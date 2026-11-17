@@ -16,11 +16,11 @@ import { Composer, type ComposerSubmission } from "../composer.js";
 import { personalReferenceCandidates } from "../composer-reference-picker.js";
 import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
-import {
-  pendingScopeUnavailable,
-  pendingStorageAvailable,
-  pendingStorageUnavailable,
-} from "../pending-sends.js";
+import { hostMessageOutbox } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { ActionLine } from "../action-line.js";
+import { useAction } from "../use-action.js";
+import type { PendingSubmission } from "../../host/message-outbox.js";
 import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
@@ -122,16 +122,12 @@ function NewTaskComposer({
   );
   const canCreateThread = canCreate && selection !== null;
   const inputRef = useRef<HTMLElement | null>(null);
-  const storageReady = useMemo(() => pendingStorageAvailable(), []);
   const accessConflict = selectedPlacement
     ? accessModeConflict(accessMode, selectedPlacement)
     : null;
-  const sendBlocked =
-    !deploymentId || !userId
-      ? pendingScopeUnavailable
-      : !storageReady
-        ? pendingStorageUnavailable
-        : accessConflict;
+  const sendBlocked = hostMessageOutbox(hostClient)
+    ? accessConflict
+    : presentClientIssue({ code: "storage-unavailable" }).title;
   const attachmentTarget =
     draftKey && deploymentId ? { client: hostClient, scope: draftKey, deploymentId } : null;
   // A suggestion fills the draft; the person sends it.
@@ -141,6 +137,13 @@ function NewTaskComposer({
     inputRef.current?.focus();
   }, [draftKey, suggestion]);
 
+  // Not started offline: the draft stays and this line says why, above it.
+  const start = useAction(hostClient, {
+    label: "start this task",
+    done: "started",
+    thing: "this task",
+    execute: (message: PendingSubmission) => createThreadAndSend(message, selection!, accessMode),
+  });
   const startThread = async (
     body: string,
     {
@@ -148,17 +151,25 @@ function NewTaskComposer({
       places,
       idempotencyKey,
     }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey">,
-  ) => {
-    if (!selection) throw new Error("Choose an available model to start.");
-    const thread = await createThreadAndSend(
-      { attachments, body, ...(places.length > 0 ? { places } : {}), idempotencyKey },
-      selection,
-      accessMode,
-    );
-    nav.openConversation(nav.threadPath(thread.id));
+  ): Promise<false | undefined> => {
+    if (!selection) return false;
+    const outcome = await start.run({
+      attachments,
+      body,
+      ...(places.length > 0 ? { places } : {}),
+      idempotencyKey,
+    });
+    if (outcome.kind !== "confirmed") return false;
+    nav.openConversation(nav.threadPath(outcome.value.id));
+    return undefined;
   };
   return (
     <>
+      {start.line ? (
+        <div aria-live="polite" className="home-start-line">
+          <ActionLine line={start.line} wrap />
+        </div>
+      ) : null}
       <Composer
         attachments={attachmentTarget}
         autoFocus

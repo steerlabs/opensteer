@@ -266,7 +266,7 @@ async function mount(
                     element={
                       <AppShell
                         hostClient={sessionClient ?? client}
-                        loadError={null}
+                       
                         {...options.shell}
                       />
                     }

@@ -180,8 +180,6 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     user: base.user ? { ...base.user, email: placeholderEmail } : null,
   };
   const context: ShellContext = {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,

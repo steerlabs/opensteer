@@ -25,8 +25,6 @@ import {
   canRespondToRequests,
   conversationActivityTurn,
   conversationTurnRevealing,
-  describeHostConnection,
-  showsHostLive,
   groupTranscriptEntries,
   incomingTranscriptMessages,
   observedSequence,
@@ -103,6 +101,7 @@ import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
+import { useConnectionGate, useConnectionLive } from "./connection-shell.js";
 import { notFound, useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
@@ -129,6 +128,17 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
     else nav.openConversation("/", { replace: true });
   };
 
+  // Until the task arrives the route has nothing to show: its connection, or
+  // its own read giving up, is the one thing said.
+  const gate = useConnectionGate(hostClient.connection, {
+    scope: "route",
+    ready: thread !== null || missing || threadId === null,
+    onBack: back,
+    failed:
+      threadId && snapshot.threadLookups[threadId] === "failed"
+        ? { resource: "this task", onRetry: () => hostClient.activateThread(threadId) }
+        : null,
+  });
   if (!thread) {
     // A link to a task that was deleted, or that this reader may not see, says so.
     if (missing)
@@ -137,38 +147,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           <Unavailable onBack={back} />
         </div>
       );
-    if (
-      threadId &&
-      snapshot.threadLookups[threadId] === "failed" &&
-      snapshot.connection !== "connected"
-    )
-      return (
-        <div className="thread">
-          <Unavailable offline onBack={back} onRetry={() => hostClient.activateThread(threadId)} />
-        </div>
-      );
-    if (threadId && snapshot.threadLookups[threadId] === "failed")
-      return (
-        <div className="thread">
-          <div className="hero" role="alert">
-            <p>This conversation could not be loaded.</p>
-            <button
-              className="btn"
-              onClick={() => hostClient.activateThread(threadId)}
-              type="button"
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      );
-    return (
-      <div className="thread">
-        <div className="hero" role="status" aria-label="Loading Thread">
-          <span className="spinner" />
-        </div>
-      </div>
-    );
+    return <div className="thread">{gate}</div>;
   }
   return (
     <ThreadView
@@ -276,7 +255,7 @@ function ThreadView({
   // A message a link named that this conversation no longer holds, or could not reach.
   const [missingMessage, setMissingMessage] = useState<{
     readonly id: string;
-    readonly offline: boolean;
+    readonly unloaded: boolean;
   } | null>(null);
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
@@ -701,7 +680,7 @@ function ThreadView({
     const unreachable = async (error: unknown) => {
       setMissingMessage({
         id: messageId,
-        offline: !notFound(error) && hostClient.getSnapshot().connection !== "connected",
+        unloaded: !notFound(error),
       });
       await returnToLatest().catch(() => undefined);
       return false;
@@ -854,8 +833,7 @@ function ThreadView({
   };
 
   const canRespond = canRespondToRequests(snapshot);
-  const connection = describeHostConnection(snapshot);
-  const live = showsHostLive(snapshot) && environmentStatus === "connected";
+  const live = useConnectionLive(hostClient.connection) && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
@@ -865,40 +843,22 @@ function ThreadView({
     : threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
   const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
-  const connectionLabel =
-    connection.tone !== "green"
-      ? connection.label
-      : thread.status === "archived"
-        ? "Archived"
-        : environmentStatus === "disconnected"
-          ? `${thread.runnerLabel} offline`
-          : null;
-  const connectionStatus =
-    connectionLabel !== null ? (
+  // A fact about this task's own computer, never about this app's connection.
+  const taskLabel =
+    thread.status === "archived"
+      ? "Archived"
+      : environmentStatus === "disconnected"
+        ? `${thread.runnerLabel} offline`
+        : null;
+  const taskStatus =
+    taskLabel !== null ? (
       <span className="thread__connection" role="status">
-        <span className="thread__connection-label">{connectionLabel}</span>
-        {connection.action === "retry" ? (
-          <button
-            type="button"
-            onClick={() =>
-              void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
-            }
-          >
-            Retry
-          </button>
-        ) : null}
+        <span className="thread__connection-label">{taskLabel}</span>
       </span>
     ) : null;
   const historyState = snapshot.threadLookups[thread.id];
   const historyStatus =
-    historyState === "failed" ? (
-      <span className="thread__connection" role="alert">
-        <span className="thread__connection-label">Could not load messages</span>
-        <button type="button" onClick={() => hostClient.activateThread(thread.id)}>
-          Retry
-        </button>
-      </span>
-    ) : historyState === "loading" ? (
+    historyState === "loading" && live ? (
       <span className="thread__connection" role="status">
         Loading messages…
       </span>
@@ -953,7 +913,7 @@ function ThreadView({
       ? (blockingDetail(assignmentPresentation(assignment, snapshot))?.text ?? null)
       : null;
   }, [snapshot, thread.id]);
-  const cause = connectionStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
+  const cause = taskStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
 
   // On a phone with the conversation alone, its Run's page can stand above it.
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -1266,7 +1226,7 @@ function ThreadView({
                         <Unavailable
                           backLabel="Dismiss"
                           inline
-                          offline={missingMessage.offline}
+                          unloaded={missingMessage.unloaded ? "this message" : null}
                           onBack={() => setMissingMessage(null)}
                           onRetry={() =>
                             void jumpToMessage(missingMessage.id).catch(reportActionError)

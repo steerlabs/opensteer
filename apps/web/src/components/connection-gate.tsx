@@ -35,7 +35,7 @@ export const ConnectionGate = memo(function ConnectionGate(props: {
       <div className="splash__inner connection-gate__inner" aria-live="polite" key={props.stateKey}>
         {props.scope === "app" ? <BrandMark large /> : null}
         {props.title === null ? null : <h1 className="connection-gate__title">{props.title}</h1>}
-        <p className="splash__detail">{props.detail}</p>
+        {props.detail ? <p className="splash__detail">{props.detail}</p> : null}
         {props.primary || props.secondary ? (
           <div className="connection-gate__actions">
             {props.primary ? <GateButton button={props.primary} primary /> : null}

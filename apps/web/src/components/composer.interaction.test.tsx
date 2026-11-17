@@ -55,7 +55,6 @@ describe("composer connection transitions", () => {
       attachments: [],
       idempotencyKey: expect.any(String),
       places: [],
-      replay: false,
     });
     expect(field.value).toBe("");
     expect(node.querySelector('[aria-label="Queue message"]')).toBeNull();

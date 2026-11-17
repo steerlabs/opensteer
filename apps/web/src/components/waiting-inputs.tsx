@@ -28,12 +28,15 @@ import {
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import { TranscriptMessage } from "./agent-activity.js";
-import type { PendingSubmission } from "./composer.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
 import { Icon, type IconName } from "./icon.js";
 import { EditedMark } from "./message-revisions.js";
-import { sendMessageCommand } from "./pending-sends.js";
+import {
+  sendMessageCommand,
+  storageUnavailable,
+  type PendingSubmission,
+} from "../host/message-outbox.js";
 import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
@@ -327,7 +330,7 @@ function useInPlaceEdit(
     const held = session.current;
     if (!held || !draft) return;
     const outbox = hostMessageOutbox(client);
-    if (!outbox) throw new Error("Message storage is unavailable.");
+    if (!outbox) throw storageUnavailable();
     let submission = held.sending;
     if (!submission) {
       const current = await typed();

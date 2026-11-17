@@ -286,8 +286,6 @@ const initialQueue: ThreadInputQueue | null =
 function useShellContext(): ShellContext {
   const live = useSyncExternalStore(client.subscribe, client.getSnapshot);
   return {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: async () => {
       throw new Error("Tasks don’t start in this preview.");
     },

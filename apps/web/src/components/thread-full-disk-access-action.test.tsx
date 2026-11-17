@@ -185,8 +185,6 @@ function shellContext(input: {
       })
     : null;
   return {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,

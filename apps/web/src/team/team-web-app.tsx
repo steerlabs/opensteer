@@ -29,6 +29,11 @@ import { TeamRoutes } from "./team-routes.js";
 import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
 import { TeamSideFor, LeaveTeamDialog } from "./team-sidebar-sections.js";
+import {
+  ConnectionGateScope,
+  ShellConnectionPill,
+  type ShellConnectionSource,
+} from "../components/connection-shell.js";
 
 type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type Entry =
@@ -354,14 +359,17 @@ function TeamWebShell({
             <TeamSideFor onNavigate={close} teamId={team.teamId} />
           </section>
         </nav>
-        <main className="app-shell__main">
-          <Routes>
-            <Route index element={<Navigate replace to={landing} />} />
-            <Route path="teams/:teamId/*" element={<TeamRoutes />} />
-            <Route path="settings/teams/:teamId/:page" element={<TeamSettingsPage />} />
-            <Route path="*" element={<Navigate replace to={landing} />} />
-          </Routes>
-        </main>
+        <ConnectionGateScope>
+          <main className="app-shell__main">
+            <TeamPill team={team} />
+            <Routes>
+              <Route index element={<Navigate replace to={landing} />} />
+              <Route path="teams/:teamId/*" element={<TeamRoutes />} />
+              <Route path="settings/teams/:teamId/:page" element={<TeamSettingsPage />} />
+              <Route path="*" element={<Navigate replace to={landing} />} />
+            </Routes>
+          </main>
+        </ConnectionGateScope>
       </div>
     </WorkspaceProvider>
   );
@@ -376,4 +384,23 @@ function TeamSettingsPage() {
       </div>
     </div>
   );
+}
+
+/** The team's own site speaks about the one connection it has: its team's. */
+function TeamPill({ team }: { readonly team: TeamAttachment }) {
+  const client = team.client;
+  const current = useMemo<ShellConnectionSource | null>(
+    () =>
+      client
+        ? {
+            key: `team:${team.teamId}`,
+            connection: client.connection,
+            mark: "users",
+            onSignIn: () => window.location.reload(),
+            onUpdate: () => window.location.reload(),
+          }
+        : null,
+    [client, team.teamId],
+  );
+  return current ? <ShellConnectionPill current={current} /> : null;
 }

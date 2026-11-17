@@ -1,5 +1,3 @@
-import { useCallback } from "react";
-import { useConnectionNotice } from "@opensteer/client/react";
 import { lazy, Suspense } from "react";
 import { subscribeIntegrationAuthorizationReturns } from "./integrations/integration-authorization.js";
 import { useEffect, useRef, useState } from "react";
@@ -46,7 +44,8 @@ import {
   type InitialOwnerClaimInput,
   type PasswordSignInInput,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
+import { useClientConnection, useHostSnapshot } from "@opensteer/client/react";
+import { useConnectionGate } from "./components/connection-shell.js";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -114,10 +113,6 @@ export function App({
   } | null;
 }) {
   const { snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
-  const loadError = useConnectionNotice(hostClient.connection);
-  const reload = useCallback(async () => {
-    hostClient.connection.retry();
-  }, [hostClient]);
   useEffect(
     () =>
       desktopBridge
@@ -129,7 +124,6 @@ export function App({
   const [onboardingPending, setOnboardingPending] = useState(false);
   const autoOidcStarted = useRef(false);
   const [autoOidcSuppressed, setAutoOidcSuppressed] = useState(hasRecentAutoOidcAttempt);
-  const [refreshing, setRefreshing] = useState(false);
   // Captured once, during the first render, so the code leaves the URL before
   // anything can paint it or persist it in history.
   const [setupToken] = useState(takeSetupToken);
@@ -150,6 +144,19 @@ export function App({
     setContinuingSetup(false);
     onSetupOpened?.();
   }, [continuingSetup, onSetupOpened, shellReady]);
+  // Until this Opensteer has answered, its connection is the one thing said:
+  // setup's own opening screen while setup continues and nothing is wrong.
+  const connection = useClientConnection(hostClient.connection);
+  const interrupted = connection.showInterruption && connection.phase !== "ready";
+  const appGate = useConnectionGate(hostClient.connection, {
+    scope: "app",
+    ready: snapshot.session !== "checking" && !interrupted,
+    onSignIn: () => void hostClient.refresh().catch(() => undefined),
+    onUpdate: desktopBridge?.updates
+      ? () => void desktopBridge.updates?.download().catch(() => undefined)
+      : () => window.location.reload(),
+  });
+  const gate = continuingSetup && !interrupted ? null : appGate;
   const [recoveryToken] = useState(takeRecoveryToken);
   const nativeOAuthQuery = useNativeOAuthQuery();
   const [authorizationError, setAuthorizationError] = useState(() =>
@@ -282,15 +289,6 @@ export function App({
     }
   }
 
-  async function refreshHost() {
-    setRefreshing(true);
-    try {
-      await reload();
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
   // An authorization that failed before anyone could act on it. It reports
   // itself ahead of every other screen, including the ones that wait on the
   // Host, because the reason only exists in the URL this render just consumed.
@@ -393,18 +391,7 @@ export function App({
   }
 
   if (snapshot.session === "checking") {
-    if (continuingSetup && !loadError) {
-      return <SetupOpening />;
-    }
-    return (
-      <Splash detail={loadError ?? "Connecting to your deployment…"}>
-        {loadError ? (
-          <button className="btn" onClick={() => void refreshHost()} type="button">
-            {refreshing ? "Trying again…" : "Try again"}
-          </button>
-        ) : null}
-      </Splash>
-    );
+    return gate ?? <SetupOpening />;
   }
 
   if (nativeOAuthQuery)
@@ -439,18 +426,8 @@ export function App({
   // The Host writes this person's settings (the agent's home folder) on first
   // sign-in, so their absence is a moment on a first run, never an empty app.
   if (snapshot.personalSettings === null) {
-    if (continuingSetup && !loadError) {
-      return <SetupOpening />;
-    }
-    return (
-      <Splash detail={loadError ?? "Preparing your agent’s home…"}>
-        {loadError ? (
-          <button className="btn" onClick={() => void refreshHost()} type="button">
-            {refreshing ? "Trying again…" : "Try again"}
-          </button>
-        ) : null}
-      </Splash>
-    );
+    if (continuingSetup && !interrupted) return <SetupOpening />;
+    return interrupted ? gate : <Splash detail="Preparing your agent’s home…" />;
   }
 
   return (
@@ -501,7 +478,6 @@ export function App({
                     desktopBridge={desktopBridge}
                     desktopDeployment={desktopDeployment}
                     hostClient={hostClient}
-                    loadError={loadError}
                     onNotificationTargetOpened={onNotificationTargetOpened}
                     notificationTarget={notificationTarget}
                   />

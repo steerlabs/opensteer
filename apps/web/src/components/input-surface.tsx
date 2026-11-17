@@ -1,6 +1,5 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { hostMessageOutbox } from "@opensteer/client/host";
-import { ClientOperationError } from "@opensteer/client/connections";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
@@ -28,7 +27,7 @@ import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
-import { sendMessageCommand } from "./pending-sends.js";
+import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
@@ -138,28 +137,16 @@ export function InputSurface({
   );
   const sendMessage = async (
     body: string,
-    {
-      attachments,
-      content,
-      places,
-      idempotencyKey,
-      quotedMessageId,
-      compaction,
-    }: ComposerSubmission,
+    { attachments, places, idempotencyKey, quotedMessageId, compaction }: ComposerSubmission,
   ): Promise<void> => {
-    if (!body.trim() && attachments.length === 0 && places.length === 0 && !content?.length) return;
-    if (!outbox)
-      throw new ClientOperationError("Message storage is unavailable.", "blocked", {
-        kind: "local",
-        reason: "storage-unavailable",
-      });
+    if (!body.trim() && attachments.length === 0 && places.length === 0) return;
+    if (!outbox) throw storageUnavailable();
     await outbox.enqueue(
       sendMessageCommand(threadId, {
         attachments,
         ...(compaction ? { compaction } : {}),
         body,
         ...(places.length > 0 ? { places } : {}),
-        ...(content ? { content } : {}),
         idempotencyKey,
         ...(quotedMessageId ? { quotedMessageId } : {}),
       }),

@@ -6,7 +6,7 @@ import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
 
-type Shown = Request | { readonly state: "unavailable" | "offline"; readonly id: string };
+type Shown = Request | { readonly state: "unavailable" | "unloaded"; readonly id: string };
 
 /**
  * The Request a link named with `?requestId=`. The address is released at
@@ -58,7 +58,7 @@ export function useLinkedRequest(
       (error: unknown) => {
         if (!current) return;
         if (notFound(error)) hostClient.references.unavailable(requestId);
-        setShown({ state: notFound(error) ? "unavailable" : "offline", id: requestId });
+        setShown({ state: notFound(error) ? "unavailable" : "unloaded", id: requestId });
       },
     );
     return () => {
@@ -100,7 +100,7 @@ function LinkedRequest({
       <Dialog onClose={onClose} title="Request">
         <Unavailable
           backLabel="Close"
-          offline={request.state === "offline"}
+          unloaded={request.state === "unloaded" ? "this request" : null}
           onBack={onClose}
           onRetry={() => onRetry(request.id)}
         />

@@ -140,9 +140,15 @@ html.electron-shell .connection-pill {
   }
 }
 
-/* ---- Its details ---- */
-.connection-details {
+/* ---- Its details ----
+   Opaque: the glass a popover usually wears lets the transcript under the
+   pill read through the explanation. */
+.popover.connection-details {
   padding: var(--space-14) var(--space-16);
+  border-color: var(--line-strong);
+  background: var(--surface-elevated);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .connection-details__body {
@@ -157,6 +163,17 @@ html.electron-shell .connection-pill {
   gap: var(--space-8);
   min-width: 0;
   max-width: 100%;
+}
+
+.connection-details__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  color: var(--text-soft);
 }
 
 .connection-details__name {
@@ -503,4 +520,23 @@ html.electron-shell .connection-pill {
   from {
     transform: scale(0.96);
   }
+}
+
+/* "Not started. You're offline." above Home's composer, the draft kept below. */
+.home-start-line {
+  padding: 0 var(--space-4) var(--space-6);
+}
+
+/* Edit and Don't send in a waiting message's hover marks. */
+.mark.mark--words {
+  width: auto;
+  padding: 0 var(--space-6);
+  color: var(--ember);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.mark.mark--words:hover {
+  color: var(--ember-bright);
 }

@@ -83,8 +83,6 @@ function useShellContext(): ShellContext {
   const live = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const snapshot = live;
   return {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: async () => {
       throw new Error("Tasks don’t start in this preview.");
     },

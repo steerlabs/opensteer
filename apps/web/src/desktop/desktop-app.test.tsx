@@ -121,12 +121,13 @@ it("lets a connecting place go back and shows cancellation failures", async () =
   await act(async () => button?.click());
 
   expect(cancel).toHaveBeenCalledOnce();
+  // The failure is said in the app's words, never the exception's own text.
   await vi.waitFor(() => {
-    expect(container.textContent).toContain("The connection could not be cancelled.");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "That didn’t work. Try again.",
+    );
   });
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "The connection could not be cancelled.",
-  );
+  expect(container.textContent).not.toContain("The connection could not be cancelled.");
 
   await act(async () => root.unmount());
   container.remove();

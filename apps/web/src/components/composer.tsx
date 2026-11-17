@@ -21,7 +21,8 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import { type ArtifactContentPart, type ContentPart, type PlaceContentPart } from "@opensteer/core";
+import { type ArtifactContentPart, type PlaceContentPart } from "@opensteer/core";
+import type { PendingSubmission } from "../host/message-outbox.js";
 import { mutationIdempotencyKey, type HostClient, type PlaceItem } from "@opensteer/client/host";
 import { collectComposerTokens, type ComposerSnapshot } from "@opensteer/client/references";
 import { AttachmentTray } from "./attachments/attachment-tray.js";
@@ -63,30 +64,10 @@ export interface ComposerSubmission {
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   /** The places the message includes — pages, Mac apps, phones — as the draft held them. */
   readonly places: readonly PlaceContentPart[];
-  /** Exact accepted command content, only when a saved send is sent again. */
-  readonly content?: readonly ContentPart[];
   /** Uploaded files, in the order the person added them. */
   readonly attachments: readonly ArtifactContentPart[];
   readonly idempotencyKey: string;
   /** The exact source message this one answers, when the reader quoted one. */
-  readonly quotedMessageId?: string;
-  /** The same message handed to the Host again, after an attempt that went unanswered. */
-  readonly replay: boolean;
-}
-
-/**
- * A message handed to the Host and not yet acknowledged: its words, its files
- * and its key, fixed together. Sending it again under that key must be the
- * same message, or it is a second one.
- */
-export interface PendingSubmission {
-  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
-  readonly places?: readonly PlaceContentPart[];
-  /** Exact accepted command content, only when a saved send is sent again. */
-  readonly content?: readonly ContentPart[];
-  readonly attachments: readonly ArtifactContentPart[];
-  readonly body: string;
-  readonly idempotencyKey: string;
   readonly quotedMessageId?: string;
 }
 
@@ -154,7 +135,11 @@ interface ComposerProps {
   onHoldingChange?: ((holding: boolean) => void) | undefined;
   /** Invoked when the reader presses Escape in the textarea (e.g. to return focus to docked action options). */
   onEscape?: (() => void) | undefined;
-  onSend: (body: string, submission: ComposerSubmission) => Promise<void>;
+  /**
+   * Keeps or sends the message. Resolving `false` means it did not go and the
+   * caller has said why beside the composer: the draft stays as it is.
+   */
+  onSend: (body: string, submission: ComposerSubmission) => Promise<void | false>;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -478,14 +463,14 @@ export function Composer({
       setSubmitting(true);
       setError(null);
       try {
-        await onSend(submission.body, {
+        const sent = await onSend(submission.body, {
           attachments: submission.attachments,
           places: submission.places ?? [],
           ...(submission.compaction ? { compaction: submission.compaction } : {}),
           idempotencyKey: submission.idempotencyKey,
           ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
-          replay: false,
         });
+        if (sent === false) return;
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));

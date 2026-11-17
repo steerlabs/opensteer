@@ -295,8 +295,6 @@ function page(
   const snapshot: HostSnapshot = hostClient.getSnapshot();
   const origin = "http://127.0.0.1:43110";
   const context: ShellContext = {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,

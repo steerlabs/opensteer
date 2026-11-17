@@ -34,7 +34,6 @@ import {
   tabFilterActive,
   tabFilterEmptyWords,
   type TabFilter,
-  describeHostConnection,
   listedRowThreadId,
   doneDays,
   doneTaskList,
@@ -66,6 +65,7 @@ import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { VoiceClock } from "./voice.js";
 import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
+import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
@@ -251,7 +251,7 @@ export function Sidebar({
   const [editingGroup, editGroup] = useState<string | null>(null);
   const presentations = useListedBrowserPresentations(hostClient);
   const deployment = selectedDeploymentFrom(deploymentAccess, desktopDeployment);
-  const connection = describeHostConnection(snapshot);
+  const connection = useConnectionDot(hostClient.connection);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
   const [searching, setSearching] = useState(false);
   // Search reads every tab's words, so the list is held only while it is open.
@@ -1628,7 +1628,7 @@ function SidebarFooter({
   placeName,
   workspace,
 }: {
-  readonly connection: ReturnType<typeof describeHostConnection>;
+  readonly connection: ReturnType<typeof useConnectionDot>;
   readonly onCloseMobile: () => void;
   readonly onThisComputer: boolean;
   readonly placeName: string;
@@ -1678,7 +1678,7 @@ function SidebarFooter({
         <button
           aria-expanded={open}
           aria-haspopup="menu"
-          aria-label={`${placeName}: ${connection.label}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
+          aria-label={`${placeName}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
           className="sidebar__place"
           onClick={() => setOpen((value) => !value)}
           ref={anchorRef}
@@ -1688,15 +1688,13 @@ function SidebarFooter({
             <Icon name={onThisComputer ? "desktop" : "server"} />
             {signInEnded ? <span className="sidebar__place-alert" /> : null}
           </span>
-          <span className="sidebar__place-text">
+          {/* The dot only: the pill over the main column says what is wrong. */}
+          <span className="sidebar__place-text sidebar__place-line">
+            <span
+              aria-hidden
+              className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+            />
             <span className="sidebar__place-name">{placeName}</span>
-            <span className="sidebar__place-status">
-              <span
-                aria-hidden
-                className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-              />
-              {connection.label}
-            </span>
           </span>
           <Icon className="sidebar__place-settings" name="chevron-down" />
         </button>

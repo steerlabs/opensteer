@@ -45,7 +45,6 @@ import type {
   StagedFileView,
   TeamSend,
 } from "../components/team/team-models.js";
-import { ConnectionBanner } from "../components/team/team-status.js";
 import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
@@ -871,26 +870,16 @@ function ChannelScreenFor({
     ) : (
       threadPane
     );
-  const notice = snapshot.versionRefusal
-    ? ({ kind: snapshot.versionRefusal } as const)
-    : snapshot.connection === "connected"
-      ? null
-      : snapshot.unreachable
-        ? ({ kind: "unreachable" } as const)
-        : ({ kind: "reconnecting" } as const);
   return (
     <TeamFileReadContext value={readFile}>
       <ChannelScreen
         banner={
-          <>
-            <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
-            {timeline?.channel?.share?.state === "disconnected" ||
-            timeline?.channel?.share?.updateRequired ? (
-              <p className="team-share-notice" role="status">
-                {channel.shareLabel}. {channel.shareDetail}
-              </p>
-            ) : null}
-          </>
+          timeline?.channel?.share?.state === "disconnected" ||
+          timeline?.channel?.share?.updateRequired ? (
+            <p className="team-share-notice" role="status">
+              {channel.shareLabel}. {channel.shareDetail}
+            </p>
+          ) : null
         }
         channel={channel}
         lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
