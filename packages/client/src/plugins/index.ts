@@ -22,6 +22,7 @@ import type {
 import type { HostClient } from "../host/client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { KeysetPage } from "../team/paged-list.js";
+import { pluginInputForm, type PluginInputForm } from "./input-form.js";
 
 export type {
   ConnectedAccountView,
@@ -200,21 +201,46 @@ export function pluginStatusView(plugin: PluginSummaryView): {
   return { label: "On", tone: "ok" };
 }
 
-/** What the engine's state means to someone waiting on it; null when nothing needs saying. */
-export function pluginEngineNotice(
-  engine: PluginEngineStateView | null,
-): { readonly tone: "progress" | "error"; readonly text: string } | null {
+/**
+ * What the engine's state means to someone waiting on it; null when nothing
+ * needs saying. `detail` keeps the Host's own reason, for whoever needs it.
+ */
+export function pluginEngineNotice(engine: PluginEngineStateView | null): {
+  readonly tone: "progress" | "error";
+  readonly text: string;
+  readonly detail: string | null;
+} | null {
   if (!engine) return null;
   if (engine.status === "starting")
-    return { tone: "progress", text: "Starting plugins. The first open can take a few seconds." };
+    return {
+      tone: "progress",
+      text: "Starting plugins. The first open can take a few seconds.",
+      detail: null,
+    };
   if (engine.status === "unavailable")
     return {
       tone: "error",
-      text: engine.reason
-        ? `Plugins are unavailable: ${engine.reason}`
-        : "Plugins are unavailable right now.",
+      text: pluginUnavailableText(engine.reason),
+      detail: engine.reason ?? null,
     };
   return null;
+}
+
+/**
+ * The Host reports why the plugin sandbox can't start in its own terms; a
+ * person needs to know what to do about it.
+ */
+function pluginUnavailableText(reason: string | undefined) {
+  const sandbox = reason?.match(/workerd (has no binary|cannot run|runtime) .*?(\w+)\/(\w+)/u);
+  if (sandbox) {
+    const [, problem, platform] = sandbox;
+    if (problem === "runtime")
+      return "Plugins aren't installed correctly on this computer. Reinstalling Opensteer should fix it.";
+    if (problem === "cannot run" && platform === "darwin")
+      return "Plugins need a newer version of macOS. Update macOS on this computer to use them.";
+    return "Plugins aren't supported on this computer.";
+  }
+  return "Plugins are unavailable right now. Opensteer tries again the next time you open them.";
 }
 
 /** A refused read that means the engine is unavailable, as the state to show instead of an error. */
@@ -253,7 +279,9 @@ export function pluginAuthorText(author: PluginAuthor) {
 /**
  * The consent a person gives by linking an account, in the order it matters:
  * where the credential may go, what the plugin's code receives, the trust
- * linking places in that code, and who wrote it.
+ * linking places in that code, and who wrote it. "This plugin's code" rather
+ * than the plugin's name, which is often the service's: it is not the
+ * service's code.
  */
 export function pluginConsentLines(input: {
   readonly consent: PluginConsentView;
@@ -267,33 +295,37 @@ export function pluginConsentLines(input: {
   const credential = input.providerName
     ? `your ${input.providerName} credential`
     : "the credential";
+  const Credential = `${credential[0]!.toUpperCase()}${credential.slice(1)}`;
+  const sealed = consent.credential === "sealed";
   return [
     {
       key: "sites",
-      text:
-        sites.length && consent.credential === "sealed"
-          ? `${credential[0]!.toUpperCase()}${credential.slice(1)} may only be sent to ${listText(sites)}.`
-          : sites.length
-            ? `${input.pluginName} declares ${listText(sites)}, but its code receives ${credential} and can send it elsewhere.`
-            : `${input.pluginName} doesn't say which sites ${credential} may go to.`,
+      // Plugin code that receives the credential itself can send it anywhere,
+      // whatever sites it declares; only a sealed credential is confined to them.
+      text: sealed
+        ? sites.length
+          ? `${Credential} can only be sent to ${listText(sites)}.`
+          : `This plugin doesn't say which sites ${credential} may go to.`
+        : sites.length
+          ? `This plugin says it uses ${credential} with ${listText(sites)}, but its code can send it elsewhere.`
+          : `This plugin doesn't say which sites it sends ${credential} to.`,
     },
     {
       key: "credential",
-      text:
-        consent.credential === "sealed"
-          ? `${input.pluginName}'s code gets a sealed handle, never the credential itself.`
-          : `${input.pluginName}'s code receives the credential itself.`,
+      text: sealed
+        ? `This plugin's code never sees ${credential}. It gets an account reference that only works for ${sites.length ? "those sites" : "the sites it declares"}.`
+        : `This plugin's code receives ${credential} itself and could send it to any site.`,
     },
     {
       key: "trust",
-      text: `Linking trusts ${input.pluginName}'s code with this account. Its setup runs with the account before any tool asks for approval.`,
+      text: "Linking trusts this plugin's code with this account. Its setup runs with the account before any tool asks for approval.",
     },
     {
       key: "author",
       text:
         input.author === "catalog"
-          ? `${input.pluginName} comes from the plugin catalog.`
-          : `${input.pluginName} was written by an agent. Nobody else reviewed its code.`,
+          ? `The ${input.pluginName} plugin comes from the plugin catalog.`
+          : `The ${input.pluginName} plugin was written by an agent. Nobody else reviewed its code.`,
     },
   ];
 }
@@ -339,146 +371,10 @@ export function pluginLinkableAccounts(review: PluginAccountReviewView) {
     .sort((a, b) => Number(b.linked) - Number(a.linked) || a.label.localeCompare(b.label));
 }
 
-/* ---- A tool's input form, from its JSON Schema ---- */
-
-export interface PluginInputField {
-  readonly id: string;
-  readonly prompt: string;
-  readonly description: string | null;
-  readonly kind: "text" | "number" | "integer" | "boolean" | "choice" | "choices";
-  readonly choices: readonly { readonly value: string; readonly label: string }[];
-  readonly required: boolean;
-}
-export interface PluginInputForm {
-  readonly fields: readonly PluginInputField[];
-  /** Properties this form cannot render; the person can only decline. */
-  readonly unsupported: readonly string[];
-}
-
-/** The flat MCP form schema a tool asks with, as fields the app's form components draw. */
-export function pluginInputForm(schema: Record<string, unknown>): PluginInputForm {
-  const properties =
-    schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
-      ? (schema.properties as Record<string, unknown>)
-      : {};
-  const required = new Set(
-    Array.isArray(schema.required) ? schema.required.filter((v) => typeof v === "string") : [],
-  );
-  const fields: PluginInputField[] = [];
-  const unsupported: string[] = [];
-  for (const [id, raw] of Object.entries(properties)) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      unsupported.push(id);
-      continue;
-    }
-    const property = raw as Record<string, unknown>;
-    const prompt = typeof property.title === "string" && property.title ? property.title : id;
-    const description = typeof property.description === "string" ? property.description : null;
-    const base = { id, prompt, description, required: required.has(id) };
-    const enumValues = Array.isArray(property.enum)
-      ? property.enum.filter((value): value is string => typeof value === "string")
-      : null;
-    const oneOf = Array.isArray(property.oneOf)
-      ? property.oneOf.flatMap((option) =>
-          option &&
-          typeof option === "object" &&
-          typeof (option as { const?: unknown }).const === "string"
-            ? [
-                {
-                  value: (option as { const: string }).const,
-                  label:
-                    typeof (option as { title?: unknown }).title === "string"
-                      ? (option as { title: string }).title
-                      : (option as { const: string }).const,
-                },
-              ]
-            : [],
-        )
-      : null;
-    const names = Array.isArray(property.enumNames) ? property.enumNames : [];
-    if (property.type === "string" && (enumValues?.length || oneOf?.length)) {
-      fields.push({
-        ...base,
-        kind: "choice",
-        choices: oneOf?.length
-          ? oneOf
-          : enumValues!.map((value, index) => ({
-              value,
-              label: typeof names[index] === "string" ? (names[index] as string) : value,
-            })),
-      });
-    } else if (property.type === "array") {
-      const items = property.items as Record<string, unknown> | undefined;
-      const values = Array.isArray(items?.enum)
-        ? items.enum.filter((value): value is string => typeof value === "string")
-        : Array.isArray(items?.anyOf)
-          ? items.anyOf.flatMap((option) =>
-              option &&
-              typeof option === "object" &&
-              typeof (option as { const?: unknown }).const === "string"
-                ? [(option as { const: string }).const]
-                : [],
-            )
-          : [];
-      if (values.length)
-        fields.push({
-          ...base,
-          kind: "choices",
-          choices: values.map((value) => ({ value, label: value })),
-        });
-      else unsupported.push(id);
-    } else if (property.type === "boolean") {
-      fields.push({
-        ...base,
-        kind: "boolean",
-        choices: [
-          { value: "true", label: "Yes" },
-          { value: "false", label: "No" },
-        ],
-      });
-    } else if (property.type === "number" || property.type === "integer") {
-      fields.push({ ...base, kind: property.type, choices: [] });
-    } else if (property.type === "string") {
-      fields.push({ ...base, kind: "text", choices: [] });
-    } else unsupported.push(id);
-  }
-  return { fields, unsupported };
-}
-
-/**
- * The content to send for a form's answers, or why it cannot be sent yet.
- * Answers are the app's form answers: each field's chosen or typed values.
- */
-export function pluginInputContent(
-  form: PluginInputForm,
-  answers: Readonly<Record<string, readonly string[]>>,
-):
-  | { readonly content: Record<string, string | number | boolean | string[]> }
-  | { readonly problem: string } {
-  if (form.unsupported.length)
-    return { problem: "This form asks for something Opensteer can't show. Decline it instead." };
-  const content: Record<string, string | number | boolean | string[]> = {};
-  for (const field of form.fields) {
-    const values = answers[field.id] ?? [];
-    const first = values[0]?.trim() ?? "";
-    if (!values.length || (field.kind !== "choices" && first === "")) {
-      if (field.required) return { problem: `${field.prompt} is required.` };
-      continue;
-    }
-    if (field.kind === "choices") content[field.id] = [...values];
-    else if (field.kind === "boolean") content[field.id] = first === "true";
-    else if (field.kind === "number" || field.kind === "integer") {
-      const number = Number(first);
-      if (!Number.isFinite(number) || (field.kind === "integer" && !Number.isInteger(number)))
-        return {
-          problem: `${field.prompt} needs ${field.kind === "integer" ? "a whole number" : "a number"}.`,
-        };
-      content[field.id] = number;
-    } else content[field.id] = first;
-  }
-  return { content };
-}
-
+export * from "./input-form.js";
+export * from "./webhooks.js";
+export * from "./accounts.js";
+export * from "./runs.js";
 /* ---- The three plugin Requests ---- */
 
 type PluginPresentation = NonNullable<Request["presentation"]["plugin"]>;
@@ -616,9 +512,6 @@ export function pluginWorkflowRunLabel(run: PluginWorkflowRunView) {
       return "Running";
   }
 }
-export function pluginWorkflowRunLive(run: PluginWorkflowRunView) {
-  return !["complete", "errored", "terminated"].includes(run.status);
-}
 
 /** Catalog entries already installed, matched by name: a hint only, the Host decides. */
 export function pluginCatalogInstalled(
@@ -723,7 +616,7 @@ export function pluginLocalToolForServer(
   return tools.find((tool) => tool.id === `app_server_${serverId}`) ?? null;
 }
 
-/** Which way it reaches agents, as they type it. */
+/** How agents address it in a program; for a line about exactly that, not for choosing access. */
 export function pluginLocalToolAddress(tool: Pick<PluginLocalToolView, "name">) {
   return /^[a-z_$][a-z0-9_$]*$/iu.test(tool.name) ? `tools.${tool.name}` : `tools["${tool.name}"]`;
 }

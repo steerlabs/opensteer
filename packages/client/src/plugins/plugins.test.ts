@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -14,22 +14,17 @@ import {
   pluginInputContent,
   pluginInputForm,
   pluginRequestView,
-  type PluginsHost,
+  completePluginWebhookSetup,
+  pluginAccountRemoval,
+  pluginAccountRows,
   pluginConsentLines,
+  pluginEngineNotice,
+  pluginWebhookSetupCompletion,
+  pluginWebhookSetupForm,
+  PluginWorkflowRuns,
+  type PluginsHost,
 } from "./index.js";
-
-it("discloses that a directly exposed credential is not confined to declared sites", () => {
-  const lines = pluginConsentLines({
-    consent: { digest: "a".repeat(64), credential: "value", sites: ["api.example.com"] },
-    author: "agent",
-    pluginName: "Example",
-    providerName: null,
-  });
-  expect(lines.find((line) => line.key === "sites")?.text).toContain("can send it elsewhere");
-  expect(lines.find((line) => line.key === "credential")?.text).toContain(
-    "receives the credential itself",
-  );
-});
+import type { PluginWorkflowRunView } from "@opensteer/protocol";
 
 describe("plugin input forms", () => {
   const form = pluginInputForm(mockPluginRequests.input.schema);
@@ -299,5 +294,190 @@ describe("plugin page and webhook clients", () => {
     await expect(readPluginWebhookSetup(host, "plg_linear", "whk_linear_issues")).rejects.toThrow(
       "gone",
     );
+  });
+});
+
+describe("finishing a manual webhook setup", () => {
+  const mockHost = () => {
+    const mock = new MockPlugins({ changed: () => {}, accountLinked: () => {} });
+    const host: PluginsHost = {
+      rpc: mock.reads() as PluginsHost["rpc"],
+      dispatch: (input) => mock.command(input as Parameters<MockPlugins["command"]>[0]),
+    };
+    return { mock, host };
+  };
+
+  it("asks for the declared fields and the service's secret, and sends exactly them", async () => {
+    const { host } = mockHost();
+    const setup = await readPluginWebhookSetup(host, "plg_linear", "whk_linear_projects");
+    const form = pluginWebhookSetupForm(setup);
+    expect(form.fields.fields.map(({ id, required }) => [id, required])).toEqual([
+      ["workspace", true],
+    ]);
+    expect(form.secret).toEqual({ kind: "provider" });
+    expect(pluginWebhookSetupCompletion("plg_linear", setup, { workspace: ["acme"] }, " ")).toEqual(
+      { problem: "Paste the signing secret the service shows you." },
+    );
+    expect(pluginWebhookSetupCompletion("plg_linear", setup, {}, "whsec")).toEqual({
+      problem: "Workspace ID is required.",
+    });
+    const done = pluginWebhookSetupCompletion(
+      "plg_linear",
+      setup,
+      { workspace: [" acme "] },
+      " whsec_1 ",
+    );
+    if (!("command" in done)) throw new Error(done.problem);
+    expect(done.command).toEqual({
+      pluginId: "plg_linear",
+      webhookId: "whk_linear_projects",
+      revision: "mock-webhook-1",
+      state: { workspace: "acme" },
+      secret: "whsec_1",
+    });
+    await completePluginWebhookSetup(host, done.command);
+    expect(await readPluginWebhookSetup(host, "plg_linear", "whk_linear_projects")).toMatchObject({
+      step: "done",
+      webhook: { status: "active" },
+    });
+  });
+
+  it("completes a setup with no fields and never sends back a secret Opensteer made", async () => {
+    const { host } = mockHost();
+    const setup = await readPluginWebhookSetup(host, "plg_stripe", "whk_stripe_payments");
+    const form = pluginWebhookSetupForm(setup);
+    expect(form.fields.fields).toEqual([]);
+    expect(form.secret).toMatchObject({ kind: "generated" });
+    const done = pluginWebhookSetupCompletion("plg_stripe", setup, {}, "typed anyway");
+    if (!("command" in done)) throw new Error(done.problem);
+    expect(done.command).not.toHaveProperty("secret");
+    expect(done.command.state).toEqual({});
+    await completePluginWebhookSetup(host, done.command);
+    // The completed setup has nothing left to send.
+    const after = await readPluginWebhookSetup(host, "plg_stripe", "whk_stripe_payments");
+    expect(pluginWebhookSetupCompletion("plg_stripe", after, {}, "")).toEqual({
+      problem: "This webhook isn't waiting for setup anymore.",
+    });
+  });
+});
+
+describe("workflow runs", () => {
+  const run = (id: string, status: PluginWorkflowRunView["status"], day: number) => ({
+    id,
+    workflow: "Import",
+    status,
+    createdAt: `2026-11-${String(day).padStart(2, "0")}T10:00:00.000Z`,
+    failure: null,
+  });
+
+  it("shows every live run first, pages the rest by cursor, and rereads loaded pages", async () => {
+    let finished = false;
+    // Page order follows run ids: the first page is neither the newest nor the live runs.
+    const read = vi.fn(async (cursor: string | null) =>
+      cursor === "2"
+        ? {
+            runs: [
+              run("live_late", finished ? "complete" : "running", 3),
+              run("old_8", "complete", 8),
+            ],
+            cursor: null,
+          }
+        : {
+            runs: [1, 2, 3, 4, 5, 6, 7].map((day) => run(`old_${day}`, "complete", day)),
+            cursor: "2",
+          },
+    );
+    const runs = new PluginWorkflowRuns(read);
+    await runs.refresh();
+    expect(runs.getState().visible.map(({ id }) => id)).toEqual([
+      "old_7",
+      "old_6",
+      "old_5",
+      "old_4",
+      "old_3",
+    ]);
+    expect(runs.getState().more).toBe(true);
+    await runs.showMore();
+    // The live run on the next page comes first, before newer finished ones.
+    expect(runs.getState().visible[0]).toMatchObject({ id: "live_late", status: "running" });
+    expect(runs.getState().visible).toHaveLength(9);
+    expect(runs.getState().more).toBe(false);
+    finished = true;
+    read.mockClear();
+    await runs.refresh();
+    expect(read.mock.calls).toEqual([[null], ["2"]]);
+    expect(runs.getState().visible.find(({ id }) => id === "live_late")?.status).toBe("complete");
+  });
+
+  it("keeps a failed read a failure, not an empty list", async () => {
+    const runs = new PluginWorkflowRuns(() => Promise.reject(new Error("offline")));
+    await runs.refresh();
+    expect(runs.getState()).toMatchObject({ loaded: false, loading: false, visible: [] });
+    expect(runs.getState().error).toBeInstanceOf(Error);
+  });
+});
+
+describe("saved accounts", () => {
+  it("names the plugins removing an account breaks, and none for an orphan", () => {
+    const mock = new MockPlugins({ changed: () => {}, accountLinked: () => {} });
+    const rows = pluginAccountRows(
+      mock.accounts,
+      mock.plugins.map((plugin) => mock.detail(plugin)),
+    );
+    const linear = rows.find(({ account }) => account.id === "acc_linear_work")!;
+    expect(linear).toMatchObject({
+      providerName: "Linear",
+      links: [{ pluginId: "plg_linear", pluginName: "Linear" }],
+    });
+    expect(pluginAccountRemoval(linear).message).toContain("Linear loses this account");
+    const orphan = rows.find(({ account }) => account.id === "acc_github_old")!;
+    expect(orphan.links).toEqual([]);
+    expect(pluginAccountRemoval(orphan).message).toMatch(/^No plugin uses it\. .*even if/u);
+  });
+});
+
+describe("words a person reads", () => {
+  it("never says a credential plugin code receives can only go to its sites", () => {
+    const lines = (credential: "sealed" | "value") =>
+      pluginConsentLines({
+        consent: { digest: "a".repeat(64), sites: ["https://api.resend.com"], credential },
+        author: "agent",
+        pluginName: "Resend",
+        providerName: "Resend",
+      }).map(({ text }) => text);
+    expect(lines("value").join(" ")).not.toMatch(/only|sealed|Resend's code/u);
+    expect(lines("value")).toEqual(
+      expect.arrayContaining([
+        "This plugin says it uses your Resend credential with api.resend.com, but its code can send it elsewhere.",
+        "This plugin's code receives your Resend credential itself and could send it to any site.",
+      ]),
+    );
+    const unnamed = pluginConsentLines({
+      consent: { digest: "a".repeat(64), credential: "value", sites: ["api.example.com"] },
+      author: "agent",
+      pluginName: "Example",
+      providerName: null,
+    });
+    expect(unnamed.find((line) => line.key === "sites")?.text).toContain("can send it elsewhere");
+    expect(unnamed.find((line) => line.key === "credential")?.text).toContain(
+      "receives the credential itself",
+    );
+    expect(lines("sealed")[0]).toBe("Your Resend credential can only be sent to api.resend.com.");
+    expect(lines("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);
+  });
+
+  it("says what to do when the sandbox can't run here, keeping the Host's reason", () => {
+    const reason = "Plugins are unavailable: workerd cannot run on this darwin/arm64 system";
+    expect(pluginEngineNotice({ status: "unavailable", reason })).toEqual({
+      tone: "error",
+      text: "Plugins need a newer version of macOS. Update macOS on this computer to use them.",
+      detail: reason,
+    });
+    expect(
+      pluginEngineNotice({
+        status: "unavailable",
+        reason: "Plugins are unavailable: workerd has no binary for win32/arm64",
+      })?.text,
+    ).toBe("Plugins aren't supported on this computer.");
   });
 });

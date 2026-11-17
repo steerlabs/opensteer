@@ -1,6 +1,7 @@
 import {
   hostApi,
   pluginsInstalledMax,
+  pluginRunsMax,
   rpcSuccess,
   type ConnectedAccountView,
   type HostApiCommand,
@@ -17,6 +18,7 @@ import {
   type PluginRequirementTarget,
   type PluginScheduledRunView,
   type PluginSummaryView,
+  type PluginWebhookSetupView,
   type PluginWorkflowRunView,
   type pluginReads,
 } from "@opensteer/protocol";
@@ -40,9 +42,18 @@ export function isMockSignInCommand(command: HostApiCommand): command is MockSig
  * The plugin side of the mock Host: a catalog of a few hundred entries for
  * paging and search, installed plugins in every state a person can meet, and
  * schedules, versions, workflows and webhooks to act on. `?mock-plugins=` picks
- * `empty`, `unavailable` or `error` for those screens.
+ * `empty`, `unavailable`, `unsupported` (the sandbox can't run on this
+ * computer), `error` or `local-only` (no public address for webhooks).
  */
-export type MockPluginScenario = "default" | "empty" | "unavailable" | "error";
+export type MockPluginScenario =
+  "default" | "empty" | "unavailable" | "unsupported" | "error" | "local-only";
+const mockPluginScenarios: readonly MockPluginScenario[] = [
+  "empty",
+  "unavailable",
+  "unsupported",
+  "error",
+  "local-only",
+];
 
 const digest = (seed: string) =>
   Array.from({ length: 64 }, (_, index) =>
@@ -384,6 +395,14 @@ function seedPlugins(): MockPlugin[] {
           account: "acc_linear_work",
           createdAt: "2026-11-02T09:05:00.000Z",
         },
+        {
+          id: "whk_linear_projects",
+          name: "Project updates",
+          status: "setup-required",
+          failure: null,
+          account: "acc_linear_work",
+          createdAt: "2026-11-16T18:00:00.000Z",
+        },
       ],
       hasPage: true,
     },
@@ -440,7 +459,16 @@ function seedPlugins(): MockPlugin[] {
       skills: [],
       schedules: [],
       workflows: [],
-      webhooks: [],
+      webhooks: [
+        {
+          id: "whk_stripe_payments",
+          name: "Payment events",
+          status: "setup-required",
+          failure: null,
+          account: "acc_stripe_live",
+          createdAt: "2026-11-16T19:30:00.000Z",
+        },
+      ],
       hasPage: false,
     },
     {
@@ -517,6 +545,39 @@ const seedAccounts: ConnectedAccountView[] = [
   { id: "acc_resend", provider: "resend", label: "Transactional key" },
   { id: "acc_github_old", provider: "github", label: "Personal token" },
 ];
+
+/** How each seeded manual webhook is set up at its service, as a plugin declares it. */
+const seedWebhookSetups: Record<
+  string,
+  {
+    instructions: string;
+    stateSchema: NonNullable<PluginWebhookSetupView["stateSchema"]>;
+    secret: "provider" | string;
+  }
+> = {
+  whk_linear_projects: {
+    instructions:
+      "In Linear, open Settings → API → Webhooks, add a webhook with the address below for Project updates, then paste the signing secret Linear shows and your workspace ID here.",
+    stateSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          title: "Workspace ID",
+          description: "Shown in Linear under Settings → Workspace.",
+        },
+      },
+      required: ["workspace"],
+    },
+    secret: "provider",
+  },
+  whk_stripe_payments: {
+    instructions:
+      "In the Stripe dashboard, open Developers → Webhooks, add an endpoint with the address below, choose the payment events, and set the signing secret below. Then come back and press Done.",
+    stateSchema: { type: "object", properties: {} },
+    secret: "whsec_mock_5f2c9a1e7b3d4c8a",
+  },
+};
 
 const studio = { id: "rnr_33333333-3333-4333-8333-333333333333", name: "Alex's MacBook Pro" };
 /** Device data apps and a local server, as the Host lists them beside plugins. */
@@ -609,6 +670,9 @@ export function mockPluginAccountConsent(): PluginConsentView {
   return consentOf(plugin, plugin.requirements[0]!);
 }
 
+const noPublicAddress =
+  "No public callback address is currently available. Webhooks cannot be received; enable Connect or use a public Host address.";
+
 function refusal(code: "not_found" | "conflict" | "bad_request", message: string, reason?: string) {
   return new HostClientRequestError({
     code,
@@ -669,22 +733,40 @@ export class MockPlugins {
       approval: null,
     },
   ];
-  #workflowRuns: PluginWorkflowRunView[] = [
-    {
-      id: "wfr_import_2",
+  /**
+   * Runs in the Host's page order, which follows run ids, not age: the live
+   * Linear import is seventh, past what an older screen showed. GitHub's run
+   * outlived the account link its current declarations need.
+   */
+  #workflowRuns: Record<string, PluginWorkflowRunView[]> = {
+    plg_linear: [
+      ["wfr_0a1", "complete", "2026-11-15T12:00:00.000Z"],
+      ["wfr_1b7", "complete", "2026-11-14T09:30:00.000Z"],
+      ["wfr_2c4", "errored", "2026-11-13T16:10:00.000Z"],
+      ["wfr_3d9", "complete", "2026-11-12T08:00:00.000Z"],
+      ["wfr_4e2", "terminated", "2026-11-11T19:45:00.000Z"],
+      ["wfr_5f6", "complete", "2026-11-10T07:20:00.000Z"],
+      ["wfr_6a8", "running", "2026-11-16T20:10:00.000Z"],
+      ["wfr_7b1", "complete", "2026-11-09T11:00:00.000Z"],
+      ["wfr_8c3", "complete", "2026-11-08T10:00:00.000Z"],
+    ].map(([id, status, createdAt]) => ({
+      id: id!,
       workflow: "Import backlog",
-      status: "running",
-      createdAt: "2026-11-16T20:10:00.000Z",
-      failure: null,
-    },
-    {
-      id: "wfr_import_1",
-      workflow: "Import backlog",
-      status: "complete",
-      createdAt: "2026-11-15T12:00:00.000Z",
-      failure: null,
-    },
-  ];
+      status: status as PluginWorkflowRunView["status"],
+      createdAt: createdAt!,
+      failure: status === "errored" ? "Row 14 has no title" : null,
+    })),
+    plg_github: [
+      {
+        id: "wfr_9d0",
+        workflow: "Mirror issues",
+        status: "running",
+        createdAt: "2026-11-13T08:00:00.000Z",
+        failure: null,
+      },
+    ],
+  };
+  readonly #webhookSetups = new Map(Object.entries(seedWebhookSetups));
 
   constructor(options: {
     readonly changed: () => void;
@@ -699,15 +781,19 @@ export class MockPlugins {
         : null;
     this.scenario =
       options.scenario ??
-      (fromAddress === "empty" || fromAddress === "unavailable" || fromAddress === "error"
-        ? fromAddress
-        : "default");
+      mockPluginScenarios.find((scenario) => scenario === fromAddress) ??
+      "default";
     this.plugins = this.scenario === "empty" ? [] : seedPlugins();
     this.accounts = this.scenario === "empty" ? [] : [...seedAccounts];
     this.engine =
       this.scenario === "unavailable"
         ? { status: "unavailable", reason: "The plugin engine stopped three times in a row." }
-        : { status: "idle" };
+        : this.scenario === "unsupported"
+          ? {
+              status: "unavailable",
+              reason: "Plugins are unavailable: workerd cannot run on this darwin/arm64 system",
+            }
+          : { status: "idle" };
   }
 
   subscribeEngine(listener: (engine: PluginEngineStateView) => void) {
@@ -725,10 +811,10 @@ export class MockPlugins {
   }
   /** The first read starts the engine, which takes a moment, as the real one does. */
   async #ready() {
-    if (this.scenario === "unavailable")
+    if (this.engine.status === "unavailable")
       throw refusal(
         "conflict",
-        "The plugin engine stopped three times in a row.",
+        this.engine.reason ?? "The plugin engine is unavailable.",
         "plugin-engine-unavailable",
       );
     if (this.scenario === "error")
@@ -803,6 +889,8 @@ export class MockPlugins {
       schedules: plugin.schedules,
       workflows: ready ? plugin.workflows : null,
       webhooks: plugin.webhooks,
+      webhookUnavailable:
+        this.scenario === "local-only" && plugin.webhooks.length ? noPublicAddress : null,
       page: plugin.hasPage
         ? {
             url: null,
@@ -1136,7 +1224,7 @@ export class MockPlugins {
       "plugins.installed.list": async () => {
         const local = this.scenario === "empty" ? [] : this.local();
         // Local tools never wait on the engine, so they still list while it is unavailable.
-        if (this.scenario === "unavailable")
+        if (this.engine.status === "unavailable")
           return rpcSuccess({ engine: this.engine, plugins: null, local });
         await this.#ready();
         return rpcSuccess({
@@ -1176,7 +1264,10 @@ export class MockPlugins {
         if (!entry) throw refusal("not_found", "Catalog entry not found");
         return rpcSuccess(entry);
       },
-      "plugins.accounts.list": async () => rpcSuccess({ accounts: this.accounts }),
+      "plugins.accounts.list": async () => {
+        await this.#ready();
+        return rpcSuccess({ accounts: this.accounts });
+      },
       "plugins.account.review": async (target) => {
         await this.#ready();
         return rpcSuccess(this.review(target));
@@ -1185,30 +1276,39 @@ export class MockPlugins {
         this.#plugin(pluginId);
         return rpcSuccess({ runs: pluginId === "plg_linear" ? this.#runs : [] });
       },
-      "plugins.workflow.runs": async ({ pluginId }) => {
+      "plugins.workflow.runs": async ({ pluginId, cursor }) => {
+        await this.#ready();
         this.#plugin(pluginId);
-        return rpcSuccess({
-          runs: pluginId === "plg_linear" ? this.#workflowRuns : [],
-          cursor: null,
-        });
+        const runs = this.#workflowRuns[pluginId] ?? [];
+        const offset = cursor ? Number(cursor) : 0;
+        const page = runs.slice(offset, offset + pluginRunsMax);
+        const next = offset + page.length;
+        return rpcSuccess({ runs: page, cursor: next < runs.length ? String(next) : null });
       },
       "plugins.webhook.setup.get": async ({ pluginId, webhookId }) => {
         const webhook = this.#plugin(pluginId).webhooks.find((entry) => entry.id === webhookId);
         if (!webhook) throw refusal("not_found", "That webhook is gone.");
+        const setup = this.#webhookSetups.get(webhook.id);
+        const step = this.#removingWebhooks.has(webhook.id)
+          ? "remove"
+          : webhook.status === "setup-required"
+            ? "configure"
+            : "done";
         return rpcSuccess({
-          step: this.#removingWebhooks.has(webhook.id)
-            ? "remove"
-            : webhook.status === "setup-required"
-              ? "configure"
-              : "done",
+          unavailable: this.scenario === "local-only" ? noPublicAddress : null,
+          step,
           webhook,
-          callbackUrl: `https://hooks.opensteer.example/${webhook.id}`,
-          instructions: this.#removingWebhooks.has(webhook.id)
-            ? "Remove this webhook in the service settings, then confirm below."
-            : null,
-          revision: "mock-webhook-1",
-          stateSchema: null,
-          signingSecret: null,
+          callbackUrl: `https://hooks.opensteer.example/hooks/v1/plugins/${pluginId}/${webhook.id}`,
+          instructions:
+            step === "remove"
+              ? "Remove this webhook in the service settings, then confirm below."
+              : step === "configure"
+                ? (setup?.instructions ?? null)
+                : null,
+          revision: step === "configure" ? "mock-webhook-1" : null,
+          stateSchema: step === "configure" ? (setup?.stateSchema ?? {}) : null,
+          signingSecret:
+            step === "configure" && setup && setup.secret !== "provider" ? setup.secret : null,
         });
       },
     };
@@ -1368,7 +1468,8 @@ export class MockPlugins {
       }
       case "plugins.workflow.start": {
         const runId = this.#id("wfr");
-        this.#workflowRuns = [
+        this.#workflowRuns[command.pluginId] = [
+          ...(this.#workflowRuns[command.pluginId] ?? []),
           {
             id: runId,
             workflow: command.workflow,
@@ -1376,14 +1477,13 @@ export class MockPlugins {
             createdAt: new Date().toISOString(),
             failure: null,
           },
-          ...this.#workflowRuns,
         ];
         this.#changed();
         return { type: command.type, runId };
       }
       case "plugins.workflow.stop":
-        this.#workflowRuns = this.#workflowRuns.map((run) =>
-          run.id === command.runId ? { ...run, status: "terminated" } : run,
+        this.#workflowRuns[command.pluginId] = (this.#workflowRuns[command.pluginId] ?? []).map(
+          (run) => (run.id === command.runId ? { ...run, status: "terminated" } : run),
         );
         this.#changed();
         return { type: command.type };
@@ -1392,8 +1492,20 @@ export class MockPlugins {
           (entry) => entry.id === command.webhookId,
         );
         if (!webhook) throw refusal("not_found", "That webhook is gone.");
-        if (command.revision !== "mock-webhook-1")
+        if (webhook.status === "active") return { type: command.type };
+        if (webhook.status !== "setup-required" || command.revision !== "mock-webhook-1")
           throw refusal("conflict", "Webhook setup changed. Open it again.");
+        // The engine's own checks: a provider's secret must come with it, a generated one never.
+        const setup = this.#webhookSetups.get(webhook.id);
+        const state = command.state as Record<string, unknown> | null;
+        const required = (setup?.stateSchema.required as string[] | undefined) ?? [];
+        if (
+          (setup?.secret === "provider") !== (command.secret !== undefined) ||
+          typeof state !== "object" ||
+          state === null ||
+          required.some((field) => typeof state[field] !== "string" || state[field] === "")
+        )
+          throw refusal("bad_request", "The service rejected that setup.", "plugin-invalid");
         webhook.status = "active";
         this.#changed();
         return { type: command.type };

@@ -136,8 +136,7 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
             value={access}
           />
           <p className="settings-footnote">
-            {pluginAccessChoices.find(({ value }) => value === access)!.detail} Agents call it as{" "}
-            <code>{pluginLocalToolAddress(tool)}</code>.
+            {pluginAccessChoices.find(({ value }) => value === access)!.detail}
           </p>
           <SettingsError message={error} />
         </div>
@@ -149,6 +148,9 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
             <span className="plugin-page__count">{tool.tools.length}</span>
           ) : null}
         </h2>
+        <p className="settings-footnote">
+          In a program, agents reach these as <code>{pluginLocalToolAddress(tool)}</code>.
+        </p>
         {tool.tools.length ? (
           <div className="card">
             {tool.tools.map((entry) => (

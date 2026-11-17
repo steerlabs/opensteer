@@ -13,14 +13,17 @@ import {
   pluginScheduleText,
   pluginScheduledRunLabel,
   pluginStatusView,
+  pluginWebhookSetupCompletion,
+  pluginWebhookSetupForm,
+  pluginWebhookStatusText,
   pluginWorkflowRunLabel,
   pluginWorkflowRunLive,
   readPlugin,
   readPluginScheduleRuns,
   readPluginWebhookSetup,
-  readPluginWorkflowRuns,
   removePlugin,
   removePluginWebhook,
+  completePluginWebhookSetup,
   confirmPluginWebhookRemoval,
   setPluginAccess,
   startPluginWorkflow,
@@ -29,9 +32,10 @@ import {
   type InstalledPluginView,
   type PluginRequirementTarget,
 } from "@opensteer/client/plugins";
-import { useAppView } from "@opensteer/client/react";
+import { useAppView, usePluginWorkflowRuns } from "@opensteer/client/react";
 import { AppFrame, AppLoading, AppLoadFailure, useAppTheme } from "../apps/app-frame.js";
 import { useShell } from "../app-shell.js";
+import { CopyBlock } from "../copy-block.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { IntegrationIcon } from "../integration-icon.js";
@@ -48,7 +52,7 @@ import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { PluginConnectDialog } from "./plugin-connect.js";
 import { PluginFormFields } from "./plugin-form-fields.js";
-import { EngineNotice, pluginsPath, usePluginEngine } from "./plugins-area.js";
+import { EngineNotice, pluginAccountsPath, pluginsPath, usePluginEngine } from "./plugins-area.js";
 
 /** Runs a person's action once at a time, with its failure shown where they acted. */
 function useAction() {
@@ -68,6 +72,8 @@ function useAction() {
 export function PluginPage({ pluginId }: { readonly pluginId: string }) {
   const { hostClient } = useShell();
   const detail = useSettingsRead(() => readPlugin(hostClient, pluginId), `plugin:${pluginId}`);
+  // Read beside the detail, not after it: runs outlive the declarations the detail reports.
+  const runs = usePluginWorkflowRuns(hostClient, pluginId);
   const data = detail.data;
   const refused = data ? null : pluginEngineRefusal(detail.error);
   const engine = usePluginEngine(refused);
@@ -80,7 +86,7 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
       <EngineNotice engine={data ? null : engine} />
       <SettingsError message={detail.error && !refused ? actionErrorMessage(detail.error) : null} />
       {data ? (
-        <PluginContent data={data} reload={detail.reload} />
+        <PluginContent data={data} reload={detail.reload} runs={runs} />
       ) : detail.error ? (
         <button className="btn" onClick={detail.reload} type="button">
           Try again
@@ -92,12 +98,16 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
   );
 }
 
+type WorkflowRuns = ReturnType<typeof usePluginWorkflowRuns>;
+
 function PluginContent({
   data,
   reload,
+  runs,
 }: {
   readonly data: InstalledPluginView;
   readonly reload: () => void;
+  readonly runs: WorkflowRuns;
 }) {
   const { plugin } = data;
   const status = pluginStatusView(plugin);
@@ -159,7 +169,9 @@ function PluginContent({
       <AccountsSection data={data} reload={reload} />
       <ToolsSection data={data} />
       {data.schedules.length ? <SchedulesSection data={data} /> : null}
-      {data.workflows?.length ? <WorkflowsSection data={data} /> : null}
+      {data.workflows?.length || runs.visible.length || runs.error ? (
+        <WorkflowsSection data={data} runs={runs} />
+      ) : null}
       {data.webhooks.length ? <WebhooksSection data={data} reload={reload} /> : null}
       <VersionsSection data={data} />
       <RemoveSection data={data} />
@@ -314,8 +326,27 @@ function AccountsSection({
   );
 }
 
+function ShowAll({
+  all,
+  label,
+  onToggle,
+}: {
+  readonly all: boolean;
+  readonly label: string;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <button className="card__row plugins-link-row" onClick={onToggle} type="button">
+      <span className="card__row-body">
+        <span className="card__row-title">{all ? "Show fewer" : label}</span>
+      </span>
+    </button>
+  );
+}
+
 function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
   const [all, setAll] = useState(false);
+  const [allSkills, setAllSkills] = useState(false);
   const tools = data.tools;
   const shown = tools && !all ? tools.slice(0, 8) : tools;
   return (
@@ -350,17 +381,11 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
               />
             ))}
             {tools.length > 8 ? (
-              <button
-                className="card__row plugins-link-row"
-                onClick={() => setAll(!all)}
-                type="button"
-              >
-                <span className="card__row-body">
-                  <span className="card__row-title">
-                    {all ? "Show fewer" : `Show all ${data.toolCount} tools`}
-                  </span>
-                </span>
-              </button>
+              <ShowAll
+                all={all}
+                label={`Show all ${data.toolCount} tools`}
+                onToggle={() => setAll(!all)}
+              />
             ) : null}
           </div>
         )}
@@ -369,13 +394,20 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
         <section className="settings-group">
           <h2 className="settings-group__title">Skills</h2>
           <div className="card">
-            {data.skills.map((skill) => (
+            {(allSkills ? data.skills : data.skills.slice(0, 5)).map((skill) => (
               <SettingsRow
                 key={skill.name}
                 title={skill.name}
                 detail={skill.description || undefined}
               />
             ))}
+            {data.skills.length > 5 ? (
+              <ShowAll
+                all={allSkills}
+                label={`Show all ${data.skills.length} skills`}
+                onToggle={() => setAllSkills(!allSkills)}
+              />
+            ) : null}
           </div>
         </section>
       ) : null}
@@ -456,9 +488,16 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
           );
         })}
       </div>
-      <SettingsError
-        message={action.error ?? (runs.error ? actionErrorMessage(runs.error) : null)}
-      />
+      <SettingsError message={action.error} />
+      {runs.error ? (
+        <RunsReadFailure
+          error={runs.error}
+          retry={runs.reload}
+          what="this plugin's scheduled runs"
+        />
+      ) : !runs.data ? (
+        <LoadingRows label="Loading scheduled runs" rows={1} />
+      ) : null}
       {waiting.map((run) => (
         <div className="plugin-approval" key={run.id}>
           <p className="plugin-approval__title">
@@ -528,21 +567,52 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
   );
 }
 
-function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
+/** A run read that failed, said as a failure: never as "nothing has run". */
+function RunsReadFailure({
+  error,
+  retry,
+  what,
+}: {
+  readonly error: unknown;
+  readonly retry: () => void;
+  readonly what: string;
+}) {
+  return (
+    <div className="plugin-runs-failure" role="alert">
+      <p className="settings-footnote">
+        Couldn't read {what}: {actionErrorMessage(error)}
+      </p>
+      <button className="btn btn--small" onClick={retry} type="button">
+        Try again
+      </button>
+    </div>
+  );
+}
+
+function WorkflowsSection({
+  data,
+  runs,
+}: {
+  readonly data: InstalledPluginView;
+  readonly runs: WorkflowRuns;
+}) {
   const { hostClient } = useShell();
   const action = useAction();
-  const runs = useSettingsRead(
-    () => readPluginWorkflowRuns(hostClient, data.plugin.id),
-    `plugin-workflows:${data.plugin.id}`,
-  );
   const [starting, setStarting] = useState<
     NonNullable<InstalledPluginView["workflows"]>[number] | null
   >(null);
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Workflows</h2>
+      {data.workflows === null ? (
+        <p className="settings-footnote">
+          {data.plugin.status === "ready"
+            ? "This version's workflows couldn't be read, so none can be started. Runs already under way are below."
+            : "Workflows can be started once its accounts are connected and a version builds. Runs already under way are below."}
+        </p>
+      ) : null}
       <div className="card">
-        {data.workflows!.map((workflow) => (
+        {data.workflows?.map((workflow) => (
           <SettingsRow
             key={workflow.name}
             title={workflow.name}
@@ -558,7 +628,7 @@ function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
             }
           />
         ))}
-        {runs.data?.runs.slice(0, 6).map((run) => (
+        {runs.visible.map((run) => (
           <SettingsRow
             className="plugin-run"
             key={run.id}
@@ -567,11 +637,12 @@ function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
             action={
               pluginWorkflowRunLive(run) ? (
                 <button
+                  aria-label={`Stop ${run.workflow} run from ${formatWhen(run.createdAt)}`}
                   className="btn btn--small btn--ghost"
                   disabled={action.pending !== null}
                   onClick={() =>
                     action.run(`stop:${run.id}`, () =>
-                      stopPluginWorkflow(hostClient, data.plugin.id, run.id).then(runs.reload),
+                      stopPluginWorkflow(hostClient, data.plugin.id, run.id).then(runs.retry),
                     )
                   }
                   type="button"
@@ -582,14 +653,33 @@ function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
             }
           />
         ))}
+        {runs.loaded && runs.more ? (
+          <button
+            className="card__row plugins-link-row"
+            disabled={runs.loadingMore}
+            onClick={runs.showMore}
+            type="button"
+          >
+            <span className="card__row-body">
+              <span className="card__row-title">
+                {runs.loadingMore ? "Loading…" : "Show more runs"}
+              </span>
+            </span>
+          </button>
+        ) : null}
       </div>
+      {runs.error ? (
+        <RunsReadFailure error={runs.error} retry={runs.retry} what="this plugin's workflow runs" />
+      ) : !runs.loaded ? (
+        <LoadingRows label="Loading workflow runs" rows={1} />
+      ) : null}
       <SettingsError message={action.error} />
       {starting ? (
         <StartWorkflow
           onClose={() => setStarting(null)}
           onStarted={() => {
             setStarting(null);
-            runs.reload();
+            runs.retry();
           }}
           pluginId={data.plugin.id}
           workflow={starting}
@@ -674,22 +764,11 @@ function WebhooksSection({
           <SettingsRow
             key={webhook.id}
             title={webhook.name}
-            detail={
-              webhook.failure
-                ? `Couldn't ${webhook.failure === "register" ? "register with" : "unregister from"} the service`
-                : webhook.status === "active"
-                  ? "Receiving events"
-                  : webhook.status === "setup-required"
-                    ? "Needs setup at the service"
-                    : webhook.status === "pending"
-                      ? "Setting up"
-                      : webhook.status === "stopping"
-                        ? "Stopping"
-                        : "Stopped"
-            }
+            detail={pluginWebhookStatusText(webhook)}
             action={
               webhook.status === "setup-required" || webhook.status === "stopping" ? (
                 <button
+                  aria-label={`${webhook.status === "stopping" ? "Finish removing" : "Finish setting up"} ${webhook.name}`}
                   className="btn btn--small btn--primary"
                   onClick={() => setSetup(webhook.id)}
                   type="button"
@@ -750,35 +829,100 @@ function WebhookSetup({
   readonly webhookId: string;
 }) {
   const { hostClient } = useShell();
+  // Re-read on every plugins change; what the person typed lives here, not in the read.
   const setup = useSettingsRead(
     () => readPluginWebhookSetup(hostClient, pluginId, webhookId),
-    `webhook:${webhookId}`,
+    `webhook:${pluginId}:${webhookId}`,
   );
   const titleId = useId();
   const action = useAction();
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [secret, setSecret] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const data = setup.data;
+  const form = data ? pluginWebhookSetupForm(data) : null;
+  const completion = data ? pluginWebhookSetupCompletion(pluginId, data, answers, secret) : null;
+  const remove = () =>
+    action.run("remove", () =>
+      removePluginWebhook(hostClient, pluginId, webhookId).then(async () => {
+        setRemoving(false);
+        const next = await readPluginWebhookSetup(hostClient, pluginId, webhookId).catch(
+          () => null,
+        );
+        if (next?.step === "remove") setup.reload();
+        else onClose();
+      }),
+    );
+  const footer =
+    data?.step === "remove" ? (
+      <button
+        className="btn btn--danger"
+        type="button"
+        disabled={action.pending !== null}
+        onClick={() =>
+          action.run("confirm", () =>
+            confirmPluginWebhookRemoval(hostClient, pluginId, webhookId).then(onClose),
+          )
+        }
+      >
+        I've removed it at the service
+      </button>
+    ) : data?.step === "configure" ? (
+      removing ? (
+        <>
+          <button className="btn btn--ghost" onClick={() => setRemoving(false)} type="button">
+            Keep it
+          </button>
+          <button
+            className="btn btn--danger"
+            disabled={action.pending !== null}
+            onClick={remove}
+            type="button"
+          >
+            {action.pending === "remove" ? "Removing…" : "Remove webhook"}
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            className="btn btn--ghost"
+            disabled={action.pending !== null}
+            onClick={() => setRemoving(true)}
+            type="button"
+          >
+            Remove
+          </button>
+          <button
+            className="btn btn--primary"
+            disabled={!completion || "problem" in completion || action.pending !== null}
+            onClick={() =>
+              completion &&
+              "command" in completion &&
+              action.run("complete", () =>
+                completePluginWebhookSetup(hostClient, completion.command).then(onClose),
+              )
+            }
+            type="button"
+          >
+            {action.pending === "complete" ? "Finishing…" : "Done"}
+          </button>
+        </>
+      )
+    ) : data?.step === "done" ? (
+      <button className="btn btn--primary" onClick={onClose} type="button">
+        Close
+      </button>
+    ) : undefined;
   return (
     <Dialog
       labelledBy={titleId}
       onClose={onClose}
-      footer={
-        setup.data?.step === "remove" ? (
-          <button
-            className="btn btn--danger"
-            type="button"
-            disabled={action.pending !== null}
-            onClick={() =>
-              action.run("confirm", () =>
-                confirmPluginWebhookRemoval(hostClient, pluginId, webhookId).then(onClose),
-              )
-            }
-          >
-            I've removed it at the service
-          </button>
-        ) : undefined
-      }
+      footer={footer}
       title={
         <span id={titleId}>
-          {setup.data?.step === "remove" ? "Remove the webhook" : "Set up the webhook"}
+          {data?.step === "remove"
+            ? "Remove the webhook"
+            : `Set up ${data?.webhook.name ?? "the webhook"}`}
         </span>
       }
     >
@@ -786,21 +930,49 @@ function WebhookSetup({
         <SettingsError
           message={action.error ?? (setup.error ? actionErrorMessage(setup.error) : null)}
         />
-        {setup.data ? (
+        {data && form ? (
           <>
-            {setup.data.instructions ? <p>{setup.data.instructions}</p> : null}
-            <label className="plugins-field">
-              <span>Address to give the service</span>
-              <input className="text-input" readOnly value={setup.data.callbackUrl} />
-            </label>
-            {setup.data.signingSecret ? (
+            {data.unavailable ? (
+              <p className="notice notice--warn" role="status">
+                {data.unavailable}
+              </p>
+            ) : null}
+            {data.step === "done" ? (
+              <p>This webhook is set up. {pluginWebhookStatusText(data.webhook)}.</p>
+            ) : null}
+            {data.instructions ? <p>{data.instructions}</p> : null}
+            {data.step !== "done" ? (
+              <CopyBlock label="Address to give the service" value={data.callbackUrl} />
+            ) : null}
+            {form.secret?.kind === "generated" ? (
+              <CopyBlock label="Signing secret to give the service" value={form.secret.value} />
+            ) : form.secret?.kind === "provider" ? (
               <label className="plugins-field">
-                <span>Signing secret</span>
-                <input className="text-input" readOnly value={setup.data.signingSecret} />
+                <span>Signing secret from the service</span>
+                <input
+                  autoComplete="off"
+                  className="text-input"
+                  onChange={(event) => setSecret(event.currentTarget.value)}
+                  placeholder="Paste it here"
+                  type="password"
+                  value={secret}
+                />
               </label>
             ) : null}
+            {form.fields.fields.length || form.fields.unsupported.length ? (
+              <PluginFormFields answers={answers} form={form.fields} onChange={setAnswers} />
+            ) : null}
+            {data.step === "configure" && form.secret?.kind === "generated" ? (
+              <p className="settings-footnote">The secret is shown only until setup is done.</p>
+            ) : null}
+            {removing ? (
+              <p className="settings-footnote">
+                Removing it stops events from reaching this plugin. If the service already has this
+                address, you'll be asked to remove it there too.
+              </p>
+            ) : null}
           </>
-        ) : (
+        ) : setup.error ? null : (
           <LoadingRows label="Loading setup" rows={2} />
         )}
       </div>
@@ -812,13 +984,14 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
   const action = useAction();
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
   const titleId = useId();
   if (!data.versions.length) return null;
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Versions</h2>
       <div className="card">
-        {data.versions.map((version) => (
+        {(all ? data.versions : data.versions.slice(0, 5)).map((version) => (
           <SettingsRow
             key={version.id}
             title={version.createdAt ? formatWhen(version.createdAt) : version.id}
@@ -839,6 +1012,13 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
             }
           />
         ))}
+        {data.versions.length > 5 ? (
+          <ShowAll
+            all={all}
+            label={`Show all ${data.versions.length} versions`}
+            onToggle={() => setAll(!all)}
+          />
+        ) : null}
       </div>
       <p className="settings-footnote">
         Switching versions changes the plugin's code, not the data it has stored.
@@ -893,7 +1073,12 @@ function RemoveSection({ data }: { readonly data: InstalledPluginView }) {
       <div className="card">
         <SettingsRow
           title={`Remove ${data.plugin.name}`}
-          detail="Agents lose its tools. Connected accounts stay saved for other plugins."
+          detail={
+            <>
+              Agents lose its tools. Connected accounts stay saved;{" "}
+              <Link to={pluginAccountsPath}>remove them in Connected accounts</Link>.
+            </>
+          }
           action={
             <button
               className="btn btn--small btn--danger"

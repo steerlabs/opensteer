@@ -59,6 +59,7 @@ import {
   PluginSkillsScreen,
   PluginsScreen,
 } from "./screens/plugins.js";
+import { PluginAccountsScreen } from "./screens/plugin-accounts.js";
 import { OtherDeviceScreen } from "./screens/other-device.js";
 import { PluginDetailScreen } from "./screens/plugin-detail.js";
 import { PluginConnectScreen } from "./screens/plugin-connect.js";
@@ -560,6 +561,7 @@ const RootStack = createNativeStackNavigator({
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
     PluginSkills: { screen: PluginSkillsScreen, options: { title: "Skills" } },
+    PluginAccounts: { screen: PluginAccountsScreen, options: { title: "Connected accounts" } },
     PluginCatalog: {
       screen: PluginCatalogScreen,
       options: { title: "Catalog", headerShown: Platform.OS !== "ios" },
@@ -822,6 +824,7 @@ type OpensteerRootParamList = {
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
   readonly PluginSkills: { readonly deploymentId: string };
+  readonly PluginAccounts: { readonly deploymentId: string };
   readonly PluginCatalog: { readonly deploymentId: string };
   readonly PluginDetail: { readonly deploymentId: string; readonly pluginId: string };
   readonly PluginLocalTool: { readonly deploymentId: string; readonly id: string };

@@ -17,11 +17,11 @@ import {
   type PluginLocalToolView,
   type PluginTone,
 } from "@opensteer/client/plugins";
-import { usePagedList, usePluginEngine } from "@opensteer/client/react";
+import { useDebouncedValue, usePagedList, usePluginEngine } from "@opensteer/client/react";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { settingsMutationRejected } from "@opensteer/client/settings";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useDeferredValue, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -80,6 +80,7 @@ export function engineSection(
             kind: "status",
             tone: notice.tone === "error" ? "bad" : "attention",
             label: notice.text,
+            ...(notice.detail ? { detail: notice.detail } : {}),
           },
         ],
       }
@@ -195,6 +196,15 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
     title: "Your agent",
     rows: [
       {
+        key: "accounts",
+        kind: "button",
+        label: "Connected accounts",
+        detail: "The sign-ins and keys your plugins use, and removing them",
+        opens: true,
+        symbol: "key",
+        onPress: () => navigation.navigate("PluginAccounts", { deploymentId }),
+      },
+      {
         key: "skills",
         kind: "button",
         label: "Skills in Agent home",
@@ -309,7 +319,8 @@ export function PluginCatalogScreen({ route }: Params): ReactNode {
 function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClient }) {
   const navigation = useNavigation();
   const [query, setQuery] = useState("");
-  const search = useDeferredValue(query.trim());
+  // Each pause in typing is one read of the Host, not each keystroke.
+  const search = useDebouncedValue(query.trim());
   const installed = useSettingsRead(host, () => readInstalledPlugins(host));
   const engine = usePluginEngine(host, installed.data?.engine ?? null);
   const list = usePagedList(pluginCatalogReader(host, search), `catalog:${search}`);
@@ -530,13 +541,14 @@ function LocalToolPage({
             ],
             footer: action.error
               ? { text: action.error, tone: "danger" }
-              : {
-                  text: `${pluginAccessChoices.find(({ value }) => value === access)!.detail} Agents call it as ${pluginLocalToolAddress(tool)}.`,
-                },
+              : { text: pluginAccessChoices.find(({ value }) => value === access)!.detail },
           },
           {
             key: "tools",
             title: "Tools",
+            footer: {
+              text: `In a program, agents reach these as ${pluginLocalToolAddress(tool)}.`,
+            },
             rows: tool.tools.length
               ? tool.tools.map((entry) => ({
                   key: entry.name,

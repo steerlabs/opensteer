@@ -408,3 +408,15 @@
 .plugins-area > .btn {
   align-self: flex-start;
 }
+.plugin-engine-notice__detail {
+  display: block;
+  margin-top: var(--space-4);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+.plugin-runs-failure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
