@@ -19,6 +19,9 @@ its exact installation URL (`https://github.com/apps/<app-slug>/installations/ne
 managed registration only after checking its endpoints, scopes and credential destinations. This
 registry deploys with the Account service, independently of desktop releases. Custom-app relay
 uses Account's plugin callback relay capability and does not need a managed provider entry.
+Remove old `relayOnly` entries before deploying: registry entries now describe confidential managed
+apps only. Retired built-in service requests receive HTTP 400 with an update instruction; they do
+not fall back to plugin consent.
 
 **Custom apps**: prepare the plugin account connection, review its sites, credential exposure and
 scopes, then save or select the owner's OAuth client. With an Account
@@ -37,7 +40,9 @@ and verify redirects, issuer and PKCE pins.
   revision's installation URL; user authorization and repository selection stay separate.
 
 ```sh
-pnpm exec vitest run packages/integration-auth/src/oauth.test.ts apps/control-plane/src/auth/hosted-oauth-broker-contract.test.ts apps/host/src/integrations/integration-auth-attempt-service.test.ts
+pnpm --filter @opensteer/control-plane test --exclude '**/*.integration.test.ts'
+pnpm --filter @opensteer/control-plane-protocol test
+pnpm exec vitest run apps/host/src/access/hosted-oauth-broker-client.test.ts apps/host/src/access/integration-auth-attempt-service.test.ts apps/desktop/src/app/integration-authorizations.test.ts
 pnpm test:integration -- tests/plugin-oauth.integration.test.ts apps/control-plane/src/auth/hosted-oauth-broker-store.integration.test.ts
 ```
 

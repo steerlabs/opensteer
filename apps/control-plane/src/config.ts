@@ -1,6 +1,6 @@
 import {
   HostedOAuthProviderRegistrySchema,
-  type HostedOAuthProvider,
+  type HostedOAuthProviderApplication,
 } from "./auth/hosted-oauth-provider-registry.js";
 import type { AppleSignInConfig } from "./auth/apple-sign-in.js";
 import type { AppReviewSignInConfig } from "./auth/app-review-sign-in.js";
@@ -241,7 +241,7 @@ export interface ControlPlaneConfig {
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
     readonly attemptContextEncryptionKey: string;
-    readonly applications: readonly HostedOAuthProvider[];
+    readonly applications: readonly HostedOAuthProviderApplication[];
   };
   readonly portalOrigin: URL;
   readonly connectDomain: string;
@@ -424,7 +424,7 @@ function pushConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
 }
 
 function hostedOAuthConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
-  let applications: HostedOAuthProvider[] = [];
+  let applications: HostedOAuthProviderApplication[] = [];
   if (parsed.OPENSTEER_HOSTED_OAUTH_PROVIDERS !== undefined) {
     let registry: unknown;
     try {

@@ -9,20 +9,16 @@ import {
   CreatePluginOAuthRevocationRequestSchema,
   AcknowledgeHostedOAuthRefreshRequestSchema,
   AcknowledgeHostedOAuthResultRequestSchema,
-  CreateHostedOAuthAttemptRequestSchema,
   CreateHostedOAuthAttemptResponseSchema,
-  CreateOAuthCallbackRelayRequestSchema,
-  CreateHostedOAuthRevocationRequestSchema,
   CreateHostedOAuthRevocationResponseSchema,
-  CreateHostedOAuthRefreshRequestSchema,
   CreateHostedOAuthRefreshResponseSchema,
   HostedOAuthAttemptStatusResponseSchema,
   OAuthBrokerPublicMetadataSchema,
+  oauthBrokerMetadataVersion,
   PullHostedOAuthRefreshResponseSchema,
   PullHostedOAuthResultResponseSchema,
   ReturnHostedOAuthAttemptRequestSchema,
   ReturnHostedOAuthAttemptResponseSchema,
-  type CreateHostedOAuthAttemptRequest,
   type HostedOAuthAttemptId,
   type HostedOAuthRefreshTransactionId,
 } from "@opensteer/control-plane-protocol";
@@ -52,7 +48,7 @@ export class HostedOAuthBrokerClient {
 
   async metadata() {
     return OAuthBrokerPublicMetadataSchema.parse(
-      await this.#request("/v1/oauth-broker/metadata?version=2"),
+      await this.#request(`/v1/oauth-broker/metadata?version=${oauthBrokerMetadataVersion}`),
     );
   }
 
@@ -92,24 +88,6 @@ export class HostedOAuthBrokerClient {
       }),
     );
   }
-  async createAttempt(input: CreateHostedOAuthAttemptRequest) {
-    return CreateHostedOAuthAttemptResponseSchema.parse(
-      await this.#request("/v1/host/oauth-broker/attempts", {
-        body: CreateHostedOAuthAttemptRequestSchema.parse(input),
-        method: "POST",
-      }),
-    );
-  }
-
-  async createCallbackRelay(input: unknown) {
-    return CreateHostedOAuthAttemptResponseSchema.parse(
-      await this.#request("/v1/host/oauth-broker/callback-relays", {
-        body: CreateOAuthCallbackRelayRequestSchema.parse(input),
-        method: "POST",
-      }),
-    );
-  }
-
   callbackUrl(provider: string): string {
     return new URL(
       `/v1/oauth-broker/callback/${encodeURIComponent(provider)}`,
@@ -147,24 +125,6 @@ export class HostedOAuthBrokerClient {
       body: AcknowledgeHostedOAuthResultRequestSchema.parse({ attemptId }),
       method: "POST",
     });
-  }
-
-  async refresh(input: unknown) {
-    return CreateHostedOAuthRefreshResponseSchema.parse(
-      await this.#request("/v1/host/oauth-broker/refreshes", {
-        body: CreateHostedOAuthRefreshRequestSchema.parse(input),
-        method: "POST",
-      }),
-    );
-  }
-
-  async revoke(input: unknown) {
-    return CreateHostedOAuthRevocationResponseSchema.parse(
-      await this.#request("/v1/host/oauth-broker/revocations", {
-        body: CreateHostedOAuthRevocationRequestSchema.parse(input),
-        method: "POST",
-      }),
-    );
   }
 
   async pullRefresh(transactionId: HostedOAuthRefreshTransactionId) {
@@ -240,7 +200,7 @@ function exactOrigin(value: URL): string {
 /**
  * A refusal from the Account service is the owner's problem to act on, not a
  * fault of this Deployment: it names the reason (a changed Host authority, a
- * stale catalog definition, an expired attempt), so it must surface with the
+ * stale registry revision, an expired attempt), so it must surface with the
  * Account service's own code and sentence instead of collapsing to a 500.
  */
 async function brokerRefusal(response: Response): Promise<OpensteerError> {

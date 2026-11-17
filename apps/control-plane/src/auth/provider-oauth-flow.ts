@@ -1,8 +1,8 @@
 import {
   OAuthTokenResponseIdentitySchema,
-  type OAuthMethodConfig,
   type OAuthTokenResponseIdentity,
-} from "@opensteer/integration-core/auth-method";
+} from "@opensteer/control-plane-protocol";
+import { type OAuthMethodConfig } from "./provider-oauth-config.js";
 import {
   buildAuthorizationUrl,
   createPkcePair,
@@ -115,7 +115,7 @@ export interface DeclarativeCredential {
 }
 
 /**
- * Selects the catalog-declared identity fields from a token response. This is
+ * Selects the registry-declared identity fields from a token response. This is
  * the only provider response metadata that needs to cross the hosted broker
  * boundary; the full provider document remains ephemeral.
  */

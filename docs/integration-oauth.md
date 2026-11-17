@@ -29,6 +29,14 @@ sealed to its ephemeral key. Account's registry owns provider endpoints, allowed
 and managed credential placement; a plugin cannot choose where a managed token is sent. An entry
 without placement is unavailable for one-click sign-in.
 
+The broker accepts only plugin sign-in requests. Hosts using the retired built-in service
+integration protocol receive an explicit HTTP 400 asking them to update and restart sign-in.
+Account and the desktop ship independently; deploying Account does not upgrade a Host.
+Plugin-only metadata uses version 3; older metadata requests receive the same refusal before an
+older Host can try to decode the changed response.
+The plugin-only broker migration discards short-lived attempts and refresh results: in-flight
+consent must restart, and an uncommitted renewal whose recovery result is gone needs reconnecting.
+
 Custom apps, dynamic registration and client metadata keep discovery, client secrets, PKCE,
 exchange and token renewal in the engine on the Host. Account relays only the authorization
 parameters sealed to the initiating Host. Select the callback before discovery or registration and

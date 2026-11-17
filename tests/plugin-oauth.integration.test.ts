@@ -417,7 +417,7 @@ beforeAll(async () => {
       let result: unknown;
       if (path.endsWith("/metadata")) {
         if (metadataUnavailable) throw new Error("metadata unavailable");
-        const metadata = broker.metadata(true);
+        const metadata = broker.metadata();
         if (relayAvailable) result = metadata;
         else {
           const { pluginCallbackRelay: _, ...withoutRelay } = metadata;

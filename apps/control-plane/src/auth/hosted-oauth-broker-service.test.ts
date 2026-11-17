@@ -1,10 +1,7 @@
 import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
-import {
-  ControlPlaneAccountIdSchema,
-  HostedOAuthAttemptIdSchema,
-} from "@opensteer/control-plane-protocol";
-import { createId } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { providerScenario } from "./hosted-oauth-broker-provider.test-support.js";
+import { extractDeclarativeCredential } from "./provider-oauth-flow.js";
 import {
   assertHostedOAuthAccountLink,
   HostedOAuthBrokerService,
@@ -33,60 +30,8 @@ describe("HostedOAuthBrokerService authority", () => {
       installationUrls: {
         github: "https://github.com/apps/opensteer/installations/new",
       },
-      providerRevisions: { github: 1 },
     });
-    expect(broker.metadata(false)).not.toHaveProperty("installationUrls");
   });
-
-  it.each(["provider", "mcp"] as const)(
-    "rejects app finish from a web %s relay before accessing a Deployment",
-    async (mode) => {
-      const broker = new HostedOAuthBrokerService({
-        applications: [],
-        attemptContextEncryptionKey: Buffer.alloc(32, 6).toString("base64url"),
-        issuer: new URL("https://accounts.opensteer.test"),
-        store: {} as never,
-      });
-      const serverId = `isv_${crypto.randomUUID()}`;
-      await expect(
-        broker.createCallbackRelay(
-          {
-            credentialHash: "unused",
-            deploymentId: createId("deployment"),
-            hostInstanceId: createId("hostInstance"),
-          },
-          {
-            accountSubject: {
-              issuer: "https://accounts.opensteer.test",
-              subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
-            },
-            attemptId: HostedOAuthAttemptIdSchema.parse(`hoa_${crypto.randomUUID()}`),
-            authorizationDigest: "d".repeat(43),
-            authorizationUrl: "https://provider.example.test/authorize",
-            clientId: "client",
-            clientSurface: "web",
-            finish: "app",
-            definitionId: mode === "mcp" ? serverId : "slack",
-            deploymentAuthorityDigest: "d".repeat(43),
-            expiresAt: "2026-11-04T18:00:00Z",
-            hostPublicKey: "k".repeat(43),
-            provider: mode === "mcp" ? "mcp" : "slack",
-            providerApplicationRevision: 1,
-            ...(mode === "mcp"
-              ? {
-                  mcp: {
-                    serverId,
-                    issuer: "https://provider.example.test",
-                    authorizationEndpoint: "https://provider.example.test/authorize",
-                    authorizationResponseIssuerParameterSupported: false,
-                  },
-                }
-              : { providerApplicationId: `ipa_${crypto.randomUUID()}` }),
-          },
-        ),
-      ).rejects.toMatchObject({ code: "bad_request" });
-    },
-  );
 
   it("rejects link mismatch even when an email could be equal", () => {
     const presentedAccount = {
@@ -111,11 +56,370 @@ describe("HostedOAuthBrokerService authority", () => {
   });
 });
 
-describe("HostedOAuthBrokerService authorization session", () => {
-});
+describe("plugin provider grants", () => {
+  const microsoftScopes = [
+    "offline_access",
+    "openid",
+    "profile",
+    "email",
+    "User.Read",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "MailboxSettings.ReadWrite",
+  ];
+  const qualifiedMicrosoftScopes = microsoftScopes
+    .filter((scope) => scope !== "offline_access")
+    .map((scope) => (scope.includes(".") ? `https://graph.microsoft.com/${scope}` : scope))
+    .join(" ");
 
-describe("HostedOAuthBrokerService Microsoft authorization", () => {
-});
+  it("uses Microsoft's common authority, PKCE and delegated scopes, with userinfo as identity authority", async () => {
+    const calls: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      calls.push(request);
+      if (request.url === "https://graph.microsoft.com/oidc/userinfo") {
+        expect(request.headers.get("authorization")).toBe("Bearer microsoft-access");
+        return Response.json({
+          sub: "userinfo-person",
+          email: "person@example.test",
+          name: "Person",
+        });
+      }
+      return Response.json({
+        access_token: "microsoft-access",
+        refresh_token: "rotated-refresh",
+        expires_in: 3600,
+        scope: qualifiedMicrosoftScopes,
+        token_type: "Bearer",
+        id_token: "incidental.jwt.is-not-identity",
+      });
+    });
+    const s = providerScenario("microsoft", fetch, microsoftScopes);
+    const started = await s.begin();
+    expect(started.url.origin + started.url.pathname).toBe(
+      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    );
+    expect(started.url.searchParams.get("scope")).toBe(microsoftScopes.join(" "));
+    expect(started.url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(
+      await started.complete({
+        iss: "https://login.microsoftonline.com/tenant/v2.0",
+        session_state: "extension",
+      }),
+    ).toMatchObject({ status: "sealed" });
+    const exchange = calls[0]!;
+    expect(exchange.url).toBe("https://login.microsoftonline.com/common/oauth2/v2.0/token");
+    const body = new URLSearchParams(await exchange.text());
+    expect(exchange.headers.has("authorization")).toBe(false);
+    expect(Object.fromEntries(body)).toMatchObject({
+      client_id: "microsoft-client",
+      client_secret: "microsoft-secret",
+      grant_type: "authorization_code",
+      redirect_uri: s.request.binding.redirectUrl,
+    });
+    expect(s.verifierDigest(body.get("code_verifier")!)).toBe(
+      started.url.searchParams.get("code_challenge"),
+    );
+    const bundle = s.authorizationBundle();
+    expect(bundle).toMatchObject({
+      accessToken: "microsoft-access",
+      refreshToken: "rotated-refresh",
+      grantedScopes: microsoftScopes.filter((scope) => scope !== "offline_access"),
+    });
+    expect(bundle).not.toHaveProperty("idToken");
+    expect(bundle).not.toHaveProperty("tokenResponseIdentity");
+    const identity = await extractDeclarativeCredential({
+      config: s.application.oauth,
+      fetch,
+      tokenResponse: { access_token: bundle.accessToken, token_type: bundle.tokenType },
+    });
+    expect(identity).toMatchObject({
+      externalIdentityId: "userinfo-person",
+      accountIdentifier: "person@example.test",
+      displayName: "Person",
+    });
+    expect(s.broker.metadata().pluginProviders?.microsoft).not.toHaveProperty("revocationUrl");
+    const before = calls.length;
+    await expect(s.broker.revoke(s.authority, s.revocationRequest())).rejects.toMatchObject({
+      code: "bad_request",
+      message: "Hosted OAuth provider does not declare token revocation",
+    });
+    expect(calls).toHaveLength(before);
+  });
 
-describe("HostedOAuthBrokerService Discord tokens", () => {
+  it("renews Microsoft with the exact consent scopes, canonicalizes Graph aliases, and retains the rotated token", async () => {
+    let request: Request | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      request = new Request(input, init);
+      return Response.json({
+        access_token: "new-access",
+        refresh_token: "rotated-refresh",
+        expires_in: 3600,
+        scope: qualifiedMicrosoftScopes,
+        token_type: "Bearer",
+        id_token: "incidental.jwt.is-not-identity",
+      });
+    });
+    const s = providerScenario("microsoft", fetch, microsoftScopes);
+    const refresh = s.refreshRequest();
+    expect(await s.broker.refresh(s.authority, refresh)).toMatchObject({ status: "sealed" });
+    expect(request!.url).toBe(s.application.oauth.tokenUrl);
+    expect(request!.headers.has("authorization")).toBe(false);
+    expect(Object.fromEntries(new URLSearchParams(await request!.text()))).toEqual({
+      client_id: "microsoft-client",
+      client_secret: "microsoft-secret",
+      grant_type: "refresh_token",
+      refresh_token: "original-refresh",
+      scope: microsoftScopes.join(" "),
+    });
+    expect(s.refreshBundle(refresh)).toEqual({
+      accessToken: "new-access",
+      refreshToken: "rotated-refresh",
+      expiresAt: s.now.getTime() + 3600_000,
+      grantedScopes: microsoftScopes.filter((scope) => scope !== "offline_access"),
+      tokenType: "bearer",
+    });
+  });
+
+  it("refuses missing Microsoft functional grants before and after refresh", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        access_token: "narrowed-access",
+        refresh_token: "rotated-refresh",
+        scope: "openid profile email User.Read",
+        token_type: "Bearer",
+      }),
+    );
+    const s = providerScenario("microsoft", fetch, microsoftScopes);
+    await expect(
+      s.broker.refresh(s.authority, s.refreshRequest(["openid", "profile", "email", "User.Read"])),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(fetch).not.toHaveBeenCalled();
+    const refresh = s.refreshRequest();
+    await expect(s.broker.refresh(s.authority, refresh)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(s.store.failRefresh).toHaveBeenCalledWith(
+      refresh.transactionId,
+      "scope-escalation",
+      null,
+      s.now,
+    );
+    expect(s.store.sealRefresh).not.toHaveBeenCalled();
+  });
+
+  it("exchanges and refreshes GitHub App user tokens with PKCE, without OAuth scopes or an installation grant", async () => {
+    const calls: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      calls.push(new Request(input, init));
+      return Response.json({
+        access_token: "ghu_access",
+        refresh_token: "ghr_rotated",
+        expires_in: 28_800,
+        refresh_token_expires_in: 15_897_600,
+        scope: "",
+        token_type: "bearer",
+      });
+    });
+    const s = providerScenario("github", fetch);
+    const started = await s.begin();
+    expect(started.url.origin + started.url.pathname).toBe(
+      "https://github.com/login/oauth/authorize",
+    );
+    expect(started.url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(started.url.searchParams.has("scope")).toBe(false);
+    expect(s.broker.metadata().installationUrls.github).toBe(
+      "https://github.com/apps/opensteer/installations/new",
+    );
+    expect(await started.complete()).toMatchObject({ status: "sealed" });
+    const exchange = new URLSearchParams(await calls[0]!.text());
+    expect(exchange.get("client_secret")).toBe("github-secret");
+    expect(exchange.has("scope")).toBe(false);
+    expect(s.verifierDigest(exchange.get("code_verifier")!)).toBe(
+      started.url.searchParams.get("code_challenge"),
+    );
+    expect(s.authorizationBundle()).toEqual({
+      accessToken: "ghu_access",
+      refreshToken: "ghr_rotated",
+      expiresAt: s.now.getTime() + 28_800_000,
+      grantedScopes: [],
+      tokenType: "bearer",
+    });
+    const refresh = s.refreshRequest();
+    expect(await s.broker.refresh(s.authority, refresh)).toMatchObject({ status: "sealed" });
+    expect(calls[1]!.url).toBe("https://github.com/login/oauth/access_token");
+    expect(calls[1]!.headers.has("authorization")).toBe(false);
+    expect(Object.fromEntries(new URLSearchParams(await calls[1]!.text()))).toEqual({
+      client_id: "github-client",
+      client_secret: "github-secret",
+      grant_type: "refresh_token",
+      refresh_token: "original-refresh",
+    });
+    expect(s.refreshBundle(refresh)).toMatchObject({
+      accessToken: "ghu_access",
+      refreshToken: "ghr_rotated",
+      grantedScopes: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses Discord's confidential flow without PKCE and revokes with the broker's client", async () => {
+    const calls: Request[] = [];
+    let failRevocation = false;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      calls.push(request);
+      if (request.url.endsWith("/revoke"))
+        return new Response(failRevocation ? "discord-secret rotated-refresh" : null, {
+          status: failRevocation ? 400 : 200,
+        });
+      return Response.json({
+        access_token: "discord-access",
+        refresh_token: "rotated-refresh",
+        expires_in: 604_800,
+        scope: "identify email guilds",
+        token_type: "Bearer",
+      });
+    });
+    const s = providerScenario("discord", fetch);
+    const started = await s.begin();
+    expect(started.url.origin + started.url.pathname).toBe("https://discord.com/oauth2/authorize");
+    expect(started.url.searchParams.get("scope")).toBe("identify email guilds");
+    expect(started.url.searchParams.get("prompt")).toBe("consent");
+    expect(started.url.searchParams.has("code_challenge")).toBe(false);
+    expect(await started.complete()).toMatchObject({ status: "sealed" });
+    expect(Object.fromEntries(new URLSearchParams(await calls[0]!.text()))).toEqual({
+      client_id: "discord-client",
+      client_secret: "discord-secret",
+      grant_type: "authorization_code",
+      code: "provider-code",
+      redirect_uri: s.request.binding.redirectUrl,
+    });
+    const refresh = s.refreshRequest();
+    expect(await s.broker.refresh(s.authority, refresh)).toMatchObject({ status: "sealed" });
+    expect(Object.fromEntries(new URLSearchParams(await calls[1]!.text()))).toEqual({
+      client_id: "discord-client",
+      client_secret: "discord-secret",
+      grant_type: "refresh_token",
+      refresh_token: "original-refresh",
+      scope: "identify email guilds",
+    });
+    expect(s.refreshBundle(refresh)).toMatchObject({ refreshToken: "rotated-refresh" });
+    const revoke = s.revocationRequest();
+    expect(await s.broker.revoke(s.authority, revoke)).toMatchObject({ revoked: true });
+    expect(calls[2]!.url).toBe("https://discord.com/api/v10/oauth2/token/revoke");
+    expect(calls[2]!.headers.has("authorization")).toBe(false);
+    expect(Object.fromEntries(new URLSearchParams(await calls[2]!.text()))).toEqual({
+      client_id: "discord-client",
+      client_secret: "discord-secret",
+      token: "rotated-refresh",
+    });
+    failRevocation = true;
+    await expect(s.broker.revoke(s.authority, revoke)).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Hosted OAuth provider did not accept token revocation",
+    });
+    const before = calls.length;
+    for (const change of [
+      { registryRevision: 2 },
+      { expiresAt: new Date(s.now.getTime() - 1).toISOString() },
+      { binding: { ...revoke.binding, accountLinkGeneration: "h".repeat(43) } },
+      {
+        binding: {
+          ...revoke.binding,
+          accountSubject: {
+            ...revoke.binding.accountSubject,
+            subject: `acct_${crypto.randomUUID()}`,
+          },
+        },
+      },
+    ]) {
+      await expect(s.broker.revoke(s.authority, { ...revoke, ...change })).rejects.toThrow();
+    }
+    expect(calls).toHaveLength(before);
+  });
+
+  it.each(["authorization", "refresh", "revocation"])(
+    "refuses expired and overlong %s requests before provider access",
+    async (kind) => {
+      const fetch = vi.fn(async () => {
+        throw new Error("Provider must not be contacted");
+      });
+      const s = providerScenario("google", fetch);
+      const maximum = kind === "authorization" ? 600_000 : 120_000;
+      const request =
+        kind === "authorization"
+          ? s.request
+          : kind === "refresh"
+            ? s.refreshRequest()
+            : s.revocationRequest();
+      for (const offset of [0, maximum + 1]) {
+        const input = { ...request, expiresAt: new Date(s.now.getTime() + offset).toISOString() };
+        const operation =
+          kind === "authorization"
+            ? s.broker.createAuthorizationAttempt(s.authority, input)
+            : kind === "refresh"
+              ? s.broker.refresh(s.authority, input)
+              : s.broker.revoke(s.authority, input);
+        await expect(operation).rejects.toMatchObject({ code: "bad_request" });
+      }
+      expect(fetch).not.toHaveBeenCalled();
+      expect(s.store.createAttempt).not.toHaveBeenCalled();
+      expect(s.store.claimRefresh).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["google", "invalid_grant", "grant-rejected"],
+    ["google", "invalid_client", "client-rejected"],
+    ["google", "invalid_scope", "provider-exchange-failed"],
+    ["github", "bad_refresh_token", "grant-rejected"],
+    ["github", "invalid_grant", "grant-rejected"],
+    ["microsoft", "invalid_grant", "grant-rejected"],
+  ])(
+    "classifies %s refresh error %s as %s without exposing the provider body",
+    async (provider, providerError, failureCode) => {
+      const fetch = vi.fn(async () =>
+        Response.json(
+          { error: providerError, error_description: "secret-provider-body" },
+          { status: 400 },
+        ),
+      );
+      const s = providerScenario(provider, fetch);
+      const refresh = s.refreshRequest();
+      const result = await s.broker.refresh(s.authority, refresh);
+      expect(result).toMatchObject({ status: "failed", failureCode, providerError });
+      expect(s.store.failRefresh).toHaveBeenCalledWith(
+        refresh.transactionId,
+        failureCode,
+        providerError,
+        s.now,
+      );
+      expect(s.store.sealRefresh).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain("secret-provider-body");
+    },
+  );
+
+  it.each(["http", "transport", "unbounded-code"])(
+    "keeps a %s refresh failure unattributed and safe",
+    async (kind) => {
+      const fetch = vi.fn(async () => {
+        if (kind === "transport") throw new Error("original-refresh provider-secret");
+        return kind === "http"
+          ? new Response("provider-secret", { status: 503 })
+          : Response.json(
+              { error: "Not A Bounded Code", error_description: "provider-secret" },
+              { status: 400 },
+            );
+      });
+      const s = providerScenario("google", fetch);
+      const result = await s.broker.refresh(s.authority, s.refreshRequest());
+      expect(result).toMatchObject({
+        status: "failed",
+        failureCode: "provider-exchange-failed",
+        providerError: null,
+      });
+      expect(JSON.stringify(result)).not.toContain("provider-secret");
+    },
+  );
 });

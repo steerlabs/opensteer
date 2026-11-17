@@ -16,7 +16,6 @@ import {
   ControlPlaneAccountIdSchema,
   HostedOAuthAttemptIdSchema,
   HostedOAuthRefreshTransactionIdSchema,
-  OAuthBrokerMcpCallbackRelayContextSchema,
   type OAuthBrokerSealedEnvelope,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
@@ -26,11 +25,14 @@ import {
   sealOAuthBrokerPayload,
   hostedOAuthDeploymentAuthorityDigest,
 } from "@opensteer/control-plane-protocol/broker-sealing";
+import { gate } from "@opensteer/shared/test-support/observation";
 import { createHash } from "node:crypto";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt, vi } from "vitest";
+import { pluginOAuthOnlyBrokerMigration } from "../database/migrations.js";
 import { createControlPlaneDatabase } from "../database/database.js";
 import { HostedOAuthBrokerStore } from "./hosted-oauth-broker-store.js";
+import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import { HostedOAuthBrokerService } from "./hosted-oauth-broker-service.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
@@ -62,7 +64,7 @@ integration("hosted OAuth broker durable boundary", () => {
         hostPublicKey: "H".repeat(43),
         launchTicketHash: attemptDigest("launch", attemptId),
         provider: "google",
-        providerApplicationRevision: 1,
+        registryRevision: 1,
         requestedScopeDigest: "D".repeat(43),
         stateHash: attemptDigest("state", attemptId),
       };
@@ -242,50 +244,58 @@ integration("hosted OAuth broker durable boundary", () => {
       });
       const attemptId = attemptIdAt(90);
       const recipient = generateOAuthBrokerEphemeralKeyPair();
-      const mcp = {
-        serverId: `isv_${crypto.randomUUID()}`,
-        issuer: "https://mcp-issuer.example.test/",
-        authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
-        authorizationResponseIssuerParameterSupported: true,
-      };
-      const context = OAuthBrokerMcpCallbackRelayContextSchema.parse({
-        accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+      const context = OAuthBrokerPluginRelayContextSchema.parse({
+        provider: "mcp",
+        registryRevision: 1,
+        requestedScopes: [],
+        binding: {
+          accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+          accountLinkGeneration: "g".repeat(43),
+          deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+          hostPublicKey: recipient.publicKey,
+          requirementDigest: "r".repeat(43),
+          redirectUrl: broker.callbackUrl("mcp"),
+        },
+        relay: {
+          clientId: "mcp-client",
+          issuer: "https://mcp-issuer.example.test/",
+          authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
+          authorizationResponseIssuerParameterSupported: true,
+          usesPkce: true,
+          scopeSeparator: " ",
+        },
         attemptId,
-        authorizationDigest: "d".repeat(43),
-        deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
         expiresAt: new Date(now.getTime() + 60_000).toISOString(),
-        clientId: "mcp-client",
-        mcp,
-        redirectUrl: broker.callbackUrl("mcp"),
-        schemaVersion: 1,
+        schemaVersion: 2,
       });
       const state = "s".repeat(43);
-      const authorizationUrl = new URL(mcp.authorizationEndpoint);
+      const authorizationUrl = new URL(context.relay.authorizationEndpoint);
       authorizationUrl.search = new URLSearchParams({
         state,
-        client_id: context.clientId,
-        redirect_uri: context.redirectUrl,
+        client_id: context.relay.clientId,
+        redirect_uri: context.binding.redirectUrl,
         response_type: "code",
         code_challenge: "c".repeat(43),
         code_challenge_method: "S256",
       }).toString();
-      const { schemaVersion: _version, redirectUrl: _redirect, ...requestContext } = context;
+      const { schemaVersion: _version, ...requestContext } = context;
       const created = await broker.createCallbackRelay(
         { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId! },
         {
           ...requestContext,
+          kind: "plugin-relay",
           authorizationUrl: authorizationUrl.toString(),
-          hostPublicKey: recipient.publicKey,
           clientSurface: "native",
           ...(appFinish ? { finish: "app" as const } : {}),
-          definitionId: mcp.serverId,
-          provider: "mcp",
-          providerApplicationRevision: 1,
         },
       );
       const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
       await broker.launchAuthorization(appFinish ? null : accountId, attemptId, ticket);
-      const parameters = new URLSearchParams({ code: "mcp-code", state, iss: mcp.issuer });
+      const parameters = new URLSearchParams({
+        code: "mcp-code",
+        state,
+        iss: context.relay.issuer!,
+      });
       await expect(
         broker.completeAuthorization({ parameters, provider: "mcp" }),
       ).rejects.toMatchObject({ code: "forbidden" });
@@ -303,7 +313,7 @@ integration("hosted OAuth broker durable boundary", () => {
       });
       expect(outcome).toMatchObject({
         status: appFinish ? "held" : "sealed",
-        returnUrl: expect.stringContaining(`attempt_id=imo_${attemptId.slice(4)}`),
+        returnUrl: expect.stringContaining(`attempt_id=ioa_${attemptId.slice(4)}`),
       });
       if (appFinish) await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!);
       const result = await broker.pull(
@@ -313,7 +323,9 @@ integration("hosted OAuth broker durable boundary", () => {
       expect(openOAuthBrokerPayload(result.sealedResult!, recipient.privateKey, context)).toEqual({
         parameters: [...parameters],
       });
-      expect(broker.mcpClientMetadata()).toMatchObject({ redirect_uris: [context.redirectUrl] });
+      expect(broker.mcpClientMetadata()).toMatchObject({
+        redirect_uris: [context.binding.redirectUrl],
+      });
     },
   );
 
@@ -323,14 +335,25 @@ integration("hosted OAuth broker durable boundary", () => {
     const { store, attempt, now, accountId, database, deploymentId } = storeFixture;
     const attemptId = attemptIdAt(0);
     await store.createAttempt(attempt(attemptId, new Date(now.getTime() + 60_000)), now);
-    await expect(
-      store.launchAttempt({
+    const launches = await Promise.all(
+      [0, 1].map(() =>
+        store.launchAttempt({
+          accountId,
+          attemptId,
+          launchTicketHash: attemptDigest("launch", attemptId),
+          now,
+        }),
+      ),
+    );
+    expect(launches.filter(Boolean)).toHaveLength(1);
+    expect(
+      await store.launchAttempt({
         accountId,
         attemptId,
         launchTicketHash: attemptDigest("launch", attemptId),
         now,
       }),
-    ).resolves.not.toBeNull();
+    ).toBeNull();
     const claim = {
       stateHash: attemptDigest("state", attemptId),
       provider: "google",
@@ -532,6 +555,408 @@ integration("hosted OAuth broker durable boundary", () => {
     },
   );
 
+  it.for(["session", "app", "expired-app"] as const)(
+    "exchanges a managed provider code for the initiating cloud member (app finish: %s)",
+    async (mode, { storeFixture }) => {
+      const appFinish = mode !== "session";
+      const { database, now, deploymentId, store } = storeFixture;
+      let brokerNow = now;
+      const memberId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+      await database
+        .insertInto("users")
+        .values({
+          createdAt: now,
+          displayName: "Managed member",
+          email: "managed-member@example.test",
+          emailVerified: true,
+          id: memberId,
+          image: null,
+          updatedAt: now,
+        })
+        .execute();
+      await database
+        .insertInto("deploymentDirectoryEntries")
+        .values({
+          accountId: memberId,
+          deploymentId,
+          generation: "1",
+          observedAt: now,
+          present: true,
+          updatedAt: now,
+        })
+        .execute();
+      const binding = (await store.deploymentBinding(deploymentId))!;
+      const oauth = brokerProviderFixture("google").oauth;
+      const exchange = Promise.withResolvers<Response>();
+      const providerFetch = vi.fn(async () => {
+        if (mode === "expired-app") return exchange.promise;
+        return Response.json({
+          access_token: "managed-member-access",
+          refresh_token: "managed-member-refresh",
+          scope: oauth.scopes.join(oauth.scopeSeparator),
+          token_type: "Bearer",
+        });
+      });
+      const broker = new HostedOAuthBrokerService({
+        applications: [
+          {
+            ...brokerProviderFixture("google"),
+            clientId: "managed-google-client",
+            clientSecret: "managed-google-secret",
+            provider: "google",
+            revision: 1,
+          },
+        ],
+        fetch: providerFetch,
+        issuer: new URL("https://accounts.opensteer.test"),
+        now: () => brokerNow,
+        attemptContextEncryptionKey: Buffer.alloc(32, 7).toString("base64url"),
+        store,
+      });
+      const attemptId = attemptIdAt(40);
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+      const created = await broker.createAuthorizationAttempt(
+        { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
+        {
+          kind: "plugin",
+          attemptId,
+          expiresAt,
+          provider: "google",
+          registryRevision: 1,
+          requestedScopes: oauth.scopes,
+          clientSurface: appFinish ? "desktop" : "web",
+          ...(appFinish ? { finish: "app" as const } : {}),
+          binding: {
+            accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
+            accountLinkGeneration: "g".repeat(43),
+            requirementDigest: "r".repeat(43),
+            deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+            hostPublicKey: recipient.publicKey,
+            redirectUrl: broker.callbackUrl("google"),
+          },
+        },
+      );
+      const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+      if (!appFinish) {
+        await expect(
+          broker.launchAuthorization(storeFixture.accountId, attemptId, ticket),
+        ).rejects.toMatchObject({ refusalReason: "account-mismatch" });
+        expect(await broker.inspectLaunch(attemptId, ticket)).toMatchObject({ status: "ready" });
+        expect((await store.getAttemptForHost(deploymentId, attemptId, now))!.status).toBe(
+          "pending",
+        );
+      }
+      const authorizationUrl = new URL(
+        await broker.launchAuthorization(appFinish ? null : memberId, attemptId, ticket),
+      );
+      expect(await broker.inspectLaunch(attemptId, ticket)).toEqual({ status: "used" });
+      expect(await broker.inspectLaunch(attemptId, "X".repeat(43))).toEqual({ status: "invalid" });
+      const completion = broker.completeAuthorization({
+        cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
+        parameters: new URLSearchParams({
+          code: "managed-member-code",
+          iss: "https://accounts.google.com",
+          state: authorizationUrl.searchParams.get("state")!,
+        }),
+        provider: "google",
+      });
+      if (mode === "expired-app") {
+        await vi.waitFor(() =>
+          expect(providerFetch, "Token exchange never started").toHaveBeenCalledOnce(),
+        );
+        brokerNow = new Date(expiresAt);
+        exchange.resolve(Response.json({ access_token: "expired-access", token_type: "Bearer" }));
+      }
+      const outcome = await completion;
+      if (mode === "expired-app") {
+        expect(outcome.status).toBe("failed");
+        expect(
+          outcome.returnUrl && new URL(outcome.returnUrl).searchParams.get("return"),
+        ).toBeNull();
+        expect(
+          await database
+            .selectFrom("hostedOAuthBrokerAttempts")
+            .selectAll()
+            .where("attemptId", "=", attemptId)
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({
+          status: "expired",
+          sealedCiphertext: null,
+          returnProofHash: null,
+          encryptedContext: null,
+          contextKeyVersion: null,
+          launchTicketHash: null,
+        });
+        expect(
+          await broker.pull(
+            {
+              credentialHash: "unused",
+              deploymentId,
+              hostInstanceId: binding.activeHostInstanceId,
+            },
+            attemptId,
+          ),
+        ).toMatchObject({ status: "expired", sealedResult: null });
+        expect(await store.getAttemptForHost(deploymentId, attemptId, brokerNow)).toMatchObject({
+          status: "expired",
+          sealedCiphertext: null,
+          returnProofHash: null,
+          encryptedContext: null,
+          contextKeyVersion: null,
+          launchTicketHash: null,
+        });
+        return;
+      }
+      expect(outcome).toMatchObject({ attemptId, status: appFinish ? "held" : "sealed" });
+      if (appFinish)
+        await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!, true);
+      expect(providerFetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.for([
+    { kind: "attempt", deployments: 1 },
+    { kind: "attempt", deployments: 3 },
+    { kind: "refresh", deployments: 1 },
+    { kind: "refresh", deployments: 3 },
+  ])(
+    "enforces Account and Deployment quotas across concurrent requests (%j)",
+    async ({ kind, deployments }, { storeFixture }) => {
+      const { store, now, deploymentId, accountId, attempt, database } = storeFixture;
+      const original = await database
+        .selectFrom("deployments")
+        .selectAll()
+        .where("id", "=", deploymentId)
+        .executeTakeFirstOrThrow();
+      const deploymentIds = [deploymentId];
+      for (let index = 1; index < deployments; index += 1) {
+        const id = createId("deployment");
+        deploymentIds.push(id);
+        await database
+          .insertInto("deployments")
+          .values({
+            ...original,
+            id,
+            activeHostInstanceId: createId("hostInstance"),
+            hostKeyFingerprint: `sha256:${createHash("sha256").update(id).digest("base64url")}`,
+            canonicalOrigin: `https://host-${index}.example.test`,
+          })
+          .execute();
+      }
+      const expiresAt = new Date(now.getTime() + 60_000);
+      const count = deployments === 1 ? 12 : 24;
+      const accepted = deployments === 1 ? 10 : 20;
+      const results = await Promise.allSettled(
+        Array.from({ length: count }, (_, index) =>
+          kind === "attempt"
+            ? store.createAttempt(
+                {
+                  ...attempt(attemptIdAt(index), expiresAt),
+                  deploymentId: deploymentIds[index % deployments]!,
+                },
+                now,
+              )
+            : store.claimRefresh(
+                {
+                  accountSubject: accountId,
+                  deploymentId: deploymentIds[index % deployments]!,
+                  expiresAt,
+                  hostPublicKey: "h".repeat(43),
+                  provider: "google",
+                  registryRevision: 1,
+                  requestBindingDigest: "d".repeat(43),
+                  transactionId: refreshIdAt(index),
+                },
+                now,
+              ),
+        ),
+      );
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(accepted);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(
+        count - accepted,
+      );
+      for (const result of results)
+        if (result.status === "rejected")
+          expect(result.reason).toMatchObject({
+            code: "unavailable",
+            message: "Hosted OAuth rate limit exceeded",
+          });
+    },
+  );
+
+  it.for([false, true])(
+    "resumes one rotating refresh and refuses a result that expired during exchange (expired: %s)",
+    async (expired, { storeFixture }) => {
+      const { store, deploymentId, accountId, now } = storeFixture;
+      let brokerNow = now;
+      const deployment = (await store.deploymentBinding(deploymentId))!;
+      const authority = {
+        credentialHash: "unused",
+        deploymentId,
+        hostInstanceId: deployment.activeHostInstanceId,
+      };
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const oauth = brokerProviderFixture("google").oauth;
+      const provider = gate({ label: "Rotating refresh provider", deadlineMs: 2_000 });
+      const providerFetch = vi.fn(async () => {
+        await provider.enter();
+        return Response.json({
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+          scope: oauth.scopes.join(" "),
+          token_type: "Bearer",
+        });
+      });
+      const broker = new HostedOAuthBrokerService({
+        applications: [
+          {
+            ...brokerProviderFixture("google"),
+            provider: "google",
+            revision: 1,
+            clientId: "client",
+            clientSecret: "secret",
+          },
+        ],
+        issuer: new URL("https://accounts.example.test"),
+        now: () => brokerNow,
+        fetch: providerFetch,
+        attemptContextEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
+        store,
+      });
+      const context = OAuthBrokerPluginRefreshContextSchema.parse({
+        provider: "google",
+        registryRevision: 1,
+        requestedScopes: oauth.scopes,
+        binding: {
+          accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+          accountLinkGeneration: "g".repeat(43),
+          requirementDigest: "r".repeat(43),
+          deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(deployment),
+          hostPublicKey: recipient.publicKey,
+          redirectUrl: broker.callbackUrl("google"),
+        },
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        schemaVersion: 2,
+        transactionId: refreshIdAt(0),
+      });
+      const { schemaVersion: _version, ...fields } = context;
+      const request = {
+        ...fields,
+        kind: "plugin",
+        grantedScopes: oauth.scopes,
+        brokerSealedCredential: sealOAuthBrokerPayload(
+          { refreshToken: "one-use-refresh" },
+          broker.metadata().encryptionPublicKey,
+          context,
+        ),
+      };
+      const first = broker.refresh(authority, request);
+      try {
+        await provider.entered;
+        await expect(broker.refresh(authority, request)).rejects.toMatchObject({
+          code: "unavailable",
+        });
+        expect(providerFetch).toHaveBeenCalledOnce();
+        if (expired) brokerNow = new Date(context.expiresAt);
+      } finally {
+        provider.release();
+      }
+      if (expired) {
+        await expect(first).rejects.toMatchObject({ code: "conflict" });
+        expect(await broker.pullRefresh(authority, context.transactionId)).toMatchObject({
+          status: "expired",
+          sealedResult: null,
+        });
+        expect(providerFetch).toHaveBeenCalledOnce();
+        return;
+      }
+      await expect(first).resolves.toMatchObject({
+        status: "sealed",
+        transactionId: context.transactionId,
+      });
+      const firstPull = await broker.pullRefresh(authority, context.transactionId);
+      expect(await broker.refresh(authority, request)).toMatchObject({ status: "sealed" });
+      const resumed = await broker.pullRefresh(authority, context.transactionId);
+      expect(resumed.sealedResult).toEqual(firstPull.sealedResult);
+      expect(
+        openOAuthBrokerPayload(resumed.sealedResult!, recipient.privateKey, context),
+      ).toMatchObject({ refreshToken: "rotated-refresh" });
+      expect(providerFetch).toHaveBeenCalledOnce();
+      for (let index = 1; index < 10; index += 1)
+        await store.claimRefresh(
+          {
+            accountSubject: accountId,
+            deploymentId,
+            expiresAt: new Date(context.expiresAt),
+            hostPublicKey: recipient.publicKey,
+            provider: "google",
+            registryRevision: 1,
+            requestBindingDigest: "d".repeat(43),
+            transactionId: refreshIdAt(index),
+          },
+          now,
+        );
+      await expect(
+        broker.refresh(authority, { ...request, transactionId: refreshIdAt(10) }),
+      ).rejects.toMatchObject({ code: "unavailable" });
+      expect(providerFetch).toHaveBeenCalledOnce();
+      await broker.acknowledgeRefresh(authority, context.transactionId);
+      expect(await broker.pullRefresh(authority, context.transactionId)).toMatchObject({
+        status: "acknowledged",
+        sealedResult: null,
+      });
+    },
+  );
+
+  it("retires encrypted attempts and refreshes during the plugin-only broker migration", async ({
+    storeFixture,
+  }) => {
+    const { database, store, attempt, now, deploymentId, accountId } = storeFixture;
+    const expiresAt = new Date(now.getTime() + 60_000);
+    await store.createAttempt(attempt(attemptIdAt(0), expiresAt), now);
+    await store.claimRefresh(
+      {
+        accountSubject: accountId,
+        deploymentId,
+        expiresAt,
+        hostPublicKey: "h".repeat(43),
+        provider: "google",
+        registryRevision: 1,
+        requestBindingDigest: "d".repeat(43),
+        transactionId: refreshIdAt(0),
+      },
+      now,
+    );
+    await sql`
+      alter table public.hosted_oauth_broker_attempts rename column registry_revision to provider_application_revision;
+      alter table public.hosted_oauth_broker_refreshes rename column registry_revision to provider_application_revision;
+      alter table public.hosted_oauth_broker_refreshes alter column request_binding_digest drop not null;
+      update public.hosted_oauth_broker_refreshes set request_binding_digest = null;
+    `.execute(database);
+    await pluginOAuthOnlyBrokerMigration.up(database);
+    expect(await database.selectFrom("hostedOAuthBrokerAttempts").selectAll().execute()).toEqual(
+      [],
+    );
+    expect(await database.selectFrom("hostedOAuthBrokerRefreshes").selectAll().execute()).toEqual(
+      [],
+    );
+    expect(await database.selectFrom("users").select("id").execute()).toEqual([{ id: accountId }]);
+    expect(await database.selectFrom("deployments").select("id").execute()).toEqual([
+      { id: deploymentId },
+    ]);
+    const created = await store.createAttempt(attempt(attemptIdAt(1), expiresAt), now);
+    expect(created.registryRevision).toBe(1);
+    await store.failAttempt(created.attemptId, "failed", "client-rejected", now);
+    expect(await store.getAttemptForHost(deploymentId, created.attemptId, now)).toMatchObject({
+      failureCode: "client-rejected",
+    });
+    await store.createAttempt(attempt(attemptIdAt(2), expiresAt), now);
+    await expect(
+      store.failAttempt(attemptIdAt(2), "failed", "catalog-version-skew", now),
+    ).rejects.toThrow();
+  });
+
   it.for(["web", "app"] as const)(
     "binds plugin %s consent, sealed tokens, refresh and revocation to the reviewed Host context",
     async (finish, { storeFixture }) => {
@@ -703,7 +1128,16 @@ integration("hosted OAuth broker durable boundary", () => {
         refreshToken: "plugin-refresh",
         grantedScopes: ["read"],
       });
+      expect(() =>
+        openOAuthBrokerPayload(
+          pulled.sealedResult!,
+          generateOAuthBrokerEphemeralKeyPair().privateKey,
+          context,
+        ),
+      ).toThrow();
       for (const change of [
+        { attemptId: attemptIdAt(102) },
+        { expiresAt: new Date(now.getTime() + 61_000).toISOString() },
         { registryRevision: 8 },
         { requestedScopes: ["write"] },
         { binding: { ...context.binding, accountLinkGeneration: "h".repeat(43) } },
