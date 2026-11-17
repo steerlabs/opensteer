@@ -12,7 +12,6 @@ import { HarnessIdSchema } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import type { HostApiClient } from "@opensteer/protocol";
 import type { EnvironmentId, HarnessInstanceId, RunId } from "@opensteer/core";
-import { eventFromRow } from "@opensteer/database";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -70,7 +69,8 @@ export interface PersonalRuntime {
     replacementRunId?: RunId,
   ): Promise<{
     readonly runId: RunId;
-    readonly events: readonly AgentEvent[];
+    readonly status: "completed" | "failed" | "interrupted";
+    readonly items: readonly { id: string; kind: string; position: string | null }[];
     readonly assistantText: string;
   }>;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
@@ -531,15 +531,20 @@ export async function startPersonalRuntime(input: {
               .select(["id", "status"])
               .where("id", "=", replacementRunId ?? inputRow.runId!)
               .executeTakeFirstOrThrow();
-            if (["completed", "failed", "interrupted"].includes(run.status)) {
-              const selected = (
-                await host!.store.database
-                  .selectFrom("deploymentEvents")
-                  .selectAll()
-                  .where("runId", "=", run.id)
-                  .orderBy("sequence")
-                  .execute()
-              ).map(eventFromRow);
+            if (
+              run.status === "completed" ||
+              run.status === "failed" ||
+              run.status === "interrupted"
+            ) {
+              const items = await host!.store.database
+                .selectFrom("transcriptItems")
+                .select(["id", "kind", "position"])
+                .where("runId", "=", run.id)
+                .where("visible", "=", true)
+                .orderBy("position", "desc")
+                .orderBy("id", "desc")
+                .limit(100)
+                .execute();
               const messages = await host!.store.database
                 .selectFrom("messages")
                 .select("content")
@@ -549,7 +554,8 @@ export async function startPersonalRuntime(input: {
                 .execute();
               return {
                 runId: run.id,
-                events: selected,
+                status: run.status,
+                items: items.reverse(),
                 assistantText: messages
                   .flatMap((row) => MessageContentSchema.parse(row.content))
                   .filter((part) => part.type === "text")

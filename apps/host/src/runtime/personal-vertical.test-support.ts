@@ -250,13 +250,14 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       },
       async waitForToolStart(runId, count = 1) {
         await observe(async () => {
-          const events = await current.host.store.database
-            .selectFrom("deploymentEvents")
-            .select("eventId")
+          const calls = await current.host.store.database
+            .selectFrom("toolCalls")
+            .select("id")
             .where("runId", "=", runId)
-            .where("type", "=", "tool.started")
+            .where("startedAt", "is not", null)
+            .limit(count)
             .execute();
-          return events.length >= count ? true : undefined;
+          return calls.length >= count ? true : undefined;
         }, `Run never started ${count} tools`);
       },
       async steerMessage({ threadId, text, attachments }) {

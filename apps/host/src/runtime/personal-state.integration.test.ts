@@ -51,12 +51,12 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
     expect(await Promise.all(committed)).toEqual([{ ownerId: personal.userId }]);
     await initialize();
     expect(notices).toHaveLength(1);
-    // Reconciling ready settings must not queue behind, or hold, the Deployment event fence.
+    // Reconciling ready settings must not queue behind, or hold, the Deployment sync fence.
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const fence = database.transaction().execute(async (transaction) => {
       await transaction
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("deploymentId")
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
@@ -67,7 +67,7 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
     try {
       await held.promise;
       await withTimeout(initialize(), 2_000, {
-        timeoutError: () => new Error("Reconciling ready settings waited on the event fence"),
+        timeoutError: () => new Error("Reconciling ready settings waited on the sync fence"),
       });
     } finally {
       release.resolve();
