@@ -2075,8 +2075,6 @@ export class ComputerUseService {
       readonly access: IntegrationAccess | null;
       readonly app: ComputerAppIdentity | null;
       readonly definitionId?: DisplayDefinitionId;
-      readonly availability?: DeviceAvailability;
-      readonly setup?: PhoneDisplayView["setup"];
       readonly operation: ComputerUseOperation;
       readonly params: ComputerUseFrameParams;
       readonly runId?: RunId;
