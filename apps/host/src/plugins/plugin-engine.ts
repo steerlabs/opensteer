@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import { Effect, Cause, Schema } from "effect";
 import { FormElicitation, type ElicitationHandler } from "apps/contracts";
 import {
@@ -250,7 +251,7 @@ process.on("message", (raw: unknown) => {
         controller.signal,
       );
       if (result instanceof Response) {
-        if (result.body) streams.set(message.id, result.body.getReader());
+        if (result.body) streams.set(message.id, responseChunkReader(result.body));
         send({
           type: "result",
           id: message.id,

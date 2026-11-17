@@ -120,6 +120,16 @@ export function createBoundedResponseReader() {
 
 export const { readBoundedResponse, forEachBoundedResponseChunk } = createBoundedResponseReader();
 
+/**
+ * A body read one chunk at a time by a caller that enforces its own bound, such as a relay
+ * that forwards each chunk. Cancelling also ends a read that is still pending.
+ */
+export function responseChunkReader(
+  body: ReadableStream<Uint8Array>,
+): ReadableStreamDefaultReader<Uint8Array> {
+  return body.getReader();
+}
+
 export async function readBoundedText(
   response: Response,
   options: BoundedResponseOptions & { readonly fatalUtf8?: boolean },
