@@ -2930,6 +2930,9 @@ integration("personal task delegation lifecycle", () => {
     const continuations = new ContinuationService({
       commands,
       integrations: {
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: unexpected,
         computerUsePhones: unexpected,
         listCallableTools: unexpected,

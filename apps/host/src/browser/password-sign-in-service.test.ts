@@ -541,6 +541,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -618,6 +621,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },

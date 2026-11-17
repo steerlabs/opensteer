@@ -4019,6 +4019,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
     };
     const lease = { sessionId: mintComputerUseSessionId() };
     const mockedComputerUse = {
+      eligibleInventory: async () => ({ machines: [], phones: [] }),
       closeForConnection: vi.fn(),
       eligibleMachines: vi.fn(async () => []),
       installedApps: vi.fn(async () => []),
@@ -4214,6 +4215,46 @@ describe("IntegrationPlatformService computer use gateway", () => {
         }),
       },
     });
+    vi.spyOn(service.computerAppApprovals, "computerUseInventory").mockImplementation(async () => ({
+      machines:
+        input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Alex's Mac",
+                runnerId,
+                ready: true,
+                state: "ready",
+                appApproval: "ask",
+                apps: [
+                  {
+                    name: notes.displayName,
+                    bundleId: notes.bundleId,
+                    connectionId: connection.id,
+                    access: input.connectionAccess ?? "read-write",
+                    status: "approved",
+                  },
+                ],
+              },
+            ],
+      phones:
+        !input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Pixel 7",
+                runnerId,
+                ready: true,
+                state: "ready",
+                blockedByOwner: false,
+                connection: {
+                  connectionId: connection.id,
+                  access: input.connectionAccess ?? "read-write",
+                },
+              },
+            ],
+    }));
+    vi.spyOn(service.computerAppApprovals, "computerAppHolders").mockReturnValue(new Map());
     return {
       callable,
       computerUse,
@@ -4255,6 +4296,42 @@ describe("IntegrationPlatformService computer use gateway", () => {
   }
 
   const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const who = runCaller(context);
+    const tools = vi.spyOn(f.service, "listCallableTools").mockResolvedValue([]);
+    try {
+      const access = await f.service.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run,
+      );
+      const state = access.appEntries(access.machines[0]!)[0]!;
+      tools.mockClear();
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        code: "forbidden",
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+      expect(tools).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("authorizes callable operations without gathering discovery facts", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const access = vi
+      .spyOn(f.service, "computerAccess")
+      .mockRejectedValue(new Error("Unexpected discovery"));
+    try {
+      await operate(f.service, f.callable, {}, runCaller(context));
+      expect(access).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it.each([false, true])(
     "revokes during a slow saved-login seal without dispatch (phone=%s)",
@@ -4722,7 +4799,12 @@ function platform(input: {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
           listGrants: vi.fn(async () => []),
+          listComputerAppSetupRequests: async () => [],
           ...input.store,
+          requests: {
+            listPendingIntegrationAccessRequests: async () => [],
+            ...input.store.requests,
+          },
         }
       : {
           connections: { assertOwner: vi.fn(async () => undefined) },
@@ -4730,7 +4812,7 @@ function platform(input: {
           computerAppRunner: vi.fn(async () => null),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
-        }) as IntegrationPlatformStore,
+        }) as unknown as IntegrationPlatformStore,
   });
   services.push(service);
   return service;

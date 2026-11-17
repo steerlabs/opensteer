@@ -1,3 +1,4 @@
+import { gatherComputerAccess } from "./computer-access.js";
 import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { randomUUID } from "node:crypto";
 import type { NativeTabTargets, NativeReplTabTarget } from "../computer-use/native-tab-targets.js";
@@ -2867,6 +2868,7 @@ export class IntegrationPlatformService {
     signal?: AbortSignal,
     deadline?: number,
     beforeAcquired?: () => Promise<void>,
+    facts?: Awaited<ReturnType<IntegrationPlatformService["computerAccess"]>>,
   ): Promise<ReplReply> {
     const run = caller.run;
     if (!run || !this.#computerUse)
@@ -2877,12 +2879,10 @@ export class IntegrationPlatformService {
         : ["windows", "bind", "observe"].includes(operation)
           ? "observe"
           : "act";
-    const callable = (
-      await this.listCallableTools({
-        ownerUserId: run.requestedBy,
-        threadId: caller.threadId,
-      })
-    ).find(
+    const tools =
+      facts?.tools ??
+      (await this.listCallableTools({ ownerUserId: run.requestedBy, threadId: caller.threadId }));
+    const callable = tools.find(
       (candidate) =>
         candidate.grant.connectionId === target &&
         candidate.tool.name === row &&
@@ -2891,6 +2891,31 @@ export class IntegrationPlatformService {
           candidate.server.transport.definitionId === androidPhoneDefinitionId),
     );
     if (!callable) {
+      const access =
+        facts ??
+        (await this.computerAccess(
+          { ownerUserId: run.requestedBy, threadId: caller.threadId },
+          run,
+          tools,
+        ));
+      const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
+      const machine = access.machines.find((entry) =>
+        entry.apps.some((app) => app.connectionId === target),
+      );
+      const app = machine?.apps.find((entry) => entry.connectionId === target);
+      const state = phone
+        ? access.phone(phone)
+        : machine && app
+          ? access.app(machine, { displayName: app.name, bundleId: app.bundleId })
+          : undefined;
+      if (operation !== "release" && state?.blocked)
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: state.blocked.code,
+          message: state.blocked.message,
+          next: state.blocked.next,
+        });
+
       const connection =
         row === "act"
           ? await this.#store.getComputerConnectionForCall({
@@ -3210,6 +3235,14 @@ export class IntegrationPlatformService {
     }
   }
 
+  async computerAccess(
+    input: IntegrationRequester,
+    run?: RunCapabilityClaims<string>,
+    tools?: readonly CallableIntegrationTool[],
+  ) {
+    return gatherComputerAccess(this, input, run, tools);
+  }
+
   async #invokeComputerRepl(
     caller: ToolCaller,
     request: ComputerReplInvocation,
@@ -3219,22 +3252,29 @@ export class IntegrationPlatformService {
       if (!this.#tabs || !this.#nativeTabTarget || caller.run.aud !== "opensteer-run-tools")
         throw refused("not_found", "This tab is unavailable.");
       const claims: RunToolScope = { ...caller.run, aud: "opensteer-run-tools" };
+      let facts: ReturnType<IntegrationPlatformService["computerAccess"]> | undefined;
+      const computerAccess = () =>
+        (facts ??= this.computerAccess(
+          { ownerUserId: claims.requestedBy, threadId: caller.threadId },
+          claims,
+        ));
       return bindNativeTab(
         {
           tabs: this.#tabs,
           lookup: this.#nativeTabTarget,
-          connections: async () => {
-            const rows = await this.listCallableTools({
-              ownerUserId: claims.requestedBy,
-              threadId: caller.threadId,
-            });
-            return (await this.#listConnections(claims.requestedBy)).filter((entry) =>
-              rows.some(
-                (row) => row.grant.connectionId === entry.id && row.tool.name === "observe",
-              ),
-            );
+          connections: () => this.#listConnections(claims.requestedBy),
+          blocked: async (target) => {
+            const access = await computerAccess();
+            if (target.kind === "phone") {
+              const phone = access.phones.find((entry) => entry.runnerId === target.computerId);
+              return phone ? access.phone(phone).blocked : undefined;
+            }
+            const machine = access.machines.find((entry) => entry.runnerId === target.computerId);
+            return machine && target.kind === "window"
+              ? access.app(machine, target.app).blocked
+              : undefined;
           },
-          bind: (connection, target, beforeAcquired) =>
+          bind: async (connection, target, beforeAcquired) =>
             this.callComputerOperation(
               caller,
               connection.id,
@@ -3243,6 +3283,7 @@ export class IntegrationPlatformService {
               request.signal,
               request.deadline,
               beforeAcquired,
+              await computerAccess(),
             ),
         },
         claims,
@@ -3250,47 +3291,29 @@ export class IntegrationPlatformService {
       );
     }
     if (request.operation === "apps" || request.operation === "phones") {
-      const rows = await this.listCallableTools({
-        ownerUserId: caller.run.requestedBy,
-        threadId: caller.threadId,
-      });
-      const entries = await Promise.all(
-        rows
-          .filter(
-            (row) =>
-              row.tool.name === "observe" &&
-              row.server.transport.type === "computer" &&
-              row.server.transport.definitionId ===
-                (request.operation === "apps" ? computerUseDefinitionId : androidPhoneDefinitionId),
-          )
-          .map(async (row) => {
-            if (!row.grant.connectionId) return null;
-            const connection = await this.#store.getComputerConnectionForCall({
-              connectionId: row.grant.connectionId,
-              ownerUserId: caller.run!.requestedBy,
-            });
-            if (
-              !connection ||
-              connection.runnerRevoked ||
-              connection.connection.status !== "connected"
-            )
-              return null;
-            const app = connection.connection.computer?.app;
-            return {
-              id: row.grant.connectionId,
-              name: app?.displayName ?? connection.runnerName,
-              ...(app ? { bundleId: app.bundleId } : {}),
-              computer: connection.runnerName,
-              computerId: connection.runnerId,
-              access:
-                row.grant.access === "read" || connection.access === "read" ? "read" : "read-write",
-            };
-          }),
+      const access = await this.computerAccess(
+        { ownerUserId: caller.run.requestedBy, threadId: caller.threadId },
+        caller.run,
       );
-      const usable = entries.filter((entry) => entry !== null);
+      const usable =
+        request.operation === "phones"
+          ? access.phones.map((phone) => ({
+              id: phone.connection?.connectionId ?? null,
+              name: phone.name,
+              computer: phone.name,
+              computerId: phone.runnerId,
+              ...access.phone(phone),
+            }))
+          : access.machines.flatMap((machine) =>
+              access.appEntries(machine).map((entry) => ({
+                ...entry,
+                computer: machine.name,
+                computerId: machine.runnerId,
+              })),
+            );
       const key = `${request.context.runId}:${request.context.generation}`;
       const targets = this.#replTargets.get(key) ?? new Set<string>();
-      for (const entry of usable) targets.add(entry.id);
+      for (const entry of usable) if (entry.id && entry.access) targets.add(entry.id);
       this.#replTargets.set(key, targets);
       return { value: usable };
     }

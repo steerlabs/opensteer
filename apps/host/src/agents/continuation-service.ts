@@ -17,7 +17,6 @@ import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
-import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
@@ -37,7 +36,7 @@ type ThreadInputDisposition = Awaited<
  */
 export type IntegrationInventorySource = Pick<
   IntegrationPlatformService,
-  "listDiscoveryInventory" | "listCallableTools"
+  "listDiscoveryInventory" | "listCallableTools" | "computerAccess"
 > &
   Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
 type IntegrationInventoryEntry = Awaited<
@@ -310,6 +309,12 @@ export async function continuationMessage(
   ) {
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
+  let computerFacts: ReturnType<IntegrationInventorySource["computerAccess"]> | undefined;
+  const computerAccess = () =>
+    (computerFacts ??= integrations.computerAccess({
+      ownerUserId: request.requestedBy,
+      threadId: request.originatingThreadId,
+    }));
   switch (request.kind) {
     case "device.access": {
       if (request.payload.kind !== "device.access")
@@ -434,11 +439,17 @@ export async function continuationMessage(
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const machines = await integrations.computerUseMachines(request.requestedBy);
+        const machines = (await computerAccess()).machines;
         for (const machine of machines) {
           const app = machine.apps.find(({ connectionId: id }) => id === connectionId);
           if (app)
-            return computerAppContinuation(request, integrations, machine.name, app.name, app);
+            return computerAppContinuation(
+              request,
+              await computerAccess(),
+              machine.name,
+              app.name,
+              app,
+            );
         }
       }
       if (
@@ -448,10 +459,10 @@ export async function continuationMessage(
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
+        const phone = (await computerAccess()).phones.find(
           ({ connection }) => connection !== null && connection.connectionId === connectionId,
         );
-        if (phone) return phoneContinuation(request, integrations, phone);
+        if (phone) return phoneContinuation(await computerAccess(), phone);
       }
       if (!target.success) {
         return `${receipt} The fulfilled connection was not recorded; its current state is unverified.`;
@@ -505,18 +516,18 @@ export async function continuationMessage(
       const payload = request.payload;
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
+        const phone = (await computerAccess()).phones.find(
           ({ runnerId }) => runnerId === payload.runnerId,
         );
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
-          ? phoneContinuation(request, integrations, phone)
+          ? phoneContinuation(await computerAccess(), phone)
           : `Request ${request.id} was fulfilled, but that phone is no longer available to this task. Continue without it.`;
       }
       const asked = payload.app;
       const { displayName } = asked;
-      const machines = await integrations.computerUseMachines(request.requestedBy);
+      const machines = (await computerAccess()).machines;
       const machine = machines.find(({ runnerId }) => runnerId === payload.runnerId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
@@ -524,7 +535,7 @@ export async function continuationMessage(
       const app = machine?.apps.find(
         ({ bundleId }) => bundleId.toLowerCase() === asked.bundleId.toLowerCase(),
       );
-      return computerAppContinuation(request, integrations, mac, displayName, app);
+      return computerAppContinuation(request, await computerAccess(), mac, displayName, app);
     }
     case "harness.approval":
     case "harness.input":
@@ -533,44 +544,38 @@ export async function continuationMessage(
 }
 async function computerAppContinuation(
   request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   mac: string,
   displayName: string,
   app:
     | Awaited<ReturnType<IntegrationInventorySource["computerUseMachines"]>>[number]["apps"][number]
     | undefined,
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is no longer available to this task. Continue without it.`;
-  if (!app || app.status === "blocked") return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    app.connectionId,
+  const machine = access.machines.find(
+    (machine) =>
+      machine.name === mac &&
+      machine.apps.some((entry) => entry.connectionId === app?.connectionId),
   );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`;
+  if (!machine || !app)
+    return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use integration_search {query:"Computer use"} to find current targets.`;
+  const result = access.app(machine, { displayName: app.name, bundleId: app.bundleId });
+  return result.blocked
+    ? `${result.blocked.message} ${result.blocked.next}`
+    : `${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer:${JSON.stringify(mac)}}) in computer_use.`;
 }
-
-/** A fulfilled ask names the phone exactly as the computer library accepts it. */
 async function phoneContinuation(
-  request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   phone: Awaited<ReturnType<IntegrationInventorySource["computerUsePhones"]>>[number],
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${phone.name} is no longer available to this task. Continue without it.`;
-  if (!phone.connection) return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    phone.connection.connectionId,
-  );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in computer_use. Release it when you are done so another task can use it. Continue.`;
+  const current = access.phones.find((entry) => entry.runnerId === phone.runnerId);
+  if (!current)
+    return `${phone.name} is unavailable. Use integration_search {query:"Android phone"} to find current targets.`;
+  const result = access.phone(current);
+  return result.blocked
+    ? `${result.blocked.message} ${result.blocked.next}`
+    : `${phone.name} is ready. Use phone(${JSON.stringify(phone.runnerId)}) in computer_use.`;
 }
+
 function inventoryFor(
   request: Request,
   integrations: IntegrationInventorySource,

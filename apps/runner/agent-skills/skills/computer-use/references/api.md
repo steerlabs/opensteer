@@ -5,7 +5,7 @@ async function: use `await`, `return` a value to see it as JSON, and `print(...)
 `globalThis` persists between `computer_use` calls in this Run. In a later Run, including a resumed task, bind again with `tab()`, `app()` or `phone()` and observe before acting. State can also be discarded on cancellation, resource failure or worker loss. A call has a 100,000 ms wall limit; split longer work across calls.
 
 ```js
-const notes = await app("Notes"); // name, bundle id, or the id from apps()
+const notes = await app("Notes"); // name, bundle id, computerId, or the id from apps()
 const win = await notes.window(); // the window you used last in this app, else its front window
 // or: const win = await tab(tabId); // the exact window or phone of a tab_list / tab_open tab
 await win.observe(); // prints the window list and the accessibility tree
@@ -15,7 +15,7 @@ await win.key("cmd+s");
 await win.observe({ screenshot: true }); // look again, with a picture
 ```
 
-- `apps()` lists the approved Mac apps you can use; `app(query, { computer })` picks one (add
+- `apps()` lists visible Mac apps with either `access` or `blocked` (`code`, `message`, `next`); `app(query, { computer })` picks one (add
   `computer` when the same app is approved on several Macs).
 - `App.windows()` lists the app's windows as `{ windowId, title }`. `App.window(windowId)` binds
   that exact window; `App.window()` binds
@@ -36,7 +36,7 @@ await win.observe({ screenshot: true }); // look again, with a picture
   `setValue(index, value)`, `scroll(target, direction, amount)`; a target is an element index or
   `[x, y]` screenshot pixels. Actions never look again: call `observe()` when you need to see the
   result. `Window.act([...])` sends several actions as one batch.
-- `phones()` and `phone(query)` give a `Phone` (see below). `sleep(ms)` pauses.
+- `phones()` lists visible phones with either `access` or `blocked`; `phone(query)` matches name, id or computerId and gives a `Phone`, or throws its blocked error with `next`. `sleep(ms)` pauses.
 
 Errors throw `ComputerError` with `code`, a plain `message`, and `performed` (what completed before
 the failure). Catch them in code when you can recover; never repeat an action whose outcome is

@@ -46,6 +46,32 @@ const connection = {
 } as unknown as IntegrationConnectionSummary;
 
 describe("native tab binding", () => {
+  it("returns a visible target's blocker before binding and keeps authorization masking", async () => {
+    const blocked = {
+      code: "access_required",
+      message: "Pixel needs access for this task.",
+      next: 'Use app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"Check calendar"}.',
+    };
+    const options: NativeTabBindingOptions = {
+      tabs: {
+        get: async () => ({ ...tab, kind: "phone" }) as Tab,
+        authorizeShow: async () => undefined,
+      },
+      lookup: async () => ({ kind: "phone", computerId, tabGeneration: 1 }),
+      connections: async () => [],
+      blocked: async () => blocked,
+      bind: vi.fn(),
+    };
+    await expect(bindNativeTab(options, claims, tabId)).rejects.toMatchObject({
+      ...blocked,
+      code: "forbidden",
+      reason: blocked.code,
+    });
+    options.tabs.authorizeShow = async () => {
+      throw new Error("concealed");
+    };
+    await expect(bindNativeTab(options, claims, tabId)).rejects.toThrow("concealed");
+  });
   it("uses the private exact-window lookup and rechecks closure before acquisition", async () => {
     let open = true;
     let tabGeneration = 1;

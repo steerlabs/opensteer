@@ -1,3 +1,5 @@
+import type { IntegrationPlatformService } from "./integration-platform-service.js";
+import { gatherComputerAccess } from "./computer-access.js";
 import { ToolFailureSchema } from "@opensteer/core";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { agentTools } from "@opensteer/agent-tools";
@@ -654,9 +656,6 @@ describe("Opensteer MCP integration access classes", () => {
             ),
           ),
         ).toMatchObject({
-          guidance: {
-            computers: expect.stringContaining("do not poll, repeat or route around the Request"),
-          },
           catalog: expect.arrayContaining([
             expect.objectContaining({
               computers: [expect.objectContaining({ name: "Studio Mac" })],
@@ -1621,6 +1620,10 @@ async function createHarness(input: {
     definitions: input.definitions ?? [definition],
     onEvent: vi.fn(),
     platform: {
+      computerAccess: (
+        input: Parameters<IntegrationPlatformService["computerAccess"]>[0],
+        run?: Parameters<IntegrationPlatformService["computerAccess"]>[1],
+      ) => gatherComputerAccess(handlerOptions.platform, input, run),
       computerToolEnabled: async () => true,
       computerUseVersion: () => 2,
       callTool: input.callTool ?? vi.fn(),
@@ -2020,25 +2023,19 @@ describe("computer use discovery", () => {
       expect.any(Array),
     );
     expect(answer).toMatchObject({
-      guidance: {
-        computers: expect.stringContaining(
-          "blocked: only the computer owner can unblock it from any Opensteer app",
-        ),
-      },
-      computer: { computerId: mac.runnerId, state: "ready", appApproval: "ask" },
+      computer: { computerId: mac.runnerId },
       total: 20,
       nextCursor: "6",
       apps: [
         {
           name: "Notes",
           bundleId: "com.apple.Notes",
-          status: "blocked",
+          blocked: { code: "blocked_by_owner" },
         },
         {
           name: "Notepad",
           bundleId: "example.Notepad",
-          status: "not-approved",
-          // The row is already the listing, so it asks rather than searching again.
+          blocked: { code: "access_required", next: expect.stringContaining("app_access_request") },
         },
       ],
     });

@@ -2274,6 +2274,7 @@ export async function createHostRuntime(
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
+        computerAccess: (input, run) => integrationPlatform.computerAccess(input, run),
         computerUseMachines: (ownerUserId) =>
           integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>
