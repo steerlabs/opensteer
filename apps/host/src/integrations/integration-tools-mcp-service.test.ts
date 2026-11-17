@@ -1816,8 +1816,6 @@ async function createHarness(input: {
         if (request.callId) requestByCallId.set(request.callId, existing);
         return {
           status: "pending",
-          nextAction:
-            "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
           replayed: true,
           request: existing,
           setupRequest: { id: "setup" },
@@ -1827,8 +1825,6 @@ async function createHarness(input: {
       accessByKey.set(key, created.request);
       return {
         status: "pending",
-        nextAction:
-          "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
         replayed: false,
         request: created.request,
         setupRequest: { id: "setup" },

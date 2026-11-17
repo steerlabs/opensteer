@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { IntegrationToolHandlers } from "./handlers/integrations.js";
+import { gatherComputerAccess } from "../integrations/computer-access.js";
+import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import {
   IntegrationPlatformStore,
   type IntegrationRequester,
@@ -187,16 +189,23 @@ async function serveMcp(
   if (!address || typeof address === "string") throw new Error("MCP test did not listen");
   const url = new URL(`http://127.0.0.1:${address.port}${mcpResourcePath}`);
   const integrationStore = new IntegrationPlatformStore(store.database);
+  const platform = {
+    store: integrationStore,
+    listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
+      integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
+    listCallableTools: (input: IntegrationRequester) =>
+      integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
+    computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
+  };
   const integrations = new IntegrationToolHandlers({
     definitions: [],
     onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
     platform: {
-      store: integrationStore,
-      listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
-        integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
-      listCallableTools: (input: IntegrationRequester) =>
-        integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
-      computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
+      ...platform,
+      computerAccess: (
+        input: Parameters<IntegrationPlatformService["computerAccess"]>[0],
+        run?: Parameters<IntegrationPlatformService["computerAccess"]>[1],
+      ) => gatherComputerAccess(platform as unknown as IntegrationPlatformService, input, run),
     } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["platform"],
   });
   service = new OpensteerMcpService({

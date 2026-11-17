@@ -325,7 +325,7 @@ describe("Product tool handlers", () => {
           type === "saved_login_request"
             ? "No saved login was released. Continue without it and report the reason."
             : "No cookies were copied. Continue without them and report the reason.",
-        status: "fulfilled",
+        status: "blocked",
         site: result.site,
         reason: result.reason,
         [type === "saved_login_request" ? "loginStatus" : "cookiesStatus"]: "unavailable",

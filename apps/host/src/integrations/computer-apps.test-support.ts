@@ -633,21 +633,6 @@ export function operations(search: Record<string, unknown>) {
   });
 }
 
-export function toolReadiness(search: Record<string, unknown>, name: string) {
-  const results = search.results as readonly {
-    readonly tools?: readonly {
-      readonly name: string;
-      readonly readiness: { readonly code: string; readonly detail: string | null };
-    }[];
-  }[];
-  const found = results.flatMap(({ tools }) => tools ?? []).find((tool) => tool.name === name);
-  if (found) return found.readiness;
-  if (operations(search).some((candidate) => candidate.name === name)) {
-    return { code: "READY", detail: null };
-  }
-  throw new Error(`Tool ${name} was not found in ${JSON.stringify(search)}`);
-}
-
 export function operation(search: Record<string, unknown>, name: string) {
   const found = operations(search).find((candidate) => candidate.name === name);
   if (!found) throw new Error(`Operation ${name} was not found in ${JSON.stringify(search)}`);

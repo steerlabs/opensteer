@@ -1,5 +1,6 @@
 import { callMcpTool } from "../../host/src/mcp/call-tool.test-support.js";
-import { createId } from "@opensteer/core";
+import { createId, formatReferenceLink } from "@opensteer/core";
+import { chrome_cookies_request } from "@opensteer/agent-tools/tools";
 import { TabCommandResultSchema } from "@opensteer/protocol";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
@@ -50,10 +51,7 @@ import {
   type HostToRunnerMessage,
   HostToRunnerMessageSchema,
 } from "@opensteer/protocol";
-import {
-  ChromeCookiesResultSchema,
-  opensteerChromeExtensionId,
-} from "@opensteer/protocol/browser-sources";
+import { opensteerChromeExtensionId } from "@opensteer/protocol/browser-sources";
 import { sql } from "kysely";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -586,7 +584,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       });
       if (response.isError)
         throw new Error(`chrome_cookies_request failed: ${JSON.stringify(response.content)}`);
-      const result = ChromeCookiesResultSchema.parse(response.structuredContent);
+      const result = chrome_cookies_request.output.parse(response.structuredContent);
       agentResults.push(result);
       return result;
     };
@@ -638,10 +636,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         status: "fulfilled",
       });
       expect(await heldSignIn).toEqual({
+        requestId: pendingRequestId,
+        link: formatReferenceLink(pendingRequestId, "Request"),
+        kind: "browser.sign-in",
+        replayed: false,
+        next: `Request ${pendingRequestId} was fulfilled: copied Everyday Chrome's cookies for https://beta.test into the browser tab. Reload the page and check the account; the site may still refuse copied cookies.`,
         profileName: null,
         site: "https://beta.test",
         sourceName: "Everyday Chrome",
-        status: "copied",
+        status: "fulfilled",
+        cookiesStatus: "copied",
       });
       const reloaded = await visit(viewerOne, "www.beta.test");
       expect(signedIn(reloaded, "beta")).toBe(true);
@@ -669,10 +673,14 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       const before = (await signInRequests()).length;
       const result = await signIn(sessionTwo, "beta.test");
       expect(result).toEqual({
+        requestId: null,
+        kind: "browser.sign-in",
+        next: "Cookies were copied; reload the tab and check the account.",
         profileName: null,
         site: "https://beta.test",
         sourceName: "Everyday Chrome",
-        status: "copied",
+        status: "fulfilled",
+        cookiesStatus: "copied",
       });
       expect((await signInRequests()).length).toBe(before);
       expect(signedIn(await visit(viewerTwo, "www.beta.test"), "beta")).toBe(true);
@@ -724,10 +732,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         );
       });
       expect(await heldOfflineSignIn!).toEqual({
+        requestId: drainedRequestId,
+        link: formatReferenceLink(drainedRequestId, "Request"),
+        kind: "browser.sign-in",
+        replayed: false,
+        next: `Request ${drainedRequestId} was fulfilled: copied Everyday Chrome's cookies for https://alpha.test into the browser tab. Reload the page and check the account; the site may still refuse copied cookies.`,
         profileName: null,
         site: "https://alpha.test",
         sourceName: "Everyday Chrome",
-        status: "copied",
+        status: "fulfilled",
+        cookiesStatus: "copied",
       });
       expect((await rpc.sources()).sources).toEqual([
         expect.objectContaining({ connected: true, id: sourceId }),

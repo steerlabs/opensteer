@@ -143,7 +143,7 @@ export function passwordsAnywhereJourneys() {
                 arguments: { tabId, site: passwordFixture.site, reason: "Read the account" },
               });
               expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
-                status: "fulfilled",
+                status: "blocked",
                 requestId: null,
                 kind: "browser.password-sign-in",
                 next: "No saved login was released. Continue without it and report the reason.",
@@ -346,7 +346,7 @@ export function passwordsAnywhereJourneys() {
                 await new Promise<void>((resolve) => setImmediate(resolve));
                 const next = await signIn();
                 expect(next.structuredContent).toMatchObject({
-                  status: "fulfilled",
+                  status: "blocked",
                   loginStatus: "unavailable",
                 });
                 expect(next.structuredContent).not.toHaveProperty("loginRef");

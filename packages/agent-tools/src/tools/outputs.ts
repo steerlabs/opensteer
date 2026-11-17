@@ -304,7 +304,7 @@ export const RequestCreationOutputSchema = z.object({
   kind: RequestKindSchema,
   replayed: z.boolean(),
   requestId: RequestIdSchema.nullable(),
-  status: RequestStatusSchema,
+  status: RequestStatusSchema.or(z.literal("blocked")),
   next: z.string().min(1),
 });
 export const BrowserProfileOutputSchema = z.object({
@@ -327,12 +327,30 @@ export const CopyChromeCookiesOutputSchema = BrowserRequestOutputSchema.extend({
   cookiesStatus: z.enum(["pending", "declined", "copied", "unavailable"]),
   sourceName: z.string().optional(),
   profileName: z.string().nullable().optional(),
-});
+}).refine(
+  ({ cookiesStatus, sourceName, profileName, reason, requestId, status }) =>
+    (cookiesStatus === "copied"
+      ? sourceName !== undefined && profileName !== undefined
+      : sourceName === undefined && profileName === undefined) &&
+    (cookiesStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (cookiesStatus === "copied" ? "fulfilled" : "blocked")) &&
+    (cookiesStatus !== "pending" || requestId !== null),
+  "Cookie details and request status must match the cookie outcome",
+);
 export const UseSavedLoginOutputSchema = BrowserRequestOutputSchema.extend({
   loginStatus: z.enum(["pending", "declined", "ready", "unavailable"]),
   loginRef: z.string().optional(),
   account: z.string().optional(),
-});
+}).refine(
+  ({ loginStatus, loginRef, account, reason, requestId, status }) =>
+    (loginStatus === "ready"
+      ? loginRef !== undefined && account !== undefined
+      : loginRef === undefined && account === undefined) &&
+    (loginStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (loginStatus === "ready" ? "fulfilled" : "blocked")) &&
+    (loginStatus !== "pending" || requestId !== null),
+  "Login details and request status must match the login outcome",
+);
 export const BrowserSessionSchema = AgentBrowserSessionSummarySchema;
 export const BrowserSessionListOutputSchema = z.object({ sessions: z.array(BrowserSessionSchema) });
 export const BrowserSessionOpenOutputSchema = z.object({
@@ -543,7 +561,16 @@ export const UseCardOutputSchema = BrowserRequestOutputSchema.extend({
   cardRef: z.string().optional(),
   brand: z.string().optional(),
   lastFour: z.string().optional(),
-});
+}).refine(
+  ({ cardStatus, cardRef, brand, lastFour, reason, requestId, status }) =>
+    (cardStatus === "ready"
+      ? cardRef !== undefined && brand !== undefined && lastFour !== undefined
+      : cardRef === undefined && brand === undefined && lastFour === undefined) &&
+    (cardStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (cardStatus === "ready" ? "fulfilled" : "blocked")) &&
+    (cardStatus !== "pending" || requestId !== null),
+  "Card details and request status must match the card outcome",
+);
 export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;
 
 export const AppPublishOutputSchema = z.object({

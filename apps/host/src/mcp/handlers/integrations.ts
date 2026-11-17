@@ -1,4 +1,5 @@
 import { integrationBlocked } from "../../integrations/integration-blocked.js";
+import { immediateRequestResult } from "../request-result.js";
 import { androidPhoneDefinitionId, isPhoneDisplayDefinitionId } from "@opensteer/core";
 const isComputerUseDefinition = (value: string) =>
   value === "macos-app" || isPhoneDisplayDefinitionId(value);
@@ -1038,15 +1039,16 @@ function computerAccessResult(
     return integrationRequestResult(created.request, created.replayed, scope);
   }
   const output = {
-    kind: "computer.app.access",
-    requestId: null,
-    status: "fulfilled",
+    ...immediateRequestResult(
+      "computer.app.access",
+      "fulfilled",
+      created.app
+        ? `${created.app.displayName} on ${created.computer} is ready. Use app(${JSON.stringify(created.app.displayName)}, {computer:${JSON.stringify(created.computer)}}) in computer_use.`
+        : `${created.computer} is ready. Use phone(${JSON.stringify(created.computerId)}) in computer_use.`,
+    ),
     computerId: created.computerId,
     computer: created.computer,
     app: created.app,
-    next: created.app
-      ? `${created.app.displayName} on ${created.computer} is ready. Use app(${JSON.stringify(created.app.displayName)}, {computer:${JSON.stringify(created.computer)}}) in computer_use.`
-      : `${created.computer} is ready. Use phone(${JSON.stringify(created.computerId)}) in computer_use.`,
   };
   return {
     content: [{ text: JSON.stringify(output), type: "text" as const }],
@@ -1060,13 +1062,15 @@ function computerAccessResult(
  */
 function proposalRefusalResult(refusal: IntegrationProposalRefusal) {
   const result = {
-    requestId: null,
-    kind: "integration.install",
-    next: "No installation was requested. Call integration_search to inspect the complete catalog; if no built-in fits, find a supported API-credential source or tell the person the reported limitation.",
+    ...immediateRequestResult(
+      "integration.install",
+      "blocked",
+      "No installation was requested. Call integration_search for this service and inspect its complete catalog. catalogAlternatives contains hints, not every supported integration; an empty list does not mean no built-in exists. If a catalog definition fits, call integration_request with its definitionId as catalog and the access this task needs. If none fits, look for a supported API-credential source or explain the limitation to the user.",
+    ),
+    proposalStatus: refusal.status,
     catalogAlternatives: refusal.catalogAlternatives,
     detectedAuth: refusal.detectedAuth,
     reason: refusal.reason,
-    status: "fulfilled",
   };
   return {
     content: [{ text: JSON.stringify(result), type: "text" as const }],
@@ -1141,11 +1145,12 @@ function integrationAlreadyGrantedResult(
   account: string,
 ) {
   const result = {
-    kind: "integration.access" as const,
-    requestId: null,
+    ...immediateRequestResult(
+      "integration.access",
+      "fulfilled",
+      `${integration} as ${account} has a personal ${access} grant. This task’s access mode still limits execution. Call integration_search for operations this task can use.`,
+    ),
     replayed: false,
-    status: "fulfilled" as const,
-    next: `${integration} as ${account} has a personal ${access} grant. This task’s access mode still limits execution. Call integration_search for operations this task can use.`,
   };
   return {
     content: [

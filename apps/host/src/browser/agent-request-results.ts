@@ -1,7 +1,7 @@
 import type { Request } from "@opensteer/core";
 import type { SavedLoginResult, UseCardResult, ChromeCookiesResult } from "@opensteer/protocol";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
-import { requestResult } from "../mcp/request-result.js";
+import { immediateRequestResult, requestResult } from "../mcp/request-result.js";
 
 export function savedLoginAgentResult(result: SavedLoginResult, request: Request | null) {
   const next =
@@ -13,12 +13,11 @@ export function savedLoginAgentResult(result: SavedLoginResult, request: Request
   return {
     ...(request
       ? requestResult(request, next, "replayed" in result && result.replayed === true)
-      : {
-          requestId: null,
-          kind: "browser.password-sign-in" as const,
-          status: "fulfilled" as const,
+      : immediateRequestResult(
+          "browser.password-sign-in",
+          result.status === "ready" ? "fulfilled" : "blocked",
           next,
-        }),
+        )),
     site: result.site,
     loginStatus: result.status,
     ...(result.status === "ready" ? { loginRef: result.loginRef, account: result.account } : {}),
@@ -32,16 +31,17 @@ export function cardAgentResult(result: UseCardResult, request: Request | null) 
       ? requestPendingGuidance
       : result.status === "ready"
         ? "Use cardRef to fill the approved card."
-        : "No card was released. Continue without it and report the reason.";
+        : result.status === "needs-approval"
+          ? "No card was released. Ask the parent task to request the person's approval."
+          : "No card was released. Continue without it and report the reason.";
   return {
     ...(request
       ? requestResult(request, next)
-      : {
-          requestId: null,
-          kind: "browser.password-sign-in" as const,
-          status: "fulfilled" as const,
+      : immediateRequestResult(
+          "browser.password-sign-in",
+          result.status === "ready" ? "fulfilled" : "blocked",
           next,
-        }),
+        )),
     site: result.site,
     cardStatus: result.status,
     ...(result.status === "ready"
@@ -61,7 +61,11 @@ export function chromeCookiesAgentResult(result: ChromeCookiesResult, request: R
   return {
     ...(request
       ? requestResult(request, next, "replayed" in result && result.replayed === true)
-      : { requestId: null, kind: "browser.sign-in" as const, status: "fulfilled" as const, next }),
+      : immediateRequestResult(
+          "browser.sign-in",
+          result.status === "copied" ? "fulfilled" : "blocked",
+          next,
+        )),
     site: result.site,
     cookiesStatus: result.status,
     ...(result.status === "copied"
