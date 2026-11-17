@@ -26,6 +26,7 @@ const maxTailBytes = 16 * 1024;
 
 export class ItemTextStore {
   readonly #items = new Map<string, ItemText>();
+  readonly #faces = new Map<string, NonNullable<LiveFrame["item"]>>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #gaps = new Map<string, number>();
   readonly #closed = new Map<string, string>();
@@ -40,6 +41,10 @@ export class ItemTextStore {
 
   get(itemId: string) {
     return this.#items.get(itemId);
+  }
+
+  item(itemId: string) {
+    return this.#faces.get(itemId);
   }
 
   subscribe(itemId: string, listener: () => void) {
@@ -63,6 +68,7 @@ export class ItemTextStore {
   clear() {
     const ids = [...this.#items.keys()];
     this.#items.clear();
+    this.#faces.clear();
     this.#gaps.clear();
     this.#closed.clear();
     this.#retiredThrough = -1n;
@@ -126,6 +132,8 @@ export class ItemTextStore {
       256,
     );
     const offset = update.totalLength - text.length;
+    if (frame.item) this.#faces.set(frame.itemId, frame.item);
+    else if (!matches) this.#faces.delete(frame.itemId);
     this.#replace(frame.itemId, {
       streamId: frame.streamId,
       text,
@@ -168,6 +176,7 @@ export class ItemTextStore {
     const identity = this.#identities.get(id);
     if (identity) this.#gaps.delete(identity.key);
     this.#items.delete(id);
+    this.#faces.delete(id);
     this.#notify(id);
   }
 

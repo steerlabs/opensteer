@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { MachineSummarySchema, hostApi } from "@opensteer/protocol";
-import { computerTargetId, deviceDriverKey, machineSelfRunnerId } from "./device-projection.js";
+import {
+  computerTargetId,
+  deviceDriverKey,
+  deviceReasonLabel,
+  machineSelfRunnerId,
+} from "./device-projection.js";
+
+import { devicesView } from "../computers/devices.js";
 
 const runner = "rnr_00000000-0000-4000-8000-000000000001";
 const legacy = MachineSummarySchema.parse({
@@ -40,8 +47,57 @@ describe("scoped device facts", () => {
 
   it("reads the typed target from the shared setup request", () => {
     expect(computerTargetId({ deviceId: runner })).toBe(runner);
+    expect(computerTargetId({ runnerId: runner })).toBe(runner);
     expect(hostApi["machines.list"].success.parse({ machines: [legacy] }).machines[0]?.id).toBe(
       runner,
     );
   });
+});
+
+it("never offers screen control from phone platform or Device kind alone", () => {
+  const phones = (["android", "ios"] as const).map((platform) =>
+    MachineSummarySchema.parse({
+      ...legacy,
+      id: platform,
+      device: { platform, form: "phone", app: "opensteer" },
+      kind: "agent-phone",
+      allowedModules: ["browser", "integrations"],
+      phoneDisplay: null,
+    }),
+  );
+  expect(phones.map(machineSelfRunnerId)).toEqual([null, null]);
+  expect(
+    devicesView({ machines: phones, sessions: [], hereId: null }).devices.map(
+      ({ capabilitySummary }) => capabilitySummary,
+    ),
+  ).toEqual([null, null]);
+});
+
+it("keeps an explicitly advertised Android display and its offline reason", () => {
+  const unavailable = { state: "unavailable", reason: { kind: "driver-offline" } };
+  const phone = MachineSummarySchema.parse({
+    ...legacy,
+    kind: "agent-phone",
+    device: { platform: "android", form: "phone" },
+    phoneDisplay: {
+      definitionId: "android-phone",
+      driver: null,
+      control: unavailable,
+      view: unavailable,
+      input: unavailable,
+      navigationButtons: [],
+      actions: [],
+      wake: false,
+      lock: null,
+      setup: { location: "android-usb" },
+    },
+  });
+  const row = devicesView({ machines: [phone], sessions: [], hereId: null }).devices[0];
+  expect(row?.machine).toBe(phone);
+  expect(row?.capabilitySummary).toBe("Screen control");
+  expect(row?.machine.phoneDisplay).toMatchObject({
+    definitionId: "android-phone",
+    control: unavailable,
+  });
+  expect(deviceReasonLabel(phone.phoneDisplay?.control.reason ?? null)).toBe("Driver offline");
 });

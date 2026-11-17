@@ -1,4 +1,4 @@
-import { createId, TabSchema } from "@opensteer/core";
+import { AppIdSchema, createId, TabSchema } from "@opensteer/core";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   personalAuthorityChangedReason,
@@ -19,6 +19,7 @@ import {
 } from "./personal-stream-cache.js";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
+import { nodeTranscriptCard } from "./transcript-item-view.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
@@ -830,64 +831,191 @@ test("invalidates observed tab inventory without discarding its independent layo
   }
 });
 
-test("keeps a provisional item and its final message at one row identity", () => {
+test.each(["message", "reasoning"] as const)(
+  "keeps provisional %s in its original slot and lets the durable text win",
+  async (kind) => {
+    const f = fixture();
+    f.syncShell();
+    f.stream.receive(f.detailSnapshot([]));
+    f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+    const attemptId = createId("runAttempt");
+    const { messageId: _messageId, ...base } = item;
+    const face =
+      kind === "message"
+        ? { ...item, attemptId, view: {} }
+        : {
+            ...base,
+            kind,
+            id: "thought",
+            attemptId,
+            blockId: "thought",
+            bindingGeneration: 1,
+            view: {},
+          };
+    const final = { ...face, revision: "3", view: { preview: "The authoritative text." } };
+    const tool = {
+      ...base,
+      kind: "tool" as const,
+      id: "search",
+      toolCallId: "search",
+      position: "2",
+      revision: "2",
+      view: { status: "done" },
+    };
+    type Rpc = import("@opensteer/protocol").HostApiClient;
+    const rpc = {
+      "thread.inputQueue.get": async () => ({
+        ok: true,
+        data: { threadId, revision: "1", paused: false, steerRunId: null, items: [] },
+      }),
+      "thread.items.page": async () => ({
+        ok: true,
+        data: {
+          kind: "page",
+          threadId,
+          nodeId: null,
+          revision: "3",
+          orderRevision: "1",
+          items: [final, tool],
+          nextBefore: null,
+          hasMore: false,
+        },
+      }),
+    } as unknown as Rpc;
+    const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
+    const address = {
+      ...f.address,
+      type: "host.live" as const,
+      liveBootId: crypto.randomUUID(),
+      runId,
+      attemptId,
+      bindingGeneration: 1,
+      streamId: "draft",
+      itemId: face.id,
+      afterSequence: "1",
+    };
+    const upsert = (value: TranscriptItem, fromSequence: string) =>
+      f.stream.receive({
+        ...f.address,
+        type: "host.changes",
+        fromSequence,
+        throughSequence: value.revision,
+        changes: [
+          {
+            operation: "upsert",
+            entityKind: "item",
+            entityId: value.id,
+            sequence: value.revision,
+            ordinal: 0,
+            value,
+          },
+        ],
+      });
+    try {
+      if (kind === "reasoning") {
+        f.stream.receive({
+          ...address,
+          item: face,
+          update: { operation: "append", totalLength: 0, offset: 0, text: "" },
+        });
+        expect(reader.getSnapshot().entries).toEqual([]);
+      }
+      expect(
+        f.stream.receive({
+          ...address,
+          ...(kind === "message" ? { item: face } : {}),
+          update: { operation: "append", totalLength: 2, offset: 0, text: "🦊" },
+        }),
+      ).toBe(true);
+      upsert(tool, "1");
+      const draft = reader.getSnapshot().entries;
+      expect(draft.map(({ id }) => id)).toEqual([face.id, tool.id]);
+      expect(draft[0]).toMatchObject(
+        kind === "message" ? { streaming: true } : { state: "streaming" },
+      );
+      f.stream.receive({
+        ...address,
+        update: { operation: "append", totalLength: 3, offset: 2, text: "!" },
+      });
+      expect(f.detail.text.get(face.id)?.text).toBe("🦊!");
+      expect(reader.getSnapshot().entries).toBe(draft);
+      if (kind === "message") upsert(final, "2");
+      else await reader.history("latest");
+      const settled = reader.getSnapshot().entries;
+      expect(settled.map(({ id }) => id)).toEqual([face.id, tool.id]);
+      expect(settled[0]).toMatchObject(
+        kind === "message"
+          ? { body: "The authoritative text." }
+          : { state: "done", text: "The authoritative text." },
+      );
+      expect(settled[0]).not.toHaveProperty("streaming", true);
+      expect(settled[1]).toBe(draft[1]);
+      f.stream.receive({ ...address, afterSequence: "2", update: { operation: "close" } });
+      f.stream.receive({
+        ...address,
+        update: {
+          operation: "replace",
+          text: "stale",
+          offset: 0,
+          totalLength: 5,
+          incomplete: false,
+        },
+      });
+      expect(f.detail.text.get(face.id)).toBeUndefined();
+    } finally {
+      reader.dispose();
+    }
+  },
+);
+
+test("keeps the latest publication and distinct place markers across overlapping pages", () => {
   const f = fixture();
-  f.syncShell();
-  f.stream.receive(f.detailSnapshot([]));
-  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
-  const attemptId = createId("runAttempt");
-  const face = { ...item, attemptId, view: { preview: "" } };
-  const address = {
-    ...f.address,
-    type: "host.live" as const,
-    liveBootId: crypto.randomUUID(),
-    runId,
-    attemptId,
-    bindingGeneration: 1,
-    streamId: "reply",
-    itemId: face.id,
-    afterSequence: "1",
+  const { messageId: _messageId, ...base } = item;
+  const appId = AppIdSchema.parse("app_11111111-1111-4111-8111-111111111111");
+  const publication = {
+    ...base,
+    kind: "app" as const,
+    id: `app:${appId}`,
+    appId,
+    position: "4",
+    view: { title: "Budget 3" },
   };
-  expect(
-    f.stream.receive({
-      ...address,
-      item: face,
-      update: { operation: "append", totalLength: 2, offset: 0, text: "🦊" },
-    }),
-  ).toBe(true);
-  expect([...f.detail.transcript.getSnapshot().liveItems.keys()]).toEqual([item.id]);
-  const structure = f.detail.transcript.getSnapshot();
-  f.stream.receive({
-    ...address,
-    update: { operation: "append", totalLength: 3, offset: 2, text: "!" },
-  });
-  expect(f.detail.transcript.getSnapshot()).toBe(structure);
-  f.stream.receive({
-    ...f.address,
-    type: "host.changes",
-    fromSequence: "1",
-    throughSequence: "2",
-    changes: [
-      {
-        operation: "upsert",
-        entityKind: "item",
-        entityId: item.id,
-        sequence: "2",
-        ordinal: 0,
-        value: { ...face, revision: "2", view: { preview: "🦊!" } },
-      },
+  const middle = {
+    ...base,
+    kind: "place" as const,
+    id: "place:middle",
+    position: "2",
+    place: {
+      tabId: TabSchema.shape.tabId.parse("page"),
+      title: "Between publications",
+      site: null,
+    },
+  };
+  const revisited = { ...middle, id: "place:revisited", position: "3" };
+  f.syncShell();
+  f.stream.receive(f.detailSnapshot([revisited, publication]));
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const page = {
+    kind: "page" as const,
+    threadId,
+    nodeId: null,
+    items: [
+      { ...publication, revision: "0", position: "1", view: { title: "Budget 1" } },
+      middle,
+      revisited,
     ],
-  });
-  const final = f.detail.transcript.getSnapshot();
-  expect(final.liveItems.size).toBe(0);
-  expect(final.ids).toEqual([item.id]);
-  f.stream.receive({ ...address, afterSequence: "2", update: { operation: "close" } });
-  f.stream.receive({
-    ...address,
-    update: { operation: "replace", text: "stale", offset: 0, totalLength: 5, incomplete: false },
-  });
-  expect(f.detail.text.get(item.id)).toBeUndefined();
-  expect(f.detail.transcript.getSnapshot()).toBe(final);
+    revision: "1",
+    orderRevision: "1",
+    hasMore: false,
+    nextBefore: null,
+  };
+  const { generation } = f.detail.transcript.getSnapshot();
+  f.detail.transcript.installPage(page, generation, "earlier");
+  f.detail.transcript.installPage(page, generation, "earlier");
+  const state = f.detail.transcript.getSnapshot();
+  expect(state.ids).toEqual([middle.id, revisited.id, publication.id]);
+  expect(state.items.get(publication.id)).toEqual(publication);
+  expect(state.items.get(revisited.id)).toEqual(revisited);
 });
 
 test("rejects a saved cut whose revision or authority does not match and ignores a read after logout", async () => {
@@ -1166,6 +1294,90 @@ test("does not install a history page that contains another node's item", async 
     expect(f.detail.transcript.getSnapshot().items.get(item.id)?.view.preview).toBe("A");
   } finally {
     reader.dispose();
+  }
+});
+
+test("pages a node across a missed window and ignores a released holder's earlier read", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const scope = { kind: "node", threadId, nodeId } as const;
+  const release = f.stream.observe(scope);
+  const subscription = f.sent.at(-1);
+  if (subscription?.type !== "client.subscribe" || subscription.scope.kind !== "node")
+    throw new Error("Missing node subscription");
+  const address = {
+    scope,
+    subscriptionId: subscription.subscriptionId,
+    generation: subscription.generation,
+  };
+  const { messageId: _messageId, ...base } = item;
+  const lines = Array.from({ length: 107 }, (_, index) => ({
+    ...base,
+    kind: "node-message" as const,
+    id: `line:${index + 1}`,
+    position: String(index + 1),
+    nodeId,
+    view: { preview: `Message ${index + 1}` },
+  }));
+  const boundary = (row: (typeof lines)[number]) => ({
+    ...cursor,
+    nodeId,
+    beforeId: row.id,
+    beforePosition: row.position,
+  });
+  f.stream.receive({
+    ...f.detailSnapshot([lines.at(-1)!]),
+    ...address,
+    snapshot: {
+      ...f.detailSnapshot([lines.at(-1)!]).snapshot,
+      nextBefore: boundary(lines.at(-1)!),
+    },
+  });
+  f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+  type Rpc = import("@opensteer/protocol").HostApiClient;
+  const held = Promise.withResolvers<Awaited<ReturnType<Rpc["node.items.page"]>>>();
+  const page = (from: number, end: number): Awaited<ReturnType<Rpc["node.items.page"]>> => ({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId,
+      revision: "1",
+      orderRevision: "1",
+      items: lines.slice(from, end),
+      hasMore: from !== 0,
+      nextBefore: from === 0 ? null : boundary(lines[from]!),
+    },
+  });
+  const read = vi
+    .fn<Rpc["node.items.page"]>()
+    .mockReturnValueOnce(held.promise)
+    .mockResolvedValueOnce(page(6, 106))
+    .mockResolvedValueOnce(page(0, 6));
+  const detail = f.stream.detail(scope);
+  const rpc = { "node.items.page": read } as unknown as Rpc;
+  const previous = new ScopedThreadReader(detail, rpc, new TranscriptBodies(), false);
+  const current = new ScopedThreadReader(detail, rpc, new TranscriptBodies(), false);
+  try {
+    const pending = previous.history("earlier");
+    previous.dispose();
+    held.resolve(page(6, 106));
+    await pending;
+    expect(detail.transcript.getSnapshot().ids).toEqual([lines.at(-1)!.id]);
+    await current.history("earlier");
+    expect(detail.transcript.getSnapshot().snapshot?.nextBefore).toEqual(boundary(lines[6]!));
+    await current.history("earlier");
+    const state = detail.transcript.getSnapshot();
+    expect(state.snapshot?.nextBefore).toBeNull();
+    expect(state.ids.map((id) => nodeTranscriptCard(state.items.get(id)!))).toEqual(
+      lines.map((row) => expect.objectContaining({ id: row.id, text: row.view.preview })),
+    );
+    expect(read.mock.calls.map(([request]) => request.nodeId)).toEqual([nodeId, nodeId, nodeId]);
+  } finally {
+    previous.dispose();
+    current.dispose();
+    release();
   }
 });
 

@@ -72,6 +72,23 @@ function comparePosition(a: TranscriptItem, b: TranscriptItem) {
   return delta < 0n ? -1 : delta > 0n ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+export function displayedItemIds(state: TranscriptState): readonly string[] {
+  if (!state.liveItems.size) return state.ids;
+  const ids = [...state.ids];
+  const items = { get: (id: string) => state.items.get(id) ?? state.liveItems.get(id) };
+  for (const item of state.liveItems.values()) insertId(ids, item, items);
+  return ids;
+}
+
+export function finalizedItemText(item: TranscriptItem | undefined): boolean {
+  return (
+    item?.kind === "message" ||
+    item?.kind === "reasoning" ||
+    item?.kind === "node-message" ||
+    (item?.kind === "tool" && item.view.status !== "running")
+  );
+}
+
 export class ThreadTranscriptStore {
   readonly #listeners = new Set<Listener>();
   #state: TranscriptState = emptyState;
@@ -219,7 +236,8 @@ export class ThreadTranscriptStore {
             snapshot = { ...snapshot, pendingRequests: requests };
           }
           if (change.entityKind !== "item") continue;
-          if ((liveItems ?? state.liveItems).has(change.entityId)) {
+          const provisional = (liveItems ?? state.liveItems).has(change.entityId);
+          if (provisional) {
             liveItems ??= new Map(state.liveItems);
             liveItems.delete(change.entityId);
           }
@@ -245,8 +263,9 @@ export class ThreadTranscriptStore {
             const first = (items ?? state.items).get(history[0] ?? "");
             const last = (items ?? state.items).get(history.at(-1) ?? "");
             const inHistory =
-              (!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
-              (state.newest || !last || comparePosition(next, last) <= 0);
+              provisional ||
+              ((!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
+                (state.newest || !last || comparePosition(next, last) <= 0));
             const active = (activeIds ?? state.activeIds).has(id);
             if (!previous && !inHistory && !active) continue;
             items ??= new Map(state.items);
@@ -367,12 +386,18 @@ export class ThreadTranscriptStore {
     );
     const stale = new Set(state.stale);
     stale.delete("history-order");
+    let liveItems: Map<string, TranscriptItem> | undefined;
+    for (const { id } of page.items) {
+      if (!state.liveItems.has(id)) continue;
+      (liveItems ??= new Map(state.liveItems)).delete(id);
+    }
     this.#set({
       ...state,
       snapshot,
       historyIds,
       ids: stableIds(state.ids, sortedIds(items)),
       items,
+      liveItems: liveItems ?? state.liveItems,
       stale,
       readRevision: maxRevision(state.readRevision, page.revision),
       orderRevision: page.orderRevision,
@@ -510,7 +535,11 @@ function removeId(ids: string[], id: string) {
   if (index !== -1) ids.splice(index, 1);
 }
 
-function insertId(ids: string[], item: TranscriptItem, items: ReadonlyMap<string, TranscriptItem>) {
+function insertId(
+  ids: string[],
+  item: TranscriptItem,
+  items: Pick<ReadonlyMap<string, TranscriptItem>, "get">,
+) {
   removeId(ids, item.id);
   let first = 0;
   let end = ids.length;

@@ -5,6 +5,7 @@ import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadNames } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
+import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
   PersonalShellSnapshotSchema,
@@ -1328,6 +1329,22 @@ export class HttpHostClient {
     const release = this.#stream.observe(scope);
     let previous: ReturnType<typeof detail.transcript.getSnapshot> | undefined;
     const cards = new WeakMap<TranscriptItem, ReturnType<typeof nodeTranscriptCard>>();
+    const liveCards = new WeakMap<TranscriptItem, ReturnType<typeof nodeTranscriptCard>>();
+    const listeners = new Set<() => void>();
+    const notify = () => {
+      for (const listener of listeners) listener();
+    };
+    const unsubscribe = detail.transcript.subscribe(notify);
+    let released = false;
+    let read:
+      | {
+          generation: number;
+          mode: "earlier" | "latest";
+          status: "loading" | "missing" | "error";
+          error: string | null;
+        }
+      | undefined;
+    let shownRead: typeof read;
     let view: NodeDetailSnapshot = {
       threadId,
       nodeId,
@@ -1338,55 +1355,121 @@ export class HttpHostClient {
       error: null,
       loadingOlder: false,
     };
+    const closed = { ...view, status: "closed" as const };
+    const readHistory = async (mode: "earlier" | "latest") => {
+      const { generation, synchronized } = detail.transcript.getSnapshot();
+      if (
+        released ||
+        !synchronized ||
+        (read?.generation === generation && read.status === "loading")
+      )
+        return;
+      const pending = { generation, mode, status: "loading" as const, error: null };
+      read = pending;
+      notify();
+      try {
+        await reader.history(mode);
+        if (read === pending) read = undefined;
+      } catch (error) {
+        if (read === pending && generation === detail.transcript.getSnapshot().generation) {
+          const unavailable =
+            error instanceof HostClientRequestError &&
+            (error.status === 403 || error.status === 404);
+          read = {
+            generation,
+            mode,
+            status: unavailable ? "missing" : "error",
+            error: unavailable ? null : "Could not load this subagent’s work.",
+          };
+        }
+      } finally {
+        if (!released) notify();
+      }
+    };
     return {
       getSnapshot: () => {
+        if (released) return closed;
         const state = detail.transcript.getSnapshot();
-        if (previous === state) return view;
+        const page = read?.generation === state.generation ? read : undefined;
+        if (previous === state && shownRead === page) return view;
+        shownRead = page;
+        const status =
+          state.removed || page?.status === "missing"
+            ? "missing"
+            : page?.status === "error"
+              ? "error"
+              : state.synchronized
+                ? "ready"
+                : "loading";
         const structureChanged =
-          previous?.items !== state.items || previous.liveItems !== state.liveItems;
+          previous?.items !== state.items ||
+          previous.liveItems !== state.liveItems ||
+          (view.status === "missing") !== (status === "missing");
         const subject = state.snapshot?.nodeSubject;
         const node =
-          subject === previous?.snapshot?.nodeSubject
-            ? view.node
-            : subject
-              ? transcriptCard(subject)
-              : null;
-        const status = state.removed ? "missing" : state.synchronized ? "ready" : "loading";
-        const hasMore = state.snapshot?.nextBefore != null;
+          status === "missing"
+            ? null
+            : subject === previous?.snapshot?.nodeSubject && view.status !== "missing"
+              ? view.node
+              : subject
+                ? transcriptCard(subject)
+                : null;
+        const hasMore = status !== "missing" && state.snapshot?.nextBefore != null;
+        const loadingOlder = page?.status === "loading" && page.mode === "earlier";
+        const error = page?.error ?? null;
         previous = state;
         if (
           !structureChanged &&
           node === view.node &&
           status === view.status &&
-          hasMore === view.hasMore
+          hasMore === view.hasMore &&
+          loadingOlder === view.loadingOlder &&
+          error === view.error &&
+          state.generation === view.generation
         )
           return view;
-        const entries = !structureChanged
-          ? view.entries
-          : [...state.ids, ...state.liveItems.keys()].flatMap((id) => {
-              const item = state.items.get(id) ?? state.liveItems.get(id);
-              if (!item) return [];
-              if (!cards.has(item)) cards.set(item, nodeTranscriptCard(item));
-              return cards.get(item) ?? [];
-            });
+        const entries =
+          status === "missing"
+            ? closed.entries
+            : !structureChanged
+              ? view.entries
+              : displayedItemIds(state).flatMap((id) => {
+                  const durable = state.items.get(id);
+                  const item = durable ?? state.liveItems.get(id);
+                  if (!item) return [];
+                  const projected = durable ? cards : liveCards;
+                  if (!projected.has(item)) projected.set(item, nodeTranscriptCard(item, !durable));
+                  return projected.get(item) ?? [];
+                });
         view = {
           ...view,
           entries,
           status,
           hasMore,
+          loadingOlder,
+          error,
           generation: state.generation,
           node: node?.kind === "node" ? node : null,
         };
         return view;
       },
-      subscribe: detail.transcript.subscribe,
-      loadOlder: () => reader.history("earlier"),
+      subscribe: (listener) => {
+        if (released) return () => {};
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      loadOlder: () => readHistory("earlier"),
       retry: () => {
-        void reader.history("latest");
+        void readHistory(read?.mode ?? "latest");
       },
       release: () => {
-        release();
+        if (released) return;
+        released = true;
+        unsubscribe();
         reader.dispose();
+        release();
+        notify();
+        listeners.clear();
       },
     };
   }

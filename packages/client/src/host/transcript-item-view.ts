@@ -8,14 +8,17 @@ import { toMessageEntry } from "./transcript.js";
 export function transcriptCard(
   item: TranscriptItem,
   body?: TranscriptItemResult["body"],
+  live = false,
 ): TranscriptEntry | undefined {
   const { id, createdAt, runId, view } = item;
   const base = { id, createdAt, runId };
   const preview = view.preview ?? "";
   switch (item.kind) {
     case "message": {
-      const full = body?.kind === "message" ? toMessageEntry(body.message) : undefined;
-      if (full) return { ...full, itemId: id, itemRevision: item.revision };
+      if (body?.kind === "message") {
+        const full = toMessageEntry(body.message);
+        return full ? { ...full, itemId: id, itemRevision: item.revision } : undefined;
+      }
       const messageKind =
         item.messageKind ??
         (view.author === "assistant" || !item.isTurnStart ? "assistant" : "input");
@@ -26,6 +29,7 @@ export function transcriptCard(
         itemId: id,
         itemRevision: item.revision,
         previewTruncated: view.truncated === true,
+        ...(live ? { streaming: true } : {}),
         kind: "message",
         author,
         messageKind,
@@ -62,7 +66,7 @@ export function transcriptCard(
         itemId: id,
         itemRevision: item.revision,
         previewTruncated: view.truncated === true,
-        state: "done",
+        state: live ? "streaming" : "done",
         text: body?.kind === "text" ? body.text : preview,
       };
     case "request":
@@ -71,6 +75,7 @@ export function transcriptCard(
         : {
             ...base,
             kind: "request",
+            ...(view.status === "declined" ? { declined: true } : {}),
             requestId: item.requestId,
             requestKind: item.requestKind ?? null,
             title: view.title ?? "Request",
@@ -136,7 +141,10 @@ export function transcriptCard(
   }
 }
 
-export function nodeTranscriptCard(item: TranscriptItem): NodeDetailEntry | undefined {
+export function nodeTranscriptCard(
+  item: TranscriptItem,
+  live = false,
+): NodeDetailEntry | undefined {
   if (item.kind === "node-message")
     return {
       kind: "node-message",
@@ -146,7 +154,7 @@ export function nodeTranscriptCard(item: TranscriptItem): NodeDetailEntry | unde
       itemRevision: item.revision,
       previewTruncated: item.view.truncated === true,
     };
-  const card = transcriptCard(item);
+  const card = transcriptCard(item, undefined, live);
   if (card?.kind === "tool" || card?.kind === "reasoning" || card?.kind === "node") return card;
   return undefined;
 }
