@@ -143,7 +143,7 @@ export async function publishAssignmentSummaries(
       view,
     });
     if (row.parentThreadId) {
-      if (row.status !== "open") {
+      if (row.status !== "open" && row.resultStatus === "delivered") {
         await publishThreadCard(tx, mutation, {
           id: `delegation:${row.id}`,
           threadId: row.parentThreadId,

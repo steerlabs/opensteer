@@ -1,3 +1,4 @@
+import { personalTransactionDatabase } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -7,6 +8,10 @@ import {
   OpensteerError,
   PersonMessageSchema,
   type Message,
+  type MessageId,
+  type RunId,
+  type ThreadId,
+  type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
@@ -22,6 +27,27 @@ export interface PersonMessageResult {
 
   readonly wasDuplicate: boolean;
 }
+export interface PersonMessageReady {
+  readonly type: "replyPublished";
+  readonly messageId: MessageId;
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly addressedToUserId: UserId;
+}
+
+type PersonMessageWake = (message: PersonMessageReady) => void | Promise<void>;
+const messageWakes = new WeakMap<Kysely<DatabaseSchema>, PersonMessageWake>();
+
+export function installPersonMessageWake(
+  database: Kysely<DatabaseSchema>,
+  wake: PersonMessageWake,
+) {
+  messageWakes.set(database, wake);
+  return () => {
+    if (messageWakes.get(database) === wake) messageWakes.delete(database);
+  };
+}
+
 export async function publishPersonMessage(
   database: Kysely<DatabaseSchema>,
   input: PersonMessageInput,
@@ -33,7 +59,7 @@ export async function publishPersonMessage(
       code: "bad_request",
       message: "Invalid notification admission",
     });
-  return commitPersonalMutation(database, async (personalTransaction) => {
+  return commitPersonalMutation(database, async (personalTransaction, mutation) => {
     await (async (transaction) => {
       await admitRunToolCallInTransaction(transaction, admission);
     })(personalTransaction);
@@ -115,6 +141,18 @@ export async function publishPersonMessage(
         .where("runId", "=", admission.runId)
         .where("requestId", "=", admission.requestId)
         .executeTakeFirstOrThrow();
+      const source = personalTransactionDatabase(transaction);
+      const wake = source && messageWakes.get(source);
+      if (wake)
+        mutation.reaction(() =>
+          wake({
+            messageId: message.id,
+            threadId: message.threadId,
+            runId: admission.runId,
+            type: "replyPublished",
+            addressedToUserId: run.requestedBy,
+          }),
+        );
       return { message, wasDuplicate: false };
     })(personalTransaction);
   });

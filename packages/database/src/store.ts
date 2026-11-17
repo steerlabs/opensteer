@@ -134,7 +134,9 @@ import {
 import { NotificationStateStore } from "./notification-state.js";
 import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
+  installPersonMessageWake,
   publishPersonMessage,
+  type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
 } from "./person-message-store.js";
@@ -1710,6 +1712,9 @@ export class OpensteerStore {
     readonly userId: UserId;
   }): Promise<TaskPage> {
     return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
+  }
+  onPersonMessageReady(wake: (message: PersonMessageReady) => void | Promise<void>) {
+    return installPersonMessageWake(this.#database, wake);
   }
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
