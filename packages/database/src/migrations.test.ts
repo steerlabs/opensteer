@@ -36,6 +36,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0026_tabs_and_apps",
     "0027_message_origin",
     "0028_device_drivers",
+    "0029_changed_since_indexes",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

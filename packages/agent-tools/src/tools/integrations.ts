@@ -23,7 +23,7 @@ import {
 } from "./integration-outputs.js";
 export const SearchInputSchema = z
   .strictObject({
-    limit: z.number().int().min(1).max(20).default(10),
+    limit: z.number().int().min(1).max(20).default(10).describe("At most 20; page with cursor."),
     cursor: z
       .string()
       .regex(/^\d{1,5}$/u)

@@ -1,4 +1,4 @@
-import { TabIdSchema } from "@opensteer/core";
+import { TabIdSchema, TeamSourceSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
 import { z } from "zod";
@@ -171,6 +171,8 @@ export const ThreadSummarySchema = z.object({
   taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
   updatedAt: task.updatedAt,
+  newMessages: z.number().int().positive().optional(),
+  firstNewAt: task.updatedAt.optional(),
 });
 export const ThreadListOutputSchema = z.object({
   tasks: z.array(ThreadSummarySchema).max(50),
@@ -465,6 +467,8 @@ export const ThreadItemSchema = z.object({
   textTruncated: z.boolean(),
   nextTextOffset: z.number().int().nonnegative().nullable(),
   places: z.array(PlaceContentPartSchema).max(64).optional(),
+  // The team channel and audience a message came from; keep it beside anything repeated from it.
+  teamSource: TeamSourceSchema.optional(),
   createdAt: z.string(),
 });
 export type ThreadItem = z.infer<typeof ThreadItemSchema>;

@@ -16,8 +16,9 @@
     "@opensteer/harness-claude": "workspace:*",
     "@opensteer/harness-codex": "workspace:*",
     "@opensteer/protocol": "workspace:*",
-    "zod": "catalog:",
-    "@opensteer/shared": "workspace:*"
+    "@opensteer/shared": "workspace:*",
+    "@opensteer/triggers": "workspace:*",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

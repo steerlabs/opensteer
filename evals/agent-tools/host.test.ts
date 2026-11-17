@@ -447,39 +447,6 @@ it("reads back successful automation changes and the requested one-shot time", a
   }
 });
 
-it("reads back a source-only schedule change while retaining the person's pause", async () => {
-  const c = parseCases(
-    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
-  ).find((c) => c.id === "memory-nightly-tunes-paused-light")!;
-  const host = await startFakeHost(c);
-  const client = new Client({ name: "eval-trigger-source", version: "1" });
-  try {
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
-        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
-      }) as unknown as Transport,
-    );
-    const update = c.expect.calls[0]!;
-    await client.callTool({ name: update.tool, arguments: update.args });
-    await client.callTool({
-      name: "opensteer_automation_read",
-      arguments: { automationId: update.args.automationId },
-    });
-    expect(host.calls.at(-1)?.result).toMatchObject({
-      automation: { status: "paused", nextFireAt: null },
-      revision: {
-        source: {
-          kind: "schedule",
-          schedule: { kind: "cron", expression: "0 9 * * 1-5", timezone: "America/New_York" },
-        },
-      },
-    });
-  } finally {
-    await client.close();
-    await host.close();
-  }
-});
-
 it("validates subagent read and stop cases with the production tool schemas", async () => {
   const cases = parseCases(
     await readFile(new URL("./cases/subagents.ndjson", import.meta.url), "utf8"),
@@ -502,5 +469,116 @@ it("validates subagent read and stop cases with the production tool schemas", as
       await client.close();
       await host.close();
     }
+  }
+});
+
+it("discovers changed tasks from message times and reads own handoffs and team audiences", async () => {
+  const taskId = "thr_00000000-0000-4000-8000-000000000021";
+  const workerId = "thr_00000000-0000-4000-8000-000000000011";
+  const teamSource = {
+    teamId: "dep_00000000-0000-4000-8000-000000000001",
+    channelId: "tch_00000000-0000-4000-8000-000000000001",
+    threadRootId: "1",
+    messageId: "2",
+    audience: {
+      teamName: "Eval team",
+      channelName: "leadership",
+      channelKind: "private",
+      memberCount: 3,
+      peopleOnly: false,
+    },
+  };
+  const task = (id: string, title: string) => ({
+    id,
+    title,
+    status: "idle",
+    purpose: "task",
+    teamOrigin: null,
+    aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
+    modelSelection: { providerId: "openai", modelId: "eval", options: {} },
+    accessMode: "full-access",
+    parentTaskId: null,
+    pendingRequests: 0,
+    inputQueuePaused: false,
+    doneAt: null,
+    createdAt: "2026-11-15T15:00:00Z",
+    updatedAt: "2026-11-16T16:00:00Z",
+  });
+  const item = (text: string, createdAt: string) => ({
+    itemId: text,
+    type: "message",
+    status: "published",
+    runId: null,
+    title: null,
+    text,
+    textTruncated: false,
+    nextTextOffset: null,
+    createdAt,
+  });
+  const c = parseCases(
+    JSON.stringify({
+      id: "task-history-fixture",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "Passes find their own changed messages" },
+      turns: ["Read new work"],
+      expect: {},
+      tasks: [
+        {
+          task: task(workerId, "Light pass"),
+          self: true,
+          items: [item("Handoff: Gmail through msg-X", "2026-11-16T15:30:00Z")],
+        },
+        {
+          task: task(taskId, "Voice"),
+          items: [
+            item("Old", "2026-11-16T14:00:00Z"),
+            item("Boundary", "2026-11-16T15:30:00Z"),
+            { ...item("New", "2026-11-16T15:45:00Z"), teamSource },
+            item("Newest", "2026-11-16T15:50:00Z"),
+          ],
+        },
+      ],
+    }),
+  )[0]!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-task-history", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).not.toBe(true);
+      return result.structuredContent;
+    };
+    expect(
+      await call("opensteer_task_list", { changedSince: "2026-11-16T15:30:00Z" }),
+    ).toMatchObject({
+      tasks: [{ id: taskId, newMessages: 2, firstNewAt: "2026-11-16T15:45:00Z" }],
+      hasMore: false,
+    });
+    expect(
+      await call("opensteer_task_list", { changedSince: "2026-11-16T15:50:00Z" }),
+    ).toMatchObject({ tasks: [] });
+    expect(await call("opensteer_task_read", {})).toMatchObject({
+      task: { id: workerId },
+      items: [{ text: "Handoff: Gmail through msg-X" }],
+    });
+    expect(await call("opensteer_task_read", { taskId, limit: 2 })).toMatchObject({
+      items: [{ text: "Newest" }, { text: "New", teamSource }],
+      hasMore: true,
+      nextCursor: "2",
+    });
+    expect(await call("opensteer_task_read", { taskId, limit: 2, cursor: "2" })).toMatchObject({
+      items: [{ text: "Boundary" }, { text: "Old" }],
+      hasMore: false,
+    });
+  } finally {
+    await client.close();
+    await host.close();
   }
 });

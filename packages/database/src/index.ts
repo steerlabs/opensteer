@@ -41,6 +41,7 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
+export * from "./message-team-sources.js";
 
 export * from "./agent-connection-store.js";
 

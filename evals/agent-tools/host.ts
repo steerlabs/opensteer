@@ -50,7 +50,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     runId: createId("run"),
     runnerBootId: "eval",
     runnerId: createId("runner"),
-    threadId: createId("thread"),
+    threadId: testCase.tasks.find((entry) => entry.self)?.task.id ?? createId("thread"),
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000),
     iss: "opensteer-host" as const,
@@ -209,7 +209,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
   const automationWrites = new Map<string, unknown>();
-  const automationSources = new Map<string, unknown>();
   const endpoints = new Map<
     string,
     {
@@ -308,7 +307,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           ? mocks[name]
           : tabFixtureTools.has(name)
             ? undefined
-            : defaultResult(name);
+            : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
         if (
           result !== null &&
           typeof result === "object" &&
@@ -376,20 +375,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             automation = { ...automation, nextFireAt: new Date(args.source.at).toISOString() };
           result = { ...result, automation };
           automationWrites.set(automationId, automation);
-          if (
-            name === "opensteer_automation_update" &&
-            isRecord(args.source) &&
-            args.source.kind === "schedule" &&
-            typeof args.source.cron === "string"
-          )
-            automationSources.set(automationId, {
-              kind: "schedule",
-              schedule: {
-                kind: "cron",
-                expression: args.source.cron,
-                timezone: args.source.timezone,
-              },
-            });
         }
         if (name === "opensteer_automation_read" && isRecord(result)) {
           if (isRecord(result.automation) && typeof result.automation.id === "string") {
@@ -397,14 +382,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             result = {
               ...result,
               automation: automationWrites.get(automationId) ?? result.automation,
-              ...(isRecord(result.revision) && automationSources.has(automationId)
-                ? {
-                    revision: {
-                      ...result.revision,
-                      source: automationSources.get(automationId),
-                    },
-                  }
-                : {}),
             };
           }
         }
@@ -529,12 +506,87 @@ const automationWriteTools = new Set([
   "opensteer_automation_control",
 ]);
 
+function taskFixtureResult(
+  testCase: EvalCase,
+  name: string,
+  args: Record<string, unknown>,
+  selfId: string,
+): unknown {
+  if (!testCase.tasks.length) return undefined;
+  const offset = typeof args.cursor === "string" ? Number(args.cursor) : 0;
+  const page = <T>(items: T[], limit: number) => ({
+    items: items.slice(offset, offset + limit),
+    hasMore: offset + limit < items.length,
+    nextCursor: offset + limit < items.length ? String(offset + limit) : null,
+  });
+  if (name === "opensteer_task_list") {
+    const since = typeof args.changedSince === "string" ? Date.parse(args.changedSince) : null;
+    const tasks = testCase.tasks
+      .flatMap(({ task, items }) => {
+        if (args.parentTaskId && task.parentTaskId !== args.parentTaskId) return [];
+        if (
+          typeof args.query === "string" &&
+          !task.title?.toLowerCase().includes(args.query.toLowerCase())
+        )
+          return [];
+        const messages = items
+          .filter(
+            (item) =>
+              item.type === "message" &&
+              item.status === "published" &&
+              (since === null || Date.parse(item.createdAt) > since),
+          )
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+        if (since !== null && !messages.length) return [];
+        return [
+          {
+            id: task.id,
+            link: task.link,
+            title: task.title,
+            status: task.status,
+            doneAt: task.doneAt,
+            parentTaskId: task.parentTaskId,
+            pendingRequests: task.pendingRequests,
+            delegationId: null,
+            taskStatus: null,
+            updatedAt: task.updatedAt,
+            ...(since !== null
+              ? {
+                  newMessages: messages.length,
+                  firstNewAt: messages.at(-1)!.createdAt,
+                }
+              : {}),
+          },
+        ];
+      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const result = page(tasks, typeof args.limit === "number" ? args.limit : 25);
+    return { tasks: result.items, hasMore: result.hasMore, nextCursor: result.nextCursor };
+  }
+  if (name === "opensteer_task_read") {
+    const history = testCase.tasks.find(({ task }) => task.id === (args.taskId ?? selfId));
+    if (!history) return undefined;
+    const items = history.items
+      .filter(
+        (item) =>
+          (args.view === "activity" || (item.type === "message" && item.status === "published")) &&
+          (!args.itemId || args.itemId === item.itemId) &&
+          (typeof args.query !== "string" ||
+            item.text?.toLowerCase().includes(args.query.toLowerCase())),
+      )
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    const result = page(items, typeof args.limit === "number" ? args.limit : 20);
+    return { task: history.task, recentRuns: [], recentPlaces: [], ...result };
+  }
+  return undefined;
+}
+
 function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
       return { operations: [], results: [], catalog: [], total: 0, nextCursor: null };
     case "opensteer_task_list":
-      return { tasks: [], nextCursor: null };
+      return { tasks: [], hasMore: false, nextCursor: null };
     case "opensteer_request_list":
       return { requests: [] };
     case "browser_profile_list":

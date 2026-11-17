@@ -477,6 +477,7 @@ export class ProductToolHandlers {
       maxItems: input.limit,
       ownerId: claims.requestedBy,
       ...(input.query ? { query: input.query } : {}),
+      ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
     });
@@ -494,6 +495,9 @@ export class ProductToolHandlers {
         doneAt: summary.doneAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
+        ...(summary.newMessages === undefined
+          ? {}
+          : { newMessages: summary.newMessages, firstNewAt: summary.firstNewAt }),
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,
@@ -570,8 +574,14 @@ export class ProductToolHandlers {
     const messages = [...(await this.#readableMessages(caller, page.messages))].sort((a, b) =>
       compareSequence(b.sequence, a.sequence),
     );
+    const teamSources = await this.#store.messageTeamSources(
+      thread.id,
+      messages.map((m) => m.id),
+    );
     const items = boundedThreadItems(
-      messages.map((m) => messageItem(m, input.maxCharsPerItem, input.textOffset)),
+      messages.map((m) =>
+        messageItem(m, input.maxCharsPerItem, input.textOffset, teamSources.get(m.id)),
+      ),
     );
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
     const hasMore = items.length < messages.length || page.window.hasMore;
@@ -729,6 +739,10 @@ export class ProductToolHandlers {
     const readablePlaces = new Set(places.map((place) => place.sequence));
     const requestById = new Map(requests.flatMap((r) => (r ? [[r.id, r] as const] : [])));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
+    const teamSources = await this.#store.messageTeamSources(
+      threadId,
+      messages.map((message) => message.id),
+    );
     const mapped = page.items.flatMap((item) => {
       if (item.type === "message")
         return [
@@ -738,6 +752,7 @@ export class ProductToolHandlers {
               readableMessages.get(item.message.id)!,
               input.maxCharsPerItem,
               input.textOffset,
+              teamSources.get(item.message.id),
             ),
           },
         ];
