@@ -74,6 +74,7 @@ const electron = vi.hoisted(() => ({
 vi.mock("electron", () => {
   class MockWebContents {
     readonly id = electron.views.length + 1;
+    backgroundThrottling = true;
     readonly navigationHistory = {
       restore: vi.fn(async () => electron.restore?.()),
       getAllEntries: vi.fn(() => [{ url: "https://restore.test/", title: "Saved" }]),
