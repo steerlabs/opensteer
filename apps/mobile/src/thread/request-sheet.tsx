@@ -97,7 +97,7 @@ import {
   withRequestDraftValues,
   type RequestFormDraft,
 } from "./request-form-model.js";
-import { updateRequestSession, type RequestSession } from "./request-session.js";
+import { updateRequestSession, type RequestLine, type RequestSession } from "./request-session.js";
 import { signInAvailability, signInStatus } from "./request-sign-in-status.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
@@ -453,7 +453,7 @@ export function RequestSheetContent(props: {
     formAnswers !== null &&
     session.held !== null &&
     sameRequestResponse(session.held.response, { answers: formAnswers, kind: "form" });
-  const canSend = props.canRespond && session.pendingId === null;
+  const canSend = session.pendingId === null;
   const sendForm = (): void => {
     if (formAnswers === null) return;
     Keyboard.dismiss();
@@ -601,7 +601,7 @@ export function RequestSheetContent(props: {
         >
           <AnswerPill
             busy={session.pendingId === answers.decline.id}
-            disabled={!props.canRespond || session.pendingId !== null}
+            disabled={session.pendingId !== null}
             label={requestOptionLabel(request, answers.decline)}
             onPress={() =>
               void responder.submit(
@@ -613,7 +613,7 @@ export function RequestSheetContent(props: {
           />
           <AnswerPill
             busy={session.pendingId === answers.allow.id}
-            disabled={!props.canRespond || session.pendingId !== null}
+            disabled={session.pendingId !== null}
             label={`${requestOptionLabel(request, answers.allow)}${answers.highRisk ? "…" : ""}`}
             onPress={() =>
               answers.highRisk
@@ -673,7 +673,7 @@ function RequestDetail(props: { readonly mono: boolean; readonly text: string })
 
 /** Why the action beside it cannot run, and what the last attempt came to. */
 function ResponseStatus(props: {
-  readonly failure: string | null;
+  readonly failure: RequestLine | null;
   readonly reason: string | null;
 }): ReactNode {
   if (props.failure === null && props.reason === null) return null;
@@ -685,8 +685,8 @@ function ResponseStatus(props: {
         </AppText>
       )}
       {props.failure === null ? null : (
-        <AppText role="caption" tone="danger">
-          {props.failure}
+        <AppText role="caption" tone={props.failure.tone}>
+          {props.failure.text}
         </AppText>
       )}
     </View>
@@ -752,7 +752,7 @@ function RequestBody(props: {
             {options.map((option, index) => (
               <ChoiceOptionRow
                 busy={session.pendingId === option.id}
-                disabled={!canRespond || session.pendingId !== null}
+                disabled={session.pendingId !== null}
                 key={option.id}
                 onPress={() => choose(option)}
                 option={option}
@@ -789,7 +789,7 @@ function RequestBody(props: {
           <AnswerRow>
             <AnswerPill
               busy={session.pendingId === "full-disk-access-decline"}
-              disabled={!canRespond || session.pendingId !== null}
+              disabled={session.pendingId !== null}
               label={fullAccessDeclineLabel}
               onPress={() => decline("full-disk-access-decline")}
               tone="secondary"
@@ -888,7 +888,7 @@ function RequestBody(props: {
  */
 function BrowserAccessBody(props: {
   readonly canRespond: boolean;
-  readonly failure: string | null;
+  readonly failure: RequestLine | null;
   readonly hostClient: HostClient;
   readonly onRespond: (
     selection: BrowserAccessSelection | null,
@@ -920,7 +920,7 @@ function BrowserAccessBody(props: {
     ? (homes.options.find(({ id }) => id === session.browserHome)?.id ?? homes.initial)
     : null;
   const busy = props.pendingId !== null;
-  const disabled = !props.canRespond || busy;
+  const disabled = busy;
   const choose = (next: BrowserAccessSelection): void => {
     void Haptics.selectionAsync();
     updateRequestSession(session, { browserSelection: next });
@@ -1125,7 +1125,7 @@ function BrowserSignInBody(props: {
       <AnswerRow>
         <AnswerPill
           busy={session.pendingId === "browser-sign-in-decline"}
-          disabled={!props.canRespond || busy}
+          disabled={busy}
           label={declineLabel}
           onPress={() =>
             void responder.respondSignIn({ decision: "decline" }, "browser-sign-in-decline")
@@ -1135,7 +1135,7 @@ function BrowserSignInBody(props: {
         {session.allowed === null ? (
           <AnswerPill
             busy={session.pendingId === "browser-sign-in-allow"}
-            disabled={!props.canRespond || busy || selected === undefined}
+            disabled={busy || selected === undefined}
             label="Allow"
             onPress={() => {
               if (selected !== undefined) allow(selected.sourceId);
@@ -1180,11 +1180,16 @@ function PasswordSignInBody(props: {
       .then((result) => {
         if (!live) return;
         if (result.ok) updateRequestSession(session, { passwordCard: result.data });
-        else updateRequestSession(session, { failure: result.error.message });
+        else
+          updateRequestSession(session, {
+            failure: { text: result.error.message, tone: "danger" },
+          });
       })
       .catch(() => {
         if (live)
-          updateRequestSession(session, { failure: "Opensteer Passwords could not be reached." });
+          updateRequestSession(session, {
+            failure: { text: "Opensteer Passwords could not be reached.", tone: "danger" },
+          });
       });
     return () => {
       live = false;
@@ -1416,7 +1421,7 @@ function ComputerAppAccessBody(props: {
   readonly access: "read" | "read-write";
   readonly canRespond: boolean;
   readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
-  readonly failure: string | null;
+  readonly failure: RequestLine | null;
   readonly machines: readonly MachineSummary[];
   readonly onAllow: () => void;
   readonly onDecline: () => void;
@@ -1464,7 +1469,7 @@ function ComputerAppAccessBody(props: {
 /** Needs you: one switch on one device, turned on here or left off; the Host's words say which. */
 function DeviceAccessBody(props: {
   readonly canRespond: boolean;
-  readonly failure: string | null;
+  readonly failure: RequestLine | null;
   readonly onDecline: () => void;
   readonly onTurnOn: () => void;
   readonly pendingId: string | null;

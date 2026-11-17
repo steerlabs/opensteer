@@ -38,6 +38,8 @@ import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { useReducedMotion } from "react-native-reanimated";
 import { Symbol } from "../ui/symbol.js";
+import { useShowsLive } from "../ui/connection-live.js";
+import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 
 /**
  * One of the reader's tasks, as the sidebar, search and Done
@@ -189,11 +191,13 @@ export function TaskRowState(
   const { row, shelf, time } = props;
   const drafted = props.drafted === true;
   const reducedMotion = useReducedMotion();
+  // Once the pill says the connection is interrupted, "working" holds still.
+  const live = useShowsLive(useSelectedHostClient()?.connection ?? null);
   const tone =
     row.tone === "needs-you" ? (
       <NeedsYouTag />
     ) : row.tone === "working" ? (
-      reducedMotion ? (
+      reducedMotion || !live ? (
         <Symbol name="circle.dotted" size={16} tint={color.ember} />
       ) : (
         <ActivityIndicator color={color.ember} size="small" style={styles.spinner} />

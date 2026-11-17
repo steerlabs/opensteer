@@ -1,4 +1,5 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { presentActionFailure, presentClientIssue } from "@opensteer/client/feedback";
+import { notSent, notSentIssue } from "../ui/connection-live.js";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
@@ -88,11 +89,15 @@ export function useRequestResponse(input: {
     if (mounted.current) onAdmitted?.();
   };
 
-  const fail = (detail: string): void => {
-    updateRequestSession(session, { failure: detail });
+  const fail = (text: string, tone: "muted" | "danger" = "danger"): void => {
+    updateRequestSession(session, { failure: { text, tone } });
     if (!mounted.current) return;
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    void AccessibilityInfo.announceForAccessibility(detail);
+    void Haptics.notificationAsync(
+      tone === "danger"
+        ? Haptics.NotificationFeedbackType.Error
+        : Haptics.NotificationFeedbackType.Warning,
+    );
+    void AccessibilityInfo.announceForAccessibility(text);
   };
 
   const attempt: RequestResponder["attempt"] = async (
@@ -101,7 +106,12 @@ export function useRequestResponse(input: {
     act,
     describe = requestFailureDetail,
   ) => {
-    if (session.responding || !answerable || !canRespond || !canStartResponse()) return;
+    if (session.responding || !answerable || !canStartResponse()) return;
+    // Known not to go out: said at once, beside the answers, and nothing is sent.
+    if (!canRespond) {
+      fail(presentClientIssue(notSentIssue(hostClient, "sent") ?? notSent("sent")).title, "muted");
+      return;
+    }
     if (options.shareWithAi && !(await authorizeAiSharing(aiSharing, hostClient))) return;
     if (!mounted.current || session.responding || !canStartResponse()) return;
     const claim = gate.acquire("request");
@@ -246,7 +256,7 @@ export function useRequestResponse(input: {
         });
         if (result.type !== "browser.password-sign-in.respond") return;
         updateRequestSession(session, {
-          ...(result.message ? { failure: result.message } : {}),
+          ...(result.message ? { failure: { text: result.message, tone: "danger" as const } } : {}),
           ...(result.status === "pending" ? { heldPasswordKey: null } : {}),
           passwordCard: result.card ?? session.passwordCard,
         });

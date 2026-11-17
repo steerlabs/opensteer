@@ -173,7 +173,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
   it("shows a failed read with Try again rather than loading forever", async () => {
     const fake = fakeBridge(new Error("The Opensteer app couldn’t reach Passwords."));
     const page = await mount({ bridge: fake.bridge });
-    expect(text(page)).toContain("The Opensteer app couldn’t reach Passwords.");
+    expect(text(page)).toContain("Couldn't load Passwords.");
     expect(buttons(page)).toEqual(["Try again"]);
   });
 
@@ -203,9 +203,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     );
     const page = await mount({ bridge: fake.bridge });
     await click(button(page, "Set up Passwords"));
-    expect(page.querySelector("[role=alert]")?.textContent).toBe(
-      "Opensteer Passwords didn’t open.",
-    );
+    expect(page.querySelector("[role=alert]")?.textContent).toBe("Couldn't confirm this change.");
     expect(button(page, "Set up Passwords").disabled).toBe(false);
   });
 });

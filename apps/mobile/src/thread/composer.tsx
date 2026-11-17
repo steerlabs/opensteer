@@ -1,7 +1,8 @@
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { hostMessageOutbox } from "@opensteer/client/host";
-import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { clientIssue, presentActionFailure, presentClientIssue } from "@opensteer/client/feedback";
+import { ActionLine, issueLine, type ActionLineValue } from "../ui/action-line.js";
+import { notSent, notSentIssue, useConnectionReady } from "../ui/connection-live.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
 import { ComposerEditor } from "../ui/composer-editor.js";
@@ -95,16 +96,12 @@ import { UsageNotice } from "./usage-notice.js";
  * The one surface at the bottom of a Thread: the composer, and whatever
  * Opensteer is currently waiting on, docked into it.
  *
- * Two pieces of text live here and they are deliberately different things. The
- * draft is what is being typed and is the person's to change. The pending
- * command is the message that was handed to the Host — its words and its
- * idempotency key, fixed together — and nothing changes it, because a retry
- * under a key the Host has already seen must be the same message or it is a
- * second one. It is written to the device and the write is awaited before the
- * command is dispatched; a write that fails stops the send and says so, because
- * a message sent under a key no relaunch can find is a message that can be sent
- * twice. Typing while one is in flight edits the draft and leaves the command
- * alone.
+ * The draft is what is being typed and is the person's to change. Send hands
+ * the message to the app's outbox, which writes it to this phone before
+ * anything goes out and delivers it when the connection is ready, so the bar
+ * stays usable offline. The transcript shows each message on its way, where
+ * it will stand; nothing about it waits in the bar. Only a failure to write it
+ * down here is said beside the bar, and the draft stays.
  */
 export function Composer(props: {
   readonly variant?: "conversation" | "work";
@@ -112,7 +109,10 @@ export function Composer(props: {
   readonly accessMode: ThreadAccessMode;
   /** The modes this Thread's engine can enforce, or null while it has not said. */
   readonly accessModes: readonly ThreadAccessMode[] | null;
-  /** False while the Host is unreachable: a decision is never queued. */
+  /**
+   * False while the Host is unreachable. A decision is never queued: its
+   * controls stay usable and a tap says it didn't go out.
+   */
   readonly canRespond: boolean;
   readonly deploymentId: string;
   /** What stops this Thread accepting anything, in words, or null. */
@@ -165,11 +165,6 @@ export function Composer(props: {
   readonly user: AuthenticatedUser;
   /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
-  /**
-   * The pane draws the message this Thread owes in its transcript, with its
-   * own way to send it again, so the bar does not repeat it.
-   */
-  /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
@@ -211,7 +206,9 @@ export function Composer(props: {
   const quote = draft?.quote ?? null;
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // What Send or Stop came to, beside the bar: a message that couldn't be
+  // written down here, or a Stop that didn't go out.
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const input = useRef<ComposerEditorHandle>(null);
@@ -260,6 +257,9 @@ export function Composer(props: {
     files: { deploymentId, threadId, userId },
   });
   const attachmentsReady = staged.items.every((item) => draftAttachmentPart(item) !== null);
+  // Files still on their way hold Send; offline, the bar says why once.
+  const connectionReady = useConnectionReady(hostClient.connection);
+  const filesWait = !attachmentsReady && !connectionReady && !(props.readOnly ?? false);
 
   // The page this message includes. One Ask put on the draft is the person's
   // own choice and stays with the draft until it is sent or removed. Otherwise
@@ -311,7 +311,6 @@ export function Composer(props: {
     voice: voiceReady,
   });
   const canSend = view.canSend || (dictating && !disabled && !sending && attachmentsReady);
-  const requestBlocked = disabled || !props.canRespond || sending;
   // A typed `@` offers references to put in the words, until the caret leaves it.
   const referenceQuery =
     focused && !dictating && !disabled && !textHidden && !answering
@@ -586,7 +585,7 @@ export function Composer(props: {
       staged.release(carried.map(attachmentKey));
     } catch (error) {
       const issue = clientIssue(error, { operation: "action", label: "save this message" });
-      setFailure(issue ? presentClientIssue(issue).title : null);
+      setFailure(issue === null ? null : issueLine(issue, `send:${Date.now()}`));
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -620,22 +619,34 @@ export function Composer(props: {
   };
 
   const stop = async (): Promise<void> => {
-    if (stoppingRef.current || props.runStopping || !props.canRespond) return;
+    if (stoppingRef.current || props.runStopping) return;
+    const unsent = props.canRespond
+      ? null
+      : (notSentIssue(props.hostClient, "stopped") ?? notSent("stopped"));
+    if (unsent !== null) {
+      setFailure(issueLine(unsent, `stop:${Date.now()}`));
+      return;
+    }
+    setFailure(null);
     stoppingRef.current = true;
     setStopping(true);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     try {
       await props.hostClient.stopRun(props.threadId);
     } catch (error) {
-      setFailure(presentActionFailure(error, "Opensteer could not be asked to stop."));
+      const issue = clientIssue(error, { operation: "action", label: "stop this run" });
+      setFailure(
+        issue === null ? null : issueLine({ ...issue, done: "stopped" }, `stop:${Date.now()}`),
+      );
     } finally {
       stoppingRef.current = false;
       setStopping(false);
     }
   };
 
+  // Not the connection: offline, an answer is tapped and said not to have gone out.
   const canStartRequestResponse = (): boolean =>
-    props.canRespond && !readOnly && props.disabledReason === null && !inFlight.current;
+    !readOnly && props.disabledReason === null && !inFlight.current;
 
   const requestDisabledReason = readOnly
     ? "This thread is archived."
@@ -700,7 +711,7 @@ export function Composer(props: {
               void hostClient
                 .setTaskDone(threadId, false)
                 .catch((error: unknown) =>
-                  Alert.alert("Task not reopened", presentActionFailure(error, "Try again.")),
+                  Alert.alert("Task not reopened", presentActionFailure(error)),
                 )
             }
           >
@@ -716,7 +727,7 @@ export function Composer(props: {
       {surface === null ? null : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard
-            canRespond={props.canRespond && !requestBlocked}
+            canRespond={props.canRespond}
             canStartResponse={canStartRequestResponse}
             composer={answering ? "answer" : "message"}
             deploymentId={deploymentId}
@@ -736,7 +747,7 @@ export function Composer(props: {
       ) : (
         <Animated.View entering={appear}>
           <RequestCard
-            canRespond={props.canRespond && !requestBlocked}
+            canRespond={props.canRespond}
             deploymentId={deploymentId}
             highlighted={surface.request.id === props.highlightRequestId}
             onPresent={hold}
@@ -751,12 +762,17 @@ export function Composer(props: {
         </Animated.View>
       )}
       {failure === null ? null : (
-        <Animated.View entering={enter} exiting={exit} style={styles.failure}>
-          <AppText role="secondary" tone="danger">
-            {failure}
-          </AppText>
-        </Animated.View>
+        <View style={styles.failure}>
+          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
+        </View>
       )}
+      {filesWait ? (
+        <View style={styles.failure}>
+          <AppText role="caption" tone="muted">
+            {presentClientIssue({ code: "preparation-required" }).detail}
+          </AppText>
+        </View>
+      ) : null}
       {draftFailure === null ? null : (
         <Animated.View entering={enter} exiting={exit} style={styles.failure}>
           <AppText role="secondary" tone="danger">
@@ -842,7 +858,7 @@ export function Composer(props: {
       <VoiceDock />
       {answering ? (
         <AnswerBar
-          canRespond={props.canRespond && !requestBlocked}
+          canRespond={props.canRespond}
           canStartResponse={canStartRequestResponse}
           gate={props.mutationGate}
           hostClient={hostClient}
@@ -962,7 +978,7 @@ export function Composer(props: {
                         ) : view.action === "stop" ? (
                           <ComposerAction
                             busy={stopping || props.runStopping}
-                            disabled={stopping || props.runStopping || !props.canRespond}
+                            disabled={stopping || props.runStopping}
                             kind="stop"
                             label={props.stopLabel ?? "Stop this run"}
                             onPress={() => void stop()}
@@ -1103,15 +1119,6 @@ const styles = StyleSheet.create({
   leading: { flexDirection: "row" },
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
-  pending: {
-    ...material.plate,
-    borderRadius: radius.sm,
-    gap: space[4],
-    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
-    paddingVertical: space[8] - (1 - StyleSheet.hairlineWidth),
-  },
-  pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
-  pendingRetry: { justifyContent: "center", minHeight: touchTarget },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
     ...material.control,

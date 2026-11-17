@@ -11,12 +11,12 @@ import {
 import { afterEach, beforeAll, vi } from "vitest";
 import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
 import {
-  createMessageOutboxStorage,
-  initializeMessageOutbox,
-  placeList,
+  disposeMessageOutbox,
   type HostClient,
+  placeList,
   type PlaceItem,
 } from "@opensteer/client/host";
+import { initializeBrowserMessageOutbox } from "../../host/message-outbox.js";
 
 import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
@@ -56,6 +56,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 let client: MockHostClient;
 let sessionClient: HostClient | null = null;
+const messageRecords = new Map<string, string>();
 let teamHost: MockTeamHost | null = null;
 let teamSession: TeamSessionClient | null = null;
 /** Teams past the first, for a mount with more than one. */
@@ -108,6 +109,7 @@ function cleanupWorkspace() {
   }
   moreTeams = [];
   client?.dispose();
+  messageRecords.clear();
   history = [];
   goTo = null;
   viewport.queries.clear();
@@ -178,23 +180,16 @@ async function mount(
       ...(options.now ? { now: options.now } : {}),
     });
     await client.load();
-    const records = new Map<string, string>();
-    initializeMessageOutbox(client, {
-      storage: createMessageOutboxStorage({
-        read: async (key) => records.get(key) ?? null,
-        write: async (key, value) => {
-          records.set(key, value);
-        },
-        remove: async (key) => {
-          records.delete(key);
-        },
-      }),
-      drafts: { restore: async () => "restored" },
-    });
   }
   const entry = typeof path === "function" ? path(client) : path;
+  if (options.sameHost) disposeMessageOutbox(sessionClient ?? client);
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
+  initializeBrowserMessageOutbox(sessionClient ?? client, {
+    read: async (key) => messageRecords.get(key) ?? null,
+    write: async (key, value) => void messageRecords.set(key, value),
+    remove: async (key) => void messageRecords.delete(key),
+  });
   let teams: readonly TeamAttachment[] = [];
   if (options.team && options.sameHost && teamHost && teamSession) {
     teams = [

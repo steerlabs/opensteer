@@ -88,7 +88,9 @@ describe("computer app data refresh", () => {
       .mockRejectedValueOnce(new Error("Computer apps could not be loaded."))
       .mockResolvedValueOnce(platform);
     const { container } = await mount(client);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load apps.");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't load computer apps.",
+    );
     await act(async () => container.querySelector("button")?.click());
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("");
     expect(container.querySelector("output")?.textContent).not.toBe("Loading");

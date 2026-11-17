@@ -18,9 +18,7 @@ import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { ActionLine } from "../action-line.js";
-import { useAction } from "../use-action.js";
-import type { PendingSubmission } from "../../host/message-outbox.js";
+import { act, ActionNotDone } from "../use-action.js";
 import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
@@ -137,13 +135,7 @@ function NewTaskComposer({
     inputRef.current?.focus();
   }, [draftKey, suggestion]);
 
-  // Not started offline: the draft stays and this line says why, above it.
-  const start = useAction(hostClient, {
-    label: "start",
-    done: "started",
-    thing: "this task",
-    execute: (message: PendingSubmission) => createThreadAndSend(message, selection!, accessMode),
-  });
+  // Not started offline or refused: the composer keeps the draft and says why.
   const startThread = async (
     body: string,
     {
@@ -151,25 +143,24 @@ function NewTaskComposer({
       places,
       idempotencyKey,
     }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey">,
-  ): Promise<false | undefined> => {
-    if (!selection) return false;
-    const outcome = await start.run({
+  ) => {
+    // Send is off without a model; this keeps the draft if that ever races.
+    if (!selection) throw new ActionNotDone({ kind: "not-sent", issue: null });
+    const message = {
       attachments,
       body,
       ...(places.length > 0 ? { places } : {}),
       idempotencyKey,
-    });
-    if (outcome.kind !== "confirmed") return false;
-    nav.openConversation(nav.threadPath(outcome.value.id));
-    return undefined;
+    };
+    const thread = await act(
+      hostClient,
+      { label: "start", thing: "this task", done: "started" },
+      () => createThreadAndSend(message, selection, accessMode),
+    );
+    nav.openConversation(nav.threadPath(thread.id));
   };
   return (
     <>
-      {start.line ? (
-        <div aria-live="polite" className="home-start-line">
-          <ActionLine line={start.line} wrap />
-        </div>
-      ) : null}
       <Composer
         attachments={attachmentTarget}
         autoFocus

@@ -55,10 +55,10 @@ describe("the review's findings", () => {
       });
       return `/tasks/${thread.id}`;
     });
-    const refresh = vi.spyOn(client, "refresh").mockResolvedValue();
-    expect(element(".thread__connection-label").textContent).toBe("Unavailable");
+    const retry = vi.spyOn(client.connection, "retry");
+    expect(element(".thread__connection-label").textContent).toBe("Can't reach your computer");
     await click(element(".thread__connection button"));
-    expect(refresh).toHaveBeenCalledExactlyOnceWith({ retryConnection: true });
+    expect(retry).toHaveBeenCalledExactlyOnceWith();
   });
   it("1 · a send's late answer never resets, refollows or overwrites the next draft's places", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);

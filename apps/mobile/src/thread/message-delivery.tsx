@@ -4,7 +4,7 @@ import {
   type MessageDeliveryPhase,
 } from "@opensteer/client/host";
 import { useQuietMoment } from "@opensteer/client/react";
-import { memo, useEffect, useMemo, type ReactNode } from "react";
+import { createContext, memo, useEffect, useMemo, type ReactNode } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -31,6 +31,36 @@ const defaultCopy = {
   sending: "Sending…",
   waiting: "Waiting to send",
 };
+
+/**
+ * What a transcript lets a person do to the messages still on this phone,
+ * by their send key, and which of them carry a status line: a run of waiting
+ * messages says it once, under the last.
+ */
+export interface MessageDeliveryControls {
+  readonly act: (key: string, action: MessageDeliveryAction) => void;
+  readonly statusShown: (key: string) => boolean;
+}
+
+export const MessageDeliveryContext = createContext<MessageDeliveryControls | null>(null);
+
+/** The long-press menu's entries for a message on its way, by its phase. */
+export function deliveryMenu(
+  phase: MessageDeliveryPhase,
+  attempted: boolean,
+): readonly {
+  readonly group: number;
+  readonly id: MessageDeliveryAction;
+  readonly image: string;
+  readonly title: string;
+}[] {
+  return messageDeliveryActions(phase, attempted).map((id) => ({
+    group: 0,
+    id,
+    image: id === "edit" ? "pencil" : id === "delete" ? "trash" : "xmark",
+    title: actionLabel(id, defaultCopy),
+  }));
+}
 
 /** How long a message being sent on a good connection says nothing at all. */
 const quietMs = 1_000;

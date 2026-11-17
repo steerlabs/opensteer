@@ -2,6 +2,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, type ReactNode } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
+import { Gated } from "../ui/connection-gate.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
@@ -35,19 +36,27 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
     },
     [deploymentId, navigation],
   );
-  if (hostClient === null)
-    return <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />;
   return (
-    <Screen edgeToEdge>
-      <NewTaskPane
-        autoFocus={false}
-        deploymentId={deploymentId}
-        hostClient={hostClient}
-        key={deploymentId}
-        onStarted={onStarted}
-        underHeader
-        voice
-      />
-    </Screen>
+    <Gated
+      gate={
+        hostClient === null ? (
+          <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />
+        ) : null
+      }
+    >
+      {hostClient === null ? null : (
+        <Screen edgeToEdge>
+          <NewTaskPane
+            autoFocus={false}
+            deploymentId={deploymentId}
+            hostClient={hostClient}
+            key={deploymentId}
+            onStarted={onStarted}
+            underHeader
+            voice
+          />
+        </Screen>
+      )}
+    </Gated>
   );
 }

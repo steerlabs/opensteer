@@ -522,11 +522,6 @@ html.electron-shell .connection-pill {
   }
 }
 
-/* "Not started. You're offline." above Home's composer, the draft kept below. */
-.home-start-line {
-  padding: 0 var(--space-4) var(--space-6);
-}
-
 /* Edit and Don't send in a waiting message's hover marks. */
 .mark.mark--words {
   width: auto;

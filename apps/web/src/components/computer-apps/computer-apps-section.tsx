@@ -54,7 +54,7 @@ export function useComputerAppData(hostClient: HostClient, revision: number) {
     if (!source.active) return;
     const current = ++source.request;
     const read = await runRead(hostClient, {
-      resource: "apps",
+      resource: "computer apps",
       read: () =>
         Promise.all([
           hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),

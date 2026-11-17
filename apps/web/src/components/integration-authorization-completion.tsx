@@ -55,7 +55,7 @@ export function IntegrationAuthorizationCompletion({
     const controller = new AbortController();
     setState({ kind: "checking" });
     void runRead(null, {
-      resource: "this authorization",
+      resource: "authorization status",
       read: () => waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal }),
     }).then((result) => {
       if (controller.signal.aborted) return;

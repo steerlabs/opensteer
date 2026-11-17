@@ -804,14 +804,14 @@ describe("RequestSheetContent external requests", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("keeps decline visible but disabled while the Host is offline", async () => {
+  it("keeps decline usable while the Host is offline, and says a tap didn't go out", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
     await render(surface(fullDiskAccessRequest()), dispatch, { canRespond: false });
 
-    const decline = button("Not now");
-    expect(decline.disabled).toBe(true);
-    decline.click();
+    expect(button("Not now").disabled).toBe(false);
+    await click("Not now");
     expect(dispatch).not.toHaveBeenCalled();
+    expect(text()).toContain("Not sent.");
   });
 
   it("retries a failed decline with the same idempotency key", async () => {

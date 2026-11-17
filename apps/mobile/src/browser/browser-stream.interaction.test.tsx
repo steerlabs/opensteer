@@ -55,6 +55,13 @@ const native = vi.hoisted(() => ({
   renders: 0,
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => native.geometry }));
+vi.mock("react-native-reanimated", () => ({
+  default: { View: (props: { children?: ReactNode }) => <div>{props.children}</div> },
+}));
+vi.mock("../ui/motion.js", () => ({ dim: undefined, exit: undefined }));
+vi.mock("../ui/last-picture-chip.js", () => ({
+  LastPictureChip: () => <span>Last picture</span>,
+}));
 vi.mock("../computers/phone-display-native.js", async () => {
   const React = await import("react");
   const Picture = React.forwardRef(
@@ -708,7 +715,11 @@ describe.each(["image", "picture"] as const)(
           {} as PanResponderGestureState,
         ),
       ).toBe(false);
+      // The last picture stays, marked as such, with no words about the connection.
+      expect(container.textContent).toContain("Last picture");
+      expect(container.textContent).not.toContain("Connecting");
       render("synchronized");
+      expect(container.textContent).not.toContain("Last picture");
       expect(send).not.toHaveBeenCalled();
       render("synchronized", false);
       expect(container.querySelector("img")).toBeNull();

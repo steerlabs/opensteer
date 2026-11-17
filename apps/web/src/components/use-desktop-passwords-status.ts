@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DesktopPasswordsStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { outcomeWords, runAction } from "./use-action.js";
+import { runRead } from "./use-action.js";
 
 /** The Mac's own Passwords status, followed while mounted. */
 export function useDesktopPasswordsStatus(
@@ -13,17 +13,17 @@ export function useDesktopPasswordsStatus(
   const live = useRef(true);
   const read = useCallback(async () => {
     pushed.current = false;
-    const outcome = await runAction(null, {
-      label: "read Passwords",
-      execute: () => bridge.passwordsStatus(),
+    const result = await runRead(null, {
+      resource: "Passwords",
+      read: () => bridge.passwordsStatus(),
     });
     if (!live.current) return;
-    if (outcome.kind !== "confirmed") {
-      setReadError(outcomeWords(outcome));
+    if (!result.ok) {
+      setReadError(result.words);
       return;
     }
     if (pushed.current) return;
-    setStatus(outcome.value);
+    setStatus(result.value);
     setReadError(null);
   }, [bridge]);
 

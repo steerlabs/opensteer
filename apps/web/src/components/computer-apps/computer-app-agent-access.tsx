@@ -72,7 +72,7 @@ export function ComputerAppAgentAccess({
         loading: true,
       }));
       const read = await runRead(hostClient, {
-        resource: "agent access",
+        resource: "app access",
         read: async () => unwrapRpcResult(await hostClient.rpc["integration.grants.list"]({})),
       });
       if (read.ok) {

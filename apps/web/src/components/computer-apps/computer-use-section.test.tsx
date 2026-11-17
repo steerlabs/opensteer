@@ -364,7 +364,7 @@ describe("ComputerUseBlock", () => {
     if (!candidate) throw new Error("missing app");
     await click(button(candidate, "Can see"));
     expect(candidate.getAttribute("aria-busy")).toBe("true");
-    await act(async () => review.reject(new Error("Couldn't confirm this change.")));
+    await act(async () => review.reject(new Error("Can't verify this app right now.")));
     expect(candidate.textContent).toContain("Couldn't confirm this change.");
     expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
@@ -437,7 +437,7 @@ describe("ComputerUseBlock", () => {
       }),
     );
     expect(button(container, "Decline Preview")?.textContent).toBe("Declining…");
-    await act(async () => answer.reject(new Error("Couldn't confirm this change.")));
+    await act(async () => answer.reject(new Error("Studio did not answer.")));
     expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe(
       "Couldn't confirm this change.",
     );
@@ -481,7 +481,7 @@ describe("ComputerUseBlock", () => {
     });
     expect(stop).toHaveBeenCalledTimes(1);
 
-    await act(async () => answer.reject(new Error("Couldn't confirm this change.")));
+    await act(async () => answer.reject(new Error("Studio is offline.")));
     expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe(
       "Couldn't confirm this change.",
     );

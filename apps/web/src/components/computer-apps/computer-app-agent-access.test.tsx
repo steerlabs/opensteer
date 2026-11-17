@@ -167,7 +167,7 @@ describe("ComputerAppAgentAccess", () => {
     host.list.mockRejectedValueOnce(new Error("Grants are unavailable."));
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn't load agent access.",
+      "Couldn't load app access.",
     );
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')).toBeNull();

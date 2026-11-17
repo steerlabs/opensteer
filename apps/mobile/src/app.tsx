@@ -6,7 +6,7 @@ import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js
 import { notificationPreviewNative } from "../modules/notification-preview/index.js";
 import { NotificationPreviews } from "./notifications/notification-preview.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
-import { ConnectionPill } from "./ui/connection-pill.js";
+import { ConnectionPill } from "./ui/connection-shell.js";
 import { VoiceOverlay } from "./voice/controls.js";
 import { VoiceProvider } from "./voice/context.js";
 
@@ -796,9 +796,9 @@ export function App(): ReactNode {
                             theme={navigationTheme}
                           />
                           <TeamReadyNotices />
+                          <ConnectionPill />
                         </MobileTeamsProvider>
                       </AppLinksProvider>
-                      <ConnectionPill />
                       <OpenComputer />
                       {/* Outside the navigator: a Request card on the bar still navigates. */}
                       <NavigationContainerRefContext value={navigationRef}>

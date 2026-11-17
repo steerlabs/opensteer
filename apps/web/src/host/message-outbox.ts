@@ -5,6 +5,7 @@ import {
   initializeMessageOutbox,
   messageDraftParts,
   type HostClient,
+  type MessageRecordStorage,
   type PendingSendCommand,
 } from "@opensteer/client/host";
 import { ClientOperationError } from "@opensteer/client/connections";
@@ -17,8 +18,11 @@ import {
 } from "@opensteer/core";
 import { composerDraftKey, composerDrafts } from "../components/composer-drafts.js";
 
-export function initializeBrowserMessageOutbox(client: HostClient): void {
-  const storage = createMessageOutboxStorage(browserMessageRecords());
+export function initializeBrowserMessageOutbox(
+  client: HostClient,
+  records: MessageRecordStorage = browserMessageRecords(),
+): void {
+  const storage = createMessageOutboxStorage(records);
   initializeMessageOutbox(client, {
     storage,
     legacy: {

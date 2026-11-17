@@ -114,6 +114,7 @@ import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { PublishHeaderClearance } from "./ui/header-clearance.js";
+import { ConnectionSheetScreen } from "./screens/connection-sheet.js";
 import { Pane } from "./ui/pane.js";
 import { thisPhoneNoun } from "./computers/phone-noun.js";
 
@@ -136,6 +137,7 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  */
 function ScreenLayout(props: {
   readonly children: ReactNode;
+  readonly largeTitle: boolean;
   readonly modal: boolean;
   readonly route: { readonly params?: unknown };
 }) {
@@ -146,7 +148,7 @@ function ScreenLayout(props: {
     <>
       {props.modal ? <Pane>{content}</Pane> : content}
       {props.modal ? null : <TopLevelMenu />}
-      {props.modal ? null : <PublishHeaderClearance />}
+      {props.modal ? null : <PublishHeaderClearance largeTitle={props.largeTitle} />}
       <SheetAnchor active={focused} level={1} />
     </>
   );
@@ -184,6 +186,7 @@ const RootStack = createNativeStackNavigator({
   // region the shell measured lies over it.
   screenLayout: ({ children, options, route }) => (
     <ScreenLayout
+      largeTitle={options.headerLargeTitle === true || options.headerLargeTitleEnabled === true}
       modal={options.presentation !== undefined && options.presentation !== "card"}
       route={route}
     >
@@ -382,6 +385,18 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Around this thread",
+      },
+    },
+    // What the connection pill opens, over whatever screen it was on. It is as
+    // tall as what it says; other sessions in trouble are rows in it.
+    ConnectionDetails: {
+      screen: ConnectionSheetScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.ConnectionDetails,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Connection",
       },
     },
     // Every version of a message edited while it waited, from its "Edited"
@@ -754,6 +769,8 @@ type OpensteerRootParamList = {
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
+  /** "tasks" for the open computer, else a team's id. */
+  readonly ConnectionDetails: { readonly session: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };

@@ -1,8 +1,15 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
-import { useConnectionNotice } from "@opensteer/client/react";
-import { hostMessageOutbox, projectMessageOutbox } from "@opensteer/client/host";
-import { useOptionalMessageOutbox } from "@opensteer/client/react";
-import { presentMessageDelivery, presentDeliveryActions } from "@opensteer/client/feedback";
+import {
+  hostMessageOutbox,
+  messageDeliveryStatusShown,
+  projectMessageOutbox,
+  type MessageDeliveryAction,
+} from "@opensteer/client/host";
+import { useClientConnection, useOptionalMessageOutbox } from "@opensteer/client/react";
+import { ActionLine, issueLine } from "../ui/action-line.js";
+import { useConnectionReady, useShowsLive } from "../ui/connection-live.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
+import { MessageDeliveryContext, type MessageDeliveryControls } from "./message-delivery.js";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { useThreadVisits } from "@opensteer/client/react";
@@ -77,7 +84,7 @@ import {
   type ScrollViewProps,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
+import { canRespondToRequests } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
@@ -86,7 +93,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
-import { AppText, Notice } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -320,30 +327,19 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
       sameThreadPaneSelection(select(left), select(right)),
     [select],
   );
-  // Keep the shared hook's load/retry lifecycle, using its store equality support.
   const state = useHostSnapshot(props.hostClient, isEqual);
-  const loadError = useConnectionNotice(props.hostClient.connection);
-  const reload = useCallback(async () => {
-    props.hostClient.connection.retry();
-  }, [props.hostClient]);
   const selection = useMemo(() => select(state.snapshot), [select, state.snapshot]);
   return (
     <ThreadPaneForUser
       {...props}
       key={`${props.deploymentId}:${state.snapshot.user?.id ?? "signed-out"}:${props.threadId}`}
-      loadError={loadError}
-      reload={reload}
       snapshot={selection}
     />
   );
 }
 
 function ThreadPaneForUser(
-  props: ThreadPaneProps & {
-    readonly loadError: string | null;
-    readonly reload: () => Promise<void>;
-    readonly snapshot: ThreadPaneSelection;
-  },
+  props: ThreadPaneProps & { readonly snapshot: ThreadPaneSelection },
 ): ReactNode {
   const client = useMobileClient();
   const navigation = useNavigation();
@@ -360,7 +356,7 @@ function ThreadPaneForUser(
   // native bar items and a transparent bar, and left the first message under
   // the bar.
   const headerHeight = useHeaderHeight();
-  const { loadError, reload, snapshot } = props;
+  const { snapshot } = props;
   const viewerUserId = snapshot.user?.id ?? null;
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   // Whether the list follows the newest entry, and where it stood when last read or moved.
@@ -409,7 +405,13 @@ function ThreadPaneForUser(
   const [historical, setHistorical] = useState(false);
   const [returning, setReturning] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // A read the reader asked for that didn't come, with its own way to ask again.
+  // Said only while the connection is fine: otherwise the pill says why.
+  const [failure, setFailure] = useState<{
+    readonly key: number;
+    readonly resource: string;
+    readonly retry: () => void;
+  } | null>(null);
   const pendingMutationOwner = (): ThreadMutationOwner | null => null;
   // One gate per Thread, shared with the settings sheet: it is a sibling route
   // in the native stack, so no context of this pane's can reach it, and an
@@ -499,7 +501,11 @@ function ThreadPaneForUser(
   const thread = snapshot.thread;
   const canRespond = canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const live = useShowsLive(props.hostClient.connection) && environment?.status === "connected";
+  const connectionReady = useConnectionReady(props.hostClient.connection);
+  // A failed read is asked again once the connection is back; it says nothing until then.
+  const { readyRevision } = useClientConnection(props.hostClient.connection);
+  useEffect(() => setFailure(null), [readyRevision]);
   const connectionLabel =
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
@@ -535,6 +541,48 @@ function ThreadPaneForUser(
         threadId,
       ),
     [conversational, entries, inputQueue, outboxState, threadId, viewerUserId],
+  );
+  // Messages still on this phone: which carry their status line, and what
+  // Edit, Delete and Don't send do to them. Edit hands the words back to the
+  // composer above any draft there, once the message can no longer go.
+  const pendingKeys = useMemo(() => {
+    const held = conversation.flatMap((entry) =>
+      entry.kind === "message" && entry.localDelivery !== undefined
+        ? [{ key: entry.clientSendKey ?? entry.id, entry }]
+        : [],
+    );
+    const shown = messageDeliveryStatusShown(held.map(({ entry }) => entry.localDelivery!.phase));
+    return new Map(held.map(({ key, entry }, index) => [key, { entry, shown: shown[index]! }]));
+  }, [conversation]);
+  const heldMessages = useRef(pendingKeys);
+  heldMessages.current = pendingKeys;
+  const deliveryControls = useMemo<MessageDeliveryControls>(
+    () => ({
+      act: (key: string, action: MessageDeliveryAction) => {
+        const entry = heldMessages.current.get(key)?.entry;
+        if (outbox === null || entry === undefined) return;
+        if (action !== "edit") {
+          void outbox.discard(key).catch(() => undefined);
+          return;
+        }
+        // An answer that may have landed can only come back as a draft of its own.
+        if (entry.localDelivery?.issue?.code === "unconfirmed") {
+          void outbox.restoreDraft(key).catch(() => undefined);
+          return;
+        }
+        void outbox.discard(key).then(
+          () =>
+            setRestoredDraft((current) => ({
+              attachments: entry.attachments ?? [],
+              key: (current?.key ?? 0) + 1,
+              text: entry.body,
+            })),
+          () => undefined,
+        );
+      },
+      statusShown: (key: string) => heldMessages.current.get(key)?.shown ?? true,
+    }),
+    [outbox],
   );
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // What this client holds of the account is current only while it is live.
@@ -621,9 +669,13 @@ function ThreadPaneForUser(
     anchored.current = anchorMessageId;
     setHistorical(true);
     follow(false);
-    void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
-      setFailure(presentActionFailure(error, "That update could not be opened."));
-    });
+    const open = (): void => {
+      setFailure(null);
+      void hostClient
+        .loadTranscriptAround(threadId, anchorMessageId)
+        .catch(() => setFailure({ key: Date.now(), resource: "that update", retry: open }));
+    };
+    open();
   }, [anchorMessageId, follow, hostClient, threadId]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
@@ -643,9 +695,9 @@ function ThreadPaneForUser(
         follow(true);
         scrollToLatest(false);
       })
-      .catch((error: unknown) => {
-        setFailure(presentActionFailure(error, "The latest activity could not be loaded."));
-      })
+      .catch(() =>
+        setFailure({ key: Date.now(), resource: "the latest messages", retry: returnToLatest }),
+      )
       .finally(() => setReturning(false));
   }, [follow, hostClient, props.onAnchorReleased, returning, scrollToLatest, threadId]);
   const anchor = useMemo(
@@ -691,9 +743,9 @@ function ThreadPaneForUser(
     setLoadingEarlier(true);
     void hostClient
       .loadEarlierTranscript(threadId)
-      .catch((error: unknown) => {
-        setFailure(presentActionFailure(error, "Earlier activity could not be loaded."));
-      })
+      .catch(() =>
+        setFailure({ key: Date.now(), resource: "earlier messages", retry: loadEarlier }),
+      )
       .finally(() => {
         paging.current = false;
         setLoadingEarlier(false);
@@ -963,49 +1015,9 @@ function ThreadPaneForUser(
           {item.outcome === null ? null : (
             <TaskOutcomeLine onOpenThread={openSource} outcome={item.outcome} />
           )}
-          {item.group.kind === "message" && item.group.entry.localDelivery ? (
-            <View>
-              <AppText role="caption" tone="muted">
-                {presentMessageDelivery(
-                  item.group.entry.localDelivery.phase,
-                  item.group.entry.localDelivery.issue,
-                )}
-              </AppText>
-              {item.group.entry.localDelivery.phase === "rejected" ? (
-                <View style={{ flexDirection: "row", gap: 12 }}>
-                  <Pressable
-                    onPress={() => void outbox?.restoreDraft(item.group.key).catch(() => undefined)}
-                  >
-                    <AppText role="caption" tone="ember">
-                      {presentDeliveryActions().edit}
-                    </AppText>
-                  </Pressable>
-                  {item.group.entry.localDelivery.issue?.code !== "unconfirmed" ? (
-                    <Pressable
-                      onPress={() => void outbox?.discard(item.group.key).catch(() => undefined)}
-                    >
-                      <AppText role="caption" tone="ember">
-                        {presentDeliveryActions().delete}
-                      </AppText>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : !item.group.entry.localDelivery.attempted ? (
-                <Pressable
-                  onPress={() => void outbox?.discard(item.group.key).catch(() => undefined)}
-                >
-                  <AppText role="caption" tone="ember">
-                    {presentDeliveryActions().discard}
-                  </AppText>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
         </>
       ),
     [
-      canRespond,
-      outbox,
       anchorMessageId,
       conversational,
       hostClient,
@@ -1193,33 +1205,27 @@ function ThreadPaneForUser(
   };
 
   if (thread === null) {
-    return (
+    // Gone is a fact about the task; anything else not loaded yet is the
+    // connection's to explain, and the gate does, or the read is under way.
+    if (snapshot.lookup === "missing") return <UnavailableState onBack={onGone} />;
+    if (!connectionReady)
+      return (
+        <ConnectionRouteGate
+          connection={hostClient.connection}
+          secondary={{ label: "Back", onPress: onGone }}
+        />
+      );
+    return snapshot.lookup === "failed" ? (
       <View style={[styles.centred, sides]}>
-        {loadError !== null ? (
-          <Notice
-            title="This thread could not be loaded"
-            detail={loadError}
-            action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
-          />
-        ) : snapshot.lookup === "failed" ? (
-          <Notice
-            title="This thread could not be loaded"
-            detail="Check your connection and try again."
-            action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-          />
-        ) : snapshot.lookup === "missing" ? (
-          <Notice
-            detail="It may have been deleted, or it belongs to another deployment."
-            title="This thread is not here"
-            tone="neutral"
-          />
-        ) : (
-          <AppText role="secondary" tone="muted">
-            Opening this thread…
-          </AppText>
-        )}
+        <ActionLine
+          line={issueLine({ code: "read-failed", resource: "this task" }, "lookup", {
+            label: "Try again",
+            onPress: () => hostClient.activateThread(threadId),
+          })}
+          numberOfLines={2}
+        />
       </View>
-    );
+    ) : null;
   }
 
   // Access capabilities follow the engine that will enforce them.
@@ -1269,87 +1275,89 @@ function ThreadPaneForUser(
         });
   const transcript = (clearance: number): ReactNode => (
     <View style={styles.body}>
-      <FlatList
-        automaticallyAdjustsScrollIndicatorInsets={false}
-        contentInsetAdjustmentBehavior="never"
-        contentContainerStyle={[
-          column,
-          {
-            ...sides,
-            paddingBottom: clearance + space[16],
-            paddingTop: headerClearance + pageInset + space[8],
-          },
-        ]}
-        data={items}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        keyExtractor={(item) => item.key}
-        ListFooterComponent={listFooter}
-        // Beside a page, before anything has been said, the page is the subject;
-        // a task holding only waiting words is not empty.
-        ListEmptyComponent={
-          companion === null && (snapshot.lookup === "loading" || !waiting?.length) ? (
-            <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
-          ) : undefined
-        }
-        ListHeaderComponent={
-          <ThreadHeader
-            earlier={canLoadEarlier}
-            loadingEarlier={loadingEarlier}
-            onLoadEarlier={loadEarlier}
-            onOpenRequester={openSource}
-            requester={requester}
-          />
-        }
-        // Paging upward inserts entries above what is being read; this is
-        // what keeps the reader's place instead of jumping them to the top.
-        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
-        onContentSizeChange={(_width, height) => {
-          extent.current.content = height;
-          keepPinned();
-        }}
-        onLayout={(event) => {
-          extent.current.viewport = event.nativeEvent.layout.height;
-          keepPinned();
-        }}
-        onMomentumScrollBegin={() => {
-          flinging.current = true;
-        }}
-        onMomentumScrollEnd={() => {
-          flinging.current = false;
-        }}
-        onScroll={handleScroll}
-        onScrollBeginDrag={() => {
-          dragging.current = true;
-        }}
-        onScrollEndDrag={() => {
-          dragging.current = false;
-        }}
-        // `scrollToIndex` needs somewhere to go before the row it names has
-        // been measured. FlatList hands back its own estimate for exactly
-        // this, and one more layout pass then lands on the row.
-        onScrollToIndexFailed={({ averageItemLength, index }) => {
-          listRef.current?.scrollToOffset({
-            animated: false,
-            offset: averageItemLength * index,
-          });
-          if (scrollAttempts.current < 3) {
-            scrollAttempts.current += 1;
-            if (scrollRetry.current !== null) clearTimeout(scrollRetry.current);
-            scrollRetry.current = setTimeout(
-              () => listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0.5 }),
-              150,
-            );
+      <MessageDeliveryContext value={deliveryControls}>
+        <FlatList
+          automaticallyAdjustsScrollIndicatorInsets={false}
+          contentInsetAdjustmentBehavior="never"
+          contentContainerStyle={[
+            column,
+            {
+              ...sides,
+              paddingBottom: clearance + space[16],
+              paddingTop: headerClearance + pageInset + space[8],
+            },
+          ]}
+          data={items}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          keyExtractor={(item) => item.key}
+          ListFooterComponent={listFooter}
+          // Beside a page, before anything has been said, the page is the subject;
+          // a task holding only waiting words is not empty.
+          ListEmptyComponent={
+            companion === null && (snapshot.lookup === "loading" || !waiting?.length) ? (
+              <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
+            ) : undefined
           }
-        }}
-        ref={listRef}
-        renderItem={renderItem}
-        renderScrollComponent={renderScroll}
-        // The pill and the load-earlier trigger both read scroll position, so
-        // the list reports it every frame rather than every fourth one.
-        scrollEventThrottle={16}
-        scrollIndicatorInsets={{ bottom: clearance, top: headerClearance + pageInset }}
-      />
+          ListHeaderComponent={
+            <ThreadHeader
+              earlier={canLoadEarlier}
+              loadingEarlier={loadingEarlier}
+              onLoadEarlier={loadEarlier}
+              onOpenRequester={openSource}
+              requester={requester}
+            />
+          }
+          // Paging upward inserts entries above what is being read; this is
+          // what keeps the reader's place instead of jumping them to the top.
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          onContentSizeChange={(_width, height) => {
+            extent.current.content = height;
+            keepPinned();
+          }}
+          onLayout={(event) => {
+            extent.current.viewport = event.nativeEvent.layout.height;
+            keepPinned();
+          }}
+          onMomentumScrollBegin={() => {
+            flinging.current = true;
+          }}
+          onMomentumScrollEnd={() => {
+            flinging.current = false;
+          }}
+          onScroll={handleScroll}
+          onScrollBeginDrag={() => {
+            dragging.current = true;
+          }}
+          onScrollEndDrag={() => {
+            dragging.current = false;
+          }}
+          // `scrollToIndex` needs somewhere to go before the row it names has
+          // been measured. FlatList hands back its own estimate for exactly
+          // this, and one more layout pass then lands on the row.
+          onScrollToIndexFailed={({ averageItemLength, index }) => {
+            listRef.current?.scrollToOffset({
+              animated: false,
+              offset: averageItemLength * index,
+            });
+            if (scrollAttempts.current < 3) {
+              scrollAttempts.current += 1;
+              if (scrollRetry.current !== null) clearTimeout(scrollRetry.current);
+              scrollRetry.current = setTimeout(
+                () => listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0.5 }),
+                150,
+              );
+            }
+          }}
+          ref={listRef}
+          renderItem={renderItem}
+          renderScrollComponent={renderScroll}
+          // The pill and the load-earlier trigger both read scroll position, so
+          // the list reports it every frame rather than every fourth one.
+          scrollEventThrottle={16}
+          scrollIndicatorInsets={{ bottom: clearance, top: headerClearance + pageInset }}
+        />
+      </MessageDeliveryContext>
       {snapshot.user === null ? null : (
         <RunPageSlot
           active={focused}
@@ -1429,25 +1437,19 @@ function ThreadPaneForUser(
           threadId={threadId}
         />
       )}
-      {failure !== null ? (
-        <Notice
-          action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-          detail={failure}
-          title="Something did not work"
+      {failure === null || !connectionReady ? null : (
+        <ActionLine
+          line={issueLine(
+            { code: "read-failed", resource: failure.resource },
+            String(failure.key),
+            {
+              label: "Try again",
+              onPress: failure.retry,
+            },
+          )}
+          onDismiss={() => setFailure(null)}
         />
-      ) : loadError !== null && canRespond ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
-          detail={loadError}
-          title="This thread could not be loaded"
-        />
-      ) : snapshot.lookup === "failed" ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-          detail="Check your connection and try again."
-          title="Messages could not be loaded"
-        />
-      ) : null}
+      )}
       {snapshot.user === null ? null : (
         <>
           {(voiceThread && onCall) || editingInPlace ? null : (
@@ -1471,6 +1473,7 @@ function ThreadPaneForUser(
               <VoiceDock slot />
               {onCall ? null : (
                 <VoiceStartBar
+                  hostClient={hostClient}
                   modelHold={settingsDisabledReason({
                     canRespond,
                     hasRun: threadRuns.length > 0,

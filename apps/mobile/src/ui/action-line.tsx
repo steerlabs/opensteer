@@ -4,21 +4,10 @@ import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { space, touchTarget } from "../theme.js";
 import { appear } from "./motion.js";
+import type { ActionLineValue } from "./action-line-value.js";
 import { AppText } from "./primitives.js";
 
-/** One action's outcome, said beside the control that asked for it. */
-export interface ActionLineValue {
-  /** Changes for each new outcome: it is said and felt once per key. */
-  readonly key: string;
-  readonly text: string;
-  readonly tone: "muted" | "danger";
-  readonly link?: {
-    readonly label: string;
-    readonly accessibilityLabel?: string;
-    readonly onPress: () => void;
-  } | null;
-  readonly haptic?: "warning" | "error" | null;
-}
+export { issueLine, type ActionLineValue } from "./action-line-value.js";
 
 /**
  * The answer to a tap, in one short line next to where it happened: never a

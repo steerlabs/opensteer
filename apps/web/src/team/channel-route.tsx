@@ -438,7 +438,7 @@ function ChannelScreenFor({
           { ...row.command, createdAt: row.createdAt },
           pendingSendView(
             row,
-            !snapshot.unreachable,
+            snapshot.connection === "connected",
             snapshot.sendErrors?.[row.command.clientMessageId]
               ? {
                   error: snapshot.sendErrors[row.command.clientMessageId],

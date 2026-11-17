@@ -18,7 +18,7 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
       createClientRead(hostClient, {
         key,
         label: "settings",
-        remember,
+        remember: remember ? "across-mounts" : false,
         read: () => current.current(),
         subscribeInvalidation: (listener) => hostClient.subscribePluginsChanged(listener),
       }),

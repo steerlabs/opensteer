@@ -1,4 +1,5 @@
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
 import { mockAccountSubject, type TeamConnectionIntent } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -45,9 +46,7 @@ describe("phone team ports", () => {
       ({
         rpc: { "commands.dispatch": () => Promise.reject(failure) },
       }) as unknown as HostClient;
-    const offline = mobilePersonalTeamLinks(() =>
-      answering(new TypeError("Network request failed")),
-    );
+    const offline = mobilePersonalTeamLinks(() => answering(new HostTransportError("unreachable")));
     expect(await offline.join(personal, "offer")).toEqual({ kind: "offline" });
     expect(await mobilePersonalTeamLinks(() => null).join(personal, "offer")).toEqual({
       kind: "offline",

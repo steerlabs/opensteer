@@ -1,4 +1,7 @@
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { ActionNotDone, failureWords } from "./use-action.js";
+
+const isNotDone = (error: unknown) => error instanceof ActionNotDone;
 import { compactionOfferText } from "@opensteer/client/host";
 import {
   dictationLabels,
@@ -136,10 +139,10 @@ interface ComposerProps {
   /** Invoked when the reader presses Escape in the textarea (e.g. to return focus to docked action options). */
   onEscape?: (() => void) | undefined;
   /**
-   * Keeps or sends the message. Resolving `false` means it did not go and the
-   * caller has said why beside the composer: the draft stays as it is.
+   * Keeps or sends the message. A rejection from `act` is said in the
+   * action owner's words; anything else as a message this device couldn't keep.
    */
-  onSend: (body: string, submission: ComposerSubmission) => Promise<void | false>;
+  onSend: (body: string, submission: ComposerSubmission) => Promise<void>;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -463,14 +466,13 @@ export function Composer({
       setSubmitting(true);
       setError(null);
       try {
-        const sent = await onSend(submission.body, {
+        await onSend(submission.body, {
           attachments: submission.attachments,
           places: submission.places ?? [],
           ...(submission.compaction ? { compaction: submission.compaction } : {}),
           idempotencyKey: submission.idempotencyKey,
           ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
         });
-        if (sent === false) return;
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));
@@ -480,7 +482,20 @@ export function Composer({
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
         const issue = clientIssue(error, { operation: "action", label: "save this message" });
-        setError(issue ? presentClientIssue(issue).title : null);
+        const reason =
+          failureWords(error) ??
+          (issue && !isNotDone(error) ? presentClientIssue(issue).title : null);
+        if (mounted.current) setError(reason);
+        else if (draftKey)
+          composerDrafts.handBack(draftKey, {
+            edit: (current) => {
+              if (!body || current.trim() === body) return current;
+              return current.trim() ? `${body}\n${current}` : body;
+            },
+            places,
+            quote: carriedQuote,
+            ...(reason ? { reason } : {}),
+          });
       } finally {
         submittingRef.current = false;
         setSubmitting(false);

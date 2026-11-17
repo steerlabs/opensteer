@@ -2249,6 +2249,7 @@ export class HttpHostClient {
             Promise.all(
               [...this.#channels.values()].map((channel) => this.#probeChannel(channel, signal)),
             ).then(() => {
+              signal.throwIfAborted();
               if (this.#tasksStale) this.#rereadTasks();
             }),
           close: () => {
