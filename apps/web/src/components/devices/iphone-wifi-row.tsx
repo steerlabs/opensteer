@@ -72,7 +72,7 @@ export function IphoneWifiRow({
   const known = status === "checking" ? null : status;
   const reachable = known?.transport != null;
   const words = failure
-    ? iphoneSetupWords(failure, { deploymentName, osVersion: null, step: "wifi" })
+    ? iphoneSetupWords(failure, { deploymentName, osVersion: null, stage: "wifi" })
     : null;
   const detail =
     busy === "enable" || busy === "pair"
@@ -112,9 +112,9 @@ export function IphoneWifiRow({
           <p>
             <strong>{words.title}.</strong> {words.detail}
           </p>
-          {words.instructions ? (
+          {words.steps ? (
             <ol className="iphone-setup__steps">
-              {words.instructions.map((line) => (
+              {words.steps.map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ol>
