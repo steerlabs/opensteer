@@ -532,18 +532,6 @@ export const iphoneNativeRequestSchema = z.union([
   iphoneNativeBaseRequestSchema,
   z.strictObject({
     ...requestBase,
-    method: z.literal("images.refresh"),
-    timeoutMs: positive.max(30000),
-    params: z.strictObject({ imageRoots: z.array(z.string().min(1).max(4096)).max(8) }),
-  }),
-  z.strictObject({
-    ...requestBase,
-    method: z.literal("setup.revealDeveloperMode"),
-    timeoutMs: positive.max(30000),
-    params: iphoneNativePhoneRefSchema,
-  }),
-  z.strictObject({
-    ...requestBase,
     method: z.literal("phone.identity"),
     timeoutMs: positive.max(30000),
     params: z.strictObject({ candidateId: id }),
