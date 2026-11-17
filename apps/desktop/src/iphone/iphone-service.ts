@@ -66,6 +66,8 @@ export class IphoneService {
   #native: IphoneNativeTransport | undefined;
   #starting: Promise<IphoneNativeTransport> | undefined;
   #images: { handle: string; build: string }[] = [];
+  #suspended = false;
+  #nativeGeneration = 0;
   #stopped = false;
   #stopping: Promise<void> | undefined;
   #detachNative: (() => void)[] = [];
@@ -81,8 +83,10 @@ export class IphoneService {
     if (this.#records.length) await this.discover();
   }
   async discover(): Promise<void> {
+    const generation = this.#nativeGeneration;
     const native = await this.#connect();
     const roster = await native.request("roster.get", {}, iphoneNativeRosterSchema);
+    if (generation !== this.#nativeGeneration || native !== this.#native || this.#stopped) return;
     this.#reconcile(roster);
   }
   candidates(): readonly Candidate[] {
@@ -560,6 +564,9 @@ export class IphoneService {
     const authorized = () => {
       const live = this.#slots.get(deploymentId);
       return (
+        !this.#stopped &&
+        this.#native === native &&
+        this.#bindings.get(record.udid) === binding &&
         live?.key === key &&
         sameOwner(record, live.owner) &&
         this.#records.some(
@@ -857,20 +864,23 @@ export class IphoneService {
     this.#roster = roster.candidates;
     this.#revision = roster.revision;
     for (const record of probe) this.#cleanup(this.#probe(record));
+    const generation = this.#nativeGeneration;
     for (const slot of this.#slots.keys())
       void this.targets(slot).then((targets) => {
+        if (this.#stopped || generation !== this.#nativeGeneration) return;
         for (const params of targets)
           this.#emit(slot, { kind: "event", event: "iphone.targetsChanged", params });
       });
   }
   async #connect(): Promise<IphoneNativeTransport> {
-    if (this.#stopped) throw new IphoneServiceError("cancelled");
+    if (this.#stopped || this.#suspended) throw new IphoneServiceError("cancelled");
     if (this.#options.supported === false) throw new IphoneServiceError("unsupported-mac");
     if (this.#native) return this.#native;
     if (this.#starting) return this.#starting;
+    const generation = this.#nativeGeneration;
     const starting = (async () => {
       const result = await this.#options.startNative();
-      if (this.#stopped) {
+      if (this.#stopped || generation !== this.#nativeGeneration) {
         await result.client.close();
         throw new IphoneServiceError("cancelled");
       }
@@ -894,13 +904,26 @@ export class IphoneService {
         }),
       ];
       try {
-        this.#reconcile(
-          await result.client.request("roster.subscribe", {}, iphoneNativeRosterSchema),
+        const roster = await result.client.request(
+          "roster.subscribe",
+          {},
+          iphoneNativeRosterSchema,
         );
+        if (
+          this.#stopped ||
+          this.#native !== result.client ||
+          generation !== this.#nativeGeneration
+        )
+          throw new IphoneServiceError("cancelled");
+        this.#reconcile(roster);
       } catch (error) {
-        await result.client.close();
-        if (this.#native === result.client) this.#native = undefined;
-        for (const detach of this.#detachNative.splice(0)) detach();
+        if (this.#native === result.client) {
+          await result.client.close();
+          if (this.#native === result.client) {
+            this.#native = undefined;
+            for (const detach of this.#detachNative.splice(0)) detach();
+          }
+        }
         throw error;
       }
       return result.client;
@@ -924,6 +947,8 @@ export class IphoneService {
     await this.#drain();
   }
   suspend(): void {
+    this.#suspended = true;
+    this.#nativeGeneration++;
     for (const detach of this.#detachNative.splice(0)) detach();
     for (const record of this.#records) this.#invalidate(record, "phone-disconnected");
     const native = this.#native;
@@ -932,6 +957,28 @@ export class IphoneService {
     this.#roster = [];
     this.#revision = -1;
     if (native) this.#cleanup(native.close());
+  }
+  async resume(): Promise<void> {
+    if (this.#stopped || !this.#suspended) return;
+    const generation = this.#nativeGeneration;
+    await this.#starting?.catch(() => undefined);
+    await this.#drain();
+    if (this.#stopped || generation !== this.#nativeGeneration) return;
+    this.#suspended = false;
+    if (
+      this.#records.some((record) => {
+        const slot = this.#slots.get(record.deploymentId);
+        return (
+          record.phase === "bound" &&
+          slot &&
+          sameOwner(record, slot.owner) &&
+          slot.assignments.some(
+            (a) => a.deviceId === record.deviceId && a.generation === record.driverGeneration,
+          )
+        );
+      })
+    )
+      await this.discover();
   }
   async #drain(): Promise<void> {
     await Promise.allSettled(this.#cleanups);
@@ -947,6 +994,8 @@ export class IphoneService {
       for (const detach of this.#detachNative.splice(0)) detach();
       await native?.close();
       this.#bindings.clear();
+      this.#roster = [];
+      this.#revision = -1;
       this.#slots.clear();
       this.#listeners.clear();
       this.#invalidatedSlots.clear();

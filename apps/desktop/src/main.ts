@@ -454,9 +454,12 @@ async function runDesktop(
       }
     },
   });
+  let iphoneSuspension = Promise.resolve();
+  let iphonePowerRevision = 0;
   const suspendIphones = () => {
-    void iphoneSetup
-      .stop()
+    iphonePowerRevision++;
+    iphoneSuspension = iphoneSuspension
+      .then(() => iphoneSetup.stop())
       .finally(() => iphone.suspend())
       .catch(() => undefined);
   };
@@ -1535,6 +1538,13 @@ async function runDesktop(
   const refreshOnSystemResume = () => {
     if (shutdown.requested) return;
     access.wake();
+    const iphoneResumeRevision = ++iphonePowerRevision;
+    void iphoneSuspension
+      .then(async () => {
+        if (!shutdown.requested && iphoneResumeRevision === iphonePowerRevision)
+          await iphone.resume();
+      })
+      .catch(() => reportEvent("desktop.iphone.resume-failed"));
     void localRunner
       .reconcile()
       .catch((error: unknown) => reportNonFatal("desktop.local-runner.resume-failed", error));
