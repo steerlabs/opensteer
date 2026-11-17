@@ -1167,7 +1167,7 @@ export async function dispatchRequestResponse(
   commandId: CommandRow["id"],
   send: (beforeAck: () => Promise<void>) => Promise<void>,
 ): Promise<SucceededCommand> {
-  const intent = await commitPersonalMutation(database, async (transaction) => {
+  const lockIntent = async (transaction: Transaction<DatabaseSchema>, receipt: boolean) => {
     const observed = await transaction
       .selectFrom("commands")
       .innerJoin("requests", "requests.responseCommandId", "commands.id")
@@ -1248,7 +1248,7 @@ export async function dispatchRequestResponse(
       requestRow.originatingThreadId !== observed.threadId ||
       !command ||
       command.type !== "request.respond" ||
-      command.status !== "dispatched" ||
+      (command.status !== "dispatched" && !(receipt && command.status === "unknown")) ||
       command.runId !== observed.runId ||
       command.threadId !== observed.threadId
     ) {
@@ -1263,33 +1263,16 @@ export async function dispatchRequestResponse(
     ) {
       throw requestResponseDispatchConflict();
     }
-    await stampDispatchIntent(transaction, commandId);
-    return {
-      requestId: request.id,
-      revision: requestRow.revision,
-      runId: observed.runId,
-      threadId: observed.threadId,
-      agentResponder,
-    };
+  };
+  await commitPersonalMutation(database, async (tx) => {
+    await lockIntent(tx, false);
+    await stampDispatchIntent(tx, commandId);
   });
   let result: SucceededCommand | undefined;
   try {
     await send(async () => {
       result = await commitPersonalMutation(database, async (tx) => {
-        const pending = await tx
-          .selectFrom("requests")
-          .select("id")
-          .where("id", "=", intent.requestId)
-          .where("revision", "=", intent.revision)
-          .where("responseCommandId", "=", commandId)
-          .where("status", "=", "pending")
-          .executeTakeFirst();
-        if (!pending || !(await runHasActiveGrant(tx, intent.runId)))
-          throw requestResponseDispatchConflict();
-        if (intent.agentResponder)
-          await assertAgentRequestTarget(tx, intent.agentResponder.authority, intent.threadId, {
-            admitted: true,
-          });
+        await lockIntent(tx, true);
         const succeeded = await succeedCommandInTransaction(tx, commandId);
         const accepted = await tx
           .selectFrom("commands")
@@ -1313,7 +1296,7 @@ export async function dispatchChannelCommand(
   commandId: CommandRow["id"],
   send: (beforeAck: () => Promise<void>) => Promise<void>,
 ): Promise<SucceededCommand> {
-  await commitPersonalMutation(database, async (transaction) => {
+  const lockIntent = async (transaction: Transaction<DatabaseSchema>) => {
     const observed = await transaction
       .selectFrom("commands")
       .innerJoin("threads", "threads.id", "commands.threadId")
@@ -1384,13 +1367,17 @@ export async function dispatchChannelCommand(
         message: "Messaging command is no longer dispatchable",
       });
     }
-    await stampDispatchIntent(transaction, commandId);
+  };
+  await commitPersonalMutation(database, async (tx) => {
+    await lockIntent(tx);
+    await stampDispatchIntent(tx, commandId);
   });
   let result: SucceededCommand | undefined;
   await send(async () => {
-    result = await commitPersonalMutation(database, (tx) =>
-      succeedCommandInTransaction(tx, commandId),
-    );
+    result = await commitPersonalMutation(database, async (tx) => {
+      await lockIntent(tx);
+      return succeedCommandInTransaction(tx, commandId);
+    });
   });
   if (!result)
     throw new OpensteerError({ code: "conflict", message: "Messaging command was not accepted" });

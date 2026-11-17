@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readTranscriptPage, readTranscriptItem } from "./personal-sync-store.js";
 import { readPersonalDetailSnapshot } from "./snapshot-store.js";
 import type { TranscriptOrderCursor } from "@opensteer/protocol/transcript";
@@ -3647,21 +3648,19 @@ describeStore("PostgreSQL store", (it) => {
       store.claimCommand(authorityCancelledResponse.command.id, "cancelled-response-worker"),
     ).resolves.toBeNull();
   });
-  it("holds cancellation behind the transactional Runner response boundary", async ({
+  it("rejects the Runner receipt when authority is revoked after the response handoff", async ({
     storeFixture,
   }) => {
     const { startRunFixture, openLiveRequest, store, database, reactions } = storeFixture;
     const fixture = await startRunFixture("request-response-dispatch-fence");
     const requestId = createId("request");
     await openLiveRequest(fixture, requestId);
+    const claims = (await store.runCapabilityScope(fixture.run.id))!;
     const response = await store.enqueueRunnerControl({
       idempotencyKey: "request-response-dispatch-fence",
       requestId,
       requestedBy: fixture.userId,
-      response: {
-        kind: "choice",
-        optionId: "allow",
-      },
+      response: { kind: "choice", optionId: "allow" },
       sealedResponse: sealedTestRequestResponse(),
       runId: fixture.run.id,
       threadId: fixture.thread.id,
@@ -3669,46 +3668,26 @@ describeStore("PostgreSQL store", (it) => {
       type: "request.respond",
     });
     await store.claimCommand(response.command.id, "request-response-dispatch-fence-worker");
-    let announceSend!: () => void;
-    const sendStarted = new Promise<void>((resolve) => {
-      announceSend = resolve;
-    });
-    let releaseReceipt!: () => void;
-    const receipt = new Promise<void>((resolve) => {
-      releaseReceipt = resolve;
-    });
+    const offered = Promise.withResolvers<void>();
+    const receipt = Promise.withResolvers<void>();
     const delivery = store.dispatchRequestResponse(response.command.id, async (beforeAck) => {
-      announceSend();
-      await receipt;
+      offered.resolve();
+      await receipt.promise;
       await beforeAck();
     });
-    void delivery.catch(() => undefined);
-    await sendStarted;
-    const cancellation = store.requests.cancelForRun(fixture.run.id, "run-ended");
-    void cancellation.catch(() => undefined);
-    await vi.waitFor(
-      async () => {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks locks
-          join pg_stat_activity activity on activity.pid = locks.pid
-          where locks.granted = false
-          and locks.locktype = 'transactionid'
-          and activity.datname = current_database()
-          and activity.application_name = 'opensteer-integration-test'
-        `.execute(database);
-        expect(
-          Number(result.rows[0]?.waiting ?? 0),
-          "The operation never waited on its database lock",
-        ).toBeGreaterThan(0);
-      },
-      { timeout: 1_000, interval: 5 },
-    );
-    releaseReceipt();
-    await delivery;
-    await expect(cancellation).resolves.toEqual([]);
+    void delivery.catch(offered.reject);
+    try {
+      await withTimeout(offered.promise, 5_000, {
+        timeoutError: () => new Error("The Runner never received the Request response intent"),
+      });
+      expect(await store.stopHeldRun(claims, "device-access")).not.toBeNull();
+      expect(await store.requests.cancelForRun(fixture.run.id, "authority-revoked")).toEqual([
+        requestId,
+      ]);
+    } finally {
+      receipt.resolve();
+      await expect(delivery).rejects.toMatchObject({ code: "conflict" });
+    }
     expect(
       reactions.filter(
         (reaction) =>
@@ -3716,7 +3695,7 @@ describeStore("PostgreSQL store", (it) => {
           reaction.requestId === requestId &&
           reaction.status !== "pending",
       ),
-    ).toEqual([expect.objectContaining({ type: "requestChanged", status: "fulfilled" })]);
+    ).toEqual([expect.objectContaining({ type: "requestChanged", status: "cancelled" })]);
     await expect(
       database
         .selectFrom("requests")
@@ -3724,12 +3703,9 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", requestId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      cancellationReason: null,
-      response: {
-        kind: "choice",
-        optionId: "allow",
-      },
-      status: "fulfilled",
+      cancellationReason: "authority-revoked",
+      response: null,
+      status: "cancelled",
     });
   });
   it("allows a Runner infrastructure failure before run.started", async ({ storeFixture }) => {

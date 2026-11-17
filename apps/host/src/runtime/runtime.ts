@@ -1,3 +1,4 @@
+import { PersonalRunnerObservations } from "./personal-runner-observations.js";
 import { PersonalLiveText } from "./personal-live-text.js";
 import {
   commitPersonalMutation,
@@ -1806,6 +1807,7 @@ export async function createHostRuntime(
       shell: (runnerId, reason) => shellHub?.detachRunner(runnerId, reason),
     };
     let naming: ThreadNaming | undefined;
+    const runnerObservations = new PersonalRunnerObservations(database);
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -1944,15 +1946,7 @@ export async function createHostRuntime(
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
-          await bumpResources(
-            "machine",
-            "environment",
-            "harness-auth",
-            "agent-home-settings",
-            "browser-availability",
-            "browser-placement",
-            "tab",
-          );
+          await runnerObservations.publish(identity, false);
           notices.notify({ runnerId: identity.runnerId });
           // A lost connection costs a Run nothing: it keeps executing on its
           // lease and reattaches. A revoked Runner can never come back, so its
@@ -2056,15 +2050,7 @@ export async function createHostRuntime(
             if (await initializePersonal()) await ensureLinks();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
-            await bumpResources(
-              "machine",
-              "environment",
-              "harness-auth",
-              "agent-home-settings",
-              "browser-availability",
-              "browser-placement",
-              "tab",
-            );
+            await runnerObservations.publish(identity, true);
             tabs?.changed();
             void apps
               ?.onRunnerConnected(identity.runnerId)
@@ -2852,6 +2838,7 @@ export async function createHostRuntime(
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.deploymentShape),
         liveText,
+        runnerObservations,
         ...(options.onPersonalScopeCut ? { onPersonalScopeCut: options.onPersonalScopeCut } : {}),
         deviceAccess: deviceAccessService,
         machineFullDiskAccess,

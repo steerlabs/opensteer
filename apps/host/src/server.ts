@@ -428,6 +428,7 @@ export interface HostServerDependencies {
   readonly settleRequestDeadlines?: () => Promise<void>;
   readonly runnerAuthenticator: RunnerAuthenticator;
   readonly runners: RunnerRegistry;
+  readonly runnerObservations?: import("./runtime/personal-runner-observations.js").PersonalRunnerObservations;
   /** The Host's end of every `shell` module control stream. */
   readonly shellControl: ShellControlStreamHandler;
   /** Present when web distribution is packaged. */
@@ -1390,7 +1391,8 @@ export async function createHostServer(
         }),
       ),
     "thread.inputQueue.get": async (input, context) => {
-      const requestedBy = requireRpcSession(context).user.id;
+      const session = requireRpcSession(context);
+      const requestedBy = session.user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess(
@@ -1398,6 +1400,7 @@ export async function createHostServer(
           await dependencies.store.getThreadInputQueue({
             threadId: thread.id,
             requestedBy,
+            sessionId: session.id,
             ...(input.expectedRevision === undefined
               ? {}
               : { expectedRevision: input.expectedRevision }),
