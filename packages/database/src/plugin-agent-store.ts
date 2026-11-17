@@ -1,4 +1,3 @@
-import { withTaskPluginAdmission, pluginAdmissionKey } from "./plugin-admission.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Insertable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -23,19 +22,17 @@ export class PluginAgentStore {
     await requirePersonalOwner(this.database, owner);
     if (!["all", "read-only", "off"].includes(access))
       throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
-    await withTaskPluginAdmission(this.database, pluginAdmissionKey(owner, plugin), async () => {
-      await this.database
-        .insertInto("pluginAgentSettings")
-        .values({
-          ownerUserId: owner,
-          pluginId: plugin,
-          access,
-          author: "agent",
-          versionAuthors: {},
-        })
-        .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
-        .execute();
-    });
+    await this.database
+      .insertInto("pluginAgentSettings")
+      .values({
+        ownerUserId: owner,
+        pluginId: plugin,
+        access,
+        author: "agent",
+        versionAuthors: {},
+      })
+      .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
+      .execute();
   }
   async recordInstall(owner: UserId, plugin: string, version: string, author: "catalog" | "agent") {
     await requirePersonalOwner(this.database, owner);
@@ -67,13 +64,37 @@ export class PluginAgentStore {
       .where("id", "=", id)
       .executeTakeFirst();
   }
-  takeForRun(id: string, runId: import("@opensteer/core").RunId) {
+  takeForRun(row: PluginExecutionRecord, runId: import("@opensteer/core").RunId) {
     return this.database
       .updateTable("pluginExecutions")
       .set({ runId, handoff: false, updatedAt: new Date() })
-      .where("id", "=", id)
+      .where("id", "=", row.id)
+      .where("runId", "=", row.runId!)
+      .where("state", "=", "answered")
+      .where((eb) => eb.or([eb("handoff", "=", true), eb("runId", "=", runId)]))
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("runs")
+            .select("id")
+            .where("id", "=", runId)
+            .where("status", "in", ["starting", "running", "waiting"]),
+        ),
+      )
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("commands")
+              .select("id")
+              .whereRef("commands.runId", "=", "pluginExecutions.runId")
+              .where("type", "=", "run.interrupt")
+              .where(sql<boolean>`authority_source ->> 'kind' <> 'request-hold'`),
+          ),
+        ),
+      )
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirst();
   }
   async insert(input: Insertable<DatabaseSchema["pluginExecutions"]>) {
     await this.database
@@ -82,7 +103,7 @@ export class PluginAgentStore {
       .onConflict((c) => c.column("id").doNothing())
       .execute();
   }
-  async update(
+  updateLive(
     id: string,
     input: Partial<
       Pick<
@@ -90,13 +111,21 @@ export class PluginAgentStore {
         "state" | "requestId" | "interactionId" | "handoff" | "result" | "reason"
       >
     >,
+    runId?: import("@opensteer/core").RunId | null,
   ) {
     return this.database
       .updateTable("pluginExecutions")
       .set({ ...input, updatedAt: new Date() })
       .where("id", "=", id)
+      .where("state", "in", ["running", "waiting", "answered"])
+      .$if(runId !== undefined, (query) =>
+        query.where("runId", runId === null ? "is" : "=", runId ?? null),
+      )
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirst();
+  }
+  async update(id: string, input: Parameters<PluginAgentStore["updateLive"]>[1]) {
+    return (await this.updateLive(id, input)) ?? (await this.execution(id))!;
   }
   unfinished() {
     return this.database

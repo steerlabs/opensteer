@@ -67,6 +67,7 @@ export class LocalServerRegistry {
     readonly onConnectionsChanged: () => void;
     readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onRequestsChanged: () => void;
+    readonly onProviderRemoved?: (owner: UserId, provider: string) => Promise<void>;
     readonly onSettingsChanged: (input: { installationId?: string }) => Promise<void>;
   };
   constructor(options: LocalServerRegistry["options"]) {
@@ -80,10 +81,12 @@ export class LocalServerRegistry {
     actor: { readonly userId: UserId; readonly threadId: ThreadId },
     input: LocalServerRegistration,
     requestId: string,
+    authorize?: () => Promise<void>,
   ) {
     const install = (directory: string) =>
       this.installPackage({
         actorUserId: actor.userId,
+        authorize,
         directory,
         registration: input,
         threadId: actor.threadId,
@@ -159,7 +162,12 @@ export class LocalServerRegistry {
       });
   }
 
-  async remove(actor: { readonly userId: UserId }, name: string, requestId: string) {
+  async remove(
+    actor: { readonly userId: UserId },
+    name: string,
+    requestId: string,
+    authorize?: () => Promise<void>,
+  ) {
     const plugin = (await this.#options.store.plugins.list()).find(
       (candidate) => candidate.name === name && candidate.installedBy === actor.userId,
     );
@@ -169,7 +177,7 @@ export class LocalServerRegistry {
         message: `No local server is named ${name}.`,
         next: "Use local_server_list for the registered names.",
       });
-    await this.removePlugin(actor, plugin.id, requestId);
+    await this.removePlugin(actor, plugin.id, requestId, undefined, authorize);
   }
 
   /** Removes a registered server's plugin record with its installation, grants and data. */
@@ -178,16 +186,21 @@ export class LocalServerRegistry {
     pluginId: string,
     requestId: string,
     administration?: AdministrationCommandIdentity,
+    authorize?: () => Promise<void>,
   ) {
     const store = this.#options.store;
     await store.plugins.assertCanRemove(pluginId, actor);
-    for (const installation of await store.listInstallations())
-      if (installation.pluginId === pluginId)
-        await this.uninstall({
-          installationId: installation.id,
-          actorUserId: actor.userId,
-          requestId,
-        });
+    const installations = (await store.listInstallations()).filter(
+      (installation) => installation.pluginId === pluginId,
+    );
+    if (installations.length === 0) await authorize?.();
+    for (const installation of installations)
+      await this.uninstall({
+        installationId: installation.id,
+        actorUserId: actor.userId,
+        requestId,
+        authorize,
+      });
     await store.plugins.remove(pluginId, administration);
     await this.#options.localServers.removePluginData(pluginId);
   }
@@ -198,6 +211,7 @@ export class LocalServerRegistry {
    */
   async installPackage(input: {
     readonly actorUserId: UserId;
+    readonly authorize?: (() => Promise<void>) | undefined;
     readonly directory: string;
     readonly registration: LocalServerRegistration;
     readonly threadId?: ThreadId | undefined;
@@ -247,6 +261,7 @@ export class LocalServerRegistry {
         .every((s) => s.runnerId === runnerId && s.status !== "disabled")
     ) {
       if (setupThreadId !== undefined) {
+        await input.authorize?.();
         await store.plugins.recordSetupThread(pluginId, setupThreadId);
         await localServers.requestLocalServerApprovals();
         await this.#options.onSettingsChanged({ installationId: previous.id });
@@ -273,6 +288,7 @@ export class LocalServerRegistry {
     };
     const mutation = await store.install({
       beforeInstall: async (transaction) => {
+        await input.authorize?.();
         if (updating)
           await store.plugins.update(
             { pluginId, source: { directory: input.directory }, ...version },
@@ -328,19 +344,23 @@ export class LocalServerRegistry {
   /** Uninstalls one installation, ending its computers' sessions and dropping its MCP clients. */
   async uninstall(input: {
     readonly actorUserId: UserId;
+    readonly authorize?: (() => Promise<void>) | undefined;
     readonly installationId: IntegrationInstallationId;
     readonly requestId: string;
   }) {
     const { store, devices } = this.#options;
     const runnerIds = await store.listComputerRunnerIdsForInstallation(input.installationId);
     const mutation = await devices.withRunnerAdmissions(runnerIds, async () => {
+      await input.authorize?.();
       const removed = await store.uninstall(input);
       devices.endSessionsForRemovedApps(removed.removedApps);
       return removed;
     });
     this.#publish(mutation.requestEvents);
-    for (const serverId of mutation.removedServerIds)
+    for (const serverId of mutation.removedServerIds) {
+      await this.#options.onProviderRemoved?.(input.actorUserId, `app_server_${serverId}`);
       this.#options.localServers.clients.dropServer(serverId);
+    }
     this.#options.onConnectionsChanged();
   }
 

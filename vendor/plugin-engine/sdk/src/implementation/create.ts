@@ -112,6 +112,7 @@ export const createPluginEngine = (
       crypto,
       declarations,
       options.workflows,
+      options.hooks,
     );
     const webhooks = makeWebhooks(
       options.database,

@@ -1,3 +1,4 @@
+import type { ResolvedAccounts } from "apps/contracts";
 import { migrateEngineProduct, lockEngineApp, readEngineLinks } from "./engine-storage.js";
 export { migrateEngineProduct };
 import { createHash } from "node:crypto";
@@ -363,6 +364,28 @@ export function engineAccounts(options: {
           .map((account) => account.id),
       );
     });
+  const recheckLinks = (plugin: string, accounts: ResolvedAccounts) =>
+    Effect.gen(function* () {
+      const selected = (["app", "user"] as const).flatMap((scope) =>
+        Object.entries(accounts[scope] ?? {}).flatMap(([requirement, slot]) =>
+          (Array.isArray(slot) ? slot : [slot]).map(({ id }) => ({ scope, requirement, id })),
+        ),
+      );
+      if (!selected.length) return;
+      const links = yield* read(yield* engine, AppId.make(plugin));
+      if (
+        selected.some(
+          ({ scope, requirement, id }) =>
+            !links.some(
+              (link) =>
+                link.scope === scope && link.requirement === requirement && link.account === id,
+            ),
+        )
+      )
+        return yield* Effect.fail(
+          new PluginServiceError("forbidden", "A plugin account link changed before dispatch"),
+        );
+    });
   const validateBinding = (generation: string) =>
     sql`
     select link.subject from public.personal_remote_account_link link
@@ -600,6 +623,7 @@ export function engineAccounts(options: {
       }),
     standing: (app: AppId) =>
       options.authorizeBackground(app).pipe(Effect.andThen(accounts(app)), Effect.asVoid),
+    recheckLinks,
     validateBinding,
     prepare,
     pinConnection,

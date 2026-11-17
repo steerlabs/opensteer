@@ -89,6 +89,7 @@ import {
   leavingProviderError,
   parseMcpError,
   parseSkillLoadFailed,
+  redactOutput,
 } from "./failure-detail.ts";
 
 /** Either catalog detail on the wire; summaries are descriptions without schemas. */
@@ -716,6 +717,7 @@ function dispatch(
         const execution = context.workflow;
         if (execution === undefined)
           return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
+        const workflowSecrets = new Set(secrets);
         const workflowContext = yield* makeWorkflowContext(
           execution,
           definition,
@@ -726,6 +728,8 @@ function dispatch(
                 () => bindAccounts(native.accounts, declared, current),
                 new WorkflowFailure({ reason: "credentials", retryable: false }),
               );
+              const stepSecrets = accountSecrets(current.accounts);
+              for (const secret of stepSecrets) workflowSecrets.add(secret);
               return {
                 context: {
                   ...accounts,
@@ -743,7 +747,7 @@ function dispatch(
                   idempotencyKey: stepId,
                 },
                 // The resolved values, not the app's decoded fields, which may be `Redacted`.
-                secrets: accountSecrets(current.accounts),
+                secrets: stepSecrets,
               };
             }),
           invocationSignal,
@@ -769,7 +773,7 @@ function dispatch(
             message:
               "The workflow returned a value that is not JSON, such as undefined, or is larger than 1 MiB. Return null for no result.",
           }),
-        );
+        ).pipe(Effect.map((value) => redactOutput(value, [...workflowSecrets])));
       }
       if (request.operation === "inspect") {
         const summary = request.detail === "summary";
@@ -986,7 +990,7 @@ function dispatch(
           return yield* safe(
             () => Schema.decodeUnknownEffect(JsonValue)(decoded),
             new HostOutputInvalid(),
-          );
+          ).pipe(Effect.map((value) => redactOutput(value, secrets)));
         });
       return yield* withinDeadline(execute());
     }),

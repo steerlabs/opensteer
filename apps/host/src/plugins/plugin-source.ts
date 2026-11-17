@@ -31,6 +31,8 @@ export async function exportPluginSource(
   directory: string,
   files: Extract<PluginInput<"install">, { kind: "files" }>["files"],
   helperPath: string,
+  authorize: () => Promise<void>,
+  callerSignal?: AbortSignal,
 ) {
   const { NativeFsHelper, NativeFsHelperError } =
     await import("@opensteer/shared/files/native-fs-helper");
@@ -70,8 +72,11 @@ export async function exportPluginSource(
       message: "Plugin source exceeds the 24 MiB export limit.",
     });
   const helper = new NativeFsHelper({ binary: helperPath, rootPolicy: "managed-local" });
-  const signal = AbortSignal.timeout(60000);
+  const timeout = AbortSignal.timeout(60000);
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
   const expectedRootIdentity = await helper.directoryIdentity({ root, path: "." }, signal);
+  await authorize();
+  signal.throwIfAborted();
   try {
     await helper.createDirectory({ root, path: directory, expectedRootIdentity }, signal);
     const made = new Set([directory]);

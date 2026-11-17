@@ -1,4 +1,4 @@
-import { CurrentPluginRequest, engineAdmission } from "./engine-authority.js";
+import { CurrentPluginRequest } from "./engine-authority.js";
 import { detailSection, detailPreview } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
@@ -67,6 +67,7 @@ import {
   LinkWebhookSource,
   CompleteWebhookSetup,
   WebhookSetupView,
+  RuntimeProtocolFailed,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/node";
@@ -104,6 +105,7 @@ import {
   interactionBytes,
   jsonBytes,
   pluginResultTooLarge,
+  pluginCallerSubject,
   type EngineInit,
   type PluginCaller,
   type PluginExecution,
@@ -111,7 +113,12 @@ import {
   type PluginCallback,
 } from "./engine-protocol.js";
 import { z } from "zod";
-import { ElicitationResponse, type ElicitationHandler } from "apps/contracts";
+import {
+  ElicitationResponse,
+  WorkflowFailure,
+  type ElicitationHandler,
+  type HostContext,
+} from "apps/contracts";
 
 const packagedSkills = (files: Schema.Schema.Type<typeof SourceFiles>) =>
   Effect.tryPromise({
@@ -335,105 +342,67 @@ export async function startEngine(
           Redacted.make(config.secret),
           globalThis.crypto,
         );
-        const authorizeEffect = (input: import("./engine-protocol.js").PluginAuthorization) =>
-          callback("authorize", input);
-        const nativeRuntime = toEffectRuntime(local.runtime, blobs);
-        const dispatch = <A, E, R>(app: string, write: boolean, work: Effect.Effect<A, E, R>) =>
+        const check = (input: import("./engine-protocol.js").PluginAuthorization) =>
+          callback("authorize", input).pipe(
+            Effect.flatMap(({ allowed }) =>
+              allowed
+                ? Effect.void
+                : Effect.fail(
+                    new PluginServiceError("forbidden", "Plugin authority changed before dispatch"),
+                  ),
+            ),
+          );
+        const standing = (plugin: string) =>
+          check({ caller: config.owner, mode: "automatic", operation: "background", plugin });
+        const beforeResourceWrite = (
+          plugin: string,
+          action: "deploy" | "activate" | "schedule" | "workflow",
+        ) =>
           Effect.gen(function* () {
             const request = yield* CurrentPluginRequest;
-            const execution = request?.execution;
-            const operation =
-              request &&
-              ["resourcesUpdate", "resourcesStop", "resourcesRead"].includes(request.operation)
-                ? request.operation
-                : "callTool";
-            const authority = request
-              ? {
-                  ...request.context,
-                  operation,
-                  write,
-                  plugin: app,
-                  ...(execution ? { execution } : {}),
-                }
-              : {
-                  caller: config.owner,
-                  mode: "automatic" as const,
-                  operation: "background",
-                  write,
-                  plugin: app,
-                };
-            return yield* engineAdmission(authorizeEffect, authority, work);
+            if (request && request.context.caller !== config.owner) {
+              return yield* check({
+                ...request.context,
+                operation: request.operation,
+                ...(action === "workflow" ? { write: true } : {}),
+                ...(action !== "deploy" || request.plugin ? { plugin } : {}),
+              });
+            }
+            if (action === "workflow") yield* standing(plugin);
+          }).pipe(Effect.orDie);
+        const nativeRuntime = toEffectRuntime(local.runtime, blobs);
+        const dispatch = <A, E, R>(
+          input: { app: string } & HostContext,
+          write: boolean,
+          work: Effect.Effect<A, E, R>,
+        ) =>
+          Effect.gen(function* () {
+            const request = yield* CurrentPluginRequest;
+            yield* (
+              request
+                ? check({
+                    ...request.context,
+                    operation: request.operation,
+                    plugin: input.app,
+                    write,
+                    ...(request.execution ? { execution: request.execution } : {}),
+                  })
+                : standing(input.app)
+            ).pipe(Effect.mapError(() => new RuntimeProtocolFailed({ reason: "unrecognized" })));
+            yield* accountAdapter
+              .recheckLinks(input.app, Redacted.value(input.accounts))
+              .pipe(Effect.mapError(() => new RuntimeProtocolFailed({ reason: "unrecognized" })));
+            return yield* work;
           });
         const runtime = runtimeAdapter({
           ...nativeRuntime,
-          call: (input) => dispatch(input.app, input.kind !== "query", nativeRuntime.call(input)),
-          query: (input) => dispatch(input.app, false, nativeRuntime.query(input)),
-          mutate: (input) => dispatch(input.app, true, nativeRuntime.mutate(input)),
-          webhook: (input) => dispatch(input.app, true, nativeRuntime.webhook(input)),
+          call: (input) => dispatch(input, input.kind !== "query", nativeRuntime.call(input)),
+          query: (input) => dispatch(input, false, nativeRuntime.query(input)),
+          mutate: (input) => dispatch(input, true, nativeRuntime.mutate(input)),
+          webhook: (input) => dispatch(input, true, nativeRuntime.webhook(input)),
           workflow: (input) =>
-            dispatch(
-              input.app,
-              input.command.operation !== "workflows",
-              nativeRuntime.workflow(input),
-            ),
+            dispatch(input, input.command.operation !== "workflows", nativeRuntime.workflow(input)),
         });
-        // The final check shares the outer SQL transaction, after its waits and before commit.
-        const sourceOrm = database.orm;
-        database.orm = (version) => {
-          const db = sourceOrm(version);
-          return {
-            ...db,
-            transaction: (work) =>
-              Effect.gen(function* () {
-                const request = yield* CurrentPluginRequest;
-                const nested = yield* Effect.serviceOption(sql.transactionService);
-                if (
-                  !request ||
-                  Option.isSome(nested) ||
-                  !["resourcesUpdate", "resourcesStop", "install", "activate", "remove"].includes(
-                    request.operation,
-                  )
-                )
-                  return yield* db.transaction(work);
-                let lease: string | undefined;
-                const authority = {
-                  ...request.context,
-                  operation: request.operation,
-                  ...(request.plugin ? { plugin: request.plugin } : {}),
-                };
-                return yield* db
-                  .transaction(
-                    work.pipe(
-                      Effect.tap(() =>
-                        authorizeEffect({ ...authority, admission: true }).pipe(
-                          Effect.flatMap((permission) => {
-                            lease = permission.lease;
-                            return permission.allowed
-                              ? Effect.void
-                              : Effect.die(
-                                  new PluginServiceError(
-                                    "forbidden",
-                                    "Plugin authority changed before commit",
-                                  ),
-                                );
-                          }),
-                          Effect.orDie,
-                        ),
-                      ),
-                    ),
-                  )
-                  .pipe(
-                    Effect.ensuring(
-                      Effect.suspend(() =>
-                        lease
-                          ? authorizeEffect({ ...authority, lease }).pipe(Effect.orDie)
-                          : Effect.void,
-                      ),
-                    ),
-                  );
-              }),
-          };
-        };
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
@@ -442,10 +411,58 @@ export async function startEngine(
             callback("webhookOrigin", {}).pipe(Effect.map((origin) => origin ?? undefined)),
           git: repositories,
           markdown: markdownRefusals,
-          hooks: accountAdapter.hooks,
+          hooks: {
+            ...accountAdapter.hooks,
+            beforeResourceWrite,
+            appRemoving: (app) =>
+              Effect.flatMap(CurrentPluginRequest, (request) =>
+                request && request.context.caller !== config.owner
+                  ? check({ ...request.context, operation: "remove", plugin: app }).pipe(
+                      Effect.orDie,
+                    )
+                  : Effect.void,
+              ),
+            scheduleApprovalDefault: Effect.map(CurrentPluginRequest, (request) =>
+              request?.operation.startsWith("resources")
+                ? ("browser" as const)
+                : ("automatic" as const),
+            ),
+            workflowContextResolved: (app, context) =>
+              accountAdapter
+                .recheckLinks(app, Redacted.value(context.accounts))
+                .pipe(Effect.andThen(standing(app))),
+          },
           blobs,
           runtime,
-          workflows: local.workflows,
+          workflows: {
+            ...local.workflows,
+            start: (run) =>
+              Deferred.await(ready).pipe(
+                Effect.flatMap((engine) => engine[WorkflowHost].get(run)),
+                Effect.flatMap(({ app }) =>
+                  standing(app).pipe(
+                    Effect.mapError(
+                      () => new WorkflowFailure({ reason: "credentials", retryable: false }),
+                    ),
+                  ),
+                ),
+                Effect.andThen(local.workflows.start(run)),
+              ),
+            terminate: (run) =>
+              Effect.flatMap(CurrentPluginRequest, (request) =>
+                request && request.context.caller !== config.owner && request.plugin
+                  ? check({
+                      ...request.context,
+                      operation: request.operation,
+                      plugin: request.plugin,
+                    }).pipe(
+                      Effect.mapError(
+                        () => new WorkflowFailure({ reason: "unavailable", retryable: false }),
+                      ),
+                    )
+                  : Effect.void,
+              ).pipe(Effect.andThen(local.workflows.terminate(run))),
+          },
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
           background: (work) =>
@@ -486,7 +503,7 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        const scheduler = yield* startScheduleWorker(engine, () => Effect.void, {
+        const scheduler = yield* startScheduleWorker(engine, ({ app }) => standing(app), {
           runner: "host",
           concurrency: 2,
           pollMilliseconds: 1000,
@@ -624,42 +641,26 @@ export async function startEngine(
       raw: unknown,
       context: PluginCaller,
       signal: AbortSignal,
-    ): Effect.Effect<unknown, Error, Scope.Scope> =>
-      Effect.gen(function* () {
-        const target =
-          typeof raw === "object" &&
-          raw !== null &&
-          "plugin" in raw &&
-          typeof raw.plugin === "string"
-            ? raw.plugin
-            : typeof raw === "object" &&
-                raw !== null &&
-                "pluginId" in raw &&
-                typeof raw.pluginId === "string"
-              ? raw.pluginId
-              : undefined;
-        const stop =
-          operation === "resourcesUpdate" &&
-          (() => {
-            const change = operations.resourcesUpdate.input.parse(raw).change;
-            return (
-              change.action === "workflow.stop" ||
-              change.action === "webhook.remove" ||
-              (change.action === "schedule.configure" && !change.enabled)
-            );
-          })();
-        const authorityOperation = stop ? "resourcesStop" : operation;
-        yield* authorize(
-          context,
-          authorityOperation,
-          target,
-          typeof raw === "object" &&
-            raw !== null &&
-            "execution" in raw &&
-            typeof raw.execution === "string"
-            ? raw.execution
-            : undefined,
-        );
+    ): Effect.Effect<unknown, Error, Scope.Scope> => {
+      const fields = z
+        .object({
+          pluginId: z.string().optional(),
+          plugin: z.string().optional(),
+          execution: z.string().optional(),
+        })
+        .parse(raw);
+      const plugin = fields.pluginId ?? fields.plugin;
+      const change =
+        operation === "resourcesUpdate"
+          ? operations.resourcesUpdate.input.parse(raw).change
+          : undefined;
+      const stop =
+        change?.action === "workflow.stop" ||
+        change?.action === "webhook.remove" ||
+        (change?.action === "schedule.configure" && !change.enabled);
+      const authorityOperation = stop ? "resourcesStop" : operation;
+      return Effect.gen(function* () {
+        yield* authorize(context, authorityOperation, plugin, fields.execution);
         switch (operation) {
           case "health":
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
@@ -1096,7 +1097,11 @@ export async function startEngine(
               return yield* Effect.fail(
                 new PluginServiceError("invalid", "Plugin is not deployed"),
               );
-            const source = yield* engine.apps.source({ app, owner, version: plugin.activeVersion });
+            const source = yield* engine.apps.source({
+              app,
+              owner,
+              version: plugin.activeVersion,
+            });
             const skills = yield* packagedSkills(source.files);
             const files = skills.flatMap((skill) =>
               skill.files.map((file) => ({
@@ -1315,7 +1320,6 @@ export async function startEngine(
                     name: input.schedule,
                     enabled: input.enabled,
                     key: parsed.key ?? null,
-                    ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
                   },
                 });
               case "schedule.run":
@@ -1335,7 +1339,7 @@ export async function startEngine(
                     workflow: input.workflow,
                     input: input.input,
                     key: createHash("sha256")
-                      .update(JSON.stringify([context.caller, app, input.key]))
+                      .update(JSON.stringify([pluginCallerSubject(context.caller), app, input.key]))
                       .digest("hex"),
                   },
                 });
@@ -1380,31 +1384,11 @@ export async function startEngine(
         Effect.provideService(CurrentActor, owner),
         Effect.provideService(CurrentPluginRequest, {
           context,
-          operation:
-            operation === "resourcesUpdate" &&
-            (() => {
-              const change = operations.resourcesUpdate.input.parse(raw).change;
-              return (
-                change.action === "workflow.stop" ||
-                change.action === "webhook.remove" ||
-                (change.action === "schedule.configure" && !change.enabled)
-              );
-            })()
-              ? "resourcesStop"
-              : operation,
-          ...(typeof raw === "object" &&
-          raw !== null &&
-          "pluginId" in raw &&
-          typeof raw.pluginId === "string"
-            ? { plugin: raw.pluginId }
-            : typeof raw === "object" &&
-                raw !== null &&
-                "plugin" in raw &&
-                typeof raw.plugin === "string"
-              ? { plugin: raw.plugin }
-              : {}),
+          operation: authorityOperation,
+          ...(plugin === undefined ? {} : { plugin }),
         }),
       );
+    };
     const manage = (
       input: z.infer<typeof operations.manage.input>,
     ): Effect.Effect<unknown, Error> => {

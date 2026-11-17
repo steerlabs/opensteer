@@ -8,6 +8,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { LocalMcpServers } from "@opensteer/runner";
 import type { RequestId } from "@opensteer/core";
+import { DeviceService } from "../devices/device-service.js";
+import { LocalServerService } from "./local-server-service.js";
 import { ServerInput } from "./server-input.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -317,8 +319,80 @@ integration("local servers as plugin tools", () => {
       /AB89|CD34|6723672367236723|-13\.75/u,
     );
 
+    const pause = async (gate: PromiseWithResolvers<void>, release: PromiseWithResolvers<void>) => {
+      gate.resolve();
+      await withTimeout(release.promise, 10000, {
+        timeoutError: () => new Error("Local server change was not released"),
+      });
+    };
+    for (const operation of ["add", "remove"] as const) {
+      const gate = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const select = LocalServerService.prototype.pluginComputer;
+      const runnerTurn = DeviceService.prototype.withRunnerAdmissions;
+      const blocked =
+        operation === "add"
+          ? vi
+              .spyOn(LocalServerService.prototype, "pluginComputer")
+              .mockImplementationOnce(async function (this: LocalServerService, ...args) {
+                await pause(gate, release);
+                return select.apply(this, args);
+              })
+          : vi
+              .spyOn(DeviceService.prototype, "withRunnerAdmissions")
+              .mockImplementationOnce(async function (this: DeviceService, runners, work) {
+                await pause(gate, release);
+                return runnerTurn.call(this, runners, work);
+              });
+      const attempt = (
+        operation === "add"
+          ? gateway.call("local_server_add", {
+              name: "later",
+              computerId: computer.runnerId,
+              launch: { command: "node", args: [server] },
+            })
+          : gateway.call("local_server_remove", { name: "tv" })
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await withTimeout(gate.promise, 10000, {
+          timeoutError: () => new Error("Local server change did not reach its wait"),
+        });
+        await host.store.updateThreadAccessMode({
+          threadId: first.threadId,
+          requestedBy: host.ownerId,
+          accessMode: "approval-required",
+        });
+        release.resolve();
+        expect(await attempt).toHaveProperty("error");
+        expect(await gateway.call("local_server_list", {})).toMatchObject({
+          servers: [{ name: "tv" }],
+        });
+      } finally {
+        release.resolve();
+        blocked.mockRestore();
+        await attempt;
+        await host.store.updateThreadAccessMode({
+          threadId: first.threadId,
+          requestedBy: host.ownerId,
+          accessMode: "full-access",
+        });
+      }
+    }
+
     // Removed: its tools are gone and its data removal reaches the Mac.
+    const pendingRemoval = call(otherGateway);
+    const ending = await pendingInput(host);
     await gateway.call("local_server_remove", { name: "tv" });
+    expect(await host.store.requests.get(ending.id)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "plugin-interrupted",
+    });
+    await withTimeout(pendingRemoval, 10_000, {
+      timeoutError: () => new Error("Removed server's call remained pending"),
+    });
     expect(await gateway.call("local_server_list", {})).toEqual({ servers: [] });
     const after = await gateway.call("plugin_search", { query: "pair" });
     expect(after.items).toEqual([]);

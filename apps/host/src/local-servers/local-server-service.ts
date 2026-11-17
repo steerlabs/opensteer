@@ -350,7 +350,8 @@ export class LocalServerService {
             "Local tool authority changed while the call was queued; the call was not sent.",
           );
         call.signal.throwIfAborted();
-        return await caller.authorize?.();
+        await caller.authorize?.();
+        call.signal.throwIfAborted();
       } catch (error) {
         admissionError =
           error instanceof Error
@@ -360,9 +361,8 @@ export class LocalServerService {
       }
     };
     if (upstream.computer) upstream.computer.beforeToolCall = authorize;
-    let releaseAdmission: (() => void) | void = undefined;
     try {
-      releaseAdmission = !upstream.computer ? await authorize() : undefined;
+      if (!upstream.computer) await authorize();
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
@@ -405,7 +405,6 @@ export class LocalServerService {
           : `${computer} did not answer. Try again.`,
       );
     } finally {
-      releaseAdmission?.();
       if (upstream.computer?.beforeToolCall === authorize)
         upstream.computer.beforeToolCall = undefined;
       await this.inputRequests.finish(upstream.client, call);

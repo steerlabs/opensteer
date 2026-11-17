@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { acquireTaskPluginAdmission, pluginAdmissionKey } from "@opensteer/database";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { pluginOwnerId } from "./engine-protocol.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { PluginAgentStore, TriggerStore, type OpensteerStore } from "@opensteer/database";
@@ -68,32 +68,16 @@ export function pluginCaller(caller: AgentCaller): PluginCaller {
     mode: caller.accessMode === "auto" || caller.accessMode === "full-access" ? "automatic" : "ask",
   };
 }
+interface CallerScope {
+  context: PluginCaller;
+  caller: AgentCaller;
+  execution?: string;
+  plugins: Set<string>;
+}
+
 export class PluginAuthority {
-  readonly #active = new Map<string, number>();
-  readonly #executions = new Map<string, string>();
-  async scoped<T>(caller: AgentCaller, work: () => Promise<T>): Promise<T> {
-    const key = this.admit(caller).caller;
-    this.#active.set(key, (this.#active.get(key) ?? 0) + 1);
-    try {
-      return await work();
-    } finally {
-      const count = (this.#active.get(key) ?? 1) - 1;
-      if (count) this.#active.set(key, count);
-      else this.#active.delete(key);
-      this.#retire(key);
-    }
-  }
-  execution(id: string, caller: string, live: boolean) {
-    if (live) this.#executions.set(id, caller);
-    else this.#executions.delete(id);
-    this.#retire(caller);
-  }
-  #retire(key: string) {
-    if (!this.#active.has(key) && ![...this.#executions.values()].includes(key))
-      this.#callers.delete(key);
-  }
-  readonly #leases = new Map<string, { caller: string; release: () => void }>();
-  readonly #callers = new Map<string, AgentCaller>();
+  readonly #scope = new AsyncLocalStorage<CallerScope>();
+  readonly #callers = new Map<string, CallerScope>();
   readonly options: {
     store: OpensteerStore;
     settings: PluginAgentStore;
@@ -103,18 +87,44 @@ export class PluginAuthority {
   constructor(options: PluginAuthority["options"]) {
     this.options = options;
   }
+  async scoped<T>(caller: AgentCaller, work: () => Promise<T>): Promise<T> {
+    const subject = pluginCaller(caller);
+    const context = { ...subject, caller: `${subject.caller}:${randomUUID()}` };
+    const scope: CallerScope = { context, caller, plugins: new Set() };
+    this.#callers.set(context.caller, scope);
+    try {
+      return await this.#scope.run(scope, work);
+    } finally {
+      if (!scope.execution) this.#callers.delete(context.caller);
+    }
+  }
   admit(caller: AgentCaller) {
-    const context = pluginCaller(caller);
-    this.#callers.set(context.caller, caller);
-    return context;
+    return this.#scope.getStore()?.context ?? pluginCaller(caller);
+  }
+  submittedExecution() {
+    return this.#scope.getStore()?.execution;
+  }
+  execution(id: string, key: string, live: boolean) {
+    const scope = this.#callers.get(key);
+    if (!scope) return;
+    if (live) scope.execution = id;
+    else this.#callers.delete(key);
+  }
+  transfer(key: string, caller: AgentCaller) {
+    const scope = this.#callers.get(key);
+    if (scope) scope.caller = caller;
+  }
+  executionsFor(plugin: string) {
+    return [...this.#callers.values()].flatMap(({ execution, plugins }) =>
+      execution && plugins.has(plugin) ? [execution] : [],
+    );
   }
   caller(key: string) {
-    return this.#callers.get(key);
+    return this.#callers.get(key)?.caller;
   }
   async currentMode(key: string): Promise<PluginCaller["mode"]> {
-    const caller = this.#callers.get(key);
-    if (!caller || caller.kind === "connection" || pluginCaller(caller).mode === "ask")
-      return "ask";
+    const caller = this.caller(key);
+    if (!caller || caller.kind === "connection") return "ask";
     const thread = await this.options.store.getThreadForOwner(
       caller.kind === "run" ? caller.thread.id : caller.anchor.id,
       caller.userId,
@@ -127,57 +137,22 @@ export class PluginAuthority {
     input: PluginAuthorization,
     signal?: AbortSignal,
   ): Promise<import("./engine-protocol.js").PluginAuthorizationResult> {
-    if (input.lease) {
-      const lease = this.#leases.get(input.lease);
-      if (lease?.caller !== input.caller) return { allowed: false };
-      lease.release();
-      this.#leases.delete(input.lease);
-      return { allowed: true };
-    }
-    if (input.admission) {
-      const caller = this.#callers.get(input.caller);
-      const releaseTask =
-        caller && caller.kind !== "connection"
-          ? await acquireTaskPluginAdmission(
-              this.options.store.database,
-              caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-            )
-          : () => {};
-      let releasePlugin = () => {};
-      let abort: (() => void) | undefined;
-      const release = () => {
-        if (abort) signal?.removeEventListener("abort", abort);
-        releasePlugin();
-        releaseTask();
-      };
-      try {
-        if (input.plugin)
-          releasePlugin = await acquireTaskPluginAdmission(
-            this.options.store.database,
-            pluginAdmissionKey(await this.options.owner(), input.plugin),
-          );
-        signal?.throwIfAborted();
-        const permission = await this.authorize({ ...input, admission: false }, signal);
-        signal?.throwIfAborted();
-        if (!permission.allowed) {
-          release();
-          return permission;
-        }
-        const lease = randomUUID();
-        this.#leases.set(lease, { caller: input.caller, release });
-        abort = () => {
-          release();
-          this.#leases.delete(lease);
-        };
-        signal?.addEventListener("abort", abort, { once: true });
-        return { ...permission, lease };
-      } catch (error) {
-        release();
-        throw error;
-      }
-    }
-    await this.options.beforeAuthorize?.();
+    const scope = this.#callers.get(input.caller);
+    if (
+      scope &&
+      input.execution &&
+      scope.execution === input.execution &&
+      input.plugin &&
+      !discovery.has(input.operation)
+    )
+      scope.plugins.add(input.plugin);
     const owner = await this.options.owner();
+    if (input.operation === "cancel" && input.execution) {
+      const execution = await this.options.settings.execution(input.execution);
+      return { allowed: execution?.ownerUserId === owner && execution.caller === input.caller };
+    }
+    if (input.execution) await this.options.beforeAuthorize?.();
+    signal?.throwIfAborted();
     const settings = await this.options.settings.settings(owner);
     const grants = Object.fromEntries(settings.map((s) => [s.pluginId, s.access]));
     if (input.plugin && input.write && (grants[input.plugin] ?? "all") !== "all")
@@ -192,22 +167,8 @@ export class PluginAuthority {
         ...(input.operation === "background" ? { grants } : {}),
       };
     }
-    if (input.operation === "cancel" && input.execution) {
-      const execution = await this.options.settings.execution(input.execution);
-      return {
-        allowed: execution?.ownerUserId === owner && execution.caller === input.caller,
-        grants,
-      };
-    }
-    const caller = this.#callers.get(input.caller);
+    const caller = scope?.caller;
     if (!caller || caller.userId !== owner) return { allowed: false };
-    if (
-      input.mode === "automatic" &&
-      input.operation !== "cancel" &&
-      !discovery.has(input.operation) &&
-      (await this.currentMode(input.caller)) !== "automatic"
-    )
-      return { allowed: false };
     if (caller.kind === "program" && input.operation !== "cancel") {
       const triggers = new TriggerStore(this.options.store.database);
       try {
@@ -225,6 +186,13 @@ export class PluginAuthority {
         owner,
       );
       if (!thread) return { allowed: false };
+      if (
+        input.mode === "automatic" &&
+        !discovery.has(input.operation) &&
+        thread.accessMode !== "auto" &&
+        thread.accessMode !== "full-access"
+      )
+        return { allowed: false };
       const execution = input.execution
         ? await this.options.settings.execution(input.execution)
         : undefined;
@@ -233,6 +201,8 @@ export class PluginAuthority {
         (!execution ||
           execution.ownerUserId !== owner ||
           execution.caller !== input.caller ||
+          execution.mode !== input.mode ||
+          (caller.kind === "run" && execution.runId !== caller.claims.runId) ||
           ["completed", "cancelled", "expired", "interrupted", "failed"].includes(execution.state))
       )
         return { allowed: false };
@@ -271,6 +241,7 @@ export class PluginAuthority {
         (input.operation === "resourcesUpdate" && (grants[input.plugin] ?? "all") !== "all"))
     )
       return { allowed: false, grants };
+    signal?.throwIfAborted();
     return { allowed: true, grants };
   }
   async assert(context: PluginCaller, operation: string, plugin?: string, execution?: string) {

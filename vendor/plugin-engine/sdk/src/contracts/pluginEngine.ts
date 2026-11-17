@@ -187,6 +187,17 @@ export interface ResourceLifecycle {
   readonly connectionCompleting: (
     connection: AccountConnectionCompletion,
   ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
+  /** Product check after preparation and before an irreversible resource write. */
+  readonly beforeResourceWrite?: (
+    app: AppId,
+    operation: "deploy" | "activate" | "schedule" | "workflow",
+  ) => Effect.Effect<void, StorageError>;
+  readonly scheduleApprovalDefault?: Effect.Effect<"browser" | "automatic">;
+  /** Product check before supplying resolved capabilities to a workflow. */
+  readonly workflowContextResolved?: (
+    app: AppId,
+    context: import("apps/contracts").HostContext,
+  ) => Effect.Effect<void, Error>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
   /** Runs in the version commit transaction, including deployments to an existing app. */

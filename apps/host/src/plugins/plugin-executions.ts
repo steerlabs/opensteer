@@ -17,7 +17,12 @@ import {
 } from "@opensteer/database";
 import type { AgentCaller, RunCaller } from "../mcp/agent-caller.js";
 import { pluginCaller, type PluginAuthority } from "./plugin-authority.js";
-import { JsonSchema, type PluginCaller, type PluginExecution } from "./engine-protocol.js";
+import {
+  JsonSchema,
+  pluginCallerSubject,
+  type PluginCaller,
+  type PluginExecution,
+} from "./engine-protocol.js";
 import type { PluginService } from "./plugin-service.js";
 
 export const pluginInterruptedReason =
@@ -91,11 +96,14 @@ export class PluginExecutions {
     if (!row || terminal.has(row.state)) return;
     const result =
       execution.state === "completed" && execution.result ? object.parse(execution.result) : null;
-    await this.options.records.update(execution.id, {
-      state: execution.state,
-      result,
-      reason: execution.reason ?? null,
-    });
+    if (
+      !(await this.options.records.updateLive(execution.id, {
+        state: execution.state,
+        result,
+        reason: execution.reason ?? null,
+      }))
+    )
+      return;
     if (
       ["interrupted", "expired", "cancelled", "failed"].includes(execution.state) &&
       row.requestId
@@ -140,9 +148,9 @@ export class PluginExecutions {
   ) {
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, operation);
-    const execution =
+    return this.#invoke(caller, () =>
       operation === "call"
-        ? await this.options.service.call(
+        ? this.options.service.call(
             z
               .object({
                 calls: z.union([
@@ -154,13 +162,24 @@ export class PluginExecutions {
             context,
             signal,
           )
-        : await this.options.service.execute(
+        : this.options.service.execute(
             z.object({ code: z.string() }).parse(input),
             context,
             signal,
-          );
-    await this.#reports;
-    return this.#consume(caller, execution);
+          ),
+    );
+  }
+  async #invoke(caller: AgentCaller, work: () => Promise<PluginExecution>, executionId?: string) {
+    try {
+      const execution = await work();
+      await this.#reports;
+      return await this.#consume(caller, execution);
+    } catch (error) {
+      const id = executionId ?? this.options.authority.submittedExecution();
+      const row = id ? await this.options.records.execution(id) : undefined;
+      if (row?.state === "interrupted") return this.result(row);
+      throw error;
+    }
   }
   async #consume(caller: AgentCaller, execution: PluginExecution) {
     await this.#record(execution);
@@ -194,6 +213,8 @@ export class PluginExecutions {
           settings.find((s) => s.pluginId === pluginId)?.author ??
           ("agent" as const),
       };
+      if (!(await this.#authorizeExecution(row, "answer", pluginId)))
+        return this.result((await this.options.records.execution(row.id))!);
       const kind = interaction.status === "approval-required" ? "plugin.approval" : "plugin.input";
       const decision =
         kind === "plugin.approval"
@@ -252,51 +273,56 @@ export class PluginExecutions {
         payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
         presentation,
       });
-      row = await this.options.records.update(row.id, {
+      const attached = await this.options.records.updateLive(row.id, {
         requestId: created.request.id,
         interactionId: interaction.requestId,
       });
       for (const event of created.events) this.options.publish(event);
+      if (!attached) {
+        for (const event of await this.options.store.requests.cancelPluginRequests(
+          [created.request.id],
+          "plugin-interrupted",
+        ))
+          this.options.publish(event);
+        this.options.notify();
+      }
+      row = attached ?? (await this.options.records.execution(row.id))!;
     }
     return this.result(row);
   }
   #context(row: PluginExecutionRecord): PluginCaller {
     return { caller: row.caller, mode: row.mode };
   }
-  async #authorizeExecution(row: PluginExecutionRecord, operation: string) {
+  async #authorizeExecution(row: PluginExecutionRecord, operation: string, plugin?: string) {
     if (
       !terminal.has(row.state) &&
       row.mode === "automatic" &&
       (await this.options.authority.currentMode(row.caller)) !== "automatic"
     ) {
-      const reason = `Plugin authority changed. ${pluginInterruptedReason}`;
-      await this.options.records.update(row.id, { state: "interrupted", reason, result: null });
-      await this.options.service
-        .cancel({ execution: row.id }, this.#context(row))
-        .catch(() => undefined);
-      if (row.requestId)
-        for (const event of await this.options.store.requests.endPluginExecutionRequest(
-          row.requestId,
-          "plugin-interrupted",
-        ))
-          this.options.publish(event);
-      this.options.notify();
-      this.#changes.emit(row.id);
+      await this.#end(
+        row,
+        "plugin-interrupted",
+        `Plugin authority changed. ${pluginInterruptedReason}`,
+      );
       return false;
     }
     const request = row.requestId ? await this.options.store.requests.get(row.requestId) : null;
     await this.options.authority.assert(
-      terminal.has(row.state) ? { caller: row.caller, mode: "ask" } : this.#context(row),
+      this.#context(row),
       operation,
-      request?.presentation.plugin?.plugin.id,
-      terminal.has(row.state) ? undefined : row.id,
+      plugin ?? request?.presentation.plugin?.plugin.id,
+      row.id,
     );
     return true;
   }
   async #owned(caller: AgentCaller, id: string) {
     const row = await this.options.records.execution(id);
     const context = pluginCaller(caller);
-    if (!row || row.ownerUserId !== caller.userId || row.caller !== context.caller)
+    if (
+      !row ||
+      row.ownerUserId !== caller.userId ||
+      pluginCallerSubject(row.caller) !== context.caller
+    )
       throw new OpensteerError({
         code: "forbidden",
         message: "Plugin execution is unavailable to this caller.",
@@ -324,18 +350,25 @@ export class PluginExecutions {
     };
   }
   async resume(caller: AgentCaller, id: string, signal?: AbortSignal) {
-    this.options.authority.admit(caller);
     return this.#drive(id, async () => {
       let row = await this.#owned(caller, id);
       if (terminal.has(row.state)) {
-        await this.#authorizeExecution(row, "resume");
+        await this.options.authority.scoped(caller, () =>
+          this.options.authority.assert(
+            { ...this.options.authority.admit(caller), mode: "ask" },
+            "resume",
+          ),
+        );
         return this.result(row);
       }
       if (!(await this.#authorizeExecution(row, "resume")))
         return this.result((await this.options.records.execution(id))!);
       if (caller.kind === "run" && (await this.#answerReady(row))) {
         await this.options.store.assertActiveGrant(caller.claims);
-        row = await this.options.records.takeForRun(id, caller.claims.runId);
+        const taken = await this.options.records.takeForRun(row, caller.claims.runId);
+        if (!taken) return this.result(await this.#owned(caller, id));
+        row = taken;
+        this.options.authority.transfer(row.caller, caller);
       }
       return this.#resume(caller, row, signal);
     });
@@ -345,13 +378,11 @@ export class PluginExecutions {
     if (!(await this.#authorizeExecution(row, "resume")))
       return this.result((await this.options.records.execution(row.id))!);
     if (!(await this.#answerReady(row))) return this.result(row);
-    const execution = await this.options.service.resume(
-      { execution: row.id },
-      this.#context(row),
-      signal,
+    return this.#invoke(
+      caller,
+      () => this.options.service.resume({ execution: row.id }, this.#context(row), signal),
+      row.id,
     );
-    await this.#reports;
-    return this.#consume(caller, execution);
   }
   async #answerReady(row: PluginExecutionRecord) {
     if (row.state !== "answered" || !row.requestId) return false;
@@ -557,22 +588,60 @@ export class PluginExecutions {
       await this.#cancel(row);
     }
   }
-  async #cancel(row: PluginExecutionRecord) {
-    await this.options.service
-      .cancel({ execution: row.id }, this.#context(row))
-      .catch(() => undefined);
-    await this.options.records.update(row.id, {
-      state: "cancelled",
-      result: null,
-      reason:
-        "The Run stopped. Earlier calls may have taken effect; check current state before repeating work.",
-    });
-    if (row.requestId)
-      for (const event of await this.options.store.requests.endPluginExecutionRequest(
-        row.requestId,
-        "run-ended",
+  async cancelPlugin(owner: UserId, plugin: string) {
+    const ids = new Set(this.options.authority.executionsFor(plugin));
+    const requests = await this.options.store.database
+      .selectFrom("requests")
+      .select("id")
+      .where("requestedBy", "=", owner)
+      .where("kind", "=", "plugin.account")
+      .where("status", "=", "pending")
+      .where((eb) => eb(eb.ref("payload", "->>").key("plugin"), "=", plugin))
+      .execute();
+    if (requests.length)
+      for (const event of await this.options.store.requests.cancelPluginRequests(
+        requests.map(({ id }) => id),
+        "plugin-interrupted",
       ))
         this.options.publish(event);
+    if (ids.size)
+      for (const row of await this.options.records.unfinished())
+        if (row.ownerUserId === owner && ids.has(row.id))
+          await this.#end(
+            row,
+            "plugin-interrupted",
+            `Plugin authority changed. ${pluginInterruptedReason}`,
+          );
+    this.options.notify();
+  }
+  async #cancel(row: PluginExecutionRecord) {
+    await this.#end(
+      row,
+      "run-ended",
+      "The Run stopped. Earlier calls may have taken effect; check current state before repeating work.",
+    );
+  }
+  async #end(
+    row: PluginExecutionRecord,
+    cause: "plugin-interrupted" | "run-ended",
+    reason: string,
+  ) {
+    const ended = await this.options.records.updateLive(
+      row.id,
+      { state: cause === "run-ended" ? "cancelled" : "interrupted", reason, result: null },
+      cause === "run-ended" ? row.runId : undefined,
+    );
+    if (!ended) return;
+    void this.options.service
+      .cancel({ execution: row.id }, this.#context(row))
+      .catch(() => undefined);
+    if (ended.requestId)
+      for (const event of await this.options.store.requests.endPluginExecutionRequest(
+        ended.requestId,
+        cause,
+      ))
+        this.options.publish(event);
+    this.options.notify();
     this.#changes.emit(row.id);
   }
   async close() {

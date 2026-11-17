@@ -1634,6 +1634,8 @@ export async function createHostRuntime(
       onConnectionsChanged,
       onDeploymentEvent: publishDeploymentEvent,
       onRequestsChanged: () => notifyIntegrationContinuations(),
+      onProviderRemoved: (owner, plugin) =>
+        pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
       onSettingsChanged,
     });
     for (const event of await toolActivity.finalize()) publishDeploymentEvent(event);
@@ -2546,13 +2548,15 @@ export async function createHostRuntime(
         requirePluginRun(caller);
         return withFolderPluginPackage({ directory, files, install: pluginSourceFiles });
       },
-      exportFiles: async (caller, directory, source) => {
+      exportFiles: async (caller, directory, source, authorize, signal) => {
         requirePluginRun(caller);
         await exportPluginSource(
           (await personalExecution()).options.agentHome.path,
           directory,
           source.files,
           files.options.helperPath!,
+          authorize,
+          signal,
         );
       },
     });
@@ -2564,7 +2568,8 @@ export async function createHostRuntime(
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),
       localTools: (owner) => providerNames.owned(owner),
-      accessAdmission: (owner, plugin, work) => providerNames.withAdmission(owner, plugin, work),
+      cancelPlugin: (owner, plugin) =>
+        pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
       changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
     });
     pluginOAuth = new PluginOAuthService({

@@ -9,6 +9,9 @@ import {
   EngineWorkflowSchema,
 } from "./engine-feature-schemas.js";
 
+/** The execution caller has a per-invocation suffix; resource identity is task-wide. */
+export const pluginCallerSubject = (caller: string) => caller.slice(0, caller.lastIndexOf(":"));
+
 export const JsonSchema = z.json();
 export type PluginJson = z.infer<typeof JsonSchema>;
 const object = z.record(z.string(), JsonSchema);
@@ -426,14 +429,11 @@ export const AuthorizationSchema = z.strictObject({
   plugin: id.optional(),
   tool: id.optional(),
   execution: id.optional(),
-  admission: z.boolean().optional(),
   write: z.boolean().optional(),
-  lease: id.optional(),
 });
 export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
   allowed: z.boolean(),
-  lease: id.optional(),
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;

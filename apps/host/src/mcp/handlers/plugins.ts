@@ -1,3 +1,4 @@
+import { pluginCaller } from "../../plugins/plugin-authority.js";
 import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
@@ -28,6 +29,8 @@ export class PluginToolHandlers {
       caller: AgentCaller,
       directory: string,
       files: PluginInput<"install"> & { kind: "files" },
+      authorize: () => Promise<void>,
+      signal?: AbortSignal,
     ) => Promise<void>;
     publish: (event: import("@opensteer/core").AgentEvent) => void;
     notify: () => void;
@@ -172,33 +175,23 @@ export class PluginToolHandlers {
       context,
       c.signal,
     );
-    await c.checkLive?.();
-    const permission = await this.options.authority.authorize(
-      { ...context, operation: "export", plugin: c.input.pluginId, admission: true },
+    await this.options.exportFiles(
+      c.caller,
+      c.input.directory,
+      { kind: "files", files },
+      async () => {
+        await c.checkLive?.();
+        await this.options.authority.assert(context, "export", c.input.pluginId);
+      },
       c.signal,
     );
-    if (!permission.allowed)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Task authority changed before exporting plugin source.",
-      });
-    try {
-      await this.options.exportFiles(c.caller, c.input.directory, { kind: "files", files });
-    } finally {
-      if (permission.lease)
-        await this.options.authority.authorize({
-          ...context,
-          operation: "release",
-          lease: permission.lease,
-        });
-    }
     return {
       directory: c.input.directory,
       files: files.length,
       next: `Edit the draft, then call opensteer_plugin_install with source:folder and pluginId:${c.input.pluginId}.`,
     };
   }
-  async accountRequest(c: ToolCall<"plugin_account_request">) {
+  async #accountRequest(c: ToolCall<"plugin_account_request">) {
     const caller = requireRun(c.caller);
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, "account-request", c.input.pluginId);
@@ -217,6 +210,7 @@ export class PluginToolHandlers {
       (detail.plugin.activeVersion
         ? provenance?.versionAuthors[detail.plugin.activeVersion]
         : undefined) ?? "agent";
+    await this.options.authority.assert(context, "account-request", target.plugin);
     const created = await this.options.store.requests.create({
       callId: `plugin-account:${c.operationKey}`,
       kind: "plugin.account",
@@ -346,11 +340,7 @@ export class PluginToolHandlers {
         const result = await o.service.resourcesUpdate(
           {
             ...c.input,
-            key: JSON.stringify([
-              c.caller.userId,
-              o.authority.admit(c.caller).caller,
-              c.operationKey,
-            ]),
+            key: JSON.stringify([c.caller.userId, pluginCaller(c.caller).caller, c.operationKey]),
           },
           o.authority.admit(c.caller),
           c.signal,
@@ -378,11 +368,12 @@ export class PluginToolHandlers {
       },
       opensteer_plugin_remove: async (c) => {
         await o.service.remove({ plugin: c.input.pluginId }, o.authority.admit(c.caller), c.signal);
+        await o.executions.cancelPlugin(c.caller.userId, c.input.pluginId);
         o.removed?.(c.input.pluginId);
         o.changed?.(c.caller.userId);
         return { ok: true };
       },
-      plugin_account_request: (c) => this.accountRequest(c),
+      plugin_account_request: (c) => this.#accountRequest(c),
     };
     const scope = <K extends keyof AgentToolHandlers>(name: K) => {
       const handler = handlers[name] as ((c: ToolCall<K>) => Promise<unknown>) | undefined;
