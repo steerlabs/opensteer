@@ -44,8 +44,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * speak the lower of their two current versions. See "API compatibility" in
  * docs/connections.md before changing either.
  */
-export const hostApiVersion = 64;
-export const minimumHostApiVersion = 64;
+export const hostApiVersion = 65;
+export const minimumHostApiVersion = 65;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. See
  * "API compatibility" in docs/connections.md before changing either; the wire

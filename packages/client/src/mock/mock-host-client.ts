@@ -88,6 +88,7 @@ import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-deskt
 import {
   isMockSignInCommand,
   MockPlugins,
+  type MockPluginScenario,
   mockPluginAccountConsent,
   mockPluginRequests,
 } from "./mock-plugins.js";
@@ -1768,6 +1769,8 @@ export interface MockHostClientOptions {
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
+  /** The plugin side's state, as the web's `?mock-plugins=` picks it. */
+  plugins?: MockPluginScenario;
 
   agentPlugins?: { id: string; name: string }[];
   memoryPasses?: "active" | "off" | "waiting-for-model";
@@ -3748,6 +3751,10 @@ export class MockHostClient implements HostClient {
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
+  /** The mock Host's plugin side, for a test to make background work happen. */
+  get enginePlugins() {
+    return this.#state.enginePlugins;
+  }
   readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
@@ -5260,12 +5267,7 @@ class MockHostState {
       ),
     }),
   );
-  readonly enginePlugins = new MockPlugins({
-    changed: () => {
-      for (const listener of this.settings.listeners) listener({ type: "host.plugins-changed" });
-    },
-    accountLinked: (target) => this.settlePluginAccount(target),
-  });
+  readonly enginePlugins: MockPlugins;
   /** A link the person made answers every Request waiting on that requirement. */
   private settlePluginAccount(target: PluginRequirementTarget): void {
     for (const request of Object.values(this.snapshot.requests).flat()) {
@@ -5981,6 +5983,13 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.enginePlugins = new MockPlugins({
+      changed: () => {
+        for (const listener of this.settings.listeners) listener({ type: "host.plugins-changed" });
+      },
+      accountLinked: (target) => this.settlePluginAccount(target),
+      ...(options.plugins ? { scenario: options.plugins } : {}),
+    });
     this.tabCatalog.bind(
       () => this.snapshot,
       () => this.apps,

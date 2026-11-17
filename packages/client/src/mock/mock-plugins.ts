@@ -51,14 +51,14 @@ export function isMockSignInCommand(command: HostApiCommand): command is MockSig
  */
 export type MockPluginScenario =
   "default" | "empty" | "unavailable" | "unsupported" | "error" | "local-only" | "many";
-const mockPluginScenarios: readonly MockPluginScenario[] = [
+export const mockPluginScenarios = [
   "empty",
   "unavailable",
   "unsupported",
   "error",
   "local-only",
   "many",
-];
+] as const satisfies readonly MockPluginScenario[];
 
 const digest = (seed: string) =>
   Array.from({ length: 64 }, (_, index) =>
@@ -753,7 +753,7 @@ export class MockPlugins {
   readonly #engineListeners = new Set<(engine: PluginEngineStateView) => void>();
   readonly #changed: () => void;
   readonly #accountLinked: (target: PluginRequirementTarget) => void;
-  #started = false;
+  #started: Promise<void> | undefined;
   #nextId = 0;
   #runs: PluginScheduledRunView[] = [
     {
@@ -885,11 +885,12 @@ export class MockPlugins {
       );
     if (this.scenario === "error")
       throw refusal("conflict", "The plugin engine answered with an error.");
-    if (this.#started) return;
-    this.#started = true;
-    this.#setEngine({ status: "starting" });
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-    this.#setEngine({ status: "ready" });
+    this.#started ??= (async () => {
+      this.#setEngine({ status: "starting" });
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      this.#setEngine({ status: "ready" });
+    })();
+    await this.#started;
   }
   #plugin(id: string) {
     const plugin = this.plugins.find((entry) => entry.id === id);
@@ -1321,7 +1322,7 @@ export class MockPlugins {
         // plugins, and a change notice follows once it can say.
         if (this.engine.status !== "ready") {
           if (this.scenario === "error") await this.#ready();
-          if (this.engine.status !== "unavailable")
+          if (this.engine.status !== "unavailable" && !this.#started)
             void this.#ready().then(this.#changed, this.#changed);
           return rpcSuccess({
             engine: this.engine.status === "idle" ? { status: "starting" } : this.engine,
@@ -1705,6 +1706,14 @@ export class MockPlugins {
         return { type: command.type };
       }
     }
+  }
+
+  /** The service confirmed a webhook's setup on its own: background work the Host publishes. */
+  confirmWebhookInBackground(pluginId: string, webhookId: string) {
+    const webhook = this.#plugin(pluginId).webhooks.find((entry) => entry.id === webhookId);
+    if (!webhook) throw new Error(`No webhook ${webhookId}`);
+    webhook.status = "active";
+    this.#changed();
   }
 
   #checkedLink(

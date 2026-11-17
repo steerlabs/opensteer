@@ -5,6 +5,7 @@ import {
   pluginCatalogReader,
   pluginEngineNotice,
   pluginInstalledGroups,
+  pluginInstalledReader,
   agentHomeSkills,
   pluginLocalToolAddress,
   pluginLocalToolDetail,
@@ -12,13 +13,19 @@ import {
   pluginLocalToolSummary,
   pluginStatusView,
   readInstalledPlugins,
+  readPluginLocalTool,
   setPluginAccess,
   type PluginCatalogEntryView,
   type PluginLocalToolView,
   type PluginTone,
 } from "@opensteer/client/plugins";
 import { useDebouncedValue, usePagedList, usePluginEngine } from "@opensteer/client/react";
-import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  mutationIdempotencyKey,
+  unwrapRpcResult,
+  type HostClient,
+} from "@opensteer/client/host";
 import { settingsMutationRejected } from "@opensteer/client/settings";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
@@ -88,8 +95,9 @@ export function engineSection(
 }
 
 /**
- * Settings → Plugins on a phone. Opening it is one read of the installed list,
- * which also carries the local tools; the catalog loads only when opened.
+ * Settings → Plugins on a phone. Opening it is one read of the installed list's
+ * first page, which also carries the local tools and never waits for the engine;
+ * the catalog loads only when opened.
  */
 export function PluginsScreen({ route }: Params): ReactNode {
   const host = useAttachedHost(route.params.deploymentId);
@@ -105,6 +113,14 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
   const installed = useSettingsRead(host, () => readInstalledPlugins(host));
   const engine = usePluginEngine(host, installed.data?.engine ?? null);
   const [adding, setAdding] = useState(false);
+  const cursor = installed.data?.cursor ?? null;
+  // Plugins past the first page load only when asked for, from where it ended.
+  const [showingMore, setShowingMore] = useState<string | null>(null);
+  const more = usePagedList(
+    cursor && showingMore === cursor ? pluginInstalledReader(host, cursor) : null,
+    `installed-more:${cursor}`,
+  );
+  const moreCursor = showingMore === cursor ? more.nextCursor : cursor;
   const sections: NativeSettingsSection[] = [];
   const notice = engineSection(engine);
   if (notice) sections.push(notice);
@@ -114,8 +130,9 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
       title: "Plugins",
       rows: [{ key: "error", kind: "status", tone: "bad", label: installed.error }],
     });
-  const plugins = installed.data?.plugins;
-  if (!installed.data && !installed.error)
+  const first = installed.data?.plugins;
+  const plugins = first && showingMore === cursor ? [...first, ...more.items] : first;
+  if ((!installed.data && !installed.error) || (first === null && engine?.status !== "unavailable"))
     sections.push({
       key: "loading",
       title: "Plugins",
@@ -151,6 +168,28 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
           onPress: () => navigation.navigate("PluginDetail", { deploymentId, pluginId: plugin.id }),
         } satisfies NativeSettingsRow;
       }),
+    });
+  if (plugins?.length && (moreCursor || more.loading))
+    sections.push({
+      key: "more",
+      title: "",
+      rows: [
+        {
+          key: "more",
+          kind: "button",
+          label: more.loading || more.loadingMore ? "Loading…" : "Show more plugins",
+          disabled: more.loading || more.loadingMore,
+          onPress: () => (showingMore === cursor ? more.more() : setShowingMore(cursor)),
+        },
+      ],
+      ...(more.error
+        ? {
+            footer: {
+              text: operationDetail(more.error, "Couldn't load more plugins."),
+              tone: "danger" as const,
+            },
+          }
+        : {}),
     });
   const local = installed.data?.local ?? [];
   if (local.length)
@@ -425,6 +464,12 @@ export function PluginLocalToolScreen({
   );
 }
 
+/** A local tool the Host no longer has reads as gone, not as a failed read. */
+const gone = (error: unknown): "gone" => {
+  if (error instanceof HostClientRequestError && error.code === "not_found") return "gone";
+  throw error;
+};
+
 function LocalTool({
   deploymentId,
   host,
@@ -434,10 +479,11 @@ function LocalTool({
   host: HostClient;
   id: string;
 }) {
-  const installed = useSettingsRead(host, () => readInstalledPlugins(host));
+  // Its own read: the installed list counts a local tool's tools, this page lists them.
+  const read = useSettingsRead(host, () => readPluginLocalTool(host, id).catch(gone), id);
   const action = usePluginAction(host);
   const [chosen, setChosen] = useState<PluginLocalToolView["access"] | null>(null);
-  const tool = installed.data?.local.find((entry) => entry.id === id) ?? null;
+  const tool = read.data && read.data !== "gone" ? read.data : null;
   if (!tool)
     return (
       <NativeSettingsPage
@@ -449,9 +495,9 @@ function LocalTool({
               {
                 key: "gone",
                 kind: "text",
-                label: installed.data
+                label: read.data
                   ? "This isn't available to agents anymore."
-                  : (installed.error ?? "Loading…"),
+                  : (read.error ?? "Loading…"),
               },
             ],
           },

@@ -7,6 +7,7 @@ import {
   pluginEngineNotice,
   pluginEngineRefusal,
   pluginInstalledGroups,
+  pluginInstalledReader,
   pluginStatusView,
   readInstalledPlugins,
   type PluginCatalogEntryView,
@@ -91,7 +92,16 @@ function InstalledPlugins() {
   const refused = installed.data ? null : pluginEngineRefusal(installed.error);
   const engine = usePluginEngine(installed.data?.engine ?? refused);
   const [installing, setInstalling] = useState(false);
-  const plugins = installed.data?.plugins ?? null;
+  const cursor = installed.data?.cursor ?? null;
+  // Plugins past the first page load only when asked for, from where it ended.
+  const [showingMore, setShowingMore] = useState<string | null>(null);
+  const more = usePagedList(
+    cursor && showingMore === cursor ? pluginInstalledReader(hostClient, cursor) : null,
+    `installed-more:${cursor}`,
+  );
+  const first = installed.data?.plugins ?? null;
+  const plugins = first && showingMore === cursor ? [...first, ...more.items] : first;
+  const moreCursor = showingMore === cursor ? more.nextCursor : cursor;
   return (
     <div className="plugins-area">
       <SectionHeader
@@ -118,7 +128,11 @@ function InstalledPlugins() {
         </button>
       ) : !installed.data ? (
         <LoadingRows label="Loading plugins" rows={3} />
-      ) : plugins === null ? null : plugins.length === 0 ? (
+      ) : plugins === null ? (
+        engine?.status === "unavailable" ? null : (
+          <LoadingRows label="Starting plugins" rows={3} />
+        )
+      ) : plugins.length === 0 ? (
         <div className="plugins-empty">
           <span aria-hidden className="plugins-empty__glyph">
             <Icon name="puzzle" />
@@ -132,19 +146,32 @@ function InstalledPlugins() {
           </Link>
         </div>
       ) : (
-        pluginInstalledGroups(plugins).map((group) => (
-          <section className="settings-group" key={group.id}>
-            <h2 className="settings-group__title">{group.title}</h2>
-            <div
-              className={`card${group.id === "attention" ? " settings-plugin-attention" : ""}`}
-              role="list"
+        <>
+          {pluginInstalledGroups(plugins).map((group) => (
+            <section className="settings-group" key={group.id}>
+              <h2 className="settings-group__title">{group.title}</h2>
+              <div
+                className={`card${group.id === "attention" ? " settings-plugin-attention" : ""}`}
+                role="list"
+              >
+                {group.plugins.map((plugin) => (
+                  <InstalledRow key={plugin.id} plugin={plugin} />
+                ))}
+              </div>
+            </section>
+          ))}
+          <SettingsError message={more.error ? actionErrorMessage(more.error) : null} />
+          {moreCursor || more.loading ? (
+            <button
+              className="btn"
+              disabled={more.loading || more.loadingMore}
+              onClick={() => (showingMore === cursor ? more.more() : setShowingMore(cursor))}
+              type="button"
             >
-              {group.plugins.map((plugin) => (
-                <InstalledRow key={plugin.id} plugin={plugin} />
-              ))}
-            </div>
-          </section>
-        ))
+              {more.loading || more.loadingMore ? "Loading…" : "Show more plugins"}
+            </button>
+          ) : null}
+        </>
       )}
       {installed.data?.local.length ? <LocalTools tools={installed.data.local} /> : null}
       <section className="settings-group">
@@ -310,7 +337,7 @@ function PluginCatalog() {
       )}
       {list.nextCursor ? (
         <button
-          className="btn plugins-more"
+          className="btn"
           disabled={list.loadingMore}
           onClick={list.more}
           type="button"

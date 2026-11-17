@@ -1,6 +1,6 @@
 import { useTeamSideBack } from "./side-back.js";
 import { TeamScreenLayout } from "./team/team-screen-gate.js";
-import { screenPresentations } from "./navigation-presentations.js";
+import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
 import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
@@ -198,11 +198,21 @@ const RootStack = createNativeStackNavigator({
     </ScreenLayout>
   ),
   // Recomputed as the stack changes, so a top-level screen's transition is in
-  // force as it is pushed, and its pop fades the same way back to Home.
-  screenOptions: ({ navigation, route }) =>
-    isTopLevel(navigation.getState(), route.key)
+  // force as it is pushed, and its pop fades the same way back to Home. A page
+  // pushed inside a sheet, as every Settings page is, carries its own Back: iOS
+  // shows it as another sheet with no chevron. A screen's own left action wins.
+  screenOptions: ({ navigation, route }) => {
+    const state = navigation.getState();
+    const options = isTopLevel(state, route.key)
       ? { ...stackScreenOptions, ...topLevelScreenOptions }
-      : stackScreenOptions,
+      : stackScreenOptions;
+    return Platform.OS === "ios" && pushedInPresentation(state, route.key)
+      ? {
+          ...options,
+          ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
+        }
+      : options;
+  },
   screens: {
     Deployments: {
       screen: DeploymentsScreen,

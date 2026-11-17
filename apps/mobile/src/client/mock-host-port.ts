@@ -1,6 +1,11 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import { MockDesktopUpdates, MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
+import {
+  MockDesktopUpdates,
+  MockHostClient,
+  type MockPluginScenario,
+  type MockSubagentScene,
+} from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
@@ -20,6 +25,8 @@ export function createMockHostPort(
     readonly hosts?: Map<string, MockHostClient>;
     /** One subagent scene of the design, so each of its states can be looked at. */
     readonly subagents?: MockSubagentScene | null;
+    /** The plugin side's state, as the web's `?mock-plugins=` picks it. */
+    readonly plugins?: MockPluginScenario | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
     readonly onCommand?: (command: HostApiCommandInput) => void;
   } = {},
@@ -29,15 +36,15 @@ export function createMockHostPort(
     connection.authority.document.deploymentId !== mockSignedOutDeploymentId;
   const attach = (connection: DeploymentConnection): HostClient => {
     const hosts = options.hosts;
-    if (hosts === undefined)
-      return new MockHostClient(options.subagents ? { subagents: options.subagents } : {});
+    const scenario = {
+      ...(options.subagents ? { subagents: options.subagents } : {}),
+      ...(options.plugins ? { plugins: options.plugins } : {}),
+    };
+    if (hosts === undefined) return new MockHostClient(scenario);
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      const created = new MockHostClient({
-        devices: "seeded",
-        ...(options.subagents ? { subagents: options.subagents } : {}),
-      });
+      const created = new MockHostClient({ devices: "seeded", ...scenario });
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {
         const result = await dispatch(command);

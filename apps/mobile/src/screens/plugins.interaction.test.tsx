@@ -73,7 +73,7 @@ async function host() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
   // The mock engine takes a moment to start on its first read, as the real one does.
-  await client.rpc["plugins.installed.list"]({});
+  await client.rpc["plugins.accounts.list"]({});
   state.host = client;
   return client;
 }

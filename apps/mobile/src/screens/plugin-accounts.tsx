@@ -59,7 +59,7 @@ function PluginAccounts({ host }: { host: HostClient }) {
           },
         ]
       : accounts.data.map((row) => {
-          const label = row.account.label || row.account.id;
+          const label = row.label || row.id;
           const remove = () => {
             const text = pluginAccountRemoval(row);
             confirmDestructive({
@@ -67,18 +67,18 @@ function PluginAccounts({ host }: { host: HostClient }) {
               message: text.message,
               confirm: text.confirm,
               onConfirm: () =>
-                action.run(`remove:${row.account.id}`, async () => {
-                  await removePluginAccount(host, row.account.id);
+                action.run(`remove:${row.id}`, async () => {
+                  await removePluginAccount(host, row.id);
                   await accounts.reload();
                 }),
             });
           };
           return {
-            key: row.account.id,
+            key: row.id,
             kind: "button",
-            label: action.pending === `remove:${row.account.id}` ? `Removing ${label}…` : label,
+            label: action.pending === `remove:${row.id}` ? `Removing ${label}…` : label,
             detail: pluginAccountRowDetail(row),
-            mark: { definitionId: row.account.provider, name: row.providerName },
+            mark: { definitionId: row.provider, name: row.providerName },
             disabled: action.pending !== null,
             onPress: remove,
             actions: [{ label: "Remove", destructive: true, onPress: remove }],

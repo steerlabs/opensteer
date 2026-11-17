@@ -7,10 +7,12 @@ import {
   pluginLocalToolStatus,
   pluginLocalToolSummary,
   pluginLocalToolWhere,
-  readInstalledPlugins,
+  readPluginLocalTool,
   setPluginAccess,
+  type PluginLocalToolSummaryView,
   type PluginLocalToolView,
 } from "@opensteer/client/plugins";
+import { HostClientRequestError } from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -27,7 +29,7 @@ import { LocalServerSection } from "./local-server-section.js";
 import { localToolPath, pluginsPath } from "./plugins-area.js";
 
 /** Device data apps and local servers, which agents reach beside plugins. */
-export function LocalTools({ tools }: { readonly tools: readonly PluginLocalToolView[] }) {
+export function LocalTools({ tools }: { readonly tools: readonly PluginLocalToolSummaryView[] }) {
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">On your devices</h2>
@@ -66,22 +68,23 @@ export function LocalTools({ tools }: { readonly tools: readonly PluginLocalTool
 /** One local tool: how agents reach it, what it offers, and their access. */
 export function LocalToolPage({ id }: { readonly id: string }) {
   const { hostClient } = useShell();
-  const installed = useSettingsRead(
-    () => readInstalledPlugins(hostClient),
-    "plugins-installed",
-    true,
-  );
-  const tool = installed.data?.local.find((entry) => entry.id === id) ?? null;
+  // Its own read: the installed list counts a local tool's tools, this page lists them.
+  const installed = useSettingsRead(() => readPluginLocalTool(hostClient, id), `local-tool:${id}`);
+  const gone =
+    installed.error instanceof HostClientRequestError && installed.error.code === "not_found";
+  const tool = gone ? null : installed.data;
   return (
     <div className="plugins-area plugin-page">
       <Link className="plugins-back" to={pluginsPath}>
         <Icon name="arrow-left" />
         Plugins
       </Link>
-      <SettingsError message={installed.error ? actionErrorMessage(installed.error) : null} />
+      <SettingsError
+        message={installed.error && !gone ? actionErrorMessage(installed.error) : null}
+      />
       {tool ? (
         <LocalToolContent tool={tool} />
-      ) : installed.data ? (
+      ) : gone ? (
         <p className="notice" role="status">
           This isn't available to agents anymore. It may have been removed on its device.
         </p>

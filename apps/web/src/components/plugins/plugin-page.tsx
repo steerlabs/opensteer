@@ -18,6 +18,9 @@ import {
   pluginWebhookStatusText,
   pluginWorkflowRunLabel,
   pluginWorkflowRunLive,
+  pluginSkillsReader,
+  pluginToolsReader,
+  pluginVersionsReader,
   readPlugin,
   readPluginScheduleRuns,
   readPluginWebhookSetup,
@@ -32,7 +35,7 @@ import {
   type InstalledPluginView,
   type PluginRequirementTarget,
 } from "@opensteer/client/plugins";
-import { useAppView, usePluginWorkflowRuns } from "@opensteer/client/react";
+import { useAppView, usePluginSection, usePluginWorkflowRuns } from "@opensteer/client/react";
 import { AppFrame, AppLoading, AppLoadFailure, useAppTheme } from "../apps/app-frame.js";
 import { useShell } from "../app-shell.js";
 import { CopyBlock } from "../copy-block.js";
@@ -326,29 +329,77 @@ function AccountsSection({
   );
 }
 
-function ShowAll({
-  all,
+/** "Show all" for a section the detail sends the first few of, with the Host's further pages. */
+function SectionPages({
   label,
-  onToggle,
+  noun,
+  section,
 }: {
-  readonly all: boolean;
   readonly label: string;
-  readonly onToggle: () => void;
+  readonly noun: string;
+  readonly section: ReturnType<typeof usePluginSection<unknown>>;
 }) {
+  if (!section.expandable) return null;
   return (
-    <button className="card__row plugins-link-row" onClick={onToggle} type="button">
-      <span className="card__row-body">
-        <span className="card__row-title">{all ? "Show fewer" : label}</span>
-      </span>
-    </button>
+    <>
+      {section.error ? (
+        <div className="card__row">
+          <span className="card__row-body">
+            <span className="card__row-detail">
+              Couldn't read all of its {noun}: {actionErrorMessage(section.error)}
+            </span>
+          </span>
+          <button className="btn btn--small" onClick={section.retry} type="button">
+            Try again
+          </button>
+        </div>
+      ) : null}
+      {section.more ? (
+        <button
+          className="card__row plugins-link-row"
+          disabled={section.loadingMore}
+          onClick={section.more}
+          type="button"
+        >
+          <span className="card__row-body">
+            <span className="card__row-title">
+              {section.loadingMore ? "Loading…" : `Show more ${noun}`}
+            </span>
+          </span>
+        </button>
+      ) : null}
+      <button
+        className="card__row plugins-link-row"
+        disabled={section.loading}
+        onClick={section.toggle}
+        type="button"
+      >
+        <span className="card__row-body">
+          <span className="card__row-title">
+            {section.loading ? "Loading…" : section.all ? "Show fewer" : label}
+          </span>
+        </span>
+      </button>
+    </>
   );
 }
 
 function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
-  const [all, setAll] = useState(false);
-  const [allSkills, setAllSkills] = useState(false);
-  const tools = data.tools;
-  const shown = tools && !all ? tools.slice(0, 8) : tools;
+  const { hostClient } = useShell();
+  const id = data.plugin.id;
+  const version = data.plugin.activeVersion;
+  const tools = usePluginSection(
+    data.tools ?? [],
+    data.toolCount,
+    pluginToolsReader(hostClient, id),
+    `tools:${id}:${version}`,
+  );
+  const skills = usePluginSection(
+    data.skills ?? [],
+    data.skillCount,
+    pluginSkillsReader(hostClient, id),
+    `skills:${id}:${version}`,
+  );
   return (
     <>
       <section className="settings-group">
@@ -356,17 +407,17 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
           Tools
           {data.toolCount ? <span className="plugin-page__count">{data.toolCount}</span> : null}
         </h2>
-        {tools === null ? (
+        {data.tools === null ? (
           <p className="settings-footnote">
             {data.plugin.status === "not-built"
               ? "Tools appear once a version builds."
               : "Tools appear once its accounts are connected."}
           </p>
-        ) : tools.length === 0 ? (
+        ) : data.tools.length === 0 ? (
           <p className="settings-footnote">This plugin has no tools.</p>
         ) : (
           <div className="card">
-            {shown!.map((tool) => (
+            {tools.items.map((tool) => (
               <SettingsRow
                 key={tool.name}
                 title={<code className="plugin-page__tool">{tool.name}</code>}
@@ -380,13 +431,7 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
                 }
               />
             ))}
-            {tools.length > 8 ? (
-              <ShowAll
-                all={all}
-                label={`Show all ${data.toolCount} tools`}
-                onToggle={() => setAll(!all)}
-              />
-            ) : null}
+            <SectionPages label={`Show all ${data.toolCount} tools`} noun="tools" section={tools} />
           </div>
         )}
       </section>
@@ -394,20 +439,18 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
         <section className="settings-group">
           <h2 className="settings-group__title">Skills</h2>
           <div className="card">
-            {(allSkills ? data.skills : data.skills.slice(0, 5)).map((skill) => (
+            {skills.items.map((skill) => (
               <SettingsRow
                 key={skill.name}
                 title={skill.name}
                 detail={skill.description || undefined}
               />
             ))}
-            {data.skills.length > 5 ? (
-              <ShowAll
-                all={allSkills}
-                label={`Show all ${data.skills.length} skills`}
-                onToggle={() => setAllSkills(!allSkills)}
-              />
-            ) : null}
+            <SectionPages
+              label={`Show all ${data.skillCount} skills`}
+              noun="skills"
+              section={skills}
+            />
           </div>
         </section>
       ) : null}
@@ -984,14 +1027,19 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
   const action = useAction();
   const [confirming, setConfirming] = useState<string | null>(null);
-  const [all, setAll] = useState(false);
+  const versions = usePluginSection(
+    data.versions,
+    data.versionCount,
+    pluginVersionsReader(hostClient, data.plugin.id),
+    `versions:${data.plugin.id}:${data.plugin.activeVersion}`,
+  );
   const titleId = useId();
   if (!data.versions.length) return null;
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Versions</h2>
       <div className="card">
-        {(all ? data.versions : data.versions.slice(0, 5)).map((version) => (
+        {versions.items.map((version) => (
           <SettingsRow
             key={version.id}
             title={version.createdAt ? formatWhen(version.createdAt) : version.id}
@@ -1012,13 +1060,11 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
             }
           />
         ))}
-        {data.versions.length > 5 ? (
-          <ShowAll
-            all={all}
-            label={`Show all ${data.versions.length} versions`}
-            onToggle={() => setAll(!all)}
-          />
-        ) : null}
+        <SectionPages
+          label={`Show all ${data.versionCount} versions`}
+          noun="versions"
+          section={versions}
+        />
       </div>
       <p className="settings-footnote">
         Switching versions changes the plugin's code, not the data it has stored.
