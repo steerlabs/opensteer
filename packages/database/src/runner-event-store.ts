@@ -1,43 +1,60 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { recoverLostRunTransaction } from "./run-recovery.js";
+import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
+import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
+import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
+import {
+  invalidateExecution,
+  publishExecutionThread,
+  publishExecutionInput,
+  publishExecutionRequest,
+  recordExecutionRunChange,
+  updateExecutionThread,
+  writeExecutionItem,
+} from "./execution-changes.js";
+import {
+  describeTranscriptMessage,
+  transcriptIdentity,
+  transcriptPreview,
+} from "./transcript-store.js";
+import { completeRunReplacement, recoverLostRunTransaction } from "./run-recovery.js";
 import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
 import { storableJson } from "./storable-json.js";
 export { storableText } from "./storable-json.js";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { isConstraintViolation } from "./connection.js";
-import { type DeploymentEventRow, type RunRow, type DatabaseSchema } from "./schema.js";
-import { type PendingAgentEvent, PendingAgentEventSchema } from "@opensteer/protocol";
+import { type RunRow, type DatabaseSchema } from "./schema.js";
+import {
+  type PendingAgentEventV2 as PendingAgentEvent,
+  PendingAgentEventV2Schema,
+} from "@opensteer/protocol";
 import {
   type EnvironmentId,
   type RunnerId,
   OpensteerError,
-  type AgentEvent,
   MessageAuthorSchema,
   ReplyTargetSchema,
   type IntegrationCallSubject,
   IntegrationCallSubjectSchema,
-  createId,
   runBackgroundMaxMs,
-  nodeDetailEventNodeId,
+  utf8Prefix,
 } from "@opensteer/core";
-import { isDeepStrictEqual } from "node:util";
-import { type Transaction, sql, type Kysely } from "kysely";
+import { type Transaction, sql, type Kysely, type Selectable } from "kysely";
 import {
   type ChannelLinks,
   systemPrincipalId,
   jsonValue,
-  eventFromRow,
   lockThreadRow,
 } from "./store-primitives.js";
-import { appendHostDeploymentEvent, stampRunContext } from "./deployment-events.js";
-import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
-import { markThreadStatePending, projectThreadState } from "./thread-status.js";
-import { finalizeRunTransaction } from "./run-finalization.js";
+import { messageFromRow } from "./thread-row-mappers.js";
+import {
+  finalizeRunTransaction,
+  drainRunFinish,
+  settleFinishChildren,
+} from "./run-finalization.js";
 import {
   runAssignmentAcceptsRequests,
   assignmentActivityEventsForRun,
 } from "./assignment-store.js";
-import { requestInsert, cancelPending } from "./request-store.js";
+import { requestInsert } from "./request-store.js";
 import { enqueueChannelConversationStatus, enqueueChannelReply } from "./channel-deliveries.js";
 import { assertActiveExecutionBinding as assertActiveExecutionBindingInStore } from "./execution-authority.js";
 import { runReply } from "./run-reply.js";
@@ -45,62 +62,11 @@ import { runHasActiveGrant, runWasStopped, type RevokedRunGrant } from "./run-gr
 import { deliverConversationInputsInTransaction } from "./thread-inbox.js";
 import {
   completeExecutionNode,
-  endLiveExecutionNodes,
   requireRunNode,
   startExecutionNode,
   updateExecutionNode,
 } from "./execution-nodes.js";
-import {
-  attemptForBinding,
-  currentRunAttempt,
-  endAttempt,
-  markAttemptStarted,
-  recordAttemptUsage,
-  type RunAttemptRow,
-} from "./run-attempts.js";
-function isExactRunnerEventReplay(
-  row: DeploymentEventRow,
-  event: PendingAgentEvent,
-  input: {
-    readonly environmentId: EnvironmentId;
-    readonly runnerBootId: string;
-    readonly runnerId: RunnerId;
-  },
-): boolean {
-  return (
-    row.runId === event.runId &&
-    row.runnerOrdinal === event.ordinal &&
-    row.runnerId === input.runnerId &&
-    row.runnerBootId === input.runnerBootId &&
-    row.runnerBindingGeneration === event.bindingGeneration &&
-    row.environmentId === input.environmentId &&
-    row.threadId === event.threadId &&
-    row.type === event.type &&
-    (event.type === "assistant.message" ||
-      row.createdAt.getTime() === Date.parse(event.emittedAt)) &&
-    isDeepStrictEqual(runnerReportedData(row), event.data)
-  );
-}
-
-/**
- * A stored Runner event's data less what the Host added when it committed it:
- * an integration call's subject, or which message was a turn's or a completed
- * Run's reply.
- */
-function runnerReportedData(row: DeploymentEventRow): unknown {
-  const hostKey =
-    row.type === "tool.started"
-      ? "integration"
-      : row.type === "run.completed" || row.type === "run.phase"
-        ? "replyMessageId"
-        : null;
-  if (typeof row.data !== "object" || row.data === null) return row.data;
-  return Object.fromEntries(
-    Object.entries(row.data).filter(
-      ([key]) => key !== hostKey && !["startedBy", "startedAt", "personWaiting"].includes(key),
-    ),
-  );
-}
+import { markAttemptStarted, recordAttemptUsage, type RunAttemptRow } from "./run-attempts.js";
 function assertRunnerEventTransition(
   run: Pick<
     RunRow,
@@ -163,26 +129,69 @@ function assertRunnerEventTransition(
     });
   }
 }
-interface EventProjection {
-  readonly compensatingEvents: readonly AgentEvent[];
-  /** A restart that took the person's waiting messages ended the attempt's tools. */
-  readonly revokedGrants: readonly RevokedRunGrant[];
-  /**
-   * A second `run.usage` arrived for a Run that already has one. The first
-   * statement stands; the caller reports the conflict rather than failing the
-   * Runner's delivery over a fact nobody is waiting on.
-   */
-  readonly duplicateRunUsage: boolean;
+async function publishRunnerMessage(
+  tx: Transaction<DatabaseSchema>,
+  mutation: PersonalMutation,
+  row: Selectable<DatabaseSchema["messages"]>,
+  attempt: RunAttemptRow,
+) {
+  const message = messageFromRow(row);
+  const { published, visible, isTurnStart, view } = describeTranscriptMessage({
+    ...message,
+    edited: false,
+    admittedSeed: false,
+    seedInRun: false,
+    assigned: false,
+  });
+  await tx.updateTable("messages").set({ published }).where("id", "=", row.id).execute();
+  await writeExecutionItem(tx, mutation, {
+    id: row.id,
+    kind: "message",
+    messageId: row.id,
+    createdAt: row.createdAt,
+    threadId: row.threadId,
+    runId: row.runId,
+    attemptId: attempt.id,
+    nodeId: null,
+    visible,
+    isTurnStart,
+    view,
+  });
+  if (message.kind === "assistant") {
+    await tx
+      .updateTable("threads")
+      .set({
+        revision: mutation.sequence,
+        lastReplyMessageId: row.id,
+        lastReplyPreview: utf8Prefix(view.preview ?? "", 1120),
+      })
+      .where("id", "=", row.threadId)
+      .execute();
+    await publishExecutionThread(tx, mutation, row.threadId);
+  }
 }
+
 async function applyEventProjection(
   transaction: Transaction<DatabaseSchema>,
+  mutation: PersonalMutation,
   event: PendingAgentEvent,
   links: ChannelLinks,
-  attempt: RunAttemptRow | undefined,
-): Promise<EventProjection> {
-  let canonicalMessageEvent: AgentEvent | null = null;
+  attempt: RunAttemptRow,
+  integration?: IntegrationCallSubject,
+): Promise<{ duplicateRunUsage: boolean; revokedGrants: readonly RevokedRunGrant[] }> {
   let duplicateRunUsage = false;
   let revokedGrants: readonly RevokedRunGrant[] = [];
+  const close = (itemId: string, nodeId: import("@opensteer/core").ExecutionNodeId | null = null) =>
+    mutation.react({
+      type: "liveClosed",
+      itemId,
+      runId: event.runId,
+      threadId: event.threadId,
+      attemptId: attempt.id,
+      bindingGeneration: event.bindingGeneration,
+      nodeId,
+      afterSequence: mutation.sequence,
+    });
   if (event.type === "assistant.message") {
     if (event.data.content.some(isPlaceContentPart)) {
       throw new OpensteerError({
@@ -249,16 +258,7 @@ async function applyEventProjection(
       })
       .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
-    canonicalMessageEvent = await appendHostDeploymentEvent(transaction, {
-      data: {
-        input: null,
-        message: messageFromRow(messageRow),
-      },
-      environmentId: event.environmentId,
-      runId: event.runId,
-      threadId: event.threadId,
-      type: "message.created",
-    });
+    await publishRunnerMessage(transaction, mutation, messageRow, attempt);
   }
   if (event.type === "voice.heard") {
     if (!event.runId)
@@ -314,19 +314,10 @@ async function applyEventProjection(
       })
       .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
-    canonicalMessageEvent = await appendHostDeploymentEvent(transaction, {
-      data: {
-        input: null,
-        message: messageFromRow(messageRow),
-      },
-      environmentId: event.environmentId,
-      runId: event.runId,
-      threadId: event.threadId,
-      type: "message.created",
-    });
+    await publishRunnerMessage(transaction, mutation, messageRow, attempt);
   }
   const now = new Date(event.emittedAt);
-  const compensatingEvents: AgentEvent[] = canonicalMessageEvent ? [canonicalMessageEvent] : [];
+
   switch (event.type) {
     case "request.cancelled": {
       const pendingRequest = await transaction
@@ -381,6 +372,7 @@ async function applyEventProjection(
         .returningAll()
         .executeTakeFirst();
       if (!cancelled) break;
+      await publishExecutionRequest(transaction, cancelled);
       const anotherLiveRequest = event.runId
         ? await transaction
             .selectFrom("requests")
@@ -402,7 +394,6 @@ async function applyEventProjection(
           .execute();
         if (resumedStatus === "running") {
           const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
-          compensatingEvents.push(...handed.events);
           revokedGrants = handed.revokedGrants;
         }
       }
@@ -447,17 +438,7 @@ async function applyEventProjection(
           .execute();
       }
       if (injected) {
-        compensatingEvents.push(
-          await appendHostDeploymentEvent(transaction, {
-            data: {
-              input: threadInputFromRow(injected),
-            },
-            environmentId: event.environmentId,
-            runId: event.runId,
-            threadId: event.threadId,
-            type: "thread-input.updated",
-          }),
-        );
+        await publishExecutionInput(transaction, injected);
       }
       break;
     case "run.started":
@@ -521,25 +502,14 @@ async function applyEventProjection(
         for (const { messageId } of fixedBatch) {
           const row = deliveredById.get(messageId);
           if (!row) continue;
-          compensatingEvents.push(
-            await appendHostDeploymentEvent(transaction, {
-              data: {
-                input: threadInputFromRow(row),
-              },
-              environmentId: event.environmentId,
-              runId: event.runId,
-              threadId: event.threadId,
-              type: "thread-input.updated",
-            }),
-          );
+          await publishExecutionInput(transaction, row);
         }
         // What the person wrote while the engine was starting is the started
         // turn's to take now.
         const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
-        compensatingEvents.push(...handed.events);
         revokedGrants = handed.revokedGrants;
       }
-      compensatingEvents.push(...(await projectThreadState(transaction, event.threadId, now)));
+
       break;
     case "run.status":
       const liveRequest =
@@ -562,38 +532,7 @@ async function applyEventProjection(
           .where("id", "=", event.runId)
           .execute();
       }
-      compensatingEvents.push(...(await projectThreadState(transaction, event.threadId, now)));
-      break;
-    case "run.completed":
-    case "run.interrupted":
-      if (event.runId) {
-        const status = event.type === "run.completed" ? "completed" : "interrupted";
-        compensatingEvents.push(
-          ...(await finalizeRunTransaction(transaction, {
-            completedAt: new Date(),
-            links,
-            source: "runner",
-            queuedInputCancellation: "seed-input",
-            runId: event.runId,
-            status,
-          })),
-        );
-      }
-      break;
-    case "run.failed":
-      if (event.runId) {
-        compensatingEvents.push(
-          ...(await finalizeRunTransaction(transaction, {
-            completedAt: new Date(),
-            failure: event.data,
-            links,
-            source: "runner",
-            queuedInputCancellation: "seed-input",
-            runId: event.runId,
-            status: "failed",
-          })),
-        );
-      }
+
       break;
     case "request.opened":
       if (
@@ -607,7 +546,12 @@ async function applyEventProjection(
         });
       }
       if (event.data.request.originatingNodeId) {
-        await requireRunNode(transaction, event.runId, event.data.request.originatingNodeId);
+        await requireRunNode(
+          transaction,
+          event.runId,
+          event.data.request.originatingNodeId,
+          attempt.id,
+        );
       }
       // The Runner's event stream must keep moving, so an ask from a stopped
       // Run or task is recorded and cancelled at once instead of refused.
@@ -620,15 +564,15 @@ async function applyEventProjection(
         .values(requestInsert(event.data.request))
         .executeTakeFirstOrThrow();
       if (!accepted) {
-        compensatingEvents.push(
-          ...(await cancelPending(transaction, {
-            reason: "source-closed",
-            requestIds: [event.data.request.id],
-            resolvedAt: now,
-          })),
-        );
+        await transaction
+          .updateTable("requests")
+          .set({ status: "cancelled", cancellationReason: "source-closed", resolvedAt: now })
+          .where("id", "=", event.data.request.id)
+          .execute();
+        await publishExecutionRequest(transaction, { id: event.data.request.id });
         break;
       }
+      await publishExecutionRequest(transaction, { id: event.data.request.id });
       if (event.runId) {
         await transaction
           .updateTable("runs")
@@ -657,32 +601,100 @@ async function applyEventProjection(
       }
       break;
     case "run.phase":
-      compensatingEvents.push(...(await projectRunPhase(transaction, event, links)));
+      await projectRunPhase(transaction, event, links);
       break;
     case "node.started":
+      if (event.data.parentNodeId)
+        await requireRunNode(transaction, event.runId, event.data.parentNodeId, attempt.id);
       await startExecutionNode(transaction, {
-        attemptId: (attempt ?? (await currentRunAttempt(transaction, event.runId))).id,
+        attemptId: attempt.id,
         node: event.data,
         runId: event.runId,
         startedAt: now,
       });
       break;
     case "node.updated":
+      await requireRunNode(transaction, event.runId, event.data.nodeId, attempt.id);
+      if (event.data.parentNodeId)
+        await requireRunNode(transaction, event.runId, event.data.parentNodeId, attempt.id);
       await updateExecutionNode(transaction, event.runId, event.data);
       break;
     case "node.completed":
+      await requireRunNode(transaction, event.runId, event.data.nodeId, attempt.id);
       await completeExecutionNode(transaction, {
         completion: event.data,
         endedAt: now,
         runId: event.runId,
       });
       break;
-    case "tool.started":
-    case "tool.completed":
-    case "node.message":
-    case "reasoning.completed":
-      if (event.data.nodeId) await requireRunNode(transaction, event.runId, event.data.nodeId);
+    case "assistant.message":
+      close(event.data.messageId);
       break;
+    case "tool.started":
+    case "tool.completed": {
+      if (event.data.nodeId)
+        await requireRunNode(transaction, event.runId, event.data.nodeId, attempt.id);
+      const key = {
+        runId: event.runId,
+        threadId: event.threadId,
+        attemptId: attempt.id,
+        bindingGeneration: event.bindingGeneration,
+        nodeId: event.data.nodeId ?? null,
+        callId: event.data.callId,
+        origin: "runner" as const,
+      };
+      if (event.type === "tool.started") {
+        await startPersonalToolCall(transaction, mutation, {
+          ...key,
+          tool: event.data.tool,
+          arguments: event.data.arguments,
+          ...(integration ? { integration } : {}),
+          ...(event.data.provisional ? { provisional: true } : {}),
+        });
+      } else {
+        await completePersonalToolCall(transaction, mutation, {
+          ...key,
+          output: event.data.output,
+          isError: event.data.isError,
+        });
+      }
+      break;
+    }
+    case "node.message":
+    case "reasoning.completed": {
+      const nodeId = event.data.nodeId ?? null;
+      if (nodeId) await requireRunNode(transaction, event.runId, nodeId, attempt.id);
+      const reasoning = event.type === "reasoning.completed";
+      const id = reasoning
+        ? transcriptIdentity(
+            "reasoning",
+            event.runId,
+            attempt.id,
+            event.bindingGeneration,
+            nodeId,
+            event.data.blockId,
+          )
+        : transcriptIdentity("node-message", event.runId, event.ordinal);
+      const body = utf8Prefix(event.data.text, 480 * 1024);
+      await writeExecutionItem(transaction, mutation, {
+        id,
+        kind: reasoning ? "reasoning" : "node-message",
+        createdAt: now,
+        threadId: event.threadId,
+        runId: event.runId,
+        attemptId: attempt.id,
+        nodeId,
+        visible: true,
+        isTurnStart: false,
+        body,
+        view: transcriptPreview({ preview: body }),
+        ...(reasoning
+          ? { blockId: event.data.blockId, bindingGeneration: event.bindingGeneration }
+          : {}),
+      });
+      close(id, nodeId);
+      break;
+    }
     case "run.context-measured": {
       const run = await transaction
         .selectFrom("runs")
@@ -740,7 +752,7 @@ async function applyEventProjection(
         // write is the whole conflict check: it lands only while this attempt
         // has no usage recorded yet.
         duplicateRunUsage = !(await recordAttemptUsage(transaction, {
-          attemptId: (attempt ?? (await currentRunAttempt(transaction, event.runId))).id,
+          attemptId: attempt.id,
           runId: event.runId,
           usage: event.data,
         }));
@@ -750,7 +762,6 @@ async function applyEventProjection(
       break;
   }
   return {
-    compensatingEvents,
     duplicateRunUsage,
     revokedGrants,
   };
@@ -771,7 +782,7 @@ async function projectRunPhase(
     }
   >,
   links: ChannelLinks,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const background = event.data.phase === "background";
   const run = await transaction
     .selectFrom("runs")
@@ -813,512 +824,235 @@ async function projectRunPhase(
       threadId: run.threadId,
     });
   }
-  return [];
 }
 
-async function latestRunEvent(
-  transaction: Transaction<DatabaseSchema>,
-  runId: RunRow["id"],
-): Promise<AgentEvent> {
-  return eventFromRow(
-    await transaction
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", runId)
-      .orderBy("sequence", "desc")
-      .limit(1)
-      .executeTakeFirstOrThrow(),
-  );
-}
-
-/**
- * An event from an attempt a restart superseded, which the Runner sends until
- * the interruption lands. Its ordinal is consumed so the stream keeps moving,
- * but nothing it reports reaches the Run, except what it consumed. Its
- * interruption is the restart's cue: the Run goes back to its queue with a
- * new `run.execute`, whose attempt starts with the messages steered into it.
- */
-async function commitSupersededAttemptEvent(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly attempt: RunAttemptRow;
-    readonly event: PendingAgentEvent;
-    readonly run: RunRow;
-  },
-): Promise<{
-  readonly compensatingEvents: readonly AgentEvent[];
-  readonly duplicateRunUsage: boolean;
-  readonly event: AgentEvent;
-  readonly revokedGrants: readonly RevokedRunGrant[];
-  readonly wasDuplicate: boolean;
-}> {
-  const { attempt, event, run } = input;
-  if (event.ordinal !== run.nextRunnerOrdinal) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: `Runner event ordinal ${event.ordinal} is out of sequence; expected ${run.nextRunnerOrdinal}`,
-    });
-  }
-  if (event.type !== "run.interrupted") {
-    await transaction
-      .updateTable("runs")
-      .set({
-        nextRunnerOrdinal: event.ordinal + 1,
-      })
-      .where("id", "=", run.id)
-      .executeTakeFirstOrThrow();
-    const duplicateRunUsage =
-      event.type === "run.usage" &&
-      !(await recordAttemptUsage(transaction, {
-        attemptId: attempt.id,
-        runId: run.id,
-        usage: event.data,
-      }));
-    return {
-      compensatingEvents: [],
-      duplicateRunUsage,
-      event: await latestRunEvent(transaction, run.id),
-      revokedGrants: [],
-      wasDuplicate: true,
-    };
-  }
-  if (!attempt.supersededBy) throw new Error("A superseded attempt has no successor");
-  const successor = await transaction
-    .selectFrom("runAttempts")
-    .selectAll()
-    .where("id", "=", attempt.supersededBy)
-    .executeTakeFirstOrThrow();
-  const now = new Date(event.emittedAt);
-  await lockRunProjectionRows(transaction, {
-    runIds: [run.id],
-    threadIds: [run.threadId],
-  });
-  await transaction
-    .updateTable("runs")
-    .set({
-      bindingGeneration: null,
-      nextRunnerOrdinal: event.ordinal + 1,
-      status: "queued",
-    })
-    .where("id", "=", run.id)
-    .executeTakeFirstOrThrow();
-  await transaction
-    .updateTable("providerSessions")
-    .set({
-      status: "ready",
-      updatedAt: now,
-    })
-    .where("id", "=", run.providerSessionId)
-    .where("bindingGeneration", "=", event.bindingGeneration)
-    .execute();
-  const execute = await transaction
-    .selectFrom("commands")
-    .selectAll()
-    .where("runId", "=", run.id)
-    .where("type", "=", "run.execute")
-    .orderBy("createdAt", "asc")
-    .orderBy("id", "asc")
-    .limit(1)
-    .executeTakeFirstOrThrow();
-  await transaction
-    .insertInto("commands")
-    .values({
-      actorPrincipalId: execute.actorPrincipalId,
-      authoritySource: jsonValue(execute.authoritySource),
-      dispatcherId: null,
-      environmentId: execute.environmentId,
-      id: createId("command"),
-      idempotencyKey: `restart:${successor.id}`,
-      lastError: null,
-      payload: jsonValue(execute.payload),
-      requestedBy: execute.requestedBy,
-      runId: run.id,
-      status: "pending",
-      threadId: execute.threadId,
-      type: "run.execute",
-    })
-    .executeTakeFirstOrThrow();
-  // The Run row was read under its lock after every earlier attempt's usage.
-  const priorUsage = runUsageFromRow(run);
-  const restarted = await appendHostDeploymentEvent(transaction, {
-    data: {
-      attempt: successor.ordinal,
-      ...(priorUsage
-        ? {
-            priorUsage,
-          }
-        : {}),
-      reason: "steer",
-    },
-    environmentId: run.environmentId,
-    runId: run.id,
-    threadId: run.threadId,
-    type: "run.restarted",
-  });
-  const compensatingEvents: AgentEvent[] = [
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        status: "queued",
-      },
-      environmentId: run.environmentId,
-      runId: run.id,
-      threadId: run.threadId,
-      type: "run.status",
-    }),
-    ...(await projectThreadState(transaction, run.threadId, now)),
-    ...(await assignmentActivityEventsForRun(transaction, run.id)),
-  ];
-  await endLiveExecutionNodes(transaction, {
-    attemptId: attempt.id,
-    endedAt: now,
-    runId: run.id,
-  });
-  await endAttempt(transaction, attempt.id, "interrupted");
-  return {
-    compensatingEvents,
-    duplicateRunUsage: false,
-    event: restarted,
-    revokedGrants: [],
-    wasDuplicate: false,
-  };
-}
 export async function commitRunnerEvent(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   input: {
     readonly environmentId: EnvironmentId;
     readonly event: PendingAgentEvent;
-    /**
-     * What a `tool.started` integration call addressed, as the Host resolved
-     * it. It is stored with the event but is not the Runner's to send, so a
-     * replay is still compared against the Runner's data alone.
-     */
     readonly integration?: IntegrationCallSubject;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   },
   executionNow: () => number = Date.now,
-): Promise<{
-  /** Turns the Host requeued because this event ended their injection window. */
-  readonly compensatingEvents: readonly AgentEvent[];
-  /** A `run.usage` this Run had already stated; the first one still stands. */
-  readonly duplicateRunUsage: boolean;
-  readonly event: AgentEvent;
-  /** Grants a restart took when the event let the person's messages reach the Run. */
-  readonly revokedGrants: readonly RevokedRunGrant[];
-  readonly wasDuplicate: boolean;
-}> {
-  // An engine can put half of a surrogate pair or U+0000 in any text it
-  // reports, and PostgreSQL refuses either in jsonb. The event is made
-  // storable once, here, so the log, every projection and the comparison with
-  // a replay all see the same text, and one bad character never fails the
-  // commit, which the Runner would otherwise send again forever.
-  const event = storableJson(PendingAgentEventSchema.parse(input.event));
-  if (event.environmentId !== input.environmentId) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Runner event environment mismatch",
-    });
-  }
-  if (input.integration && event.type !== "tool.started") {
-    throw new Error("Only a tool.started event names an integration call's subject");
-  }
-  const data = storableJson(
-    input.integration
-      ? {
-          ...event.data,
-          integration: IntegrationCallSubjectSchema.parse(input.integration),
-        }
-      : event.data,
-  );
-
-  // An event whose content the schema refuses fails the same way on every
-  // replay, so it is refused — which ends its Run — rather than reported as a
-  // store failure, which would have the Runner send it again forever.
-  const committed = await withPersonalTransaction(database, async (transaction) => {
-    const run = await transaction
-      .selectFrom("runs")
-      .selectAll()
-      .where("id", "=", event.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!run) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Runner event has no durable run",
-      });
-    }
-    const retired = await transaction
-      .selectFrom("runAttempts")
-      .select("id")
-      .where("runId", "=", run.id)
-      .where("bindingGeneration", "=", event.bindingGeneration)
-      .where("status", "=", "superseded")
-      .where("endedAt", "is not", null)
-      .where((expression) =>
-        expression.exists(
-          expression
-            .selectFrom("runAttempts as replacement")
-            .select("replacement.id")
-            .whereRef("replacement.runId", "=", "runAttempts.runId")
-            .whereRef("replacement.ordinal", ">", "runAttempts.ordinal")
-            .where("replacement.reason", "=", "recovery"),
-        ),
-      )
-      .executeTakeFirst();
-    if (retired) {
-      const binding = await transaction
-        .selectFrom("providerSessions")
-        .select("bindingGeneration")
-        .where("id", "=", run.providerSessionId)
-        .executeTakeFirst();
-      if (binding?.bindingGeneration !== event.bindingGeneration) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Another execution binding holds this Run",
-        });
-      }
-    }
-    const duplicate = await transaction
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", event.runId)
-      .where("runnerOrdinal", "=", event.ordinal)
-      .executeTakeFirst();
-    if (duplicate) {
-      if (!isExactRunnerEventReplay(duplicate, event, input)) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Runner event ordinal was already committed with different content",
-        });
-      }
-      return {
-        compensatingEvents: [],
-        duplicateRunUsage: false,
-        revokedGrants: [],
-        event: eventFromRow(duplicate),
-        wasDuplicate: true,
-      };
-    }
-    const attempt = await attemptForBinding(transaction, run.id, event.bindingGeneration);
-    const superseded =
-      attempt?.status === "superseded" &&
-      attempt.runnerId === input.runnerId &&
-      attempt.runnerBootId === input.runnerBootId &&
-      run.environmentId === input.environmentId &&
-      run.threadId === event.threadId
-        ? attempt
-        : null;
-    // A superseded attempt's events below the Run's ordinal were absorbed,
-    // not stored: a repeat is acknowledged as the duplicate it is.
-    if (superseded && event.ordinal < run.nextRunnerOrdinal) {
-      return {
-        compensatingEvents: [],
-        duplicateRunUsage: false,
-        revokedGrants: [],
-        event: await latestRunEvent(transaction, run.id),
-        wasDuplicate: true,
-      };
-    }
-    if (["completed", "failed", "interrupted"].includes(run.status)) {
-      const formerBinding = await transaction
-        .selectFrom("providerSessions")
-        .innerJoin("threads", "threads.id", "providerSessions.threadId")
-        .where("providerSessions.id", "=", run.providerSessionId)
-        .where("providerSessions.bindingGeneration", "=", event.bindingGeneration)
-        .where("providerSessions.runnerId", "=", input.runnerId)
-        .where("providerSessions.runnerBootId", "=", input.runnerBootId)
-        .executeTakeFirst();
-      const isExactLateEvent =
-        formerBinding !== undefined &&
-        run.environmentId === input.environmentId &&
-        run.threadId === event.threadId &&
-        run.nextRunnerOrdinal === event.ordinal;
-      if (isExactLateEvent) {
-        const durableTerminal = await transaction
-          .selectFrom("deploymentEvents")
-          .selectAll()
-          .where("runId", "=", run.id)
-          .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
-          .orderBy("sequence", "desc")
-          .executeTakeFirstOrThrow();
-        await transaction
-          .updateTable("runs")
-          .set({
-            nextRunnerOrdinal: event.ordinal + 1,
-          })
-          .where("id", "=", run.id)
-          .where("nextRunnerOrdinal", "=", event.ordinal)
-          .executeTakeFirstOrThrow();
-        return {
-          compensatingEvents: [],
-          duplicateRunUsage: false,
-          revokedGrants: [],
-          event: eventFromRow(durableTerminal),
-          wasDuplicate: true,
-        };
-      }
-    }
-    await assertActiveExecutionBindingInStore(
-      transaction,
-      {
-        ...(event.type === "run.interrupted" && event.data.cause === "lease-lost"
-          ? {
-              lostExecution: true,
-            }
-          : {}),
-        bindingGeneration: event.bindingGeneration,
-        environmentId: input.environmentId,
-        requestedBy: run.requestedBy,
-        runId: event.runId,
-        runnerBootId: input.runnerBootId,
-        runnerId: input.runnerId,
-        threadId: event.threadId,
-      },
-      executionNow,
-    );
-    // An engine cancelling its own question can be what lets the Run work
-    // again, so that one Request event is fenced like the Run's own events.
-    if (!event.type.startsWith("request.") || event.type === "request.cancelled")
-      await lockThreadRow(transaction, event.threadId);
-    if (event.type === "run.interrupted" && event.data.cause === "lease-lost") {
-      assertRunnerEventTransition(run, event);
-      const recovered = await recoverLostRunTransaction(transaction, {
-        failure: {
-          code: "execution_binding_expired",
-          message: "The Runner stopped renewing this Run's execution binding",
-          retryable: false,
-          status: "failed",
-        },
-        links,
-        now: new Date(),
-        runId: run.id,
-      });
-      const outcome = recovered.events.find(
-        (entry) =>
-          entry.type === "run.restarted" ||
-          entry.type === "run.failed" ||
-          entry.type === "run.interrupted",
-      );
-      if (!outcome) throw new Error("A lost execution has no recovery outcome");
-      return {
-        event: outcome,
-        compensatingEvents: recovered.events.filter((entry) => entry !== outcome),
-        duplicateRunUsage: false,
-        revokedGrants: recovered.revokedGrants,
-        wasDuplicate: false,
-      };
-    }
-    if (superseded) {
-      // Only an end the Run shares is the Run's: one that finished before
-      // its interruption landed, or an interruption somebody also asked for.
-      const endsRun =
-        event.type === "run.completed" ||
-        event.type === "run.failed" ||
-        (event.type === "run.interrupted" && (await runWasStopped(transaction, run.id)));
-      if (!endsRun) {
-        return commitSupersededAttemptEvent(transaction, {
-          attempt: superseded,
-          event,
-          run,
-        });
-      }
-    }
-    if (
-      event.type === "run.started" ||
-      event.type === "run.status" ||
-      event.type === "request.cancelled"
-    ) {
-      await lockRunProjectionRows(transaction, {
-        runIds: [run.id],
-        threadIds: [event.threadId],
-      });
-    }
-    assertRunnerEventTransition(run, event);
-    // A completed Run's reply, and the reply of a turn that ended with work
-    // still running in the background, which every client shows as one.
-    const stored =
-      event.type === "run.completed" ||
-      (event.type === "run.phase" && event.data.phase === "background")
-        ? {
-            ...data,
-            replyMessageId: (await runReply(transaction, run))?.id ?? null,
+) {
+  const event = storableJson(PendingAgentEventV2Schema.parse(input.event));
+  if (event.environmentId !== input.environmentId)
+    throw new OpensteerError({ code: "forbidden", message: "Runner event environment mismatch" });
+  if (input.integration && event.type !== "tool.started")
+    throw new Error("Only tool.started reports can have an integration subject");
+  const integration = input.integration && IntegrationCallSubjectSchema.parse(input.integration);
+  let duplicateRunUsage = false;
+  let revokedGrants: readonly RevokedRunGrant[] = [];
+  const statement = { ...event, runnerId: input.runnerId, runnerBootId: input.runnerBootId };
+  const accept = () =>
+    commitPersonalMutation(database, async (tx, mutation) =>
+      acceptPersonalRunnerStatement(
+        tx,
+        mutation,
+        statement,
+        async (digest, event, authority) => {
+          const run = await tx
+            .selectFrom("runs")
+            .selectAll()
+            .where("id", "=", event.runId)
+            .executeTakeFirstOrThrow();
+          const attempt = await tx
+            .selectFrom("runAttempts")
+            .selectAll()
+            .where("id", "=", authority.attemptId)
+            .executeTakeFirstOrThrow();
+          const lostExecution =
+            event.type === "run.interrupted" && event.data.cause === "lease-lost";
+          await assertActiveExecutionBindingInStore(
+            tx,
+            {
+              bindingGeneration: event.bindingGeneration,
+              environmentId: input.environmentId,
+              requestedBy: run.requestedBy,
+              runId: run.id,
+              runnerBootId: input.runnerBootId,
+              runnerId: input.runnerId,
+              threadId: run.threadId,
+              ...(lostExecution ? { lostExecution } : {}),
+            },
+            executionNow,
+          );
+          await lockThreadRow(tx, event.threadId);
+          if (lostExecution) {
+            assertRunnerEventTransition(run, event);
+            const recovery = await recoverLostRunTransaction(tx, {
+              failure: {
+                code: "execution_binding_expired",
+                message: "The Runner stopped renewing this Run's execution binding",
+                retryable: false,
+                status: "failed",
+              },
+              links,
+              now: mutation.state.now,
+              runId: run.id,
+              statement: {
+                ordinal: event.ordinal,
+                runnerId: input.runnerId,
+                runnerBootId: input.runnerBootId,
+                digest: digest.toString("hex"),
+              },
+            });
+            revokedGrants = recovery.revokedGrants;
+            return "applied";
           }
-        : data;
-    const eventId = createId("event");
-    const sequenceRow = await transaction
-      .updateTable("deploymentEventState")
-      .set({
-        sequence: sql<string>`sequence + 1`,
-      })
-      .returning(["sequence", "deploymentId"])
-      .executeTakeFirstOrThrow();
-    const inserted = await transaction
-      .insertInto("deploymentEvents")
-      .values({
-        createdAt: event.type === "assistant.message" ? new Date() : new Date(event.emittedAt),
-        nodeDetailId: nodeDetailEventNodeId(event) ?? null,
-        data: jsonValue(await stampRunContext(transaction, event.type, event.runId, stored)),
-        environmentId: input.environmentId,
-        eventId,
-        runId: event.runId,
-        runnerBindingGeneration: event.bindingGeneration,
-        runnerBootId: input.runnerBootId,
-        runnerId: input.runnerId,
-        runnerOrdinal: event.ordinal,
-        sequence: sequenceRow.sequence,
-        deploymentId: sequenceRow.deploymentId,
-        threadId: event.threadId,
-        type: event.type,
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    const projection = await applyEventProjection(transaction, event, links, attempt);
-    if (
-      event.type.startsWith("request.") ||
-      event.type === "run.context-measured" ||
-      event.type === "run.compaction"
-    )
-      await markThreadStatePending(transaction, event.threadId);
-    const advanced = await transaction
-      .updateTable("runs")
-      .set({
-        nextRunnerOrdinal: event.ordinal + 1,
-      })
-      .where("id", "=", event.runId)
-      .where("nextRunnerOrdinal", "=", event.ordinal)
-      .executeTakeFirst();
-    if (advanced.numUpdatedRows !== 1n) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Runner event ordinal changed while the event was committing",
-      });
+          const terminal =
+            event.type === "run.completed" ||
+            event.type === "run.failed" ||
+            event.type === "run.interrupted";
+          if (
+            authority.kind === "superseded" &&
+            (!terminal || (event.type === "run.interrupted" && !(await runWasStopped(tx, run.id))))
+          ) {
+            if (event.type === "run.interrupted") {
+              const scope = { attemptId: attempt.id, bindingGeneration: event.bindingGeneration };
+              const children = await readFinishChildren(tx, run.id, scope);
+              if (children.hasMore) {
+                await beginPersonalRunFinish(tx, mutation, {
+                  runId: run.id,
+                  intent: {
+                    ...scope,
+                    mode: "steer",
+                    outcome: "interrupted",
+                    completedAt: event.emittedAt,
+                    replyMessageId: null,
+                    statement: {
+                      ordinal: event.ordinal,
+                      runnerId: input.runnerId,
+                      runnerBootId: input.runnerBootId,
+                      digest: digest.toString("hex"),
+                    },
+                  },
+                });
+                await recordExecutionRunChange(tx, mutation, {
+                  runId: run.id,
+                  threadId: run.threadId,
+                  transition: "finishing",
+                });
+              } else {
+                await settleFinishChildren(
+                  tx,
+                  mutation,
+                  run.id,
+                  { completedAt: new Date(event.emittedAt), source: "runner" },
+                  children,
+                );
+                await completeRunReplacement(
+                  tx,
+                  mutation,
+                  run,
+                  attempt.id,
+                  "steer",
+                  new Date(event.emittedAt),
+                );
+                mutation.react({
+                  type: "runFinished",
+                  attemptOnly: true,
+                  ...scope,
+                  runId: run.id,
+                  threadId: run.threadId,
+                  outcome: "interrupted",
+                });
+              }
+              return "applied";
+            }
+            if (event.type === "run.usage")
+              duplicateRunUsage = !(await recordAttemptUsage(tx, {
+                attemptId: attempt.id,
+                runId: run.id,
+                usage: event.data,
+              }));
+            return "absorbed";
+          }
+          assertRunnerEventTransition(run, event);
+          if (terminal) {
+            await finalizeRunTransaction(tx, {
+              completedAt: mutation.state.now,
+              links,
+              source: "runner",
+              queuedInputCancellation: "seed-input",
+              runId: run.id,
+              status:
+                event.type === "run.completed"
+                  ? "completed"
+                  : event.type === "run.failed"
+                    ? "failed"
+                    : "interrupted",
+              ...(event.type === "run.failed" ? { failure: event.data } : {}),
+              statement: {
+                ordinal: event.ordinal,
+                runnerId: input.runnerId,
+                runnerBootId: input.runnerBootId,
+                digest: digest.toString("hex"),
+              },
+              attemptId: attempt.id,
+            });
+            return "applied";
+          }
+          const projection = await applyEventProjection(
+            tx,
+            mutation,
+            event,
+            links,
+            attempt,
+            integration,
+          );
+          duplicateRunUsage = projection.duplicateRunUsage;
+          revokedGrants = projection.revokedGrants;
+          const transition =
+            event.type === "run.started"
+              ? "started"
+              : event.type === "run.phase"
+                ? event.data.phase === "background"
+                  ? "background"
+                  : "foreground"
+                : event.type === "run.status" ||
+                    event.type === "request.opened" ||
+                    event.type === "request.cancelled"
+                  ? "status"
+                  : null;
+          if (transition) {
+            await updateExecutionThread(tx, run.threadId, new Date(event.emittedAt));
+            await recordExecutionRunChange(tx, mutation, {
+              runId: run.id,
+              threadId: run.threadId,
+              transition,
+            });
+            if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
+          }
+          if (event.type === "run.started")
+            await markAttemptStarted(tx, run.id, event.bindingGeneration);
+          if (event.type === "run.context-measured" || event.type === "run.compaction")
+            invalidateExecution(mutation, run.threadId, "return-hint");
+          return "applied";
+        },
+        {
+          now: executionNow(),
+          allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
+        },
+      ),
+    );
+  try {
+    let result = await accept();
+    if ("finishing" in result) {
+      await drainRunFinish(database, links, event.runId);
+      result = await accept();
+      if ("finishing" in result) throw new Error("Run finish did not commit its Runner receipt");
     }
-    // A terminal event reaches the Assignment through Run finalization.
-    const assignmentEvents =
-      event.type === "run.started" || event.type === "run.status" || event.type === "request.opened"
-        ? await assignmentActivityEventsForRun(transaction, event.runId)
-        : [];
-    // Attempts rank last in ./lock-order.ts.
-    if (event.type === "run.started") {
-      await markAttemptStarted(transaction, run.id, event.bindingGeneration);
-    }
-    return {
-      compensatingEvents: [...projection.compensatingEvents, ...assignmentEvents],
-      duplicateRunUsage: projection.duplicateRunUsage,
-      revokedGrants: projection.revokedGrants,
-      event: eventFromRow(inserted),
-      wasDuplicate: false,
-    };
-  }).catch((error: unknown) => {
+    return { ...result, duplicateRunUsage, revokedGrants };
+  } catch (error) {
     if (!isConstraintViolation(error)) throw error;
     throw new OpensteerError({
       code: "conflict",
       message: `Runner ${event.type} event conflicts with what the Host recorded`,
       retryable: false,
     });
-  });
-  // Assignment return delivery is an independent durable outbox. A Runner's
-  // terminal-event ACK does not depend on delivery into a parent inbox.
-  return committed;
+  }
 }

@@ -1,7 +1,6 @@
 import type { PersonMessageInput, PersonMessageResult } from "@opensteer/database";
 import { OpensteerError } from "@opensteer/core";
 import type {
-  AgentEvent,
   Sequence,
   EnvironmentId,
   ThreadAccessMode,
@@ -33,22 +32,19 @@ interface CommandServiceOptions {
   readonly store: OpensteerStore;
   readonly admission: KeyedAdmissionQueue;
   /** A durable execution was accepted, so dispatch can resume immediately. */
-  readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
+  readonly onExecutionQueued: (environmentId: EnvironmentId | undefined) => void;
   readonly onActivity?: () => void;
-  readonly onDeploymentEvent: (event: AgentEvent) => void;
 }
 export class CommandService {
   readonly #store: OpensteerStore;
   readonly #admission: KeyedAdmissionQueue;
-  readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
+  readonly #onExecutionQueued: (environmentId: EnvironmentId | undefined) => void;
   readonly #onActivity: (() => void) | undefined;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   constructor(options: CommandServiceOptions) {
     this.#store = options.store;
     this.#admission = options.admission;
     this.#onExecutionQueued = options.onExecutionQueued;
     this.#onActivity = options.onActivity;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
   }
   readonly #inputAdmissions = new Map<string, Promise<void>>();
 
@@ -85,7 +81,6 @@ export class CommandService {
   }> {
     return this.#admission.execute(["personal-task-create"], byteSize(input), async () => {
       const result = await this.#store.createThread(input);
-      if (result.event) this.#onDeploymentEvent(result.event);
       return result;
     });
   }
@@ -95,7 +90,6 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.renameThread(input);
-      for (const event of result.events ?? []) this.#onDeploymentEvent(event);
       return {
         asOfSequence: result.asOfSequence,
         thread: result.thread,
@@ -108,7 +102,6 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.setThreadIcon(input);
-      for (const event of result.events ?? []) this.#onDeploymentEvent(event);
       return {
         asOfSequence: result.asOfSequence,
         thread: result.thread,
@@ -125,7 +118,6 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.updateThreadAccessMode(input);
-      if (result.event) this.#onDeploymentEvent(result.event);
       return {
         asOfSequence: result.asOfSequence,
         thread: result.thread,
@@ -140,7 +132,6 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.updateThreadExecutionSelection(input);
-      if (result.event) this.#onDeploymentEvent(result.event);
       return {
         asOfSequence: result.asOfSequence,
         thread: result.thread,
@@ -150,8 +141,7 @@ export class CommandService {
   enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueThreadInput(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
-      if (result.events.length && input.policy !== "report") this.#onActivity?.();
+      if (!result.wasDuplicate && input.policy !== "report") this.#onActivity?.();
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
@@ -161,7 +151,6 @@ export class CommandService {
   takeThreadInputLease(input: Parameters<OpensteerStore["takeThreadInputLease"]>[0]) {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.takeThreadInputLease(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
       return result;
     });
   }
@@ -173,29 +162,20 @@ export class CommandService {
   releaseThreadInputLease(input: Parameters<OpensteerStore["releaseThreadInputLease"]>[0]) {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.releaseThreadInputLease(input);
-      this.#publishQueueAdvance(result.events);
+      this.#onExecutionQueued(undefined);
       return result;
     });
   }
   editThreadInput(input: Parameters<OpensteerStore["editThreadInput"]>[0]) {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.editThreadInput(input);
-      this.#publishQueueAdvance(result.events);
+      this.#onExecutionQueued(undefined);
       return result;
     });
-  }
-  #publishQueueAdvance(events: readonly AgentEvent[]) {
-    const environments = new Set<EnvironmentId>();
-    for (const event of events) {
-      this.#onDeploymentEvent(event);
-      if (event.environmentId) environments.add(event.environmentId);
-    }
-    for (const environmentId of environments) this.#onExecutionQueued(environmentId);
   }
   steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.steerThreadInput(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
@@ -205,14 +185,14 @@ export class CommandService {
   cancelThreadInput(input: CancelThreadInputRequest): Promise<CancelledThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.cancelThreadInput(input);
-      this.#publishQueueAdvance(result.events);
+      this.#onExecutionQueued(undefined);
       return result;
     });
   }
   moveThreadInput(input: MoveThreadInputRequest): Promise<MovedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.moveThreadInput(input);
-      this.#publishQueueAdvance(result.events);
+      this.#onExecutionQueued(undefined);
       return result;
     });
   }
@@ -222,7 +202,6 @@ export class CommandService {
       byteSize(input),
       async () => {
         const result = await this.#store.publishPersonMessage(input);
-        for (const event of result.events) this.#onDeploymentEvent(event);
         return result;
       },
     );
@@ -230,8 +209,7 @@ export class CommandService {
   enqueueAdmittedThreadInput(input: AdmittedThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueAdmittedThreadInput(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
-      if (result.events.length && input.input.policy !== "report") this.#onActivity?.();
+      if (!result.wasDuplicate && input.input.policy !== "report") this.#onActivity?.();
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
@@ -246,21 +224,18 @@ export class CommandService {
   }): Promise<{
     readonly asOfSequence: Sequence;
     readonly thread: Thread;
-    readonly events: readonly AgentEvent[];
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.resumeThreadInputQueue(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
-      if (result.events.length) this.#onActivity?.();
-      if (result.events.length > 0) this.#onExecutionQueued(result.thread.environmentId);
+      this.#onActivity?.();
+      this.#onExecutionQueued(result.thread.environmentId);
       return result;
     });
   }
   delegateThread(input: DelegateThreadRequest): Promise<DelegatedThreadResult> {
     return this.#admission.execute(delegationKeys(input), byteSize(input), async () => {
       const result = await this.#store.delegateThread(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
-      if (result.events.length) this.#onActivity?.();
+      if (!result.wasDuplicate) this.#onActivity?.();
       if (!result.wasDuplicate) this.#onExecutionQueued(result.run.environmentId);
       return result;
     });
@@ -268,8 +243,7 @@ export class CommandService {
   delegateAdmittedThread(input: AdmittedThreadDelegationRequest): Promise<DelegatedThreadResult> {
     return this.#admission.execute(delegationKeys(input.input), byteSize(input), async () => {
       const result = await this.#store.delegateAdmittedThread(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
-      if (result.events.length) this.#onActivity?.();
+      if (!result.wasDuplicate) this.#onActivity?.();
       if (!result.wasDuplicate) this.#onExecutionQueued(result.run.environmentId);
       return result;
     });
@@ -293,7 +267,6 @@ export class CommandService {
             return null;
           }
           const cancelled = await this.#store.cancelAssignment(input);
-          for (const event of cancelled.events) this.#onDeploymentEvent(event);
           for (const command of cancelled.interruptCommands) {
             if (command.environmentId) this.#onExecutionQueued(command.environmentId);
           }
@@ -330,7 +303,6 @@ export class CommandService {
             return null;
           }
           const done = await this.#store.setThreadDone(input);
-          for (const event of done.events) this.#onDeploymentEvent(event);
           for (const command of done.interruptCommands) {
             if (command.environmentId) this.#onExecutionQueued(command.environmentId);
           }
@@ -348,7 +320,6 @@ export class CommandService {
   stopNode(input: import("@opensteer/database").NodeStopInput) {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.stopNode(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
       if (!result.wasDuplicate && result.command.environmentId)
         this.#onExecutionQueued(result.command.environmentId);
       return result;
@@ -360,7 +331,6 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueRunnerControl(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
       // Control commands are dispatched to a Runner, so the schema refuses to
       // enqueue one without an environment. The null branch is unreachable and
       // is left as a silence rather than a guess: nothing is nudged awake for a

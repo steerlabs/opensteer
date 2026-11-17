@@ -1,5 +1,5 @@
 import { ResolvedRequestSchema } from "@opensteer/core";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { publishExecutionRequest } from "./execution-changes.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   OpensteerError,
@@ -37,7 +37,7 @@ import {
   lockIntegrationGrantScopeInTransaction,
   writeIntegrationGrantInTransaction,
 } from "./integration-grant-write.js";
-import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
+import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -439,16 +439,9 @@ async function resolveComputerAppAccessRequest(
     })
     .onConflict((conflict) => conflict.column("requestId").doNothing())
     .execute();
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: { request },
-    environmentId: await requestOriginEnvironment(transaction, request),
-    runId: request.originatingRunId,
-    threadId: request.originatingThreadId,
-    type: "request.resolved",
-  });
+  await publishExecutionRequest(transaction, request);
   return {
     events: [
-      event,
       ...(request.originatingRunId
         ? await assignmentActivityEventsForRun(transaction, request.originatingRunId)
         : []),

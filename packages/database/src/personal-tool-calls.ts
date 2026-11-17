@@ -1,6 +1,7 @@
 import {
   OpensteerError,
   IntegrationCallSubjectSchema,
+  isIntegrationGatewayTool,
   ToolIdentitySchema,
   ToolOutputSchema,
   type ToolIdentity,
@@ -252,6 +253,7 @@ export async function startPersonalToolCall(
         .set({
           arguments: sql`${args}::jsonb`,
           provisional: false,
+          integration: existing.integration ?? integration,
         })
         .where("id", "=", id)
         .returningAll()
@@ -308,7 +310,7 @@ export async function startPersonalToolCall(
     type: "teamStep",
     runId: call.runId,
     toolName: tool.name,
-    isIntegration: integration !== null,
+    isIntegration: integration !== null || isIntegrationGatewayTool(tool),
   });
   const handle: HostToolEffectHandle | undefined =
     input.origin === "runner" ? undefined : { toolCallId: call.id, origin: input.origin };
@@ -340,6 +342,7 @@ export async function completePersonalHostToolCall(
       "nodeId",
       "callId",
       "origin",
+      "status",
     ])
     .where("id", "=", handle.toolCallId)
     .where("origin", "=", handle.origin)
@@ -349,6 +352,11 @@ export async function completePersonalHostToolCall(
       code: "not_found",
       message: "The admitted tool effect is unavailable",
     });
+  if (call.status !== "open") {
+    const settled = await currentCall(tx, call.id);
+    if (!settled) throw new Error("Settled tool effect disappeared");
+    return { call: settled, completed: false };
+  }
   return completeToolCall(tx, mutation, call.id, { ...call, ...result });
 }
 
@@ -435,7 +443,7 @@ export async function interruptPersonalToolCalls(
   if (ids.length > 128) throw new Error("A tool interruption batch exceeded the Run fence");
   const current = await tx
     .selectFrom("toolCalls")
-    .select("id")
+    .select(["id", "bindingGeneration"])
     .where("id", "in", [...ids])
     .where("runId", "=", runId)
     .where("status", "=", "open")
@@ -449,7 +457,8 @@ export async function interruptPersonalToolCalls(
     .set({ status: "interrupted", completedAt: mutation.state.now })
     .where("id", "in", callIds)
     .execute();
-  const cardIds = callIds.map((id) => `tool:${id}`);
+  const closedCards = new Map(current.map((call) => [`tool:${call.id}`, call]));
+  const cardIds = [...closedCards.keys()];
   await tx
     .selectFrom("transcriptItems")
     .select("id")
@@ -467,6 +476,16 @@ export async function interruptPersonalToolCalls(
     .returningAll()
     .execute();
   for (const card of cards) {
+    mutation.react({
+      type: "liveClosed",
+      itemId: card.id,
+      runId,
+      attemptId: card.attemptId,
+      bindingGeneration: closedCards.get(card.id)!.bindingGeneration,
+      threadId: card.threadId,
+      nodeId: card.nodeId,
+      afterSequence: mutation.sequence,
+    });
     mutation.change(
       {
         scopeKey: card.nodeId ? `node:${card.nodeId}` : `thread:${card.threadId}`,

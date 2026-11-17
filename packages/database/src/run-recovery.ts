@@ -1,3 +1,14 @@
+import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import {
+  recordExecutionRunChange,
+  publishExecutionInput,
+  updateExecutionThread,
+} from "./execution-changes.js";
+import {
+  beginPersonalRunFinish,
+  refreshExecuteClaimProof,
+  readFinishChildren,
+} from "./personal-run-state.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -8,25 +19,24 @@ import {
   type ContentPart,
   type RunFailure,
   type RunId,
+  type RunAttemptId,
 } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { endAttempt } from "./run-attempts.js";
-import { cleanupRunAttemptTransaction, finalizeRunTransaction } from "./run-finalization.js";
+import { settleFinishChildren, finalizeRunTransaction } from "./run-finalization.js";
 import { runWasStopped, type RevokedRunGrant } from "./run-grants.js";
-import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
-import type { DatabaseSchema } from "./schema.js";
+import { lockThreadProviderSession } from "./run-projection-locks.js";
+import type { FinishIntent } from "./personal-state-schema.js";
+import type { DatabaseSchema, RunRow } from "./schema.js";
 import {
-  eventFromRow,
   jsonValue,
   lockThreadRow,
   systemPrincipalId,
   threadExecutionIsAvailableToUser,
   type ChannelLinks,
 } from "./store-primitives.js";
-import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
-import { projectThreadState } from "./thread-status.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { messageFromRow } from "./thread-row-mappers.js";
 
 export async function recoverLostRunTransaction(
   transaction: Transaction<DatabaseSchema>,
@@ -35,13 +45,13 @@ export async function recoverLostRunTransaction(
     readonly links: ChannelLinks;
     readonly now: Date;
     readonly runId: RunId;
+    readonly statement?: FinishIntent["statement"];
   },
 ): Promise<{
   readonly status: "recovered" | "terminal" | "unchanged";
   readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
-  const successorId = createId("runAttempt");
   const messageId = createId("message");
   const run = await transaction
     .selectFrom("runs")
@@ -49,7 +59,7 @@ export async function recoverLostRunTransaction(
     .where("id", "=", input.runId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  if (!["starting", "running", "waiting"].includes(run.status)) {
+  if (run.finishIntent || !["starting", "running", "waiting"].includes(run.status)) {
     return {
       status: "unchanged",
       events: [],
@@ -65,14 +75,20 @@ export async function recoverLostRunTransaction(
     .executeTakeFirstOrThrow();
   const session = await lockThreadProviderSession(transaction, run.threadId, run.providerSessionId);
   if (!session) throw new Error("Run's provider session is missing");
-  const attempts = await transaction
+  const current = await transaction
     .selectFrom("runAttempts")
     .selectAll()
     .where("runId", "=", run.id)
-    .orderBy("ordinal", "asc")
-    .execute();
-  const current = attempts.find((attempt) => attempt.status === "current");
-  const lost = attempts.find((attempt) => attempt.bindingGeneration === run.bindingGeneration);
+    .where("status", "=", "current")
+    .limit(1)
+    .executeTakeFirst();
+  const lost = await transaction
+    .selectFrom("runAttempts")
+    .selectAll()
+    .where("runId", "=", run.id)
+    .where("bindingGeneration", "=", run.bindingGeneration)
+    .limit(1)
+    .executeTakeFirst();
   const fail = async (status: "failed" | "interrupted", failure = input.failure) => ({
     status: "terminal" as const,
     events: await finalizeRunTransaction(transaction, {
@@ -84,6 +100,7 @@ export async function recoverLostRunTransaction(
       runId: run.id,
       source: "host",
       status,
+      ...(input.statement ? { statement: input.statement } : {}),
     }),
     revokedGrants: [],
   });
@@ -105,82 +122,48 @@ export async function recoverLostRunTransaction(
     });
   }
   if (!current || !lost || session.providerSessionReference === null) return fail("failed");
-  if (
-    attempts.filter(
-      (attempt) =>
-        attempt.reason === "recovery" &&
-        attempt.startedAt.getTime() >= input.now.getTime() - 5 * 60_000,
-    ).length >= 3
-  ) {
+  const recentRecoveries = await transaction
+    .selectFrom("runAttempts")
+    .select("id")
+    .where("runId", "=", run.id)
+    .where(sql<boolean>`reason = 'recovery'`)
+    .where("startedAt", ">=", new Date(input.now.getTime() - 5 * 60_000))
+    .limit(3)
+    .execute();
+  if (recentRecoveries.length >= 3) {
     return fail("failed", {
       ...input.failure,
       message:
         "This Run was interrupted repeatedly: three recoveries in five minutes. Continue it explicitly when its computer is stable.",
     });
   }
-  await lockRunProjectionRows(transaction, {
-    runIds: [run.id],
-    threadIds: [thread.id],
-  });
-  // Capture durable facts before cleanup changes their receipts.
+  const children = await readFinishChildren(transaction, run.id);
   const requests = await transaction
     .selectFrom("requests")
-    .selectAll()
+    .select(["kind", "presentation"])
     .where("originatingRunId", "=", run.id)
     .where("mode", "=", "live")
     .where("status", "=", "pending")
-    .orderBy("id", "asc")
+    .orderBy("id")
+    .limit(11)
     .execute();
   const nodes = await transaction
     .selectFrom("executionNodes")
-    .selectAll()
+    .select(["kind", "title"])
     .where("runId", "=", run.id)
-    .where("status", "=", "running")
-    .orderBy("id", "asc")
+    .where(sql<boolean>`status='running'`)
+    .orderBy("id")
+    .limit(11)
     .execute();
-  const tools = (
-    await transaction
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", run.id)
-      .where("runnerBindingGeneration", "=", lost.bindingGeneration)
-      .where("type", "in", ["tool.started", "tool.completed"])
-      .orderBy("sequence", "asc")
-      .execute()
-  ).map(eventFromRow);
-  const completed = new Set(
-    tools.flatMap((event) => (event.type === "tool.completed" ? [event.data.callId] : [])),
-  );
-  const openTools = tools.filter(
-    (event) => event.type === "tool.started" && !completed.has(event.data.callId),
-  );
-  const priorUsage = runUsageFromRow(run);
-  const ordinal = current.ordinal + 1;
-  const restarted = await appendHostDeploymentEvent(transaction, {
-    data: {
-      attempt: ordinal,
-      ...(priorUsage
-        ? {
-            priorUsage,
-          }
-        : {}),
-      reason: "recovery",
-    },
-    environmentId: run.environmentId,
-    runId: run.id,
-    threadId: thread.id,
-    type: "run.restarted",
-  });
-  const cleanup = await cleanupRunAttemptTransaction(transaction, {
-    completedAt: input.now,
-    failure: input.failure,
-    requestCancellationReason: "process-lost",
-    retireBinding: true,
-    run,
-    source: "host",
-    status: "interrupted",
-  });
-  const events = [restarted, ...cleanup.events];
+  const openTools = await transaction
+    .selectFrom("toolCalls")
+    .select(["tool", "arguments"])
+    .where("runId", "=", run.id)
+    .where("bindingGeneration", "=", lost.bindingGeneration)
+    .where(sql<boolean>`status='open'`)
+    .orderBy("id")
+    .limit(11)
+    .execute();
   const claimed = await transaction
     .selectFrom("messages")
     .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
@@ -190,6 +173,7 @@ export async function recoverLostRunTransaction(
     .where("threadInputs.policy", "!=", "report")
     .where("threadInputs.steerCommandId", "is", null)
     .orderBy("messages.sequence", "asc")
+    .limit(101)
     .execute();
   const reusable = claimed.find(
     (message) => message.author.kind === "platform" && message.author.cause === "run-recovery",
@@ -209,17 +193,12 @@ export async function recoverLostRunTransaction(
       "- Live browser, computer and phone sessions may have closed; reopen any you need.",
       ...openTools
         .slice(0, 10)
-        .flatMap((event) =>
-          event.type === "tool.started"
-            ? [
-                `- Started, completion unknown: ${utf8Prefix(event.data.tool.name, 80)} ${utf8Prefix(JSON.stringify(event.data.arguments) ?? "", 200)}`,
-              ]
-            : [],
+        .map(
+          (call) =>
+            `- Started, completion unknown: ${utf8Prefix(call.tool?.name ?? "Tool", 80)} ${utf8Prefix(JSON.stringify(call.arguments) ?? "", 200)}`,
         ),
       ...(openTools.length > 10
-        ? [
-            `- and ${openTools.length - 10} more commands; read them with opensteer_task_read view activity.`,
-          ]
+        ? ["- More tool calls were open; read them with opensteer_task_read view activity."]
         : []),
       ...nodes
         .slice(0, 10)
@@ -227,7 +206,7 @@ export async function recoverLostRunTransaction(
           (node) =>
             `- ${node.kind === "subagent" ? "Subagent" : node.kind === "workflow" ? "Workflow" : "Background task"}: ${utf8Prefix(node.title, 200)}`,
         ),
-      ...(nodes.length > 10 ? [`- and ${nodes.length - 10} more background tasks.`] : []),
+      ...(nodes.length > 10 ? ["- More background tasks were open."] : []),
       ...requests
         .slice(0, 10)
         .map(
@@ -235,9 +214,7 @@ export async function recoverLostRunTransaction(
             `- Your ${request.kind === "harness.input" ? "question" : "approval"} '${utf8Prefix(request.presentation.title, 160)}' did not complete; ask again if you still need it.`,
         ),
       ...(requests.length > 10
-        ? [
-            `- and ${requests.length - 10} more requests did not complete; ask again if you still need them.`,
-          ]
+        ? ["- More requests did not complete; ask again if you still need them."]
         : []),
     ];
     // The incident summary is bounded independently of A3's quoted inputs.
@@ -301,7 +278,7 @@ export async function recoverLostRunTransaction(
       cause: "run-recovery",
       referenceId: lost.id,
     } as const;
-    const message = await transaction
+    await transaction
       .insertInto("messages")
       .values({
         actorPrincipalId: systemPrincipalId,
@@ -352,107 +329,160 @@ export async function recoverLostRunTransaction(
       })
       .where("id", "=", thread.id)
       .execute();
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: {
-          input: threadInputFromRow(receipt),
-          message: messageFromRow(message),
-        },
-        environmentId: run.environmentId,
-        runId: run.id,
-        threadId: thread.id,
-        type: "message.created",
-      }),
-    );
+    await publishExecutionInput(transaction, receipt);
   }
-  await transaction
-    .updateTable("runs")
-    .set({
-      bindingGeneration: null,
-      status: "queued",
-    })
-    .where("id", "=", run.id)
-    .execute();
-  const execute = await transaction
-    .selectFrom("commands")
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    const intent: FinishIntent = {
+      mode: "recovery",
+      attemptId: lost.id,
+      bindingGeneration: run.bindingGeneration,
+      outcome: "interrupted",
+      completedAt: input.now.toISOString(),
+      replyMessageId: null,
+      requestCancellationReason: "process-lost",
+      ...(input.statement ? { statement: input.statement } : {}),
+    };
+    if (children.hasMore) {
+      await beginPersonalRunFinish(tx, mutation, { runId: run.id, intent });
+      await recordExecutionRunChange(tx, mutation, {
+        runId: run.id,
+        threadId: run.threadId,
+        transition: "finishing",
+      });
+      return;
+    }
+    await settleFinishChildren(
+      tx,
+      mutation,
+      run.id,
+      {
+        completedAt: input.now,
+        failure: input.failure,
+        source: "host",
+        requestCancellationReason: "process-lost",
+      },
+      children,
+      true,
+    );
+    await completeRunReplacement(tx, mutation, run, lost.id, "recovery", input.now);
+    mutation.react({
+      type: "runFinished",
+      attemptOnly: true,
+      runId: run.id,
+      threadId: run.threadId,
+      attemptId: lost.id,
+      bindingGeneration: run.bindingGeneration,
+      outcome: "interrupted",
+    });
+  });
+  return { status: "recovered", events: [], revokedGrants: [] };
+}
+
+export async function completeRunReplacement(
+  tx: Transaction<DatabaseSchema>,
+  mutation: PersonalMutation,
+  run: RunRow,
+  attemptId: RunAttemptId,
+  mode: "steer" | "recovery",
+  now: Date,
+) {
+  const replaced = await tx
+    .selectFrom("runAttempts")
+    .selectAll()
+    .where("id", "=", attemptId)
+    .where("runId", "=", run.id)
+    .executeTakeFirstOrThrow();
+  const current = await tx
+    .selectFrom("runAttempts")
     .selectAll()
     .where("runId", "=", run.id)
-    .where("type", "=", "run.execute")
-    .orderBy("createdAt", "asc")
-    .orderBy("id", "asc")
+    .where("status", "=", "current")
     .limit(1)
     .executeTakeFirstOrThrow();
-  await transaction
-    .insertInto("commands")
-    .values({
-      actorPrincipalId: execute.actorPrincipalId,
-      authoritySource: jsonValue(execute.authoritySource),
-      dispatcherId: null,
-      environmentId: run.environmentId,
-      id: createId("command"),
-      idempotencyKey: `recovery:${successorId}`,
-      lastError: null,
-      payload: jsonValue(execute.payload),
-      requestedBy: run.requestedBy,
-      runId: run.id,
-      status: "pending",
-      threadId: thread.id,
-      type: "run.execute",
-    })
-    .execute();
-  events.push(
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        status: "queued",
-      },
-      environmentId: run.environmentId,
-      runId: run.id,
-      threadId: thread.id,
-      type: "run.status",
-    }),
-    ...(await projectThreadState(transaction, thread.id, input.now)),
-    ...(await assignmentActivityEventsForRun(transaction, run.id)),
-  );
-  const revokedGrants = await cleanup.finish(async () => {
-    // Include both the executing attempt and an unsent steering replacement.
-    await transaction
-      .selectFrom("runAttempts")
-      .select("id")
-      .where("runId", "=", run.id)
-      .orderBy("id", "asc")
-      .forNoKeyUpdate()
-      .execute();
-    await endAttempt(transaction, lost.id, "interrupted");
-    if (current.id !== lost.id) await endAttempt(transaction, current.id, "cancelled");
-    await transaction
+  if (mode === "steer" && replaced.supersededBy !== current.id)
+    throw new Error("The steer replacement changed during finalization");
+  await tx
+    .updateTable("providerSessions")
+    .set((eb) => ({
+      status: "ready",
+      updatedAt: now,
+      ...(mode === "recovery"
+        ? {
+            bindingGeneration: eb("bindingGeneration", "+", 1),
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            runnerId: null,
+            runnerBootId: null,
+          }
+        : {}),
+    }))
+    .where("id", "=", run.providerSessionId)
+    .where("bindingGeneration", "=", run.bindingGeneration)
+    .executeTakeFirstOrThrow();
+  await tx
+    .updateTable("runs")
+    .set({ bindingGeneration: null, status: "queued" })
+    .where("id", "=", run.id)
+    .executeTakeFirstOrThrow();
+  await endAttempt(tx, replaced.id, "interrupted");
+  let successorId = current.id;
+  if (mode === "recovery") {
+    if (current.id !== replaced.id) await endAttempt(tx, current.id, "cancelled");
+    await tx
       .updateTable("runAttempts")
-      .set({
-        status: "superseded",
-        supersededAt: input.now,
-      })
+      .set({ status: "superseded", supersededAt: now })
       .where("id", "=", current.id)
       .execute();
-    await transaction
+    successorId = createId("runAttempt");
+    await tx
       .insertInto("runAttempts")
       .values({
         id: successorId,
-        ordinal,
+        ordinal: current.ordinal + 1,
         reason: "recovery",
         runId: run.id,
         status: "current",
       })
       .execute();
-    await transaction
+    await tx
       .updateTable("runAttempts")
-      .set({
-        supersededBy: successorId,
-      })
+      .set({ supersededBy: successorId })
       .where("id", "=", current.id)
       .execute();
+  }
+  const execute = await tx
+    .selectFrom("commands")
+    .selectAll()
+    .where("runId", "=", run.id)
+    .where("type", "=", "run.execute")
+    .orderBy("createdAt")
+    .orderBy("id")
+    .limit(1)
+    .executeTakeFirstOrThrow();
+  await tx
+    .insertInto("commands")
+    .values({
+      actorPrincipalId: execute.actorPrincipalId,
+      authoritySource: jsonValue(execute.authoritySource),
+      dispatcherId: null,
+      environmentId: execute.environmentId,
+      id: createId("command"),
+      idempotencyKey: `${mode === "steer" ? "restart" : "recovery"}:${successorId}`,
+      lastError: null,
+      payload: jsonValue(execute.payload),
+      requestedBy: execute.requestedBy,
+      runId: run.id,
+      status: "pending",
+      threadId: run.threadId,
+      type: "run.execute",
+    })
+    .execute();
+  await refreshExecuteClaimProof(tx, run.id);
+  await updateExecutionThread(tx, run.threadId, now);
+  await recordExecutionRunChange(tx, mutation, {
+    runId: run.id,
+    threadId: run.threadId,
+    transition: "restarted",
   });
-  return {
-    status: "recovered",
-    events,
-    revokedGrants,
-  };
+  await assignmentActivityEventsForRun(tx, run.id);
 }

@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
@@ -32,13 +32,15 @@ import {
   returnRunToQueue,
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
-import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
+import {
+  drainRunFinish,
+  endStoppedUnconfirmedRun,
+  finalizeRunTransaction,
+} from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { threadInputFromRow } from "./thread-row-mappers.js";
+import { publishExecutionInput, updateExecutionThread } from "./execution-changes.js";
 import { ensureQueuedRun } from "./thread-inbox.js";
-import { projectThreadState } from "./thread-status.js";
 export interface RecoveredRunTarget {
   readonly environmentId: EnvironmentId;
   readonly runId: RunId;
@@ -118,7 +120,7 @@ async function recoverAbandonedRuns(
   const events: AgentEvent[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
   for (const candidate of candidates) {
-    const recovered = await withPersonalTransaction(database, async (transaction) => {
+    const recovered = await commitPersonalMutation(database, async (transaction) => {
       // Runner events and recovery both lock the Run first. Whichever terminal
       // outcome wins that lock is the only one projected or published. Recover
 
@@ -230,7 +232,7 @@ export async function failRunForRefusedRunnerEvent(
     readonly runnerId: RunnerId;
   },
 ): Promise<readonly AgentEvent[]> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -287,7 +289,7 @@ export async function recoverThreadWorkQueues(
   const events: AgentEvent[] = [];
   for (const candidate of obsolete) {
     events.push(
-      ...(await withPersonalTransaction(database, async (transaction) => {
+      ...(await commitPersonalMutation(database, async (transaction) => {
         const run = await transaction
           .selectFrom("runs")
           .selectAll()
@@ -337,15 +339,6 @@ export async function recoverThreadWorkQueues(
             .where("id", "=", run.causalChainId)
             .execute();
         }
-        const event = await appendHostDeploymentEvent(transaction, {
-          data: {
-            status: "interrupted",
-          },
-          environmentId: run.environmentId,
-          runId: run.id,
-          threadId: run.threadId,
-          type: "run.interrupted",
-        });
         const reportAuthorityCurrent = await threadExecutionIsAvailableToUser(
           transaction,
           run.threadId,
@@ -370,28 +363,15 @@ export async function recoverThreadWorkQueues(
           .where("state", "=", "claimed")
           .returningAll()
           .execute();
-        const receiptEvents: AgentEvent[] = [];
-        for (const report of unconfirmedReports) {
-          receiptEvents.push(
-            await appendHostDeploymentEvent(transaction, {
-              data: {
-                input: threadInputFromRow(report),
-              },
-              environmentId: run.environmentId,
-              runId: run.id,
-              threadId: run.threadId,
-              type: "thread-input.updated",
-            }),
-          );
-        }
+        for (const report of unconfirmedReports) await publishExecutionInput(transaction, report);
         const thread = await transaction
           .selectFrom("threads")
           .selectAll()
           .where("id", "=", run.threadId)
           .executeTakeFirstOrThrow();
         const queued = await ensureQueuedRun(transaction, thread);
-        const statusEvents = await projectThreadState(transaction, thread.id, now);
-        return [event, ...receiptEvents, ...queued.events, ...statusEvents];
+        await updateExecutionThread(transaction, thread.id, now);
+        return queued.events;
       })),
     );
   }
@@ -405,7 +385,7 @@ export async function recoverThreadWorkQueues(
     .execute();
   for (const { threadId } of pending) {
     events.push(
-      ...(await withPersonalTransaction(database, async (transaction) => {
+      ...(await commitPersonalMutation(database, async (transaction) => {
         await lockThreadRow(transaction, threadId);
         const thread = await transaction
           .selectFrom("threads")
@@ -429,6 +409,18 @@ export async function recoverCommandsAfterHostRestart(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
 ): Promise<readonly AgentEvent[]> {
+  for (;;) {
+    const pending = await database
+      .selectFrom("runs")
+      .select("id")
+      .where("finishIntent", "is not", null)
+      .orderBy("id")
+      .limit(1)
+      .executeTakeFirst();
+    if (!pending) break;
+    await drainRunFinish(database, links, pending.id);
+  }
+
   await database
     .updateTable("commands")
     .set({
@@ -467,7 +459,7 @@ export async function recoverCommandsAfterHostRestart(
     .orderBy("id", "asc")
     .execute();
   for (const { id } of claimed) {
-    const requeued = await withPersonalTransaction(database, async (transaction) => {
+    const requeued = await commitPersonalMutation(database, async (transaction) => {
       const command = await transaction
         .selectFrom("commands")
         .select("runId")
@@ -583,7 +575,7 @@ export async function attachRunnerExecutions(
   const resumed: ResumedExecution[] = [];
   const results: ExecutionAttachment[] = [];
   for (const execution of input.executions) {
-    const settled = await withPersonalTransaction(database, async (transaction) => {
+    const settled = await commitPersonalMutation(database, async (transaction) => {
       const revoked = (reason: string, terminal: readonly AgentEvent[] = []) => ({
         events: terminal,
         revokedGrants: [] as readonly RevokedRunGrant[],
@@ -700,7 +692,7 @@ export async function attachRunnerExecutions(
         .where("id", "=", run.providerSessionId)
         .executeTakeFirstOrThrow();
       const state = await transaction
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("sequence")
         .executeTakeFirstOrThrow();
       return {
@@ -770,7 +762,7 @@ async function recoverLostExecutions(
   const events: AgentEvent[] = [];
   const revokedGrants: RevokedRunGrant[] = [];
   for (const candidate of candidates) {
-    const recovered = await withPersonalTransaction(database, async (transaction) => {
+    const recovered = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -956,7 +948,7 @@ export async function stopRunsPastBackgroundDeadline(
     .orderBy("id", "asc")
     .execute();
   for (const candidate of candidates) {
-    const stopped = await withPersonalTransaction(database, async (transaction) => {
+    const stopped = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1006,7 +998,7 @@ export async function stopHeldRun(
   links: ChannelLinks,
   executionNow: () => number = Date.now,
 ): Promise<BackgroundDeadlineStop | null> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1086,7 +1078,7 @@ async function stopRunWithoutPausing(
     .where("id", "=", run.id)
     .where("status", "=", "waiting")
     .execute();
-  runEvents.push(...(await projectThreadState(transaction, run.threadId, now)));
+  await updateExecutionThread(transaction, run.threadId, now);
   const command = await transaction
     .insertInto("commands")
     .values({
@@ -1139,7 +1131,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
   for (const candidate of candidates) {
-    const terminal = await withPersonalTransaction(database, async (transaction) => {
+    const terminal = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")

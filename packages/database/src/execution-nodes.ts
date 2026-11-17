@@ -6,6 +6,10 @@ import {
   type RunId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { writeExecutionItem } from "./execution-changes.js";
+import { transcriptPreview } from "./transcript-store.js";
+import { isOfflineSettlement } from "./personal-transaction.js";
 import type { DatabaseSchema, ExecutionNodeTable } from "./schema.js";
 
 export type ExecutionNodeRow = Selectable<ExecutionNodeTable>;
@@ -50,6 +54,7 @@ export async function startExecutionNode(
       title: node.title,
     })
     .execute();
+  await publishExecutionNode(transaction, node.nodeId);
 }
 
 export async function updateExecutionNode(
@@ -102,6 +107,7 @@ export async function updateExecutionNode(
     })
     .where("id", "=", update.nodeId)
     .execute();
+  await publishExecutionNode(transaction, update.nodeId);
 }
 
 /** Records how a subagent ended, once; a repeat of a finished node changes nothing. */
@@ -115,7 +121,7 @@ export async function completeExecutionNode(
 ): Promise<void> {
   const { completion } = input;
   await requireRunNode(transaction, input.runId, completion.nodeId);
-  await transaction
+  const ended = await transaction
     .updateTable("executionNodes")
     .set({
       cacheWriteTokens: completion.usage?.cacheWriteTokens ?? null,
@@ -130,7 +136,8 @@ export async function completeExecutionNode(
     })
     .where("id", "=", completion.nodeId)
     .where("status", "=", "running")
-    .execute();
+    .executeTakeFirst();
+  if (ended.numUpdatedRows > 0n) await publishExecutionNode(transaction, completion.nodeId);
 }
 
 /**
@@ -139,14 +146,21 @@ export async function completeExecutionNode(
  */
 export async function endLiveExecutionNodes(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly attemptId?: RunAttemptId; readonly endedAt: Date; readonly runId: RunId },
+  input: {
+    readonly attemptId?: RunAttemptId;
+    readonly endedAt: Date;
+    readonly runId: RunId;
+    readonly ids?: readonly ExecutionNodeId[];
+  },
 ): Promise<void> {
+  if (input.ids?.length === 0) return;
   const live = await transaction
     .selectFrom("executionNodes")
     .select("id")
     .where("runId", "=", input.runId)
     .$if(input.attemptId !== undefined, (query) => query.where("attemptId", "=", input.attemptId!))
     .where("status", "=", "running")
+    .$if(input.ids !== undefined, (query) => query.where("id", "in", [...input.ids!]))
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
@@ -160,6 +174,48 @@ export async function endLiveExecutionNodes(
       live.map(({ id }) => id),
     )
     .execute();
+  for (const { id } of live) await publishExecutionNode(transaction, id);
+}
+
+export async function publishExecutionNode(
+  transaction: Transaction<DatabaseSchema>,
+  id: ExecutionNodeId,
+) {
+  if (isOfflineSettlement(transaction)) return;
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    const row = await tx
+      .selectFrom("executionNodes")
+      .innerJoin("runs", "runs.id", "executionNodes.runId")
+      .select([
+        "executionNodes.id",
+        "executionNodes.status",
+        "executionNodes.stopping",
+        "executionNodes.title",
+        "executionNodes.startedAt",
+        "executionNodes.parentNodeId",
+        "executionNodes.runId",
+        "executionNodes.attemptId",
+        "runs.threadId",
+      ])
+      .where("executionNodes.id", "=", id)
+      .executeTakeFirstOrThrow();
+    await writeExecutionItem(tx, mutation, {
+      id: `node:${row.id}`,
+      kind: "node",
+      executionNodeId: row.id,
+      threadId: row.threadId,
+      runId: row.runId,
+      attemptId: row.attemptId,
+      nodeId: row.parentNodeId,
+      createdAt: row.startedAt,
+      visible: true,
+      isTurnStart: false,
+      view: transcriptPreview({
+        title: row.title,
+        status: row.stopping && row.status === "running" ? "stopping" : row.status,
+      }),
+    });
+  });
 }
 
 /** A node the Runner names must be one this Run's engine reported. */
@@ -167,12 +223,14 @@ export async function requireRunNode(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   runId: RunId,
   nodeId: ExecutionNodeId,
+  attemptId?: RunAttemptId,
 ): Promise<void> {
   const node = await database
     .selectFrom("executionNodes")
     .select("id")
     .where("id", "=", nodeId)
     .where("runId", "=", runId)
+    .$if(attemptId !== undefined, (query) => query.where("attemptId", "=", attemptId!))
     .executeTakeFirst();
   if (!node) {
     throw new OpensteerError({

@@ -32,6 +32,7 @@ export async function assertActiveExecutionBinding(
     .innerJoin("runners", "runners.id", "providerSessions.runnerId")
     .select([
       "runs.environmentId",
+      "runs.finishIntent",
       "runs.harnessInstanceId as runHarnessInstanceId",
       "runs.requestedBy",
       "runs.status as runStatus",
@@ -51,6 +52,7 @@ export async function assertActiveExecutionBinding(
     .executeTakeFirst();
   if (
     !binding ||
+    binding.finishIntent !== null ||
     binding.environmentId !== input.environmentId ||
     binding.runHarnessInstanceId !== binding.providerSessionHarnessInstanceId ||
     binding.threadId !== input.threadId ||
