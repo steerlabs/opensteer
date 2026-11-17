@@ -298,7 +298,7 @@ test("a parity failure keeps the source ledger and the unready cursor", async ()
   const fixture = await createStoreFixture();
   const { database } = fixture;
   try {
-    const { threadId } = await fixture.createRunFixture("migration-parity");
+    const { threadId } = await fixture.startRunFixture("migration-parity");
     await database.transaction().execute(applyPersonalStateSchema);
 
     const stopBeforeVerify = new Error("Stop before verification");

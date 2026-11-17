@@ -1,3 +1,4 @@
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
@@ -23,6 +24,71 @@ import {
   sealedTestRequestResponse,
 } from "./store.integration.test-support.js";
 describeStore("PostgreSQL store", (it) => {
+  it("leaves retired session and command rows unlocked during a Run projection", async ({
+    storeFixture,
+  }) => {
+    const { database, startRunFixture } = storeFixture;
+    const run = await startRunFixture("many-retired-projection-rows");
+    const { providerSessionId } = await database
+      .selectFrom("runs")
+      .select("providerSessionId")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    expect(providerSessionId).not.toBeNull();
+    const { rows: retiredSessions } = await sql<{ id: string }>`
+      insert into provider_sessions(
+        id, thread_id, harness_instance_id, active, state_layout, binding_generation, status
+      )
+      select 'retired-projection-session-' || n, thread_id, harness_instance_id,
+        false, state_layout, n, 'stopped'
+      from provider_sessions cross join generate_series(1, 200) n
+      where id = ${providerSessionId} returning id
+    `.execute(database);
+    const { rows: retiredCommands } = await sql<{ id: string }>`
+      insert into commands(
+        id, thread_id, run_id, environment_id, requested_by, actor_principal_id, authority_source,
+        idempotency_key, type, payload, status
+      )
+      select 'retired-projection-command-' || n, thread_id, run_id, environment_id, requested_by,
+        actor_principal_id, authority_source, idempotency_key || ':retired:' || n, type, payload, 'failed'
+      from (select * from commands where run_id = ${run.runId} and type = 'run.execute' limit 1) source
+      cross join generate_series(1, 200) n returning id
+    `.execute(database);
+    expect(retiredSessions).toHaveLength(200);
+    expect(retiredCommands).toHaveLength(200);
+
+    await withPersonalTransaction(database, async (tx) => {
+      await tx
+        .selectFrom("runs")
+        .select("id")
+        .where("id", "=", run.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", run.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      expect((await lockThreadProviderSession(tx, run.threadId, providerSessionId))?.id).toBe(
+        providerSessionId,
+      );
+      await lockRunProjectionRows(tx, { threadIds: [run.threadId], runIds: [run.runId] });
+      const retired = await database.transaction().execute(async (other) => {
+        const sessions = await sql`select id from provider_sessions
+          where id like 'retired-projection-session-%' order by id for no key update nowait`.execute(
+          other,
+        );
+        const commands = await sql`select id from commands
+          where id like 'retired-projection-command-%' order by id for no key update nowait`.execute(
+          other,
+        );
+        return [sessions.rows.length, commands.rows.length];
+      });
+      expect(retired).toEqual([200, 200]);
+    });
+  });
+
   it("pages the owner's active listed tasks with filter-bound cursors", async ({
     storeFixture,
   }) => {
