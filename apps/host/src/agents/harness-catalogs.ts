@@ -6,8 +6,6 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import type { HarnessInstanceCatalog, HostToRunnerMessage } from "@opensteer/protocol";
-import type { RealtimeHub } from "@opensteer/orchestration";
-import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 
 export type HarnessInspectionDefinitions = Extract<
   HostToRunnerMessage,
@@ -50,33 +48,6 @@ export interface HarnessCatalogRecorder {
   }): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
-export function notifyingHarnessCatalogRecorder(
-  catalogs: HarnessCatalogRecorder,
-  realtime: Pick<RealtimeHub, "broadcast">,
-): HarnessCatalogRecorder {
-  return {
-    recordHarnessCatalogs: async (input) => {
-      const recorded = await catalogs.recordHarnessCatalogs(input);
-      if (recorded.length > 0) notifyMachinesChanged(realtime, "harness.catalog");
-      return recorded;
-    },
-  };
-}
-
-interface HarnessCatalogReader {
-  listHarnessCatalogs(environmentIds: readonly EnvironmentId[]): Promise<
-    readonly {
-      readonly capturedAt: Date;
-      readonly catalog: HarnessInstanceCatalog;
-      readonly environmentId: EnvironmentId;
-      readonly harnessInstanceId: HarnessInstanceId;
-    }[]
-  >;
-}
-
-export const harnessCatalogMaxAgeMs = 30 * 60 * 1_000;
-
-/** Enough of the store to ask an environment what profiles it has and file answers. */
 export interface HarnessCatalogInventoryStore extends HarnessCatalogRecorder {
   listHarnessInstances(options?: {
     readonly environmentIds?: readonly EnvironmentId[];

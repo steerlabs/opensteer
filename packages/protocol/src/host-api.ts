@@ -1,8 +1,25 @@
+import {
+  PersonalDetailSnapshotSchema,
+  PersonalRequestSummarySchema,
+  PersonalNetworkShellSnapshotSchema,
+} from "./personal-sync.js";
+import {
+  PersonalResourceDetailSchema,
+  PersonalResourceKindSchema,
+  PersonalResourceViewSchema,
+  PersonalRevisionSchema,
+} from "./resources.js";
+import {
+  TranscriptItemIdSchema,
+  TranscriptItemResultSchema,
+  TranscriptItemSchema,
+  TranscriptOrderCursorSchema,
+  TranscriptPageResultSchema,
+} from "./transcript.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
-import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
 import {
   TabCommandSchema,
   TabCommandResultSchema,
@@ -30,7 +47,6 @@ import {
   IdleCompactionPolicySchema,
   IdleCompactionPolicyViewSchema,
 } from "@opensteer/core";
-import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
 import {
@@ -98,7 +114,6 @@ import {
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
   IdentityPasswordSchema,
-  LiveRunProgressViewSchema,
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
   MessageEditViewSchema,
@@ -123,7 +138,6 @@ import {
   ThreadIdSchema,
   ThreadInputEditLeaseViewSchema,
   ThreadInputPolicySchema,
-  ThreadInputQueueViewSchema,
   ThreadInputViewSchema,
   ThreadVisitSchema,
   IsoDateTimeSchema,
@@ -229,10 +243,7 @@ import {
   DurableWindowCursorSchema,
   DurableWindowSchema,
   TaskPageSchema,
-  NodeEventPageSchema,
-  ThreadEventPageSchema,
   ThreadMessagePageSchema,
-  turnPageMaxTurns,
 } from "./client.js";
 import {
   ComputerAppIdentitySchema,
@@ -440,6 +451,9 @@ export const DeviceMachineAccessUpdateCommandSchema = z.strictObject({
   deviceId: DeviceIdSchema,
   expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   policy: MachineAccessPolicySchema,
+  requestReview: z
+    .strictObject({ requestId: RequestIdSchema, revision: PersonalRevisionSchema })
+    .optional(),
 });
 export type DeviceMachineAccessUpdateCommand = z.infer<
   typeof DeviceMachineAccessUpdateCommandSchema
@@ -696,6 +710,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
     response: RequestResponseSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("request.respond"),
   }),
   z.strictObject({
@@ -1149,6 +1164,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     decision: BrowserSignInDecisionSchema,
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("browser.sign-in.respond"),
   }),
   /**
@@ -1158,6 +1174,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("browser.password-sign-in.respond"),
     decision: z.union([
       z.strictObject({ kind: z.literal("decline") }),
@@ -1599,7 +1616,6 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
   typeof HostApiErrorSchema
 > => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
-const workspaceBootstrapOutput: z.ZodType<HostBootstrap> = HostBootstrapSchema;
 // Named groups keep TypeScript declaration serialization below its size limit.
 const hostApiGroup1 = defineRpc({
   "attention.get": declaration(
@@ -2160,6 +2176,15 @@ const hostApiGroup4 = defineRpc({
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
     TaskPageSchema,
   ),
+  "tasks.page": declaration(
+    "GET",
+    z.strictObject({
+      done: z.boolean().optional(),
+      before: z.string().max(4096).optional(),
+      limit: z.int().min(1).max(50).optional(),
+    }),
+    TaskPageSchema,
+  ),
   /**
    * The Run's executions and the subagents they started, oldest first: the
    * newest hundred attempts and two hundred subagents of a Run with more.
@@ -2187,56 +2212,6 @@ const hostApiGroup4 = defineRpc({
     TranscriptFileContentSchema,
     true,
   ),
-  "tool.output.get": declaration(
-    "GET",
-    z.strictObject({
-      threadId: ThreadIdSchema,
-      runId: RunIdSchema,
-      callId: z.string().min(1),
-      nodeId: ExecutionNodeIdSchema.optional(),
-    }),
-    z.object({ output: ToolOutputViewSchema }),
-  ),
-  "thread.events.list": declaration(
-    "GET",
-    z
-      .strictObject({
-        threadId: ThreadIdSchema,
-        aroundMessageId: MessageIdSchema.optional(),
-        deviceAccessRequests: z.literal("include").optional(),
-        placeEvents: z.literal("include").optional(),
-        toolOutputs: z.literal("preview").optional(),
-        /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
-        turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
-      })
-      .extend(durablePageInputSchema.shape)
-      .refine(
-        (input) => !input.aroundMessageId || !input.before,
-        "An anchored read cannot also page",
-      )
-      .refine(
-        (input) => input.turns === undefined || (!input.aroundMessageId && !input.limit),
-        "A turn page sets its own size",
-      ),
-    ThreadEventPageSchema,
-  ),
-  /**
-   * One subagent's own events through `through`, the sequence its watch
-   * began after. Needs `node-detail-v1`.
-   */
-  "node.events.list": declaration(
-    "GET",
-    z
-      .strictObject({
-        nodeId: ExecutionNodeIdSchema,
-        threadId: ThreadIdSchema,
-        deviceAccessRequests: z.literal("include").optional(),
-        toolOutputs: z.literal("preview").optional(),
-        through: SequenceSchema.optional(),
-      })
-      .extend(durablePageInputSchema.shape),
-    NodeEventPageSchema,
-  ),
   "thread.assignments.list": declaration(
     "GET",
     z
@@ -2263,8 +2238,49 @@ const hostApiGroup4 = defineRpc({
   ),
   "thread.inputQueue.get": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }),
-    ThreadInputQueueViewSchema,
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      expectedRevision: PersonalRevisionSchema.optional(),
+    }),
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      revision: PersonalRevisionSchema,
+      paused: z.boolean(),
+      steerRunId: RunIdSchema.nullable(),
+      items: z
+        .array(
+          z.strictObject({
+            message: z.strictObject({
+              id: MessageIdSchema,
+              revision: z.int().nonnegative(),
+              author: z.enum([
+                "agent",
+                "connection",
+                "human",
+                "platform",
+                "team-member",
+                "trigger",
+                "watch",
+              ]),
+              preview: z.string(),
+              truncated: z.boolean(),
+            }),
+            input: z.strictObject({
+              messageId: MessageIdSchema,
+              state: ThreadInputViewSchema.shape.state,
+              queueRank: PersonalRevisionSchema,
+            }),
+            canEdit: z.boolean(),
+            canCancel: z.boolean(),
+            canMove: z.boolean(),
+            canSteer: z.boolean(),
+            lease: z
+              .strictObject({ deviceLabel: z.string(), expiresAt: z.iso.datetime() })
+              .nullable(),
+          }),
+        )
+        .max(100),
+    }),
   ),
   /** A waiting message's versions, newest first, a bounded page at a time. */
   "thread.message.revisions.list": declaration(
@@ -2273,6 +2289,8 @@ const hostApiGroup4 = defineRpc({
       threadId: ThreadIdSchema,
       messageId: MessageIdSchema,
       before: z.number().int().positive().optional(),
+      expectedRevision: z.int().nonnegative().optional(),
+      leaseId: z.string().min(1).max(64).optional(),
     }),
     z.object({
       revisions: z.array(MessageRevisionViewSchema).max(messageRevisionsPageSize),
@@ -2284,16 +2302,6 @@ const hostApiGroup4 = defineRpc({
    * items. A reader that opened the Thread mid-turn, or saw a gap in a stream,
    * reads this to draw the whole stream instead of the part it happened to see.
    */
-  "thread.live.get": declaration(
-    "GET",
-    z.strictObject({ threadId: ThreadIdSchema }),
-    z.object({
-      runs: z
-        .array(z.object({ afterSequence: SequenceSchema, progress: LiveRunProgressViewSchema }))
-        .max(64),
-      threadId: ThreadIdSchema,
-    }),
-  ),
   "thread.messages.list": declaration(
     "POST",
     z
@@ -2321,17 +2329,27 @@ const hostApiGroup4 = defineRpc({
       .strictObject({
         threadId: ThreadIdSchema,
         requestId: RequestIdSchema.optional(),
+        review: z
+          .array(z.strictObject({ id: RequestIdSchema, revision: PersonalRevisionSchema }))
+          .min(1)
+          .max(20)
+          .refine((requests) => new Set(requests.map(({ id }) => id)).size === requests.length)
+          .optional(),
         deviceAccessRequests: z.literal("include").optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine(
-        (input) => !input.requestId || (input.before === undefined && input.limit === undefined),
+        (input) =>
+          !(input.requestId && input.review) &&
+          (!(input.requestId || input.review) ||
+            (input.before === undefined && input.limit === undefined)),
         "A targeted Request read cannot page",
       ),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,
       window: DurableWindowSchema,
+      reviewedRevisions: z.record(RequestIdSchema, PersonalRevisionSchema).optional(),
     }),
   ),
   "triggers.get": declaration(
@@ -2372,7 +2390,100 @@ const hostApiGroup4 = defineRpc({
   ),
 } as const);
 
+const transcriptScopeInput = { threadId: ThreadIdSchema, nodeId: ExecutionNodeIdSchema.optional() };
+const transcriptPageInput = {
+  after: TranscriptOrderCursorSchema.optional(),
+  before: TranscriptOrderCursorSchema.optional(),
+  anchorItemId: TranscriptItemIdSchema.optional(),
+  aroundMessageId: MessageIdSchema.optional(),
+  limit: z.int().min(1).max(100).optional(),
+};
+
 const workspaceHostApi = defineRpc({
+  "personal.shell.get": declaration(
+    "GET",
+    z.strictObject({ selectedThreadId: ThreadIdSchema.optional() }),
+    PersonalNetworkShellSnapshotSchema,
+  ),
+  "personal.readiness.get": declaration(
+    "GET",
+    z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("runner"),
+        environmentId: EnvironmentIdSchema,
+        runnerId: RunnerIdSchema,
+      }),
+      z.strictObject({
+        kind: z.literal("browser-placement"),
+        environmentId: EnvironmentIdSchema,
+        runtimeId: z.string().trim().min(1).max(255),
+      }),
+    ]),
+    z.strictObject({ ready: z.boolean() }),
+  ),
+  "thread.snapshot.get": declaration(
+    "GET",
+    z.strictObject(transcriptScopeInput),
+    PersonalDetailSnapshotSchema,
+  ),
+  "thread.items.page": declaration(
+    "GET",
+    z.strictObject({ threadId: ThreadIdSchema, ...transcriptPageInput }),
+    TranscriptPageResultSchema,
+  ),
+  "node.items.page": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      nodeId: ExecutionNodeIdSchema,
+      ...transcriptPageInput,
+    }),
+    TranscriptPageResultSchema,
+  ),
+  "transcript.item.get": declaration(
+    "GET",
+    z.strictObject({
+      ...transcriptScopeInput,
+      itemId: TranscriptItemIdSchema,
+      expectedRevision: PersonalRevisionSchema.optional(),
+    }),
+    TranscriptItemResultSchema,
+  ),
+  "thread.overlays.page": declaration(
+    "GET",
+    z.strictObject({
+      ...transcriptScopeInput,
+      kind: z.enum(["requests", "tools", "nodes"]),
+      expectedRevision: PersonalRevisionSchema.optional(),
+      cursor: z.string().max(4096).optional(),
+    }),
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      nodeId: ExecutionNodeIdSchema.nullable(),
+      kind: z.enum(["requests", "tools", "nodes"]),
+      revision: PersonalRevisionSchema,
+      entries: z.array(z.union([PersonalRequestSummarySchema, TranscriptItemSchema])).max(20),
+      next: z.string().max(4096).nullable(),
+    }),
+  ),
+  "resources.get": declaration(
+    "GET",
+    z.strictObject({
+      kind: PersonalResourceKindSchema,
+      knownRevision: PersonalRevisionSchema.optional(),
+    }),
+    z.strictObject({ revision: PersonalRevisionSchema, view: PersonalResourceViewSchema }),
+  ),
+  "resources.detail.get": declaration(
+    "GET",
+    z.strictObject({
+      kind: PersonalResourceKindSchema,
+      id: z.string().max(255).optional(),
+      expectedRevision: PersonalRevisionSchema,
+      cursor: z.string().max(4096).optional(),
+    }),
+    PersonalResourceDetailSchema,
+  ),
   "machines.list": declaration(
     "GET",
     emptyInputSchema,
@@ -2389,7 +2500,6 @@ const workspaceHostApi = defineRpc({
   "tabs.state": declaration("GET", z.strictObject({}), TabBootstrapSchema),
   "apps.list": declaration("GET", AppsListInputSchema, AppsListResultSchema),
   "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppViewSchema),
-  "bootstrap.get": declaration("GET", z.strictObject({}), workspaceBootstrapOutput),
 });
 export const hostApi: typeof hostApiGroup1 &
   typeof hostApiGroup2 &

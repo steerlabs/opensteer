@@ -9,15 +9,21 @@ import { constants } from "node:zlib";
 // caller-controlled labels, which compression would turn into a length oracle.
 // Review each addition for that.
 export const compressedReads = new Set<keyof typeof hostApi>([
-  "bootstrap.get",
+  "personal.shell.get",
+  "tasks.page",
+  "needsYou.get",
+  "attention.get",
+  "thread.snapshot.get",
+  "thread.items.page",
+  "node.items.page",
+  "thread.overlays.page",
+  "transcript.item.get",
+  "resources.get",
+  "resources.detail.get",
   "requests.list",
   "tasks.list",
   "thread.assignments.list",
-  "thread.events.list",
-  "node.events.list",
-  "tool.output.get",
   "thread.inputQueue.get",
-  "thread.live.get",
   "thread.messages.list",
   "thread.requests.list",
 ]);

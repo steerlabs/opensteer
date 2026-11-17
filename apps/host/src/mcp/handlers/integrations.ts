@@ -34,7 +34,6 @@ import {
   UserIdSchema,
   OpensteerError,
   refused,
-  type AgentEvent,
   type Request,
   type RunId,
   type TriggerOccurrenceId,
@@ -107,15 +106,12 @@ type DiscoveryInventoryEntry = Awaited<
 >[number];
 export class IntegrationToolHandlers {
   readonly #definitions: readonly IntegrationDefinition[];
-  readonly #onEvent: (event: AgentEvent) => void;
   readonly #platform: IntegrationPlatformService;
   constructor(options: {
     readonly definitions: readonly IntegrationDefinition[];
-    readonly onEvent: (event: AgentEvent) => void;
     readonly platform: IntegrationPlatformService;
   }) {
     this.#definitions = options.definitions;
-    this.#onEvent = options.onEvent;
     this.#platform = options.platform;
   }
 
@@ -931,7 +927,6 @@ export class IntegrationToolHandlers {
           requestedServerId: null,
         })
       : await this.#platform.store.requests.createIntegrationInstallRequest(requestInput);
-    for (const event of created.events) this.#onEvent(event);
     return integrationRequestResult(created.request, created.replayed, scope, {
       ...(outcome.authNote === undefined ? {} : { authNote: outcome.authNote }),
       selectedAuth: outcome.selectedAuth,
@@ -1017,7 +1012,6 @@ export class IntegrationToolHandlers {
             requestedServerId: installed?.servers.length === 1 ? installed.servers[0]!.id : null,
           })
         : await this.#platform.store.requests.createIntegrationInstallRequest(requestInput);
-      for (const event of created.events) this.#onEvent(event);
       return integrationRequestResult(created.request, created.replayed, scope);
     }
     const inventory = await this.#platform.listDiscoveryInventory({
@@ -1125,7 +1119,6 @@ export class IntegrationToolHandlers {
       requestedServerId,
       requestedBy: scope.requestedBy,
     });
-    for (const event of created.events) this.#onEvent(event);
     return integrationRequestResult(created.request, created.replayed, scope);
   }
 

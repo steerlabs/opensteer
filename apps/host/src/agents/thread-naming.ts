@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   backgroundModelWants,
   excludedBackgroundAccounts,
-  type AgentEvent,
   type EnvironmentId,
   type ResolvedModelCandidate,
   type ThreadId,
@@ -44,7 +43,6 @@ interface ThreadNamingDependencies {
   store: OpensteerStore;
   catalogs?: HarnessCatalogRecorder;
   runners: RunnerRegistry;
-  publish: (event: AgentEvent) => void;
   onError: (error: unknown) => void;
 }
 
@@ -105,7 +103,7 @@ export class ThreadNaming {
   }
 
   async #name(threadId: ThreadId) {
-    const { store, runners, publish } = this.dependencies;
+    const { store, runners } = this.dependencies;
     const input = await store.getThreadNamingInput(threadId);
     if (!input) return;
     const { candidates: resolved } = await resolveAutomaticModels(
@@ -201,7 +199,7 @@ export class ThreadNaming {
       )
         return;
       const name = parseGeneratedThreadName(result.text, { icon: input.icon });
-      const applied = await store.applyGeneratedThreadName({
+      await store.applyGeneratedThreadName({
         threadId,
         ...(name.title ? { title: name.title } : {}),
         ...(name.icon ? { icon: name.icon } : {}),
@@ -214,7 +212,6 @@ export class ThreadNaming {
           expiresAt,
         },
       });
-      for (const event of applied?.events ?? []) publish(event);
       return;
     }
     unnamed();

@@ -1530,15 +1530,7 @@ export class OpensteerStore {
     readonly integration?: IntegrationCallSubject;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<{
-    /** Turns the Host requeued because this event ended their injection window. */
-    readonly compensatingEvents: readonly AgentEvent[];
-    /** A `run.usage` this Run had already stated; the first one still stands. */
-    readonly duplicateRunUsage: boolean;
-    readonly event: AgentEvent;
-    readonly revokedGrants: readonly RevokedRunGrant[];
-    readonly wasDuplicate: boolean;
-  }> {
+  }): Promise<Awaited<ReturnType<typeof runnerEventStore.commitRunnerEvent>>> {
     return this.#announceRevokedGrants(
       await runnerEventStore.commitRunnerEvent(
         this.#database,

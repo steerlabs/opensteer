@@ -60,7 +60,6 @@ export * from "./team-api.js";
 export * from "./team-session.js";
 
 export * from "./needs-you.js";
-export * from "./person-questions.js";
 export {
   readTeamFrame,
   TeamClientFrameViewSchema,
@@ -96,5 +95,3 @@ export {
 } from "@opensteer/core";
 
 export * from "./phone-display.js";
-
-export * from "./device-wire-compatibility.js";

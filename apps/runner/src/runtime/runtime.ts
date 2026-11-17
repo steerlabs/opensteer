@@ -76,7 +76,7 @@ import {
 import {
   backgroundTextAttemptsPerRunner,
   HarnessInstanceCatalogSchema,
-  PendingAgentEventSchema,
+  PendingAgentEventV2Schema,
   pendingAgentEventMaxSerializedBytes,
   type PendingAgentEvent,
   type ProtocolError,
@@ -275,6 +275,7 @@ interface ActiveRun {
   emittedEvents: number;
   /** Streaming text not yet completed by a durable event. */
   readonly live: LiveProgressBuffer;
+  assistantMessageId?: import("@opensteer/core").MessageId;
   nextOrdinal: number;
   readonly pendingRequestIds: Set<RequestId>;
   /**
@@ -2001,6 +2002,10 @@ export class RunnerRuntime {
     await this.#publishPendingHarnessCatalogInvalidations(sink);
   }
 
+  resynchronizeLive(runId: RunId): void {
+    this.#runs.get(runId)?.live.resynchronize();
+  }
+
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
   acknowledge(
     acks: Extract<HostToRunnerMessage, { readonly type: "host.events.acked" }>["acks"],
@@ -2301,6 +2306,7 @@ export class RunnerRuntime {
               runId: context.runId,
               threadId: context.threadId,
             },
+            ...(active.assistantMessageId ? { assistantMessageId: active.assistantMessageId } : {}),
             type: "runner.live",
           });
         },
@@ -3231,6 +3237,7 @@ export class RunnerRuntime {
   #appendLive(active: ActiveRun, event: HarnessLiveEvent): void {
     switch (event.type) {
       case "assistant.delta":
+        active.assistantMessageId ??= createId("message");
         active.live.append({ stream: "assistant" }, event.data.text);
         return;
       case "reasoning.delta":
@@ -3271,7 +3278,12 @@ export class RunnerRuntime {
    */
   async #emitDurable(active: ActiveRun, event: HarnessDurableEvent): Promise<void> {
     await active.live.flush();
-    await this.#emit(active, event);
+    await this.#emit(
+      active,
+      event.type === "assistant.message" && active.assistantMessageId
+        ? { ...event, data: { ...event.data, messageId: active.assistantMessageId } }
+        : event,
+    );
     switch (event.type) {
       case "tool.started":
         if (event.data.nodeId) active.toolNodeIds.set(event.data.callId, event.data.nodeId);
@@ -3281,6 +3293,7 @@ export class RunnerRuntime {
         return;
       case "assistant.message":
         active.live.complete({ stream: "assistant" });
+        delete active.assistantMessageId;
         return;
       case "reasoning.completed":
         if (event.data.nodeId) return;
@@ -3314,7 +3327,10 @@ export class RunnerRuntime {
           // tail can exceed in many scripts; the newest text that fits is kept.
           const text = fittedTail(item.text, truncated, messageContentMaxSerializedBytes - 1_024);
           await this.#emit(active, {
-            data: { content: [{ text, type: "text" }], messageId: createId("message") },
+            data: {
+              content: [{ text, type: "text" }],
+              messageId: active.assistantMessageId ?? createId("message"),
+            },
             type: "assistant.message",
           });
         } else if (item.stream === "reasoning") {
@@ -3355,7 +3371,7 @@ export class RunnerRuntime {
         : original;
     const event = fittedDurableEvent(outcome);
     const { context } = active.command;
-    const pending = PendingAgentEventSchema.parse({
+    const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
       data: event.data,
       emittedAt: new Date().toISOString(),

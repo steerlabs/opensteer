@@ -1,17 +1,8 @@
-import {
-  apiVersionQueryParameter,
-  apiCurrentQueryParameter,
-  hostApiVersionHeader,
-  hostApiCurrentHeader,
-  minimumHostApiVersion,
-  negotiatedHostApiVersion,
-} from "@opensteer/deployment-authority";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { OpensteerError, type AuthenticatedSession } from "@opensteer/core";
 import {
   displayViewerCloseCodes,
-  assertDeviceWireInput,
   ComputerUseSessionIdSchema,
   ComputerViewIdSchema,
   type DisplaySource,
@@ -231,17 +222,7 @@ export function registerComputerUseDisplayRoutes(
         if (source.kind === "owner-view" && !Number.isSafeInteger(source.generation))
           throw new OpensteerError({ code: "forbidden", message: "Invalid view generation" });
         try {
-          const target = await options.hub.authorize(source, login.user.id);
-          const query = new URL(request.url ?? "", "http://host.invalid").searchParams;
-          const version =
-            negotiatedHostApiVersion({
-              ...request.headers,
-              [hostApiVersionHeader]:
-                query.get(apiVersionQueryParameter) ?? request.headers[hostApiVersionHeader],
-              [hostApiCurrentHeader]:
-                query.get(apiCurrentQueryParameter) ?? request.headers[hostApiCurrentHeader],
-            }) ?? minimumHostApiVersion;
-          assertDeviceWireInput({ deviceId: target.deviceId }, version);
+          await options.hub.authorize(source, login.user.id);
         } catch (error) {
           if (error instanceof ComputerUseError)
             throw new OpensteerError({

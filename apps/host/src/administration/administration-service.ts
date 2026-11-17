@@ -21,7 +21,7 @@ import {
 import type { HostServerDependencies } from "../server.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { settings } from "../mcp/tool-access.js";
-import { notifyMachinesChanged } from "../shell/machine-access-events.js";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { harnessView, requireMachineAccessManagement } from "./authority.js";
 import {
   executeIntegrationAdministration,
@@ -178,16 +178,7 @@ export class AdministrationService {
             .parse(replay.result),
         });
     }
-    const result = await this.#execute(caller, actor, command, administration, afterResponse);
-    if (
-      command.type.startsWith("harness.") ||
-      command.type === "execution.preferences.remember" ||
-      command.type === "viewer.quietTasks.update" ||
-      command.type === "settings.idleCompaction.set" ||
-      command.type === "browser.site.remove"
-    )
-      notifyMachinesChanged(this.dependencies.realtime, "unspecified");
-    return result;
+    return this.#execute(caller, actor, command, administration, afterResponse);
   }
   #commandIdentity(
     caller: AgentCaller,
@@ -300,7 +291,7 @@ export class AdministrationService {
         administration,
       );
       if (command.type.startsWith("plugin.") || command.type === "specialist.remove")
-        notifyMachinesChanged(dependencies.realtime, "integration.connections");
+        dependencies.realtime.publishConnectionsChanged(userId);
       return result;
     }
     switch (command.type) {
@@ -559,7 +550,9 @@ export class AdministrationService {
           command.name,
           administration ? { administration } : {},
         );
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
+        await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) =>
+          mutation.bumpResource("machine"),
+        );
         return {
           type: command.type,
         };
@@ -580,7 +573,9 @@ export class AdministrationService {
           dependencies.store,
           dependencies.deviceDrivers,
         ).execute({ userId, sessionId: caller.sessionId }, command);
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
+        await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) =>
+          mutation.bumpResource("machine"),
+        );
         return hostApi["commands.dispatch"].success.parse(result);
       }
       case "machine.access.session.stop": {

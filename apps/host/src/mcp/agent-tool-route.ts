@@ -1,11 +1,12 @@
 import { agentToolFailureResult } from "@opensteer/agent-tools";
-import { createToolOutput, type AgentEvent, type RunId } from "@opensteer/core";
+import { createToolOutput, type RunId } from "@opensteer/core";
 import {
   AgentToolRelayRequestSchema,
   agentToolHostRoutePath,
   type AgentToolRelayResponse,
 } from "@opensteer/protocol/agent-tool-relay";
 import type { FastifyInstance } from "fastify";
+import type { AgentToolActivityStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentCallerResolver, RunCaller } from "./agent-caller.js";
 import type { OpensteerMcpService } from "./opensteer-mcp-service.js";
@@ -16,8 +17,6 @@ type Context = Pick<
   RunCaller["claims"],
   "runId" | "threadId" | "environmentId" | "bindingGeneration"
 >;
-type Completed = Extract<AgentEvent, { type: "tool.completed" }>;
-type Started = Extract<AgentEvent, { type: "tool.started" }>;
 const unknownOutcome = () =>
   agentToolFailureResult({
     code: "outcome_unknown",
@@ -30,21 +29,8 @@ export function registerAgentToolRoute(
   options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly service: Pick<OpensteerMcpService, "callToolResult" | "validateToolInput">;
-    readonly activity: {
-      start(
-        context: Context,
-        callId: string,
-        name: string,
-        args: unknown,
-      ): Promise<{ started: Started; replay: boolean; completed: Completed | null }>;
-      complete(
-        started: Started,
-        output: ReturnType<typeof createToolOutput>,
-        isError: boolean,
-      ): Promise<Completed>;
-    };
-    readonly realtime: Pick<RealtimeHub, "observe">;
-    readonly publish: (events: readonly AgentEvent[]) => void | Promise<void>;
+    readonly activity: Pick<AgentToolActivityStore, "start" | "complete">;
+    readonly realtime: Pick<RealtimeHub, "observeScopes">;
   },
 ): void {
   const active = new Map<
@@ -52,7 +38,7 @@ export function registerAgentToolRoute(
     { fingerprint: string; result: Promise<AgentToolRelayResponse> }
   >();
   const controllers = new Map<AbortController, { token: string; runId: RunId }>();
-  const unobserve = options.realtime.observe(() => {
+  const unobserve = options.realtime.observeScopes(["authority"], () => {
     for (const [controller, call] of controllers)
       void options.callers.authenticate(call.token).then(
         (caller) => {
@@ -135,47 +121,38 @@ export function registerAgentToolRoute(
     }
     controllers.set(controller, { token, runId: context.runId });
     const result = (async (): Promise<AgentToolRelayResponse> => {
-      let started: Started | undefined;
+      let started: Awaited<ReturnType<AgentToolActivityStore["start"]>>["handle"] | undefined;
       try {
         controller.signal.throwIfAborted();
         const activity = await options.activity.start(context, callId, name, args);
-        started = activity.started;
+        started = activity.handle;
         if (activity.completed) {
           // Durable output is bounded and sanitized like every engine-reported tool result.
-          if (activity.completed.data.output.truncation) return unknownOutcome();
+          if (activity.completed.output.truncation) return unknownOutcome();
           try {
-            const replay = JSON.parse(
-              activity.completed.data.output.text,
-            ) as AgentToolRelayResponse;
+            const replay = JSON.parse(activity.completed.output.text) as AgentToolRelayResponse;
             if (replay._meta?.["opensteer/harness-activity-only"]) return unknownOutcome();
             return replay;
           } catch {
             return unknownOutcome();
           }
         }
-        if (!activity.replay) await options.publish([activity.started]);
         const response = activity.replay
           ? unknownOutcome()
           : await options.service.callToolResult(token, name, input, {
               operationKey: callId,
               signal: controller.signal,
             });
-        const completed = await options.activity.complete(
+        await options.activity.complete(
           started,
           activityOutput(response),
           response.isError === true,
         );
-        await options.publish([completed]);
         return response;
       } catch (error) {
         const response = agentToolFailureResult(agentToolFailure(error, "write"));
         if (started) {
-          const completed = await options.activity.complete(
-            started,
-            activityOutput(response),
-            true,
-          );
-          await options.publish([completed]);
+          await options.activity.complete(started, activityOutput(response), true);
         }
         return response;
       } finally {

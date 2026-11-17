@@ -664,6 +664,7 @@ export class BrowserSourceService {
     readonly ownerId: UserId;
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly decision: BrowserSignInDecision;
   }): Promise<BrowserSignInOutcome | null> {
     const request = await this.#requests.get(input.requestId);
@@ -682,6 +683,7 @@ export class BrowserSourceService {
         this.#requests.declineBrowserSignInRequest({
           requestId: input.requestId,
           resolvedBy: input.ownerId,
+          expectedRevision: input.expectedRevision,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         }),
       );

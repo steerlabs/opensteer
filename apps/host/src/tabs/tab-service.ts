@@ -52,7 +52,6 @@ import type {
   TabActor,
   TabServicePort,
 } from "./ports.js";
-import { TabStreams } from "./tab-streams.js";
 
 export interface PageTabsPort {
   open(
@@ -148,7 +147,6 @@ const cursorSchema = z.strictObject({
 });
 
 export class TabService implements TabServicePort {
-  readonly streams: TabStreams;
   readonly #stopAcquired: () => void;
   readonly options: TabServiceOptions;
   readonly #catalogs = new Map<
@@ -184,7 +182,6 @@ export class TabService implements TabServicePort {
   }
   constructor(options: TabServiceOptions) {
     this.options = options;
-    this.streams = new TabStreams((ownerId) => this.#catalog(ownerId), options.onError);
     this.#stopAcquired = options.nativeTargets.onTargetAcquired(
       async (target) =>
         this.acquired({
@@ -200,7 +197,6 @@ export class TabService implements TabServicePort {
       if (!tabIds) catalog.dirty = null;
       else if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
     }
-    this.streams.changed(ownerId, tabIds);
   }
   appsChanged(appIds: AppId[]): void {
     for (const [ownerId, catalog] of this.#catalogs) {
@@ -212,7 +208,6 @@ export class TabService implements TabServicePort {
   }
   dispose(): void {
     this.#stopAcquired();
-    this.streams.close();
     this.#catalogs.clear();
   }
   async #catalog(ownerId: UserId) {
@@ -263,7 +258,7 @@ export class TabService implements TabServicePort {
     return current.pending;
   }
 
-  /** The same ordered projection feeds bootstrap, snapshots, RPCs and the keyed stream. */
+  /** The same ordered projection feeds resource reads and RPCs. */
   async project(
     actor: TabActor,
     database = this.options.store.database,

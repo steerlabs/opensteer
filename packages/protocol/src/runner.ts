@@ -453,6 +453,7 @@ export const PendingAgentEventSchema = z
 
 export const runEventsVersion = 2;
 export const runEventsCapability = "run-events-v2";
+export const runEventsUpdateReason = "Update Opensteer on the Host and this computer to run tasks.";
 export const PendingAgentEventV2Schema = z
   .discriminatedUnion("type", [
     ...pendingEventVariants,
@@ -1616,6 +1617,7 @@ export const RunnerChallengeSchema = z.object({
   nonce: z.string().regex(/^[A-Za-z0-9_-]{32,255}$/),
   // Missing on a pre-v2 Host, so the producer can report an actionable refusal.
   proofFormatVersion: z.number().int().positive().optional(),
+  runEventsVersion: z.number().int().positive().optional(),
   type: z.literal("host.challenge"),
 });
 export type RunnerChallenge = z.infer<typeof RunnerChallengeSchema>;
@@ -1830,7 +1832,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...fencedMessageBase,
     type: z.literal("runner.event"),
-    event: PendingAgentEventSchema,
+    event: PendingAgentEventV2Schema,
   }),
   /**
    * What a Run's streams are saying before they complete. Live progress is
@@ -1842,6 +1844,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     bindingGeneration: z.number().int().positive(),
     environmentId: EnvironmentIdSchema,
     progress: LiveRunProgressSchema,
+    assistantMessageId: MessageIdSchema.optional(),
     type: z.literal("runner.live"),
   }),
   z.strictObject({
@@ -1967,6 +1970,8 @@ export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
 export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({ ...fencedMessageBase, type: z.literal("host.shell.probe-full-disk-access") }),
+  z.strictObject({ ...fencedMessageBase, type: z.literal("host.live.resync"), runId: RunIdSchema }),
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
   HostAppsSyncSchema,

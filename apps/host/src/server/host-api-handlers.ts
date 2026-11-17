@@ -73,13 +73,22 @@ export function createHostApiHandlers(
   browserSources: BrowserSourceRpcOptions,
   coreHandlers: Pick<
     HostApiHandlers,
+    | "personal.shell.get"
+    | "personal.readiness.get"
+    | "tasks.page"
+    | "thread.snapshot.get"
+    | "thread.items.page"
+    | "node.items.page"
+    | "thread.overlays.page"
+    | "transcript.item.get"
+    | "resources.get"
+    | "resources.detail.get"
     | "agentPhone.target.get"
     | "apps.list"
     | "apps.get"
     | "tabs.get"
     | "tabs.state"
     | "machines.list"
-    | "bootstrap.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -111,16 +120,12 @@ export function createHostApiHandlers(
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
-    | "thread.events.list"
-    | "node.events.list"
     | "asset.urls"
     | "file.open"
     | "file.content"
-    | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"
     | "thread.message.revisions.list"
-    | "thread.live.get"
     | "thread.requests.list"
     | "references.resolve"
   >,
@@ -314,7 +319,6 @@ export function createHostApiHandlers(
   } satisfies Omit<
     HostApiHandlers,
     | "machines.list"
-    | "bootstrap.get"
     | "tabs.get"
     | "tabs.state"
     | "apps.list"

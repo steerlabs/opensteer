@@ -10,7 +10,7 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import type { AdministrationDependencies } from "./administration-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
-import { notifyMachinesChanged } from "../shell/machine-access-events.js";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 
 type Dependencies = AdministrationDependencies & { readonly authenticator: HostAuthenticator };
 const membershipTurns = new WeakMap<OpensteerStore, KeyedMutationQueue>();
@@ -47,7 +47,17 @@ export async function finishDeviceRemoval(
     dependencies.browser.abandonSession(sessionId);
   await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
   dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
-  notifyMachinesChanged(dependencies.realtime, "machine.command");
+  await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
+    for (const kind of [
+      "machine",
+      "environment",
+      "browser-placement",
+      "browser-home",
+      "browser-availability",
+      "tab",
+    ] as const)
+      mutation.bumpResource(kind);
+  });
 }
 function withRemovalAdmission<T>(
   dependencies: Dependencies,
@@ -114,7 +124,6 @@ export async function removeSignedDevice(
     );
     if (result.removed)
       await finishDeviceRemoval(dependencies, result.runnerId, result.removed, afterResponse);
-    else notifyMachinesChanged(dependencies.realtime, "machine.command");
   });
 }
 export async function signOutDeviceSession(
