@@ -18,6 +18,7 @@ import { completePersonalToolCall } from "./personal-tool-calls.js";
 import { resolvePersonalToolImages } from "./personal-tool-images.js";
 import { liveRequest } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-persistence.js";
+import { transcriptIdentity } from "./transcript-store.js";
 
 function legacyState(database: Kysely<DatabaseSchema>) {
   return sql<{ legacy: boolean; cursor: boolean }>`
@@ -166,8 +167,9 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       }),
     });
 
-    await preparePersonalConversion(database, 905);
+    await preparePersonalConversion(database, 1013);
     const imagePath = "/disposable-fixture/screenshot.png";
+    const reasoningText = 'Retained "reasoning"\nSecond line';
     await sql`delete from deployment_events`.execute(database);
     const identity = { callId: "legacy-test", tool: { namespace: "native", name: "image" } };
     const output = { text: "result", images: [{ path: imagePath, mediaType: "image/png" }] };
@@ -204,10 +206,16 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
         ordinal: null,
       },
       {
-        sequence: 905,
+        sequence: 1012,
         type: "reasoning.completed",
-        data: { blockId: "thought", text: "Retained reasoning" },
+        data: { blockId: "thought", text: "Superseded reasoning" },
         ordinal: 8,
+      },
+      {
+        sequence: 1013,
+        type: "reasoning.completed",
+        data: { blockId: "thought", text: reasoningText },
+        ordinal: 9,
       },
     ]) {
       const binding = event.ordinal === null ? null : active.bindingGeneration;
@@ -223,7 +231,8 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       select ${active.deploymentId},seq,'evt_fixture_'||seq,${active.threadId},${active.runId},${active.environmentId},
         case when seq in (508,510) then 'message.placed' else 'message.created' end,
         jsonb_build_object('message',jsonb_build_object('id',${prompt.id}::text))
-      from generate_series(12,525) seq`.execute(database);
+      from generate_series(12,1011) seq
+      where seq not in (850,851,899,900,902,904)`.execute(database);
     for (const boundary of ["settle", "message", "ledger", "verify", "finalize"] as const) {
       await expect(
         finishPersonalStateUpgrade(database, {
@@ -254,8 +263,8 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     const state = await target.selectFrom("clientSyncState").selectAll().executeTakeFirstOrThrow();
     expect(state).toMatchObject({
       ready: true,
-      sequence: "905",
-      prunedThroughSequence: "905",
+      sequence: "1013",
+      prunedThroughSequence: "1013",
       retainedChangeCount: 0,
     });
     expect(
@@ -298,6 +307,27 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .where("id", "=", prompt.id)
       .executeTakeFirstOrThrow();
     expect(BigInt(tools[1]!.completionOrder!) - BigInt(placed.position!)).toBe(390n);
+    expect(
+      await target
+        .selectFrom("transcriptItems")
+        .select(["id", "body", "view"])
+        .where("runId", "=", active.runId)
+        .where("kind", "=", "reasoning")
+        .execute(),
+    ).toEqual([
+      {
+        id: transcriptIdentity(
+          "reasoning",
+          active.runId,
+          tools[1]!.attemptId,
+          active.bindingGeneration,
+          null,
+          "thought",
+        ),
+        body: reasoningText,
+        view: { preview: reasoningText },
+      },
+    ]);
 
     const original = await target
       .selectFrom("toolOutputImages")

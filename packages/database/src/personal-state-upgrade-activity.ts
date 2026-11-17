@@ -1,10 +1,10 @@
 import {
   eventDataSchemas,
+  RunAttemptIdSchema,
   RunIdSchema,
   ThreadIdSchema,
   type AgentEvent,
   type DeploymentId,
-  type EnvironmentId,
   type EventId,
   type ExecutionNodeId,
   type RunAttemptId,
@@ -13,6 +13,7 @@ import {
   utf8Prefix,
 } from "@opensteer/core";
 import { sql, type Insertable, type Selectable, type Transaction } from "kysely";
+import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import type {
   ToolCallTable,
@@ -28,14 +29,13 @@ import {
 
 type Tx = Transaction<DatabaseSchema>;
 interface LegacyActivity {
-  readonly eventId: EventId;
+  readonly eventId: EventId | null;
   readonly sequence: string;
   readonly runId: RunId | null;
   readonly threadId: ThreadId | null;
   readonly runnerOrdinal: number | null;
   readonly runnerBindingGeneration: number | null;
   readonly createdAt: Date;
-  readonly environmentId: EnvironmentId | null;
   readonly type: AgentEvent["type"];
   readonly data: unknown;
   readonly attemptId: RunAttemptId | null;
@@ -52,6 +52,16 @@ export interface LegacyImportCounts {
 
 const maxLegacyBatchBytes = 2 * 1024 * 1024;
 const maxLegacyBatchRows = 500;
+export const legacyRunIdPattern = z.toJSONSchema(RunIdSchema, { io: "input" }).pattern!;
+export const legacyAttemptIdPattern = z.toJSONSchema(RunAttemptIdSchema, { io: "input" }).pattern!;
+const threadIdPattern = z.toJSONSchema(ThreadIdSchema, { io: "input" }).pattern!;
+const emptyCounts: LegacyImportCounts = {
+  tools: 0,
+  images: 0,
+  reasoning: 0,
+  nodeMessages: 0,
+  skipped: 0,
+};
 
 export async function convertLegacyActivityBatch(
   tx: Tx,
@@ -60,7 +70,7 @@ export async function convertLegacyActivityBatch(
   through: string,
   reservedPosition: string,
 ): Promise<{ through: string | null; counts: LegacyImportCounts }> {
-  const page = await sql<LegacyActivity & { placedInSql: boolean }>`
+  const page = await sql<LegacyActivity & { importedInSql: boolean; reasoning: number }>`
     with sized as materialized (
       select sequence,
         case when type in ('tool.started','tool.completed','reasoning.completed','node.message')
@@ -73,7 +83,7 @@ export async function convertLegacyActivityBatch(
         row_number() over(order by sequence) as row_no from sized
     ), selected as materialized (
       select e.sequence,e.event_id,e.run_id,e.thread_id,e.runner_ordinal,e.runner_binding_generation,
-        e.environment_id,e.type,e.created_at,
+        e.type,e.created_at,
         case when b.bytes > ${maxLegacyBatchBytes} then
           case when e.type in ('reasoning.completed','node.message') then jsonb_strip_nulls(jsonb_build_object(
             'blockId',left(e.data->>'blockId',255),'nodeId',left(e.data->>'nodeId',255),
@@ -100,10 +110,33 @@ export async function convertLegacyActivityBatch(
       from bounded b
       join deployment_events e on e.deployment_id=${deploymentId} and e.sequence=b.sequence
       where b.batch_bytes <= ${maxLegacyBatchBytes} or b.row_no=1
+    ), resolved as materialized (
+      select b.*,node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id
+      from selected b
+      left join execution_nodes node on node.id=b.data->>'nodeId' and node.run_id=b.run_id
+        and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
+      left join lateral (
+        select a.id from run_attempts a where a.run_id=b.run_id
+          and a.binding_generation=b.runner_binding_generation
+          and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
+        order by a.id limit 1
+      ) attempt on node.id is null
     ), batch as materialized (
       select max(sequence) as last, coalesce(bool_and(
         type in ('message.created','message.placed','assistant.message')
-      ),false) as message_only from selected
+      ),false) as message_only, coalesce(bool_and((
+        type='reasoning.completed' and not (data ? 'nodeId')
+          and run_id collate "C" ~* ${legacyRunIdPattern}
+          and thread_id collate "C" ~* ${threadIdPattern}
+          and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
+          and (runner_binding_generation is null or runner_binding_generation >= 0)
+          and (runner_ordinal is null or (attempt_id is not null and runner_binding_generation is not null))
+          and jsonb_typeof(data->'blockId')='string'
+          and (data->>'blockId') collate "C" ~ '^[a-zA-Z0-9:_.-]{1,255}$'
+          and jsonb_typeof(data->'text')='string'
+          and octet_length(data->>'text') between 1 and 256
+          and isfinite(created_at)
+      ) is true),false) as reasoning_only from resolved
     ), markers as (
       select data->>'id' as id,thread_id,sequence,type='message.placed' as move
       from selected where (select message_only from batch)
@@ -118,29 +151,43 @@ export async function convertLegacyActivityBatch(
       order by i.id for no key update of i
     ), placed as (
       update transcript_items i set position=locked.position from locked where i.id=locked.id
+    ), blocks as (
+      -- Match transcriptIdentity's compact JSON array for these root blocks.
+      select 'reasoning:' || encode(sha256(convert_to(concat(
+          '[',to_json(run_id),',',coalesce(to_json(attempt_id)::text,'null'),',',
+          coalesce(runner_binding_generation::text,'null'),',null,',to_json(data->>'blockId'),']'
+        ),'UTF8')),'hex') as id, thread_id,run_id,attempt_id,runner_binding_generation,sequence,
+        created_at,data->>'blockId' as block_id,data->>'text' as body
+      from resolved where (select reasoning_only from batch)
+    ), imported_blocks as (
+      insert into transcript_items(id,thread_id,run_id,attempt_id,binding_generation,kind,position,
+        visible,is_turn_start,created_at,block_id,body,view)
+      select distinct on (id) id,thread_id,run_id,attempt_id,runner_binding_generation,'reasoning',
+        ${reservedPosition}::bigint + sequence,true,false,date_trunc('milliseconds',created_at),
+        block_id,to_jsonb(body),jsonb_build_object('preview',body)
+      from blocks order by id,sequence desc
+      on conflict (id) do nothing returning 1
     )
-    select b.sequence,b.event_id,b.run_id,b.thread_id,b.runner_ordinal,b.runner_binding_generation,
-      b.environment_id,b.type,b.created_at,b.data,
-      node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id,false as placed_in_sql
-    from selected b
-    left join execution_nodes node on node.id=b.data->>'nodeId' and node.run_id=b.run_id
-      and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
-    left join lateral (
-      select a.id from run_attempts a where a.run_id=b.run_id
-        and a.binding_generation=b.runner_binding_generation
-        and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
-      order by a.id limit 1
-    ) attempt on node.id is null
-    where not (select message_only from batch)
+    select b.sequence,
+      case when b.type='node.message' and b.runner_ordinal is null then b.event_id end as "eventId",
+      b.run_id as "runId",b.thread_id as "threadId",b.runner_ordinal as "runnerOrdinal",
+      b.runner_binding_generation as "runnerBindingGeneration",b.type,b.created_at as "createdAt",b.data,
+      b.node_id as "nodeId",b.attempt_id as "attemptId",false as "importedInSql",0 as reasoning
+    from resolved b
+    where not (select message_only or reasoning_only from batch)
     union all
-    select last,null,null,null,null,null,null,null,null,null,null,null,true
-    from batch where message_only
+    select last,null,null,null,null,null,null,null,null,null,null,true,
+      (select count(*)::int from imported_blocks)
+    from batch where message_only or reasoning_only
     order by sequence
-  `.execute(tx);
+  `.execute(tx.withoutPlugins());
   const last = page.rows.at(-1);
   return {
     through: last?.sequence ?? null,
-    counts: await importLegacyActivity(tx, last?.placedInSql ? [] : page.rows, reservedPosition),
+    counts:
+      !last || last.importedInSql
+        ? { ...emptyCounts, reasoning: last?.reasoning ?? 0 }
+        : await importLegacyActivity(tx, page.rows, reservedPosition),
   };
 }
 
@@ -190,8 +237,6 @@ function canonicalCard(row: LegacyActivity): { id: string; move: boolean } | nul
 }
 
 function classifyDisplay(row: LegacyActivity): DisplayEvent | null {
-  if (!RunIdSchema.safeParse(row.runId).success || !ThreadIdSchema.safeParse(row.threadId).success)
-    return null;
   if (row.runnerOrdinal !== null && (!row.attemptId || row.runnerBindingGeneration === null))
     return null;
   const type = row.type;
@@ -435,13 +480,7 @@ async function importLegacyActivity(
   reservedPosition: string,
 ): Promise<LegacyImportCounts> {
   const reserved = BigInt(reservedPosition);
-  const counts: LegacyImportCounts = {
-    tools: 0,
-    images: 0,
-    reasoning: 0,
-    nodeMessages: 0,
-    skipped: 0,
-  };
+  const counts = { ...emptyCounts };
   const candidates: ToolSource[] = [];
   const owned = new Map<string, Insertable<TranscriptItemTable>>();
   const placements = new Map<
@@ -450,6 +489,7 @@ async function importLegacyActivity(
   >();
   const terminal = new Map<RunId, { run: RunId; thread: ThreadId; reply: string | null }>();
   const runnerSafe = new Set<RunId>();
+  let scope: { runId: RunId | null; threadId: ThreadId; valid: boolean } | undefined;
   for (const row of page) {
     if (!row.threadId) continue;
     const position = (reserved + BigInt(row.sequence)).toString();
@@ -481,7 +521,17 @@ async function importLegacyActivity(
       row.type !== "node.message"
     )
       continue;
-    const display = classifyDisplay(row);
+    // Consecutive display events commonly share the same Run and thread.
+    if (!scope || row.runId !== scope.runId || row.threadId !== scope.threadId) {
+      scope = {
+        runId: row.runId,
+        threadId: row.threadId,
+        valid:
+          RunIdSchema.safeParse(row.runId).success &&
+          ThreadIdSchema.safeParse(row.threadId).success,
+      };
+    }
+    const display = scope.valid ? classifyDisplay(row) : null;
     if (!display) {
       counts.skipped++;
     } else if (display.type === "tool.started" || display.type === "tool.completed") {

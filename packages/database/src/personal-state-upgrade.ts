@@ -4,8 +4,6 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
   MessageIdSchema,
-  RunIdSchema,
-  RunAttemptIdSchema,
   ExecutionNodeIdSchema,
   type RunId,
   type ThreadId,
@@ -22,7 +20,11 @@ import {
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks } from "./store-primitives.js";
 import type { DatabaseSchema } from "./schema.js";
-import { convertLegacyActivityBatch } from "./personal-state-upgrade-activity.js";
+import {
+  convertLegacyActivityBatch,
+  legacyAttemptIdPattern,
+  legacyRunIdPattern,
+} from "./personal-state-upgrade-activity.js";
 
 export const personalCurrentStateMigrationName = "0029_personal_current_state";
 
@@ -30,8 +32,6 @@ const batchSize = 500;
 const messageBatchSize = 2_000;
 const verifyBatchSize = 1_500;
 const messageIdPattern = z.toJSONSchema(MessageIdSchema, { io: "input" }).pattern!;
-const runIdPattern = z.toJSONSchema(RunIdSchema, { io: "input" }).pattern!;
-const attemptIdPattern = z.toJSONSchema(RunAttemptIdSchema, { io: "input" }).pattern!;
 const nodeIdPattern = z.toJSONSchema(ExecutionNodeIdSchema, { io: "input" }).pattern!;
 const settlementBatchSize = 128;
 const messageWhitespace =
@@ -542,8 +542,8 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
             or (kind='reasoning' and octet_length(id) between 1 and 600
               and octet_length(block_id) between 1 and 255)
           )
-            and (run_id is null or run_id collate "C" ~* ${runIdPattern})
-            and (attempt_id is null or attempt_id collate "C" ~* ${attemptIdPattern})
+            and (run_id is null or run_id collate "C" ~* ${legacyRunIdPattern})
+            and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
             and (node_id is null or node_id collate "C" ~* ${nodeIdPattern})
             and created_at >= '0001-01-01 00:00:00+00'::timestamptz
             and created_at < '10000-01-01 00:00:00+00'::timestamptz
