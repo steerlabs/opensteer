@@ -87,6 +87,20 @@ describe("Personal runtime release", () => {
     ).rejects.toThrow(/failed release verification/u);
   });
 
+  it.each([
+    "services/plugin-engine.mjs",
+    "services/plugin-engine-bridge.json",
+    "services/node_modules/@cloudflare/workerd-linux-arm64/bin/workerd",
+  ])("pins plugin runtime bytes for %s", async (file) => {
+    const directory = await releaseDirectory();
+    const target = path.join(directory, file);
+    await chmod(target, 0o755);
+    await writeFile(target, "tampered");
+    await expect(
+      readPersonalRuntimeRelease(directory, { architecture: "arm64", operatingSystem: "linux" }),
+    ).rejects.toThrow(/failed release verification/u);
+  });
+
   it("rejects symlinked artifacts even when their bytes match", async () => {
     const directory = await releaseDirectory();
     const host = path.join(directory, "bin", "host");
@@ -294,6 +308,24 @@ async function releaseDirectory(
     files.push({
       mode: "data" as const,
       path: relative,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    });
+  }
+  for (const [relative, mode, content] of [
+    ["services/plugin-engine.mjs", "code", Buffer.from("export {};\n")],
+    ["services/plugin-engine-bridge.json", "data", Buffer.from("[]\n")],
+    [
+      "services/node_modules/@cloudflare/workerd-linux-arm64/bin/workerd",
+      "executable",
+      fakeElf(executableArchitecture, "workerd"),
+    ],
+  ] as const) {
+    const target = path.join(directory, relative);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, { mode: mode === "executable" ? 0o555 : 0o444 });
+    files.push({
+      path: relative,
+      mode,
       sha256: createHash("sha256").update(content).digest("hex"),
     });
   }

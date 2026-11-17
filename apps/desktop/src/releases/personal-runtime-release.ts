@@ -306,9 +306,17 @@ export async function readPersonalRuntimeRelease(
       ([kind]) => harnessArtifactModes[kind as ShippedHarnessKind] === "executable",
     ),
   );
+  const pluginPrograms = Object.fromEntries(
+    manifest.files
+      .filter((file) =>
+        /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd(?:\.exe)?$/u.test(file.path),
+      )
+      .map((file) => ["workerd", file.path]),
+  );
   const programPaths = new Set([
     ...Object.values(manifest.entrypoints),
     ...Object.values(machineCodeHarnesses),
+    ...Object.values(pluginPrograms),
   ]);
   const programHeaders = new Map<string, Buffer>();
   for (const file of manifest.files) {
@@ -328,6 +336,7 @@ export async function readPersonalRuntimeRelease(
   for (const [label, programs] of [
     ["entrypoint", manifest.entrypoints],
     ["harness", machineCodeHarnesses],
+    ["plugin runtime", pluginPrograms],
   ] as const) {
     for (const [name, program] of Object.entries(programs)) {
       const content = programHeaders.get(program);

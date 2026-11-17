@@ -134,11 +134,20 @@ async function verifySignedDesktopContents(context) {
   const personalExecutables = [
     ...new Set([
       ...Object.values(personalManifest.entrypoints),
+      ...personalManifest.files
+        .filter(
+          ({ path, mode }) =>
+            mode === "executable" &&
+            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd$/u.test(path),
+        )
+        .map(({ path }) => path),
       ...Object.entries(personalManifest.harnesses)
         .filter(([kind]) => harnessModes[kind] === "executable")
         .map(([, program]) => program),
     ]),
   ].map((program) => join(personalRoot, ...program.split("/")));
+  for (const executable of personalExecutables)
+    if (executable.endsWith("/bin/workerd")) verifyWorkerdEntitlements(executable);
   const sharpNativeLibraries = personalManifest.files
     .filter(
       ({ path }) =>
@@ -424,6 +433,13 @@ function verifySignedWindowsDesktop(context) {
   const personalExecutables = [
     ...new Set([
       ...Object.values(personalManifest.entrypoints),
+      ...personalManifest.files
+        .filter(
+          ({ path, mode }) =>
+            mode === "executable" &&
+            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd$/u.test(path),
+        )
+        .map(({ path }) => path),
       ...Object.values(personalManifest.harnesses),
     ]),
   ].map((program) => join(personalRoot, ...program.split("/")));
@@ -530,3 +546,14 @@ function verifyElectronHelperEntitlements(appPath, readEntitlements = signedEnti
   }
 }
 module.exports.verifyElectronHelperEntitlements = verifyElectronHelperEntitlements;
+
+function verifyWorkerdEntitlements(executable, read = signedEntitlements) {
+  const entitlements = read(executable);
+  if (
+    JSON.stringify(Object.keys(entitlements)) !==
+      JSON.stringify(["com.apple.security.cs.allow-jit"]) ||
+    entitlements["com.apple.security.cs.allow-jit"] !== true
+  )
+    throw new Error("workerd must carry only the JIT entitlement.");
+}
+module.exports.verifyWorkerdEntitlements = verifyWorkerdEntitlements;

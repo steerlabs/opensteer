@@ -63,6 +63,11 @@ import {
   readPersonalRuntimeRelease,
 } from "../src/releases/personal-runtime-release.js";
 import { personalRuntimeLayout } from "./personal-runtime-layout.js";
+import {
+  pluginEngineBuildPlugin,
+  pluginEngineExternals,
+} from "../../../scripts/plugin-engine/node-build.js";
+import { stagePluginEngineRuntime } from "../../../scripts/plugin-engine/stage-runtime.js";
 import { hostProcessEntries } from "../../host/src/process-entries.js";
 import { postgresReleaseVersion } from "./postgres-release-version.js";
 
@@ -184,10 +189,9 @@ async function main(): Promise<void> {
           script: layout.hostScript,
         },
         Object.fromEntries(
-          Object.entries(hostProcessEntries.workers).map(([worker, entry]) => [
-            worker,
-            path.join(repositoryRoot, "apps/host", entry),
-          ]),
+          Object.entries({ ...hostProcessEntries.workers, ...hostProcessEntries.processes }).map(
+            ([worker, entry]) => [worker, path.join(repositoryRoot, "apps/host", entry)],
+          ),
         ),
       )),
       ...(await timedNodeService(
@@ -207,6 +211,19 @@ async function main(): Promise<void> {
       )),
     );
     artifacts.push(...(await stageSharpRuntime(staging, targetOs, targetArch)));
+    artifacts.push(...(await stagePluginRuntime(staging, targetOs, targetArch)));
+    await run(
+      process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+      [
+        "exec",
+        "tsx",
+        "scripts/plugin-engine/prepare-host.ts",
+        path.join(staging, layout.pluginBridge),
+      ],
+      repositoryRoot,
+    );
+    await rm(path.join(staging, `${layout.pluginBridge}.map`), { force: true });
+    artifacts.push({ mode: "data", path: layout.pluginBridge });
     await timePhase("runtime.extension", () =>
       run(
         process.platform === "win32" ? "pnpm.cmd" : "pnpm",
@@ -551,7 +568,12 @@ export async function bundleNodeService(
   workers: Readonly<Record<string, string>> = {},
 ): Promise<void> {
   // Both resolve the native decoder staged beside them by `stageSharpRuntime`.
-  const unbundled = service === "host" || service === "runner" ? ["sharp"] : [];
+  const unbundled =
+    service === "host"
+      ? ["sharp", ...pluginEngineExternals]
+      : service === "runner"
+        ? ["sharp"]
+        : [];
   await mkdir(path.dirname(scriptPath), { mode: 0o700, recursive: true });
   await timePhase(`runtime.bundle.${service}`, () =>
     build({
@@ -563,6 +585,7 @@ export async function bundleNodeService(
       config: false,
       entry: { [service]: entry, ...workers },
       external: [...unbundledOptionalDependencies, ...unbundled],
+      esbuildPlugins: service === "host" ? [pluginEngineBuildPlugin] : [],
       format: ["esm"],
       noExternal: [
         unbundled.length ? new RegExp(`^(?!(?:${unbundled.join("|")})(?:$|/)).*`, "u") : /.*/u,
@@ -587,6 +610,7 @@ export async function stageSharpRuntime(
   staging: string,
   targetOs: TargetOperatingSystem,
   targetArch: TargetArchitecture,
+  modules: string = personalRuntimeLayout.serviceModules,
 ): Promise<readonly StagedArtifact[]> {
   const hostRequire = createRequire(path.join(repositoryRoot, "apps/host/package.json"));
   const sharpEntry = hostRequire.resolve("sharp");
@@ -620,7 +644,7 @@ export async function stageSharpRuntime(
   const artifacts: StagedArtifact[] = [];
   for (const item of packages) {
     const source = await installedPackageDirectory(item.entry, item.name);
-    const prefix = `${personalRuntimeLayout.serviceModules}/${item.name}`;
+    const prefix = `${modules}/${item.name}`;
     const staged = await stageRuntimeTree(source, staging, prefix, targetOs, { shape: "tree" });
     artifacts.push(
       ...staged.map((artifact) => ({
@@ -632,6 +656,16 @@ export async function stageSharpRuntime(
     );
   }
   return artifacts;
+}
+
+export async function stagePluginRuntime(
+  staging: string,
+  targetOs: TargetOperatingSystem,
+  targetArch: TargetArchitecture,
+): Promise<readonly StagedArtifact[]> {
+  return (
+    await stagePluginEngineRuntime(path.join(staging, layout.serviceModules), targetOs, targetArch)
+  ).map((file) => ({ ...file, path: `${layout.serviceModules}/${file.path}` }));
 }
 
 async function installedPackageDirectory(entry: string, name: string): Promise<string> {
@@ -991,9 +1025,14 @@ async function signMachOArtifacts(
         ...(artifact.path === `${layout.interpreter}` ||
         artifact.path === `${layout.interpreter}.exe`
           ? ["--entitlements", interpreterEntitlements]
-          : inheritsRunnerSandbox(artifact.path)
-            ? ["--entitlements", harnessEntitlements]
-            : []),
+          : /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd$/u.test(artifact.path)
+            ? [
+                "--entitlements",
+                path.join(desktopDirectory, "build/entitlements.mac.workerd.plist"),
+              ]
+            : inheritsRunnerSandbox(artifact.path)
+              ? ["--entitlements", harnessEntitlements]
+              : []),
         artifactPath,
       ],
       repositoryRoot,

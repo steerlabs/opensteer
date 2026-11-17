@@ -1,3 +1,4 @@
+import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { fork, type ChildProcess } from "node:child_process";
@@ -217,6 +218,11 @@ export class PluginService {
       });
       return;
     }
+    const unavailable = pluginEngineUnavailableReason();
+    if (unavailable) {
+      this.#set({ status: "unavailable", generation: 0, reason: unavailable });
+      return;
+    }
     this.#idleCheck ??= setInterval(() => {
       if (this.#state.status === "ready") void this.stopIfIdle().catch(() => {});
     }, idleCheckMs).unref();
@@ -339,10 +345,7 @@ export class PluginService {
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     const generation = this.#state.generation + 1;
     this.#set({ status: "starting", generation });
-    const source = import.meta.url.endsWith(".ts");
-    const entry =
-      this.#options.processEntry ??
-      new URL(source ? "./plugin-engine.ts" : "./plugin-engine.js", import.meta.url);
+    const entry = this.#options.processEntry ?? pluginEngineEntry(import.meta.url);
     const child = fork(entry, [], {
       execArgv: [...engineFlags, ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : [])],
       detached: process.platform !== "win32",

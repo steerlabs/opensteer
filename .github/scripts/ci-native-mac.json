@@ -82,7 +82,10 @@
         "packages/runner-auth/fixtures/device-proofs.v1.json",
         "scripts/quarantine-runner.ts",
         "scripts/quarantine.ts",
-        "tests/quarantine.json"
+        "tests/quarantine.json",
+        "vendor/plugin-engine",
+        "scripts/plugin-engine",
+        "apps/host/tsup.config.ts"
       ],
       "lane": true
     },

@@ -27,5 +27,6 @@
     "scripts/quarantine-runner.ts",
     "scripts/quarantine.ts",
     "tests/quarantine.json"
-  ]
+  ],
+  "extra": ["vendor/plugin-engine", "scripts/plugin-engine", "apps/host/tsup.config.ts"]
 }
