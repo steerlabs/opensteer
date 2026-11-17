@@ -28,8 +28,10 @@ export function ThreadTitleEditor(props: {
     setSaving(true);
     setError(null);
     try {
-      await act(props.hostClient, { label: "rename", thing: "this task", done: "renamed" }, () =>
-        props.hostClient.renameThread(props.threadId, title),
+      await act(
+        props.hostClient,
+        { label: "rename this task", done: "renamed", happened: "this task was renamed" },
+        () => props.hostClient.renameThread(props.threadId, title),
       );
       props.onClose();
     } catch (failure) {

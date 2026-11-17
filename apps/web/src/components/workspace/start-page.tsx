@@ -801,8 +801,14 @@ export const StartPage = memo(function StartPage({
             <button
               className="picker__row"
               onClick={() => {
-                void act(hostClient, { label: "clear recent sites", done: "cleared" }, () =>
-                  hostClient.browserHistory.clear(profileId),
+                void act(
+                  hostClient,
+                  {
+                    label: "clear recent sites",
+                    done: "cleared",
+                    happened: "recent sites were cleared",
+                  },
+                  () => hostClient.browserHistory.clear(profileId),
                 ).catch((error: unknown) => {
                   if (mounted.current)
                     setRefusal({ kind: "message", text: failureWords(error) ?? "" });

@@ -35,7 +35,11 @@ export function PlaceMenuPlaces({
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);
     setError(null);
-    void act(null, { label: "change this place", done: "changed" }, operation)
+    void act(
+      null,
+      { label: "change this place", done: "changed", happened: "this place changed" },
+      operation,
+    )
       .then(then)
       .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));

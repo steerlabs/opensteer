@@ -66,8 +66,9 @@ export function CardUseRequestBody({
       ? mutationIdempotencyKey(`card-use:${request.id}`)
       : declineKey.current;
     const outcome = await runAction(client, {
-      label: "answer this request",
+      label: "send your answer",
       done: "sent",
+      happened: "your answer was sent",
       execute: () =>
         client.dispatch({
           type: "browser.password-sign-in.respond",

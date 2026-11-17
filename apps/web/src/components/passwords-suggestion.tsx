@@ -85,6 +85,7 @@ function OnThisMac({
             void runAction(null, {
               label: "open Passwords",
               done: "opened",
+              happened: "Passwords opened",
               execute: () => bridge.passwordsOpen(),
             }).then((outcome) => {
               setError(outcomeWords(outcome));

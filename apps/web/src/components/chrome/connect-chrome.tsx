@@ -210,7 +210,11 @@ export function ConnectChrome({
     }
     setStage({ kind: "working" });
     try {
-      const pairing = await act(session, { label: "connect Chrome", done: "connected" }, pair);
+      const pairing = await act(
+        session,
+        { label: "connect Chrome", done: "connected", happened: "Chrome connected" },
+        pair,
+      );
       const origin = environment.hostHere
         ? chromeConnectOrigins(pairing).here
         : (chromeConnectOrigins(pairing).elsewhere ?? chromeConnectOrigins(pairing).here);
@@ -246,7 +250,11 @@ export function ConnectChrome({
     if (!client) return;
     setElsewhere({ kind: "working" });
     try {
-      const pairing = await act(session, { label: "connect Chrome", done: "connected" }, pair);
+      const pairing = await act(
+        session,
+        { label: "connect Chrome", done: "connected", happened: "Chrome connected" },
+        pair,
+      );
       const origins = chromeConnectOrigins(pairing);
       const origin = origins.elsewhere ?? origins.here;
       const link = chromeConnectPageUrl(origin, pairing.invitation);

@@ -125,9 +125,9 @@ export function InputSurface({
   const reopen = useAction(
     hostClient,
     {
-      label: "reopen",
-      thing: "this task",
+      label: "reopen this task",
       done: "reopened",
+      happened: "this task reopened",
       execute: () => hostClient.setTaskDone(threadId, false),
     },
     `reopen:${threadId}`,

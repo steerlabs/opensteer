@@ -184,7 +184,11 @@ function AutomationView({
   const act = async (work: () => Promise<string | null>) => {
     setPending(true);
     try {
-      const done = await owned(client, { label: "change this automation", done: "changed" }, work);
+      const done = await owned(
+        client,
+        { label: "change this automation", done: "changed", happened: "this automation changed" },
+        work,
+      );
       if (done) toast.success(done);
     } catch (reason) {
       const words = failureWords(reason);

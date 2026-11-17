@@ -109,8 +109,10 @@ export function AddPhoneDialog({
       setPhase({ kind: "unsupported" });
       return () => abort.abort();
     }
-    void act(null, { label: "prepare the phone app" }, () =>
-      loadAgentPhoneArtifact({ bridge: desktopBridge, signal: abort.signal }),
+    void act(
+      null,
+      { label: "prepare the phone app", done: "prepared", happened: "the phone app was prepared" },
+      () => loadAgentPhoneArtifact({ bridge: desktopBridge, signal: abort.signal }),
     ).then(
       (loaded) => {
         if (abort.signal.aborted) return;
@@ -158,7 +160,11 @@ export function AddPhoneDialog({
       if (phaseRef.current.kind !== "disconnected") return;
       const serial = device.current?.serial;
       const session = beginAttempt();
-      void act(null, { label: "find this phone" }, () => grantedAgentPhones(usb)).then(
+      void act(
+        null,
+        { label: "find this phone", done: "found", happened: "this phone was found" },
+        () => grantedAgentPhones(usb),
+      ).then(
         (devices) => {
           if (!isCurrent(session)) return;
           const again = devices.find(
@@ -236,7 +242,11 @@ export function AddPhoneDialog({
     setPhase({ choice: null, kind: "choosing" });
     let chosen: AgentPhoneUsbDevice | null;
     try {
-      chosen = await act(null, { label: "choose a phone" }, () => chooseAgentPhone(usb));
+      chosen = await act(
+        null,
+        { label: "choose a phone", done: "chosen", happened: "a phone was chosen" },
+        () => chooseAgentPhone(usb),
+      );
     } catch (reason) {
       if (isCurrent(session)) setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
       return;
@@ -260,16 +270,19 @@ export function AddPhoneDialog({
     device.current = chosen;
     setPhase({ kind: "running", question: null, step: "connect" });
     try {
-      const connection = await act(null, { label: "connect to this phone" }, () =>
-        connectPhoneForSetup(chosen, {
-          native: desktopBridge?.agentPhoneAdb,
-          onAuthorizePrompt: () => {
-            if (isCurrent(session)) {
-              setPhase({ kind: "running", question: null, step: "authorize" });
-            }
-          },
-          signal: abort.signal,
-        }),
+      const connection = await act(
+        null,
+        { label: "connect to this phone", done: "connected", happened: "this phone connected" },
+        () =>
+          connectPhoneForSetup(chosen, {
+            native: desktopBridge?.agentPhoneAdb,
+            onAuthorizePrompt: () => {
+              if (isCurrent(session)) {
+                setPhase({ kind: "running", question: null, step: "authorize" });
+              }
+            },
+            signal: abort.signal,
+          }),
       );
       if (!isCurrent(session)) {
         if (connection.kind === "connected") await connection.close().catch(() => undefined);
@@ -283,27 +296,30 @@ export function AddPhoneDialog({
         session.close = () => undefined;
         void connection.close().catch(() => undefined);
       };
-      const result = await act(null, { label: "set up this phone" }, () =>
-        setupAgentPhone({
-          adb: connection.adb,
-          artifact: loaded,
-          confirmUninstall: () => ask({ kind: "uninstall" }, session),
-          confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
-          enrollments,
-          host: agentPhoneSetupHost(client),
-          onStep: (step) => {
-            if (!isCurrent(session)) return;
-            if (step.step === "inspect" && step.phone) setPhone(step.phone);
-            if (step.step === "done") return;
-            setPhase({
-              kind: "running",
-              question: null,
-              step: wizardStep(step),
-            });
-          },
-          runnerName: phoneName ?? (chosen.name?.trim() || "Android phone"),
-          signal: abort.signal,
-        }),
+      const result = await act(
+        null,
+        { label: "set up this phone", done: "set up", happened: "this phone was set up" },
+        () =>
+          setupAgentPhone({
+            adb: connection.adb,
+            artifact: loaded,
+            confirmUninstall: () => ask({ kind: "uninstall" }, session),
+            confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
+            enrollments,
+            host: agentPhoneSetupHost(client),
+            onStep: (step) => {
+              if (!isCurrent(session)) return;
+              if (step.step === "inspect" && step.phone) setPhone(step.phone);
+              if (step.step === "done") return;
+              setPhase({
+                kind: "running",
+                question: null,
+                step: wizardStep(step),
+              });
+            },
+            runnerName: phoneName ?? (chosen.name?.trim() || "Android phone"),
+            signal: abort.signal,
+          }),
       );
       session.close();
       if (!isCurrent(session)) return;
@@ -332,8 +348,10 @@ export function AddPhoneDialog({
   function answerChoice(choice: DesktopUsbDeviceChoice, deviceId: string | null) {
     const session = attempt.current;
     if (!desktopBridge || !session) return;
-    void act(null, { label: "choose this phone" }, () =>
-      desktopBridge.chooseUsbDevice({ choiceId: choice.choiceId, deviceId }),
+    void act(
+      null,
+      { label: "choose this phone", done: "chosen", happened: "this phone was chosen" },
+      () => desktopBridge.chooseUsbDevice({ choiceId: choice.choiceId, deviceId }),
     ).catch((reason: unknown) => {
       if (isCurrent(session)) setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
     });

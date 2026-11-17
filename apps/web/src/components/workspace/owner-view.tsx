@@ -142,7 +142,11 @@ export function OwnerView({
   const reopen = async () => {
     setReopening(true);
     try {
-      await act(hostClient, { label: "reopen this", done: "reopened" }, onReopen);
+      await act(
+        hostClient,
+        { label: "reopen this", done: "reopened", happened: "this reopened" },
+        onReopen,
+      );
     } catch (error) {
       const reason = refusalReason(error);
       const words = reason

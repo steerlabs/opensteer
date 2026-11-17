@@ -63,9 +63,8 @@ export function createMobileBrowserEditing(
           else if (!["empty", "pasted"].includes(result.outcome))
             error(`Clipboard ${result.outcome}.`);
         })
-        .catch((reason: unknown) => {
-          if (active && current === epoch)
-            error(reason instanceof Error ? reason.message : "Editing unavailable.");
+        .catch(() => {
+          if (active && current === epoch) error("Editing unavailable.");
         });
       return admitted;
     },

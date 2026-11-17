@@ -57,8 +57,9 @@ export function ThreadFullDiskAccessAction({
     setPending(true);
     setError(null);
     const outcome = await runAction(hostClient, {
-      label: "answer this request",
+      label: "send your answer",
       done: "sent",
+      happened: "your answer was sent",
       execute: () =>
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),

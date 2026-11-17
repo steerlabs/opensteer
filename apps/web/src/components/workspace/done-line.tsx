@@ -186,8 +186,14 @@ function QuietMovedCard({
       Array.from({ length: Math.min(moveBackConcurrency, queue.length) }, async () => {
         for (let row = queue.shift(); row; row = queue.shift()) {
           try {
-            await act(hostClient, { label: "move this task back", done: "moved back" }, () =>
-              hostClient.setTaskDone(row.threadId, false),
+            await act(
+              hostClient,
+              {
+                label: "move this task back",
+                done: "moved back",
+                happened: "this task moved back",
+              },
+              () => hostClient.setTaskDone(row.threadId, false),
             );
             onMovedBack(row.threadId);
           } catch (error) {

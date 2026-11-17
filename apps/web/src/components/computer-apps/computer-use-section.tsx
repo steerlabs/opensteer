@@ -111,7 +111,11 @@ export function ComputerUseBlock({
     setBusy(key);
     setFailure(null);
     try {
-      await act(hostClient, { label: "change this", done: "changed" }, operation);
+      await act(
+        hostClient,
+        { label: "change this", done: "changed", happened: "this changed" },
+        operation,
+      );
       // A failed reload after a successful mutation does not undo the change.
       await onChanged().catch(() => undefined);
     } catch (reason) {
@@ -491,8 +495,10 @@ function PermissionSteps({
   function setUp(actions: ComputerUseLocalActions) {
     const attempt = ++setupAttempt.current;
     setSetupFailure(null);
-    void act(null, { label: "open System Settings", done: "opened" }, () =>
-      actions.openPermissions(),
+    void act(
+      null,
+      { label: "open System Settings", done: "opened", happened: "System Settings opened" },
+      () => actions.openPermissions(),
     ).then(
       (result) => {
         if (attempt === setupAttempt.current) {
@@ -602,16 +608,23 @@ function AddAppDialog({
       const current = ++generation.current;
       setLoading(true);
       setLoadError(null);
-      void act(hostClient, { label: "list apps" }, async () =>
-        unwrapRpcResult(
-          await hostClient.rpc["integration.computer.apps.installed"]({
-            icons: true,
-            limit: pickerPageSize,
-            offset,
-            query: search,
-            runnerId: machine.id,
-          }),
-        ),
+      void act(
+        hostClient,
+        {
+          label: "list this computer's apps",
+          done: "listed",
+          happened: "this computer's apps were listed",
+        },
+        async () =>
+          unwrapRpcResult(
+            await hostClient.rpc["integration.computer.apps.installed"]({
+              icons: true,
+              limit: pickerPageSize,
+              offset,
+              query: search,
+              runnerId: machine.id,
+            }),
+          ),
       )
         .then((result) => {
           if (current !== generation.current) return;
@@ -663,8 +676,10 @@ function AddAppDialog({
     setAsking({ access, bundleId: app.identity.bundleId });
     setAskError(null);
     try {
-      await act(hostClient, { label: "add this app", done: "added" }, () =>
-        onApprove({ access, app: app.identity }),
+      await act(
+        hostClient,
+        { label: "add this app", done: "added", happened: "this app was added" },
+        () => onApprove({ access, app: app.identity }),
       );
       await onDone();
     } catch (reason) {

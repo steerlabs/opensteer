@@ -322,7 +322,7 @@ export function useComposerContext({
       const stillWaiting = () =>
         draft === generationRef.current &&
         (frozenRef.current?.some((chip) => chip.key === place.key && chip.pending) ?? false);
-      void act(hostClient, { label: "add this", done: "added" }, () =>
+      void act(hostClient, { label: "add this", done: "added", happened: "this was added" }, () =>
         placePart(hostClient, place),
       ).then(
         async (part) => {

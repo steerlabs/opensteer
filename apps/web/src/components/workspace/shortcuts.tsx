@@ -55,8 +55,10 @@ export function useWorkspaceShortcuts({
           return;
         case "reopen-closed-tab": {
           const show = nav.beginPlaceOperation();
-          void act(hostClient, { label: "reopen the tab", done: "reopened" }, () =>
-            hostClient.reopenTab(),
+          void act(
+            hostClient,
+            { label: "reopen the tab", done: "reopened", happened: "the tab reopened" },
+            () => hostClient.reopenTab(),
           ).then((tab) => show({ kind: "tab", tabId: tab.tabId }), toastFailure(toast));
           return;
         }

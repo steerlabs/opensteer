@@ -2265,6 +2265,8 @@ function OwnMessage({
     null,
     {
       label: "change this message",
+      done: "changed",
+      happened: "this message changed",
       execute: async (action: MessageDeliveryAction) => {
         if (!outbox) return;
         if (action === "edit") await outbox.restoreDraft(sendKey);
@@ -2827,8 +2829,10 @@ function CompactionDivider({ run }: { run: RunEntry }) {
           type="button"
           onClick={() => {
             setBusy(true);
-            void act(client, { label: "stop", thing: "this summary", done: "stopped" }, () =>
-              client.stopRun(threadId),
+            void act(
+              client,
+              { label: "stop this summary", done: "stopped", happened: "this summary stopped" },
+              () => client.stopRun(threadId),
             )
               .catch((e: unknown) => setError(failureWords(e) ?? "Could not stop summary."))
               .finally(() => setBusy(false));

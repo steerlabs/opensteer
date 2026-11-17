@@ -107,12 +107,15 @@ function NewProfileForm({
     if (!trimmed || pending) return;
     setPending(true);
     setError(null);
-    void act(hostClient, { label: "create this profile", done: "created" }, () =>
-      hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey("browser-profile"),
-        input: { name: trimmed, ...(home ? { homeRunnerId: home } : {}) },
-        type: "browser.profile.create",
-      }),
+    void act(
+      hostClient,
+      { label: "create this profile", done: "created", happened: "this profile was created" },
+      () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey("browser-profile"),
+          input: { name: trimmed, ...(home ? { homeRunnerId: home } : {}) },
+          type: "browser.profile.create",
+        }),
     )
       .then(onDone)
       .catch((reason: unknown) => {
@@ -200,7 +203,11 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
   const run = (key: string, action: () => Promise<unknown>, then?: () => void) => {
     setPending(key);
     setError(null);
-    void act(hostClient, { label: "change this profile", done: "changed" }, action)
+    void act(
+      hostClient,
+      { label: "change this profile", done: "changed", happened: "this profile changed" },
+      action,
+    )
       .then(then)
       .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(null));

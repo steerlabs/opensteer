@@ -82,12 +82,15 @@ function AccountSessionRow({
     }
     setPending(true);
     setError(null);
-    void runAction(null, { label: "sign in", execute: () => desktopBridge.signIn() }).then(
-      (outcome) => {
-        setError(outcomeWords(outcome));
-        setPending(false);
-      },
-    );
+    void runAction(null, {
+      label: "sign in",
+      done: "signed in",
+      happened: "you were signed in",
+      execute: () => desktopBridge.signIn(),
+    }).then((outcome) => {
+      setError(outcomeWords(outcome));
+      setPending(false);
+    });
   }
 
   const copy =

@@ -46,12 +46,15 @@ export function MachineAccessHistory({
       setBusy(true);
       setError(null);
       try {
-        const next = await act(client, { label: "load earlier sessions", done: "loaded" }, () =>
-          client.loadMachineAccessHistory({
-            ...(before === undefined ? {} : { before }),
-            limit: historyPageSize,
-            runnerId: machineId,
-          }),
+        const next = await act(
+          client,
+          { label: "load earlier sessions", done: "loaded", happened: "earlier sessions loaded" },
+          () =>
+            client.loadMachineAccessHistory({
+              ...(before === undefined ? {} : { before }),
+              limit: historyPageSize,
+              runnerId: machineId,
+            }),
         );
         setPage((current) =>
           before !== undefined && current

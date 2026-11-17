@@ -82,8 +82,11 @@ export const TabGroupHeader = memo(function TabGroupHeader({
         aria-label={`${name}, ${tabIds.length} tabs`}
         className="side-tab__main side-tab-group__main"
         onClick={() =>
-          void act(hostClient, { label: "change this group", done: "changed" }, () =>
-            hostClient.updateTabGroup({ groupId: group.groupId, collapsed: !group.collapsed }),
+          void act(
+            hostClient,
+            { label: "change this group", done: "changed", happened: "this group changed" },
+            () =>
+              hostClient.updateTabGroup({ groupId: group.groupId, collapsed: !group.collapsed }),
           ).catch(toastFailure(toast))
         }
         onKeyDown={(event) => {
@@ -168,8 +171,10 @@ function TabGroupEditor({
     // A group always has a name; clearing it keeps the one it had.
     if (!trimmed || trimmed === saved.current) return;
     saved.current = trimmed;
-    void act(hostClient, { label: "rename this group", done: "renamed" }, () =>
-      hostClient.updateTabGroup({ groupId: group.groupId, name: trimmed }),
+    void act(
+      hostClient,
+      { label: "rename this group", done: "renamed", happened: "this group was renamed" },
+      () => hostClient.updateTabGroup({ groupId: group.groupId, name: trimmed }),
     ).catch((error: unknown) => {
       saved.current = group.name;
       failed(error);
@@ -214,8 +219,10 @@ function TabGroupEditor({
             className="tab-group-editor__swatch"
             key={color}
             onClick={() =>
-              void act(hostClient, { label: "change this group", done: "changed" }, () =>
-                hostClient.updateTabGroup({ groupId: group.groupId, color }),
+              void act(
+                hostClient,
+                { label: "change this group", done: "changed", happened: "this group changed" },
+                () => hostClient.updateTabGroup({ groupId: group.groupId, color }),
               ).catch(failed)
             }
             style={tabGroupStyle(color)}
@@ -231,8 +238,14 @@ function TabGroupEditor({
           item={{ icon: "browser", label: "Ungroup" }}
           onChoose={() => {
             onClose();
-            void act(hostClient, { label: "ungroup these tabs", done: "ungrouped" }, () =>
-              hostClient.deleteTabGroup(group.groupId),
+            void act(
+              hostClient,
+              {
+                label: "ungroup these tabs",
+                done: "ungrouped",
+                happened: "these tabs were ungrouped",
+              },
+              () => hostClient.deleteTabGroup(group.groupId),
             ).catch(failed);
           }}
         />

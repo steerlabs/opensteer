@@ -116,18 +116,21 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
         source: draft.source,
         toolContractVersion: 4,
       };
-      await act(hostClient, { label: "save this automation", done: "saved" }, () =>
-        hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
-          input: {
-            expectedRevisionId: editing.revision.id,
-            name: draft.name.trim(),
-            program,
-            source: sourceFrom(draft, editing),
-          },
-          triggerId: editing.trigger.id,
-          type: "trigger.update",
-        }),
+      await act(
+        hostClient,
+        { label: "save this automation", done: "saved", happened: "this automation was saved" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
+            input: {
+              expectedRevisionId: editing.revision.id,
+              name: draft.name.trim(),
+              program,
+              source: sourceFrom(draft, editing),
+            },
+            triggerId: editing.trigger.id,
+            type: "trigger.update",
+          }),
       );
       void navigate(automationPath(editing.trigger.id));
     } catch (reason) {

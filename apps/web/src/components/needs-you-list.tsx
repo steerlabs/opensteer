@@ -24,12 +24,15 @@ export function NeedsYouList({
     setDismissing(needsYouEntryKey(entry));
     setFailure(null);
     try {
-      await act(client, { label: "dismiss", thing: "this", done: "dismissed" }, () =>
-        client.decideTeamAsk({
-          decision: "decline",
-          requestId: entry.requestId,
-          teamId: entry.teamId,
-        }),
+      await act(
+        client,
+        { label: "dismiss this", done: "dismissed", happened: "this was dismissed" },
+        () =>
+          client.decideTeamAsk({
+            decision: "decline",
+            requestId: entry.requestId,
+            teamId: entry.teamId,
+          }),
       );
     } catch (error) {
       setFailure(failureWords(error) ?? "Could not dismiss it.");

@@ -675,8 +675,11 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
       return;
     }
     setState({ ...state, joining: true, error: null });
-    void act(null, { label: "join", thing: "this team", done: "joined" }, () =>
-      coordination.coordinator.joinWithInvite({ inviteUrl: url, personalDeploymentId: personal }),
+    void act(
+      null,
+      { label: "join this team", done: "joined", happened: "you joined this team" },
+      () =>
+        coordination.coordinator.joinWithInvite({ inviteUrl: url, personalDeploymentId: personal }),
     ).then(onClose, (error: unknown) =>
       setState({ ...state, joining: false, error: failureWords(error) }),
     );
@@ -1182,8 +1185,10 @@ function TransferTeamDialog({
     if (!person) return;
     setBusy(true);
     setError(null);
-    void act(null, { label: "hand over", thing: "this team", done: "handed over" }, () =>
-      coordinator.transferHostedTeam(hostedTeamId, person.accountId),
+    void act(
+      null,
+      { label: "hand over this team", done: "handed over", happened: "this team was handed over" },
+      () => coordinator.transferHostedTeam(hostedTeamId, person.accountId),
     ).then(
       () => {
         toast.success(`${person.displayName || person.email} now holds ${name}`);

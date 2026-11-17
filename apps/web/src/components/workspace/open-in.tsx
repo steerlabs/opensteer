@@ -50,14 +50,17 @@ export function useOpenPageIn(hostClient: HostClient) {
         return;
       }
       const show = nav.beginPlaceOperation();
-      void act(hostClient, { label: "open this page", done: "opened" }, () =>
-        hostClient.openTab(
-          pageOpenTarget(
-            newTabTarget(hostClient.getSnapshot(), profile.identity, hereId),
-            parsed.url,
-            hostClient.getSnapshot().machines,
+      void act(
+        hostClient,
+        { label: "open this page", done: "opened", happened: "this page opened" },
+        () =>
+          hostClient.openTab(
+            pageOpenTarget(
+              newTabTarget(hostClient.getSnapshot(), profile.identity, hereId),
+              parsed.url,
+              hostClient.getSnapshot().machines,
+            ),
           ),
-        ),
       )
         .then((tab) => {
           show({ kind: "tab", tabId: tab.tabId });

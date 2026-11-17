@@ -290,6 +290,7 @@ function AddModelServerDialog({
     void runAction(client, {
       label: "check this server",
       done: "checked",
+      happened: "this server was checked",
       execute: async () =>
         unwrapRpcResult(
           await client.rpc["harness.modelServers.discover"]({

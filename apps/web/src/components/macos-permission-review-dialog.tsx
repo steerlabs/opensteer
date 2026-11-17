@@ -38,6 +38,7 @@ export function MacOsPermissionReviewDialog({
     const outcome = await runAction(null, {
       label: "open System Settings",
       done: "opened",
+      happened: "System Settings opened",
       execute: () => bridge.requestFullDiskAccess(),
     });
     if (outcome.kind === "confirmed") {

@@ -427,6 +427,7 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
             void runAction(hostClient, {
               label: "change this",
               done: "changed",
+              happened: "this changed",
               execute: () =>
                 hostClient.dispatch({
                   type: "settings.plugin.enabled.set",
@@ -672,6 +673,7 @@ export function PluginAddSheet({ product }: { readonly product: PluginCatalogPro
     const outcome = await runAction(hostClient, {
       label: "add this",
       done: "added",
+      happened: "this was added",
       execute: () =>
         completePluginConsent(hostClient, consent, connectionId, (next) => {
           placementAttempt.current = next;
@@ -802,6 +804,7 @@ export function PluginAddSheet({ product }: { readonly product: PluginCatalogPro
           void runAction(hostClient, {
             label: "add this",
             done: "added",
+            happened: "this was added",
             execute: async () => {
               if (integration?.entry)
                 await addPluginService(hostClient, {
@@ -1114,6 +1117,7 @@ function ChangeSecrets(props: {
     void runAction(hostClient, {
       label: "save these",
       done: "saved",
+      happened: "these were saved",
       execute: () => setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets),
     }).then((outcome) => {
       setPending(false);

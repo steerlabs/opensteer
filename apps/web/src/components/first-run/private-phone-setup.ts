@@ -104,12 +104,15 @@ export function usePrivatePhoneSetup(input: {
       }
       setPhase({ kind: "turning-on", operationId: null, origin: wanted });
       try {
-        const operation = await act(hostClient, { label: "turn this on", done: "turned on" }, () =>
-          requestPersonalRemoteAccess(hostClient, {
-            action: "configure",
-            mode: "private",
-            privateOrigin: wanted,
-          }),
+        const operation = await act(
+          hostClient,
+          { label: "turn this on", done: "turned on", happened: "this turned on" },
+          () =>
+            requestPersonalRemoteAccess(hostClient, {
+              action: "configure",
+              mode: "private",
+              privateOrigin: wanted,
+            }),
         );
         if (attempt.current !== current) return;
         setPhase({ kind: "turning-on", operationId: operation.id, origin: wanted });
@@ -139,7 +142,11 @@ export function usePrivatePhoneSetup(input: {
       return true;
     };
     setPhase({ kind: "sharing" });
-    void act(null, { label: "share this computer", done: "shared" }, () => share()).then(
+    void act(
+      null,
+      { label: "share this computer", done: "shared", happened: "this computer was shared" },
+      () => share(),
+    ).then(
       (result) => {
         if (attempt.current !== current || superseded()) return;
         if (!result.ok) {

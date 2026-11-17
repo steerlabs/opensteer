@@ -40,7 +40,9 @@ export function TabCloserProvider({
       if (!tabIds.length) return;
       void act(
         hostClient,
-        { label: "close", done: "closed", thing: tabIds.length === 1 ? "this tab" : "these tabs" },
+        tabIds.length === 1
+          ? { label: "close this tab", done: "closed", happened: "this tab closed" }
+          : { label: "close these tabs", done: "closed", happened: "these tabs closed" },
         () => hostClient.closeTabs([...tabIds]),
       )
         .then((result) => {

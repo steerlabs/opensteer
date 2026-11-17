@@ -2074,9 +2074,7 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
             setBusy(true);
             void scope.hostClient
               .stopRun(scope.threadId)
-              .catch((e: unknown) =>
-                setError(e instanceof Error ? e.message : "Could not stop summary."),
-              )
+              .catch(() => setError("Could not stop summary."))
               .finally(() => setBusy(false));
           }}
           style={{ minHeight: touchTarget, justifyContent: "center" }}

@@ -21,9 +21,9 @@ async function mount(session: ClientSession, execute: () => Promise<string>) {
   let latest: ReturnType<typeof useAction<void, string>> | null = null;
   function Probe() {
     latest = useAction<void, string>(session, {
-      label: "start",
+      label: "start this task",
       done: "started",
-      thing: "this task",
+      happened: "this task started",
       execute,
     });
     return latest.line?.text ?? null;

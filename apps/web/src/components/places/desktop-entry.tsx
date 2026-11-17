@@ -193,8 +193,8 @@ export function DesktopWelcome({
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
     setActionError(null);
-    void act(null, { label: "do this" }, operation).catch((reason: unknown) =>
-      setActionError(failureWords(reason)),
+    void act(null, { label: "do this", done: "done", happened: "it was done" }, operation).catch(
+      (reason: unknown) => setActionError(failureWords(reason)),
     );
   };
   const start = () => onSetUpHere?.(chosenName ?? undefined);
@@ -355,7 +355,7 @@ export function DesktopChooser({
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);
-    void act(null, { label: "do this" }, operation)
+    void act(null, { label: "do this", done: "done", happened: "it was done" }, operation)
       .catch((reason: unknown) => setActionError(failureWords(reason)))
       .finally(() => setPending(false));
   };

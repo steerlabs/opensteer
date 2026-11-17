@@ -367,8 +367,10 @@ function ChannelScreenFor({
           previewUrl,
         },
       ]);
-      const done = act(client, { label: "upload this file", done: "uploaded" }, () =>
-        prepareTeamUpload(channelId, file).then((upload) => client.upload(upload)),
+      const done = act(
+        client,
+        { label: "upload this file", done: "uploaded", happened: "this file was uploaded" },
+        () => prepareTeamUpload(channelId, file).then((upload) => client.upload(upload)),
       )
         .then((uploaded) => {
           if (generation !== uploadGeneration.current) return null;
@@ -445,6 +447,8 @@ function ChannelScreenFor({
                   teamName: (timeline?.channel ?? entry?.channel)?.share?.teamName,
                 }
               : null,
+            // A refusal names the team that turned it away: "Acme didn't accept it."
+            team.name,
           ),
         ),
       );

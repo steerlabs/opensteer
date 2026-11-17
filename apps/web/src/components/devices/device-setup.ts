@@ -72,12 +72,11 @@ export async function setUpThisDevice(
       runnerId: null,
     };
   // Each step is said in the app's words; the ports' own exception text never is.
-  const thisMac = { thing: "this Mac" } as const;
   onStage("joining");
   const joined = await runAction(null, {
-    ...thisMac,
-    label: "add",
+    label: "add this Mac",
     done: "added",
+    happened: "this Mac was added",
     execute: async () => {
       const preparedIdentity = input.devicesAvailable ? await ports.prepare(input.name) : undefined;
       const { token } = await ports.mint({
@@ -104,15 +103,17 @@ export async function setUpThisDevice(
   if (!input.devicesAvailable) return { ok: true, runnerId };
   const applied = await runAction(null, {
     label: "set what this Mac allows",
+    done: "set",
+    happened: "what this Mac allows was set",
     execute: () => ports.applyAccess(runnerId, input.access),
   });
   if (applied.kind !== "confirmed")
     return { ok: false, cause: { kind: "failed", detail: outcomeWords(applied) ?? "" }, runnerId };
   onStage("binding");
   const bound = await runAction(null, {
-    ...thisMac,
-    label: "connect",
+    label: "connect this Mac",
     done: "connected",
+    happened: "this Mac connected",
     execute: () => ports.bind(runnerId),
   });
   if (bound.kind !== "confirmed")

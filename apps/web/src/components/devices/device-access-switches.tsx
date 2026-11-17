@@ -31,12 +31,15 @@ export function useAccessSwitch(
       setPending(capability);
       setNotice(null);
       try {
-        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
-          hostClient.updateMachineAccess({
-            expectedRevision: access.revision,
-            policy: withDeviceSwitch(access.policy, capability, on),
-            deviceId: machine.id,
-          }),
+        const result = await act(
+          hostClient,
+          { label: "change this", done: "changed", happened: "this changed" },
+          () =>
+            hostClient.updateMachineAccess({
+              expectedRevision: access.revision,
+              policy: withDeviceSwitch(access.policy, capability, on),
+              deviceId: machine.id,
+            }),
         );
         if (result.outcome === "conflict") {
           await hostClient.refresh();

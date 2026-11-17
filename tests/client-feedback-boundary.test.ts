@@ -72,6 +72,26 @@ const boundaryModules: readonly { readonly prefix: string; readonly reason: stri
     prefix: "apps/web/src/attachments-visual.tsx",
     reason: "a development visual harness that fakes Host refusals",
   },
+  {
+    prefix: "apps/mobile/src/client/",
+    reason: "the mobile client's composition root (sessions, transports, saved-view labels)",
+  },
+  {
+    prefix: "apps/mobile/src/team/mobile-teams.ts",
+    reason: "the phone's team sessions owner; turns typed team refusals into each team's state",
+  },
+  {
+    prefix: "apps/mobile/src/team/team-coordinator-ports.ts",
+    reason: "Account and team session ports; rebuild typed failures for the coordinator",
+  },
+  {
+    prefix: "apps/mobile/src/phone-browser/",
+    reason: "this phone as an agent browser; words its errors for the Host's wire, not a screen",
+  },
+  {
+    prefix: "apps/mobile/src/ui/client-feedback.ts",
+    reason: "mobile feedback over ClientAction; builds the typed refusal an answer carries in-band",
+  },
 ];
 
 /** The shell and gate adapters: the only modules that read connection notices. */
@@ -79,6 +99,10 @@ const shellAdapters: readonly { readonly prefix: string; readonly reason: string
   {
     prefix: "apps/web/src/components/connection-shell.tsx",
     reason: "web and desktop pill, sidebar dot and gates",
+  },
+  {
+    prefix: "apps/mobile/src/ui/connection-live.ts",
+    reason: "mobile shell; the pill, details sheet and gates read connection notices here",
   },
 ];
 
@@ -322,17 +346,32 @@ function violationsIn(
   return found;
 }
 
+/** Whether a module's text could hold any of these names or patterns; parsing is the costly part. */
+function mentions(text: string, names: Iterable<string>): boolean {
+  for (const name of names) if (text.includes(name)) return true;
+  return false;
+}
+
 function boundaryViolations(): Violation[] {
-  const files = uiModules().map((file) =>
-    parse(file, readFileSync(path.join(repositoryRoot, file), "utf8")),
-  );
-  const presenters = aliasesOf(files, rawPresenters);
-  const errors = aliasesOf(files, transportErrors);
-  const notices = aliasesOf(files, connectionNotices);
+  const texts = uiModules().map((file) => ({
+    file,
+    text: readFileSync(path.join(repositoryRoot, file), "utf8"),
+  }));
+  const forbidden = [...rawPresenters, ...transportErrors, ...connectionNotices];
+  // A module that renames a forbidden name names it too, so aliases are found among these;
+  // a namespace import's member access names it as well.
+  const exporting = texts
+    .filter(({ text }) => text.includes("export") && mentions(text, forbidden))
+    .map(({ file, text }) => parse(file, text));
+  const presenters = aliasesOf(exporting, rawPresenters);
+  const errors = aliasesOf(exporting, transportErrors);
+  const notices = aliasesOf(exporting, connectionNotices);
+  const patterns = [...presenters, ...errors, ...notices, "instanceof Error", ".error.message"];
   const under = (file: string, list: typeof boundaryModules) =>
     list.some((entry) => file === entry.prefix || file.startsWith(entry.prefix));
-  return files
-    .filter(({ file }) => !under(file, boundaryModules))
+  return texts
+    .filter(({ file, text }) => !under(file, boundaryModules) && mentions(text, patterns))
+    .map(({ file, text }) => parse(file, text))
     .flatMap((parsed) =>
       violationsIn(parsed, {
         rawPresenters: presenters,

@@ -264,7 +264,7 @@ function AddServer() {
     try {
       const { target, result } = await act(
         hostClient,
-        { label: "create this command", done: "created" },
+        { label: "create this command", done: "created", happened: "this command was created" },
         async () => ({
           target: unwrapRpcResult(await hostClient.rpc["agentPhone.target.get"]({})),
           result: await hostClient.dispatch({
@@ -292,8 +292,10 @@ function AddServer() {
     setPending(true);
     setError(null);
     try {
-      const outcome = await act(hostClient, { label: "cancel this setup", done: "cancelled" }, () =>
-        cancelDeviceSetup(hostClient, issued.enrollmentId),
+      const outcome = await act(
+        hostClient,
+        { label: "cancel this setup", done: "cancelled", happened: "this setup was cancelled" },
+        () => cancelDeviceSetup(hostClient, issued.enrollmentId),
       );
       if (outcome === "joined")
         setError(`${name.trim()} already joined. Remove it from Devices instead.`);

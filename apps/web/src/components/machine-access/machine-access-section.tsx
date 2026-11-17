@@ -151,12 +151,15 @@ export function MachineAccessSection({
       setConflict(false);
       setError(null);
       try {
-        const outcome = await act(client, { label: "save this", done: "saved" }, () =>
-          client.updateMachineAccess({
-            expectedRevision: editor.revision,
-            policy,
-            runnerId: machineId,
-          }),
+        const outcome = await act(
+          client,
+          { label: "save this", done: "saved", happened: "this was saved" },
+          () =>
+            client.updateMachineAccess({
+              expectedRevision: editor.revision,
+              policy,
+              runnerId: machineId,
+            }),
         );
         if (outcome.outcome === "conflict") setConflict(true);
         else edit({ policy, revision: outcome.revision, type: "saved" });
@@ -210,8 +213,10 @@ export function MachineAccessSection({
     setStopping((current) => [...current, sessionId]);
     setError(null);
     try {
-      await act(client, { label: "stop this session", done: "stopped" }, () =>
-        client.stopMachineAccessSession(sessionId),
+      await act(
+        client,
+        { label: "stop this session", done: "stopped", happened: "this session stopped" },
+        () => client.stopMachineAccessSession(sessionId),
       );
     } catch (reason) {
       setError(failureWords(reason));
@@ -232,8 +237,10 @@ export function MachineAccessSection({
     if (!desktopBridge) return;
     setError(null);
     try {
-      const picked = await act(null, { label: "choose a folder" }, () =>
-        desktopBridge.pickFolder(),
+      const picked = await act(
+        null,
+        { label: "choose a folder", done: "chosen", happened: "a folder was chosen" },
+        () => desktopBridge.pickFolder(),
       );
       if (picked) edit({ index, path: picked.path, type: "share-path-edited" });
     } catch (reason) {

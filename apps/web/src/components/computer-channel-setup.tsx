@@ -49,14 +49,17 @@ export function ComputerChannelSetup({
     setPending(true);
     setError(null);
     try {
-      const result = await act(null, { label: "set up this channel" }, () =>
-        hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey("channel-computer-connection"),
-          ownerHandles,
-          provider: provider.provider,
-          runnerId,
-          type: "channel.connection.computer.create",
-        }),
+      const result = await act(
+        null,
+        { label: "set up this channel", done: "set up", happened: "this channel was set up" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey("channel-computer-connection"),
+            ownerHandles,
+            provider: provider.provider,
+            runnerId,
+            type: "channel.connection.computer.create",
+          }),
       );
       if (result.type !== "channel.connection.computer.create") {
         setError("The channel could not be set up.");

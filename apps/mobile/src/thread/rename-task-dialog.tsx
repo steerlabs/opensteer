@@ -26,8 +26,8 @@ export function RenameTaskDialog(props: {
     try {
       await props.hostClient.renameThread(props.threadId, title);
       props.onClose();
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The task could not be renamed.");
+    } catch {
+      setError("The task could not be renamed.");
       setSaving(false);
     }
   };

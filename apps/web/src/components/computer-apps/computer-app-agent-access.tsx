@@ -132,39 +132,43 @@ export function ComputerAppAgentAccess({
     setBusyScope(scope);
     let failure: string | undefined;
     try {
-      await act(hostClient, { label: "change agent access", done: "changed" }, async () => {
-        if (next === "off") {
-          if (grant === null) return;
-          const result = await hostClient.dispatch({
-            grantId: grant.id,
-            idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${grant.id}`),
-            type: "integration.grant.revoke",
-          });
-          if (result.type !== "integration.grant.revoke") {
-            throw new Error("Agent access did not change.");
+      await act(
+        hostClient,
+        { label: "change agent access", done: "changed", happened: "agent access changed" },
+        async () => {
+          if (next === "off") {
+            if (grant === null) return;
+            const result = await hostClient.dispatch({
+              grantId: grant.id,
+              idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${grant.id}`),
+              type: "integration.grant.revoke",
+            });
+            if (result.type !== "integration.grant.revoke") {
+              throw new Error("Agent access did not change.");
+            }
+          } else {
+            const result = await hostClient.dispatch({
+              idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${connectionId}`),
+              input: {
+                access: next,
+                alias: grant?.alias ?? `${appName} on ${machineName}`.slice(0, 80),
+                connectionId,
+                installationId,
+                isDefault:
+                  grant?.isDefault ??
+                  !grants.some(
+                    (candidate) =>
+                      candidate.status === "active" && candidate.installationId === installationId,
+                  ),
+              },
+              type: "integration.grant.create",
+            });
+            if (result.type !== "integration.grant.create") {
+              throw new Error("Agent access did not change.");
+            }
           }
-        } else {
-          const result = await hostClient.dispatch({
-            idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${connectionId}`),
-            input: {
-              access: next,
-              alias: grant?.alias ?? `${appName} on ${machineName}`.slice(0, 80),
-              connectionId,
-              installationId,
-              isDefault:
-                grant?.isDefault ??
-                !grants.some(
-                  (candidate) =>
-                    candidate.status === "active" && candidate.installationId === installationId,
-                ),
-            },
-            type: "integration.grant.create",
-          });
-          if (result.type !== "integration.grant.create") {
-            throw new Error("Agent access did not change.");
-          }
-        }
-      });
+        },
+      );
     } catch (reason) {
       failure = failureWords(reason) ?? undefined;
     }

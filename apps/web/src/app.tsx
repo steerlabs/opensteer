@@ -189,6 +189,8 @@ export function App({
     // Before sign-in there is no session to be unready: these go straight out.
     void runAction(null, {
       label: "check this setup link",
+      done: "checked",
+      happened: "this setup link was checked",
       execute: async () =>
         unwrapRpcResult(await hostClient.rpc["auth.setup.exchange"]({ token: setupToken.trim() })),
     }).then((outcome) => {
@@ -226,6 +228,8 @@ export function App({
     setOnboardingPending(true);
     const outcome = await runAction(null, {
       label: "sign in",
+      done: "signed in",
+      happened: "you were signed in",
       execute: async () => {
         const { redirectUrl } = unwrapRpcResult(
           await hostClient.rpc["auth.password.signIn"]({
@@ -253,6 +257,8 @@ export function App({
     setOnboardingPending(true);
     const outcome = await runAction(null, {
       label: "create this account",
+      done: "created",
+      happened: "this account was created",
       execute: async () => {
         unwrapRpcResult(
           await hostClient.rpc["auth.setup.claim"]({
@@ -279,6 +285,8 @@ export function App({
     setOnboardingPending(true);
     const outcome = await runAction(null, {
       label: "sign in",
+      done: "signed in",
+      happened: "you were signed in",
       execute: () =>
         startHostOidcSignIn({
           desktopBridge,

@@ -723,7 +723,7 @@ function AgentAccessChoice({
     setPending(choice);
     setError(null);
     try {
-      await act(client, { label: "change this", done: "changed" }, () =>
+      await act(client, { label: "change this", done: "changed", happened: "this changed" }, () =>
         setIphoneAgentAccess(client, machine, view?.connectionId ?? null, choice),
       );
       await apps.reload();

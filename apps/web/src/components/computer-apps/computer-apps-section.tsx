@@ -238,7 +238,11 @@ export function ComputerAppsSection({
     if (pendingIds.current.has(definitionId)) return;
     begin(definitionId, optimisticAccess);
     try {
-      await act(hostClient, { label: "change this app", done: "changed" }, operation);
+      await act(
+        hostClient,
+        { label: "change this app", done: "changed", happened: "this app changed" },
+        operation,
+      );
       await onChanged();
     } catch (reason) {
       const words = failureWords(reason);

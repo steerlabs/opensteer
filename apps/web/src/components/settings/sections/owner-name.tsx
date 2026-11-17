@@ -134,8 +134,10 @@ function NameEditor(props: {
     }
     setPending(true);
     setMessage(null);
-    void act(hostClient, { label: "save your name", done: "saved" }, () =>
-      props.save(name, editedVersion),
+    void act(
+      hostClient,
+      { label: "save your name", done: "saved", happened: "your name was saved" },
+      () => props.save(name, editedVersion),
     )
       .then(({ applied, version }) => {
         if (applied) setEditing(false);

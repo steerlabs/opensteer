@@ -205,8 +205,10 @@ function useDownload(
     if (pending) return;
     setPending(true);
     setError(null);
-    void act(client, { label: "download this file", done: "downloaded" }, () =>
-      client.readAttachment(part.artifactId),
+    void act(
+      client,
+      { label: "download this file", done: "downloaded", happened: "this file downloaded" },
+      () => client.readAttachment(part.artifactId),
     )
       .then((bytes) => saveFile(bytes, part.name))
       .catch((reason: unknown) => {

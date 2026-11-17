@@ -47,7 +47,7 @@ export function HomeSetupStep({
       if (home && next && next !== home.name) {
         const result = await act(
           hostClient,
-          { label: "rename", thing: "this Mac", done: "renamed" },
+          { label: "rename this Mac", done: "renamed", happened: "this Mac was renamed" },
           () =>
             hostClient.dispatch({
               idempotencyKey: mutationIdempotencyKey("device-rename"),
@@ -63,12 +63,15 @@ export function HomeSetupStep({
       }
       const access = home?.access;
       if (switchable && home && access && deviceAccess(access.policy).apps !== apps) {
-        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
-          hostClient.updateMachineAccess({
-            expectedRevision: access.revision,
-            policy: withDeviceSwitch(access.policy, "apps", apps),
-            runnerId: home.id,
-          }),
+        const result = await act(
+          hostClient,
+          { label: "change this", done: "changed", happened: "this changed" },
+          () =>
+            hostClient.updateMachineAccess({
+              expectedRevision: access.revision,
+              policy: withDeviceSwitch(access.policy, "apps", apps),
+              runnerId: home.id,
+            }),
         );
         if (result.outcome === "conflict") {
           await hostClient.refresh();

@@ -103,8 +103,10 @@ function AppTabRow({
         aria-label={`Close the ${title} tab`}
         className="icon-btn"
         onClick={() => {
-          void act(client, { label: "close", thing: "this tab", done: "closed" }, () =>
-            client.closeTabs([tabId]),
+          void act(
+            client,
+            { label: "close this tab", done: "closed", happened: "this tab closed" },
+            () => client.closeTabs([tabId]),
           ).catch((error: unknown) => toastFailure(toast)(error));
           onClosed();
         }}
@@ -156,8 +158,10 @@ function LiveApp({
             className="btn btn--ghost btn--small"
             onClick={() => {
               const show = workspace.nav.beginPlaceOperation();
-              void act(client, { label: "open", thing: "this app", done: "opened" }, () =>
-                client.openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) }),
+              void act(
+                client,
+                { label: "open this app", done: "opened", happened: "this app opened" },
+                () => client.openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) }),
               )
                 .then((tab) => {
                   show({ kind: "tab", tabId: tab.tabId });

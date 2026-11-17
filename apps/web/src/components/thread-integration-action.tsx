@@ -841,7 +841,9 @@ export function ThreadIntegrationAction({
         setApiKeyOpen(false);
         setReload((value) => value + 1);
       })
-      .catch((reason: unknown) => setApiKeyError(presentFailure(reason, "connect", "connected")))
+      .catch((reason: unknown) =>
+        setApiKeyError(presentFailure(reason, "connect this account", "connected")),
+      )
       .finally(() => setPending(false));
   };
 

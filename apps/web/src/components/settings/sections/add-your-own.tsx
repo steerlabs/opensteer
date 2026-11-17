@@ -45,7 +45,7 @@ export function AddYourOwn({
     if (!ready || pending || !connected) return;
     setPending(true);
     setError(null);
-    void act(hostClient, { label: "add this", done: "added" }, () =>
+    void act(hostClient, { label: "add this", done: "added", happened: "this was added" }, () =>
       kind === "folder"
         ? hostClient
             .dispatch({
@@ -138,7 +138,15 @@ export function AddYourOwn({
                     className="btn"
                     disabled={pending}
                     onClick={() =>
-                      void act(null, { label: "choose a folder" }, () => picker.pickFolder())
+                      void act(
+                        null,
+                        {
+                          label: "choose a folder",
+                          done: "chosen",
+                          happened: "a folder was chosen",
+                        },
+                        () => picker.pickFolder(),
+                      )
                         .then((picked) => {
                           if (picked) setDirectory(picked.path);
                         })

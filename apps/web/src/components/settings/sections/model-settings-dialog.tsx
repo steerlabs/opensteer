@@ -129,8 +129,9 @@ export function ModelSettingsDialog({
     setRefreshing(true);
     setRefreshError(null);
     void runAction(session, {
-      label: "refresh models",
+      label: "refresh the models",
       done: "refreshed",
+      happened: "the models were refreshed",
       execute: onRefresh,
     }).then((outcome) => {
       setRefreshError(outcomeWords(outcome));
@@ -251,6 +252,7 @@ function ModelRow({
     void runAction(session, {
       label: "save this",
       done: "saved",
+      happened: "this was saved",
       execute: () => onSave(settings),
     }).then((outcome) => {
       if (outcome.kind === "confirmed") setDraft(null);

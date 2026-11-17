@@ -62,12 +62,15 @@ export function DevicesSection() {
     if (signingOut) return;
     setSigningOut(row.session.id);
     setError(null);
-    void act(hostClient, { label: "sign out", thing: "this device", done: "signed out" }, () =>
-      hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`session:${row.session.id}`),
-        sessionId: row.session.id,
-        type: "session.revoke",
-      }),
+    void act(
+      hostClient,
+      { label: "sign out this device", done: "signed out", happened: "this device was signed out" },
+      () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`session:${row.session.id}`),
+          sessionId: row.session.id,
+          type: "session.revoke",
+        }),
     )
       .then(() => {
         if (row.session.current) {

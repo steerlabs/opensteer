@@ -48,8 +48,11 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
   const attempt = () => {
     setBusy(true);
     setError(null);
-    void act(null, { label: "open this team", done: "opened" }, async () =>
-      surface === "team-web" ? window.location.reload() : enter ? enter(teamId) : reload(),
+    void act(
+      null,
+      { label: "open this team", done: "opened", happened: "this team opened" },
+      async () =>
+        surface === "team-web" ? window.location.reload() : enter ? enter(teamId) : reload(),
     )
       .catch((failure: unknown) => setError(failureWords(failure)))
       .finally(() => setBusy(false));

@@ -81,13 +81,15 @@ export function DeploymentOperationBanner({
     if (pending) return;
     setPending(kind);
     setError(null);
-    void runAction(null, { label: kind === "cancel" ? "cancel this" : kind, execute: run }).then(
-      (outcome) => {
-        if (outcome.kind === "confirmed") return;
-        setError(outcomeWords(outcome));
-        setPending(null);
-      },
-    );
+    void runAction(null, {
+      label:
+        kind === "cancel" ? "cancel this" : kind === "repair" ? "repair this" : "try this again",
+      execute: run,
+    }).then((outcome) => {
+      if (outcome.kind === "confirmed") return;
+      setError(outcomeWords(outcome));
+      setPending(null);
+    });
   };
 
   return (

@@ -172,13 +172,16 @@ function ChromeProfileRow({
     }
     setPending(true);
     setError(null);
-    void act(hostClient, { label: "rename this Chrome", done: "renamed" }, () =>
-      hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`browser-source-rename:${source.id}`),
-        name,
-        sourceId: source.id,
-        type: "browser.source.rename",
-      }),
+    void act(
+      hostClient,
+      { label: "rename this Chrome", done: "renamed", happened: "this Chrome was renamed" },
+      () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`browser-source-rename:${source.id}`),
+          name,
+          sourceId: source.id,
+          type: "browser.source.rename",
+        }),
     )
       .then(onChanged)
       .then(close)
@@ -190,12 +193,19 @@ function ChromeProfileRow({
     if (pending) return;
     setPending(true);
     setError(null);
-    void act(hostClient, { label: "disconnect this Chrome", done: "disconnected" }, () =>
-      hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`browser-source-revoke:${source.id}`),
-        sourceId: source.id,
-        type: "browser.source.revoke",
-      }),
+    void act(
+      hostClient,
+      {
+        label: "disconnect this Chrome",
+        done: "disconnected",
+        happened: "this Chrome disconnected",
+      },
+      () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`browser-source-revoke:${source.id}`),
+          sourceId: source.id,
+          type: "browser.source.revoke",
+        }),
     )
       .then(() => {
         toast.success(`Disconnected ${source.name}.`);
@@ -338,12 +348,15 @@ function AllowedSites({
     if (pending) return;
     setPending(grant.site);
     setError(null);
-    void act(hostClient, { label: "remove this site", done: "removed" }, () =>
-      hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
-        site: grant.site,
-        type: "browser.site.remove",
-      }),
+    void act(
+      hostClient,
+      { label: "remove this site", done: "removed", happened: "this site was removed" },
+      () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
+          site: grant.site,
+          type: "browser.site.remove",
+        }),
     )
       .then(() => {
         toast.success(`${browserSiteLabel(grant.site)} removed.`);

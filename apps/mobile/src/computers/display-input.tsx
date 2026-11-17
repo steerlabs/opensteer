@@ -161,8 +161,8 @@ export function DisplayControls({
           if (active()) setReceipt(outcome === "written" ? "Copied" : `Copy ${outcome}`);
         } else if (result.outcome !== "empty") setReceipt(`Copy ${result.outcome}`);
       })
-      .catch((error: unknown) => {
-        if (active()) setReceipt(error instanceof Error ? error.message : "Input unavailable.");
+      .catch(() => {
+        if (active()) setReceipt("Input unavailable.");
       });
     return true;
   };

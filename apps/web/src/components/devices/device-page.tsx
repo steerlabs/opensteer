@@ -106,8 +106,10 @@ function PendingDeviceDetail({
     setCancelling(true);
     setError(null);
     try {
-      const outcome = await act(hostClient, { label: "cancel this setup", done: "cancelled" }, () =>
-        cancelDeviceSetup(hostClient, enrollmentId),
+      const outcome = await act(
+        hostClient,
+        { label: "cancel this setup", done: "cancelled", happened: "this setup was cancelled" },
+        () => cancelDeviceSetup(hostClient, enrollmentId),
       );
       if (outcome === "joined") {
         setConfirming(false);
@@ -301,8 +303,10 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   function openScreen() {
     if (!workspace || !screenTab.success) return;
     const show = workspace.nav.beginPlaceOperation();
-    void act(hostClient, { label: "open this screen", done: "opened" }, () =>
-      hostClient.openTab(screenTab.data),
+    void act(
+      hostClient,
+      { label: "open this screen", done: "opened", happened: "this screen opened" },
+      () => hostClient.openTab(screenTab.data),
     )
       .then((tab) => show({ kind: "tab", tabId: tab.tabId }))
       .catch((reason: unknown) => setError(failureWords(reason)));
@@ -314,8 +318,11 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     setRemoving(true);
     setError(null);
     try {
-      await act(hostClient, { label: "remove this screen", done: "removed" }, () =>
-        hostClient.detachIphoneScreen({ deviceId: machine.id, expectedGeneration: generation }),
+      await act(
+        hostClient,
+        { label: "remove this screen", done: "removed", happened: "this screen was removed" },
+        () =>
+          hostClient.detachIphoneScreen({ deviceId: machine.id, expectedGeneration: generation }),
       );
       await hostClient.refresh();
       setConfirming(null);
@@ -335,7 +342,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     try {
       const result = await act(
         hostClient,
-        { label: "rename", thing: "this device", done: "renamed" },
+        { label: "rename this device", done: "renamed", happened: "this device was renamed" },
         () =>
           hostClient.dispatch({
             idempotencyKey: mutationIdempotencyKey("device-rename"),
@@ -407,12 +414,16 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
       if (leavesHere) {
         // Desktop main fences this Mac and delivers the signed leave; the
         // window then shows it signed out.
-        await act(null, { label: "leave", thing: "this Mac", done: "left" }, () => device?.leave());
+        await act(
+          null,
+          { label: "leave on this Mac", done: "left", happened: "this Mac left" },
+          () => device?.leave(),
+        );
         return;
       }
       const result = await act(
         hostClient,
-        { label: "remove", thing: "this device", done: "removed" },
+        { label: "remove this device", done: "removed", happened: "this device was removed" },
         () =>
           hostClient.dispatch({
             idempotencyKey: mutationIdempotencyKey(`device-remove:${machine.id}`),

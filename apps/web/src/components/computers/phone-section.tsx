@@ -73,7 +73,11 @@ export function PhoneSection({
     setBusy(kind);
     setError(null);
     try {
-      await owned(hostClient, { label: "change this phone", done: "changed" }, action);
+      await owned(
+        hostClient,
+        { label: "change this phone", done: "changed", happened: "this phone changed" },
+        action,
+      );
       await onChanged();
     } catch (reason) {
       setError(failureWords(reason));

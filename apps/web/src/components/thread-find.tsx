@@ -64,6 +64,7 @@ export function ThreadFind({ client, onClose, onJump, threadId }: ThreadFindProp
     const outcome = await runAction(client, {
       label: "search this task",
       done: "searched",
+      happened: "this task was searched",
       execute: () =>
         client.searchThreadMessages({
           query: trimmed.slice(0, queryLimit),
@@ -87,6 +88,7 @@ export function ThreadFind({ client, onClose, onJump, threadId }: ThreadFindProp
     const outcome = await runAction(client, {
       label: "open this message",
       done: "opened",
+      happened: "this message opened",
       execute: () => onJump(messageId),
     });
     setJumpingId(null);

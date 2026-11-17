@@ -111,8 +111,10 @@ export function SetupAiStep({
     setSaving(true);
     setError(null);
     try {
-      await owned(hostClient, { label: "save this", done: "saved" }, () =>
-        hostClient.rememberExecution({ selection }),
+      await owned(
+        hostClient,
+        { label: "save this", done: "saved", happened: "this was saved" },
+        () => hostClient.rememberExecution({ selection }),
       );
       onNext();
     } catch (reason) {

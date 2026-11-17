@@ -52,8 +52,8 @@ export function createPageAutofill(input: {
         input.onConfirming(loginId);
         try {
           if (!(await input.authenticate())) return;
-        } catch (error) {
-          input.onUnfilled(error instanceof Error ? error.message : String(error));
+        } catch {
+          input.onUnfilled(unfilled.expired);
           return;
         } finally {
           confirming = false;

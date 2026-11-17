@@ -29,13 +29,16 @@ export function TaskIconEditor({
             if (saving) return;
             setSaving(true);
             setError(null);
-            void act(hostClient, { label: "change", thing: "this icon", done: "changed" }, () =>
-              hostClient.dispatch({
-                type: "thread.icon.set",
-                idempotencyKey: mutationIdempotencyKey(`thread-icon:${threadId}`),
-                threadId,
-                icon,
-              }),
+            void act(
+              hostClient,
+              { label: "change this icon", done: "changed", happened: "this icon changed" },
+              () =>
+                hostClient.dispatch({
+                  type: "thread.icon.set",
+                  idempotencyKey: mutationIdempotencyKey(`thread-icon:${threadId}`),
+                  threadId,
+                  icon,
+                }),
             )
               .then(onClose)
               .catch((failure: unknown) => {

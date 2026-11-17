@@ -30,7 +30,9 @@ export function DeviceRemovedScreen({
   const run = (operation: () => void | Promise<void>) => {
     setPending(true);
     setError(null);
-    void act(null, { label: "do this" }, async () => operation())
+    void act(null, { label: "do this", done: "done", happened: "it was done" }, async () =>
+      operation(),
+    )
       .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
@@ -53,7 +55,11 @@ export function DeviceRemovedScreen({
           disabled={pending}
           onClick={() =>
             run(async () => {
-              await act(null, { label: "sign in" }, () => resumeDeviceSignIn(bridge, deploymentId));
+              await act(
+                null,
+                { label: "sign in", done: "signed in", happened: "you were signed in" },
+                () => resumeDeviceSignIn(bridge, deploymentId),
+              );
               await onConnectAgain();
             })
           }
@@ -118,8 +124,10 @@ export function DeviceSignInScreen({
             onClick={() => {
               setRetrying(true);
               setError(null);
-              void act(null, { label: "connect again" }, () =>
-                bridge.retryDeviceConnection({ deploymentId: id }),
+              void act(
+                null,
+                { label: "connect again", done: "connected", happened: "this connected again" },
+                () => bridge.retryDeviceConnection({ deploymentId: id }),
               )
                 .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setRetrying(false));
@@ -134,8 +142,14 @@ export function DeviceSignInScreen({
             onClick={() => {
               setPending(true);
               setError(null);
-              void act(null, { label: "leave this Opensteer" }, () =>
-                bridge.leaveDeployment({ deploymentId: id }),
+              void act(
+                null,
+                {
+                  label: "leave this Opensteer",
+                  done: "left",
+                  happened: "you left this Opensteer",
+                },
+                () => bridge.leaveDeployment({ deploymentId: id }),
               )
                 .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setPending(false));

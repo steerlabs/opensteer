@@ -316,7 +316,12 @@ export function AiEngineSettings({
   /** Runs one profile operation with shared pending/error handling. */
   const run = (key: string, operation: () => Promise<unknown>, onDone?: () => void) => {
     setPending(key);
-    void runAction(client, { label: "change this account", execute: operation }).then((outcome) => {
+    void runAction(client, {
+      label: "change this account",
+      done: "changed",
+      happened: "this account changed",
+      execute: operation,
+    }).then((outcome) => {
       if (outcome.kind === "confirmed") onDone?.();
       else onError(outcomeWords(outcome) ?? "");
       setPending(null);

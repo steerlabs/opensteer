@@ -123,8 +123,9 @@ export function BrowserSignInRequestBody({
     setAnswer(decision);
     setError(null);
     void runAction(client, {
-      label: "answer this request",
+      label: "send your answer",
       done: "sent",
+      happened: "your answer was sent",
       execute: () =>
         client.dispatch({
           decision:

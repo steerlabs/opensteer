@@ -155,7 +155,7 @@ export function BrowserSignInPanel({
       };
     }
     const idempotencyKey = attempt.current.key;
-    void act(session, { label: "sign in", done: "signed in" }, () =>
+    void act(session, { label: "sign in", done: "signed in", happened: "you were signed in" }, () =>
       client.dispatch({
         idempotencyKey,
         sessionId,

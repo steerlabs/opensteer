@@ -72,6 +72,7 @@ export function PasswordRecovery({
     const outcome = await runAction(null, {
       label: "reset your password",
       done: "reset",
+      happened: "your password was reset",
       execute: () => onReset(token, newPassword),
     });
     if (outcome.kind === "confirmed") return;
@@ -191,6 +192,8 @@ export function HostAccessOnboarding({
       setAdmissionPending(true);
       const outcome = await runAction(null, {
         label: "check this setup code",
+        done: "checked",
+        happened: "this setup code was checked",
         execute: () => onAdmit(token),
       });
       setAdmissionPending(false);

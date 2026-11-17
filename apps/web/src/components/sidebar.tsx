@@ -236,6 +236,7 @@ export function Sidebar({
         void runAction(hostClient, {
           label: "move this tab",
           done: "moved",
+          happened: "this tab moved",
           execute: () => hostClient.organizeTabs(input),
         }).then(toastOutcome(toast));
     },

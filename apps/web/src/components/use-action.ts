@@ -43,12 +43,12 @@ export const localSession: ClientSession = {
 };
 
 export interface ActionSpec<I, O> {
-  /** What the action is, for "Couldn't {label}." when it is refused without a reason. */
+  /** The whole verb phrase, for "Couldn't {label}." when refused without a reason: "close this tab". */
   readonly label: string;
   /** Its past tense, for "Not {done}. You're offline." */
   readonly done?: string;
-  /** What it acts on, for "Couldn't confirm {thing} {done}." */
-  readonly thing?: string;
+  /** The full clause for "Couldn't confirm {happened}." after a lost answer: "this tab closed". */
+  readonly happened?: string;
   readonly execute: (input: I, signal: AbortSignal) => Promise<O>;
   readonly reconcile?: (input: I, signal: AbortSignal) => Promise<ActionOutcome<O> | null>;
 }
@@ -83,7 +83,7 @@ export function useAction<I = void, O = unknown>(
         key,
         label: spec.label,
         ...(spec.done ? { done: spec.done } : {}),
-        ...(spec.thing ? { thing: spec.thing } : {}),
+        ...(spec.happened ? { happened: spec.happened } : {}),
         execute: async (input, signal) => {
           try {
             return await current.current.execute(input, signal);
@@ -173,7 +173,7 @@ export async function runAction<O>(
     key: spec.label,
     label: spec.label,
     ...(spec.done ? { done: spec.done } : {}),
-    ...(spec.thing ? { thing: spec.thing } : {}),
+    ...(spec.happened ? { happened: spec.happened } : {}),
     execute: async (_input, signal) => {
       try {
         return await spec.execute(signal);
@@ -346,7 +346,11 @@ export function useDisposedWithView(owner: { dispose(): void }): void {
 }
 
 /** Answering a Request: "Not sent. You're offline." before it goes, the Host's reason after. */
-export const requestAnswer = { label: "answer this request", done: "sent" } as const;
+export const requestAnswer = {
+  label: "send your answer",
+  done: "sent",
+  happened: "your answer was sent",
+} as const;
 
 /**
  * A failure that didn't run through `act`, said by the shared presenter:

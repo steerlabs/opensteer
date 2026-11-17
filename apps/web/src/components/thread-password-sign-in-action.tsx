@@ -154,8 +154,9 @@ export function PasswordSignInRequestBody({
     // the Host admitted stays busy until the Mac has answered it.
     const idempotencyKey = declineKey.current;
     void runAction(client, {
-      label: "answer this request",
+      label: "send your answer",
       done: "sent",
+      happened: "your answer was sent",
       execute: () =>
         client.dispatch({
           idempotencyKey,
@@ -176,8 +177,9 @@ export function PasswordSignInRequestBody({
     setBusy(remember ? "allow" : "once");
     setError(null);
     void runAction(client, {
-      label: "answer this request",
+      label: "send your answer",
       done: "sent",
+      happened: "your answer was sent",
       execute: () =>
         client.dispatch({
           type: "browser.password-sign-in.respond",
@@ -563,6 +565,8 @@ export function useHostSignIn(
     let live = true;
     void runAction(client, {
       label: "load this sign-in",
+      done: "loaded",
+      happened: "this sign-in loaded",
       execute: async () =>
         unwrapRpcResult(await client.rpc["browser.password-sign-in.get"]({ requestId })),
     }).then((outcome) => {

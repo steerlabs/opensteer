@@ -232,8 +232,10 @@ export function useOmnibox(options: {
   function remove(row: StartPageResult) {
     const historyUrl = row.historyUrl;
     if (!historyUrl) return;
-    void act(hostClient, { label: "remove this", done: "removed" }, () =>
-      hostClient.browserHistory.remove(profileId, historyUrl),
+    void act(
+      hostClient,
+      { label: "remove this", done: "removed", happened: "it was removed" },
+      () => hostClient.browserHistory.remove(profileId, historyUrl),
     ).catch((error: unknown) => toastFailure(toast)(error));
     setHighlight(null);
     setFrozen(null);

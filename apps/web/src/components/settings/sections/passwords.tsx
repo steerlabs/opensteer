@@ -114,13 +114,16 @@ function PasswordsOnThisMac({
     if (busy !== null) return;
     setBusy(kind);
     setError(null);
-    void runAction(null, { label: "open Passwords", done: "opened", execute: action }).then(
-      (outcome) => {
-        if (!live.current) return;
-        setError(outcomeWords(outcome));
-        setBusy(null);
-      },
-    );
+    void runAction(null, {
+      label: "open Passwords",
+      done: "opened",
+      happened: "Passwords opened",
+      execute: action,
+    }).then((outcome) => {
+      if (!live.current) return;
+      setError(outcomeWords(outcome));
+      setBusy(null);
+    });
   }
   const openPasswords = () => run("open", () => bridge.passwordsOpen());
   const declineAll = () =>
