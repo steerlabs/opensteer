@@ -129,7 +129,6 @@ async function consentFixture(base: StoreFixture) {
     admission: new TaskAdmissionService({
       database: f.database,
       execution: async () => f.execution,
-      publish() {},
       revokeGrants() {},
     }),
     runs: { outcome: (request) => personalTeamRunOutcome(f.database, request) },

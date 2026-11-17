@@ -2,11 +2,7 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
-import {
-  RunnerBootIdSchema,
-  machineAccessPolicyDefault,
-  projectDeviceAccessRequestEvent,
-} from "@opensteer/protocol";
+import { RunnerBootIdSchema, machineAccessPolicyDefault } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
 import { NotificationStore } from "./notification-store.js";
@@ -201,13 +197,15 @@ describeStore("device access Requests", (it) => {
     expect(
       await f.store.notificationState.attention(run.userId, { deviceAccessRequests: "include" }),
     ).toMatchObject({ needsYou: 2 });
-    const states = await f.store.drainPendingThreadStates();
-    const state = states.find(({ type }) => type === "thread.state-changed")!;
-    expect(state.data).toMatchObject({ pendingRequests: 2, pendingDeviceAccessRequests: 1 });
-    expect(projectDeviceAccessRequestEvent(state, false).data).toMatchObject({
-      pendingRequests: 1,
+    const state = await f.database
+      .selectFrom("clientSyncState")
+      .select(["pendingRequestCount", "pendingDeviceAccessRequestCount", "needsYouCount"])
+      .executeTakeFirstOrThrow();
+    expect(state).toEqual({
+      pendingRequestCount: 2,
+      pendingDeviceAccessRequestCount: 1,
+      needsYouCount: 2,
     });
-    expect(projectDeviceAccessRequestEvent(state, true).data).toMatchObject({ pendingRequests: 2 });
     const historyInput = { threadId: run.thread.id, ownerId: run.userId };
     expect((await f.store.threadEventPageForOwner(historyInput))?.thread.pendingRequests).toBe(1);
     expect(
