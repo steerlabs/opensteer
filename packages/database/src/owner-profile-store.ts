@@ -7,7 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /** The Account a linked Host's owner name came from. */
@@ -52,7 +52,7 @@ export class OwnerProfileStore {
   /** A name the owner chose while no Account owns it. */
   async setLocal(input: { readonly userId: UserId; readonly name: PersonName | null }) {
     const name = input.name === null ? null : PersonNameSchema.parse(input.name);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const current = await lockedProfile(transaction);
       if (current.ownerId !== input.userId)
         throw new OpensteerError({ code: "forbidden", message: "The personal owner is required." });
@@ -61,6 +61,8 @@ export class OwnerProfileStore {
           code: "conflict",
           message: "Your name belongs to your Opensteer Account; change it there.",
         });
+      mutation.bumpResource("owner-profile");
+      mutation.bumpResource("identity");
       await write(transaction, current.ownerId, {
         ownerName: name,
         ownerNameAccount: null,
@@ -85,7 +87,7 @@ export class OwnerProfileStore {
     readonly profile: OwnerProfile;
   }> {
     const name = PersonNameSchema.parse(input.name);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const current = await lockedProfile(transaction);
       // Lock order: the principal this writes ranks before the link it holds steady.
       await lockOwnerPrincipal(transaction, current.ownerId);
@@ -107,6 +109,8 @@ export class OwnerProfileStore {
         subject: input.account.subject,
         revision: input.revision,
       };
+      mutation.bumpResource("owner-profile");
+      mutation.bumpResource("identity");
       await write(transaction, current.ownerId, {
         ownerName: name,
         ownerNameAccount: { issuer: account.issuer, subject: account.subject },
@@ -125,7 +129,7 @@ export class OwnerProfileStore {
    * while a link is active, so a late answer from before a relink cannot unbind the new one.
    */
   async detachAccount(): Promise<boolean> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await lockedProfile(transaction);
       if (await activeLink(transaction)) return false;
       const updated = await transaction
@@ -134,6 +138,10 @@ export class OwnerProfileStore {
         .where("singletonKey", "=", "personal")
         .where("ownerNameAccount", "is not", null)
         .executeTakeFirst();
+      if (updated.numUpdatedRows > 0n) {
+        mutation.bumpResource("owner-profile");
+        mutation.bumpResource("identity");
+      }
       return updated.numUpdatedRows > 0n;
     });
   }
@@ -144,7 +152,7 @@ export class OwnerProfileStore {
    * a name; the desktop's implicit owner takes `computerName`, its computer account's full name.
    */
   async seed(computerName: string | null): Promise<boolean> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const current = await lockedProfile(transaction);
       const row = await transaction
         .selectFrom("personalSettings")
@@ -157,6 +165,8 @@ export class OwnerProfileStore {
         row.email === localMachineOwnerEmail ? (computerName ?? "") : row.displayName,
       );
       if (!name) return false;
+      mutation.bumpResource("owner-profile");
+      mutation.bumpResource("identity");
       await write(transaction, current.ownerId, {
         ownerName: name,
         ownerNameAccount: null,

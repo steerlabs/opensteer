@@ -7,7 +7,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSchema } from "./schema.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 
 type Fence = Pick<
@@ -37,7 +37,7 @@ export async function reportAgentHomeSettings(
   const report = RunnerSettingsReportSchema.parse(input);
   if (Object.entries(authenticated).some(([key, value]) => report[key as keyof Fence] !== value))
     return null;
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const owner = await transaction
       .selectFrom("personalSettings")
       .select("ownerId")
@@ -86,6 +86,8 @@ export async function reportAgentHomeSettings(
     );
     const after = written.rows[0];
     if (!after || (before && isDeepStrictEqual(before, after))) return null;
+    mutation.bumpResource("agent-home-settings");
+    mutation.bumpResource("harness");
     return owner.ownerId;
   });
 }
