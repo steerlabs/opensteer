@@ -170,7 +170,7 @@ function ConnectedApps(props: {
         void AccessibilityInfo.announceForAccessibility(message);
       }
     } catch (reason) {
-      if (current()) setError(presentActionFailure(reason, "That did not finish. Try again."));
+      if (current()) setError(presentActionFailure(reason) || null);
     } finally {
       if (current()) setBusy(null);
     }

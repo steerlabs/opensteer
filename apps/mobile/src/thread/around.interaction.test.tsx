@@ -736,7 +736,7 @@ describe("Around this thread", () => {
     expect(toggle().getAttribute("aria-checked")).toBe("true");
 
     const release = w.hold();
-    act(() => toggle().click());
+    await act(async () => toggle().click());
     expect(w.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ status: "paused", triggerId: id, type: "trigger.status.set" }),
     );

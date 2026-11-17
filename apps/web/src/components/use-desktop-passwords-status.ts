@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DesktopPasswordsStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { actionErrorMessage } from "../ui-utils.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 
 /** The Mac's own Passwords status, followed while mounted. */
 export function useDesktopPasswordsStatus(
@@ -19,7 +19,7 @@ export function useDesktopPasswordsStatus(
       setStatus(next);
       setReadError(null);
     } catch (reason) {
-      if (live.current) setReadError(actionErrorMessage(reason));
+      if (live.current) setReadError(presentReadFailure(reason, "Passwords"));
     }
   }, [bridge]);
 

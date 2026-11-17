@@ -173,6 +173,7 @@ export { IntegrationAuthorizationAttempts } from "./authorization-attempts.js";
 export class IntegrationAuthorizationCancelledError extends Error {
   constructor() {
     super("Integration authorization was cancelled.");
+    this.name = "AbortError";
   }
 }
 

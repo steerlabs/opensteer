@@ -156,7 +156,7 @@ vi.mock("../ui/primitives.js", () => ({
 }));
 
 const { PluginAccounts } = await import("./settings-plugin-accounts.js");
-const { IntegrationAuthorizationCancelUnconfirmedError } =
+const { IntegrationAuthorizationCancelledError, IntegrationAuthorizationCancelUnconfirmedError } =
   await import("@opensteer/client/integrations");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -266,7 +266,9 @@ describe("Connected apps on the phone", () => {
     const begin = vi.fn(
       ({ signal }: { readonly signal: AbortSignal }) =>
         new Promise((_, reject) => {
-          signal.addEventListener("abort", () => reject(new Error("Cancelled here.")));
+          signal.addEventListener("abort", () =>
+            reject(new IntegrationAuthorizationCancelledError()),
+          );
         }),
     );
     state.begin = begin;
@@ -287,7 +289,8 @@ describe("Connected apps on the phone", () => {
     );
     await vi.waitFor(() => expect(cancel()).toBeDefined());
     await act(async () => cancel()?.click());
-    await vi.waitFor(() => expect(container.textContent).toContain("Cancelled here."));
+    await vi.waitFor(() => expect(cancel()).toBeUndefined());
+    expect(container.textContent).not.toContain("That did not finish");
     expect(begin.mock.calls[0]?.[0].signal.aborted).toBe(true);
     expect(cancel()).toBeUndefined();
   });

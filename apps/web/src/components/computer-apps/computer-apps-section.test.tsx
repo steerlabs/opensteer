@@ -368,7 +368,7 @@ describe("ComputerAppsSection", () => {
 
     await click(button(container, "Finish setup"));
     await click(button(container, "Allow and continue"));
-    expect(container.textContent).toContain("Approval failed");
+    expect(container.textContent).toContain("Couldn't confirm this change.");
     expect(button(container, "Allow and continue").disabled).toBe(false);
   });
 

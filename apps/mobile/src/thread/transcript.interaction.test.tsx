@@ -1212,7 +1212,7 @@ describe("an app's card and its tab", () => {
       await act(async () => press(f.container, "Open"));
       expect(f.tabs.show).not.toHaveBeenCalled();
       expect(f.container.querySelector('[role="alert"]')?.textContent).toContain(
-        "This Host cannot open app tabs.",
+        "Couldn't confirm this change.",
       );
       expect(frame(f.container)).not.toBeNull();
 
