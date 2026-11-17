@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import {
   darwinOnlyTests,
+  testExtraInputs,
   defaultTestInclude,
   defaultTestExclude,
   integrationTestInclude,
@@ -233,12 +234,14 @@ export function nativeWindowsInputs({ narrow = false } = {}) {
     return [
       ...nativeWindows.ciInputs.filter((input) => !shared.has(input)),
       ...nativeWindows.go,
+      ...(nativeWindows.extra ?? []),
       ...nativeWindows.scripts,
       ...nativeWindows.vitest,
     ];
   return [
     ...nativeWindows.ciInputs,
     ...nativeWindows.go,
+    ...(nativeWindows.extra ?? []),
     ...nativeMac.nodeInputs,
     ...(nativeInputs["native-windows"] ?? []),
   ];
@@ -496,7 +499,12 @@ export function decide(
       if (tests.has(importer)) direct.add(importer);
       for (const p of ownerOf(importer)) affected.add(p.name);
     }
-    for (const test of tests) if (mentions(text(test), file)) direct.add(test);
+    for (const test of tests)
+      if (
+        mentions(text(test), file) ||
+        (testExtraInputs[test] ?? []).some((input) => under(file, input))
+      )
+        direct.add(test);
     for (const [lane, runner] of Object.entries(runners)) {
       if (runner.roots.some((root) => under(file, root)) || runner.files.has(file)) {
         whole[lane] = true;

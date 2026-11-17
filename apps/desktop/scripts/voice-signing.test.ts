@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { expect, it, vi } from "vitest";
 import { parse } from "yaml";
@@ -69,3 +70,20 @@ it.skipIf(process.platform !== "darwin")(
     );
   },
 );
+
+it("accepts only workerd's JIT entitlement", () => {
+  const { verifyWorkerdEntitlements } = require("./after-sign.cjs") as {
+    verifyWorkerdEntitlements(file: string, read: () => Record<string, unknown>): void;
+  };
+  verifyWorkerdEntitlements("/workerd", () => ({ "com.apple.security.cs.allow-jit": true }));
+  for (const extra of [{}, { "com.apple.security.cs.allow-jit": false }, reviewed])
+    expect(() => verifyWorkerdEntitlements("/workerd", () => extra)).toThrow(/only the JIT/);
+  expect(sourceKeys("entitlements.mac.workerd.plist")).toEqual(["com.apple.security.cs.allow-jit"]);
+});
+function sourceKeys(file: string) {
+  return [
+    ...readFileSync(path.resolve(import.meta.dirname, "../build", file), "utf8").matchAll(
+      /<key>([^<]+)<\/key>/gu,
+    ),
+  ].map((match) => match[1]);
+}

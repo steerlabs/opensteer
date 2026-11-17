@@ -8,6 +8,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   bundleNodeService,
   stageRuntimeTree,
+  stageWorkerdWindowsLibraries,
 } from "../apps/desktop/scripts/build-personal-runtime.js";
 import type { ComputerReplResult } from "../apps/host/src/computer-use/computer-repl/computer-repl-service.js";
 import { hostProcessEntries } from "../apps/host/src/process-entries.js";
@@ -85,6 +86,29 @@ export async function run(code) {
     });
     expect(result.content).toEqual([{ type: "text", text: "42" }]);
     expect(result.isError).toBeFalsy();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("places Windows workerd's Visual C++ libraries beside the executable and refuses an incomplete source", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "runtime-workerd-vc-"));
+  try {
+    const source = path.join(root, "source");
+    const staged = path.join(root, "staged");
+    await mkdir(path.join(source, "bin"), { recursive: true });
+    await mkdir(path.join(source, "lib"));
+    const libraries = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+    for (const name of libraries)
+      await writeFile(path.join(source, "bin", name.toUpperCase()), "reviewed fixture");
+    const destination = "services/node_modules/@cloudflare/workerd-windows-64/bin";
+    expect(await stageWorkerdWindowsLibraries(source, staged, destination)).toEqual(
+      libraries.map((name) => ({ path: `${destination}/${name}`, mode: "code" })),
+    );
+    await rm(path.join(source, "bin", "VCRUNTIME140_1.DLL"));
+    await expect(stageWorkerdWindowsLibraries(source, staged, destination)).rejects.toThrow(
+      /vcruntime140_1.dll/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
