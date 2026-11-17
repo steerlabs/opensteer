@@ -917,6 +917,7 @@ export class ProductToolHandlers {
       await this.#commands.sendControl({
         type: "request.respond",
         requestId: request.id,
+        expectedRevision: agentResponder.expectedRevision,
         response,
         sealedResponse,
         requestedBy: caller.userId,

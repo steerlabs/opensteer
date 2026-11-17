@@ -12,6 +12,7 @@ import {
   ThreadIdSchema,
   ThreadTitleSchema,
 } from "@opensteer/core";
+import { TranscriptItemIdSchema } from "@opensteer/protocol/transcript";
 
 import { z } from "zod";
 
@@ -65,8 +66,7 @@ const readInput = z
     itemId: z
       .string()
       .trim()
-      .min(1)
-      .max(255)
+      .pipe(TranscriptItemIdSchema)
       .optional()
       .describe("Read one item using its returned itemId."),
     textOffset: z
