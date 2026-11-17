@@ -110,7 +110,8 @@ export class PendingDestination {
   async initialState(fallback: () => InitialState): Promise<InitialState> {
     while (this.#pending !== null) {
       const pending = this.#pending;
-      await Promise.race([pending.work, pending.done, pending.released]);
+      // A rejected destination was already reported through `failed`; startup continues without it.
+      await Promise.race([pending.work, pending.done, pending.released]).catch(() => undefined);
       if (pending !== this.#pending) continue;
       if (pending.state === undefined) return fallback();
       this.#initial = pending;

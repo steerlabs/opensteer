@@ -576,6 +576,20 @@ describe("pending external destinations", () => {
     expect(landed.pending.mayReconcileSelection("remembered")).toBe(true);
   });
 
+  it("still opens the app on its usual stack when a cold-start destination is refused", async () => {
+    const error = new Error("That team is not on this phone.");
+    const f = fixture(async () => {
+      throw error;
+    });
+    f.pending.hydrated();
+    const tap = f.pending.submit("removed-team");
+    expect(await f.pending.initialState(() => deploymentRoot("remembered"))).toEqual(
+      deploymentRoot("remembered"),
+    );
+    await expect(tap).rejects.toThrow(error);
+    expect(f.failed).toHaveBeenCalledWith(error);
+  });
+
   it("reports a routing failure and rejects the acknowledgment so the OS response remains retryable", async () => {
     const error = new Error("navigation refused");
     const f = fixture(async () => {

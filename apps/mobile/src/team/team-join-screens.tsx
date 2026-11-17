@@ -246,7 +246,14 @@ function OpenPlace(props: {
   useEffect(() => {
     let mounted = true;
     const intentCurrent = captureNavigationIntent();
-    const current = (): boolean => mounted && intentCurrent();
+    // A newer link that doesn't replace the stack (a Connect code) must not leave this sheet spinning.
+    const current = (): boolean => {
+      if (!mounted) return false;
+      if (intentCurrent()) return true;
+      mounted = false;
+      navigation.goBack();
+      return false;
+    };
     setFailure(null);
     const open = async () => {
       const located = await teams.locate(intent.origin);
@@ -275,7 +282,7 @@ function OpenPlace(props: {
     return () => {
       mounted = false;
     };
-  }, [attempt, captureNavigationIntent, intent, teams]);
+  }, [attempt, captureNavigationIntent, intent, navigation, teams]);
   return failure === null ? (
     <View style={styles.sheet}>
       <AppText role="secondary" tone="muted">
