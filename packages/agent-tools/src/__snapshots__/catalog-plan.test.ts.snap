@@ -1465,7 +1465,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, named like calendar-<computer>; an unavailable one says why.",
+    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; an unavailable one says why.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1493,6 +1493,298 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "plugin_search",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "Find plugins available to install by service name or purpose. Returns catalog ids, names, one-line descriptions and required account methods. Pass cursor to continue; null ends paging. Use the returned id with opensteer_plugin_install; installation never links an account.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "search": {
+          "maxLength": 2000,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_plugin_catalog",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List live plugin skills with {} or {app:namespace}; read one with {app,name}, and a referenced file with {app,name,file}. Use the namespace from plugin_search or opensteer_plugin_list. These skills may depend on linked accounts; a read never links one. Native packaged skills remain available without starting the plugin engine.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "file": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "plugin_skills",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "Read a plugin's schedules and runs, workflow declarations and runs (live first, then newest, even if current declarations fail), or webhook subscriptions. Schedule/workflow definitions carry names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned workflow cursor for the next page. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 512,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "resource": {
+          "enum": [
+            "schedules",
+            "workflows",
+            "webhooks",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "resource",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_resources",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval answers, webhook secret setup and account links remain person-only.",
+    "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "change": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "schedule.configure",
+                  "type": "string",
+                },
+                "approvalMode": {
+                  "enum": [
+                    "browser",
+                    "automatic",
+                  ],
+                  "type": "string",
+                },
+                "enabled": {
+                  "type": "boolean",
+                },
+                "schedule": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "schedule",
+                "enabled",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "schedule.run",
+                  "type": "string",
+                },
+                "schedule": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "scheduleId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "schedule",
+                "scheduleId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "workflow.start",
+                  "type": "string",
+                },
+                "input": {
+                  "$ref": "#/$defs/__schema0",
+                },
+                "key": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "workflow": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "workflow",
+                "input",
+                "key",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "workflow.stop",
+                  "type": "string",
+                },
+                "runId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "runId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "webhook.remove",
+                  "type": "string",
+                },
+                "webhookId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "webhookId",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "change",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_resource_update",
   },
   {
     "access": "read",

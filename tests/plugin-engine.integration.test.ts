@@ -1,3 +1,4 @@
+import { qualifyEngineStorage } from "../apps/host/src/plugins/engine-storage.js";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -333,6 +334,7 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
         yield* sql.unsafe(`CREATE SCHEMA ${schema}`);
         const database = yield* makePluginEngineStorage({ provider: "postgresql" });
         yield* database.migrate;
+        yield* qualifyEngineStorage(sql);
         const ready = yield* Deferred.make<PluginEngine>();
         const workerd = yield* startRuntimeCheck({
           directory,

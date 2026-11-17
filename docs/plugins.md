@@ -10,7 +10,7 @@ tool's query label; it cannot prove what that plugin's code does.
 
 The Host supervises a private child that starts on demand and stops when idle. Programs run away
 from the event loop serving clients; workerd belongs to that child's lifetime. Saved schedules can
-wake it again ([demand](../apps/host/src/plugins/engine-demand.ts)).
+wake it again ([demand](../apps/host/src/plugins/engine-storage.ts)).
 
 Paused programs live in memory. After a Host restart or child loss, unfinished executions become
 interrupted and their Requests are cancelled. Earlier calls may already have taken effect. Never
@@ -20,7 +20,7 @@ Answering a Request and driving its continuation are separate operations, owned 
 
 Engine tables live in the Host database's `plugin_engine` schema, separate from Host migrations.
 The engine also keeps repositories, builds and per-plugin SQLite data under the Host data
-directory. Back up the database, those files and the Host credential key together; restoring only
+directory. With the Host, engine and sandbox stopped so all writers are quiet, back up the database, those files and the Host credential key together; restoring only
 one part loses the relationships or the ability to decrypt credentials. Activating an earlier
 version changes code, not plugin data.
 
@@ -58,5 +58,21 @@ person's confirmation before plugin removal can finish.
 
 Packaged text skills at the active version are cached for native agent delivery. Run planning reads
 that cache and verifies its version without starting the child. Turning plugin access off excludes
-its skills. Dynamic skills remain live engine features, and binary skill resources do not enter
+its skills. Dynamic skills are read through `plugin_skills`, and binary skill resources do not enter
 the native cache ([skill cache](../apps/host/src/plugins/plugin-skill-cache.ts)).
+
+## Runtime support and cost
+
+The sandbox has its own platform requirements. The pinned macOS arm64 binary declares macOS 13.5,
+while the desktop app advertises 13.0. The Host keeps running when the sandbox cannot load and
+reports a structured unavailable reason, including the binary's declared minimum when readable.
+Tim must decide before release whether to select a sandbox supporting the app's floor, raise the
+app floor, or explicitly support Plugins only on newer systems. This change does not decide it.
+
+Budget hundreds of MiB unpacked and tens of MiB of additional download. A running engine and sandbox can retain roughly 0.6 GiB idle and around 1 GiB after one hermetic plugin build/call; those post-build samples exclude the complete Host and are not peak-memory qualification.
+The selected external payload measures about 133 MiB unpacked and 35 MiB gzip on macOS arm64.
+The whole-subsystem packaging estimate is about 166 MiB unpacked and 42 MiB of isolated ZIP contribution, not a
+complete signed-app measurement. Resident memory varies with loaded plugins and builds; the
+engine is stopped when idle. Re-measure the final runtime with the
+[desktop procedure](../.agents/skills/desktop-builds/references/plugin-runtime.md) before choosing
+supported-device budgets; earlier pre-reduction memory samples are not current qualification.

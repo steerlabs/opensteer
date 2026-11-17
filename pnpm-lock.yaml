@@ -758,6 +758,9 @@ importers:
       '@opensteer/plugin-engine-mcp-auth':
         specifier: workspace:*
         version: link:../../vendor/plugin-engine/mcp-auth
+      '@opensteer/plugin-engine-reactivity':
+        specifier: workspace:*
+        version: link:../../vendor/plugin-engine/reactivity
       '@opensteer/plugin-engine-sdk':
         specifier: workspace:*
         version: link:../../vendor/plugin-engine/sdk

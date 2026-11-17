@@ -36,6 +36,12 @@ export type PluginEngineStatus = z.infer<typeof PluginEngineStatusSchema>;
 export const PluginEngineStateViewSchema = z.object({
   status: PluginEngineStatusSchema,
   reason: text(500).optional(),
+  unavailable: z
+    .object({
+      code: z.enum(["unsupported-system", "missing-runtime"]),
+      minimumMacOS: text(32).optional(),
+    })
+    .optional(),
 });
 export type PluginEngineStateView = z.infer<typeof PluginEngineStateViewSchema>;
 

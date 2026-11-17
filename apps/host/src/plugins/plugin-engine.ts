@@ -135,6 +135,7 @@ process.on("message", (raw: unknown) => {
         callback,
         (execution) => send({ type: "execution", execution }),
         (phase) => send({ type: "diagnostic", phase }),
+        () => send({ type: "resourcesChanged" }),
       )
         .then((started) => {
           engine = started;

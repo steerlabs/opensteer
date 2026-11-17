@@ -557,7 +557,12 @@ test("declining a held approval returns a refusal without executing the approved
     { calls: { path: "tools.fixture.reviewed", input: { amount: 4 } } },
     true,
   );
-  const request = await pendingRequest(caller);
+  const request = await Promise.race([
+    pendingRequest(caller),
+    work.then((result) => {
+      throw new Error(`Plugin call ended before its approval Request: ${JSON.stringify(result)}`);
+    }),
+  ]);
   await answer(request.id, false);
   expect(await deadline(work, "Declined plugin call remained held")).toMatchObject({
     status: "completed",
@@ -955,10 +960,22 @@ test("folder build errors are data; a fixed draft deploys a version and can roll
   ).rejects.toThrow();
 });
 
-test("installs a catalog plugin without asking the person", async () => {
+test("discovers a catalog entry, reads live skills and installs without asking the person", async () => {
   const caller = await run("full-access");
+  const catalog = await call(caller, "opensteer_plugin_catalog", { search: "fixture", limit: 1 });
+  expect(catalog).toMatchObject({
+    items: [{ id: "fixture", name: "Catalog fixture", accounts: [] }],
+    cursor: null,
+  });
+  const id = z.object({ items: z.array(z.object({ id: z.string() })) }).parse(catalog).items[0]!.id;
   expect(
-    await call(caller, "opensteer_plugin_install", { source: "catalog", catalogId: "fixture" }),
+    JSON.stringify(await call(caller, "plugin_skills", { app: "fixture", name: "demo" })),
+  ).toContain("Fixture skill");
+  expect(
+    await call(caller, "plugin_resources", { pluginId: plugin, resource: "workflows" }),
+  ).toEqual({ items: [], definitions: [] });
+  expect(
+    await call(caller, "opensteer_plugin_install", { source: "catalog", catalogId: id }),
   ).toMatchObject({ status: "installed" });
   expect(
     await database

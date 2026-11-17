@@ -270,6 +270,37 @@ export class PluginToolHandlers {
   handlers(): Partial<AgentToolHandlers> {
     const o = this.options;
     return {
+      opensteer_plugin_catalog: async (c) => {
+        const page = await o.service.catalogList(
+          { ...c.input, limit: c.input.limit ?? 20 },
+          o.authority.admit(c.caller),
+          c.signal,
+        );
+        return {
+          items: page.items.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            description: entry.description.split("\n")[0]!.slice(0, 300),
+            accounts: entry.auth
+              .slice(0, 8)
+              .map((method) => String(method.label ?? method.method ?? method.kind ?? "Account")),
+          })),
+          cursor: page.cursor,
+        };
+      },
+      plugin_skills: (c) => o.service.skills(c.input, o.authority.admit(c.caller), c.signal),
+      plugin_resources: (c) =>
+        o.service.resourcesRead(c.input, o.authority.admit(c.caller), c.signal),
+      opensteer_plugin_resource_update: async (c) => {
+        await c.checkLive?.();
+        const result = await o.service.resourcesUpdate(
+          c.input,
+          o.authority.admit(c.caller),
+          c.signal,
+        );
+        o.changed?.(c.caller.userId);
+        return result;
+      },
       plugin_search: (c) => o.service.search(c.input, o.authority.admit(c.caller), c.signal),
       plugin_describe: (c) => o.service.describe(c.input, o.authority.admit(c.caller), c.signal),
       plugin_call: (c) => o.executions.execute(c.caller, "call", c.input, c.signal),

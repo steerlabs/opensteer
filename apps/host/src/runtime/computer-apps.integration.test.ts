@@ -1,3 +1,4 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startHeldRequest } from "../mcp/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -38,8 +39,6 @@ import {
 } from "./machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
-const queryMessages = 'tools["messages-studio-mac"].query_messages';
-const sendMessage = 'tools["messages-studio-mac"].send_message';
 const integration = baseDatabaseUrl ? describe : describe.skip;
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
 let databaseUrl = "postgres://unconfigured";
@@ -242,6 +241,12 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
+    const messagesNamespace = localNamespace(
+      "messages-studio-mac",
+      `app_device_${enabled.connection.id}`,
+    );
+    const queryMessages = `tools[${JSON.stringify(messagesNamespace)}].query_messages`;
+    const sendMessage = `tools[${JSON.stringify(messagesNamespace)}].send_message`;
     expect(await pluginPath(gateway, "query_messages", "query_messages")).toBe(queryMessages);
     expect((await pluginCall(gateway, queryMessages, { sql: "SELECT 1" })).value).toMatchObject({
       columns: ["guid"],
@@ -387,7 +392,7 @@ integration("computer apps", () => {
 
     // Unavailable, the provider says why instead of listing tools.
     expect(
-      JSON.stringify(await gateway.call("plugin_search", { namespace: "messages-studio-mac" })),
+      JSON.stringify(await gateway.call("plugin_search", { namespace: messagesNamespace })),
     ).toContain("Opensteer's integrations service is unavailable on Studio Mac.");
     await computer.reconnectModule();
     await waitForCondition(async () => {
@@ -587,6 +592,7 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
+    const queryMessages = `tools[${JSON.stringify(localNamespace("messages-studio-mac", `app_device_${enabled.connection.id}`))}].query_messages`;
     expect(await pluginPath(gateway, "query_messages", "query_messages")).toBe(queryMessages);
     expect((await pluginCall(gateway, queryMessages, { sql: "SELECT 1" })).value).toMatchObject({
       columns: ["guid"],
@@ -656,6 +662,10 @@ integration("computer apps", () => {
         "apple-calendar",
       );
       const calendar = await setComputerApp(host, computer, calendarSetup, calendarSetup.id);
+      const calendarSlug = localNamespace(
+        "calendar-studio-mac",
+        `app_device_${calendar.connection.id}`,
+      );
       const remindersSetup = await requestComputerAppSetup(
         host,
         computer.runnerId,
@@ -664,6 +674,10 @@ integration("computer apps", () => {
         "apple-reminders",
       );
       const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
+      const remindersSlug = localNamespace(
+        "reminders-studio-mac",
+        `app_device_${reminders.connection.id}`,
+      );
 
       const run = await dispatchCallerRun(host, caller, {
         key: "helper-apps-run",
@@ -684,8 +698,7 @@ integration("computer apps", () => {
       });
 
       // 1. Full access not yet allowed: the provider says so and lists no tools.
-      const calendarNamespace = () =>
-        gateway.call("plugin_search", { namespace: "calendar-studio-mac" });
+      const calendarNamespace = () => gateway.call("plugin_search", { namespace: calendarSlug });
       await waitForCondition(async () =>
         JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
@@ -707,11 +720,15 @@ integration("computer apps", () => {
 
       // 3. Read only refuses a change before it reaches the Mac.
       const before3 = helper.invocations.length;
-      const change = await pluginCall(gateway, 'tools["calendar-studio-mac"].create_event', {
-        end: "2026-10-01T10:00",
-        start: "2026-10-01T09:00",
-        title: "Dentist",
-      });
+      const change = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(calendarSlug)}].create_event`,
+        {
+          end: "2026-10-01T10:00",
+          start: "2026-10-01T09:00",
+          title: "Dentist",
+        },
+      );
       expect(change.failure).toContain("Calendar on Studio Mac allows reading only.");
       expect(helper.invocations).toHaveLength(before3);
 
@@ -719,7 +736,7 @@ integration("computer apps", () => {
       const page = { events: [], nextCursor: null };
       helper.answer = () => page;
       const listed = (
-        await pluginCall(gateway, 'tools["calendar-studio-mac"].list_events', {
+        await pluginCall(gateway, `tools[${JSON.stringify(calendarSlug)}].list_events`, {
           end: "2026-10-07",
           start: "2026-10-01",
         })
@@ -737,10 +754,14 @@ integration("computer apps", () => {
 
       // 5. A malformed date stops at the Host.
       const before = helper.invocations.length;
-      const malformed = await pluginCall(gateway, 'tools["calendar-studio-mac"].list_events', {
-        end: "next week",
-        start: "2026-10-01",
-      });
+      const malformed = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(calendarSlug)}].list_events`,
+        {
+          end: "next week",
+          start: "2026-10-01",
+        },
+      );
       record("list_events with a malformed date", malformed.failure);
       expect(malformed.failure).toBeDefined();
       expect(helper.invocations).toHaveLength(before);
@@ -771,7 +792,7 @@ integration("computer apps", () => {
         (
           await pluginCall(
             gateway,
-            'tools["reminders-studio-mac"].create_reminder',
+            `tools[${JSON.stringify(remindersSlug)}].create_reminder`,
             createArguments,
           )
         ).value,
@@ -794,10 +815,14 @@ integration("computer apps", () => {
         );
       };
       const sent = helper.invocations.length;
-      const lost = await pluginCall(gateway, 'tools["reminders-studio-mac"].update_reminder', {
-        completed: true,
-        id: "R1",
-      });
+      const lost = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(remindersSlug)}].update_reminder`,
+        {
+          completed: true,
+          id: "R1",
+        },
+      );
       record("update_reminder whose answer was lost", lost.failure);
       expect(lost.failure).toContain(
         "Studio Mac did not confirm this. Check whether it happened before trying again.",

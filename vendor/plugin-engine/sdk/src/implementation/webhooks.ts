@@ -370,6 +370,7 @@ export const makeWebhooks = (
   declarations: Declarations,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
+  callbackPath: (app: AppId, subscription: WebhookId) => string = (app, id) => `/api/webhooks/${app}/${id}`,
 ) => {
   const db = database(storage);
   const next = crypto.random.uuidV4();
@@ -795,11 +796,8 @@ export const makeWebhooks = (
         input,
       ).pipe(Effect.mapError(() => new RequestInvalid()));
       const actor = parsed.actor ?? undefined;
-      const currentOrigin = typeof origin === "function"
-        ? yield* origin().pipe(Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })))
-        : origin;
-      if (currentOrigin === undefined) return yield* new WebhookFailed({ reason: "unavailable" });
-      const base = yield* Effect.try(() => new URL(currentOrigin)).pipe(
+      const base = yield* (typeof origin === "function" ? origin() : Effect.succeed(origin)).pipe(
+        Effect.flatMap((value) => Effect.try(() => new URL(value ?? ""))),
         Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })),
       );
       if (
@@ -868,7 +866,7 @@ export const makeWebhooks = (
       )
         return yield* new WebhookFailed({ reason: "input", mismatch: "source" });
       const id = WebhookId.make(`whk_${yield* next}`);
-      const callbackUrl = new URL(`/hooks/v1/plugins/${parsed.app}/${id}`, base).href;
+      const callbackUrl = new URL(callbackPath(parsed.app, id), base).href;
       const secret = `${yield* next}${yield* next}`;
       const config = yield* runtime
         .webhook({

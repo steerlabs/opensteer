@@ -21,15 +21,6 @@ const IntegrationDefinitionBaseSchema = z.strictObject({
   authMethods: z.array(AuthMethodSchema).min(1).max(8),
   config: z.unknown(),
   description: z.string().min(1).max(240),
-  hostedOAuth: z
-    .strictObject({
-      providerApplicationRevision: z.number().int().positive(),
-      qualification: z.strictObject({
-        authorizationCodeExchange: z.literal(true),
-        refresh: z.literal(true),
-      }),
-    })
-    .optional(),
   icon: z.string().min(1).max(2_048).optional(),
   id: IntegrationDefinitionIdSchema,
   name: z.string().min(1).max(80),
@@ -76,16 +67,19 @@ export const IntegrationDefinitionSummarySchema = IntegrationDefinitionBaseSchem
   .strict();
 export const IntegrationDefinitionSummaryViewSchema = z.object({
   ...IntegrationDefinitionSummarySchema.shape,
-  authMethods: z.array(AuthMethodViewSchema).min(1).max(8),
-  computerApp: ComputerAppPresentationViewSchema.optional(),
+  // API 64 pins this response vocabulary; native definitions only produce computer entries.
+  adapter: z.enum(["computer", "graphql", "mcp", "openapi"]),
   hostedOAuth: z
     .object({
-      ...IntegrationDefinitionSummarySchema.shape.hostedOAuth.unwrap().shape,
-      qualification: z.object(
-        IntegrationDefinitionSummarySchema.shape.hostedOAuth.unwrap().shape.qualification.shape,
-      ),
+      providerApplicationRevision: z.number().int().positive(),
+      qualification: z.object({
+        authorizationCodeExchange: z.literal(true),
+        refresh: z.literal(true),
+      }),
     })
     .optional(),
+  authMethods: z.array(AuthMethodViewSchema).min(1).max(8),
+  computerApp: ComputerAppPresentationViewSchema.optional(),
 });
 export type IntegrationDefinitionSummary = z.infer<typeof IntegrationDefinitionSummarySchema>;
 export type IntegrationDefinitionSummaryView = z.infer<
@@ -103,17 +97,3 @@ export function integrationDefinitionSummary(
       : {}),
   };
 }
-
-export type AdapterToolResult =
-  | { readonly kind: "ok"; readonly value: unknown }
-  | {
-      readonly code:
-        | "connection_rejected"
-        | "invalid_arguments"
-        | "oauth_scope_insufficient"
-        | "upstream_http_error"
-        | "upstream_timeout";
-      readonly details?: Readonly<Record<string, unknown>>;
-      readonly kind: "error";
-      readonly message: string;
-    };

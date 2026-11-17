@@ -5,6 +5,9 @@ import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { PluginAuthorization, PluginCaller } from "./engine-protocol.js";
 
 const discovery = new Set([
+  "catalogList",
+  "catalogDetail",
+  "resourcesRead",
   "list",
   "search",
   "describe",
@@ -18,7 +21,7 @@ const discovery = new Set([
   "listSkills",
   "readSkill",
 ]);
-const management = new Set(["install", "export", "activate", "remove"]);
+const management = new Set(["install", "export", "activate", "remove", "resourcesUpdate"]);
 const personOnly = new Set([
   "installed",
   "pinOAuth",

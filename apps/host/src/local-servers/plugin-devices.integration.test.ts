@@ -1,3 +1,4 @@
+import { createIntegrationId } from "@opensteer/integration-core";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   createDeviceServices,
@@ -57,23 +58,7 @@ describeStore("plugin devices", (test) => {
     try {
       const pluginDirectory = join(directory, "source");
       await mkdir(pluginDirectory);
-      await writeFile(
-        join(pluginDirectory, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "camera-fixture",
-          extensions: {
-            "com.opensteer": { device: { name: "Main Bedroom Apple TV", kind: "tv" } },
-          },
-        }),
-      );
-      await writeFile(
-        join(pluginDirectory, "mcp.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-          mcpServers: { camera: { type: "stdio", command: "node", args: ["server.cjs"] } },
-        }),
-      );
+
       const parent = await f.database
         .selectFrom("threads")
         .selectAll()
@@ -90,6 +75,11 @@ describeStore("plugin devices", (test) => {
       const input = {
         actorUserId: run.userId,
         directory: pluginDirectory,
+        registration: {
+          name: "camera-fixture",
+          device: { name: "Main Bedroom Apple TV", kind: "tv" },
+          launch: { command: "node", args: ["server.cjs"] },
+        },
 
         runnerId: pluginComputerId,
         threadId: child.id,
@@ -181,34 +171,36 @@ describeStore("plugin devices", (test) => {
           .execute(),
       ).toHaveLength(1);
       expect(await platform.plugins.pendingDataRemovals(pluginComputerId)).toEqual([]);
-      await writeFile(
-        join(pluginDirectory, "mcp.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-          mcpServers: { replacement: { type: "stdio", command: "node", args: ["server.cjs"] } },
-        }),
-      );
+
       await service.installAgentPlugin({
         ...input,
+        registration: {
+          ...input.registration,
+          launch: { command: "node", args: ["replacement.cjs"] },
+        },
         runnerId: moved.runnerId,
         requestId: randomUUID(),
       });
-      // Historical rows from before retirement cleared their status detail must be ignored too.
-      const retired = await f.database
+      // A retired row must not overwrite the current server's computer or failure.
+      const retained = await f.database
         .selectFrom("integrationServers")
-        .select("transport")
-        .where("name", "=", "camera")
+        .selectAll()
+        .where("name", "=", "camera-fixture")
         .executeTakeFirstOrThrow();
       await f.database
-        .updateTable("integrationServers")
-        .set({
+        .insertInto("integrationServers")
+        .values({
+          ...retained,
+          id: createIntegrationId("server"),
+          name: "retired",
+          updatedAt: new Date(0),
+          status: "disabled",
           statusDetail: "Old failure",
-          transport: { ...retired.transport, runnerId: pluginComputerId },
+          transport: { ...retained.transport, runnerId: pluginComputerId },
         })
-        .where("name", "=", "camera")
         .execute();
       const replacementRequest = (await platform.listComputerAppSetupRequests(moved.userId)).find(
-        (r) => r.server?.name === "replacement",
+        (r) => r.server?.name === "camera-fixture",
       );
       if (!replacementRequest) throw new Error("Replacement approval was not opened");
       await platform.localMcp.decline({
@@ -226,17 +218,15 @@ describeStore("plugin devices", (test) => {
       expect(currentDevice?.issue).toContain("declined");
       expect(currentDevice?.issue).not.toContain("Old failure");
       const personViewer = run.userId;
-      await writeFile(
-        join(pluginDirectory, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "person-camera-fixture",
-          extensions: { "com.opensteer": { device: { name: "Person camera", kind: "camera" } } },
-        }),
-      );
+
       const person = await service.installAgentPlugin({
         actorUserId: personViewer,
         directory: pluginDirectory,
+        registration: {
+          name: "person-camera-fixture",
+          device: { name: "Person camera", kind: "camera" },
+          launch: { command: "node", args: ["server.cjs"] },
+        },
         runnerId: moved.runnerId,
         requestId: randomUUID(),
       });
@@ -249,6 +239,11 @@ describeStore("plugin devices", (test) => {
       await service.installAgentPlugin({
         actorUserId: personViewer,
         directory: pluginDirectory,
+        registration: {
+          name: "person-camera-fixture",
+          device: { name: "Person camera", kind: "camera" },
+          launch: { command: "node", args: ["server.cjs"] },
+        },
         runnerId: moved.runnerId,
         requestId: randomUUID(),
       });
@@ -317,26 +312,14 @@ describeStore("plugin devices", (test) => {
     try {
       const source = join(directory, "source");
       await mkdir(source);
-      await writeFile(
-        join(source, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "removable",
-        }),
-      );
-      await writeFile(
-        join(source, "mcp.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-          mcpServers: { device: { type: "stdio", command: "node" } },
-        }),
-      );
+
       const install = () =>
         service.installAgentPlugin({
           actorUserId: run.userId,
 
           runnerId: run.runnerId,
           directory: source,
+          registration: { name: "removable", launch: { command: "node" } },
           requestId: randomUUID(),
         });
       const installed = await install(),

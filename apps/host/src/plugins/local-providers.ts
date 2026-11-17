@@ -1,3 +1,4 @@
+import { localNamespace, slugify } from "./provider-names.js";
 import { createHash } from "node:crypto";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { UserId } from "@opensteer/core";
@@ -345,17 +346,9 @@ export class LocalProviders {
         }
       }
     }
-    // Readable names agents type as tools.<name>; a repeat gains a number in a stable order.
-    const counts = new Map<string, number>();
     const providers = located
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map((entry) => {
-        const seen = counts.get(entry.slug) ?? 0;
-        counts.set(entry.slug, seen + 1);
-        return seen === 0
-          ? entry
-          : { ...entry, slug: slugify(`${entry.slug.slice(0, 58)}-${seen + 1}`) };
-      })
+      .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))
       .map((entry) => ({
         ...entry,
         tools: entry.unavailable ? [] : entry.tools,
@@ -419,21 +412,6 @@ function skillReference(description: string): string {
 function serverName(installation: IntegrationInstallation): string {
   const name = installation.manifest.name;
   return typeof name === "string" ? name : installation.title;
-}
-
-/** The engine's address rule: a DNS label, never one of its reserved roots. */
-export function slugify(value: string): string {
-  const label = value
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[̀-ͯ]/gu, "")
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 63)
-    .replace(/-+$/u, "");
-  return !label || ["search", "constructor", "prototype", "then"].includes(label)
-    ? `local-${label || "tool"}`
-    : label;
 }
 
 function failure(message: string) {

@@ -123,6 +123,7 @@ export const createPluginEngine = (
       declarations,
       workflows.controls,
       options.hooks,
+      options.webhookCallbackPath,
     );
     const apps = {
       ...makeApps(

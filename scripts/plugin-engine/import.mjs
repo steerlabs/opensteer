@@ -10,6 +10,9 @@ import {
   noticeHeading,
 } from "./renames.mjs";
 import { checkNames } from "./names.mjs";
+import { collectNotices } from "./notices.mjs";
+const copiedSources = [];
+const dependencyPatches = [];
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const upstream = resolve(
@@ -80,6 +83,7 @@ for (const dir of closure) {
       "request-rejection",
       "trace-context",
     ]) {
+      copiedSources.push(join(upstream, "packages/telemetry/src", file + ".ts"));
       await writeFile(
         join(dest, file + ".ts"),
         rename(await readFile(join(upstream, "packages/telemetry/src", file + ".ts"), "utf8")),
@@ -122,6 +126,7 @@ for (const dir of closure) {
       }
       const out = join(dest, rename(local));
       let source = await readFile(file, "utf8");
+      copiedSources.push(file);
       if (dir === "mcp-auth" && local === "src/contracts/grant.ts") {
         const end = "export type Grant = typeof Grant.Type;";
         source = source.slice(0, source.indexOf(end) + end.length) + "\n";
@@ -322,6 +327,7 @@ const example = join(upstream, "playground/demo-apps/live-inbox");
 for (const file of await readdir(example, { recursive: true, withFileTypes: true })) {
   if (!file.isFile()) continue;
   const source = join(file.parentPath, file.name);
+  copiedSources.push(source);
   const out = join(target, "apps/reference-example", relative(example, source));
   await mkdir(dirname(out), { recursive: true });
   await writeFile(out, rename(await readFile(source, "utf8")));
@@ -360,6 +366,7 @@ for (const name of patchNames) {
         !/diff --git a\/(?:dist|src)\/sql\/Statement\./.test(part) &&
         !part.startsWith("diff --git a/src/rolldown/test/"),
     );
+  dependencyPatches.push(["dependency patches/" + name, parts.join("")]);
   // Hunk labels are informational. Keep original removed/context lines so patches still apply.
   const renamed = parts
     .join("")
@@ -397,7 +404,16 @@ section =
   "\n\nThe vendored source in `vendor/plugin-engine` is imported from snapshot `" +
   snapshot +
   "`.\n\n" +
-  (await readFile(join(upstream, "LICENSE"), "utf8"));
+  (await readFile(join(upstream, "LICENSE"), "utf8")).trimEnd() +
+  (await collectNotices(upstream, copiedSources, dependencyPatches))
+    .map(
+      ({ file, text }) =>
+        "\n\n### " +
+        rename(file).replace("packages/@opensteer/plugin-engine-database/", "packages/database/") +
+        "\n\n" +
+        text,
+    )
+    .join("");
 await writeFile(
   join(root, "THIRD_PARTY_NOTICES.md"),
   notices.slice(0, at) + section.trimEnd() + "\n" + notices.slice(end),

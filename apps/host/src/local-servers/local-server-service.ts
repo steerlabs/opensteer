@@ -2,11 +2,10 @@ import { readdir, realpath } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AesGcmSecretVault } from "@opensteer/access/host";
 import { createCredentialResponseRedactor } from "@opensteer/access/host";
-import type { LoadedAgentPluginServer } from "@opensteer/agent-plugins";
+import type { LocalServerPackageServer } from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   UserIdSchema,
-  isLoopbackHostname,
   refused,
   type RunId,
   type RunnerId,
@@ -612,16 +611,7 @@ export class LocalServerService {
   }
 }
 
-/**
- * Whether an Agent Plugin's server runs on a computer rather than being
- * reached by the Host: a program to start, or a server on a loopback, which
- * only the computer it is on can reach.
- */
-export function runsOnComputer(server: LoadedAgentPluginServer): boolean {
-  return server.type === "stdio" || isLoopbackHostname(new URL(server.url).hostname);
-}
-
-function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
+function computerLaunch(server: LocalServerPackageServer): LocalMcpLaunch {
   return server.type === "stdio"
     ? {
         args: [...server.args],
@@ -634,7 +624,7 @@ function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
     : { headers: { ...server.headers }, type: "streamable-http", url: server.url };
 }
 
-function portableComputerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
+function portableComputerLaunch(server: LocalServerPackageServer): LocalMcpLaunch {
   const launch = computerLaunch(server);
   if (launch.type !== "stdio") return launch;
   const root = launch.env.PLUGIN_ROOT!;
@@ -671,7 +661,7 @@ export function carriesApproval(
 
 /** A plugin server pinned to its computer, waiting for that computer's approval. */
 export function pendingLocalServer(
-  server: LoadedAgentPluginServer,
+  server: LocalServerPackageServer,
   runnerId: RunnerId,
   packageDigest: string,
   pluginId: string,

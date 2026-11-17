@@ -1,3 +1,9 @@
+import {
+  backgroundResourceChanges,
+  engineOAuthAttempt,
+  ownerWorkflowRunIds,
+} from "./engine-storage.js";
+import { pluginNamespace } from "./provider-names.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
@@ -51,7 +57,6 @@ import {
   StartWorkflow,
   WorkflowApp,
   WorkflowTarget,
-  ListWorkflowRuns,
   webhookCallback,
   WebhookDefinitionsInput,
   WebhookTarget,
@@ -101,7 +106,7 @@ import {
   type PluginOperation,
   type PluginCallback,
 } from "./engine-protocol.js";
-import type { z } from "zod";
+import { z } from "zod";
 import { ElicitationResponse, type ElicitationHandler } from "apps/contracts";
 
 const packagedSkills = (files: Schema.Schema.Type<typeof SourceFiles>) =>
@@ -129,6 +134,7 @@ export async function startEngine(
   callback: Callback,
   report: (execution: PluginExecution) => void,
   phase: (name: string) => void = () => {},
+  changed: () => void = () => {},
 ) {
   const started = performance.now();
   const scope = Scope.makeUnsafe();
@@ -323,6 +329,7 @@ export async function startEngine(
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
+          webhookCallbackPath: (app, subscription) => `/hooks/v1/plugins/${app}/${subscription}`,
           webhookOrigin: () =>
             callback("webhookOrigin", {}).pipe(Effect.map((origin) => origin ?? undefined)),
           git: repositories,
@@ -351,6 +358,7 @@ export async function startEngine(
               ),
           },
         });
+        yield* Effect.forkScoped(backgroundResourceChanges(database, sql, changed));
         yield* Deferred.succeed(ready, engine);
         phase("recovery");
         yield* engine[RepositoryHost].recover;
@@ -512,7 +520,12 @@ export async function startEngine(
           "plugin" in raw &&
           typeof raw.plugin === "string"
             ? raw.plugin
-            : undefined;
+            : typeof raw === "object" &&
+                raw !== null &&
+                "pluginId" in raw &&
+                typeof raw.pluginId === "string"
+              ? raw.pluginId
+              : undefined;
         yield* authorize(
           context,
           operation,
@@ -545,15 +558,15 @@ export async function startEngine(
           }
           case "list": {
             const permission = yield* callback("authorize", { ...context, operation: "list" });
-            return (yield* engine.apps.list({ owner })).filter(
-              (app) => permission.grants?.[app.id] !== "off",
-            );
+            return (yield* engine.apps.list({ owner }))
+              .filter((app) => permission.grants?.[app.id] !== "off")
+              .map((app) => ({ ...app, slug: pluginNamespace(app.slug) }));
           }
           case "installed":
             return yield* Effect.forEach(yield* engine.apps.list({ owner }), (plugin) =>
               accountAdapter.links(plugin.id).pipe(
                 Effect.map((links) => ({
-                  plugin,
+                  plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
                   links: links.map(({ requirement, scope, account }) => ({
                     requirement,
                     scope,
@@ -627,7 +640,7 @@ export async function startEngine(
                   .pipe(
                     Effect.map((result) => ({
                       status: "installed",
-                      plugin: result.app,
+                      plugin: { ...result.app, slug: pluginNamespace(result.app.slug) },
                       version: result.version,
                     })),
                     Effect.catchTags({
@@ -648,7 +661,7 @@ export async function startEngine(
             const read = <A, E>(effect: Effect.Effect<A, E>) =>
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
             return {
-              plugin,
+              plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
               links: yield* accountAdapter.links(app),
               versions: yield* engine.apps.versions({ app, owner }),
               schedules: Option.isSome(selected)
@@ -833,10 +846,7 @@ export async function startEngine(
                 : {}),
             });
             if (result.status !== "redirect" || result.brokerAttemptId) return result;
-            const rows = yield* composed.sql<{
-              id: string;
-              encrypted: Uint8Array;
-            }>`select attempt.id, attempt.encrypted from plugin_engine_oauth_attempts attempt join plugin_engine_account_connections connection on connection.oauth_attempt = attempt.id where connection.id = ${input.connection}`;
+            const rows = yield* engineOAuthAttempt(composed.sql, input.connection);
             const row = rows[0];
             if (!row)
               return yield* Effect.fail(
@@ -1093,6 +1103,66 @@ export async function startEngine(
               signal.removeEventListener("abort", abort);
             }
           }
+          case "resourcesRead": {
+            const input = operations.resourcesRead.input.parse(raw);
+            const app = AppId.make(input.pluginId);
+            yield* engine.apps.get({ app, owner });
+            const definitions = (operation: "workflows.list" | "schedules.definitions") =>
+              manage({ operation, input: { app } }).pipe(Effect.catch(() => Effect.succeed(null)));
+            if (input.resource === "workflows") {
+              const page = yield* manage({
+                operation: "workflowRuns.list",
+                input: { app, ...(input.cursor ? { cursor: input.cursor } : {}) },
+              });
+              return {
+                ...z.record(z.string(), JsonSchema).parse(page),
+                definitions: yield* definitions("workflows.list"),
+              };
+            }
+            if (input.resource === "webhooks") return yield* engine.webhooks.list({ app });
+            return {
+              definitions: yield* definitions("schedules.definitions"),
+              schedules: yield* engine.schedules.list({ app, owner }),
+              runs: yield* engine.schedules.runs({ app, owner }),
+            };
+          }
+          case "resourcesUpdate": {
+            const parsed = operations.resourcesUpdate.input.parse(raw);
+            const app = parsed.pluginId;
+            const input = parsed.change;
+            switch (input.action) {
+              case "schedule.configure":
+                return yield* manage({
+                  operation: "schedules.configure",
+                  input: {
+                    app,
+                    name: input.schedule,
+                    enabled: input.enabled,
+                    ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
+                  },
+                });
+              case "schedule.run":
+                return yield* manage({
+                  operation: "schedules.runNow",
+                  input: { app, name: input.schedule, copy: input.scheduleId },
+                });
+              case "workflow.start":
+                return yield* manage({
+                  operation: "workflowRuns.start",
+                  input: { app, workflow: input.workflow, input: input.input, key: input.key },
+                });
+              case "workflow.stop":
+                return yield* manage({
+                  operation: "workflowRuns.stop",
+                  input: { app, run: input.runId },
+                });
+              case "webhook.remove":
+                return yield* manage({
+                  operation: "webhooks.remove",
+                  input: { app, subscription: input.webhookId },
+                });
+            }
+          }
           case "manage":
             return yield* manage(operations.manage.input.parse(raw));
           case "page":
@@ -1205,7 +1275,20 @@ export async function startEngine(
         case "workflowRuns.start":
           return linked(StartWorkflow, engine.apps.workflowRuns.start);
         case "workflowRuns.list":
-          return decode(ListWorkflowRuns).pipe(Effect.flatMap(engine.apps.workflowRuns.list));
+          return Effect.gen(function* () {
+            const app = AppId.make(String(input.input.app));
+            yield* engine.apps.get({ app, owner });
+            const page = yield* ownerWorkflowRunIds(composed.sql, input.input);
+            return {
+              items: yield* Effect.forEach(page.ids, (id) =>
+                engine.apps.workflowRuns.get({
+                  app,
+                  run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(id),
+                }),
+              ),
+              ...(page.next ? { next: page.next } : {}),
+            };
+          });
         case "workflowRuns.get":
           return decode(WorkflowTarget).pipe(Effect.flatMap(engine.apps.workflowRuns.get));
         case "workflowRuns.stop":

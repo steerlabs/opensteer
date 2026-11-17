@@ -1,3 +1,4 @@
+import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
 import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -55,6 +56,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
       },
     ],
   };
+  const localPath = `tools[${JSON.stringify(localNamespace(hostProvider.slug, hostProvider.id))}].double`;
   const service = new PluginService({
     onDiagnostic: (phase) => console.log("Engine phase", phase),
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
@@ -118,14 +120,14 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     execution: { value: { ok: true, value: 3 } },
   });
   expect(await service.search({ query: "double" }, caller)).toMatchObject({
-    items: [{ path: "tools.local.double" }],
+    items: [{ path: localPath }],
   });
-  expect(await service.describe({ paths: ["tools.local.double"] }, caller)).toMatchObject({
-    items: [{ path: "tools.local.double" }],
+  expect(await service.describe({ paths: [localPath] }, caller)).toMatchObject({
+    items: [{ path: localPath }],
   });
   const mixed = await service.execute(
     {
-      code: "return await tools.local.double({ value: await tools.fixture.read({ amount: 4 }) });",
+      code: `return await ${localPath}({ value: await tools.fixture.read({ amount: 4 }) });`,
     },
     caller,
   );

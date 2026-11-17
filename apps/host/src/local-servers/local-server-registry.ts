@@ -1,12 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { localNamespace, slugify } from "../plugins/provider-names.js";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import {
-  agentPluginManifestSchemaUrl,
-  agentPluginMcpSchemaUrl,
-  loadAgentPlugin,
-  readAgentPluginName,
-} from "@opensteer/agent-plugins";
+import { snapshotLocalServerPackage } from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   refused,
@@ -25,11 +21,7 @@ import {
 import type { DeviceService } from "../devices/device-service.js";
 import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { withFolderPluginPackage } from "./folder-plugin-package.js";
-import {
-  pendingLocalServer,
-  runsOnComputer,
-  type LocalServerService,
-} from "./local-server-service.js";
+import { pendingLocalServer, type LocalServerService } from "./local-server-service.js";
 
 export interface LocalServerRegistration {
   readonly name: string;
@@ -89,41 +81,15 @@ export class LocalServerRegistry {
     input: LocalServerRegistration,
     requestId: string,
   ) {
-    const extension = {
-      ...(input.device ? { device: input.device } : {}),
-      ...(input.launch?.secrets ? { secrets: { [input.name]: input.launch.secrets } } : {}),
-    };
-    const manifest = {
-      $schema: agentPluginManifestSchemaUrl,
-      name: input.name,
-      ...(input.description ? { description: input.description } : {}),
-      ...(Object.keys(extension).length ? { extensions: { "com.opensteer": extension } } : {}),
-    };
-    const mcp = {
-      $schema: agentPluginMcpSchemaUrl,
-      mcpServers: {
-        [input.name]: input.launch
-          ? {
-              type: "stdio",
-              command: input.launch.command,
-              ...(input.launch.args ? { args: input.launch.args } : {}),
-              ...(input.launch.env ? { env: input.launch.env } : {}),
-              ...(input.launch.cwd ? { cwd: input.launch.cwd } : {}),
-            }
-          : { type: "streamable-http", url: input.url },
-      },
-    };
-    const install = async (directory: string) => {
-      await writeFile(join(directory, "plugin.json"), JSON.stringify(manifest));
-      await writeFile(join(directory, "mcp.json"), JSON.stringify(mcp));
-      return this.installPackage({
+    const install = (directory: string) =>
+      this.installPackage({
         actorUserId: actor.userId,
         directory,
+        registration: input,
         threadId: actor.threadId,
         requestId,
         runnerId: input.computerId,
       });
-    };
     let result: Awaited<ReturnType<typeof install>>;
     if (input.folder)
       result = await withFolderPluginPackage({
@@ -178,7 +144,7 @@ export class LocalServerRegistry {
           .map((server) => ({
             name: plugin.name,
             pluginId: plugin.id,
-            path: toolsPath(plugin.name),
+            path: toolsPath(localNamespace(slugify(plugin.name), `app_server_${server.id}`)),
             computer: server.runnerName,
             computerId: server.runnerId,
             kind: server.launch.type === "stdio" ? ("program" as const) : ("loopback" as const),
@@ -227,12 +193,13 @@ export class LocalServerRegistry {
   }
 
   /**
-   * Installs, or updates by name for the same person, the package a registration wrote: its
+   * Installs, or updates by name for the same person, the registered package: its
    * servers wait for that computer's approval of their exact launch.
    */
   async installPackage(input: {
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly registration: LocalServerRegistration;
     readonly threadId?: ThreadId | undefined;
     readonly requestId: string;
     readonly runnerId: RunnerId | undefined;
@@ -241,7 +208,7 @@ export class LocalServerRegistry {
     readonly issues: readonly unknown[];
   }> {
     const { store, localServers } = this.#options;
-    const name = await readAgentPluginName(input.directory);
+    const name = input.registration.name;
     const currentPlugin = (await store.plugins.list()).find(
       (p) => p.name === name && p.installedBy === input.actorUserId,
     );
@@ -253,18 +220,15 @@ export class LocalServerRegistry {
     const previous = updating
       ? (await store.listInstallations()).find((i) => i.pluginId === pluginId)
       : undefined;
-    const plugin = await loadAgentPlugin({
+    const { computerId: _computer, folder: _folder, ...registration } = input.registration;
+    const plugin = await snapshotLocalServerPackage({
+      registration,
       pluginId,
       dataDirectory: `${this.#options.dataDirectory}/plugins/data`,
       directory: input.directory,
     });
     if (plugin.manifest.name === "opensteer")
       throw refused("bad_request", "The plugin name opensteer is reserved");
-    if (!plugin.servers.every(runsOnComputer))
-      throw refused(
-        "bad_request",
-        "A local server runs on one of the person's computers: a program to launch, or a loopback URL.",
-      );
     const previousServers = previous
       ? (await store.localMcp.list()).filter((s) => s.installationId === previous.id)
       : [];
@@ -343,7 +307,7 @@ export class LocalServerRegistry {
         status: servers.length > 0 || plugin.skills.length > 0 ? "active" : "needs-attention",
         title: pluginDeviceFromManifest(plugin.manifest)?.name ?? plugin.manifest.name,
         trust: "administrator-approved",
-        version: plugin.manifest.version ?? null,
+        version: null,
       },
       requestId: input.requestId,
       servers,

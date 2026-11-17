@@ -11,13 +11,3 @@ export const AuthMethodSchema = z.strictObject({
 });
 export const AuthMethodViewSchema = z.object(AuthMethodSchema.shape);
 export type AuthMethod = z.infer<typeof AuthMethodSchema>;
-
-export type AuthPlacement = {
-  carrier: "env" | "header" | "query";
-  name: string;
-  prefix?: string | undefined;
-} & (
-  | { literal: string }
-  | { variable: string }
-  | { encoding: "base64"; separator: string; variables: string[] }
-);

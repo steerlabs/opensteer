@@ -46,6 +46,7 @@
     "ws": "catalog:",
     "zod": "catalog:",
     "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-reactivity": "workspace:*",
     "@opensteer/plugin-engine-mcp": "workspace:*",
     "@opensteer/plugin-engine-mcp-auth": "workspace:*",
     "@opensteer/plugin-engine-app-templates": "workspace:*",

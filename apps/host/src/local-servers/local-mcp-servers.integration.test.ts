@@ -1,3 +1,4 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import { beforeEach } from "vitest";
 import { clearPersonalMachineFixture } from "../runtime/private-machine-host.test-support.js";
 /** Host-owner consent, exact launch binding, Runner execution and teardown on real sockets. */
@@ -107,10 +108,12 @@ integration("MCP servers on a computer", () => {
       await host.runtime.localServers.installPackage({
         actorUserId: host.ownerId,
         directory: fixture.plugin,
+        registration: fixture.registration,
         requestId: "local-mcp-install",
         runnerId: computer.runnerId,
       });
       const server = await serverRow(host);
+      const namespace = localNamespace("notes-fixture", `app_server_${server.id}`);
       expect(server.transport).toMatchObject({ runnerId: computer.runnerId, type: "runner" });
       expect(server.status).toBe("needs-attention");
       const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
@@ -234,10 +237,12 @@ integration("MCP servers on a computer", () => {
       closers.unshift(() => gateway.close());
       const listed = async () =>
         JSON.stringify((await gateway.call("plugin_search", { query: "echo" })).items).includes(
-          'tools[\\"notes-fixture\\"].echo',
+          JSON.stringify(`tools[${JSON.stringify(namespace)}].echo`).slice(1, -1),
         );
       const call = async (name: string, args: Record<string, unknown>) =>
-        pluginResult(await pluginCall(gateway, `tools["notes-fixture"].${name}`, args));
+        pluginResult(
+          await pluginCall(gateway, `tools[${JSON.stringify(namespace)}].${name}`, args),
+        );
       await waitForCondition(listed, 30_000);
       expect(said(await call("echo", { text: "hello" }))).toBe("echo: hello");
       expect(said(await call("note", { text: "buy milk" }))).toBe("noted");
@@ -298,9 +303,7 @@ integration("MCP servers on a computer", () => {
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = JSON.stringify(
-        await gateway.call("plugin_search", { namespace: "notes-fixture" }),
-      );
+      const offline = JSON.stringify(await gateway.call("plugin_search", { namespace }));
       expect(offline).toContain("Studio Mac");
       expect(await listed()).toBe(false);
       await computer.reconnectModule();
@@ -329,6 +332,7 @@ integration("MCP servers on a computer", () => {
         await host.runtime.localServers.installPackage({
           actorUserId: host.ownerId,
           directory: fixture.plugin,
+          registration: fixture.registration,
           requestId: key,
           runnerId: computer.runnerId,
         });
@@ -350,6 +354,7 @@ integration("MCP servers on a computer", () => {
       await host.runtime.localServers.installPackage({
         actorUserId: host.ownerId,
         directory: fixture.plugin,
+        registration: fixture.registration,
         requestId: "local-mcp-changed",
         runnerId: computer.runnerId,
       });
@@ -451,6 +456,7 @@ integration("MCP servers on a computer", () => {
         host.runtime.localServers.installPackage({
           actorUserId: host.ownerId,
           directory: fixture.plugin,
+          registration: fixture.registration,
           requestId: `${key}:${randomUUID()}`,
           runnerId,
         });
@@ -517,7 +523,7 @@ integration("MCP servers on a computer", () => {
       expect(await yours()).toEqual([
         expect.objectContaining({
           id: server.id,
-          name: "camera",
+          name: "camera-fixture",
           plugin: "camera-fixture",
           secrets: [expect.objectContaining({ name: "CAMERA_PASSWORD" })],
         }),
@@ -610,14 +616,9 @@ integration("MCP servers on a computer", () => {
 
       if (personal) {
         const declare = async (names: string[]) => {
-          const path = join(fixture.plugin, "plugin.json");
-          const manifest = JSON.parse(await readFile(path, "utf8")) as {
-            extensions: Record<string, unknown>;
-          };
-          manifest.extensions["com.opensteer"] = names.length
-            ? { secrets: { camera: names.map((name) => ({ name, title: name })) } }
-            : {};
-          await writeFile(path, JSON.stringify(manifest));
+          fixture.registration.launch!.secrets = names.length
+            ? names.map((name) => ({ name, title: name }))
+            : undefined;
           await install("declare");
         };
         await declare(["CAMERA_PASSWORD", "EXTRA_PASSWORD"]);
@@ -651,12 +652,7 @@ integration("MCP servers on a computer", () => {
             .where("kind", "=", "server")
             .execute(),
         ).toEqual([]);
-        const mcpPath = join(fixture.plugin, "mcp.json");
-        const mcp = JSON.parse(await readFile(mcpPath, "utf8")) as {
-          mcpServers: Record<string, unknown>;
-        };
-        mcp.mcpServers.second = mcp.mcpServers.camera;
-        await writeFile(mcpPath, JSON.stringify(mcp));
+        fixture.registration.name = "second";
         await install("new-server");
         const second = await host.store.database
           .selectFrom("integrationServers")
@@ -719,42 +715,25 @@ async function secretPluginFixture(work: string) {
   const sdk = (path: string) =>
     JSON.stringify(require.resolve(`@modelcontextprotocol/sdk/${path}`));
   const seenFile = join(work, "seen.txt");
-  await writeFile(
-    join(plugin, "plugin.json"),
-    JSON.stringify({
-      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-      extensions: {
-        "com.opensteer": {
-          secrets: {
-            camera: [
-              {
-                description: "The camera account password from the Tapo app.",
-                name: "CAMERA_PASSWORD",
-                title: "Camera password",
-              },
-            ],
-          },
+  const registration = {
+    name: "camera-fixture",
+    launch: {
+      command: "node",
+      args: ["${PLUGIN_ROOT}/server.cjs"],
+      env: { SEEN_FILE: seenFile } as Record<string, string>,
+      secrets: [
+        {
+          name: "CAMERA_PASSWORD",
+          title: "Camera password",
+          description: "The camera account password from the Tapo app.",
         },
-      },
-      name: "camera-fixture",
-    }),
-  );
-  const writeLaunch = (env: Record<string, string>) =>
-    writeFile(
-      join(plugin, "mcp.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        mcpServers: {
-          camera: {
-            args: ["${PLUGIN_ROOT}/server.cjs"],
-            command: "node",
-            env: { SEEN_FILE: seenFile, ...env },
-            type: "stdio",
-          },
-        },
-      }),
-    );
-  await writeLaunch({});
+      ] as { name: string; title: string; description?: string }[] | undefined,
+    },
+  };
+  const writeLaunch = async (env: Record<string, string>) => {
+    registration.launch.env = { SEEN_FILE: seenFile, ...env };
+  };
+
   await writeFile(
     join(plugin, "server.cjs"),
     `const { writeFileSync } = require("node:fs");
@@ -774,6 +753,7 @@ server.connect(new StdioServerTransport());
 `,
   );
   return {
+    registration,
     changeLaunch: () => writeLaunch({ CAMERA_EDITION: "2" }),
     plugin,
     seenFile,
@@ -836,31 +816,18 @@ async function pluginFixture(work: string) {
     JSON.stringify(require.resolve(`@modelcontextprotocol/sdk/${path}`));
   const pidFile = join(work, "server.pid");
   const notesFile = join(work, "notes.txt");
-  await writeFile(
-    join(plugin, "plugin.json"),
-    JSON.stringify({
-      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-      name: "notes-fixture",
-    }),
-  );
-  const writeLaunch = (env: Record<string, string>) =>
-    writeFile(
-      join(plugin, "mcp.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        mcpServers: {
-          notes: {
-            // A launcher, as npx and uvx are: the server is its child, which
-            // must end with the session as surely as the launcher does.
-            args: ["-c", 'node "$PLUGIN_ROOT/server.cjs"; exit $?'],
-            command: "sh",
-            env: { NOTES_FILE: notesFile, PID_FILE: pidFile, ...env },
-            type: "stdio",
-          },
-        },
-      }),
-    );
-  await writeLaunch({});
+  const registration = {
+    name: "notes-fixture",
+    launch: {
+      command: "sh",
+      args: ["-c", 'node "$PLUGIN_ROOT/server.cjs"; exit $?'],
+      env: { NOTES_FILE: notesFile, PID_FILE: pidFile } as Record<string, string>,
+    },
+  };
+  const writeLaunch = async (env: Record<string, string>) => {
+    registration.launch.env = { NOTES_FILE: notesFile, PID_FILE: pidFile, ...env };
+  };
+
   await writeFile(
     join(plugin, "server.cjs"),
     `const { appendFileSync, writeFileSync } = require("node:fs");
@@ -908,6 +875,7 @@ server.connect(new StdioServerTransport());
   await mkdir(dirname(pidFile), { recursive: true });
   return {
     /** The same server, launched differently. */
+    registration,
     changeLaunch: () => writeLaunch({ NOTES_EDITION: "2" }),
     notesFile,
     pidFile,
