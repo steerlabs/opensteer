@@ -2,6 +2,7 @@ import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   PluginIconSchema,
+  pluginLocalToolsMax,
   pluginReads,
   pluginRunsMax,
   pluginToolsMax,
@@ -13,6 +14,7 @@ import {
   type PluginCommand,
   type PluginCommandResult,
   type PluginEngineStateView,
+  type PluginLocalToolView,
   type InstalledPluginView,
   type PluginRequirementView,
   type PluginSummaryView,
@@ -32,6 +34,7 @@ import type { PluginService, PluginServiceState } from "./plugin-service.js";
  * personal owner; no caller context ever comes from a client.
  */
 const owner: PluginCaller = { caller: "personal", mode: "automatic" };
+type LocalTool = Omit<PluginLocalToolView, "access">;
 
 type Service = Pick<
   PluginService,
@@ -68,6 +71,8 @@ export interface PluginOwnerApiOptions {
     settlementSessionId?: string;
   }) => Promise<void>;
   readonly assertOwner: (userId: UserId) => Promise<void>;
+  /** The owner's device data apps and local servers in the plugin namespace, read live. */
+  readonly localTools?: (owner: UserId) => Promise<readonly LocalTool[]>;
   /** Tells the owner's clients to reread what they show. */
   readonly changed: (owner: UserId) => void;
 }
@@ -290,21 +295,36 @@ export class PluginOwnerApi {
   }
 
   async installed(userId: UserId, signal?: AbortSignal) {
-    const [rows, settings] = await Promise.all([
-      this.#call(this.#options.service.installed({}, owner, signal)),
+    const [rows, settings, local] = await Promise.all([
+      // Local tools never wait on the engine, so an unavailable engine still shows them.
+      this.#options.service.installed({}, owner, signal).catch((error: unknown) => {
+        if (error instanceof PluginServiceError && error.code === "unavailable") return null;
+        return hostError(error);
+      }),
       this.#settings(userId),
+      this.#options.localTools?.(userId) ?? [],
     ]);
+    const access = (id: string) => settings.find((row) => row.pluginId === id)?.access ?? "all";
     return {
       engine: pluginEngineStateView(this.#options.service.state()),
-      plugins: rows
-        .slice(0, pluginsInstalledMax)
-        .map(({ plugin, links }) =>
-          summary(
-            plugin,
-            links,
-            settings.find((row) => row.pluginId === plugin.id),
-          ),
-        )
+      plugins:
+        rows
+          ?.slice(0, pluginsInstalledMax)
+          .map(({ plugin, links }) =>
+            summary(
+              plugin,
+              links,
+              settings.find((row) => row.pluginId === plugin.id),
+            ),
+          )
+          .sort((a, b) => a.name.localeCompare(b.name)) ?? null,
+      local: local
+        .slice(0, pluginLocalToolsMax)
+        .map((tool) => ({
+          ...tool,
+          tools: tool.tools.slice(0, pluginToolsMax),
+          access: access(tool.id),
+        }))
         .sort((a, b) => a.name.localeCompare(b.name)),
     };
   }
@@ -546,6 +566,9 @@ export class PluginOwnerApi {
       },
       consent,
       methods,
+      signIn: Object.values(
+        z.record(z.string(), z.unknown()).catch({}).parse(requirement.definition.auth),
+      ).some((value) => z.object({ type: z.literal("oauth2") }).safeParse(value).success),
       accounts: accounts
         .filter((account) => account.provider === requirement.provider)
         .slice(0, 100)

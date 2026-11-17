@@ -7,11 +7,14 @@ import type { AgentCaller } from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import type { PluginExecutions } from "../../plugins/plugin-executions.js";
+import type { LocalProviders } from "../../plugins/local-providers.js";
 import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
 
 export class PluginToolHandlers {
   readonly options: {
     service: PluginService;
+    /** Device data apps and local servers, which list beside plugins. */
+    localProviders?: Pick<LocalProviders, "providers">;
     authority: PluginAuthority;
     executions: PluginExecutions;
     store: OpensteerStore;
@@ -36,8 +39,27 @@ export class PluginToolHandlers {
   async list(c: ToolCall<"opensteer_plugin_list">) {
     const context = this.options.authority.admit(c.caller);
     const settings = await this.options.settings.settings(c.caller.userId);
-    const plugins = await this.options.service.list({}, context, c.signal);
+    const [plugins, local] = await Promise.all([
+      this.options.service.list({}, context, c.signal),
+      this.options.localProviders?.providers(context) ?? [],
+    ]);
+    const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
     return {
+      // An agent sees one list: local tools are addressed as tools.<slug> like plugins.
+      local: local
+        .filter(({ id }) => access(id) !== "off")
+        .slice(0, 100)
+        .map((provider) => ({
+          id: provider.id,
+          name: provider.name,
+          slug: provider.slug,
+          access: access(provider.id) as "all" | "read-only",
+          status: provider.unavailable ? "unavailable" : "active",
+          ...(provider.unavailable ? { unavailable: provider.unavailable } : {}),
+          tools: provider.tools
+            .slice(0, 200)
+            .map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
+        })),
       plugins: await Promise.all(
         plugins.slice(0, 100).map(async (plugin) => {
           const detail = await this.options.service.detail(

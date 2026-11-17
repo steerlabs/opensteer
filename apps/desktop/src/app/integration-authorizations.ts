@@ -81,7 +81,11 @@ export class DesktopIntegrationAuthorizations {
   }
   attach(
     identity: { readonly deploymentId: string; readonly userId: string },
-    receive: (callback: IntegrationAuthorizationAppReturn) => void,
+    receive: (
+      callback: IntegrationAuthorizationAppReturn & {
+        readonly kind: IntegrationAuthorizationAttempt["kind"];
+      },
+    ) => void,
   ): () => void {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -98,7 +102,8 @@ export class DesktopIntegrationAuthorizations {
           (entry.userId !== undefined && entry.userId !== identity.userId)
         )
           return false;
-        receive(callback);
+        // The attempt's own kind decides which Host command the proof goes to.
+        receive({ ...callback, kind: entry.kind });
         // Emitting an IPC event is not acknowledgement. Keep the proof queued
         // until the renderer confirms a durable terminal outcome.
         if (active && timer === undefined) {

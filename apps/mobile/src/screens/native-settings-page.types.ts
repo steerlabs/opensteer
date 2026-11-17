@@ -94,5 +94,11 @@ export interface NativeSettingsSection {
 export interface NativeSettingsPageProps {
   readonly sheet?: { readonly title: string; readonly onClose: () => void };
   readonly sections: readonly NativeSettingsSection[];
-  readonly search?: { readonly value: string; readonly onChange: (value: string) => void };
+  readonly search?: {
+    readonly value: string;
+    readonly onChange: (value: string) => void;
+    /** What the field asks for, and the page's title where the field brings its own bar. */
+    readonly prompt?: string;
+    readonly title?: string;
+  };
 }

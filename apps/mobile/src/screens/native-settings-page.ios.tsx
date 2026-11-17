@@ -73,7 +73,12 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
       modifiers={[
         listStyle("insetGrouped"),
         ...(props.search
-          ? [searchable(query, { prompt: "Search plugins", onChange: props.search.onChange })]
+          ? [
+              searchable(query, {
+                prompt: props.search.prompt ?? "Search plugins",
+                onChange: props.search.onChange,
+              }),
+            ]
           : []),
       ]}
     >
@@ -118,7 +123,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
         </BottomSheet>
       ) : props.search ? (
         <NavigationStack>
-          <Toolbar modifiers={[navigationTitle("Plugins")]}>
+          <Toolbar modifiers={[navigationTitle(props.search.title ?? "Plugins")]}>
             {content}
             <Toolbar.Content>
               <ToolbarItem placement="topBarLeading">

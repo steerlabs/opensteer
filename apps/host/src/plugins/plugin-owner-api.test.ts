@@ -12,6 +12,7 @@ import { HostAuthenticator } from "../identity/auth.js";
 import { registerHostApi } from "../server/host-api-registration.js";
 import { injectRpcRequest } from "../server/test-host-api-request.js";
 import { PluginOwnerApi, isPluginCommand } from "./plugin-owner-api.js";
+import { PluginServiceError } from "./engine-protocol.js";
 
 const ownerId = createId("user");
 const strangerId = createId("user");
@@ -78,7 +79,9 @@ function plugin(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function setup(options: { plugins?: number; tools?: number } = {}) {
+function setup(
+  options: { plugins?: number; tools?: number; local?: number; engineDown?: boolean } = {},
+) {
   const settings = new Map<
     string,
     {
@@ -90,8 +93,9 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
   >();
   const service = {
     state: vi.fn(() => ({ status: "ready" as const, generation: 1 })),
-    installed: vi.fn(async () =>
-      Array.from({ length: options.plugins ?? 3 }, (_, index) => ({
+    installed: vi.fn(async () => {
+      if (options.engineDown) throw new PluginServiceError("unavailable", "Engine stopped");
+      return Array.from({ length: options.plugins ?? 3 }, (_, index) => ({
         plugin: plugin(
           `p${index}`,
           index === 1
@@ -101,8 +105,8 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
               : {},
         ),
         links: [],
-      })),
-    ),
+      }));
+    }),
     detail: vi.fn(async ({ plugin: id }: { plugin: string }) => ({
       plugin: plugin(id),
       links: [
@@ -196,6 +200,19 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
       if (userId !== ownerId)
         throw new OpensteerError({ code: "forbidden", message: "Owner only" });
     },
+    localTools: async () =>
+      Array.from({ length: options.local ?? 1 }, (_, index) => ({
+        id: `app_device_con${index}`,
+        kind: "device-app" as const,
+        name: `calendar-mac-${String(index).padStart(3, "0")}`,
+        title: "Calendar on Mac",
+        computer: { id: "run_1", name: "Mac" },
+        unavailable: index === 0 ? null : "Mac is offline.",
+        tools: Array.from({ length: 600 }, (_, tool) => ({
+          name: `tool_${tool}`,
+          readOnly: tool % 2 === 0,
+        })),
+      })),
     changed,
   });
   return { api, service, store, settings, accountLinked, changed };
@@ -284,13 +301,33 @@ describe("the person's plugin API", () => {
     const view = hostApi["plugins.installed.list"].success.parse(result.data);
     expect(view.plugins).toHaveLength(200);
     expect(view.engine).toEqual({ status: "ready" });
-    const byId = new Map(view.plugins.map((entry) => [entry.id, entry]));
+    const byId = new Map(view.plugins!.map((entry) => [entry.id, entry]));
     expect(byId.get("p0")).toMatchObject({
       status: "needs-account",
       accounts: { required: 1, linked: 0 },
     });
     expect(byId.get("p1")).toMatchObject({ status: "not-built" });
     expect(byId.get("p2")).toMatchObject({ status: "ready", access: "all", author: "agent" });
+  });
+
+  it("lists bounded local tools with their access, even while the engine is down", async () => {
+    const { api } = setup({ engineDown: true, local: 120 });
+    await run(api, { type: "plugins.access.set", pluginId: "app_device_con0", access: "off" });
+    const result = await api.reads()["plugins.installed.list"]({}, context(ownerId));
+    if (!result.ok) throw new Error("refused");
+    const view = hostApi["plugins.installed.list"].success.parse(result.data);
+    expect(view.plugins).toBeNull();
+    expect(view.local).toHaveLength(100);
+    expect(view.local[0]).toMatchObject({
+      id: "app_device_con0",
+      access: "off",
+      unavailable: null,
+    });
+    expect(view.local[0]!.tools).toHaveLength(500);
+    expect(view.local[1]).toMatchObject({ access: "all", unavailable: "Mac is offline." });
+    await expect(api.reads()["plugins.installed.list"]({}, context(strangerId))).rejects.toThrow(
+      "Owner only",
+    );
   });
 
   it("bounds plugin detail and marks a link reviewed against an older declaration", async () => {
@@ -336,7 +373,7 @@ describe("the person's plugin API", () => {
     });
   });
 
-  it("offers only API-key methods it can draw, with their fields", async () => {
+  it("offers the API-key methods it can draw, with their fields, and says a sign-in exists", async () => {
     const { api } = setup();
     const result = await api
       .reads()
@@ -370,6 +407,7 @@ describe("the person's plugin API", () => {
         ],
       },
     ]);
+    expect(result.ok && result.data.signIn).toBe(true);
     expect(result.ok && result.data.accounts).toEqual([
       { id: "acc1", provider: "linear", label: "Work" },
     ]);

@@ -1,5 +1,11 @@
 import { DeploymentIdSchema } from "@opensteer/core";
-import { isHostRefusal, type HostClient } from "@opensteer/client/host";
+import {
+  authorizationStatusReturned,
+  authorizationTerminalStatuses,
+  isHostRefusal,
+  type HostClient,
+} from "@opensteer/client/host";
+import { returnPluginAuthorization, waitForPluginAuthorization } from "@opensteer/client/plugins";
 import {
   integrationAuthorizationReturnMayHaveFailed,
   integrationAuthorizationStatusReturned,
@@ -71,6 +77,7 @@ export async function beginIntegrationAuthorization(input: {
         throw new Error("Reconnect to this deployment before connecting an integration.");
       input.onStarted?.(started.attemptId, returnsByItself);
       await input.bridge.openIntegrationAuthorization({
+        kind: "integration",
         attemptId: started.attemptId,
         launchTicket: started.launchTicket,
         deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),
@@ -168,6 +175,18 @@ export function subscribeIntegrationAuthorizationReturns(
     )
       return;
     const work = (async () => {
+      if (callback.kind === "plugin") {
+        const status =
+          callback.returnProof === null
+            ? await waitForPluginAuthorization({ attemptId: callback.attemptId, client })
+            : await returnPluginAuthorization(client, callback.attemptId, callback.returnProof);
+        if (authorizationTerminalStatuses.has(status.status))
+          await bridge.finishIntegrationAuthorization({
+            deploymentId: callback.deploymentId,
+            attemptId: callback.attemptId,
+          });
+        return;
+      }
       let status: IntegrationAuthorizationStatus;
       if (callback.returnProof === null)
         status = await waitForIntegrationAuthorization({ attemptId: callback.attemptId, client });
@@ -191,12 +210,15 @@ export function subscribeIntegrationAuthorizationReturns(
     })()
       .catch(async (error: unknown) => {
         if (!isHostRefusal(error)) return;
-        integrationAuthorizationStatusReturned(client, callback.attemptId, {
+        // A refused proof ends the attempt for whoever is waiting on it, of either kind.
+        const refused = {
           status: "failed",
-          connectionId: null,
           failureCode: "grant-rejected",
+          connectionId: null,
+          account: null,
           expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-        });
+        };
+        authorizationStatusReturned(client, callback.attemptId, refused);
         await bridge
           .finishIntegrationAuthorization({
             deploymentId: callback.deploymentId,

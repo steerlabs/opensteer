@@ -22,11 +22,13 @@ import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsError, SettingsSegmented } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { LocalTools, LocalToolPage } from "./local-tools.js";
 import { PluginPage } from "./plugin-page.js";
 
 export const pluginsPath = "/settings/plugins";
 export const pluginPath = (pluginId: string) =>
   `${pluginsPath}/installed/${encodeURIComponent(pluginId)}`;
+export const localToolPath = (id: string) => `${pluginsPath}/on-device/${encodeURIComponent(id)}`;
 
 /** The plugin engine's state for this Host. */
 export function usePluginEngine(initial: PluginEngineStateView | null) {
@@ -59,6 +61,8 @@ export function PluginsArea({ legacy }: { readonly legacy: React.ReactNode }) {
   if (suffix[0] === "catalog" || suffix[0] === "add") return <PluginCatalog />;
   if (suffix[0] === "installed" && suffix[1])
     return <PluginPage key={suffix[1]} pluginId={decodeURIComponent(suffix[1])} />;
+  if (suffix[0] === "on-device" && suffix[1])
+    return <LocalToolPage key={suffix[1]} id={decodeURIComponent(suffix[1])} />;
   if (suffix.length) return legacy;
   return <InstalledPlugins />;
 }
@@ -98,9 +102,9 @@ function InstalledPlugins() {
         <button className="btn plugins-retry" onClick={installed.reload} type="button">
           Try again
         </button>
-      ) : !plugins ? (
+      ) : !installed.data ? (
         <LoadingRows label="Loading plugins" rows={3} />
-      ) : plugins.length === 0 ? (
+      ) : plugins === null ? null : plugins.length === 0 ? (
         <div className="plugins-empty">
           <span aria-hidden className="plugins-empty__glyph">
             <Icon name="puzzle" />
@@ -128,6 +132,7 @@ function InstalledPlugins() {
           </section>
         ))
       )}
+      {installed.data?.local.length ? <LocalTools tools={installed.data.local} /> : null}
       <section className="settings-group">
         <h2 className="settings-group__title">Add more</h2>
         <div className="card">

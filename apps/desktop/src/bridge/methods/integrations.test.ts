@@ -18,6 +18,7 @@ const oauth = {
   hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
 } as const;
 const entry = () => ({
+  kind: "integration" as const,
   deploymentId: createId("deployment"),
   attemptId: createIntegrationId("oauthAttempt"),
   userId: createId("user"),
@@ -45,7 +46,7 @@ it("drops unknown returns, queues registered returns before renderer subscriptio
   wrong();
   const detach = returns.attach(started, deliver);
   await returns.settled();
-  expect(deliver).toHaveBeenCalledWith(callback);
+  expect(deliver).toHaveBeenCalledWith({ ...callback, kind: "integration" });
   await returns.forget(started);
   expect(returns.accept(url)).toBe(false);
   detach();

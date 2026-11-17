@@ -3,6 +3,10 @@ import {
   type DeploymentConnectionInput,
 } from "@opensteer/client/connections";
 import { busyTeamIds } from "@opensteer/client/team";
+import {
+  buildNativeIntegrationAuthorizationCallback,
+  IntegrationAuthorizationAttemptIdSchema,
+} from "@opensteer/client/integrations";
 import { createId, DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
 
 /**
@@ -114,4 +118,23 @@ function mockConnection(input: {
     reachability: "canonical",
     source: { kind: "manual" },
   });
+}
+
+/**
+ * The system sign-in sheet in mock mode: there is no provider, so it comes back
+ * a moment later with the app return the Host's launch route would have sent.
+ */
+export function mockIntegrationAuthorizationBrowser(): (url: string) => Promise<string> {
+  return async (url) => {
+    const attemptId = /\/v1\/integration-authorizations\/([^/]+)\/launch/u.exec(
+      new URL(url).pathname,
+    )?.[1];
+    if (!attemptId) throw new Error("The mock sign-in address is not a launch address.");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    return buildNativeIntegrationAuthorizationCallback({
+      deploymentId: mockDeploymentId,
+      attemptId: IntegrationAuthorizationAttemptIdSchema.parse(decodeURIComponent(attemptId)),
+      returnProof: "P".repeat(43),
+    });
+  };
 }

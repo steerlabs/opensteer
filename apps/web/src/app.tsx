@@ -57,6 +57,7 @@ import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { actionErrorMessage } from "./ui-utils.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
+import { pluginAuthorizationCompletionPath } from "./integrations/plugin-sign-in-surface.js";
 import { DevicePage } from "./components/devices/device-page.js";
 
 const McpAuthorization = lazy(() =>
@@ -421,11 +422,17 @@ export function App({
       </Suspense>
     );
 
-  if (window.location.pathname === "/integration-authorization") {
+  if (
+    window.location.pathname === "/integration-authorization" ||
+    window.location.pathname === pluginAuthorizationCompletionPath
+  ) {
     return (
       <IntegrationAuthorizationCompletion
         client={hostClient}
         integrationAttempt={new URLSearchParams(window.location.search).get("integrationAttempt")}
+        kind={
+          window.location.pathname === pluginAuthorizationCompletionPath ? "plugin" : "integration"
+        }
       />
     );
   }

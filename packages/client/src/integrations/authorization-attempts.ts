@@ -1,13 +1,12 @@
 import { DeploymentIdSchema, IsoDateTimeSchema, UserIdSchema } from "@opensteer/core";
-import {
-  IntegrationAuthorizationAttemptIdSchema,
-  type IntegrationAuthorizationStatus,
-} from "@opensteer/integration-core";
+import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { z } from "zod";
-import { integrationAuthorizationTerminalStatuses } from "./authorization-outcome.js";
+import { authorizationTerminalStatuses } from "../host/authorization-attempt.js";
 
 const EntrySchema = z.strictObject({
+  /** Which Host command finishes it: an old integration attempt or a plugin sign-in. */
+  kind: z.enum(["integration", "plugin"]),
   deploymentId: DeploymentIdSchema,
   attemptId: IntegrationAuthorizationAttemptIdSchema,
   userId: UserIdSchema.optional(),
@@ -32,7 +31,7 @@ export class IntegrationAuthorizationAttempts {
     {
       expiresAt: number;
       userId: string | undefined;
-      result: Promise<IntegrationAuthorizationStatus | null>;
+      result: Promise<{ readonly status: string } | null>;
     }
   >();
   readonly #writes = new MutationQueue();
@@ -115,10 +114,10 @@ export class IntegrationAuthorizationAttempts {
         this.#deliveries.delete(key);
     await this.#persist();
   }
-  async deliver(
+  async deliver<S extends { readonly status: string }>(
     attempt: Attempt,
-    finish: (entry: IntegrationAuthorizationAttempt) => Promise<IntegrationAuthorizationStatus>,
-  ): Promise<IntegrationAuthorizationStatus | null> {
+    finish: (entry: IntegrationAuthorizationAttempt) => Promise<S>,
+  ): Promise<S | null> {
     await this.load();
     this.#prune();
     const previous = this.#deliveries.get(keyOf(attempt));
@@ -126,14 +125,14 @@ export class IntegrationAuthorizationAttempts {
       return attempt.userId === undefined ||
         previous.userId === undefined ||
         attempt.userId === previous.userId
-        ? previous.result
+        ? (previous.result as Promise<S | null>)
         : null;
     const entry = this.find(attempt);
     if (!entry) return null;
     const result = Promise.resolve()
       .then(() => finish(entry))
       .then(async (status) => {
-        if (integrationAuthorizationTerminalStatuses.has(status.status)) {
+        if (authorizationTerminalStatuses.has(status.status)) {
           this.#entries.delete(keyOf(attempt));
           await this.#persist();
         } else this.#deliveries.delete(keyOf(attempt));

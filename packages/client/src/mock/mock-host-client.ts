@@ -85,8 +85,12 @@ import {
   type OwnerProfileView,
 } from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
-import { MockPlugins, mockPluginAccountConsent, mockPluginRequests } from "./mock-plugins.js";
-import type { PluginSignIn } from "../plugins/index.js";
+import {
+  isMockSignInCommand,
+  MockPlugins,
+  mockPluginAccountConsent,
+  mockPluginRequests,
+} from "./mock-plugins.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -2389,20 +2393,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
-    "plugin.authorization.get": async () => {
-      throw new HostClientRequestError({
-        code: "not_found",
-        message: "Plugin sign-in preview is unavailable",
-        status: 404,
-      });
-    },
-    "plugin.authorization.methods": async () => {
-      throw new HostClientRequestError({
-        code: "not_found",
-        message: "Plugin sign-in preview is unavailable",
-        status: 404,
-      });
-    },
+    ...client.enginePlugins.signInReads(),
     "integration.authorization.get": async (input) =>
       rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),
     "integration.grants.list": async () =>
@@ -2857,6 +2848,8 @@ async function executeMockCommand(
   command: HostApiCommand,
 ): Promise<Awaited<ReturnType<HostApiClient["commands.dispatch"]>>> {
   if (isMockPluginCommand(command)) return rpcSuccess(await client.enginePlugins.command(command));
+  if (isMockSignInCommand(command))
+    return rpcSuccess(await client.enginePlugins.signInCommand(command));
   switch (command.type) {
     case "teams.link.join": {
       const offer = parseTeamLinkOffer(command.link);
@@ -3858,9 +3851,6 @@ export class MockHostClient implements HostClient {
   }
   subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void {
     return this.#state.enginePlugins.subscribeEngine(listener);
-  }
-  get pluginSignIn(): PluginSignIn {
-    return this.#state.enginePlugins.signIn;
   }
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {

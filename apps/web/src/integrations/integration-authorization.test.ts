@@ -1,6 +1,7 @@
 import type { DesktopIntegrationAuthorizationReturn } from "@opensteer/protocol/desktop";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";
@@ -225,6 +226,7 @@ describe("integration authorization client", () => {
     expect(browser.open).not.toHaveBeenCalled();
     expect(begin).toHaveBeenCalledWith("/tasks/thread_123?panel=apps#request", {});
     expect(openIntegrationAuthorization).toHaveBeenCalledWith({
+      kind: "integration",
       attemptId: started.attemptId,
       launchTicket: started.launchTicket,
       deploymentId,
@@ -394,7 +396,12 @@ it("dispatches a desktop return to its exact attachment once and wakes its waite
     getSnapshot: () => ({ user: { id: userId }, deploymentId }),
   } as unknown as HostClient;
   const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
-  const callback = { deploymentId, attemptId: started.attemptId, returnProof: "r".repeat(43) };
+  const callback = {
+    kind: "integration" as const,
+    deploymentId,
+    attemptId: started.attemptId,
+    returnProof: "r".repeat(43),
+  };
   receive({ ...callback, deploymentId: createId("deployment") });
   expect(dispatch).not.toHaveBeenCalled();
   receive(callback);
@@ -411,6 +418,46 @@ it("dispatches a desktop return to its exact attachment once and wakes its waite
       idempotencyKey: expect.any(String),
     }),
   );
+  stop();
+});
+
+it("sends a plugin sign-in's desktop return to the plugin command and closes it in main", async () => {
+  const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
+    "ioa_00000000-0000-4000-8000-000000000009",
+  );
+  const dispatch = vi.fn(async () => ({
+    type: "plugin.authorization.return",
+    attemptId,
+    connection: "con_1",
+    account: "acc_1",
+    expiresAt: started.expiresAt,
+    status: "completed",
+    failureCode: null,
+  }));
+  let receive!: (value: DesktopIntegrationAuthorizationReturn) => void;
+  const bridge = {
+    onIntegrationAuthorizationReturn: (_identity: unknown, listener: typeof receive) => {
+      receive = listener;
+      return () => {};
+    },
+    finishIntegrationAuthorization: vi.fn(async () => {}),
+  };
+  const client = {
+    dispatch,
+    subscribe: () => () => {},
+    getSnapshot: () => ({ user: { id: userId }, deploymentId }),
+  } as unknown as HostClient;
+  const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
+  receive({ kind: "plugin", deploymentId, attemptId, returnProof: "r".repeat(43) });
+  await vi.waitFor(() =>
+    expect(bridge.finishIntegrationAuthorization).toHaveBeenCalledWith({ deploymentId, attemptId }),
+  );
+  expect(dispatch).toHaveBeenCalledExactlyOnceWith({
+    type: "plugin.authorization.return",
+    idempotencyKey: `plugin-auth-return:${attemptId}`,
+    attemptId,
+    returnProof: "r".repeat(43),
+  });
   stop();
 });
 
@@ -452,7 +499,12 @@ it.each([true, false])(
         },
       }),
     );
-    expect(openIntegrationAuthorization).toHaveBeenCalledWith({ ...started, deploymentId, userId });
+    expect(openIntegrationAuthorization).toHaveBeenCalledWith({
+      kind: "integration",
+      ...started,
+      deploymentId,
+      userId,
+    });
   },
 );
 
@@ -483,7 +535,12 @@ it.each([400, 403, 404, 408, 429, 503])(
     const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
     vi.useFakeTimers();
     try {
-      const callback = { deploymentId, attemptId, returnProof: "r".repeat(43) };
+      const callback = {
+        kind: "integration" as const,
+        deploymentId,
+        attemptId,
+        returnProof: "r".repeat(43),
+      };
       receive(callback);
       await vi.advanceTimersByTimeAsync(0);
       expect(dispatch).toHaveBeenCalledOnce();

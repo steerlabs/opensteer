@@ -922,9 +922,10 @@ test("without an Account link custom and MCP callbacks finish locally; remote st
     surface: "web" as const,
     returnPath: "/settings",
   };
-  await expect(oauth.begin(input, personal.userId, "personal-remote")).rejects.toThrow(
-    "Link this Host",
-  );
+  await expect(oauth.begin(input, personal.userId, "personal-remote")).rejects.toMatchObject({
+    message: expect.stringContaining("Link this Host"),
+    reason: "plugin-account-link-required",
+  });
   const started = await oauth.begin(input, personal.userId, "canonical");
   const launched = await web.inject({
     url: `/v1/integration-authorizations/${started.attemptId}/launch?ticket=${started.launchTicket}`,

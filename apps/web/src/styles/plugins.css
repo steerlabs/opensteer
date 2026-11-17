@@ -369,6 +369,21 @@
   flex-wrap: wrap;
   gap: var(--space-8);
 }
+.plugin-connect__method {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.plugin-own-app {
+  padding-top: var(--space-4);
+}
+.plugin-own-app__remember {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
 .plugin-connect__error {
   display: flex;
   flex-direction: column;

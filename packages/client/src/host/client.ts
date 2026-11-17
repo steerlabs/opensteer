@@ -1108,8 +1108,6 @@ export interface HostClient extends TabsClient {
   readonly references: import("../references/store.js").ReferenceStore;
   readonly transcriptFiles: import("./transcript-files.js").TranscriptFileController;
   readonly rpc: HostApiClient;
-  /** OAuth sign-in for plugin accounts, when this Host offers it. */
-  readonly pluginSignIn?: import("../plugins/index.js").PluginSignIn;
   createAttachment(input: {
     readonly name: string;
     readonly mediaType: string;

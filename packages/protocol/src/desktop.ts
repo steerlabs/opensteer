@@ -397,7 +397,10 @@ export type DesktopOpenComputerUsePermissionsPanelResult = z.infer<
   typeof DesktopOpenComputerUsePermissionsPanelResultSchema
 >;
 
+/** Which Host command an attempt's return goes to: a plugin sign-in or an older integration's. */
+export const DesktopAuthorizationKindSchema = z.enum(["integration", "plugin"]);
 export const DesktopOpenIntegrationAuthorizationInputSchema = z.strictObject({
+  kind: DesktopAuthorizationKindSchema,
   attemptId: IntegrationAuthorizationAttemptIdSchema,
   deploymentId: DeploymentIdSchema,
   userId: UserIdSchema.optional(),
@@ -431,6 +434,7 @@ export type DesktopPrepareIntegrationAuthorizationReturnResult = z.infer<
 >;
 
 export const DesktopIntegrationAuthorizationReturnSchema = z.strictObject({
+  kind: DesktopAuthorizationKindSchema,
   deploymentId: DeploymentIdSchema,
   attemptId: IntegrationAuthorizationAttemptIdSchema,
   returnProof: IntegrationAuthorizationReturnProofSchema.nullable(),
