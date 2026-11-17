@@ -192,7 +192,7 @@ vi.mock("./composer-menu.js", () => ({
 }));
 
 const { RequestSheetContent, RequestSheetScreen } = await import("./request-sheet.js");
-const { useMobileState } = await import("../ui/mobile-client-context.js");
+const { useMobileClient, useMobileState } = await import("../ui/mobile-client-context.js");
 const { useNavigation } = await import("@react-navigation/native");
 const { resetRequestSessionsForTests } = await import("./request-session.js");
 
@@ -1394,21 +1394,46 @@ describe("RequestSheetScreen opened from a link", () => {
   const settled = "req_0192f4a1-1111-4000-8000-000000000001";
   const threadId = "thr_00000000-0000-4000-8000-000000000003";
 
-  async function open(requestId: string) {
+  async function open(requestId: string, refreshing = false) {
     const host = new MockHostClient({ latencyMs: 0 });
     await host.load();
-    await host.dispatch({
-      idempotencyKey: "settle",
-      requestId: settled,
-      response: { kind: "choice", optionId: "approve" },
-      type: "request.respond",
-    });
+    if (refreshing) {
+      expect(
+        host.getSnapshot().waitingRequests.some(({ request }) => request.id === requestId),
+      ).toBe(true);
+      const source = host.getThreadTranscript(threadId);
+      const state = {
+        ...source.getSnapshot(),
+        synchronized: true,
+        requests: [],
+        requestsRefreshing: true,
+        pendingRequestIds: [requestId],
+      };
+      vi.spyOn(host, "getThreadTranscript").mockReturnValue({
+        ...source,
+        getSnapshot: () => state,
+      });
+    } else {
+      await host.dispatch({
+        idempotencyKey: "settle",
+        requestId: settled,
+        response: { kind: "choice", optionId: "approve" },
+        type: "request.respond",
+      });
+    }
     const deploymentId = host.getSnapshot().deploymentId!;
     const goBack = vi.fn();
     vi.mocked(useMobileState).mockReturnValue({
       selection: { deploymentId, hostClient: host },
     } as unknown as ReturnType<typeof useMobileState>);
-    vi.mocked(useNavigation).mockReturnValue({ dispatch: vi.fn(), goBack } as never);
+    vi.mocked(useMobileClient).mockReturnValue({
+      drafts: { readPending: () => null },
+    } as unknown as ReturnType<typeof useMobileClient>);
+    vi.mocked(useNavigation).mockReturnValue({
+      dispatch: vi.fn(),
+      goBack,
+      isFocused: () => true,
+    } as never);
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -1442,6 +1467,13 @@ describe("RequestSheetScreen opened from a link", () => {
         timeout: 2_000,
       }),
     );
+  });
+
+  it("withholds the globally listed answer while the scoped Request review refreshes", async () => {
+    const { container, goBack } = await open(settled, true);
+    expect(container.textContent).toContain("Sending…");
+    expect(container.querySelector("button")).toBeNull();
+    expect(goBack).not.toHaveBeenCalled();
   });
 });
 

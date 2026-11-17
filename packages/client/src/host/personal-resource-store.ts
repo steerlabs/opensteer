@@ -15,8 +15,13 @@ export class PersonalResourceStore {
   >();
   readonly #interested = new Map<PersonalResourceKind, number>();
   readonly #listeners = new Map<PersonalResourceKind, Set<() => void>>();
+  readonly #onChanged: ((kind: PersonalResourceKind) => void) | undefined;
   #generation = 0;
   #known: PersonalResourceRevisions | undefined;
+
+  constructor(onChanged?: (kind: PersonalResourceKind) => void) {
+    this.#onChanged = onChanged;
+  }
 
   begin(generation: number) {
     if (generation > this.#generation) this.#generation = generation;
@@ -67,8 +72,8 @@ export class PersonalResourceStore {
       for (const kind of personalResourceKinds)
         if (BigInt(previous[kind]) > BigInt(revisions[kind])) next[kind] = previous[kind];
     this.#known = next;
-    for (const [kind, listeners] of this.#listeners)
-      if (previous?.[kind] !== next[kind]) for (const listener of listeners) listener();
+    for (const kind of personalResourceKinds)
+      if (previous?.[kind] !== next[kind]) this.#notify(kind);
   }
 
   install(frame: ResourceFrame) {
@@ -83,7 +88,7 @@ export class PersonalResourceStore {
     this.#views.delete(frame.kind);
     this.#views.set(frame.kind, { revision: frame.revision, view: frame.view });
     this.#evict();
-    for (const listener of this.#listeners.get(frame.kind) ?? []) listener();
+    this.#notify(frame.kind);
     return true;
   }
 
@@ -95,7 +100,12 @@ export class PersonalResourceStore {
     const observed = [...this.#views.keys()];
     this.#views.clear();
     this.#known = undefined;
-    for (const kind of observed) for (const listener of this.#listeners.get(kind) ?? []) listener();
+    for (const kind of observed) this.#notify(kind);
+  }
+
+  #notify(kind: PersonalResourceKind) {
+    this.#onChanged?.(kind);
+    for (const listener of this.#listeners.get(kind) ?? []) listener();
   }
 
   #evict() {
@@ -107,6 +117,7 @@ export class PersonalResourceStore {
       if (!this.#interested.has(kind)) {
         this.#views.delete(kind);
         unpinned -= view.entries.length;
+        this.#notify(kind);
       }
     }
   }

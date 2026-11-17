@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { createId, TabSchema } from "@opensteer/core";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   personalAuthorityChangedReason,
@@ -712,6 +712,120 @@ test("uses no timers or network reads when an attached personal client is idle",
     expect(fetch).not.toHaveBeenCalled();
     expect(socket!.sent).toHaveLength(frames);
   } finally {
+    client.dispose();
+  }
+});
+
+test("invalidates observed tab inventory without discarding its independent layout", async () => {
+  const tab = TabSchema.parse({
+    tabId: "page",
+    kind: "page",
+    title: "Page",
+    computer: { computerId: createId("runner"), name: "Mac" },
+    groupId: null,
+    state: "open",
+    openedBy: "person",
+    usedBy: [],
+    createdAt: time,
+    updatedAt: time,
+    url: "https://example.test/",
+    profile: null,
+  });
+  const tabsByPage = ["page", "next", "third", "fourth", "fifth"].map((tabId) =>
+    TabSchema.parse({ ...tab, tabId }),
+  );
+  const layout = {
+    revision: 1,
+    items: tabsByPage.map(({ tabId }) => ({ kind: "tab" as const, tabId })),
+  };
+  const view = { entries: [], complete: true, hasMore: false };
+  let socket: MockPersonalSocket;
+  let generation = 0;
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, options) => {
+    const { kind, expectedRevision, cursor } = JSON.parse(
+      new URL(String(url)).searchParams.get("input")!,
+    );
+    if (expectedRevision === "2")
+      return new Promise<Response>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    const page = Number(cursor ?? 0);
+    const next = kind === "tab" && page + 1 < tabsByPage.length ? String(page + 1) : null;
+    return Response.json({
+      ok: true,
+      data: {
+        revision: "1",
+        data: {
+          kind,
+          tabs: {
+            tabs: kind === "tab" ? [tabsByPage[page]] : [],
+            layout,
+            complete: !next,
+          },
+        },
+        next,
+      },
+    });
+  });
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    capabilities: [],
+    webSocketFactory: () =>
+      (socket = new MockPersonalSocket((raw) => {
+        const frame = JSON.parse(raw) as ScopedClientMessage;
+        if (frame.type !== "client.attach") return;
+        generation = frame.generation;
+        const address = { generation, scope: shellScope, subscriptionId: "shell" as const };
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          throughSequence: "1",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [],
+            visits: [],
+            attention: [],
+            counts,
+            resourceRevisions: revisions("1"),
+            resources: [
+              { kind: "tab", revision: "1", view },
+              { kind: "tab-layout", revision: "1", view },
+            ],
+          },
+        });
+        socket.deliver({ ...address, type: "host.synchronized", throughSequence: "1" });
+      })),
+  });
+  const releaseTab = client.watchPersonalResource("tab", () => {});
+  const releaseLayout = client.watchPersonalResource("tab-layout", () => {});
+  const tabs = client.getSnapshot().tabs;
+  try {
+    await client.load();
+    await vi.waitFor(() => {
+      expect([...tabs.rows.keys()]).toEqual(tabsByPage.map(({ tabId }) => tabId));
+      expect(tabs.complete).toBe(true);
+      expect(tabs.layout).toEqual(layout);
+    });
+    socket!.deliver({
+      type: "host.resource",
+      subscriptionId: "shell",
+      generation,
+      kind: "tab",
+      revision: "2",
+      view,
+    });
+    expect(tabs.get(tab.tabId)).toBeUndefined();
+    expect(tabs.complete).toBe(false);
+    expect(tabs.layout).toEqual(layout);
+  } finally {
+    releaseTab();
+    releaseLayout();
     client.dispose();
   }
 });

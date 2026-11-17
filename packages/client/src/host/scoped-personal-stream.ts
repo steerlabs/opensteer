@@ -63,7 +63,7 @@ function bytes(value: unknown) {
 
 export class ScopedPersonalStream {
   readonly shell = new PersonalShellStore();
-  readonly resources = new PersonalResourceStore();
+  readonly resources: PersonalResourceStore;
   readonly #details = new Map<string, ObservedDetail>();
   readonly #slots = new Map<DetailId, ObservedDetail>();
   readonly #cacheKeys = new Map<string, PersonalCacheScope>();
@@ -82,11 +82,9 @@ export class ScopedPersonalStream {
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
-  readonly onResource: ((kind: PersonalResourceKind) => void) | undefined;
-
   constructor(cache?: PersonalStreamCache, onResource?: (kind: PersonalResourceKind) => void) {
     this.cache = cache;
-    this.onResource = onResource;
+    this.resources = new PersonalResourceStore(onResource);
   }
 
   peekDetail(scope: DetailScope) {
@@ -405,10 +403,7 @@ export class ScopedPersonalStream {
     const previous = this.shell.getSnapshot();
     if (frame.generation !== previous.generation) return;
     if (frame.type === "host.resource") {
-      if (this.resources.install(frame)) {
-        this.onResource?.(frame.kind);
-        this.#checkpoint(shellScope);
-      }
+      if (this.resources.install(frame)) this.#checkpoint(shellScope);
       return;
     }
     if (frame.type === "host.live" || frame.type === "host.removed") return;
@@ -451,17 +446,13 @@ export class ScopedPersonalStream {
       return;
     }
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
-      for (const resource of frame.snapshot.resources ?? []) {
-        if (
-          this.resources.install({
-            ...resource,
-            type: "host.resource",
-            subscriptionId: "shell",
-            generation: frame.generation,
-          })
-        )
-          this.onResource?.(resource.kind);
-      }
+      for (const resource of frame.snapshot.resources ?? [])
+        this.resources.install({
+          ...resource,
+          type: "host.resource",
+          subscriptionId: "shell",
+          generation: frame.generation,
+        });
     }
     const progress = "shellProgress" in frame ? frame.shellProgress : undefined;
     if (progress) this.resources.updateRevisions(frame.generation, progress.resourceRevisions);

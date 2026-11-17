@@ -110,6 +110,7 @@ import type {
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
+  TaskEntry,
   TaskListState,
   ThreadSummary,
   TeamAskDecision,
@@ -218,6 +219,14 @@ export interface HttpHostClientOptions {
 
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
 const attachmentCacheByteBudget = 32 * 1024 * 1024;
+const resourceInventoryByteBudget = 1024 * 1024;
+const returnHintResources: ReadonlySet<PersonalResourceKind> = new Set([
+  "settings",
+  "environment",
+  "harness",
+  "harness-catalog",
+  "machine",
+]);
 
 type AttachmentRead = {
   readonly controller: AbortController;
@@ -264,17 +273,22 @@ export class HttpHostClient {
   #refused = false;
   #load: Promise<void> | undefined;
   #resolveLoad: (() => void) | undefined;
-  #resourceReads = new Map<PersonalResourceKind, AbortController>();
+  readonly #resourceReads = new Map<
+    PersonalResourceKind,
+    { controller: AbortController; revision: string }
+  >();
   readonly #environmentCatalogs = new Map<string, EnvironmentSummary["harnessCatalogs"]>();
   readonly #environmentAuth = new Map<string, boolean>();
   readonly #scopeReaders = new Map<string, ScopedThreadReader>();
   readonly #bodies = new TranscriptBodies();
   readonly #resourceRevisions = new Map<PersonalResourceKind, string>();
+  readonly #returnHintRevisions = new Map<PersonalResourceKind, string>();
   readonly #threadReaders = new Map<string, () => void>();
+  readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
-  readonly #assignmentReads = new Map<string, "read" | "reading">();
+  readonly #assignmentReads = new Map<string, "read" | AbortController>();
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -304,6 +318,7 @@ export class HttpHostClient {
     return this.#viewers.get(tabId, this.#snapshot.machines);
   }
   #tabRows: ReadonlyMap<TabId, Tab> | null = null;
+  #tabInventoryComplete = false;
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
       this.#targetedControl.surface(sessionId, surfaceId) ??
@@ -1194,11 +1209,15 @@ export class HttpHostClient {
       const state = detail.transcript.getSnapshot();
       if (state.removed) {
         clearPlaces();
+        this.#clearDetailReads(threadId);
         const threads = this.#snapshot.threads.filter(({ id }) => id !== threadId);
+        const lookups = Object.entries(this.#snapshot.threadLookups)
+          .filter(([id]) => id !== threadId)
+          .slice(-127);
         this.#update({
           ...this.#snapshot,
           threads,
-          threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "missing" },
+          threadLookups: { ...Object.fromEntries(lookups), [threadId]: "missing" },
         });
         return;
       }
@@ -1263,6 +1282,42 @@ export class HttpHostClient {
     this.#threadReaders.delete(threadId);
     this.#scopeReaders.get(threadId)?.dispose();
     this.#scopeReaders.delete(threadId);
+    this.#clearDetailReads(threadId);
+  }
+
+  #clearDetailReads(threadId: string) {
+    const read = this.#assignmentReads.get(threadId);
+    if (read && read !== "read") read.abort();
+    this.#assignmentReads.delete(threadId);
+    this.#automationReads.delete(threadId);
+    this.#readAutomations.delete(threadId);
+    this.#browserUsageRead.delete(threadId);
+    this.#browserUsageReads.delete(threadId);
+    this.#browserUsageRunSources.delete(threadId);
+    const browserUsesChanged = this.#browserUses.delete(threadId);
+    const { [threadId]: browserState, ...browserUsage } = this.#snapshot.browserUsage ?? {};
+    const { [threadId]: automationState, ...threadAutomations } = this.#snapshot.threadAutomations;
+    if (browserState || automationState || browserUsesChanged)
+      this.#update({
+        ...this.#snapshot,
+        browserUsage,
+        threadAutomations,
+        browserUses: browserUsesChanged
+          ? [...this.#browserUses.values()].flat()
+          : this.#snapshot.browserUses,
+      });
+  }
+
+  #clearViewerReads() {
+    for (const read of this.#assignmentReads.values()) if (read !== "read") read.abort();
+    this.#assignmentReads.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
+    this.#browserUsageRead.clear();
+    this.#browserUsageReads.clear();
+    this.#browserUsageRunSources.clear();
+    this.#browserUses.clear();
+    this.#deniedAssignments.clear();
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1337,15 +1392,12 @@ export class HttpHostClient {
   }
 
   readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) => {
-    const release = this.#stream.watchResource(kind, () => {
-      this.#resourceChanged(kind);
-      listener();
-    });
+    const release = this.#stream.watchResource(kind, listener);
     this.#readResource(kind);
     return () => {
       release();
       if (!this.#stream.resources.isObserved(kind)) {
-        this.#resourceReads.get(kind)?.abort();
+        this.#resourceReads.get(kind)?.controller.abort();
         this.#resourceReads.delete(kind);
       }
     };
@@ -1367,15 +1419,17 @@ export class HttpHostClient {
       this.#viewerGeneration++;
       this.#threadState.clear();
       this.#resourceRevisions.clear();
+      this.#returnHintRevisions.clear();
+      for (const kind of returnHintResources)
+        this.#returnHintRevisions.set(kind, shellAuthority.resourceRevisions[kind]);
       this.#environmentCatalogs.clear();
       this.#environmentAuth.clear();
       this.#bodies.clear();
       this.#clearAttachmentReads();
       this.#threadDeployment.clear();
-      this.#assignmentReads.clear();
-      this.#automationReads.clear();
+      this.#clearViewerReads();
       this.#invalidateAttention();
-      for (const read of this.#resourceReads.values()) read.abort();
+      for (const { controller } of this.#resourceReads.values()) controller.abort();
       this.#resourceReads.clear();
       this.#update(emptySnapshot(this.#tabs));
     }
@@ -1420,49 +1474,52 @@ export class HttpHostClient {
       attentionChanged ||
       connection !== this.#snapshot.connection
     ) {
-      const entries = tasksChanged
-        ? state.taskIds.flatMap((id) => {
-            const row = state.tasks.get(id);
-            if (!row) return [];
-            const thread = this.#threadState.reconcile(
-              row.thread
-                ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
-                : compactThread(row),
-              SequenceSchema.parse(row.revision),
-            );
-            return [{ thread, lastReply: row.lastReplyPreview, failure: row.failurePreview }];
-          })
-        : (this.#snapshot.tasks?.entries ?? []);
-      const byId = new Map(entries.map((entry) => [entry.thread.id, entry]));
-      const members = (ids: readonly string[]) => ids.flatMap((id) => byId.get(id) ?? []);
-      const recent = shell.recentTaskIds
-        ? members(shell.recentTaskIds)
-        : entries.filter(({ thread }) => thread.doneAt === null);
-      const active = shell.activeTaskIds
-        ? members(shell.activeTaskIds)
-        : entries.filter(
-            ({ thread }) => thread.status === "running" || thread.status === "waiting",
+      let taskLists: Pick<HostSnapshot, "tasks" | "activeTasks"> | undefined;
+      if (tasksChanged) {
+        const entries = state.taskIds.flatMap((id) => {
+          const row = state.tasks.get(id);
+          if (!row) return [];
+          const cached = this.#shellEntries.get(row);
+          if (cached) return [cached];
+          const thread = this.#threadState.reconcile(
+            row.thread
+              ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+              : compactThread(row),
+            SequenceSchema.parse(row.revision),
           );
+          const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+          this.#shellEntries.set(row, entry);
+          return [entry];
+        });
+        const byId = new Map(entries.map((entry) => [entry.thread.id, entry]));
+        const members = (ids: readonly string[]) => ids.flatMap((id) => byId.get(id) ?? []);
+        const recent = shell.recentTaskIds
+          ? members(shell.recentTaskIds)
+          : entries.filter(({ thread }) => thread.doneAt === null);
+        taskLists = {
+          tasks: {
+            entries: recent,
+            window: {
+              nextBefore: shell.nextBefore ?? null,
+              hasMore: shell.nextBefore != null,
+              totalItems: recent.length,
+              byteCount: 0,
+              itemCount: recent.length,
+            },
+          },
+          activeTasks: shell.activeTaskIds
+            ? members(shell.activeTaskIds)
+            : entries.filter(
+                ({ thread }) => thread.status === "running" || thread.status === "waiting",
+              ),
+        };
+      }
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update({
         ...this.#snapshot,
         connection,
         connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
-        ...(tasksChanged
-          ? {
-              tasks: {
-                entries: recent,
-                window: {
-                  nextBefore: shell.nextBefore ?? null,
-                  hasMore: shell.nextBefore != null,
-                  totalItems: recent.length,
-                  byteCount: 0,
-                  itemCount: recent.length,
-                },
-              },
-              activeTasks: active,
-            }
-          : {}),
+        ...taskLists,
         ...(attentionChanged
           ? {
               attentionSummaries: [...state.attention.values()],
@@ -1523,31 +1580,42 @@ export class HttpHostClient {
       else delete summaries[kind];
       this.#update({ ...this.#snapshot, resourceSummaries: summaries });
     }
+    const read = this.#resourceReads.get(kind);
+    if (read && (!summary || read.revision !== installed?.revision)) {
+      read.controller.abort();
+      this.#resourceReads.delete(kind);
+    }
     const details = this.#resourceRevisions.get(kind);
     if (
       details &&
-      (BigInt(details) < BigInt(revision ?? "0") ||
-        BigInt(details) < BigInt(installed?.revision ?? "0"))
+      (!installed ||
+        BigInt(details) < BigInt(revision ?? "0") ||
+        BigInt(details) < BigInt(installed.revision))
     ) {
       this.#resourceRevisions.delete(kind);
       this.#clearResource(kind);
-      if (
-        ["settings", "environment", "harness", "harness-catalog"].includes(kind) &&
-        this.#activeThreadId &&
-        this.#snapshot.threads.some(
-          ({ id, returnHint }) => id === this.#activeThreadId && returnHint != null,
-        )
-      ) {
+    }
+    if (returnHintResources.has(kind)) {
+      const known = summary ? installed?.revision : revision;
+      const previous = this.#returnHintRevisions.get(kind);
+      if (known && (!previous || BigInt(known) > BigInt(previous))) {
+        this.#returnHintRevisions.set(kind, known);
         const id = this.#activeThreadId;
-        this.#threadState.forget(id);
-        this.#update({
-          ...this.#snapshot,
-          threads: this.#snapshot.threads.map((row) =>
-            row.id === id ? { ...row, returnHint: null } : row,
-          ),
-        });
-        const scope = this.#detailScope(id);
-        if (scope) this.#stream.repairDetail(scope);
+        if (
+          previous &&
+          id &&
+          this.#snapshot.threads.some((row) => row.id === id && row.returnHint)
+        ) {
+          this.#threadState.forget(id);
+          this.#update({
+            ...this.#snapshot,
+            threads: this.#snapshot.threads.map((row) =>
+              row.id === id ? { ...row, returnHint: null } : row,
+            ),
+          });
+          const scope = this.#detailScope(id);
+          if (scope) this.#stream.repairDetail(scope);
+        }
       }
     }
     this.#readResource(kind);
@@ -1601,7 +1669,19 @@ export class HttpHostClient {
         this.#update({ ...snapshot, ownerProfile: null });
         break;
       case "settings":
-        this.#update({ ...snapshot, personalSettings: null, voiceThreadId: null });
+        this.#update({
+          ...snapshot,
+          personalSettings: null,
+          quietTaskDays: null,
+          executionPreferences: emptyExecutionPreferences,
+          voiceThreadId: null,
+        });
+        break;
+      case "tab":
+        this.#tabs.invalidateInventory();
+        break;
+      case "tab-layout":
+        this.#tabs.invalidateLayout();
         break;
     }
   }
@@ -1619,17 +1699,20 @@ export class HttpHostClient {
     )
       return;
     const controller = new AbortController();
-    this.#resourceReads.set(kind, controller);
+    const request = { controller, revision: installed.revision };
+    this.#resourceReads.set(kind, request);
     const scope = this.#stream.shell.getSnapshot().generation;
     const current = () =>
       !controller.signal.aborted &&
-      this.#resourceReads.get(kind) === controller &&
+      this.#resourceReads.get(kind) === request &&
       this.#stream.shell.getSnapshot().generation === scope &&
       this.#stream.resources.get(kind)?.revision === installed.revision &&
       BigInt(installed.revision) >= BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0");
     const read = async () => {
       let cursor: string | undefined;
-      for (let pages = 0; pages < 4; pages++) {
+      let retainedBytes = 0;
+      const cursors = new Set<string>();
+      do {
         const result = await this.rpc["resources.detail.get"](
           { kind, expectedRevision: installed.revision, ...(cursor ? { cursor } : {}) },
           { signal: controller.signal },
@@ -1639,19 +1722,21 @@ export class HttpHostClient {
           !current() ||
           result.data.data.kind !== kind ||
           result.data.revision !== installed.revision ||
-          (cursor && result.data.next === cursor)
+          (result.data.next && cursors.has(result.data.next))
         )
           return;
         this.#resourceRevisions.set(kind, result.data.revision);
-        this.#applyResource(result.data.data, cursor !== undefined);
+        retainedBytes += utf8ByteLength(JSON.stringify(result.data));
+        if (retainedBytes > resourceInventoryByteBudget) return;
+        this.#applyResource(result.data.data, cursor !== undefined, result.data.next !== null);
         cursor = result.data.next ?? undefined;
-        if (!cursor) return;
-      }
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
     };
     void read()
       .catch(() => undefined)
       .finally(() => {
-        if (this.#resourceReads.get(kind) === controller) {
+        if (this.#resourceReads.get(kind) === request) {
           this.#resourceReads.delete(kind);
           if (
             this.#stream.resources.get(kind)?.revision !== installed.revision ||
@@ -1667,6 +1752,7 @@ export class HttpHostClient {
       typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
     >,
     append: boolean,
+    hasMore: boolean,
   ) {
     const snapshot = this.#snapshot;
     switch (data.kind) {
@@ -1720,27 +1806,41 @@ export class HttpHostClient {
       case "harness":
         this.#update({
           ...snapshot,
-          harnesses: data.harnesses.map(({ config, ...harness }) => ({
-            ...harness,
-            ...harnessEndpoint(config),
-          })),
+          harnesses: mergeResourceRows(
+            append ? snapshot.harnesses : [],
+            data.harnesses.map(({ config, ...harness }) => ({
+              ...harness,
+              ...harnessEndpoint(config),
+            })),
+            (row) => row.id,
+          ),
         });
         break;
       case "tab":
+        this.#tabs.replaceCurrent({
+          tabs: mergeResourceRows(
+            append ? [...this.#tabs.rows.values()] : [],
+            data.tabs.tabs,
+            (tab) => tab.tabId,
+          ),
+          layout: this.#tabs.layout,
+          complete: data.tabs.complete && !hasMore,
+        });
+        break;
       case "tab-layout":
         this.#tabs.replaceCurrent({
-          tabs:
-            data.kind === "tab-layout"
-              ? [...this.#tabs.rows.values()]
-              : data.tabs.complete && !append
-                ? data.tabs.tabs
-                : mergeResourceRows(
-                    [...this.#tabs.rows.values()],
-                    data.tabs.tabs,
-                    (tab) => tab.tabId,
-                  ),
-          layout: data.kind === "tab-layout" ? data.tabs.layout : this.#tabs.layout,
-          complete: data.kind === "tab" ? data.tabs.complete : this.#tabs.complete,
+          tabs: [...this.#tabs.rows.values()],
+          layout: {
+            ...data.tabs.layout,
+            items: mergeResourceRows(
+              append && this.#tabs.layout.revision === data.tabs.layout.revision
+                ? this.#tabs.layout.items
+                : [],
+              data.tabs.layout.items,
+              (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
+            ),
+          },
+          complete: this.#tabs.complete,
         });
         break;
       case "browser-profile":
@@ -1751,14 +1851,32 @@ export class HttpHostClient {
             data.profiles,
             (row) => row.id,
           ),
-          browserProfileDeletions: data.deletions,
+          browserProfileDeletions: mergeResourceRows(
+            append ? (snapshot.browserProfileDeletions ?? []) : [],
+            data.deletions ?? [],
+            (row) => row.profileId,
+          ),
         });
         break;
       case "browser-placement":
-        this.#update({ ...snapshot, browserPlacements: data.placements });
+        this.#update({
+          ...snapshot,
+          browserPlacements: mergeResourceRows(
+            append ? snapshot.browserPlacements : [],
+            data.placements,
+            (row) => row.runnerId,
+          ),
+        });
         break;
       case "browser-home":
-        this.#update({ ...snapshot, browserProfileHomes: data.homes });
+        this.#update({
+          ...snapshot,
+          browserProfileHomes: mergeResourceRows(
+            append ? (snapshot.browserProfileHomes ?? []) : [],
+            data.homes ?? [],
+            (runnerId) => runnerId,
+          ),
+        });
         break;
       case "browser-availability":
         this.#update({ ...snapshot, browserAvailable: data.available });
@@ -1832,16 +1950,15 @@ export class HttpHostClient {
     return [...ids];
   }
 
-  /** `again` asks once more after a finished read; a read in flight always answers. */
-  #ensureAssignments(threadId: string, again = false): void {
+  #ensureAssignments(threadId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const read = this.#assignmentReads.get(threadId);
-    if (read === "reading" || (read === "read" && !again)) return;
-    this.#assignmentReads.set(threadId, "reading");
-    void this.#readAssignments(threadId)
+    if (this.#assignmentReads.has(threadId)) return;
+    const read = new AbortController();
+    this.#assignmentReads.set(threadId, read);
+    void this.#readAssignments(threadId, read.signal)
       .catch(() => undefined)
       .finally(() => {
-        if (this.#assignmentReads.get(threadId) === "reading")
+        if (this.#assignmentReads.get(threadId) === read)
           this.#assignmentReads.set(threadId, "read");
       });
   }
@@ -1908,36 +2025,39 @@ export class HttpHostClient {
    * Assignment however far back it was handed out, so work under way is never
    * missing. A Host without `task-family-v1` gives the newest page alone.
    */
-  async #readAssignments(threadId: string): Promise<void> {
+  async #readAssignments(threadId: string, signal: AbortSignal): Promise<void> {
     await Promise.all([
-      this.#readAssignmentPages(threadId, false),
+      this.#readAssignmentPages(threadId, false, signal),
       ...(this.#capabilities?.includes("task-family-v1")
-        ? [this.#readAssignmentPages(threadId, true)]
+        ? [this.#readAssignmentPages(threadId, true, signal)]
         : []),
     ]);
   }
 
-  async #readAssignmentPages(threadId: string, open: boolean): Promise<void> {
+  async #readAssignmentPages(threadId: string, open: boolean, signal: AbortSignal): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
+    const current = () => !signal.aborted && this.#viewerStillCurrent(generation, userId);
     let before: string | null = null;
     do {
       let response;
       try {
         response = unwrapRpcResult(
-          await this.rpc["thread.assignments.list"]({
-            threadId,
-            limit: 100,
-            ...(open ? { open } : {}),
-            ...(before === null ? {} : { before }),
-          }),
+          await this.rpc["thread.assignments.list"](
+            {
+              threadId,
+              limit: 100,
+              ...(open ? { open } : {}),
+              ...(before === null ? {} : { before }),
+            },
+            { signal },
+          ),
         );
       } catch (error) {
-        if (this.#viewerStillCurrent(generation, userId))
-          this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        if (current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (!current()) return;
       if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
       this.#update({
         ...this.#snapshot,
@@ -2013,7 +2133,7 @@ export class HttpHostClient {
         },
       });
     }
-    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null)
+    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null, read)
       .catch(() => false)
       .then((settled) => {
         if (this.#browserUsageReads.get(threadId) !== read) return;
@@ -2043,6 +2163,7 @@ export class HttpHostClient {
     threadId: string,
     runIds: readonly string[],
     whole: boolean,
+    read: { again: "full" | "missing" | null },
   ): Promise<boolean> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
@@ -2050,6 +2171,7 @@ export class HttpHostClient {
     const current = () =>
       this.#viewerStillCurrent(generation, userId) &&
       this.#snapshot.deploymentId === deploymentId &&
+      this.#browserUsageReads.get(threadId) === read &&
       this.#showsThread(threadId);
     const uses = new Map<string, BrowserSessionUsageProjection>();
     try {
@@ -2852,6 +2974,7 @@ export class HttpHostClient {
     this.#threadReaders.clear();
     for (const reader of this.#scopeReaders.values()) reader.dispose();
     this.#scopeReaders.clear();
+    this.#clearViewerReads();
     for (const release of this.#lifecycleDisposers) release();
     clearRunPageViews(this);
     clearRunPlacePictures(this);
@@ -3182,7 +3305,7 @@ export class HttpHostClient {
     this.#stream.setBackground(true);
     this.#invalidateAttention();
     this.#clearProbe();
-    for (const read of this.#resourceReads.values()) read.abort();
+    for (const { controller } of this.#resourceReads.values()) controller.abort();
     this.#resourceReads.clear();
     this.#targetedControl.suspend(true, this.#network !== "offline");
     this.#targetedWatch.suspend(true);
@@ -3365,10 +3488,12 @@ export class HttpHostClient {
       else {
         const affected = affectedPersonalSubscriptions(event.reason ?? "");
         if (affected !== null) {
-          this.#viewerGeneration++;
           if (affected.length === 0 || affected.includes("shell")) {
+            this.#viewerGeneration++;
             this.#stream.clear(true);
             this.#resourceRevisions.clear();
+            this.#returnHintRevisions.clear();
+            this.#clearViewerReads();
             this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
           } else {
             for (const scope of this.#stream.revokeDetails(affected)) {
@@ -3376,8 +3501,7 @@ export class HttpHostClient {
               const id = scope.threadId;
               this.#threadDeployment.delete(id);
               this.#threadState.forget(id);
-              this.#assignmentReads.delete(id);
-              this.#automationReads.delete(id);
+              this.#clearDetailReads(id);
             }
           }
           this.#bodies.clear();
@@ -3433,7 +3557,7 @@ export class HttpHostClient {
     this.#invalidateAttention();
     if (this.#reconnect) clearTimeout(this.#reconnect);
     this.#reconnect = undefined;
-    for (const read of this.#resourceReads.values()) read.abort();
+    for (const { controller } of this.#resourceReads.values()) controller.abort();
     this.#resourceReads.clear();
     this.#finishLoad();
     socket?.close(1000, "Client closed");
@@ -3536,17 +3660,11 @@ export class HttpHostClient {
     this.#stream.clear(true);
     this.#bodies.clear();
     this.#resourceRevisions.clear();
+    this.#returnHintRevisions.clear();
     this.#environmentCatalogs.clear();
     this.#environmentAuth.clear();
-    this.#browserUsageRead.clear();
-    this.#browserUsageReads.clear();
-    this.#browserUsageRunSources.clear();
-    this.#browserUses.clear();
+    this.#clearViewerReads();
     this.#threadDeployment.clear();
-    this.#assignmentReads.clear();
-    this.#automationReads.clear();
-    this.#readAutomations.clear();
-    this.#deniedAssignments.clear();
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
@@ -3642,8 +3760,10 @@ export class HttpHostClient {
       snapshot = { ...snapshot, threadAutomations: {} };
     const tabRows = this.#tabs.rows;
     const tabsChanged = tabRows !== this.#tabRows;
-    if (tabsChanged) {
-      this.#tabRows = tabRows;
+    const inventoryCompleted = this.#tabs.complete && !this.#tabInventoryComplete;
+    this.#tabRows = tabRows;
+    this.#tabInventoryComplete = this.#tabs.complete;
+    if (this.#tabs.complete && (tabsChanged || inventoryCompleted)) {
       // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
       for (const tabId of this.#pageSessions.keys())
         if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
@@ -3744,7 +3864,8 @@ export class HttpHostClient {
         ),
       ];
       const previousVisits =
-        viewerScopeOf(snapshot) === viewerScopeOf(this.#snapshot)
+        snapshot.sessionId === this.#snapshot.sessionId &&
+        snapshot.deploymentId === this.#snapshot.deploymentId
           ? this.#snapshot.threadVisits
           : snapshot.threadVisits;
       let visits = previousVisits;

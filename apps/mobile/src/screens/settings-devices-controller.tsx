@@ -35,6 +35,7 @@ export function DevicesSettingsController(): ReactNode {
   const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
   const host = selection.hostClient;
   usePersonalResources(host, deviceResources);
+  const machinePreview = useHostValue(host, (state) => state.resourceSummaries?.machine, undefined);
   const deploymentId = selection.deploymentId;
   const overview = useHostRead(
     host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
@@ -156,6 +157,10 @@ export function DevicesSettingsController(): ReactNode {
     }
   };
 
+  const knownMachines = new Set<string>(snapshot?.machines.map(({ id }) => id));
+  const previewRows = machinePreview?.entries.flatMap(({ id, label }) =>
+    label && !knownMachines.has(id) ? [{ key: id, label, kind: "text" as const }] : [],
+  );
   const nativeSections: NativeSettingsSection[] = [
     ...(failure === null
       ? []
@@ -167,6 +172,7 @@ export function DevicesSettingsController(): ReactNode {
             footer: { text: failure, tone: "danger" as const },
           },
         ]),
+    ...(previewRows?.length ? [{ key: "device-preview", title: "", rows: previewRows }] : []),
     ...sections.map((section) => ({
       key: section.key,
       title: section.title,

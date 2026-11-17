@@ -81,7 +81,8 @@ export class PersonalShellStore {
         const sameViewer =
           old.snapshot?.epoch === snapshot.epoch &&
           old.snapshot.viewerId === snapshot.viewerId &&
-          old.snapshot.deploymentId === snapshot.deploymentId;
+          old.snapshot.deploymentId === snapshot.deploymentId &&
+          old.snapshot.session?.sessionId === snapshot.session?.sessionId;
         const tasks = new Map(
           snapshot.tasks.map((task) => {
             const prior = sameViewer ? old.tasks.get(task.id) : undefined;
