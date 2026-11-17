@@ -1,3 +1,4 @@
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
 import { sameDeviceDriver } from "./device-drivers.js";
 import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import type { DeviceDisplayAuthorization, DeviceDriverRoute } from "./device-drivers.js";
@@ -304,6 +305,8 @@ export interface ComputerUseMachineOption {
   readonly definitionId?: DisplayDefinitionId;
   readonly runnerId: ComputerTargetId;
   readonly deviceId?: ComputerTargetId;
+  readonly availability?: DeviceAvailability;
+  readonly setup?: PhoneDisplayView["setup"];
 }
 
 type MachineOwners = ReadonlyMap<ComputerTargetId, { readonly effectiveOwner: UserId | null }>;
@@ -367,6 +370,8 @@ export interface ComputerUseServiceOptions {
       readonly name: string;
       readonly platform: ComputerAppPlatform;
       readonly definitionId?: DisplayDefinitionId;
+      readonly availability?: DeviceAvailability;
+      readonly setup?: PhoneDisplayView["setup"];
     } & ({ deviceId: DeviceId } | { runnerId: import("@opensteer/core").RunnerId }))[]
   >;
   readonly machineOwners: (deviceIds: readonly ComputerTargetId[]) => Promise<MachineOwners>;
@@ -540,6 +545,8 @@ export class ComputerUseService {
   /** A Runner chooses reported IDs; only an exact Run/Runner/session tuple may share a write. */
   readonly #unrecordedStops = new Map<string, HeldStop>();
   readonly #stopWrites = new Map<string, Promise<void>>();
+  /** Ledger writes nobody awaits; shutdown waits for them so none outlives the Host's database. */
+  readonly #writes = new Set<Promise<unknown>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
@@ -1332,10 +1339,9 @@ export class ComputerUseService {
     const owners = this.#appOwners.get(session.deviceId) ?? new Map<string, Session>();
     const holder = owners.get(key);
     if (holder && holder !== session) {
-      const title = holder.threadTitle;
       throw new ComputerUseError(
         "busy",
-        `${session.deviceName} is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
+        `${session.deviceName} is already being used by another task. ${computerUseBusyNextStep}`,
         true,
       );
     }
@@ -1390,11 +1396,6 @@ export class ComputerUseService {
     if (session.confirmed) this.#onSessionsChanged();
   }
 
-  /**
-   * The computer's own sentence, plus the Thread when this Host is the one
-   * holding the session. `busy` names no other Deployment's Thread, because
-   * only the Host that opened a session knows what it is for.
-   */
   #sentence(
     session: Session,
     scope: ComputerUseScope,
@@ -1407,11 +1408,7 @@ export class ComputerUseService {
       return `Computer use for this task on ${session.deviceName} ended before this call ran. Observe the ${scopeWords(scope).subject} again to continue.`;
     }
     if (code !== "busy") return message;
-    const holder = this.#appOwners
-      .get(session.deviceId)
-      ?.get(computerUseHolderKey(holdingOf(scope)));
-    const title = holder?.runId !== session.runId ? holder?.threadTitle : null;
-    return `${title ? `${message} (Task: ${title})` : message} ${computerUseBusyNextStep}`;
+    return `${message} ${computerUseBusyNextStep}`;
   }
 
   // ---- Mac operations --------------------------------------------------
@@ -1531,7 +1528,7 @@ export class ComputerUseService {
               : machine.definitionId === undefined || machine.definitionId === definitionId) &&
             owners.get(machine.deviceId)?.effectiveOwner === ownerUserId,
         )
-        .map(({ name, deviceId }) => {
+        .map(({ name, deviceId, availability, setup }) => {
           const status = live.get(deviceId)?.status;
           const ready =
             !!status?.operations.length &&
@@ -1539,6 +1536,8 @@ export class ComputerUseService {
           return {
             name,
             deviceId,
+            ...(availability ? { availability } : {}),
+            ...(setup ? { setup } : {}),
             runnerId: deviceId,
             ...(isPhoneDisplayDefinitionId(definitionId) ? { definitionId } : {}),
             ready,
@@ -1588,14 +1587,9 @@ export class ComputerUseService {
   }
 
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
-  holders(
-    deviceId: ComputerTargetId,
-  ): ReadonlyMap<string, { readonly runId: RunId; readonly threadTitle: string | null }> {
+  holders(deviceId: ComputerTargetId): ReadonlyMap<string, { readonly runId: RunId }> {
     return new Map(
-      [...(this.#appOwners.get(deviceId) ?? [])].map(([app, { runId, threadTitle }]) => [
-        app,
-        { runId, threadTitle },
-      ]),
+      [...(this.#appOwners.get(deviceId) ?? [])].map(([app, { runId }]) => [app, { runId }]),
     );
   }
 
@@ -1708,7 +1702,7 @@ export class ComputerUseService {
     for (const [key, stopped] of this.#unrecordedStops) {
       if (stopped.runId === runId) this.#unrecordedStops.delete(key);
     }
-    void this.#stops.clear(runId).catch(this.#onError);
+    void this.#write(this.#stops.clear(runId)).catch(this.#onError);
     for (const session of this.#snapshot()) {
       if (session.runId !== runId) continue;
       void this.#closeSession(session).catch(() => undefined);
@@ -1902,9 +1896,8 @@ export class ComputerUseService {
     const key = stopReportKey(stop);
     const inFlight = this.#stopWrites.get(key);
     if (inFlight) return inFlight;
-    const write = this.#stops
-      .record(stop.runId, stop.deviceId)
-      .then(() => {
+    const write = this.#write(
+      this.#stops.record(stop.runId, stop.deviceId).then(() => {
         const recorded = this.#unrecordedStops.get(key);
         if (!recorded) return;
         this.#unrecordedStops.delete(key);
@@ -1917,12 +1910,18 @@ export class ComputerUseService {
             })
             .catch(this.#onError);
         }
-      })
-      .finally(() => {
-        this.#stopWrites.delete(key);
-      });
+      }),
+    ).finally(() => {
+      this.#stopWrites.delete(key);
+    });
     this.#stopWrites.set(key, write);
     return write;
+  }
+
+  #write<T>(work: Promise<T>): Promise<T> {
+    const tracked = work.finally(() => this.#writes.delete(tracked));
+    this.#writes.add(tracked);
+    return tracked;
   }
 
   /**
@@ -2023,7 +2022,8 @@ export class ComputerUseService {
     for (const stop of this.#unrecordedStops.values()) {
       void this.#recordStop(stop).catch((error: unknown) => this.#onError(error));
     }
-    void this.#expireSetupRequests?.().catch((error: unknown) => this.#onError(error));
+    if (this.#expireSetupRequests)
+      void this.#write(this.#expireSetupRequests()).catch((error: unknown) => this.#onError(error));
   }
 
   sweepIdle(): void {
@@ -2040,6 +2040,7 @@ export class ComputerUseService {
     clearInterval(this.#sweep);
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
+    while (this.#writes.size > 0) await Promise.allSettled(this.#writes);
   }
 
   // ---- projection ------------------------------------------------------

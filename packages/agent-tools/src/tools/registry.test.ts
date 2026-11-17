@@ -163,7 +163,11 @@ describe("Opensteer tool registry", () => {
   });
   it("returns a ready login reference and drops any other field, such as a saved value", () => {
     const ready = {
-      status: "ready",
+      status: "fulfilled",
+      kind: "browser.password-sign-in",
+      requestId: null,
+      next: "Use the login reference.",
+      loginStatus: "ready",
       site: "https://example.com",
       loginRef: `lgn_${"1".repeat(32)}`,
       account: "a•••@example.com",

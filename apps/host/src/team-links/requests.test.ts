@@ -5,6 +5,7 @@ import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-tea
 import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
 
 function fixture() {
@@ -189,6 +190,52 @@ function fixture() {
     },
   };
 }
+
+it("drains a retry's request lookup before stopping", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const lookup = Promise.withResolvers<[]>();
+  let reading = false;
+  const publisher = new PersonalTeamRequests({
+    ...f.publisher.options,
+    requests: {
+      ...f.publisher.options.requests,
+      decide: async () => ({ ...f.row(), kind: "ask", localDecision: "approve" }),
+      mirror: async () => {
+        throw new OpensteerError({ code: "timeout", message: "Decision unavailable" });
+      },
+      mirrors: () => {
+        reading = true;
+        return lookup.promise;
+      },
+    } as unknown as PersonalTeamRequestsStore,
+  });
+  let stopping: Promise<void> | undefined;
+  try {
+    await expect(
+      publisher.decide(createId("user"), f.source.teamId, f.row().requestId, "approve"),
+    ).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(reading).toBe(true);
+    let stopped = false;
+    stopping = publisher.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped, "stop returned while the retry was still reading the database").toBe(false);
+    lookup.resolve([]);
+    vi.useRealTimers();
+    await withTimeout(stopping, 1_000, {
+      timeoutError: () => new Error("Request lookup did not drain on stop"),
+    });
+  } finally {
+    lookup.resolve([]);
+    vi.useRealTimers();
+    await withTimeout(Promise.all([stopping, publisher.stop()]), 1_000, {
+      timeoutError: () => new Error("Request retry did not stop during cleanup"),
+    });
+  }
+});
 
 describe("durable team publication", () => {
   it("strips local image embeds before validating and freezing a final team answer", async () => {

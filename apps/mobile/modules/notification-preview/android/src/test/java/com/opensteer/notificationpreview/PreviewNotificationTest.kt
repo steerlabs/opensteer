@@ -35,25 +35,39 @@ class PreviewNotificationTest {
   }
 
   @Test
-  fun invalidRouteAndFailedDecrypt() {
-    val invalid =
-      PreviewNotification.build(fields + ("deepLink" to "https://example.com")) {
-        error("must not decrypt")
+  fun allDestinationsKeepRoutingWhenDecryptionFails() {
+    val destinations =
+      listOf(
+        Triple("team-message", "channelId", "channel"),
+        Triple("team-notice", "noticeId", "notice"),
+        Triple("request-opened", "", "needs-you"),
+        Triple("future-kind", "futureId", "future"),
+      )
+    for ((kind, targetField, target) in destinations) {
+      val routing =
+        fields - setOf("threadId", "messageId") +
+          mapOf(
+            "kind" to kind,
+            "deepLink" to "com.opensteer.mobile:/deployments/$dep/$target",
+            "teamId" to dep,
+          ) + if (targetField.isEmpty()) emptyMap() else mapOf(targetField to target)
+      for (fails in listOf(false, true)) {
+        val result = PreviewNotification.build(routing + ("preview" to "encrypted")) {
+          if (fails) error("missing key or bad tag")
+          "Title" to "Body"
+        }
+        assertEquals(routing, result.routing)
+        assertEquals(
+          if (targetField in setOf("channelId", "noticeId")) "$dep:$target" else null,
+          result.group,
+        )
+        assertEquals(if (fails) PreviewNotification.generic(kind) else "Body", result.text)
       }
-    assertTrue(invalid.routing.isEmpty())
-    assertNull(invalid.group)
-    assertEquals("Opensteer replied", invalid.text)
+    }
     val failed = PreviewNotification.build(fields) { error("bad tag") }
     assertEquals(fields, failed.routing)
     assertEquals("Opensteer", failed.title)
     assertEquals("Opensteer replied", failed.text)
-    assertEquals("Opensteer needs you", PreviewNotification.generic("request-opened"))
-    assertEquals("Opensteer couldn't finish", PreviewNotification.generic("run-failed"))
-    assertFalse(
-      PreviewNotification.validRoute(
-        fields + ("deepLink" to fields.getValue("deepLink") + "&messageId=$message")
-      )
-    )
   }
 
   @Test

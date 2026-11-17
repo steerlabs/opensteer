@@ -605,6 +605,7 @@ export const IntegrationReadinessCodeSchema = z.enum([
   "USER_AUTHORIZATION_REQUIRED",
   "REAUTHORIZATION_REQUIRED",
   "ACCESS_GRANT_REQUIRED",
+  "READ_ONLY_TASK",
   "INTEGRATION_UNAVAILABLE",
 ]);
 

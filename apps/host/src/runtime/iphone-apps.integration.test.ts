@@ -40,7 +40,7 @@ import {
   operations,
   requestComputerAppSetup,
   setComputerApp,
-  toolReadiness,
+  toolBlocked,
   toolText,
   waitForClose,
   waitForMessage,
@@ -819,9 +819,12 @@ integration.sequential("iPhone integrations Host contract", () => {
     const phoneWriteAddress = operation(phoneTools, "create_event").address;
     await phone.disconnectStream();
     expect(
-      toolReadiness(await gateway.call("integration_search", { query: "Calendar" }), "list_events")
-        .detail,
-    ).toBe(offline("Test iPhone"));
+      toolBlocked(await gateway.call("integration_search", { query: "Calendar" }), "list_events"),
+    ).toEqual({
+      code: "unavailable",
+      message: `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+      next: "Continue without it and tell the person what the message says.",
+    });
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
     // Losing the phone still cannot route to it.
@@ -905,7 +908,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         error: {
           code: "computer_offline",
           message: "Device is offline. Do not request access.",
-          next: `computerId=${phone.runnerId}, access=apps. Check computer_list; do not request access while it is offline.`,
+          next: `computerId=${phone.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
         },
       },
     });

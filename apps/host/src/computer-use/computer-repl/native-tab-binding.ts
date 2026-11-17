@@ -1,6 +1,7 @@
+import { refused, OpensteerError, type Blocked, type TabId, type UserId } from "@opensteer/core";
 import { computerConnectionDeviceId, type DeviceComputerConnection } from "../device-drivers.js";
 import type { DeviceId, RunnerId } from "@opensteer/core";
-import { isPhoneDisplayDefinitionId, refused, type TabId, type UserId } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { TabServicePort } from "../../tabs/ports.js";
@@ -14,6 +15,7 @@ export interface NativeTabBindingOptions {
   tabs: Pick<TabServicePort, "get" | "authorizeShow">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
   connections(): Promise<readonly DeviceComputerConnection[]>;
+  blocked?(target: NativeReplTabTarget): Promise<Blocked | undefined>;
   bind(
     connection: DeviceComputerConnection,
     target: NativeReplTabTarget,
@@ -64,6 +66,14 @@ export async function bindNativeTab(
         ? isPhoneDisplayDefinitionId(entry.definitionId)
         : entry.computer.app && computerAppIdentitiesEqual(entry.computer.app, target.app)),
   );
+  const blocked = await options.blocked?.(target);
+  if (blocked)
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: blocked.code,
+      message: blocked.message,
+      next: blocked.next,
+    });
   if (!connection) throw refused("not_found", "This tab is unavailable.");
   await authorize();
   const reply = await options.bind(connection, target, authorize);

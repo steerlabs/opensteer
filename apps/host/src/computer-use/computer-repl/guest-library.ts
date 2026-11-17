@@ -7,7 +7,7 @@ export const computerGuestLibrary = String.raw`
   delete globalThis.__computerCall;
   delete globalThis.__computerPrint;
   class ComputerError extends Error {
-    constructor(code, message, performed = []) { super(message); this.name = "ComputerError"; this.code = code; this.performed = performed; }
+    constructor(code, message, performed = [], next = null) { super(message); this.name = "ComputerError"; this.code = code; this.performed = performed; this.next = next; }
   }
   async function call(operation, target = null, args = {}) {
     const result = JSON.parse(await bridge(JSON.stringify({operation,target,args})));
@@ -22,8 +22,9 @@ export const computerGuestLibrary = String.raw`
   async function resolve(kind, query, computer) {
     const entries = await call(kind);
     const q = String(query).toLowerCase();
-    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,kind === "phones" ? entry.computerId : null].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
-    if(matches.length !== 1) throw new ComputerError("app-not-allowed",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No approved " + (kind === "apps" ? "app" : "phone") + " matches " + query + ". Search integrations for access.");
+    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,entry.computerId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
+    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], 'Use integration_search {query:"' + (kind === "apps" ? "Computer use" : "Phone display") + '"} to find targets and access instructions.');
+    if(matches[0].blocked) { const {code,message,next}=matches[0].blocked; throw new ComputerError(code,message,[],next); }
     return matches[0];
   }
   const windowStates = new Map();
@@ -61,7 +62,7 @@ export const computerGuestLibrary = String.raw`
   }
   globalThis.app = async (query,{computer}={}) => new App(await resolve("apps",query,computer));
   const phoneStates=new Map();
-  const phoneFacts=["definitionId","platform","navigation","actions","availability"];
+  const phoneFacts=["definitionId","platform","navigation","actions","access","blocked"];
   class Phone {
     #state;
     constructor(entry) {Object.defineProperty(this,"tabId",{value:entry.tabId,enumerable:true});this.id=entry.connectionId ?? entry.id;this.name=entry.name;this.computerId=entry.computerId;for(const key of phoneFacts) if(entry[key] !== undefined) this[key]=entry[key];let state=phoneStates.get(this.id);if(!state){state={observationId:null};phoneStates.set(this.id,state);}this.#state=state;}

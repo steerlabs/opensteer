@@ -1,6 +1,5 @@
 package com.opensteer.notificationpreview
 
-import java.net.URI
 import java.util.UUID
 
 data class PreviewNotificationFields(
@@ -16,41 +15,17 @@ object PreviewNotification {
     when (kind) {
       "request-opened" -> "Opensteer needs you"
       "reply-published" -> "Opensteer replied"
-      else -> "Opensteer couldn't finish"
+      "run-failed" -> "Opensteer couldn't finish"
+      "team-message" -> "New team message"
+      "team-notice" -> "New team notice"
+      "team-agent-needs-you" -> "Your agent needs you"
+      "team-agent-completed" -> "Your agent replied to your team"
+      "team-ready" -> "Your team is ready"
+      "report-published" -> "An agent shared an update"
+      "run-completed" -> "A run finished"
+      "run-interrupted" -> "A run was stopped"
+      else -> "New Opensteer notification"
     }
-
-  fun validRoute(f: Map<String, String>): Boolean =
-    runCatching {
-        require(f.values.all { it.toByteArray().size <= 4096 })
-        val dep = f.getValue("deploymentId")
-        val thread = f.getValue("threadId")
-        require(
-          dep.matches(Regex("^dep_[0-9a-f-]{36}$")) && thread.matches(Regex("^thr_[0-9a-f-]{36}$"))
-        )
-        require(f.getValue("notificationId").matches(Regex("^ntf_[0-9a-f-]{36}$")))
-        val uri = URI(f.getValue("deepLink"))
-        require(
-          uri.scheme == "com.opensteer.mobile" &&
-            uri.rawAuthority == null &&
-            uri.fragment == null &&
-            uri.path == "/deployments/$dep/threads/$thread"
-        )
-        val anchor =
-          when (f.getValue("kind")) {
-            "reply-published" -> "messageId"
-            "request-opened" -> "requestId"
-            "run-failed" -> null
-            else -> error("invalid")
-          }
-        if (anchor == null) require(uri.query == null)
-        else {
-          val prefix = if (anchor == "messageId") "msg" else "req"
-          require(f.getValue(anchor).matches(Regex("^${prefix}_[0-9a-f-]{36}$")))
-          require(uri.query == "$anchor=${f.getValue(anchor)}")
-        }
-        true
-      }
-      .getOrDefault(false)
 
   fun plaintext(fields: Map<String, Any>): Pair<String, String> {
     require(fields.keys == setOf("version", "title", "body") && fields["version"] == 1)
@@ -66,34 +41,17 @@ object PreviewNotification {
     decrypt: () -> Pair<String, String>,
   ): PreviewNotificationFields {
     val generic = "Opensteer" to generic(fields["kind"])
-    if (!validRoute(fields))
-      return PreviewNotificationFields(
-        UUID.randomUUID().toString(),
-        null,
-        emptyMap(),
-        generic.first,
-        generic.second,
-      )
-    val routing =
-      fields.filterKeys {
-        it in
-          setOf(
-            "deepLink",
-            "deploymentId",
-            "threadId",
-            "kind",
-            "messageId",
-            "requestId",
-            "notificationId",
-            "installationId",
-            "expiresAt",
-            "preview",
-          )
-      }
-    val text = runCatching(decrypt).getOrDefault(generic)
+    val routing = fields.filterKeys { it != "preview" }
+    val text =
+      runCatching {
+        require(fields.values.all { it.toByteArray().size <= 4096 })
+        decrypt()
+      }.getOrDefault(generic)
+    val deployment = fields["deploymentId"]
+    val target = fields["threadId"] ?: fields["channelId"] ?: fields["noticeId"]
     return PreviewNotificationFields(
-      "${fields.getValue("deploymentId")}:${fields.getValue("notificationId")}",
-      "${fields.getValue("deploymentId")}:${fields.getValue("threadId")}",
+      fields["notificationId"]?.let { "$deployment:$it" } ?: UUID.randomUUID().toString(),
+      if (deployment != null && target != null) "$deployment:$target" else null,
       routing,
       text.first,
       text.second,

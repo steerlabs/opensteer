@@ -5,9 +5,8 @@ import {
 import { DeviceLimitReachedError } from "@opensteer/client/connections";
 import {
   dismissThreadNotifications,
-  notificationDestination,
+  notificationDeepLink,
   type NotificationData,
-  type NotificationDestination,
   type VisibleThread,
 } from "./notification-routing.js";
 import type {
@@ -15,6 +14,11 @@ import type {
   PushPermissions,
   PushTokenSource,
 } from "./push-registration.js";
+
+export interface OpenedNotification {
+  readonly deepLink: string;
+  readonly identifier: string;
+}
 
 /**
  * Everything notifications need from the phone, behind one port.
@@ -32,7 +36,7 @@ export interface MobileNotificationPort {
   /** Clears what the system is still showing for a Thread that was opened. */
   clearThread(visible: VisibleThread): Promise<void>;
   /** Every tap, including the one that cold-started this process. */
-  onOpened(listener: (destination: NotificationDestination) => void): () => void;
+  onOpened(listener: (notification: OpenedNotification) => Promise<void> | void): () => void;
   /**
    * Whatever the platform needs in place before a notification can arrive. On
    * Android that is the channel: the operating system takes importance, sound
@@ -140,6 +144,7 @@ export function createExpoNotificationPort(options: {
   readonly signedInSubject: () => Promise<string | null>;
 }): MobileNotificationPort {
   const { notifications, registry } = options;
+  const handled = new Set<string>();
   const pushCredentials = options.platform !== "android" || options.androidPushConfigured;
   return {
     permissions: createExpoPushPermissions(notifications),
@@ -192,30 +197,50 @@ export function createExpoNotificationPort(options: {
     },
 
     onOpened(listener): () => void {
-      // The same dedupe `useLastNotificationResponse` performs: a cold start
-      // has the response waiting *and* delivers it to the listener, and the
-      // person tapped once.
-      let handledIdentifier: string | null = null;
-      const accept = (response: ExpoNotificationResponse): void => {
-        // Swiping a notification away arrives here too, under the system's own
-        // action identifier. Only a tap asks to be taken somewhere.
-        if (response.actionIdentifier !== notifications.DEFAULT_ACTION_IDENTIFIER) return;
-        if (response.notification.request.identifier === handledIdentifier) return;
-        handledIdentifier = response.notification.request.identifier;
-        const destination = notificationDestination({
-          data: response.notification.request.content.data,
-        });
-        if (destination !== null) listener(destination);
+      const inFlight = new Set<string>();
+      let active = true;
+      const acknowledge = (identifier: string): void => {
+        if (
+          notifications.getLastNotificationResponse()?.notification.request.identifier ===
+          identifier
+        )
+          notifications.clearLastNotificationResponse();
       };
-      const pending = notifications.getLastNotificationResponse();
-      if (pending !== null) {
-        accept(pending);
-        // Read once: the next launch must not reopen a Thread from a tap that
-        // has already been answered.
-        notifications.clearLastNotificationResponse();
-      }
+      const accept = (response: ExpoNotificationResponse): void => {
+        const identifier = response.notification.request.identifier;
+        if (handled.has(identifier)) {
+          acknowledge(identifier);
+          return;
+        }
+        if (inFlight.has(identifier)) return;
+        const deepLink = notificationDeepLink({ data: response.notification.request.content.data });
+        inFlight.add(identifier);
+        const consume = async (): Promise<void> => {
+          try {
+            if (
+              response.actionIdentifier === notifications.DEFAULT_ACTION_IDENTIFIER &&
+              deepLink !== null
+            )
+              await listener({ deepLink, identifier });
+            if (!active) return;
+            handled.add(identifier);
+            if (handled.size > 64) handled.delete(handled.values().next().value!);
+            acknowledge(identifier);
+          } catch {
+            // Routing did not hand off: retain the response so a later delivery can retry.
+          } finally {
+            inFlight.delete(identifier);
+          }
+        };
+        void consume();
+      };
       const subscription = notifications.addNotificationResponseReceivedListener(accept);
-      return () => subscription.remove();
+      const pending = notifications.getLastNotificationResponse();
+      if (pending !== null) accept(pending);
+      return () => {
+        active = false;
+        subscription.remove();
+      };
     },
 
     async prepare(): Promise<void> {

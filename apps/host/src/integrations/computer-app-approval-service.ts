@@ -61,14 +61,7 @@ import {
   computerUseDefinitionId,
   type ComputerUseHolding,
 } from "../computer-use/computer-use-service.js";
-import {
-  computerToolRefs,
-  pendingOnComputerNextAction,
-  pendingPhoneAccessNextAction,
-  pendingPersonalGrantNextAction,
-  unknownComputerUseMac,
-  unknownPhone,
-} from "./computer-use-discovery.js";
+import { computerToolRefs, unknownComputerUseMac, unknownPhone } from "./computer-use-discovery.js";
 
 /** What the approval surfaces and `integration_request` need of sessions. */
 export type ComputerUseApprovalGateway = DeviceComputerUseGateway;
@@ -800,6 +793,8 @@ export class ComputerAppApprovalService {
         );
         return {
           ...phone,
+          ...(connection ? { connectionId: connection.id } : {}),
+          blockedByOwner: !!connection?.computer?.blockedAt,
           connection:
             connection?.computer && !connection.computer.blockedAt
               ? { access: connection.computer.access, connectionId: connection.id }
@@ -1047,7 +1042,12 @@ export class ComputerAppApprovalService {
     ) {
       const toolRefs = computerToolRefs(await this.#listCallableTools(scope), connection.id);
       if (toolRefs.observe && (input.access === "read" || toolRefs.act))
-        return { status: "already-available" as const, toolRefs };
+        return {
+          status: "fulfilled" as const,
+          app: resolved.identity,
+          computer: machine.name,
+          computerId: input.deviceId,
+        };
     }
     return this.#decide(computerUse, {
       app: resolved.identity,
@@ -1110,7 +1110,12 @@ export class ComputerAppApprovalService {
         connection.id,
       );
       if (toolRefs.observe && (input.access === "read" || toolRefs.act))
-        return { status: "already-available" as const, toolRefs };
+        return {
+          status: "fulfilled" as const,
+          app: null,
+          computer: phone.name,
+          computerId: input.deviceId,
+        };
     }
     if (!definition || !isComputerAppDefinition(definition))
       throw new OpensteerError({
@@ -1137,10 +1142,6 @@ export class ComputerAppApprovalService {
     const definitionId = isPhoneDisplayDefinitionId(definition.id)
       ? definition.id
       : computerUseDefinitionId;
-    const scope = {
-      ownerUserId: input.ownerUserId,
-      threadId: input.threadId,
-    };
     // Read before the admission turn: nothing else waiting on this computer
     // should wait on this Thread's name.
     const threadTitle = await computerUse.threadTitle(input.threadId, input.ownerUserId);
@@ -1170,14 +1171,15 @@ export class ComputerAppApprovalService {
         this.#onConnectionsChanged();
         return {
           status: "fulfilled" as const,
-          toolRefs: computerToolRefs(await this.#listCallableTools(scope), decision.connection.id),
+          app: ask.app,
+          computer: ask.computer,
+          computerId: input.deviceId,
         };
       case "personal-grant":
         return {
           status: "pending" as const,
           request: decision.request,
           replayed: decision.replayed,
-          nextAction: pendingPersonalGrantNextAction,
         };
       case "computer":
         this.#onConnectionsChanged();
@@ -1185,9 +1187,6 @@ export class ComputerAppApprovalService {
           status: "pending" as const,
           request: decision.request,
           replayed: decision.replayed,
-          nextAction: isPhoneDisplayDefinitionId(definitionId)
-            ? pendingPhoneAccessNextAction
-            : pendingOnComputerNextAction(ask.computer),
         };
     }
   }
