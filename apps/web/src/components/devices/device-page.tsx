@@ -277,16 +277,21 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     screen?.tone ??
     (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
-  const detachedGeneration = screenMac?.attached
-    ? undefined
-    : deviceMachine(machine).phoneDisplay?.driver?.generation;
-  const setUpAgain =
-    screenMac && detachedGeneration !== undefined && hostClient.iphoneSetup && deploymentId.success
+  const driverGeneration = deviceMachine(machine).phoneDisplay?.driver?.generation;
+  // A disconnected iPhone can be set up again on any of the person's Macs; one
+  // that needs setup is fixed on the Mac that drives it, without detaching it.
+  const fixSetup =
+    screenMac &&
+    screen?.needsSetup &&
+    (!screenMac.attached || screenMacHere) &&
+    driverGeneration !== undefined &&
+    hostClient.iphoneSetup &&
+    deploymentId.success
       ? () =>
           setSettingUpAgain({
             kind: "existing",
             deviceId: DeviceIdSchema.parse(machine.id),
-            expectedGeneration: detachedGeneration,
+            expectedGeneration: driverGeneration,
           })
       : null;
 
@@ -433,8 +438,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
         }}
         onOpenScreen={workspace && screenTab.success ? openScreen : null}
         onPlugIn={() => setPluggingIn(true)}
-        onSetUpAgain={setUpAgain}
-        setupHere={screenMacHere}
+        onFixSetup={fixSetup}
         wifiRow={
           screenMacHere && screenMac?.attached && hostClient.iphoneSetup && deploymentId.success ? (
             <IphoneWifiRow

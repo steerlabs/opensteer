@@ -1,17 +1,12 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
+import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
-  createIphoneSetupPort,
-  mutationIdempotencyKey,
-  type HostClient,
-  type IphoneSetupPort,
-} from "@opensteer/client/host";
-import type {
-  DesktopIphoneSetupBridge,
-  DesktopIphoneSetupStatus,
-} from "@opensteer/protocol/desktop";
-import { mockIphoneScreenDeviceId, mockIphoneScreenDriverId } from "@opensteer/client/mock";
+  createMockIphoneSetupPort,
+  mockIphoneScreenDeviceId,
+  mockIphoneScreenDriverId,
+} from "@opensteer/client/mock";
 import { client, goTo, mount } from "../workspace/workspace.interaction.test-support.js";
 import { deviceRoute, devicesRoute } from "./device-routes.js";
 
@@ -85,7 +80,7 @@ it("disconnects an iPhone's screen control and keeps it, then removes only the i
   });
   expect(document.body.textContent).toContain("Not connected");
   expect(document.body.textContent).toContain(
-    "Plug it into one of your Macs and set it up again in Opensteer there.",
+    "Plug it into one of your Macs, open its page in Opensteer there and choose Set up again.",
   );
 
   await act(async () => button("Remove this iPhone")!.click());
@@ -102,55 +97,18 @@ it("disconnects an iPhone's screen control and keeps it, then removes only the i
 
 it("sets a disconnected iPhone up again from its page in Opensteer on a Mac", async () => {
   const phoneId = mockIphoneScreenDeviceId;
-  let attachCommand: DesktopIphoneSetupStatus["attachCommand"] = null;
   const target = { kind: "existing", deviceId: phoneId, expectedGeneration: 2 } as const;
-  const at = (patch: Partial<DesktopIphoneSetupStatus>): DesktopIphoneSetupStatus => ({
-    setupId: "22222222-2222-4222-8222-222222222222",
-    deploymentId: client.getSnapshot().deploymentId as DesktopIphoneSetupStatus["deploymentId"],
-    step: "choose",
-    reason: null,
-    recoverable: true,
-    personAction: "choose-phone",
-    candidates: [
-      {
-        candidateId: "33333333-3333-4333-8333-333333333333",
-        name: "Sam’s iPhone",
-        model: "iPhone 17",
-        osVersion: "27.1",
-        reason: null,
-      },
-    ],
-    attachCommand: null,
-    target,
-    deviceId: null,
-    driverGeneration: null,
-    wifiEnabled: false,
-    ...patch,
-  });
-  const platform = {
-    begin: vi.fn(async () => at({})),
-    choose: vi.fn(async () => at({ step: "observe", personAction: "continue" })),
-    advance: vi.fn(async ({ step }: { step: string }) => {
-      if (step !== "attach") return at({ step: "wifi", personAction: "choose-wifi" });
-      attachCommand = {
-        type: "iphone.screen.attach",
-        idempotencyKey: "reattach-work-iphone",
-        driverRunnerId: mockIphoneScreenDriverId,
-        target,
-      };
-      return at({ step: "attach", personAction: "continue", attachCommand });
-    }),
-    wifi: vi.fn(async () => at({ step: "attach", personAction: "continue" })),
-    complete: vi.fn(async () => at({ step: "done", personAction: "none", deviceId: phoneId })),
-    cancel: vi.fn(async () => undefined),
-  };
-  let port: IphoneSetupPort | undefined;
+  let port: ReturnType<typeof createMockIphoneSetupPort> | undefined;
   await mount(deviceRoute(phoneId), {
     hostClient: (source) => {
       source.setIphoneScreenState("detached");
-      port = createIphoneSetupPort(platform as unknown as DesktopIphoneSetupBridge, (command) =>
-        source.dispatch(command),
-      );
+      port = createMockIphoneSetupPort({
+        start: "wifi",
+        driverRunnerId: mockIphoneScreenDriverId,
+        dispatch: (command) => source.dispatch(command),
+      });
+      vi.spyOn(port, "begin");
+      vi.spyOn(port, "detach");
       return new Proxy(source, {
         get(held, name) {
           if (name === "iphoneSetup") return port;
@@ -166,13 +124,10 @@ it("sets a disconnected iPhone up again from its page in Opensteer on a Mac", as
   expect(document.body.textContent).toContain("Set up again on this Mac");
 
   await act(async () => button("Set up again")!.click());
-  expect(platform.begin).toHaveBeenCalledWith({
+  expect(port!.begin).toHaveBeenCalledWith({
     deploymentId: client.getSnapshot().deploymentId,
     target,
   });
-  await act(async () =>
-    (document.querySelector('[aria-label="Choose Sam’s iPhone"]') as HTMLButtonElement).click(),
-  );
   await vi.waitFor(() => {
     if (!button("Only when plugged in")) throw new Error("Setup never reached Wi‑Fi");
   });
@@ -187,6 +142,6 @@ it("sets a disconnected iPhone up again from its page in Opensteer on a Mac", as
     },
     { timeout: 2_000 },
   );
-  expect(attachCommand).not.toBeNull();
+  expect(port!.detach).not.toHaveBeenCalled();
   expect(client.getSnapshot().machines.find(({ id }) => id === phoneId)?.name).toBe("Work iPhone");
 });

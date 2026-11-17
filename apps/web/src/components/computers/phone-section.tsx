@@ -2,6 +2,7 @@ import type { IntegrationConnectionSummary } from "@opensteer/client/integration
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerUseAccessLabel,
+  iphoneScreenKeepAwakeTip,
   phoneScreenSetupLine,
   phoneScreenStatus,
   phoneUseCardTitle,
@@ -36,8 +37,7 @@ export function PhoneSection({
   onChanged,
   onOpenScreen,
   onPlugIn,
-  onSetUpAgain = null,
-  setupHere = false,
+  onFixSetup = null,
   wifiRow,
 }: {
   /** The device's Apps switch, for a phone whose card is its whole page. */
@@ -52,10 +52,12 @@ export function PhoneSection({
   readonly onOpenScreen?: (() => void) | null;
   /** Opens setup over USB for an Android phone or updates its app. */
   readonly onPlugIn: () => void;
-  /** Sets a disconnected iPhone up again here; absent where this window can't reach iPhones. */
-  readonly onSetUpAgain?: (() => void) | null;
-  /** This window runs on the Mac that drives the phone. */
-  readonly setupHere?: boolean;
+  /**
+   * Opens iPhone setup here for this phone: setting it up again once
+   * disconnected, or fixing what its setup needs. Absent where this window
+   * can't reach the iPhone.
+   */
+  readonly onFixSetup?: (() => void) | null;
   /** Same Wi‑Fi for an iPhone, where this window runs on the Mac that drives it. */
   readonly wifiRow?: ReactNode;
 }) {
@@ -99,19 +101,13 @@ export function PhoneSection({
     ? appsOffLine
     : (screen?.fix ?? (screen?.tone === "online" ? phoneUseStatusLine(view, machine.name) : null));
   const detached = view.driver?.attached === false;
-  const setupAgainHere = detached && onSetUpAgain !== null;
-  const setupRow = setupAgainHere
+  const setupRow = onFixSetup
     ? {
-        label: "Set up again on this Mac",
-        detail: `Plug ${machine.name} into this Mac with a cable. It keeps its name, approvals and tab.`,
+        label: detached ? "Set up again on this Mac" : "Fix setup on this Mac",
+        detail: `Plug ${machine.name} into this Mac with a cable and follow along. It keeps its name, approvals and tab.`,
+        button: detached ? "Set up again" : "Fix setup",
       }
-    : setupHere && !detached
-      ? {
-          label: "Finish on this Mac",
-          detail:
-            "Keep it plugged into this Mac and do what it asks above. If it still needs setup, disconnect screen control, then set it up again here.",
-        }
-      : phoneScreenSetupLine(machine);
+    : phoneScreenSetupLine(machine);
 
   return (
     <section
@@ -265,10 +261,10 @@ export function PhoneSection({
               <span className="card__row-title">{setupRow.label}</span>
               <span className="card__row-detail card__row-detail--wrap">{setupRow.detail}</span>
             </span>
-            {setupAgainHere ? (
+            {onFixSetup && "button" in setupRow ? (
               <span className="card__row-actions">
-                <button className="btn btn--small" onClick={onSetUpAgain} type="button">
-                  Set up again
+                <button className="btn btn--small btn--primary" onClick={onFixSetup} type="button">
+                  {setupRow.button}
                 </button>
               </span>
             ) : null}
@@ -280,6 +276,7 @@ export function PhoneSection({
           {error}
         </p>
       ) : null}
+      {screen && !detached ? <p className="settings-footnote">{iphoneScreenKeepAwakeTip}</p> : null}
     </section>
   );
 }
