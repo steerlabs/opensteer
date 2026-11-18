@@ -36,6 +36,7 @@ const management = new Set([
 ]);
 const personOnly = new Set([
   "installed",
+  "scheduleApprovals",
   "pinOAuth",
   "prepareOAuth",
   "oauthMethods",
@@ -236,7 +237,6 @@ export class PluginAuthority {
       if (!live || !discovery.has(input.operation)) return { allowed: false };
     }
     if (personOnly.has(input.operation)) return { allowed: false };
-    if (caller.kind === "program" && management.has(input.operation)) return { allowed: false };
     if (
       input.plugin &&
       ((grants[input.plugin] === "off" &&

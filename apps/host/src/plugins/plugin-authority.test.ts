@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { createId } from "@opensteer/core";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
+import type { AgentCaller } from "../mcp/agent-caller.js";
 import { PluginAuthority } from "./plugin-authority.js";
 
 test.each(["page", "webhook"])(
@@ -78,4 +79,32 @@ test("retires completed occurrences while retaining a handed-off execution", asy
     });
     expect(authority.caller(key)).toBeUndefined();
   }
+});
+
+test("a full-access Run cannot read the person's scheduled approvals", async () => {
+  const owner = createId("user");
+  const authority = new PluginAuthority({
+    store: {
+      getThreadForOwner: async () => ({ accessMode: "full-access" }),
+      assertActiveGrant: async () => undefined,
+    } as unknown as OpensteerStore,
+    settings: { settings: async () => [] } as unknown as PluginAgentStore,
+    owner: async () => owner,
+  });
+  const caller = {
+    kind: "run",
+    userId: owner,
+    thread: { id: createId("thread") },
+    accessMode: "full-access",
+    claims: { runId: createId("run") },
+  } as unknown as AgentCaller;
+  await authority.scoped(caller, async () => {
+    const context = authority.admit(caller);
+    expect(await authority.authorize({ ...context, operation: "search" })).toMatchObject({
+      allowed: true,
+    });
+    expect(
+      await authority.authorize({ ...context, operation: "scheduleApprovals", plugin: "app_test" }),
+    ).toMatchObject({ allowed: false });
+  });
 });
