@@ -37,6 +37,8 @@ const connectionNotices = new Set([
   "useConnectionNotice",
   "describeHostConnection",
   "showsHostLive",
+  "presentConnectionGate",
+  "presentConnectionStarting",
 ]);
 
 /**
@@ -85,8 +87,20 @@ const boundaryModules: readonly { readonly prefix: string; readonly reason: stri
     reason: "Account and team session ports; rebuild typed failures for the coordinator",
   },
   {
-    prefix: "apps/mobile/src/phone-browser/",
-    reason: "this phone as an agent browser; words its errors for the Host's wire, not a screen",
+    prefix: "apps/mobile/src/phone-browser/android-port.ts",
+    reason: "this phone as an agent browser: words Android's errors for the Host's wire",
+  },
+  {
+    prefix: "apps/mobile/src/phone-browser/iphone-port.ts",
+    reason: "this phone as an agent browser: words iOS's errors for the Host's wire",
+  },
+  {
+    prefix: "apps/mobile/src/phone-browser/agent-helper/",
+    reason: "a script injected into the agent's page; its answers go to the agent over CDP",
+  },
+  {
+    prefix: "apps/mobile/src/phone-browser/manager.ts",
+    reason: "this phone's browser sessions for agents: CDP router failures go to the Host",
   },
   {
     prefix: "apps/mobile/src/ui/client-feedback.ts",
@@ -103,6 +117,14 @@ const shellAdapters: readonly { readonly prefix: string; readonly reason: string
   {
     prefix: "apps/mobile/src/ui/connection-live.ts",
     reason: "mobile shell; the pill, details sheet and gates read connection notices here",
+  },
+  {
+    prefix: "apps/mobile/src/ui/route-gate.tsx",
+    reason: "mobile route gate: a route's one explanation while it has nothing to show",
+  },
+  {
+    prefix: "apps/mobile/src/team/team-screen-gate.tsx",
+    reason: "mobile team gate: a team route's one explanation while it has nothing to show",
   },
 ];
 
@@ -343,6 +365,59 @@ function violationsIn(
         });
     });
   });
+  // An exception's own text handed to the screen under a guard:
+  // `if (error instanceof Error) setError(error.message)` or `{e instanceof Error && <T>{e.message}</T>}`.
+  walk(program, (node) => {
+    const guarded =
+      node.type === "IfStatement"
+        ? { test: node["test"], body: node["consequent"] }
+        : node.type === "LogicalExpression" && node["operator"] === "&&"
+          ? { test: node["left"], body: node["right"] }
+          : null;
+    if (guarded === null || !isNode(guarded.test) || !isNode(guarded.body)) return;
+    const tested = new Set<string>();
+    walk(guarded.test, (inner) => {
+      if (
+        inner.type === "BinaryExpression" &&
+        inner["operator"] === "instanceof" &&
+        isNode(inner["left"]) &&
+        inner["left"].type === "Identifier" &&
+        nameOf(inner["right"]) === "Error"
+      )
+        tested.add(nameOf(inner["left"]));
+    });
+    if (tested.size === 0) return;
+    const shown = (value: unknown): value is SyntaxNode =>
+      isNode(value) &&
+      (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") &&
+      nameOf(value["property"]) === "message" &&
+      isNode(value["object"]) &&
+      value["object"].type === "Identifier" &&
+      tested.has(nameOf(value["object"]));
+    const flagShown = (value: SyntaxNode) =>
+      found.push({
+        file,
+        line: value.loc?.start.line ?? 0,
+        rule: "message-fallback",
+        name: `${nameOf(value["object"])}.message`,
+      });
+    walk(guarded.body, (inner) => {
+      if (inner.type === "CallExpression") {
+        const callee = inner["callee"];
+        const name = isNode(callee)
+          ? callee.type === "Identifier"
+            ? nameOf(callee)
+            : nameOf(callee["property"])
+          : "";
+        // A React state setter: what it holds is drawn.
+        if (/^set[A-Z]/u.test(name))
+          for (const argument of (inner["arguments"] ?? []) as unknown[])
+            if (shown(argument)) flagShown(argument);
+      }
+      if (inner.type === "JSXExpressionContainer" && shown(inner["expression"]))
+        flagShown(inner["expression"] as SyntaxNode);
+    });
+  });
   return found;
 }
 
@@ -407,6 +482,10 @@ describe("client feedback boundary", () => {
           "if (!result.ok) setError(result.error.message);",
           'setError(failure instanceof Error ? failure.message : "Couldn\'t rename it.");',
           "const words = reason instanceof Error && reason.message ? reason.message : `No.`;",
+          'import { presentConnectionGate } from "@opensteer/client/feedback";',
+          'import { presentConnectionStarting as starting } from "@opensteer/client/feedback";',
+          "try { load(); } catch (error) { if (error instanceof Error) setError(error.message); }",
+          "const view = <p>{thrown instanceof Error && <b>{thrown.message}</b>}</p>;",
         ].join("\n"),
       ),
     ).toEqual([
@@ -415,10 +494,14 @@ describe("client feedback boundary", () => {
       "transport-error HostClientRequestError",
       "connection-notice connectionNotice",
       "raw-presenter safeMessage",
+      "connection-notice presentConnectionGate",
+      "connection-notice presentConnectionStarting",
       "raw-presenter presentActionFailure",
       "message-unwrap result.error.message",
       "message-fallback failure.message",
       "message-fallback reason.message",
+      "message-fallback error.message",
+      "message-fallback thrown.message",
     ]);
   });
 
@@ -441,6 +524,10 @@ describe("client feedback boundary", () => {
           'const code = error instanceof Error ? error.message : "";',
           "const detail = dev && error instanceof Error ? error.message : null;",
           'const said = other instanceof Error ? error.message : "Couldn\'t.";',
+          // Logged or rethrown under a guard, an exception's text is not drawn.
+          "if (error instanceof Error) console.warn(error.message);",
+          "if (error instanceof Error) throw new Error(error.message);",
+          "if (error instanceof Error) setError(other.message);",
           "// import { presentActionFailure } from '@opensteer/client/feedback';",
         ].join("\n"),
       ),
