@@ -110,7 +110,11 @@ describe("automatic model resolver", () => {
     const signedOut = account("opencode", {
       catalog: { status: "authentication-required", detail: "Sign in to OpenCode Go", models: [] },
     });
-    const light = { kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode") } as const;
+    const light = {
+      kind: "catalog-light",
+      driverKind: HarnessIdSchema.parse("opencode"),
+      effort: "low",
+    } as const;
     expect(resolve([signedOut], { wants: [light] }).skipped).toMatchObject([
       { reason: "catalog-not-ready", detail: "Sign in to OpenCode Go" },
     ]);
@@ -303,16 +307,22 @@ describe("automatic model resolver", () => {
     expect(ordered).toEqual(["gpt-5.6-luna", "gpt-6-luna"]);
     expect(
       resolve([account("opencode")], {
-        wants: [{ kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode") }],
+        wants: [
+          { kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode"), effort: "low" },
+        ],
       }).candidates,
     ).toEqual([]);
   });
-  it("uses catalog-light native selections", () => {
+  it("uses catalog-light native selections at the role's effort", () => {
     const a = account("pi");
-    const result = resolve([{ ...a, catalog: { ...a.catalog!, lightModel: selection() } }], {
-      wants: [{ kind: "catalog-light", driverKind: a.driverKind }],
+    const lightModel = selection("gpt-6-luna", { effort: "low" });
+    const result = resolve([{ ...a, catalog: { ...a.catalog!, lightModel } }], {
+      wants: [{ kind: "catalog-light", driverKind: a.driverKind, effort: "high" }],
     });
-    expect(result.candidates[0]?.storedModelSelection.nativeModelId).toBe("gateway/gpt-6-luna");
+    expect(result.candidates[0]?.storedModelSelection).toMatchObject({
+      nativeModelId: "gateway/gpt-6-luna",
+      options: { effort: "high" },
+    });
   });
   it("runs a person's effort on that model's own ladder, or moves past a model without it", () => {
     const a = account();

@@ -412,7 +412,7 @@ describe("composerExecutionSelection", () => {
 });
 
 describe("selectionForModelEffort", () => {
-  it("uses offered effort and Pi thinking values, including the highest tier", () => {
+  it("uses offered effort and Pi thinking values", () => {
     const effort = model({
       displayName: "Effort model",
       isDefault: true,
@@ -437,7 +437,7 @@ describe("selectionForModelEffort", () => {
     });
 
     expect(selectionForModelEffort(effort, "high").options).toEqual({ effort: "high" });
-    expect(selectionForModelEffort(thinking, "highest").options).toEqual({ thinking: "ultra" });
+    expect(selectionForModelEffort(thinking, "ultra").options).toEqual({ thinking: "ultra" });
     expect(selectionForModelEffort(thinking, "none").options).toEqual({ thinking: "off" });
   });
 
@@ -449,7 +449,6 @@ describe("selectionForModelEffort", () => {
       providerId: "custom",
       options: [effortSelect(["quick", "deep"], "quick")],
     });
-    expect(selectionForModelEffort(unknown, "highest").options).toEqual({});
     expect(selectionForModelEffort(unknown, "high").options).toEqual({});
     expect(
       selectionForModelEffort(

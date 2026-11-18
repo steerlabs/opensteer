@@ -43,7 +43,11 @@ export const AutomaticModelRankSchema = z.discriminatedUnion("kind", [
     modelId: ModelSelectionSchema.shape.modelId,
     effort: ModelEffortSchema,
   }),
-  z.strictObject({ kind: z.literal("catalog-light"), driverKind: HarnessIdSchema }),
+  z.strictObject({
+    kind: z.literal("catalog-light"),
+    driverKind: HarnessIdSchema,
+    effort: ModelEffortSchema,
+  }),
 ]);
 export type AutomaticModelRank = z.infer<typeof AutomaticModelRankSchema>;
 
@@ -65,8 +69,8 @@ const recommendedLight = (effort: ModelEffort): readonly AutomaticModelRank[] =>
   ),
   ...fixed("codex", "openai", ["gpt-6-luna", "gpt-5.6-luna"], effort),
   ...fixed("cursor", "xai", ["composer-2.5", "composer-2"], effort),
-  { kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode") },
-  { kind: "catalog-light", driverKind: HarnessIdSchema.parse("pi") },
+  { kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode"), effort },
+  { kind: "catalog-light", driverKind: HarnessIdSchema.parse("pi"), effort },
 ];
 /** The recommended order, which always follows a person's own list. */
 export const automaticModelDefaults: Readonly<

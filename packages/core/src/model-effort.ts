@@ -21,30 +21,28 @@ export type ModelEffort = z.infer<typeof ModelEffortSchema>;
 type Ladder = Extract<SelectionModelDescriptor["options"][number], { type: "select" }>;
 const automaticValues = new Set(["auto", "default"]);
 
-/** The select that sets how hard the model reasons, when every value on it is a known tier. */
-export function modelEffortLadder(model: SelectionModelDescriptor): Ladder | undefined {
-  const option = model.options.find(
-    (candidate): candidate is Ladder =>
-      candidate.type === "select" && (candidate.id === "effort" || candidate.id === "thinking"),
+/** The select that sets how hard the model reasons, as engines name it. */
+export function modelEffortOption<T extends SelectionModelDescriptor>(
+  model: T,
+): Extract<T["options"][number], { type: "select" }> | undefined {
+  return model.options.find(
+    (option): option is Extract<T["options"][number], { type: "select" }> =>
+      option.type === "select" && (option.id === "effort" || option.id === "thinking"),
   );
-  if (!option) return undefined;
-  const known = option.values.every(
+}
+
+/** That select, when every value on it is a known tier, so tiers map onto it. */
+export function modelEffortLadder(model: SelectionModelDescriptor): Ladder | undefined {
+  const option = modelEffortOption(model);
+  const known = option?.values.every(
     ({ value }) =>
       automaticValues.has(value) || value === "off" || modelEffortTiers.some((t) => t === value),
   );
   return known ? option : undefined;
 }
 
-function ladderValue(ladder: Ladder, effort: ModelEffortTier | "highest"): string | undefined {
-  const offered = ladder.values.flatMap(({ value }) => {
-    if (automaticValues.has(value)) return [];
-    const tier = value === "off" ? "none" : modelEffortTiers.find((t) => t === value);
-    return tier ? [{ tier, value }] : [];
-  });
-  if (effort !== "highest") return offered.find(({ tier }) => tier === effort)?.value;
-  return offered.sort(
-    (a, b) => modelEffortTiers.indexOf(b.tier) - modelEffortTiers.indexOf(a.tier),
-  )[0]?.value;
+function ladderValue(ladder: Ladder, effort: ModelEffortTier): string | undefined {
+  return ladder.values.find(({ value }) => (value === "off" ? "none" : value) === effort)?.value;
 }
 
 /**
@@ -54,7 +52,7 @@ function ladderValue(ladder: Ladder, effort: ModelEffortTier | "highest"): strin
 export function withModelEffort(
   selection: ModelSelection,
   model: SelectionModelDescriptor,
-  effort: ModelEffort | "highest",
+  effort: ModelEffort,
 ): ModelSelection | null {
   const ladder = modelEffortLadder(model);
   if (!ladder) return selection;
@@ -71,7 +69,7 @@ export function withModelEffort(
 /** This model at the effort, or at the engine's choice when it doesn't offer that effort. */
 export function selectionForModelEffort(
   model: SelectionModelDescriptor,
-  effort: ModelEffort | "highest",
+  effort: ModelEffort,
 ): ModelSelection {
   const selection = { providerId: model.providerId, modelId: model.modelId, options: {} };
   return storedModelSelection(withModelEffort(selection, model, effort) ?? selection, model);
@@ -82,7 +80,7 @@ export function modelEffortLabel(
   model: SelectionModelDescriptor,
   options: ModelSelection["options"],
 ): string | null {
-  const ladder = modelEffortLadder(model);
-  const step = ladder?.values.find(({ value }) => value === options[ladder.id]);
+  const option = modelEffortOption(model);
+  const step = option?.values.find(({ value }) => value === options[option.id]);
   return step ? (step.label ?? step.value) : null;
 }
