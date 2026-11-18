@@ -35,7 +35,7 @@ import { DeviceIdSchema } from "@opensteer/core";
  *     shows.
  *
  * The artifact directory (OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR, else a new
- * temporary directory) receives the Run's events (`events.json`), the
+ * temporary directory) receives the Run's retained tool calls (`tool-calls.json`), the
  * fixture's receipts (`receipts.json`), the phone's screen before and after
  * (`before.png`, `after.png`), `run.json` with the engine, model, versions,
  * device, APK, prompt and answer, the app's logcat, and `SHA256SUMS` over all
@@ -573,7 +573,7 @@ describe.skipIf(requestedEngine === undefined)(
           const audit = auditPhoneTurn(turn.tools, runnerId);
           await writeArtifact(
             "tool-calls.json",
-            `${JSON.stringify(locked ? audit.events : turn.tools, null, 2)}\n`,
+            `${JSON.stringify(locked ? audit.tools : turn.tools, null, 2)}\n`,
           );
           await writeArtifact(
             "observations.json",
@@ -828,7 +828,7 @@ function auditPhoneTurn(calls: readonly VerticalToolCall[], runnerId: RunnerId) 
     target: string;
     count: number;
   }[] = [];
-  const safeEvents: unknown[] = [];
+  const safeTools: unknown[] = [];
   let digitEntries = 0;
   let confirmTaps = 0;
   let credentialInteractions = 0;
@@ -837,7 +837,7 @@ function auditPhoneTurn(calls: readonly VerticalToolCall[], runnerId: RunnerId) 
   let unclassifiedLockedTaps = 0;
   for (const call of calls) {
     if (call.integration?.phone?.runnerId !== DeviceIdSchema.parse(runnerId)) {
-      safeEvents.push({ tool: call.tool, status: call.status });
+      safeTools.push({ tool: call.tool, status: call.status });
       continue;
     }
     const operation = call.integration.operation.name;
@@ -949,7 +949,7 @@ function auditPhoneTurn(calls: readonly VerticalToolCall[], runnerId: RunnerId) 
         });
       }
     }
-    safeEvents.push({
+    safeTools.push({
       callId: call.callId,
       operation,
       status: call.status,
@@ -959,7 +959,7 @@ function auditPhoneTurn(calls: readonly VerticalToolCall[], runnerId: RunnerId) 
     });
   }
   return {
-    events: safeEvents,
+    tools: safeTools,
     observations,
     actions,
     counts: { digitEntries, confirmTaps, rejections, credentialInteractions },
