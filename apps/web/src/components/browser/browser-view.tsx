@@ -29,7 +29,9 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
+import { useConnectionLive } from "../connection-shell.js";
 import { Icon } from "../icon.js";
+import { LastPictureChip } from "../last-picture-chip.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
 import { useToast } from "../toast.js";
 import { AgentCursors } from "../workspace/agent-cursors.js";
@@ -666,6 +668,11 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [prePaint, tabId, visible]);
   const waiting = prePaint && waitingTab === tabId;
+  // While the connection is out the picture is the page as it last was: it stays, dimmed under
+  // its own chip, and takes no input until the connection is back.
+  const connectionLive = useConnectionLive(hostClient.connection);
+  const stale = !connectionLive && !native && !prePaint;
+  const [stalePulse, setStalePulse] = useState(0);
 
   const fitLabel = placement
     ? `Fit page to view: ${tab?.sizedByAgent ? "an agent set" : "page is"} ${placement.viewport.width} × ${placement.viewport.height}`
@@ -861,7 +868,18 @@ export function PlaceBrowserView({
                 activeSurfaceId={tabId}
                 documentId={shownTab?.documentId}
                 inputEpoch={`${inputEpoch}:${catalogTab?.documentId ?? ""}:${url}:${tab?.loading ?? catalogTab?.loading ?? false}`}
-                canInput={visible && pageReachable && !blocked}
+                canInput={visible && pageReachable && !blocked && !stale}
+                cover={
+                  stale ? (
+                    <div
+                      aria-hidden
+                      className="browser-stale"
+                      onPointerDown={() => setStalePulse((count) => count + 1)}
+                    >
+                      <LastPictureChip pulse={stalePulse} />
+                    </div>
+                  ) : null
+                }
                 frames={hostClient.browserFrames}
                 keyboardRef={keyboardRef}
                 live={live}
