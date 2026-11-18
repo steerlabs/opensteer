@@ -135,6 +135,10 @@ export function useDraftAttachments(options: {
   const ready = useConnectionReady(client.connection);
   const readyNow = useRef(ready);
   readyNow.current = ready;
+  const readyRevision = useSyncExternalStore(
+    client.connection.subscribe,
+    () => client.connection.getSnapshot().readyRevision,
+  );
   const draftVersion = useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   // The scope is held by its own parts so that a caller's fresh object each
   // render does not restart uploads. A local scope is never a Thread scope.
@@ -164,6 +168,9 @@ export function useDraftAttachments(options: {
   const localRevision = useRef(0);
   const pendingWrites = useRef(0);
   const controllers = useRef(new Map<string, AbortController>());
+  // Files the connection interrupted, by the ready revision they failed under:
+  // they go again by themselves once the connection is back, not on a tap.
+  const interrupted = useRef(new Map<string, number>());
   const mounted = useRef(true);
   const ownerKey = useCallback(
     (attachment: string) => uploadScopeKey({ attachment, deploymentId, draftKey, userId }),
@@ -213,6 +220,7 @@ export function useDraftAttachments(options: {
       const controller = new AbortController();
       if (!acquireUpload(drafts, ownerKey(key), controller)) return;
       controllers.current.set(key, controller);
+      interrupted.current.delete(key);
       update(key, { error: null, status: "uploading" });
       void stage(client, files, item, controller.signal, (attachmentId) =>
         update(key, { attachmentId }),
@@ -229,9 +237,17 @@ export function useDraftAttachments(options: {
         },
         (error: unknown) => {
           if (controller.signal.aborted) return;
-          if (!readyNow.current && classifyClientFailure(error).kind === "transport") {
-            update(key, { error: null, status: "staged" });
-            return;
+          if (classifyClientFailure(error).kind === "transport") {
+            const connection = client.connection.getSnapshot();
+            interrupted.current.set(key, connection.readyRevision);
+            if (connection.phase !== "ready") {
+              // Back to waiting, holding its reservation; this copy no longer
+              // owns an upload, so the next ready connection starts one.
+              controllers.current.delete(key);
+              releaseUpload(drafts, ownerKey(key), controller, false);
+              update(key, { error: null, status: "staged" });
+              return;
+            }
           }
           update(key, {
             error:
@@ -248,10 +264,17 @@ export function useDraftAttachments(options: {
 
   const resume = useCallback(() => {
     if (!mounted.current) return;
+    const revision = client.connection.getSnapshot().readyRevision;
     for (const item of latest.current) {
-      if (item.status === "staged" || item.status === "uploading") upload(item);
+      const failedUnder = interrupted.current.get(attachmentKey(item));
+      if (
+        item.status === "staged" ||
+        item.status === "uploading" ||
+        (item.status === "error" && failedUnder !== undefined && failedUnder < revision)
+      )
+        upload(item);
     }
-  }, [upload]);
+  }, [client, upload]);
 
   // What the strip holds is saved with the draft, so a relaunch shows it again.
   useEffect(() => {
@@ -342,7 +365,7 @@ export function useDraftAttachments(options: {
 
   useEffect(() => {
     resume();
-  }, [items, ready, resume]);
+  }, [items, ready, readyRevision, resume]);
 
   /** Adds one file a picker or a paste produced, unless the message is full. */
   const add = (picked: PickedAttachmentSource): boolean => {
