@@ -50,6 +50,8 @@ import type { PluginElicit } from "./plugin-service.js";
 type Located = PluginHostProvider & {
   readonly kind: "device-app" | "local-server";
   readonly computer: { readonly id: DeviceId; readonly name: string } | null;
+  readonly phoneAddedAt?: Date;
+  readonly ownerUnavailable?: string;
   readonly installationId: string;
   readonly installationName: string;
   readonly serverId: string;
@@ -85,6 +87,8 @@ export class LocalProviders {
       ({
         kind: _k,
         computer: _m,
+        phoneAddedAt: _added,
+        ownerUnavailable: _detail,
         installationId: _i,
         installationName: _n,
         serverId: _s,
@@ -237,18 +241,37 @@ export class LocalProviders {
    * runs, why it is unavailable, and its tools. No task's ceiling applies.
    */
   async owned(owner: UserId, id?: string) {
-    return (await this.#list({ kind: "owner", userId: owner }, id)).providers.map((entry) => ({
-      id: entry.id,
-      kind: entry.kind,
-      name: entry.slug,
-      title: entry.name,
-      computer: entry.computer,
-      unavailable: entry.unavailable?.slice(0, 1000) ?? null,
-      ...(entry.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
-      tools: entry.unavailable
-        ? []
-        : entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
-    }));
+    const { providers } = await this.#list({ kind: "owner", userId: owner }, id);
+    const phonesByName = new Map<string, Map<DeviceId, Date>>();
+    for (const { computer, phoneAddedAt } of providers) {
+      if (!computer || !phoneAddedAt) continue;
+      const phones = phonesByName.get(computer.name) ?? new Map<DeviceId, Date>();
+      phones.set(computer.id, phoneAddedAt);
+      phonesByName.set(computer.name, phones);
+    }
+    const setupNumbers = new Map<DeviceId, number>();
+    for (const phones of phonesByName.values()) {
+      if (phones.size < 2) continue;
+      [...phones]
+        .sort(([aId, a], [bId, b]) => a.getTime() - b.getTime() || aId.localeCompare(bId))
+        .forEach(([deviceId], index) => setupNumbers.set(deviceId, index + 1));
+    }
+    return providers.map((entry) => {
+      const setup = entry.computer && setupNumbers.get(entry.computer.id);
+      const suffix = setup ? ` · Setup ${setup}` : "";
+      return {
+        id: entry.id,
+        kind: entry.kind,
+        name: entry.slug,
+        title: `${entry.name.slice(0, 240 - suffix.length)}${suffix}`,
+        computer: entry.computer,
+        unavailable: (entry.ownerUnavailable ?? entry.blocked?.message)?.slice(0, 1000) ?? null,
+        ...(entry.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
+        tools: entry.unavailable
+          ? []
+          : entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
+      };
+    });
   }
 
   #withToolBlockers(
@@ -362,7 +385,13 @@ export class LocalProviders {
           ...(!metadataOnly ? { includeTargetReadiness: true } : {}),
           ...(requested ? { provider: requested } : {}),
         })
-        .then((entries) => this.#options.devices.withAvailability(entries, requester, facts)),
+        .then((entries) =>
+          this.#options.devices.withAvailability(
+            entries,
+            { ...requester, ownerView: metadataOnly },
+            facts,
+          ),
+        ),
       metadataOnly ? [] : store.listCallableTools(requester),
     ]);
     const localServers = inventory.some((entry) =>
@@ -409,6 +438,8 @@ export class LocalProviders {
                 kind: "device-app",
                 base: dataAppName(definition),
                 computer: { id: connection.deviceId, name: connection.runnerName },
+                phoneAddedAt:
+                  connection.deviceProfile === "iphone" ? connection.deviceAddedAt : undefined,
                 name: `${entry.installation.title} on ${connection.runnerName}`,
                 installationId: entry.installation.id,
                 installationName: entry.installation.name,
@@ -430,7 +461,9 @@ export class LocalProviders {
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
-                    `${entry.installation.title} is unavailable on ${connection.runnerName}.`),
+                    (state?.code === "ACCESS_GRANT_REQUIRED"
+                      ? "Agents need access. Request it from a task."
+                      : `${entry.installation.title} is unavailable on ${connection.runnerName}.`)),
                 tools: definition.config.operations.map((operation) => ({
                   name: operation.name,
                   description: `${operation.title}. ${skillReference(operation.description)}`.slice(
@@ -508,8 +541,11 @@ export class LocalProviders {
                   ? runnerId
                     ? undefined
                     : `${entry.installation.title} has no computer to run on. Register it again, choosing one.`
-                  : (state.detail ??
-                    `${entry.installation.title} is waiting for the person to approve it on its computer. Do not retry until they do.`),
+                  : (launchStatus?.detail ??
+                    state.detail ??
+                    (state.code === "ACCESS_GRANT_REQUIRED"
+                      ? "Agents need access. Request it from a task."
+                      : `${entry.installation.title} is unavailable on its computer.`)),
               tools: listed,
             }),
           );
@@ -553,6 +589,7 @@ function provider(input: {
   kind: Located["kind"];
   base: string;
   computer: Located["computer"];
+  phoneAddedAt?: Date | undefined;
   /** Whether the address carries the computer's name, as a device app's does. */
   named?: boolean;
   name: string;
@@ -586,6 +623,8 @@ function provider(input: {
     connectionId: input.connectionId,
     transport: input.transport,
     requestName: input.requestName,
+    ...(input.phoneAddedAt ? { phoneAddedAt: input.phoneAddedAt } : {}),
+    ...(input.unavailable ? { ownerUnavailable: input.unavailable } : {}),
     ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
     ...(input.blocked
       ? {

@@ -645,7 +645,7 @@ function LocalToolPage({
                     {
                       key: "computer",
                       kind: "button" as const,
-                      label: computer.name,
+                      label: tool.kind === "device-app" ? `Manage ${computer.name}` : computer.name,
                       detail:
                         tool.kind === "device-app"
                           ? "What this device lets agents read and change"
