@@ -3866,7 +3866,7 @@ async function requestRouteServer(options: {
 
     agentTools: {} as never,
     authenticator: { authenticateUser: async () => options.ownerId } as never,
-    browser: options.browser as never,
+    browser: { ...options.browser } as never,
     commands: { sendControl: options.sendControl ?? vi.fn() } as never,
     integrations: {
       ...hostServerTestDependencies().integrations,
