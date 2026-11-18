@@ -20,7 +20,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { verifyAccessEndpoint } from "../packages/client/src/connections/deployment-catalog.js";
-import { sessionExchangePath } from "../packages/protocol/src/index.js";
+import { hostApi, sessionExchangePath } from "../packages/protocol/src/index.js";
 import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.test-support.js";
 import { waitForRealtimeMessage } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -77,10 +77,9 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
         JSON.stringify((await dispatch(headers)).json()),
         JSON.stringify(headers),
       ).not.toContain("unsupported-version");
-    // A caller learns the version it is served before it reads any state.
-    const bootstrap = await runtime.host.app.inject({
+    const shellResponse = await runtime.host.app.inject({
       method: "GET",
-      url: "/v1/rpc/bootstrap.get?input=%7B%7D",
+      url: "/v1/rpc/personal.shell.get?input=%7B%7D",
       headers: {
         [hostApiVersionHeader]: String(minimumHostApiVersion),
         [hostApiCurrentHeader]: String(hostApiVersion + 3),
@@ -88,7 +87,9 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
         origin: runtime.hostOrigin.origin,
       },
     });
-    expect(bootstrap.json()).toMatchObject({ ok: true, data: { apiVersion: hostApiVersion } });
+    expect(shellResponse.statusCode).toBe(200);
+    const shell = hostApi["personal.shell.get"].success.parse(shellResponse.json().data);
+    expect(shell.deploymentId).toBe(runtime.host.deployment.id);
     for (const version of [minimumHostApiVersion - 1, minimumHostApiVersion - 2]) {
       expect((await dispatch({ [hostApiVersionHeader]: String(version) })).json()).toMatchObject({
         ok: false,
@@ -177,23 +178,35 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
     await withTimeout(once(socket, "open"), 3000, {
       timeoutError: () => new Error("Personal realtime never opened"),
     });
+    const replaced = waitForRealtimeMessage(
+      socket,
+      (frame) => frame.type === "host.snapshot" && "scope" in frame && frame.scope.kind === "shell",
+    );
     const synchronized = waitForRealtimeMessage(
       socket,
       (frame) => frame.type === "host.synchronized",
     );
-    // A cut read at another version is replaced from the start.
+    // A cursor from a prior epoch is replaced from the start.
     socket.send(
       JSON.stringify({
-        type: "client.subscribe",
-        apiVersion: hostApiVersion - 1,
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests: [],
+        installed: {},
         cursor: {
-          deploymentId: runtime.host.deployment.id,
-          apiVersion: hostApiVersion - 1,
+          deploymentId: shell.deploymentId,
+          epoch: crypto.randomUUID(),
+          viewerId: shell.viewerId,
+          scopeKey: "shell",
           afterSequence: "0",
         },
-        threadId: null,
       }),
     );
+    expect(await replaced).toMatchObject({
+      type: "host.snapshot",
+      snapshot: { epoch: shell.epoch, deploymentId: shell.deploymentId },
+    });
     expect(await synchronized).toMatchObject({ type: "host.synchronized" });
     // A socket below the window is refused at the upgrade, before any frame.
     const below = new URL(realtime);

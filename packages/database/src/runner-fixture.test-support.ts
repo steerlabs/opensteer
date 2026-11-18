@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createId, HarnessIdSchema, ThreadAccessModeSchema } from "@opensteer/core";
-import type { RunnerDescriptor } from "@opensteer/protocol";
+import { runEventsCapability, type RunnerDescriptor } from "@opensteer/protocol";
 
 export function testRunnerDescriptor(input: {
   readonly environmentId: ReturnType<typeof createId<"environment">>;
@@ -12,7 +12,8 @@ export function testRunnerDescriptor(input: {
 }): RunnerDescriptor {
   return {
     bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem", "run-events-v2"],
+    capabilities:
+      input.modules && !input.modules.agents ? ["filesystem"] : ["filesystem", runEventsCapability],
     modules: input.modules ?? {
       agents: {
         environmentIds: [input.environmentId],

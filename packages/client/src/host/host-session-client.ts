@@ -1700,6 +1700,7 @@ export class HttpHostClient {
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
+      state.teamReplyRevision !== old?.teamReplyRevision ||
       connection !== this.#snapshot.connection
     ) {
       let taskLists: Pick<HostSnapshot, "tasks" | "activeTasks"> | undefined;
@@ -1750,6 +1751,7 @@ export class HttpHostClient {
           connection,
           connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
+          teamReplyRevision: state.teamReplyRevision,
           ...(attentionChanged
             ? {
                 attentionSummaries: [...state.attention.values()],

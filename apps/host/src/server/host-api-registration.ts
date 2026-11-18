@@ -285,8 +285,12 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       const context = createContext(authenticated, request, reply, binaryRequest);
       bindAnonymousClientAddress(context, request);
       const input = rpcInput(declaration, request);
+      // Sign-out admits the session before revoking it and returns an empty receipt.
       const guard =
-        authenticated && name !== "commands.dispatch" && options.guardResponse?.(input, context);
+        authenticated &&
+        name !== "commands.dispatch" &&
+        name !== "auth.signOut" &&
+        options.guardResponse?.(input, context);
       if (guard) {
         guards.set(request, guard);
         reply.raw.once("close", guard.release);

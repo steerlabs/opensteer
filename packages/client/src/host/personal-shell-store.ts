@@ -17,6 +17,7 @@ interface ShellState {
   readonly history: number;
   readonly generation: number;
   readonly through: string | null;
+  readonly teamReplyRevision: string | null;
   readonly synchronized: boolean;
   readonly snapshot: ShellSnapshot | null;
   readonly tasks: ReadonlyMap<string, Task>;
@@ -31,6 +32,7 @@ const emptyShell: ShellState = {
   history: 0,
   generation: 0,
   through: null,
+  teamReplyRevision: null,
   synchronized: false,
   snapshot: null,
   tasks: new Map(),
@@ -104,6 +106,7 @@ export class PersonalShellStore {
         this.#replace({
           ...old,
           through: frame.throughSequence,
+          teamReplyRevision: frame.throughSequence,
           snapshot,
           tasks,
           taskChanges: emptyShell.taskChanges,
@@ -131,12 +134,14 @@ export class PersonalShellStore {
         let attention: Map<string, Attention> | undefined;
         let invalidated: Set<string> | undefined;
         let ids = old.taskIds;
+        let teamReplyRevision = old.teamReplyRevision;
         function invalidate(id: string) {
           (invalidated ??= new Set(old.invalidated)).add(id);
         }
         for (const change of frame.changes) {
           if (change.operation === "invalidate") {
-            invalidate(change.entityId);
+            if (change.entityId === "team-replies") teamReplyRevision = frame.throughSequence;
+            else invalidate(change.entityId);
             continue;
           }
           const id = change.entityId;
@@ -188,6 +193,7 @@ export class PersonalShellStore {
         this.#replace({
           ...old,
           through: frame.throughSequence,
+          teamReplyRevision,
           taskIds: ids,
           snapshot:
             old.snapshot && frame.shellProgress

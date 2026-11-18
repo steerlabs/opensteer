@@ -750,6 +750,21 @@ export class PersonalTeamRequestsStore {
         .executeTakeFirstOrThrow();
       if (saved.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
       if (run) await publishTranscriptRun(tx, mutation, run.id);
+      if (
+        row.publicationState !== "accepted" &&
+        saved.publicationState === "accepted" &&
+        saved.acceptedMessageId &&
+        !saved.explicitReply
+      )
+        mutation.change(
+          {
+            scopeKey: "shell",
+            entityKind: "collection",
+            entityId: "team-replies",
+            operation: "invalidate",
+          },
+          () => ({ revision: mutation.sequence }),
+        );
       if (saved.publicationState === "accepted" && saved.acceptedMessageId && this.#onPublished) {
         const taskId = saved.localTaskId!;
         mutation.reaction(() => this.#onPublished?.(taskId));

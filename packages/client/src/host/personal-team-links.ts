@@ -68,6 +68,7 @@ export function watchTeamReplyRead(
   let again = false;
   let states = client.getSnapshot().threadVisits;
   let tasks = client.getSnapshot().tasks;
+  let revision = client.getSnapshot().teamReplyRevision;
   let unsubscribe: () => void = () => undefined;
   const stop = () => {
     active = false;
@@ -95,9 +96,15 @@ export function watchTeamReplyRead(
   };
   unsubscribe = client.subscribe(() => {
     const snapshot = client.getSnapshot();
-    if (states === snapshot.threadVisits && tasks === snapshot.tasks) return;
+    if (
+      states === snapshot.threadVisits &&
+      tasks === snapshot.tasks &&
+      revision === snapshot.teamReplyRevision
+    )
+      return;
     states = snapshot.threadVisits;
     tasks = snapshot.tasks;
+    revision = snapshot.teamReplyRevision;
     read();
   });
   read();

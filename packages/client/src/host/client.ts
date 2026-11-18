@@ -803,6 +803,7 @@ export interface HostSnapshot {
   readonly tabs: import("./tab-store.js").TabStore;
   /** Bumped by host.apps.changed and every reconnect; an Apps page rereads on change. */
   readonly appsRevision: number;
+  readonly teamReplyRevision?: string | null;
   readonly appVersions?: Readonly<Record<string, number>>;
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
