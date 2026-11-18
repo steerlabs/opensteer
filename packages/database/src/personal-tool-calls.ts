@@ -486,7 +486,8 @@ export async function interruptPersonalToolCalls(
         })
         .where("id", "=", id)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!card) return;
       mutation.react({
         type: "liveClosed",
         itemId: id,

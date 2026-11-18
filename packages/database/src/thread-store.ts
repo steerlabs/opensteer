@@ -1447,6 +1447,18 @@ export async function updateThreadExecutionSelection(
           message: "AI engine continuation identity does not match its driver",
         });
       }
+      const selectionChanged =
+        thread.harnessInstanceId !== input.harnessInstanceId ||
+        !isDeepStrictEqual(thread.modelSelection, modelSelection);
+      if (selectionChanged)
+        await transaction
+          .selectFrom("providerSessions")
+          .select("id")
+          .where("threadId", "=", thread.id)
+          .where((eb) => eb.or([eb("contextSnapshot", "is not", null), eb("active", "=", true)]))
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
       const selected = (await lockThreadProviderSession(transaction, thread.id)) ?? null;
       const compatible =
         selected !== null &&
@@ -1468,14 +1480,12 @@ export async function updateThreadExecutionSelection(
           message: "The selected provider session changed before this AI engine update",
         });
       }
-      const selectionChanged =
-        thread.harnessInstanceId !== input.harnessInstanceId ||
-        !isDeepStrictEqual(thread.modelSelection, modelSelection);
       if (selectionChanged) {
         await transaction
           .updateTable("providerSessions")
           .set({ contextSnapshot: null })
           .where("threadId", "=", thread.id)
+          .where("contextSnapshot", "is not", null)
           .execute();
         await invalidateThreadCollection(transaction, thread.id, "return-hint");
       }

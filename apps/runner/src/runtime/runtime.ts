@@ -618,7 +618,7 @@ export class RunnerRuntime {
   /**
    * The part of `harnessDrivers` that a CLI appearing or going changes, read
    * from PATH lookups alone (no version probe, process or network), so a
-   * connection can compare it with what it advertised on every heartbeat.
+   * connection can compare it with what it advertised when explicitly refreshed.
    */
   harnessDriverAvailability(): readonly HarnessDriverAvailability[] {
     return this.#harnesses.listDrivers().map(({ kind, readiness }) => ({

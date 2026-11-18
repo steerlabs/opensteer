@@ -293,15 +293,15 @@ export function passwordsAnywhereJourneys() {
                 value: { outcome: "authorized", account: passwordFixture.account },
               });
               expect(JSON.stringify(fulfilled)).not.toContain(start.loginRef);
+              const resumed = await acceptCallerRun(host, caller, await executed);
+              expect(resumed.threadId).toBe(run.threadId);
+              expect(resumed.runId).not.toBe(run.runId);
               const continuation = await waitForValue(async () =>
                 (await host.store.readThreadForOwner(run.threadId, host.ownerId))?.messages.find(
                   (m) => JSON.stringify(m.content).includes(start.loginRef),
                 ),
               );
               expect(JSON.stringify(continuation.content)).toContain("fillLogin");
-              const resumed = await acceptCallerRun(host, caller, await executed);
-              expect(resumed.threadId).toBe(run.threadId);
-              expect(resumed.runId).not.toBe(run.runId);
               const continuedClient = await connect(resumed.toolsToken);
               expect(
                 (
