@@ -35,6 +35,8 @@ function channelServiceFixture(
       kind: "adopted" as const,
       revokedGrants: [],
     })),
+    nextIngressDeadline: vi.fn(async () => null),
+    pruneHistory: vi.fn(async () => undefined),
     claimIngress: vi.fn(async () =>
       remaining-- > 0
         ? {

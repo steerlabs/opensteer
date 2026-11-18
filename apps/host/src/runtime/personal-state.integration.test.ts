@@ -6,7 +6,21 @@ import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { Pool } from "pg";
+import { ChannelStore, OpensteerStore } from "@opensteer/database";
+import {
+  ContinuationService,
+  type IntegrationInventorySource,
+} from "../agents/continuation-service.js";
+import { ChannelService } from "../channels/channel-service.js";
+import type { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
+import {
+  DisplayStreamHub,
+  type DisplayStreamHubOptions,
+} from "../computer-use/display-stream-hub.js";
+import type { CredentialService } from "../identity/credential-service.js";
+import { executionLeaseDrain } from "./execution-leases.js";
 import { initializePersonalState } from "./personal-state.js";
 
 it("rereads bootstrap once when the hosting computer first makes personal settings ready", async () => {
@@ -78,5 +92,82 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
     await database.destroy();
     await clone.drop();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("runs no PostgreSQL queries from idle queue and execution owners for five minutes", async () => {
+  const clone = await cloneTestDatabase("host");
+  const pool = new Pool({ connectionString: clone.url, idleTimeoutMillis: 0 });
+  const database = createDatabase({ connectionString: clone.url }, pool);
+  const store = new OpensteerStore(database);
+  const channelStore = new ChannelStore(database);
+  const channelPlanned = Promise.withResolvers<void>();
+  const continuationPlanned = Promise.withResolvers<void>();
+  const onError = vi.fn();
+  const nextIngressDeadline = channelStore.nextIngressDeadline.bind(channelStore);
+  const nextContinuationDeadline = store.requests.nextContinuationDeadline.bind(store.requests);
+  vi.spyOn(channelStore, "nextIngressDeadline").mockImplementation(async () => {
+    const result = await nextIngressDeadline();
+    channelPlanned.resolve();
+    return result;
+  });
+  vi.spyOn(store.requests, "nextContinuationDeadline").mockImplementation(async (...args) => {
+    const result = await nextContinuationDeadline(...args);
+    continuationPlanned.resolve();
+    return result;
+  });
+  const acquisitions = vi.fn();
+  pool.on("acquire", acquisitions);
+  const channels = new ChannelService({
+    canonicalOrigin: "https://opensteer.test",
+    channels: channelStore,
+    credentials: {} as CredentialService,
+    relay: {} as MessagingRelayHub,
+    runners: {
+      canRunHarness: () => false,
+      identityForEnvironment: () => undefined,
+      isAvailable: () => false,
+    },
+    store,
+    onExecutionQueued() {},
+    onError,
+  });
+  const continuations = new ContinuationService({
+    commands: { enqueueThreadInput: vi.fn() },
+    integrations: {} as IntegrationInventorySource,
+    onError,
+    requests: store.requests,
+  });
+  const leases = executionLeaseDrain(store, () => {}, onError);
+  let display: DisplayStreamHub | undefined;
+  try {
+    await seedPersonalFixture(database, "/agent-home");
+    acquisitions.mockClear();
+    const planned = withTimeout(
+      Promise.all([channelPlanned.promise, continuationPlanned.promise]),
+      2_000,
+      { timeoutError: () => new Error("Idle owners did not finish their startup reads") },
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    display = new DisplayStreamHub({} as DisplayStreamHubOptions);
+    channels.start();
+    continuations.start();
+    leases.start();
+    await Promise.all([planned, leases.settled()]);
+    expect(onError).not.toHaveBeenCalled();
+    expect(acquisitions.mock.calls.length).toBeGreaterThan(0);
+    acquisitions.mockClear();
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    expect(acquisitions).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(onError).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+    display?.close();
+    await Promise.all([channels.close(), continuations.close(), leases.close()]);
+    await database.destroy();
+    await clone.drop();
   }
 });

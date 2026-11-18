@@ -185,7 +185,10 @@ export async function renewActiveExecutionBindings(
         .execute();
       await transaction
         .updateTable("providerSessions")
-        .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+        .set({
+          leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
+          updatedAt: new Date(),
+        })
         .where("id", "in", sessionIds)
         .execute();
     }
@@ -822,6 +825,7 @@ export async function acquireExecutionBinding(
       })
       .where("id", "=", input.runId)
       .executeTakeFirstOrThrow();
+    mutation.react({ type: "executionDeadlinesChanged" });
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
       bindingGeneration: row.bindingGeneration,
       modelSelection: run.modelSelection,
@@ -859,7 +863,7 @@ export async function renewExecutionBinding(
   const result = await database
     .updateTable("providerSessions")
     .set({
-      leaseExpiresAt: input.leaseExpiresAt,
+      leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
       updatedAt: new Date(),
     })
     .where("active", "=", true)

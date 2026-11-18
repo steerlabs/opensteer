@@ -1505,16 +1505,8 @@ integration("Host vertical slice", () => {
     const disconnectedAt = clock.now();
     const priorPasses = await runtime.settleExecutionLeases();
     await advanceExecutionClock(clock, runtime, 2_000);
-    // A healthy sweep is jittered up to 3.75 s; observe its completion while
-    // retaining the entire original 2 s pre-expiry interval.
-    for (
-      let extra = 0;
-      extra < 4 && (await runtime.settleExecutionLeases()) === priorPasses;
-      extra += 1
-    )
-      await advanceExecutionClock(clock, runtime, 500);
     const preExpiryPasses = await runtime.settleExecutionLeases();
-    expect(preExpiryPasses).toBeGreaterThan(priorPasses);
+    expect(preExpiryPasses).toBe(priorPasses);
     expect(clock.now() - disconnectedAt).toBeGreaterThanOrEqual(2_000);
     expect(clock.now()).toBeLessThan(expiry.getTime());
     expect(await runStatus()).toBe("running");
@@ -1525,11 +1517,10 @@ integration("Host vertical slice", () => {
       completedPasses: preExpiryPasses,
       disconnectRecoveryCalls: disconnectRecovery.mock.calls.length,
     };
-    // Settle at expiry before spending the post-expiry interval: a sweep samples
-    // time before its async query, and reschedules from the end of the clock step.
-    // Straddling expiry could otherwise put its next jittered pass past our stop.
     await advanceExecutionClock(clock, runtime, expiry.getTime() - clock.now());
-    await advanceExecutionClock(clock, runtime, 4_000);
+    expect(await runtime.settleExecutionLeases()).toBe(preExpiryPasses);
+    await advanceExecutionClock(clock, runtime, 1);
+    expect(await runtime.settleExecutionLeases()).toBeGreaterThan(preExpiryPasses);
     await waitForCondition(async () => (await runStatus()) === "failed", 30_000);
     const evidence = await mkdtemp(join(tmpdir(), "opensteer-disconnect-clock-"));
     await writeFile(

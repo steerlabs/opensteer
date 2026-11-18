@@ -39,7 +39,7 @@ import {
   type ChannelCredentialPurpose,
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
-import { CoalescedWake } from "@opensteer/shared/coalescedWake";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
@@ -71,9 +71,8 @@ export class ChannelService {
   readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
   #closed = false;
-  readonly #drains: CoalescedWake;
-  #ticks = 0;
-  #timer: ReturnType<typeof setInterval> | null = null;
+  readonly #drains: DeadlineDrain;
+  #nextPruneAt = 0;
 
   constructor(options: ChannelServiceOptions) {
     this.#onChanged = options.onChanged ?? (() => {});
@@ -84,38 +83,22 @@ export class ChannelService {
     this.#relay = options.relay;
     this.#runners = options.runners;
     this.#store = options.store;
-    this.#drains = new CoalescedWake({
-      run: () => this.#drainIngress(),
+    this.#drains = new DeadlineDrain({
+      drain: () => this.#drainIngress(),
       ...(options.onError ? { onError: options.onError } : {}),
     });
   }
 
   start(): void {
-    if (this.#closed || this.#timer) return;
-    this.#timer = setInterval(() => this.#tick(), 1_000);
-    this.#timer.unref();
-    this.wake();
+    this.#drains.start();
   }
 
   async close(): Promise<void> {
     this.#closed = true;
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = null;
-    await this.#drains.stop();
-  }
-
-  #tick(): void {
-    this.#ticks += 1;
-    // Retention is bookkeeping, not work anybody waits on, so it rides the
-    // drain timer rather than owning a timer of its own.
-    if (this.#ticks % 3_600 === 0) {
-      void this.#channels.pruneHistory(new Date()).catch(() => undefined);
-    }
-    this.wake();
+    await this.#drains.close();
   }
 
   wake(): void {
-    if (this.#closed) return;
     this.#drains.wake();
   }
 
@@ -572,9 +555,7 @@ export class ChannelService {
     ) {
       throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
     }
-    const committed = await this.#channels.commitIngress(parsedConnectionId, event);
-    this.wake();
-    return committed;
+    return this.#channels.commitIngress(parsedConnectionId, event, () => this.wake());
   }
 
   async claimDelivery(runnerId: RunnerId, leaseSeconds: number) {
@@ -696,13 +677,18 @@ export class ChannelService {
     await this.#relay.request(runnerId, "connections.sync", { connections });
   }
 
-  async #drainIngress(): Promise<void> {
+  async #drainIngress(): Promise<Date | null> {
+    const now = new Date();
+    if (now.getTime() >= this.#nextPruneAt) {
+      this.#nextPruneAt = now.getTime() + 60 * 60 * 1_000;
+      await this.#channels.pruneHistory(now).catch(() => undefined);
+    }
     // What is connected is a property of the Deployment, not of one message,
     // so it is read once for the whole drain rather than once per claimed event.
     const availableEngines = await this.#availableEngines();
     for (let processed = 0; processed < 100 && !this.#closed; processed += 1) {
       const claim = await this.#channels.claimIngress(`host:${process.pid}`);
-      if (!claim) return;
+      if (!claim) break;
       const stale = staleIngress(claim, Date.now());
       if (stale) {
         await this.#channels
@@ -747,6 +733,7 @@ export class ChannelService {
           .catch(() => undefined);
       }
     }
+    return this.#closed ? null : this.#channels.nextIngressDeadline();
   }
 
   /**

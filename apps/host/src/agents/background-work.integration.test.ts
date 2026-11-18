@@ -1,3 +1,4 @@
+import { setBackgroundDeadline } from "./execution-clock.test-support.js";
 import { readTestResource } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -429,13 +430,7 @@ integration("Background work", () => {
       const run = await runRow(active, runId);
       expect(run.backgroundDeadlineAt).not.toBeNull();
       // The deadline was set once, when the Run first went to the background.
-      await active.host.store.database
-        .updateTable("runs")
-        .set({
-          backgroundDeadlineAt: new Date(Date.now() - 1_000),
-        })
-        .where("id", "=", runId)
-        .execute();
+      await setBackgroundDeadline(active.host, [runId], new Date(Date.now() - 1_000));
       await settled(active, runId);
       const journey = await record("deadline", active, runId);
       expect(journey.run).toMatchObject({

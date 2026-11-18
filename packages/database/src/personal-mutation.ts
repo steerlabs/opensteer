@@ -83,6 +83,8 @@ interface CommitNotice {
 }
 
 export type PersonalCommitReaction =
+  | { readonly type: "executionDeadlinesChanged" }
+  | { readonly type: "continuationsChanged" }
   | { readonly type: "deadlinesChanged" }
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }

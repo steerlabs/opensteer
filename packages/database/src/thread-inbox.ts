@@ -4070,9 +4070,10 @@ export async function ensureQueuedRun(
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
   await placeQueuedMessage(transaction, thread, seed.messageId, runId);
-  if (!options.maintenance)
-    await commitPersonalMutation(transaction, (tx, mutation) =>
-      writeExecutionItem(tx, mutation, {
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    mutation.react({ type: "continuationsChanged" });
+    if (!options.maintenance)
+      await writeExecutionItem(tx, mutation, {
         id: `run:${runId}`,
         kind: "run",
         threadId: thread.id,
@@ -4083,8 +4084,8 @@ export async function ensureQueuedRun(
         visible: true,
         isTurnStart: false,
         view: { status: "queued" },
-      }),
-    );
+      });
+  });
   await publishRunQueue(transaction, thread.id, runId);
   await projectThreadState(transaction, thread.id, new Date(), true);
   if (seed.teamRequestId)

@@ -215,6 +215,14 @@ interface ClaimedDeliveryRecord {
 }
 
 const linkCodeTtlMs = 60 * 60 * 1_000;
+const atIngressLaneHead = sql<boolean>`not exists (
+  select 1 from public.channel_ingress_events ahead
+  where ahead.lane_key = claimable.lane_key
+    and (
+      ahead.status = 'leased'
+      or (ahead.status = 'pending' and ahead.received_at < claimable.received_at)
+    )
+)`;
 const retentionMs = 7 * 24 * 60 * 60 * 1_000;
 const deliveryAttemptCeiling = 20;
 const ingressAttemptCeiling = 20;
@@ -1129,13 +1137,14 @@ export class ChannelStore {
   async commitIngress(
     connectionId: IntegrationConnectionId,
     eventInput: unknown,
+    onCommitted?: () => void,
   ): Promise<{
     readonly accountId: ChannelAccountId;
     readonly duplicate: boolean;
     readonly ingressId: ChannelIngressId;
   }> {
     const event = NormalizedChannelEventSchema.parse(eventInput);
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const account = await transaction
         .selectFrom("channelAccounts")
         .innerJoin(
@@ -1186,6 +1195,7 @@ export class ChannelStore {
         .returning("id")
         .executeTakeFirst();
       if (inserted) {
+        if (onCommitted) mutation.reaction(onCommitted);
         return { accountId: account.id, duplicate: false, ingressId: inserted.id };
       }
       const duplicate = await transaction
@@ -1198,17 +1208,43 @@ export class ChannelStore {
     });
   }
 
+  async nextIngressDeadline(): Promise<Date | null> {
+    const row = await this.#database
+      .selectFrom("channelIngressEvents as claimable")
+      .select(
+        sql<Date | null>`min(case
+        when status = 'leased' then claim_expires_at
+        when attempts >= ${ingressAttemptCeiling} then least(next_attempt_at, statement_timestamp())
+        else next_attempt_at
+      end)`.as("deadline"),
+      )
+      .where((eb) =>
+        eb.or([
+          eb("status", "=", "leased"),
+          eb.and([
+            eb("status", "=", "pending"),
+            eb.or([eb("attempts", ">=", ingressAttemptCeiling), atIngressLaneHead]),
+          ]),
+        ]),
+      )
+      .executeTakeFirstOrThrow();
+    return row.deadline;
+  }
+
   async claimIngress(workerId: string, leaseMs = 30_000): Promise<ClaimedIngress | null> {
     const now = new Date();
     const candidate = await this.#database
-      .selectFrom("channelIngressEvents")
+      .selectFrom("channelIngressEvents as claimable")
       .select("id")
       .where((eb) =>
         eb.or([
-          eb.and([eb("status", "=", "leased"), eb("claimExpiresAt", "<", now)]),
+          eb.and([eb("status", "=", "leased"), eb("claimExpiresAt", "<=", now)]),
           eb.and([
             eb("status", "=", "pending"),
-            eb.or([eb("nextAttemptAt", "<=", now), eb("attempts", ">=", ingressAttemptCeiling)]),
+            eb.or([
+              eb.and([eb("nextAttemptAt", "<=", now), atIngressLaneHead]),
+              eb("attempts", ">=", ingressAttemptCeiling),
+            ]),
           ]),
         ]),
       )
@@ -1222,7 +1258,7 @@ export class ChannelStore {
         .select("id")
         .where((eb) =>
           eb.or([
-            eb.and([eb("status", "=", "leased"), eb("claimExpiresAt", "<", now)]),
+            eb.and([eb("status", "=", "leased"), eb("claimExpiresAt", "<=", now)]),
             eb.and([eb("status", "=", "pending"), eb("attempts", ">=", ingressAttemptCeiling)]),
           ]),
         )
@@ -1243,7 +1279,7 @@ export class ChannelStore {
         })
         .where("id", "in", maintenanceIds)
         .where("status", "=", "leased")
-        .where("claimExpiresAt", "<", now)
+        .where("claimExpiresAt", "<=", now)
         .execute();
       // An event that ran out of attempts is the one failure nobody would ever
       // hear about otherwise: it never adopted, so no Run can report it, and
@@ -1287,16 +1323,7 @@ export class ChannelStore {
         .selectAll("claimable")
         .where("claimable.status", "=", "pending")
         .where("claimable.nextAttemptAt", "<=", now)
-        .where(
-          sql<boolean>`not exists (
-            select 1 from public.channel_ingress_events ahead
-            where ahead.lane_key = claimable.lane_key
-              and (
-                ahead.status = 'leased'
-                or (ahead.status = 'pending' and ahead.received_at < claimable.received_at)
-              )
-          )`,
-        )
+        .where(atIngressLaneHead)
         .orderBy("claimable.receivedAt", "asc")
         .orderBy("claimable.id", "asc")
         .limit(1)

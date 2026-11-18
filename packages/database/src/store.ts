@@ -1602,6 +1602,9 @@ export class OpensteerStore {
     if (stopped) this.#announce(stopped.revokedGrants);
     return stopped;
   }
+  nextExecutionDeadline(): Promise<Date | null> {
+    return executionRecovery.nextExecutionDeadline(this.#database);
+  }
   async stopRunsPastBackgroundDeadline(
     onStopped: (stop: BackgroundDeadlineStop) => void,
     now = new Date(),

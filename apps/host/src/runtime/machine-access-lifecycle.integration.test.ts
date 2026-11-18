@@ -1,3 +1,4 @@
+import { setBackgroundDeadline } from "../agents/execution-clock.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
@@ -890,14 +891,10 @@ integration("Machine access across a Run's authority", () => {
       // The first Run's engine is also waiting on its requester, so its stop
       // has something to tell the clients following its Workspace.
       const request = await first.openLiveRequest();
-      await host.store.database
-        .updateTable("runs")
-        .set({ backgroundDeadlineAt: new Date(Date.now() - 1_000) })
-        .where("id", "in", [first.runId, second.runId])
-        .execute();
       // The second Run's stop cannot commit while its command's key is taken,
       // so the sweep fails after the first Run's stop has committed.
       const occupied = await occupyBackgroundDeadlineKey(host, second.runId);
+      await setBackgroundDeadline(host, [first.runId, second.runId], new Date(Date.now() - 1_000));
 
       await waitForCondition(
         async () => (await sessionRow(firstSession))?.state === "ended",
