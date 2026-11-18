@@ -1453,8 +1453,10 @@ function SubscribedNewThread(props: {
 
 /** A check this sheet made itself, whose words are its own and safe to show. */
 class SettingsChanged extends Error {
-  constructor(readonly words: string) {
+  readonly words: string;
+  constructor(words: string) {
     super(words);
+    this.words = words;
   }
 }
 

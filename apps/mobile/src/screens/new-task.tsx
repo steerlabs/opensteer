@@ -496,8 +496,10 @@ function noop(): void {}
 
 /** A reason this screen itself has for not starting the task; nothing was written down. */
 class NotStarted extends Error {
-  constructor(readonly words: string) {
+  readonly words: string;
+  constructor(words: string) {
     super(words);
+    this.words = words;
   }
 }
 
