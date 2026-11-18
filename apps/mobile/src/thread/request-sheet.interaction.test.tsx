@@ -1373,7 +1373,6 @@ describe("RequestSheetScreen opened from a link", () => {
         ...source.getSnapshot(),
         synchronized: true,
         requests: [],
-        requestsRefreshing: true,
         pendingRequestIds: [requestId],
       };
       vi.spyOn(host, "getThreadTranscript").mockReturnValue({
