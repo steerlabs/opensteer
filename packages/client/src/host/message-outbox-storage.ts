@@ -338,6 +338,7 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
         if (
           !held ||
           !sameStoredMessage(held, previous) ||
+          (Boolean(held.lease) && (takeBack || next?.phase === "restoring")) ||
           (next?.phase === "restoring" &&
             record.entries.some(
               (row) =>

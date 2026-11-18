@@ -1,4 +1,8 @@
-import { clientScopeKey, type ClientConnection } from "@opensteer/client/connections";
+import {
+  classifyClientFailure,
+  clientScopeKey,
+  type ClientConnection,
+} from "@opensteer/client/connections";
 import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
@@ -13,6 +17,7 @@ import {
 } from "@opensteer/core";
 import {
   accessModeConflict,
+  hostMessageOutbox,
   placementForSelection,
   isHostRefusal,
   mutationIdempotencyKey,
@@ -371,7 +376,13 @@ function NewTask(props: {
           userId,
         });
       } catch (error) {
-        if (claimed !== null && !created && isHostRefusal(error) && isCurrent()) {
+        if (
+          claimed !== null &&
+          !created &&
+          isHostRefusal(error) &&
+          !classifyClientFailure(error).retryable &&
+          isCurrent()
+        ) {
           await drafts
             .restoreRefusedTaskStart(ownedScope, draftKey, claimed.idempotencyKey, isCurrent)
             .catch(() => undefined);
@@ -464,6 +475,10 @@ function NewTask(props: {
       (cleared) => {
         if (cleared) {
           forgetDraftFiles(files, record.localUris ?? []);
+          if (scope && record.ownerScope === scopeKey)
+            void hostMessageOutbox(hostClient)
+              ?.forgetHandoff(scope, record.idempotencyKey)
+              .catch(noop);
           setLine(null);
         }
       },

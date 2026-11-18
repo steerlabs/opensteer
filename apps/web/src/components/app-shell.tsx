@@ -702,7 +702,7 @@ export function AppShell({
       const held = composerDrafts.read(draftKey);
       if (
         held?.startGeneration &&
-        held.startPending &&
+        held.startPending !== false &&
         !held.startScope &&
         (await belongsToPreviousLogin(scopeKey, draftKey, held.startGeneration))
       )

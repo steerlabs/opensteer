@@ -20,7 +20,7 @@ import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { act, ActionNotDone } from "../use-action.js";
+import { act, ActionNotDone, failureWords } from "../use-action.js";
 import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
@@ -101,7 +101,7 @@ function NewTaskComposer({
   const scopeKey = clientScopeKey(scope);
   const generation = useSyncExternalStore(composerDrafts.subscribe, () => {
     const draft = draftKey && composerDrafts.read(draftKey);
-    return draft && draft.startPending ? (draft.startGeneration ?? null) : null;
+    return draft && draft.startPending !== false ? (draft.startGeneration ?? null) : null;
   });
   const draft = draftKey ? composerDrafts.read(draftKey) : null;
   const legacyStart = draft?.start !== undefined;
@@ -199,25 +199,42 @@ function NewTaskComposer({
       idempotencyKey,
       ...(quotedMessageId ? { quotedMessageId } : {}),
     };
-    const thread = await act(
-      hostClient,
-      { label: "start this task", done: "started", happened: "this task started" },
-      () =>
-        createThreadAndSend(
-          message,
-          resume || canCreate ? selection : null,
-          accessMode,
-          draftKey,
-          legacyStart,
-        ),
-    );
-    if (!thread.preserveDraft) nav.openConversation(nav.threadPath(thread.id));
-    return thread;
+    const expected = draftKey && composerDrafts.read(draftKey)?.startGeneration;
+    const login = clientScopeKey(hostClient.connection.getSnapshot().scope);
+    try {
+      const thread = await act(
+        hostClient,
+        { label: "start this task", done: "started", happened: "this task started" },
+        () =>
+          createThreadAndSend(
+            message,
+            canCreate ? selection : null,
+            accessMode,
+            draftKey,
+            legacyStart,
+          ),
+      );
+      if (!thread.preserveDraft) nav.openConversation(nav.threadPath(thread.id));
+      return thread;
+    } catch (error) {
+      const reason = failureWords(error);
+      if (
+        reason &&
+        draftKey &&
+        expected &&
+        login === clientScopeKey(hostClient.connection.getSnapshot().scope)
+      ) {
+        const held = composerDrafts.read(draftKey);
+        if (held?.startGeneration === expected && held.startScope === login)
+          composerDrafts.handBack(draftKey, { edit: (text) => text, reason });
+      }
+      throw error;
+    }
   };
   return (
     <>
       {previousLogin ? (
-        <p role="status">This draft started a task under your previous sign-in.</p>
+        <p role="status">This draft belongs to your previous sign-in.</p>
       ) : (
         <Composer
           attachments={attachmentTarget}

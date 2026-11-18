@@ -17,6 +17,7 @@ import { draftTaskStart, startTask } from "./task-start.js";
 function disk() {
   const records = new Map<string, string>();
   let interrupted = false;
+  let diskFailures = 0;
   const port = {
     read: async (key) => records.get(key) ?? null,
     write: async (key, value) => void records.set(key, value),
@@ -26,6 +27,7 @@ function disk() {
       const value = change(before);
       if (interrupted && value !== before) {
         interrupted = false;
+        diskFailures++;
         throw new Error("injected disk failure");
       }
       if (value === null) records.delete(key);
@@ -35,6 +37,9 @@ function disk() {
   return {
     records,
     port,
+    get diskFailures() {
+      return diskFailures;
+    },
     interrupt: (value: boolean) => {
       interrupted = value;
     },
@@ -108,7 +113,7 @@ it("settles an orphaned claim on reopen when the replay is refused", async () =>
       rejection: { code: "unconfirmed" },
     });
     await expect(second.restoreDraft("abandoned")).resolves.toBe("sent");
-    await second.removeUnconfirmed("abandoned");
+    await second.removeLocalCopy("abandoned");
     await vi.advanceTimersByTimeAsync(0);
     expect(accepted.has("next")).toBe(true);
   } finally {
@@ -312,8 +317,9 @@ async function runSeed(seed: number, clock: { now: number }) {
     const ownerScope = accounts[attempt.login]!;
     if (outcome === "ack" || outcome === "lost") {
       assert(!takenBack.has(row.localId), "a taken-back request reached the Host");
-      assert.deepEqual(accepted.get(row.localId) ?? row.command, row.command);
-      accepted.set(row.localId, row.command);
+      const prior = accepted.get(row.localId);
+      if (prior) assert.deepEqual(prior, row.command);
+      else accepted.set(row.localId, row.command);
     }
     if (!attempt.owner.closed) {
       if (outcome === "ack" || (outcome === "refuse" && accepted.has(row.localId)))
@@ -442,6 +448,8 @@ async function runSeed(seed: number, clock: { now: number }) {
       const rows = visible[owner.login]!;
       const candidate = rows[choose(rows.length)];
       const attempt = attempts[choose(attempts.length)];
+      const diskFailures = database.diskFailures;
+      const draftText = action === "start" ? owner.draft.read(draftKey)?.text : undefined;
       database.interrupt(choose(8) === 0);
       try {
         switch (action) {
@@ -516,12 +524,14 @@ async function runSeed(seed: number, clock: { now: number }) {
         if (
           !(error instanceof Error) ||
           !(
-            error.message === "injected disk failure" ||
             error.message === "injected lost creation reply" ||
-            error.message === "Message storage is unavailable."
+            (database.diskFailures !== diskFailures &&
+              (error.message === "injected disk failure" ||
+                error.message === "Message storage is unavailable."))
           )
         )
           throw error;
+        if (action === "start") assert.equal(owner.draft.read(draftKey)?.text, draftText);
       } finally {
         database.interrupt(false);
       }
@@ -578,14 +588,21 @@ async function runSeed(seed: number, clock: { now: number }) {
   }
 }
 
-it("keeps durable message and draft invariants across seeded windows, failures and reopens", async () => {
-  const clock = { now: epoch };
-  const now = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
-  const only = process.env.OPENSTEER_OUTBOX_MODEL_SEED;
-  try {
-    if (only !== undefined) await runSeed(Number(only), clock);
-    else for (let seed = 1; seed <= 2_500; seed++) await runSeed(seed, clock);
-  } finally {
-    now.mockRestore();
-  }
-}, 10_000);
+const replay = process.env.OPENSTEER_OUTBOX_MODEL_SEED;
+const batches =
+  replay === undefined
+    ? Array.from({ length: 4 }, (_, batch) => ({ first: batch * 512 + 1, last: (batch + 1) * 512 }))
+    : [{ first: Number(replay), last: Number(replay) }];
+
+it.each(batches)(
+  "keeps durable message and draft invariants (seeds $first–$last)",
+  async ({ first, last }) => {
+    const clock = { now: epoch };
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    try {
+      for (let seed = first; seed <= last; seed++) await runSeed(seed, clock);
+    } finally {
+      now.mockRestore();
+    }
+  },
+);

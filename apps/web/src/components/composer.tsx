@@ -479,10 +479,12 @@ export function Composer({
         });
         if (draftKey && result) {
           const submitted =
-            !result.preserveDraft &&
             latestDraft.current === text &&
             saved?.text.trim() === body &&
             saved.quote?.messageId === carriedQuote?.messageId &&
+            (saved.places?.length
+              ? JSON.stringify(saved.places) === JSON.stringify(places)
+              : !explicitPlaces) &&
             JSON.stringify(saved.files.map((file) => file.part)) === JSON.stringify(parts)
               ? saved
               : undefined;
@@ -490,6 +492,7 @@ export function Composer({
             draftKey,
             result.draftGeneration,
             submitted,
+            result.preserveDraft,
           );
           if (finished === "unavailable") {
             setDraftUnsaved(true);

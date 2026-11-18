@@ -17,7 +17,7 @@ export function messageDeliveryActions(
   attempted: boolean,
   unconfirmed = false,
 ): readonly MessageDeliveryAction[] {
-  if (phase === "restoring") return ["edit"];
+  if (phase === "restoring") return ["edit", "remove"];
   if (phase === "rejected") return unconfirmed ? ["retry", "remove"] : ["edit", "delete"];
   if (phase === "waiting" && !attempted) return ["edit", "dont-send"];
   return [];

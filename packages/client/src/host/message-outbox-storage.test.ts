@@ -2,6 +2,7 @@ import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { createMessageOutboxStorage } from "./message-outbox-storage.js";
+import { clientScopeKey } from "../connections/connection-controller.js";
 import { controlledClientSession } from "../test-support/client-connection.js";
 import type { StoredMessage } from "./message-outbox.js";
 
@@ -41,6 +42,55 @@ it("isolates durable records by login and rejects corrupt or mismatched commands
   await expect(storage.load(scope)).rejects.toThrow();
   records.set(key, "{ interrupted write");
   await expect(storage.load(scope)).rejects.toThrow();
+});
+
+it("replays old claims as uncertain and drops their permanent owners", async () => {
+  const scope = controlledClientSession().connection.getSnapshot().scope!;
+  const id = globalThis.crypto.randomUUID();
+  const threadId = createId("thread");
+  let raw = JSON.stringify({
+    version: 1,
+    scope: clientScopeKey(scope),
+    entries: [
+      {
+        localId: "old-claim",
+        command: {
+          type: "thread.sendMessage",
+          threadId,
+          idempotencyKey: "old-claim",
+          content: [{ type: "text", text: "Held across upgrade" }],
+        },
+        createdAt: new Date().toISOString(),
+        order: 1,
+        attempted: true,
+        phase: "sending",
+        attemptId: id,
+        inFlight: [id],
+      },
+    ],
+  });
+  const storage = createMessageOutboxStorage({
+    read: async () => raw,
+    write: async (_key, value) => {
+      raw = value;
+    },
+    remove: async () => {},
+  });
+  const [waiting] = await storage.load(scope);
+  expect(waiting).toMatchObject({ phase: "waiting", attempted: true, uncertain: true });
+  const claim = await storage.claim(
+    scope,
+    waiting!,
+    globalThis.crypto.randomUUID(),
+    100,
+    undefined,
+    () => true,
+  );
+  await claim!.settle({ code: "rejected" });
+  expect(await storage.load(scope)).toMatchObject([
+    { phase: "rejected", rejection: { code: "unconfirmed" } },
+  ]);
+  expect(raw).not.toContain(id);
 });
 
 it("keeps concurrent windows' writes and enforces the thread bound atomically", async () => {

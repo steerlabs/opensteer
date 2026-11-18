@@ -161,10 +161,10 @@ export function SignOutDialog({
               setPending(true);
               setError(null);
               void onConfirm()
-                .then(async () => {
+                .then(() => {
                   discardAllStagedFiles();
                   composerDrafts.clearAll();
-                  await cleanTaskStartJournals();
+                  void cleanTaskStartJournals().catch(() => {});
                   onClose();
                 })
                 .catch(() => {

@@ -7,8 +7,10 @@
  * refusal, and an earlier uncertain attempt makes that refusal unconfirmed. The person
  * can retry an unconfirmed refusal with the same key or remove its local copy.
  * The person can discard a never-attempted or definitely refused row, or fence it
- * as restoring before writing its draft. Edit retries that transfer after a crash.
+ * as restoring before writing its draft. Edit retries that transfer after a crash,
+ * or the person can remove the queue entry and keep any draft already saved.
  * Migration copies before retiring the source. Unbound legacy rows wait for a person.
+ * A failed write leaves the prior owner in place, and local settlement is retried.
  * Login changes stop new dispatches and hide old rows. Late results settle their own scope.
  */
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
@@ -129,7 +131,7 @@ export interface MessageOutbox {
   /** Edit: disable delivery durably before handing the message back to the draft. */
   restoreDraft(localId: string): Promise<MessageTakeBack>;
   discard(localId: string): Promise<void>;
-  removeUnconfirmed(localId: string): Promise<void>;
+  removeLocalCopy(localId: string): Promise<void>;
   dispose(): void;
 }
 export interface MessageOutboxOptions {
@@ -396,9 +398,12 @@ class SessionMessageOutbox implements MessageOutbox {
       }
       const entries = await this.#options.storage.load(scope);
       if (!this.#current(scope, generation)) return;
-      if (this.#storageRetry) clearTimeout(this.#storageRetry);
-      this.#storageRetry = null;
-      this.#storageAttempt = 0;
+      if (remaining) this.#retryStorage();
+      else {
+        if (this.#storageRetry) clearTimeout(this.#storageRetry);
+        this.#storageRetry = null;
+        this.#storageAttempt = 0;
+      }
       this.#publishRows(entries, { loading: false, issue: null });
       this.#drain();
     } catch {
@@ -549,6 +554,16 @@ class SessionMessageOutbox implements MessageOutbox {
       });
       if (!claimed || !this.#current(scope, generation)) {
         await this.#reload();
+        if (
+          this.#current(scope, generation) &&
+          this.#state.messages.some(
+            (row) =>
+              row.localId !== localId &&
+              row.command.threadId === entry.command.threadId &&
+              row.phase === "restoring",
+          )
+        )
+          return "occupied";
         return "sent";
       }
       if (
@@ -570,9 +585,9 @@ class SessionMessageOutbox implements MessageOutbox {
   };
 
   discard = (localId: string): Promise<void> => this.#discard(localId, false);
-  removeUnconfirmed = (localId: string): Promise<void> => this.#discard(localId, true);
+  removeLocalCopy = (localId: string): Promise<void> => this.#discard(localId, true);
 
-  async #discard(localId: string, unconfirmed: boolean): Promise<void> {
+  async #discard(localId: string, localCopy: boolean): Promise<void> {
     const scope = this.#scope;
     const generation = this.#generation;
     const entry = this.#state.messages.find((value) => value.localId === localId);
@@ -581,8 +596,9 @@ class SessionMessageOutbox implements MessageOutbox {
       const removed =
         scope &&
         entry &&
-        (unconfirmed
-          ? entry.phase === "rejected" && entry.rejection?.code === "unconfirmed"
+        (localCopy
+          ? entry.phase === "restoring" ||
+            (entry.phase === "rejected" && entry.rejection?.code === "unconfirmed")
           : takeable(entry) && entry.phase !== "restoring") &&
         (await this.#writes.run(
           async () =>
@@ -596,7 +612,7 @@ class SessionMessageOutbox implements MessageOutbox {
           reason: "message-unconfirmed",
           retryable: false,
         });
-      this.#housekeeping(this.#options.onDiscarded, scope, entry);
+      if (entry.phase !== "restoring") this.#housekeeping(this.#options.onDiscarded, scope, entry);
     } finally {
       if (scope && this.#current(scope, generation)) {
         this.#takingBack.delete(localId);
@@ -1000,8 +1016,7 @@ export function projectMessageOutbox(
   return pending.length === 0 && !changed ? entries : [...projected, ...pending];
 }
 
-// Rows are rebuilt only when what they show changes, so a row that did not change keeps
-// its identity and the transcript beneath it declines to redraw.
+// Cache the projection of unchanged durable rows.
 const aliasRows = new WeakMap<TranscriptEntry, MessageEntry>();
 const localRows = new WeakMap<StoredMessage, MessageEntry>();
 function localRow(entry: StoredMessage, viewerId: UserId): MessageEntry {

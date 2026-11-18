@@ -58,11 +58,11 @@ async function discardFromRow(threadId: string) {
   await settle();
 }
 
-async function remount(path: string) {
+async function remount(path: string, sameHost = false) {
   await act(async () => root?.unmount());
   setRoot(null);
   document.body.replaceChildren();
-  await mount(path);
+  await mount(path, { sameHost });
 }
 
 async function attach(name: string) {
@@ -216,7 +216,7 @@ describe("what a person has written and not sent", () => {
     expect(composerText(field())).toBe("Do the thing");
 
     const { path, search } = place();
-    await remount(`${path}${search}`);
+    await remount(`${path}${search}`, true);
     await settle();
     expect(composerText(field())).toBe("Do the thing");
   });

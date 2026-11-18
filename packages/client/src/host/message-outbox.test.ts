@@ -423,7 +423,7 @@ describe("app lifetime message delivery", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sent).toEqual([]);
     await expect(outbox.restoreDraft("legacy")).resolves.toBe("sent");
-    outbox.retry("legacy");
+    await outbox.retry("legacy");
     await vi.advanceTimersByTimeAsync(0);
     expect(sent).toEqual(["legacy"]);
     expect(outbox.getSnapshot().messages).toEqual([]);
@@ -865,7 +865,43 @@ describe("durable outbox interleavings", () => {
     }
   });
 
-  it("keeps a pending row by reference when a storage notification changes another task", async () => {
+  it("keeps the first placement when an uncertain send is replayed after the task changes", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    let idle = true;
+    const second = Promise.withResolvers<{ messageId: string }>();
+    const dispatch = vi
+      .fn(async () => ({ messageId: "accepted" }))
+      .mockRejectedValueOnce(new HostTransportError("timed-out"))
+      .mockImplementationOnce(() => second.promise);
+    const outbox = createMessageOutbox({
+      session,
+      storage: storage().port,
+      drafts: { restore: async () => "restored" },
+      startsRun: () => idle,
+      dispatch,
+    });
+    try {
+      await outbox.enqueue(command("same-placement"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outbox.getSnapshot().messages[0]).toMatchObject({
+        phase: "waiting",
+        inTranscript: true,
+      });
+      idle = false;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      expect(outbox.getSnapshot().messages[0]).toMatchObject({
+        phase: "sending",
+        inTranscript: true,
+      });
+    } finally {
+      outbox.dispose();
+      second.resolve({ messageId: "accepted" });
+    }
+  });
+
+  it("keeps a transcript by reference through lease updates and changes to another task", async () => {
     vi.useFakeTimers();
     const session = controlledClientSession();
     session.change({ phase: "recovering" });
@@ -886,9 +922,23 @@ describe("durable outbox interleavings", () => {
       const scope = session.connection.getSnapshot().scope!;
       const viewer = createId("user");
       const project = () => projectMessageOutbox(outbox.getSnapshot(), threadId, [], viewer);
+      const waiting = outbox.getSnapshot().messages[0]!;
+      const held = {
+        ...waiting,
+        attempted: true,
+        phase: "sending" as const,
+        lease: { id: globalThis.crypto.randomUUID(), expiresAt: Date.now() + 30_000 },
+      };
+      await store.port.put(scope, held);
+      changed();
+      await vi.advanceTimersByTimeAsync(0);
       const before = project();
       await store.port.put(scope, {
-        ...outbox.getSnapshot().messages[0]!,
+        ...held,
+        lease: { id: globalThis.crypto.randomUUID(), expiresAt: Date.now() + 60_000 },
+      });
+      await store.port.put(scope, {
+        ...waiting,
         localId: "another-task",
         command: { ...command("another-task"), threadId: createId("thread") },
       });

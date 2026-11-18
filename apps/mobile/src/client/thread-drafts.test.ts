@@ -1,3 +1,4 @@
+import { clientScopeKey } from "@opensteer/client/connections";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { BrowserPageContentPartSchema, ModelSelectionSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
@@ -100,6 +101,42 @@ describe("createThreadDraftStore", () => {
       quote: { messageId: draftQuote },
       page,
     });
+  });
+
+  it("restores a refused first message atomically and retains a start that has been replayed", async () => {
+    const privateFiles = new FlakyFilesystem();
+    const { drafts } = open(privateFiles);
+    const scope = { authorityKey: "host", deploymentId, viewerId: userId, loginId: "login" };
+    const key = newTaskDraftKey("home");
+    const held = {
+      idempotencyKey: "held-first",
+      ownerScope: clientScopeKey(scope)!,
+      threadId: key,
+      text: referenced,
+      browserPage: page,
+    };
+    await drafts.claimTaskStart(deploymentId, userId, key, held);
+    privateFiles.failWrites = true;
+    await expect(
+      drafts.restoreRefusedTaskStart(scope, key, held.idempotencyKey, () => true),
+    ).rejects.toThrow();
+    const reopened = open(privateFiles).drafts;
+    await reopened.load();
+    expect(reopened.readTaskStart(deploymentId, userId, key)).toMatchObject(held);
+    expect(reopened.readDraft(deploymentId, userId, key)).toBeNull();
+    privateFiles.failWrites = false;
+    await expect(
+      reopened.restoreRefusedTaskStart(scope, key, held.idempotencyKey, () => true),
+    ).resolves.toBe(true);
+    expect(reopened.readDraft(deploymentId, userId, key)).toMatchObject({ text: referenced, page });
+    expect(reopened.readTaskStart(deploymentId, userId, key)).toBeNull();
+
+    await reopened.claimTaskStart(deploymentId, userId, key, held);
+    await expect(reopened.replayTaskStart(scope, key, held.idempotencyKey)).resolves.toBe(true);
+    await expect(
+      reopened.restoreRefusedTaskStart(scope, key, held.idempotencyKey, () => true),
+    ).resolves.toBe(false);
+    expect(reopened.readTaskStart(deploymentId, userId, key)).toMatchObject(held);
   });
 
   it("never exposes one signed-in user's draft or pending work to another", async () => {

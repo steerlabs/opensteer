@@ -2,7 +2,9 @@
  * A Home draft keeps its generation through edits, even when empty. Start binds that
  * generation to the login and durably reserves one creation key and one send key.
  * Reopen or a lost creation reply replays the same creation. The Host's reply binds
- * the task ID. Until enqueue commits, Start can use revised words with that binding.
+ * the task ID. A definite first refusal releases the reservation. After a replay, the
+ * keys stay bound until the person completes the handoff or discards the draft.
+ * Until enqueue commits, Start can use revised words with that binding.
  * The outbox atomically appends the first message and records its receipt. A later
  * Start seeing that receipt finishes the handoff even if the window that sent it closed.
  * Matching words open the task. Revised words and files stay under a fresh generation.

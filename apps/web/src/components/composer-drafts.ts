@@ -365,10 +365,13 @@ export function createComposerDraftStore(
       key: string,
       generation: string,
       submitted?: ComposerDraft,
+      preserveDraft = false,
     ): "cleared" | "kept" | "unavailable" {
       const draft = read(key);
       if (draft?.startGeneration !== generation) return "kept";
-      if (!holdsContent(draft) || (submitted && matches(draft, submitted)))
+      const sameRevision = submitted && matches(draft, submitted);
+      if (preserveDraft && !sameRevision) return "kept";
+      if (!holdsContent(draft) || (!preserveDraft && sameRevision))
         return clear(key) ? "cleared" : "unavailable";
       if (
         !write(
