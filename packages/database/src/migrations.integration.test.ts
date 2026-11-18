@@ -941,7 +941,22 @@ describe("fresh personal/team lineage", () => {
       },
       source: { kind: "watch" },
     });
-    for (const { revision } of [savedSchedule, savedWatch]) {
+    const retiredSchedule = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "retired-schedule",
+      name: "Schedule using a retired tool",
+      program: {
+        ...program,
+        source: 'export default async ({opensteer}) => opensteer.callTool("integration_call", {})',
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    for (const { revision } of [savedSchedule, savedWatch, retiredSchedule]) {
       await database
         .updateTable("triggerRevisions")
         .set({ program: { ...revision.program, toolContractVersion: 4 } })
@@ -1117,6 +1132,13 @@ describe("fresh personal/team lineage", () => {
       const detail = await triggers.getForOwner(saved.trigger.id, userId, 1);
       expect(detail?.revision.program).toEqual(saved.revision.program);
     }
+    expect(
+      await database
+        .selectFrom("triggerRevisions")
+        .select("program")
+        .where("id", "=", retiredSchedule.revision.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ program: { toolContractVersion: 4 } });
     expect(
       (await triggers.getForOwner(savedWatch.trigger.id, userId, 1))?.activation,
     ).toMatchObject({

@@ -230,7 +230,8 @@ delete from plugin_owner_settings setting
     ));
 
 update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '5')
-  where program->'toolContractVersion' = '4'::jsonb;
+  where program->'toolContractVersion' = '4'::jsonb
+    and program->>'source' !~ 'integration_(call|describe|list|remove|request|search)';
 `;
 export function migrationProvider(): MigrationProvider {
   return {

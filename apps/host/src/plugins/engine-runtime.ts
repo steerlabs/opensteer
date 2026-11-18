@@ -87,7 +87,7 @@ import {
 import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource, openapiAppSource } from "@opensteer/plugin-engine-app-templates";
 import { safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
-import { defaultUrlPolicy } from "@opensteer/plugin-engine-utils/url-policy";
+import { defaultUrlPolicy, parseDestination } from "@opensteer/plugin-engine-utils/url-policy";
 import {
   makeExecutions,
   executeProgram,
@@ -788,6 +788,14 @@ export async function startEngine(
                   })).files;
                   name = input.name;
                 } else {
+                  // The client checks resolved names at connect time; a literal address skips that.
+                  if (parseDestination(input.url, defaultUrlPolicy) === undefined)
+                    return yield* Effect.fail(
+                      new PluginServiceError(
+                        "invalid",
+                        "This address cannot serve an API description",
+                      ),
+                    );
                   const client = yield* safeHttpClient(defaultUrlPolicy);
                   const response = yield* client.get(input.url);
                   const document = yield* response.json;

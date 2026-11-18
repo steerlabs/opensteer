@@ -328,6 +328,15 @@ test("account creation returns its original ID after owner cache loss and an eng
   expect(JSON.stringify([receipts.rows, history])).not.toContain("never-in-receipts");
 });
 
+test("an API description is never fetched from a private literal address", async () => {
+  await expect(
+    service.install(
+      { kind: "openapi", url: "https://169.254.169.254/openapi.json", name: "Private" },
+      owner,
+    ),
+  ).rejects.toMatchObject({ code: "invalid" });
+});
+
 test.each(["catalog", "url", "files"] as const)(
   "%s installation replays its committed result after an engine restart",
   async (kind) => {
