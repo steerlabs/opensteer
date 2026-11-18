@@ -181,9 +181,17 @@ export function failureProvenance(
     explicit === "local"
   )
     return explicit;
+  if (
+    [
+      "invalid-response",
+      "unknown-method",
+      "response-too-large",
+      "transport-response-too-large",
+    ].includes(reason)
+  )
+    return "protocol";
   if (reason.startsWith("transport-")) return "transport";
   if (reason === "proxy-unavailable") return "proxy";
-  if (reason === "invalid-response" || reason === "unknown-method") return "protocol";
   if (reason === "invalid-payload") return "local";
   return host ? "host" : "local";
 }

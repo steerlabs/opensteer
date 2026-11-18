@@ -50,7 +50,7 @@ export class HostTransportError extends ClientOperationError {
       code,
       reason: code,
       retryable: detail.retryable,
-      provenance: "transport",
+      provenance: code === "response-too-large" ? "protocol" : "transport",
       kind:
         code === "cancelled" || code === "deployment-changed"
           ? "cancelled"

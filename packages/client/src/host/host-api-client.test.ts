@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
 import { HostCapacityError } from "../connections/host-transport-error.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
@@ -211,6 +212,26 @@ describe("bounded Host rpc requests", () => {
       ok: false,
       error: { code: "resource_exhausted", retryable: true },
     });
+  });
+
+  it("preserves a response size refusal as a protocol failure through RPC", async () => {
+    const client = createHttpHostApiClient({
+      baseUrl: new URL("https://opensteer.example"),
+      fetch: async () =>
+        new Response("{}", { headers: { "content-length": String(17 * 1024 * 1024) } }),
+      onAuthenticationRequired: vi.fn(),
+    });
+    const reply = await client["auth.config"]({});
+    try {
+      unwrapRpcResult(reply);
+    } catch (error) {
+      expect(classifyClientFailure(error)).toMatchObject({
+        kind: "protocol",
+        reason: "response-too-large",
+        retryable: false,
+      });
+    }
+    expect(reply.ok).toBe(false);
   });
 
   it("preserves a Host operation refusal without treating it as network loss", async () => {
