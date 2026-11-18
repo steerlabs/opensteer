@@ -138,7 +138,8 @@ describe("DeviceService computer connections", () => {
       service.devices.computerAppApprovals.setComputerConnection(input),
     ).rejects.toMatchObject({
       code: "conflict",
-      message: `Studio Mac is offline. Turn ${computerDefinition.name} on when it is back.`,
+      reason: "device-offline",
+      message: "Open Opensteer on Studio Mac and keep it open, then try again.",
     });
     existing = true;
     await expect(
@@ -1314,9 +1315,15 @@ describe("DeviceService computer app setup expiry", () => {
           absent:
             "This version of Opensteer on this iPhone doesn't offer Calendar. Update Opensteer on this iPhone.",
         };
+        const reasons = {
+          offline: "device-offline",
+          connecting: "computer-app-connecting",
+          absent: "computer-app-not-offered",
+        };
         await expect(asking).rejects.toMatchObject({
           code: "conflict",
           message: messages[availability],
+          reason: reasons[availability],
         });
         expect(requestComputerAppSetup).not.toHaveBeenCalled();
       }

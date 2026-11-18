@@ -61,6 +61,42 @@ describe("safe client issues", () => {
       action: null,
     });
   });
+
+  it.each([
+    ["device-offline", "Open Opensteer on the device and keep it open, then try again."],
+    [
+      "computer-app-connecting",
+      "Opensteer on the device is still connecting. Try again in a moment.",
+    ],
+    [
+      "computer-app-not-offered",
+      "This device doesn't offer the app. Check for an Opensteer update on the device.",
+    ],
+    [
+      "computer-app-approval-changed",
+      "This request changed or is no longer waiting. Review the current access.",
+    ],
+    [
+      "computer-app-definition-changed",
+      "The app or its available access changed. Review it and request access again.",
+    ],
+    [
+      "computer-app-installation-invalid",
+      "The Host couldn't read this app's installation. Check for an Opensteer update on the Host.",
+    ],
+  ])("explains a computer app refusal (%s)", (reason, detail) => {
+    const error = new HostClientRequestError({
+      code: "conflict",
+      message: "Unfiltered Host message",
+      reason,
+      status: 409,
+    });
+    const issue = clientIssue(error, { operation: "action", label: "answer this request" });
+    expect(issue).toMatchObject({ code: "rejected", reason });
+    expect(presentClientIssue({ ...issue!, done: "answered" }).title).toBe(
+      `Not answered. ${detail}`,
+    );
+  });
   // "Not sent. your computer didn't accept it." and "your computer needs an update"
   // started sentences in lowercase when the computer had no name to say.
   it("starts every sentence with a capital, with or without a name", () => {

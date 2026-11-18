@@ -23,6 +23,7 @@ import {
   computerAppIdentitiesEqual,
 } from "@opensteer/integration-core";
 import { integrationAccessCovers } from "@opensteer/integration-core/access";
+import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
 import {
   OpensteerError,
   createId,
@@ -200,7 +201,16 @@ export async function computerConnectionTargetInTransaction(
       message: `${known?.title ?? input.definitionId} is not installed`,
     });
   }
-  const definition = IntegrationDefinitionSummarySchema.parse(installed.manifest.definition);
+  const parsed = IntegrationDefinitionSummarySchema.safeParse(installed.manifest.definition);
+  if (!parsed.success)
+    throw new OpensteerError({
+      cause: parsed.error,
+      code: "bad_request",
+      reason: "computer-app-installation-invalid",
+      message:
+        "The Host couldn't read this app's installation. Check for an Opensteer update on the Host.",
+    });
+  const definition = parsed.data;
   if (definition.adapter !== "computer") {
     throw new OpensteerError({ code: "not_found", message: `${definition.name} is not installed` });
   }
@@ -302,6 +312,7 @@ export async function consumeComputerAppApprovalInTransaction(
   if (!candidate || !computerAppIdentitiesEqual(candidate.app, input.app)) {
     throw new OpensteerError({
       code: "forbidden",
+      reason: computerAppApprovalChangedReason,
       message: "This approval changed or is no longer waiting.",
     });
   }

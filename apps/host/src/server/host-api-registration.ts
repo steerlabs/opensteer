@@ -208,13 +208,13 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
     errorHandler: (error, request, reply) => {
       const normalized = normalizeHostError(error);
       if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
-      else if (normalized.error.reason)
+      else if (name === "commands.dispatch" || normalized.error.reason)
         // Reasons are stable codes; messages and payloads can carry addresses.
         request.log.info(
           {
             rpc: name,
             code: normalized.error.code,
-            reason: normalized.error.reason,
+            reason: normalized.error.reason ?? null,
             cause: refusalCause(error),
           },
           "rpc refused",

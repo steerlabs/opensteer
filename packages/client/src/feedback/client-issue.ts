@@ -100,6 +100,16 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "browser-capture-limit": "Too many pages are being watched.",
   "browser-input-owner-conflict": "Someone else is using this page.",
   "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
+  "device-offline": "Open Opensteer on the device and keep it open, then try again.",
+  "computer-app-connecting": "Opensteer on the device is still connecting. Try again in a moment.",
+  "computer-app-not-offered":
+    "This device doesn't offer the app. Check for an Opensteer update on the device.",
+  "computer-app-approval-changed":
+    "This request changed or is no longer waiting. Review the current access.",
+  "computer-app-definition-changed":
+    "The app or its available access changed. Review it and request access again.",
+  "computer-app-installation-invalid":
+    "The Host couldn't read this app's installation. Check for an Opensteer update on the Host.",
   "resource-exhausted": "Too many messages waiting.",
   "team-file-too-large": "Files can be up to 100 MB.",
   "team-file-capacity": "Too many files are moving at once. Try again in a moment.",
