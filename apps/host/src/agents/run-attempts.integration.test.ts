@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunAttempt, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /*
@@ -381,8 +381,7 @@ integration("Run attempts", () => {
       timeout: 120_000,
     },
     async () => {
-      const capture = join(await mkdtemp(join(tmpdir(), "opensteer-held-turn-")), "capture.jsonl");
-      const { active, threadId } = await start(["--hold-ms=2500", `--capture=${capture}`]);
+      const { active, threadId } = await start(["--hold-ms=2500"]);
       const runId = await heldRun(active, threadId);
 
       // The Runner cannot hear the interrupt until its turn has finished.
@@ -391,10 +390,13 @@ integration("Run attempts", () => {
         text: "Use the blue palette",
         threadId,
       });
-      await waitFor(
-        async () =>
-          (await readFile(capture, "utf8").catch(() => "")).includes('"held-turn-finished"'),
-        "the held turn to finish by itself",
+      await vi.waitFor(
+        () =>
+          expect(
+            active.settledRunEvent(runId)?.type,
+            "The disconnected Runner never finished and journaled the original turn",
+          ).toBe("run.completed"),
+        { timeout: 15_000 },
       );
       active.network.unblock();
       await settled(active, runId);

@@ -203,11 +203,12 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
         },
       }),
     );
-    expect(await replaced).toMatchObject({
+    const [snapshot, sync] = await Promise.all([replaced, synchronized]);
+    expect(snapshot).toMatchObject({
       type: "host.snapshot",
       snapshot: { epoch: shell.epoch, deploymentId: shell.deploymentId },
     });
-    expect(await synchronized).toMatchObject({ type: "host.synchronized" });
+    expect(sync).toMatchObject({ type: "host.synchronized" });
     // A socket below the window is refused at the upgrade, before any frame.
     const below = new URL(realtime);
     below.searchParams.delete(apiCurrentQueryParameter);
