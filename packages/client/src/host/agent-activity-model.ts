@@ -226,7 +226,10 @@ export function groupTranscriptEntries(
       continue;
     }
     if (entry.kind === "message" && entry.addressedToUserId) {
-      slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
+      slots.push({
+        group: { entry, key: entry.clientSendKey ?? entry.id, kind: "message" },
+        kind: "group",
+      });
       open = { after: entry.id, entries: [], kind: "stretch", runId: entry.runId };
       slots.push(open);
       continue;
@@ -238,7 +241,12 @@ export function groupTranscriptEntries(
       const joinedRun =
         entry.messageKind === "input" && entry.runId !== null && runsDrawn.has(entry.runId);
       slots.push({
-        group: { entry, key: entry.id, kind: "message", ...(joinedRun ? { joinedRun } : {}) },
+        group: {
+          entry,
+          key: entry.clientSendKey ?? entry.id,
+          kind: "message",
+          ...(joinedRun ? { joinedRun } : {}),
+        },
         kind: "group",
       });
       // A message a Run took — its seed, or one that joined it while it ran —

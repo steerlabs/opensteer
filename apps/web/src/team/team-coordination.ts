@@ -10,10 +10,13 @@ import {
   HostedTeamViewSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opensteer/client/auth";
-import { AccountRequestError } from "@opensteer/client/connections";
+import {
+  AccountRequestError,
+  classifyClientFailure,
+  hostUnanswered,
+} from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
-  hostUnanswered,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -209,7 +212,7 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
       } catch (error) {
         // Only no answer from this Opensteer is it being offline; a refusal it sends, even
         // that it can't reach the team, is reported.
-        if (hostUnanswered(error)) return { kind: "offline" };
+        if (hostUnanswered(classifyClientFailure(error))) return { kind: "offline" };
         throw error;
       }
     },

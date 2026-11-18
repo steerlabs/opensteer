@@ -190,7 +190,7 @@ describe("composer drafts", () => {
     expect(drafts.index(scope).tasks[0]?.refused).toBe(false);
   });
 
-  it("hands what comes back to the composer open on that draft, not over it", () => {
+  it("saves returned input even when an editor is open", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
     const receive = vi.fn();
@@ -199,7 +199,7 @@ describe("composer drafts", () => {
 
     drafts.handBack(task("a"), returned);
     expect(receive).toHaveBeenCalledWith(returned);
-    expect(drafts.read(task("a"))).toBeNull();
+    expect(drafts.read(task("a"))?.text).toBe("returned");
 
     close();
     drafts.handBack(task("a"), returned);

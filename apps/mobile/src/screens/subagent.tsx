@@ -3,7 +3,6 @@ import {
   canRespondToRequests,
   conversationName,
   deriveSurface,
-  showsHostLive,
   subagentDetail,
   subagentFooter,
   subagentSiblings,
@@ -62,7 +61,8 @@ import {
   WorkflowPhases,
   type AgentScope,
 } from "../thread/subagent-rows.js";
-import { SubagentStop } from "../thread/subagent-stop.js";
+import { SubagentStop, useSubagentStopLine } from "../thread/subagent-stop.js";
+import { ActionLine } from "../ui/action-line.js";
 import { SubagentSteps } from "../thread/transcript.js";
 import { QuestionCard } from "../thread/waiting-questions.js";
 import { BarControl } from "../ui/bar-control.js";
@@ -75,6 +75,7 @@ import { Screen, useGutter, useReadingColumn } from "../ui/screen.js";
 import { useContentInsets } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { useShowsLive } from "../ui/connection-live.js";
 
 export type SubagentScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -161,17 +162,19 @@ function AttachedSubagent(props: {
   );
   const snapshot = watched.snapshot;
   // Out of reach of the conversation's computer, everything here is what was last known.
-  const live = useHostSelector(
+  const streaming = useShowsLive(hostClient.connection);
+  const connected = useHostSelector(
     hostClient,
     useCallback(
       (host: HostSnapshot) => {
         const thread = host.threads.find(({ id }) => id === threadId);
         const environment = host.environments.find(({ id }) => id === thread?.environmentId);
-        return showsHostLive(host) && environment?.status === "connected";
+        return environment?.status === "connected";
       },
       [threadId],
     ),
   );
+  const live = streaming && connected;
   const select = useCallback(
     (host: HostSnapshot): SubagentDetail | null => {
       const summary =
@@ -501,17 +504,25 @@ function WatchFooter(props: {
   );
   const noun = card.kind === "workflow" ? "workflow" : "subagent";
   const narrow = useWindowDimensions().width < 340;
+  // How Stop went takes the words' place, beside it, until it settles.
+  const line = useSubagentStopLine(props.hostClient, card);
   return (
     <View style={styles.bar}>
       {narrow ? null : <Symbol name="eye" size={14} tint={color.muted} />}
-      <AppText role="caption" style={styles.barWords} tone="muted">
-        {`A ${noun} reports to `}
-        <AppText role="caption" style={styles.strong} tone="soft">
-          {footer.reportsTo}
+      {line !== null ? (
+        <View style={styles.barWords}>
+          <ActionLine line={line} numberOfLines={2} />
+        </View>
+      ) : (
+        <AppText role="caption" style={styles.barWords} tone="muted">
+          {`A ${noun} reports to `}
+          <AppText role="caption" style={styles.strong} tone="soft">
+            {footer.reportsTo}
+          </AppText>
+          {". You can watch it, not message it."}
+          {footer.noStop === null ? null : ` ${footer.noStop}`}
         </AppText>
-        {". You can watch it, not message it."}
-        {footer.noStop === null ? null : ` ${footer.noStop}`}
-      </AppText>
+      )}
       <SubagentStop card={card} hostClient={props.hostClient} look="button" />
     </View>
   );

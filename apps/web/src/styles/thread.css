@@ -663,6 +663,11 @@ label.action-row input {
   color: var(--muted);
 }
 
+/* An answer's outcome sits under the buttons that asked, at their edge. */
+.action-buttons + .action-note {
+  text-align: right;
+}
+
 .action-field {
   display: flex;
   flex-direction: column;

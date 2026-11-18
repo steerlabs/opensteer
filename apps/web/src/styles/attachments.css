@@ -179,6 +179,13 @@
   opacity: 0.45;
 }
 
+.attachment-tray__waiting {
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
 .attachment-tray__notice {
   display: flex;
   align-items: flex-start;

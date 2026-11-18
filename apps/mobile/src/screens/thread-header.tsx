@@ -37,6 +37,7 @@ import { TaskStateIndicator } from "../thread/task-status.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { openTopLevel } from "../top-level.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
+import { useAssignmentStopLine } from "../thread/reviewed-stop.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
 import { barGlassInset, barTitleWidth, barYield, useBarTitleRoom } from "../ui/bar-title.js";
@@ -382,6 +383,13 @@ export function ThreadTitlePill(
 ): ReactNode {
   const glass = useLiquidGlass();
   const { deploymentId, onNeed, threadId } = props;
+  // Stop asked from the menu says how it went where the task's state is.
+  const stopLine = useAssignmentStopLine(
+    props.hostClient,
+    props.task === null
+      ? null
+      : { assignmentId: props.task.assignmentId, open: props.task.open, title: props.title },
+  );
   const width = props.maxWidth;
   // All of the title but its words is fixed, so it needs that plus what the name needs.
   const sizes = useRef({ name: NaN, title: NaN, words: NaN });
@@ -438,9 +446,10 @@ export function ThreadTitlePill(
             <View style={styles.words} {...measure("words")}>
               {name}
               {/* The one state worth a second line: nothing will answer until it is back. */}
-              {props.connectionLabel === null ? null : (
+              {props.connectionLabel === null && stopLine === null ? null : (
                 <ThreadSubtitle
                   connectionLabel={props.connectionLabel}
+                  line={stopLine}
                   placeName={null}
                   task={null}
                 />
@@ -462,6 +471,7 @@ export function ThreadTitlePill(
           <ThreadSubtitle
             placeName={props.placeName}
             connectionLabel={props.connectionLabel}
+            line={stopLine}
             // iOS says "Completed" in the menu's heading and its accessible
             // name, so the bar keeps one line for the title. Android's menu
             // has no heading, and every other state stays here.

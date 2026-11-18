@@ -15,7 +15,12 @@ import {
 import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/client/connections";
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
-import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  createMemorySavedViews,
+  hostMessageOutbox,
+  createMessageOutboxStorage,
+} from "@opensteer/client/host";
 import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
@@ -74,7 +79,10 @@ function testPort(options: {
    */
   readonly realCredentials?: boolean;
   readonly verification?: HostEpochAgreement;
-  readonly configureClient?: (client: MockHostClient) => void;
+  readonly configureClient?: (
+    client: MockHostClient,
+    authorization: Parameters<MobileHostPort["attach"]>[0]["authorization"],
+  ) => void;
 }) {
   const attached: { deploymentId: string; origin: string }[] = [];
   const capabilityReaders: Parameters<MobileHostPort["attach"]>[0]["capabilities"][] = [];
@@ -97,15 +105,26 @@ function testPort(options: {
             },
             held: async () => options.held,
           },
-    attach: ({ connection, origin, capabilities }) => {
+    attach: ({
+      connection,
+      origin,
+      capabilities,
+      connectionController,
+      clientScope,
+      authorization,
+    }) => {
       capabilityReaders.push(capabilities);
       const deploymentId = connection.authority.document.deploymentId;
       attached.push({ deploymentId, origin });
       // A real client, so the attachment this port hands back is the shape
       // `MobileClient` actually owns and disposes.
       // No latency: `connected` is a real crossing these tests wait for.
-      const hostClient = new MockHostClient({ latencyMs: 0 });
-      options.configureClient?.(hostClient);
+      const hostClient = new MockHostClient({
+        latencyMs: 0,
+        ...(connectionController ? { connectionController } : {}),
+        ...(clientScope ? { clientScope } : {}),
+      });
+      options.configureClient?.(hostClient, authorization);
       const release = hostClient.dispose.bind(hostClient);
       hostClient.dispose = () => {
         disposed.push(deploymentId);
@@ -366,6 +385,7 @@ function open(
   privateFiles: PrivateFilesystem = new MemoryPrivateFilesystem(),
   options: {
     readonly notificationPreviews?: NotificationPreviews;
+    readonly lifecycle?: MobileClientOptions["lifecycle"];
     readonly accountOrigin?: string | null;
     readonly fetch?: MobileClientOptions["fetch"];
     readonly iphoneApps?: MobileClientOptions["iphoneApps"];
@@ -377,6 +397,7 @@ function open(
   const opened: string[] = [];
   const client = new MobileClient({
     ...(options.notificationPreviews ? { notificationPreviews: options.notificationPreviews } : {}),
+    ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
     accountOrigin: options.accountOrigin ?? null,
     catalogFilePath: "/private/deployments.json",
     quietSeenFilePath: "/private/quiet-seen.json",
@@ -1283,7 +1304,7 @@ describe("MobileClient Account directory state", () => {
     await settle();
 
     expect(client.getSnapshot().directory).toEqual({
-      detail: "The Account directory did not answer.",
+      detail: "Couldn't load your computers.",
       status: "error",
       unavailable: [],
     });
@@ -1430,7 +1451,7 @@ describe("MobileClient attachment reconciliation", () => {
       expect(verify).toHaveBeenCalledTimes(1);
       await client.retrySelection();
       expect(verify).toHaveBeenCalledTimes(2);
-      await expect(read()).rejects.toThrow(/attachment changed/u);
+      await expect(read()).rejects.toMatchObject({ code: "deployment-changed" });
     } finally {
       client.dispose();
     }
@@ -1532,7 +1553,7 @@ describe("MobileClient attachment reconciliation", () => {
 
     await client.select(otherId);
 
-    expect(firstSettled).toBe(false);
+    expect(firstSettled).toBe(true);
     expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
     expect(port.attached.map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
 
@@ -2064,9 +2085,10 @@ describe("MobileClient cold saved launch", () => {
       deploymentId: serverId,
       status: "ready",
     });
-    expect(client.savedViews.getSnapshot().tasks).toMatchObject({
-      source: "saved",
-      label: "Updating…",
+    expect(client.savedViews.getSnapshot().tasks).toMatchObject({ source: "saved" });
+    expect(client.getSnapshot().selection.hostClient?.getSnapshot()).toMatchObject({
+      connection: "connecting",
+      session: "checking",
     });
     expect(load).toHaveBeenCalled();
     expect(port.attached).toHaveLength(1);
@@ -2728,7 +2750,11 @@ describe("MobileClient version verification", () => {
     expect(client.getSnapshot().selection.row?.status).toBe("offline");
     options.verification = { status: "compatible", capabilities: [] };
     await client.foregrounded();
-    expect(port.attached).toHaveLength(1);
+    await vi.waitFor(
+      () =>
+        expect(port.attached, "The first attachment did not recover on foreground").toHaveLength(1),
+      { timeout: 1000 },
+    );
     client.dispose();
   });
 });
@@ -2780,6 +2806,7 @@ describe("MobileClient per-deployment sign out", () => {
     // The Host ended the session this phone was presenting, and the record it
     // presented is gone from the device.
     expect(port.commands).toEqual(["session.revoke"]);
+    expect(attachment?.connection.getSnapshot().scope).toBeNull();
     expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
     const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
     expect(row?.status).toBe("needs-sign-in");
@@ -3853,4 +3880,331 @@ it("retains a cold computer intent above the remembered selection", async () => 
   });
   expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
   client.dispose();
+});
+
+it("does not let a cancelled first verification revoke the foreground attachment", async () => {
+  const port = testPort({ held: true });
+  const late = deferred<HostEpochAgreement>();
+  let attempts = 0;
+  const foreground = new Set<() => void>(),
+    background = new Set<() => void>();
+  const { client } = open(
+    (context) => ({
+      ...port.factory(context),
+      verifyEpoch: async () =>
+        ++attempts === 1 ? late.promise : { status: "compatible", capabilities: [] },
+    }),
+    undefined,
+    {
+      lifecycle: {
+        getSnapshot: () => ({ visibility: "foreground", network: "online" }),
+        onForeground: (listener) => {
+          foreground.add(listener);
+          return () => foreground.delete(listener);
+        },
+        onBackground: (listener) => {
+          background.add(listener);
+          return () => background.delete(listener);
+        },
+        onNetworkChange: () => () => {},
+      },
+    },
+  );
+  try {
+    await client.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
+    const initialized = client.initialize();
+    await vi.waitFor(() => expect(attempts, "first verification never started").toBe(1));
+    background.forEach((listener) => listener());
+    foreground.forEach((listener) => listener());
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().selection.session?.connection.getSnapshot().phase,
+        "foreground attachment never became ready",
+      ).toBe("ready"),
+    );
+    const admitted = client.getSnapshot().selection.hostClient;
+    expect(admitted).not.toBeNull();
+    late.resolve("identity-mismatch");
+    await initialized;
+    await settle();
+    expect(client.getSnapshot().selection.hostClient).toBe(admitted);
+    expect(client.getSnapshot().selection.session?.connection.getSnapshot().phase).toBe("ready");
+  } finally {
+    late.resolve("unreachable");
+    client.dispose();
+  }
+});
+
+describe("durable mobile connection admission", () => {
+  const send = (id: string) => ({
+    type: "thread.sendMessage" as const,
+    threadId: createId("thread"),
+    content: [{ type: "text" as const, text: id }],
+    idempotencyKey: id,
+    delivery: "queue" as const,
+  });
+
+  it("never acquires a replacement login's credential for a claimed send", async () => {
+    const release = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const credentials: (string | null)[] = [];
+    const port = testPort({
+      held: false,
+      realCredentials: true,
+      configureClient(host, authorization) {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = async (command) => {
+          if (command.type === "thread.sendMessage") {
+            started.resolve();
+            await release.promise;
+            credentials.push(await authorization.current());
+          }
+          return dispatch(command);
+        };
+      },
+    });
+    const { client } = open(port.factory);
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      vi.useFakeTimers();
+      await client.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const old = client.getSnapshot().selection.hostClient!;
+      // Keep the old attachment current through the credential commit, as can happen
+      // while another operation holds the selection queue.
+      const original = client.catalog.load.bind(client.catalog);
+      const gate = Promise.withResolvers<void>();
+      const load = vi.spyOn(client.catalog, "load");
+      await hostMessageOutbox(old)!.enqueue(send("old-login"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(port.commands).toEqual(["thread.sendMessage"]);
+      await started.promise;
+      load.mockImplementation(async () => {
+        await gate.promise;
+        return original();
+      });
+      try {
+        await client.sessions.save({
+          ...personalSession(),
+          token: `${"c".repeat(43)}.${"d".repeat(43)}=`,
+        });
+        release.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(credentials).toEqual([]);
+        expect(old.connection.getSnapshot().scope).toBeNull();
+      } finally {
+        load.mockRestore();
+        gate.resolve();
+      }
+    } finally {
+      release.resolve();
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens the same durable queue on the first upgrade launch and after relaunch", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "legacy-login",
+      secureStore: new MemorySecureStore(),
+    });
+    const files = new MemoryPrivateFilesystem();
+    await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+    let mock!: MockHostClient;
+    const port = testPort({
+      held: false,
+      realCredentials: true,
+      configureClient: (host) => {
+        mock = host;
+      },
+    });
+    const first = open(port.factory, files, { records }).client;
+    try {
+      await first.initialize();
+      await first.catalog.upsert(connectComputer(1));
+      vi.useFakeTimers();
+      await first.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = first.getSnapshot().selection.hostClient!;
+      const durableLogin = (await first.sessions.load(DeploymentIdSchema.parse(serverId)))!
+        .viewLoginId;
+      expect(durableLogin).toBeDefined();
+      expect(host.connection.getSnapshot().scope?.loginId).toBe(durableLogin);
+      mock.connection.stop();
+      await hostMessageOutbox(host)!.enqueue(send("upgraded-message"));
+    } finally {
+      first.dispose();
+      vi.useRealTimers();
+    }
+    const reopened = open(port.factory, files, { records }).client;
+    try {
+      await reopened.initialize();
+      vi.useFakeTimers();
+      await reopened.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = reopened.getSnapshot().selection.hostClient!;
+      mock.connection.stop();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hostMessageOutbox(host)!.getSnapshot().messages).toMatchObject([
+        { localId: "upgraded-message" },
+      ]);
+    } finally {
+      reopened.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed durable login upgrade before admitting a usable attachment", async () => {
+    vi.useFakeTimers();
+    const secure = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "login-repair", secureStore: secure });
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, undefined, { records });
+    try {
+      await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      secure.interrupt = () => {
+        throw new Error("secure store unavailable");
+      };
+      await expect(client.openDeployment(serverId)).rejects.toThrow("Could not save");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.getSnapshot().selection.hostClient).toBeNull();
+      const connection = client.getSnapshot().selection.session?.connection;
+      expect(connection?.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        issue: { code: "login-storage-unavailable" },
+      });
+      secure.interrupt = () => undefined;
+      connection!.retry();
+      await vi.advanceTimersByTimeAsync(1);
+      const attached = client.getSnapshot().selection.hostClient!;
+      const login = await client.sessions.load(DeploymentIdSchema.parse(serverId));
+      expect(login?.viewLoginId).toBeDefined();
+      expect(attached.connection.getSnapshot().scope?.loginId).toBe(login?.viewLoginId);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers only fallback records proved by the authenticated Host session", async () => {
+    vi.useFakeTimers();
+    const hostSessionId = createId("authSession");
+    const files = new MemoryPrivateFilesystem();
+    const folder = "/private/message-outbox";
+    const store = createMessageOutboxStorage({
+      read: async (key) => {
+        const bytes = await files.readFile(`${folder}/${key}.json`, 10 * 1024 * 1024);
+        return bytes && new TextDecoder().decode(bytes);
+      },
+      write: async (key, value) => files.writeFileAtomic(`${folder}/${key}.json`, value),
+      remove: async (key) => {
+        await files.removeFile(`${folder}/${key}.json`);
+      },
+    });
+    const base = testPort({
+      held: true,
+      realCredentials: true,
+      configureClient(host) {
+        const get = host.getSnapshot.bind(host);
+        vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+          ...get(),
+          deploymentId: serverId,
+          sessionId: hostSessionId,
+        }));
+      },
+    });
+    const { client } = open(base.factory, files);
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      await client.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = client.getSnapshot().selection.hostClient!;
+      const scope = host.connection.getSnapshot().scope!;
+      expect(scope).not.toBeNull();
+      const fallback = {
+        authorityKey: new URL(base.attached[0]!.origin).origin,
+        deploymentId: scope.deploymentId,
+        viewerId: scope.viewerId,
+        loginId: hostSessionId,
+      };
+      const other = { ...fallback, loginId: createId("authSession") };
+      const threadId = createId("thread");
+      const record = (key: string) => ({
+        command: { ...send(key), threadId },
+        localId: key,
+        createdAt: new Date().toISOString(),
+        attempted: false,
+        phase: "waiting" as const,
+        order: 1,
+      });
+      await files.ensureDirectory(folder);
+      await store.put(fallback, { ...record("never-tried"), order: 2 });
+      await store.put(fallback, {
+        ...record("refused"),
+        phase: "rejected",
+        attempted: true,
+        rejection: { code: "rejected", reason: "forbidden" },
+      });
+      await store.put(other, record("different-session"));
+      await client.retrySelection();
+      await vi.advanceTimersByTimeAsync(1);
+      const next = client.getSnapshot().selection.hostClient!;
+      expect(hostMessageOutbox(next)!.getSnapshot().messages).toMatchObject([
+        { localId: "refused", attempted: true, phase: "rejected", rejection: { code: "rejected" } },
+        { localId: "never-tried", attempted: false, phase: "waiting" },
+      ]);
+      expect(base.commands).toEqual([]);
+      expect(await store.load(fallback)).toEqual([]);
+      expect(await store.load(other)).toMatchObject([{ localId: "different-session" }]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles opening and retrying a selection offline before any dial", async () => {
+    vi.useFakeTimers();
+    const port = testPort({ held: true });
+    const { client } = open(port.factory, undefined, {
+      lifecycle: {
+        getSnapshot: () => ({ network: "offline", visibility: "foreground" }),
+        onNetworkChange: () => () => {},
+        onForeground: () => () => {},
+        onBackground: () => () => {},
+      },
+    });
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      let opened = false;
+      const opening = client.openDeployment(serverId).then(() => {
+        opened = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
+      expect(port.verified).toEqual([]);
+      expect(opened).toBe(true);
+      await opening;
+      let retried = false;
+      const retrying = client.retrySelection().then(() => {
+        retried = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await client.deselect();
+      expect(retried).toBe(true);
+      await retrying;
+      expect(port.verified).toEqual([]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
 });

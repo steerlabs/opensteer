@@ -8,6 +8,9 @@ import {
   TeamSessionClient,
   createMemoryTeamPersistence,
 } from "@opensteer/client/team";
+import type { ClientConnectionState } from "@opensteer/client/connections";
+import { ConnectionGateScope, ShellConnectionPill } from "../components/connection-shell.js";
+import { localSession } from "../components/use-action.js";
 import { TeamsProvider } from "./team-attachments.js";
 import { TeamPaneGate } from "./team-pane-gate.js";
 import { TeamRoutes } from "./team-routes.js";
@@ -154,6 +157,53 @@ it("gives a removed team-web reader invite guidance instead of a bare sign-in", 
   } finally {
     act(() => root.unmount());
     session.dispose();
+    host.dispose();
+  }
+});
+it("claims the shell's gate while it explains, so another connection's pill steps aside", async () => {
+  const host = new MockTeamHost();
+  const interrupted: ClientConnectionState = {
+    ...localSession.connection.getSnapshot(),
+    phase: "recovering",
+    showInterruption: true,
+    issue: { code: "connection" },
+  };
+  const personal = {
+    key: "personal",
+    mark: "desktop" as const,
+    connection: { getSnapshot: () => interrupted, subscribe: () => () => {}, retry: () => {} },
+  };
+  const node = document.createElement("div"),
+    root = createRoot(node);
+  const render = (inside: boolean) =>
+    root.render(
+      <ConnectionGateScope>
+        <ShellConnectionPill current={personal} />
+        <TeamsProvider
+          surface={{
+            kind: "team-web",
+            attachment: {
+              teamId: host.teamId,
+              name: "Team",
+              origin: host.origin,
+              client: null,
+              link: null,
+            },
+          }}
+        >
+          {inside ? <TeamPaneGate teamId={host.teamId}>{null}</TeamPaneGate> : null}
+        </TeamsProvider>
+      </ConnectionGateScope>,
+    );
+  const speaking = () => node.querySelector(".connection-pill:not(.connection-pill--leaving)");
+  try {
+    await act(async () => render(false));
+    expect(speaking()).not.toBeNull();
+    await act(async () => render(true));
+    expect(node.textContent).toContain("Opening team");
+    expect(speaking()).toBeNull();
+  } finally {
+    act(() => root.unmount());
     host.dispose();
   }
 });

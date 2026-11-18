@@ -25,7 +25,7 @@ import {
 } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { color, touchTarget } from "../theme.js";
-import { ErrorText, Lines } from "./settings-form-primitives.ios.js";
+import { ErrorText, LineFooter, Lines, PlaceholderRow } from "./settings-form-primitives.ios.js";
 import type {
   AiAccountRow,
   AiAccountsForm,
@@ -118,9 +118,9 @@ function Accounts({
           <Lines detail={form.confirmation} title="Done" />
         </Section>
       )}
-      {form.error === null ? null : (
+      {form.line === null ? null : (
         <Section>
-          <ErrorText detail={form.error} />
+          <LineFooter footer={form.line} />
         </Section>
       )}
       {form.locations.length === 0 ? null : (
@@ -236,8 +236,10 @@ function BackgroundModels({ form }: { readonly form: BackgroundModelsForm }): Re
         backgroundModelRows(view).map((row) => (
           <Lines detail={row.detail} key={row.role} title={row.title} />
         ))
+      ) : form.line ? (
+        <LineFooter footer={form.line} />
       ) : (
-        <Text>{form.error ? "Background models could not be loaded." : "Loading…"}</Text>
+        <PlaceholderRow label="Not loaded yet" />
       )}
       {fileError ? <ErrorText detail={fileError} /> : null}
       <Text modifiers={[secondary, footnote]}>{backgroundModelsNote}</Text>

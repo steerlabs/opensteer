@@ -36,9 +36,11 @@ export type RpcHandlers<Api extends RpcGroup, Context> = {
   ) => Promise<RpcOutput<Api[Name]>> | RpcOutput<Api[Name]>;
 };
 
-/** Per-call transport controls. Cancellation belongs to the caller, not to the
- * declaration, so it travels beside the payload instead of inside it. */
+export const expectedMutationSessionHeader = "x-opensteer-expected-session";
+
+/** Per-call transport controls travel beside the payload. */
 export interface RpcCallOptions {
+  readonly expectedSessionId?: string;
   readonly body?: Blob | Uint8Array;
   readonly signal?: AbortSignal;
 }

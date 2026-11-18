@@ -1,4 +1,6 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { WebTabNotice } from "../devices/web-tab-notice.js";
+import { useFreshPicture } from "./fresh-picture.js";
 import {
   browserSiteForTab,
   browserSiteLabel,
@@ -30,6 +32,7 @@ import {
 import { useNavigate } from "react-router";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
 import { Icon } from "../icon.js";
+import { LastPictureChip } from "../last-picture-chip.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
 import { useToast } from "../toast.js";
 import { AgentCursors } from "../workspace/agent-cursors.js";
@@ -260,7 +263,7 @@ export function PlaceBrowserView({
       setRetentionFailure({
         hostClient,
         key,
-        message: error instanceof Error ? error.message : "This tab can’t be shown.",
+        message: "This tab can’t be shown.",
       });
       onReportError(error);
     }
@@ -295,6 +298,7 @@ export function PlaceBrowserView({
     [hostClient, sessionId, tabId],
   );
   const viewer = useSyncExternalStore(subscribeViewer, readViewer, readViewer);
+  const picture = useFreshPicture(hostClient, sessionId, tabId, viewer);
   const subscribePasskeys = useCallback(
     (listener: () => void) =>
       hostClient.browserPasskeys?.subscribe(sessionId, tabId, listener) ?? (() => {}),
@@ -460,6 +464,7 @@ export function PlaceBrowserView({
     (frame: BrowserFrameView) => {
       const token = frame.header.watchToken;
       if (token) hostClient.acceptBrowserWatchFrame(sessionId, token, tabId);
+      picture.presented(frame);
       if (!presentationPresented()) return;
       setPaintedTab(`${sessionId}:${tabId}`);
       if (!takeKeyboard.current) return;
@@ -470,7 +475,7 @@ export function PlaceBrowserView({
         if (active === null || active === document.body) keyboardRef.current?.focus();
       });
     },
-    [hostClient, sessionId, tabId, presentationPresented],
+    [hostClient, sessionId, tabId, presentationPresented, picture.presented],
   );
 
   const catalogTab = dormant || !tabListed ? undefined : row;
@@ -648,7 +653,7 @@ export function PlaceBrowserView({
             tabListed,
             whole,
             presentationError ??
-              viewer.error ??
+              (viewer.error ? presentClientIssue(viewer.error).title : null) ??
               retentionError ??
               mode.error ??
               nativePresentation.error,
@@ -666,6 +671,11 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [prePaint, tabId, visible]);
   const waiting = prePaint && waitingTab === tabId;
+  // Until this viewer draws a fresh frame the picture is the page as it last was: it stays, dimmed
+  // under its own chip, and takes no input. The viewer's own feed decides, not the pill: either
+  // can come back first.
+  const stale = !picture.fresh && !native && !prePaint;
+  const [stalePulse, setStalePulse] = useState(0);
 
   const fitLabel = placement
     ? `Fit page to view: ${tab?.sizedByAgent ? "an agent set" : "page is"} ${placement.viewport.width} × ${placement.viewport.height}`
@@ -818,7 +828,7 @@ export function PlaceBrowserView({
           {live ? <PasswordSaveBubble target={savingTarget} /> : null}
           {!native && viewer.inputError ? (
             <div className="browser-action-error" role="status">
-              {viewer.inputError}
+              {presentClientIssue(viewer.inputError).title}
             </div>
           ) : null}
           {ended ? (
@@ -861,7 +871,18 @@ export function PlaceBrowserView({
                 activeSurfaceId={tabId}
                 documentId={shownTab?.documentId}
                 inputEpoch={`${inputEpoch}:${catalogTab?.documentId ?? ""}:${url}:${tab?.loading ?? catalogTab?.loading ?? false}`}
-                canInput={visible && pageReachable && !blocked}
+                canInput={visible && pageReachable && !blocked && !stale}
+                cover={
+                  stale ? (
+                    <div
+                      aria-hidden
+                      className="browser-stale"
+                      onPointerDown={() => setStalePulse((count) => count + 1)}
+                    >
+                      <LastPictureChip pulse={stalePulse} />
+                    </div>
+                  ) : null
+                }
                 frames={hostClient.browserFrames}
                 keyboardRef={keyboardRef}
                 live={live}

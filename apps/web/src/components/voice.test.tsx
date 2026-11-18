@@ -9,13 +9,14 @@ import { VoiceIsland, type VoiceControls } from "./voice.js";
 
 vi.mock("./app-shell.js", () => ({
   useShell: () => ({
-    hostClient: {},
+    hostClient: {
+      connection: { getSnapshot: () => ({}), subscribe: () => () => undefined, retry() {} },
+    },
     snapshot: { threads: [], user: null, waitingRequests: [] },
     reportActionError: vi.fn(),
   }),
 }));
 vi.mock("./workspace/composer-context.js", () => ({ useComposerContext: () => null }));
-vi.mock("./pending-sends.js", () => ({ usePendingSends: () => ({ sends: [] }) }));
 vi.mock("./composer.js", () => ({ Composer: () => <textarea aria-label="Task message" /> }));
 const iconRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock("./icon.js", () => ({

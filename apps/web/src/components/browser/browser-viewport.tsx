@@ -30,6 +30,7 @@ import {
   useSyncExternalStore,
   type CSSProperties,
   type PointerEvent,
+  type ReactNode,
   type Ref,
 } from "react";
 import { browserViewportFits } from "@opensteer/protocol";
@@ -50,6 +51,7 @@ export function BrowserViewport({
   activeSurfaceId,
   documentId,
   canInput,
+  cover,
   inputEpoch,
   keyboardRef,
   frames,
@@ -69,6 +71,8 @@ export function BrowserViewport({
   activeSurfaceId: BrowserTabSummary["id"] | null;
   documentId?: string | undefined;
   canInput: boolean;
+  /** Drawn over the picture itself, such as its "Last picture" chip. */
+  cover?: ReactNode;
   inputEpoch?: string | undefined;
   keyboardRef?: Ref<BrowserKeyboardHandle> | undefined;
   frames: BrowserFrameStore;
@@ -1009,6 +1013,7 @@ export function BrowserViewport({
             onPresented={markFramePresented}
           />
         ) : null}
+        {frame ? cover : null}
       </div>
     </div>
   );

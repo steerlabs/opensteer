@@ -21,6 +21,7 @@ import {
   passwordSignInOutcome,
   passwordSignInConsent,
   passwordSignInPrivacy,
+  unwrapRpcResult,
   type HostClient,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
@@ -28,12 +29,12 @@ import {
 } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { CardUseRequestBody } from "./thread-card-use-action.js";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 
-export type PasswordSignInRequestClient = Pick<HostClient, "dispatch" | "rpc">;
+export type PasswordSignInRequestClient = Pick<HostClient, "connection" | "dispatch" | "rpc">;
 
 /** The agent wrote the reason, so it is labelled as the agent's and never as Opensteer's. */
 const reasonLabel = "Agent’s reason";
@@ -151,17 +152,23 @@ export function PasswordSignInRequestBody({
     declineKey.current ??= mutationIdempotencyKey(`password-sign-in:${request.id}`);
     // The Request leaving the pending list is what ends the card, so a decline
     // the Host admitted stays busy until the Mac has answered it.
-    client
-      .dispatch({
-        idempotencyKey: declineKey.current,
-        requestId: request.id,
-        type: "browser.password-sign-in.respond",
-        decision: { kind: "decline" },
-      })
-      .catch((reason: unknown) => {
-        setError(actionErrorMessage(reason));
-        setBusy(null);
-      });
+    const idempotencyKey = declineKey.current;
+    void runAction(client, {
+      label: "send your answer",
+      done: "sent",
+      happened: "your answer was sent",
+      execute: () =>
+        client.dispatch({
+          idempotencyKey,
+          requestId: request.id,
+          type: "browser.password-sign-in.respond",
+          decision: { kind: "decline" },
+        }),
+    }).then((outcome) => {
+      if (outcome.kind === "confirmed") return;
+      setError(outcomeWords(outcome));
+      setBusy(null);
+    });
   }
 
   function approve(remember: boolean) {
@@ -169,25 +176,34 @@ export function PasswordSignInRequestBody({
     if (!account || busy !== null || disabled) return;
     setBusy(remember ? "allow" : "once");
     setError(null);
-    client
-      .dispatch({
-        type: "browser.password-sign-in.respond",
-        requestId: request.id,
-        idempotencyKey: mutationIdempotencyKey(`password-sign-in:${request.id}`),
-        decision: {
-          kind: "approve",
-          loginId: account.id,
-          revision: account.revision,
-          remember,
-          permissionVersion: 6,
-        },
-      })
-      .then((result) => {
+    void runAction(client, {
+      label: "send your answer",
+      done: "sent",
+      happened: "your answer was sent",
+      execute: () =>
+        client.dispatch({
+          type: "browser.password-sign-in.respond",
+          requestId: request.id,
+          idempotencyKey: mutationIdempotencyKey(`password-sign-in:${request.id}`),
+          decision: {
+            kind: "approve",
+            loginId: account.id,
+            revision: account.revision,
+            remember,
+            permissionVersion: 6,
+          },
+        }),
+    })
+      .then((outcome) => {
+        if (outcome.kind !== "confirmed") {
+          setError(outcomeWords(outcome));
+          return;
+        }
+        const result = outcome.value;
         if (result.type !== "browser.password-sign-in.respond") return;
         if (result.card) signIn.apply(result.card);
         if (result.message) setError(result.message);
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
       .finally(() => setBusy(null));
   }
 
@@ -547,17 +563,19 @@ export function useHostSignIn(
   useEffect(() => {
     if (!requestId) return;
     let live = true;
-    client.rpc["browser.password-sign-in.get"]({ requestId })
-      .then((result) => {
-        if (!live) return;
-        if (result.ok) {
-          setState(result.data);
-          setReadError(null);
-        } else setReadError(result.error.message);
-      })
-      .catch((reason: unknown) => {
-        if (live) setReadError(actionErrorMessage(reason));
-      });
+    void runAction(client, {
+      label: "load this sign-in",
+      done: "loaded",
+      happened: "this sign-in loaded",
+      execute: async () =>
+        unwrapRpcResult(await client.rpc["browser.password-sign-in.get"]({ requestId })),
+    }).then((outcome) => {
+      if (!live) return;
+      if (outcome.kind === "confirmed") {
+        setState(outcome.value);
+        setReadError(null);
+      } else setReadError(outcomeWords(outcome));
+    });
     return () => {
       live = false;
     };

@@ -11,7 +11,11 @@ import {
 } from "@opensteer/protocol";
 import type { ReferenceReadPorts } from "../references/contracts.js";
 import type { AssetUrlStore } from "./asset-urls.js";
-import { operationFailure } from "./operation-failure.js";
+import {
+  classifyClientFailure,
+  clientEndpointUnavailable,
+  isMissingClientResource,
+} from "../connections/operation-error.js";
 
 export type OpenTranscriptFile = Extract<TranscriptFileOpen, { status: "ok" }>;
 export type TranscriptFileState =
@@ -113,13 +117,13 @@ export class TranscriptFileController {
         return value;
       } catch (error) {
         this.#assertCurrent(controller, generation);
-        const failure = operationFailure(error);
-        if (failure === "gone") {
+        const failure = classifyClientFailure(error);
+        if (isMissingClientResource(failure)) {
           this.#forget(key);
           return { status: "unavailable" };
         }
-        if (failure === "signed-out") throw error;
-        if (failure === "unavailable") {
+        if (failure.code === "unauthorized" || failure.kind === "cancelled") throw error;
+        if (clientEndpointUnavailable(failure)) {
           const cached = this.#cache.get(key);
           if (cached) {
             this.#cache.delete(key);
@@ -150,15 +154,15 @@ export class TranscriptFileController {
         return { status: "ok", ...content };
       } catch (error) {
         this.#assertCurrent(controller, generation);
-        const failure = operationFailure(error);
-        if (failure === "signed-out") throw error;
-        if (failure === "gone") {
+        const failure = classifyClientFailure(error);
+        if (failure.code === "unauthorized" || failure.kind === "cancelled") throw error;
+        if (isMissingClientResource(failure)) {
           for (const [key, cached] of this.#cache)
             if (JSON.stringify(cached.value.resource) === JSON.stringify(input.resource))
               this.#forget(key);
           return { status: "unavailable" };
         }
-        return { status: failure === "unavailable" ? "unreachable" : "failed" };
+        return { status: clientEndpointUnavailable(failure) ? "unreachable" : "failed" };
       }
     });
   }
@@ -169,8 +173,7 @@ export class TranscriptFileController {
     signal?: AbortSignal,
   ): Promise<TranscriptFileOriginal> {
     const opened = await this.open(threadId, source, signal);
-    if (opened.status !== "ok")
-      return { status: opened.status === "unavailable" ? "unavailable" : opened.status };
+    if (opened.status !== "ok") return { status: opened.status };
     const content = await this.download(threadId, opened.resource, signal);
     if (content.status !== "ok") return content;
     return { status: "ok", name: opened.name, mediaType: opened.mediaType, bytes: content.bytes };

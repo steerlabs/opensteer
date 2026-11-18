@@ -15,12 +15,13 @@ import { usePluginSignIn } from "@opensteer/client/react";
 import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useScreenAction, settingsFooter } from "../ui/client-feedback.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { usePluginAction } from "./plugins.js";
-import { useSettingsRead } from "./use-settings-read.js";
+import { usePluginRead } from "./use-plugin-read.js";
 
 type Params = StaticScreenProps<{
   readonly deploymentId: string;
@@ -47,10 +48,12 @@ export function PluginConnectScreen({ route }: Params): ReactNode {
 
 function Connect({ host, target }: { host: HostClient; target: PluginRequirementTarget }) {
   const navigation = useNavigation();
-  const review = useSettingsRead(
+  const review = usePluginRead(
     host,
     () => readPluginAccountReview(host, target),
-    `${target.pluginId}:${target.requirement}:${target.scope}`,
+    `plugin-account-review:${target.pluginId}:${target.requirement}:${target.scope}`,
+    "what this plugin asks for",
+    { pluginId: target.pluginId },
   );
   const done = () => {
     if (navigation.canGoBack()) navigation.goBack();
@@ -99,7 +102,12 @@ function ConnectWithSignIn(props: BodyProps) {
 
 function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection[] }) {
   const { host, review, target } = props;
-  const action = usePluginAction(host);
+  const action = usePluginAction(
+    host,
+    `connect:${target.pluginId}:${target.requirement}:${target.scope}`,
+    "connect the account",
+    "connected",
+  );
   const [method, setMethod] = useState(review.methods[0]?.method ?? null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
@@ -116,7 +124,7 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
         pluginName: review.plugin.name,
         providerName: provider,
       }).map((line) => ({ key: line.key, kind: "text" as const, label: line.text })),
-      ...(action.error ? { footer: { text: action.error, tone: "danger" as const } } : {}),
+      ...(action.footer ? { footer: action.footer } : {}),
     },
   ];
   sections.push(...props.signIn);
@@ -237,6 +245,15 @@ function useSignInSections(input: {
   const [clientSecret, setClientSecret] = useState("");
   const [remember, setRemember] = useState(true);
   const [forgetting, setForgetting] = useState<string | null>(null);
+  const forget = useScreenAction(
+    input.host,
+    `plugin-oauth-forget:${input.target.pluginId}:${input.target.requirement}`,
+    {
+      label: "forget this app",
+      done: "removed",
+      execute: (app: string) => forgetPluginOAuthApp(input.host, app),
+    },
+  );
   const linked = state.step === "ended" && state.end.kind === "completed";
   const reported = useRef(false);
   useEffect(() => {
@@ -309,7 +326,19 @@ function useSignInSections(input: {
             disabled: state.cancelling,
             onPress: () => void flow.cancel(),
           },
+          ...(state.statusFailed
+            ? [
+                {
+                  key: "recheck",
+                  kind: "button" as const,
+                  label: "Try again",
+                  detail: "Couldn't load authorization status.",
+                  onPress: () => flow.retryStatus(),
+                },
+              ]
+            : []),
         ],
+        ...(state.issue ? { footer: { text: state.issue } } : {}),
       },
     ];
   const busy = state.step === "starting";
@@ -339,8 +368,11 @@ function useSignInSections(input: {
                     onPress: () => {
                       const app = option.savedApp!;
                       setForgetting(app);
-                      void forgetPluginOAuthApp(input.host, app)
-                        .then(() => flow.prepare())
+                      void forget
+                        .run(app)
+                        .then((result) =>
+                          result.kind === "confirmed" ? flow.prepare() : undefined,
+                        )
                         .finally(() => setForgetting(null));
                     },
                   },
@@ -368,11 +400,15 @@ function useSignInSections(input: {
             ]
           : []),
       ],
-      ...(choices.options[0]?.kind === "one-click" && choices.options[0].detail
-        ? { footer: { text: choices.options[0].detail } }
-        : choices.oneClickUnavailable
-          ? { footer: { text: choices.oneClickUnavailable } }
-          : {}),
+      ...(forget.line
+        ? { footer: settingsFooter(forget.line)! }
+        : state.step === "choosing" && state.issue
+          ? { footer: { text: state.issue } }
+          : choices.options[0]?.kind === "one-click" && choices.options[0].detail
+            ? { footer: { text: choices.options[0].detail } }
+            : choices.oneClickUnavailable
+              ? { footer: { text: choices.oneClickUnavailable } }
+              : {}),
     },
   ];
   if (form && ownApp) {

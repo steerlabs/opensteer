@@ -8,6 +8,7 @@ import {
   BrowserSignInRequestBody,
   type BrowserSignInRequestClient,
 } from "./thread-browser-sign-in-action.js";
+import { localSession } from "./use-action.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -142,6 +143,7 @@ function problem(name: string) {
 
 async function render(): Promise<void> {
   const client = {
+    connection: localSession.connection,
     dispatch,
     rpc: {
       "browser.sources.get": vi.fn(async () => ({

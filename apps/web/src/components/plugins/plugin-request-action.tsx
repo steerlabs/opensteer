@@ -9,6 +9,9 @@ import {
   respondToPluginRequest,
   type PluginRequestView,
 } from "@opensteer/client/plugins";
+import { integrationRequestStillPending } from "@opensteer/client/integrations";
+import { ActionLine } from "../action-line.js";
+import { requestAnswer, useAction } from "../use-action.js";
 import { ActionNote } from "../action-rows.js";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
@@ -47,16 +50,32 @@ export function ThreadPluginAction({
 }
 
 function useRespond(request: Request) {
-  const { hostClient, reportActionError } = useShell();
+  const { hostClient } = useShell();
   const [pending, setPending] = useState<string | null>(null);
+  const action = useAction(
+    hostClient,
+    {
+      ...requestAnswer,
+      execute: async (response: RequestResponse) => {
+        await respondToPluginRequest(hostClient, request.id, response);
+      },
+      reconcile: async () =>
+        (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
+          ? null
+          : { kind: "confirmed", value: undefined },
+    },
+    request.id,
+  );
   const respond = (key: string, response: RequestResponse) => {
     if (pending) return;
     setPending(key);
-    void respondToPluginRequest(hostClient, request.id, response)
-      .catch(reportActionError)
-      .finally(() => setPending(null));
+    void action.run(response).finally(() => setPending(null));
   };
-  return { pending, respond };
+  return {
+    pending,
+    respond,
+    line: action.line ? <ActionLine line={action.line} wrap /> : null,
+  };
 }
 
 function AccountAction({
@@ -68,7 +87,7 @@ function AccountAction({
   readonly request: Request;
   readonly view: Extract<PluginRequestView, { kind: "account" }>;
 }) {
-  const { pending, respond } = useRespond(request);
+  const { pending, respond, line } = useRespond(request);
   const [connecting, setConnecting] = useState(false);
   const [target] = useState(view.target);
   return (
@@ -106,6 +125,7 @@ function AccountAction({
           Connect account
         </button>
       </div>
+      {line}
       {connecting ? (
         <PluginConnectDialog
           onClose={() => setConnecting(false)}
@@ -126,7 +146,7 @@ function ApprovalAction({
   readonly request: Request;
   readonly view: Extract<PluginRequestView, { kind: "approval" }>;
 }) {
-  const { pending, respond } = useRespond(request);
+  const { pending, respond, line } = useRespond(request);
   return (
     <>
       <p className="plugin-request__tool">
@@ -153,6 +173,7 @@ function ApprovalAction({
           {pending === "approve" ? "Approving…" : "Allow once"}
         </button>
       </div>
+      {line}
     </>
   );
 }
@@ -166,7 +187,7 @@ function InputAction({
   readonly request: Request;
   readonly view: Extract<PluginRequestView, { kind: "input" }>;
 }) {
-  const { pending, respond } = useRespond(request);
+  const { pending, respond, line } = useRespond(request);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const content = pluginInputContent(view.form, answers);
   return (
@@ -199,6 +220,7 @@ function InputAction({
           {pending === "send" ? "Sending…" : "Send"}
         </button>
       </div>
+      {line}
     </>
   );
 }

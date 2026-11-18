@@ -1,3 +1,4 @@
+import { createHttpHostApiClient } from "../host/host-api-client.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   SequenceSchema,
@@ -15,7 +16,7 @@ import {
   mockTeamId,
   mockTeamUserId,
   mockTeamChannelId,
-  type MockTeamSocket,
+  MockTeamSocket,
 } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
 import { teamScopeKey } from "./reducers.js";
@@ -231,11 +232,19 @@ describe("team synchronization", () => {
         timeout: 1000,
       });
       f.client.selectThread(mockTeamChannelId, TeamMessageIdSchema.parse("404"));
-      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Unknown message."), {
-        timeout: 1000,
-      });
+      await vi.waitFor(
+        () =>
+          expect(f.client.getSnapshot().error).toBe(
+            "This isn't available. It may have been deleted, or you don't have access.",
+          ),
+        { timeout: 1000 },
+      );
       const root = f.host.post({ channelId: mockTeamChannelId, bodyMarkdown: "root" });
       f.client.selectThread(mockTeamChannelId, root.id);
+      expect(f.client.getSnapshot().error).toBeNull();
+      await vi.waitFor(() => expect(f.client.getSnapshot().thread?.messages[0]?.id).toBe(root.id), {
+        timeout: 1000,
+      });
       expect(f.client.getSnapshot().error).toBeNull();
     } finally {
       f.client.dispose();
@@ -476,9 +485,12 @@ describe("team synchronization", () => {
         mentions: [],
         attachmentIds: [],
       });
-      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Acknowledgement lost."), {
-        timeout: 1000,
-      });
+      await vi.waitFor(
+        () => expect(f.client.getSnapshot().error).toBe("Couldn't confirm this change."),
+        {
+          timeout: 1000,
+        },
+      );
       expect(f.host.messages.size).toBe(1);
       expect((await f.persistence.load(scope))?.pending).toHaveLength(1);
       const callsAt = f.host.calls.length;
@@ -725,7 +737,7 @@ describe("a team server swap", () => {
 
       // Disconnected on purpose, nothing reaches the team until connecting again.
       f.client.disconnect();
-      expect(f.client.getSnapshot().unreachable).toBe(true);
+      expect(f.client.connection.getSnapshot().phase).toBe("idle");
       f.client.connect();
       expect(f.client.getSnapshot().unreachable).toBe(false);
     } finally {
@@ -799,7 +811,8 @@ describe("a team server swap", () => {
         expect(await f.persistence.load(scope)).not.toBeNull();
 
         f.refuse(null);
-        await vi.advanceTimersByTimeAsync(12_000);
+        f.client.connection.retry();
+        await vi.advanceTimersByTimeAsync(0);
         expect(f.client.getSnapshot()).toMatchObject({
           versionRefusal: null,
           connection: "connected",
@@ -850,6 +863,337 @@ describe("a team server swap", () => {
       expect(f.client.getSnapshot().bootstrap!.member.displayName).toBe("Maya C.");
     } finally {
       f.dispose();
+    }
+  });
+});
+
+it("evicts a team's admitted content on 401 headers before a stalled body", async () => {
+  vi.useFakeTimers();
+  const host = new MockTeamHost(),
+    persistence = createMemoryTeamPersistence();
+  const rpc = createHttpHostApiClient({
+    baseUrl: new URL("https://team.example"),
+    kind: "team",
+    onAuthenticationRequired: () => {},
+    fetch: async (input) => {
+      if (String(input).includes("team.bootstrap.get"))
+        return Response.json(await host.rpc["team.bootstrap.get"]({}));
+      return new Response(new ReadableStream({ start() {} }), { status: 401 });
+    },
+  });
+  const client = new TeamSessionClient({ scope, rpc, persistence, connect: host.connect });
+  try {
+    await client.load();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().bootstrap).not.toBeNull();
+    const reading = client.rpc["team.members.list"]({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot()).toMatchObject({
+      bootstrap: null,
+      sidebar: null,
+      ended: "sign-in",
+    });
+    expect(client.connection.getSnapshot().scope).toBeNull();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(reading).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unauthorized", retryable: false },
+    });
+  } finally {
+    client.dispose();
+    host.dispose();
+    vi.useRealTimers();
+  }
+});
+
+describe("team attempt fencing", () => {
+  it("admits the current channel when selection changes before the first cut", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    const nextChannelId = createId("teamChannel");
+    host.channels.set(nextChannelId, {
+      ...host.channels.get(mockTeamChannelId)!,
+      id: nextChannelId,
+    });
+    const subscriptions = new Map<string, { subscriptionId: string; generation: number }>();
+    let socket!: MockTeamSocket;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () =>
+        (socket = new MockTeamSocket((frame) => {
+          if (frame.type === "team.subscribe" && frame.scope)
+            subscriptions.set(frame.scope.channelId, frame);
+        })),
+    });
+    try {
+      client.selectChannel(mockTeamChannelId);
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const old = subscriptions.get(mockTeamChannelId)!;
+      client.selectChannel(nextChannelId);
+      const current = subscriptions.get(nextChannelId)!;
+      socket.deliver({ type: "team.sidebar", sidebar: host.bootstrap.sidebar });
+      socket.deliver({
+        type: "team.cut",
+        cut: host.cut(channelScope, old.subscriptionId, old.generation, null),
+      });
+      expect(client.connection.getSnapshot().phase).toBe("connecting");
+      socket.deliver({
+        type: "team.cut",
+        cut: host.cut(
+          { kind: "channel", channelId: nextChannelId },
+          current.subscriptionId,
+          current.generation,
+          null,
+        ),
+      });
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons an open team socket that never delivers the initial cut", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    let socket!: MockTeamSocket;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => (socket = new MockTeamSocket(() => {})),
+    });
+    try {
+      client.selectChannel(mockTeamChannelId);
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      socket.deliver({ type: "team.sidebar", sidebar: host.bootstrap.sidebar });
+      expect(client.connection.getSnapshot().phase).toBe("connecting");
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(socket.readyState).toBe(3);
+      expect(client.connection.getSnapshot().phase).toBe("recovering");
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["superseded", "current"] as const)(
+    "preserves recovery when a %s refused socket's HTTP check gets a 503",
+    async (visit) => {
+      vi.useFakeTimers();
+      const host = new MockTeamHost();
+      const sockets: MockTeamSocket[] = [];
+      const temporary = {
+        ok: false as const,
+        error: {
+          code: "internal" as const,
+          reason: "proxy-unavailable",
+          retryable: true,
+          message: "Unavailable",
+        },
+      };
+      const held = Promise.withResolvers<typeof temporary>();
+      const boot = host.rpc["team.bootstrap.get"];
+      const read = vi
+        .fn(boot)
+        .mockImplementationOnce(boot)
+        .mockImplementationOnce(() => held.promise);
+      const rpc = new Proxy(host.rpc, {
+        get: (target, key, receiver) =>
+          key === "team.bootstrap.get" ? read : Reflect.get(target, key, receiver),
+      });
+      let networkChanged!: (state: "online", path: "changed") => void;
+      const client = new TeamSessionClient({
+        scope,
+        persistence: createMemoryTeamPersistence(),
+        rpc,
+        connect: () => {
+          const socket = host.connect();
+          sockets.push(socket);
+          return socket;
+        },
+        lifecycle: {
+          getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+          onNetworkChange: (listener) => {
+            networkChanged = listener;
+            return () => {};
+          },
+          onForeground: () => () => {},
+          onBackground: () => () => {},
+        },
+      });
+      try {
+        await client.load();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.connection.getSnapshot().phase).toBe("ready");
+        sockets[0]!.close(1008);
+        expect(read).toHaveBeenCalledTimes(2);
+        if (visit === "superseded") {
+          networkChanged("online", "changed");
+          await vi.advanceTimersByTimeAsync(0);
+          expect(sockets).toHaveLength(2);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        }
+        held.resolve(temporary);
+        await vi.advanceTimersByTimeAsync(0);
+        if (visit === "superseded") {
+          expect(sockets[1]!.readyState).toBe(1);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        } else {
+          expect(client.connection.getSnapshot().phase).toBe("recovering");
+          await vi.advanceTimersByTimeAsync(300);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        }
+      } finally {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+  it.each(["channel", "thread"] as const)(
+    "retires only a revoked %s when the channel and thread have different scopes",
+    async (revokedView) => {
+      vi.useFakeTimers();
+      const host = new MockTeamHost();
+      const sockets: MockTeamSocket[] = [];
+      const other = createId("teamChannel");
+      host.channels.set(other, { ...host.channels.get(mockTeamChannelId)!, id: other });
+      const root = TeamMessageIdSchema.parse("8");
+      const revoked = revokedView === "channel" ? mockTeamChannelId : other;
+      const persistence = createMemoryTeamPersistence();
+      let policyClosed = false;
+      const channel = vi.fn(async ({ channelId }: { channelId: string }) =>
+        channelId === revoked
+          ? { ok: false, error: { code: "forbidden", message: "Access removed", retryable: false } }
+          : { ok: true, data: null },
+      );
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (policyClosed && key === "team.channel.get") return channel;
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+        connect: () => {
+          const socket = host.connect();
+          if (policyClosed) {
+            const send = socket.send.bind(socket);
+            socket.send = (raw) => {
+              if (typeof raw === "string" && JSON.parse(raw).scope?.channelId === revoked)
+                socket.close(1008);
+              else send(raw);
+            };
+          }
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      try {
+        await client.load();
+        client.selectChannel(mockTeamChannelId);
+        client.selectThread(other, root);
+        await vi.advanceTimersByTimeAsync(0);
+        await client.setDraft(channelScope, "Channel draft");
+        await client.setDraft({ kind: "thread", channelId: other, rootId: root }, "Thread draft");
+        policyClosed = true;
+        sockets[0]!.close(1008);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(channel.mock.calls.map(([input]) => input.channelId).sort()).toEqual(
+          [mockTeamChannelId, other].sort(),
+        );
+        const snapshot = client.getSnapshot();
+        expect(snapshot[revokedView]).toBeNull();
+        expect(snapshot[revokedView === "channel" ? "thread" : "channel"]).not.toBeNull();
+        expect(Object.values(snapshot.drafts)).toEqual([
+          revokedView === "channel" ? "Thread draft" : "Channel draft",
+        ]);
+        if (revokedView === "thread") client.selectThread(other, root);
+        else client.selectChannel(mockTeamChannelId);
+        expect(client.getSnapshot()[revokedView]).toBeNull();
+      } finally {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("revalidates the selected channel after a path change even after the sidebar caught up", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    const sockets: MockTeamSocket[] = [];
+    const sidebar = { ...host.sidebar(), accessRevision: SequenceSchema.parse("2"), channels: [] };
+    const forbidden = {
+      ok: false as const,
+      error: {
+        code: "forbidden" as const,
+        message: "Channel access removed",
+        retryable: false,
+      },
+    };
+    const held = Promise.withResolvers<typeof forbidden>();
+    const channel = vi.fn(async () => forbidden).mockImplementationOnce(() => held.promise);
+    let policyClosed = false;
+    let changePath!: () => void;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (policyClosed && key === "team.bootstrap.get")
+            return async () => ({ ok: true, data: { ...host.bootstrap, sidebar } });
+          if (policyClosed && key === "team.sidebar.get")
+            return async () => ({ ok: true, data: sidebar });
+          if (policyClosed && key === "team.channel.get") return channel;
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+      lifecycle: {
+        getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+        onNetworkChange: (listener) => {
+          changePath = () => listener("online", "changed");
+          return () => {};
+        },
+        onForeground: () => () => {},
+        onBackground: () => () => {},
+      },
+    });
+    try {
+      await client.load();
+      client.selectChannel(mockTeamChannelId);
+      await vi.advanceTimersByTimeAsync(0);
+      policyClosed = true;
+      sockets[0]!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(channel).toHaveBeenCalledOnce();
+      expect(client.getSnapshot().sidebar?.accessRevision).toBe("2");
+      changePath();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(channel).toHaveBeenCalledTimes(2);
+      expect(client.getSnapshot().channel).toBeNull();
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+      held.resolve(forbidden);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+    } finally {
+      held.resolve(forbidden);
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
     }
   });
 });

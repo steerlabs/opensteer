@@ -3,6 +3,8 @@ import ExpoModulesCore
 public final class ComposerEditorModule: Module {
   public func definition() -> ModuleDefinition {
     Name("OpensteerComposerEditor")
+    Constant("draftPasteVersion") { 1 }
+    Events("onDraftPaste")
     View(ComposerEditorView.self) {
       Prop("documentJson") { (view: ComposerEditorView, json: String) in view.setDocumentJson(json) }
       Prop("themeJson") { (view: ComposerEditorView, json: String) in view.setThemeJson(json) }
@@ -20,6 +22,11 @@ public final class ComposerEditorModule: Module {
       Prop("editable") { (view: ComposerEditorView, editable: Bool) in view.setEditable(editable) }
       Prop("autoFocus") { (view: ComposerEditorView, autoFocus: Bool) in view.setAutoFocus(autoFocus) }
       Prop("maxBytes") { (view: ComposerEditorView, maxBytes: Int) in view.maxBytes = maxBytes }
+      Prop("pasteTarget") { [weak self] (view: ComposerEditorView, target: String?) in
+        view.deliverDraftPaste = target.map { target in
+          { [weak self] pasted in self?.sendEvent("onDraftPaste", ["target": target, "pasted": pasted]) }
+        }
+      }
       Events(
         "onComposerChange",
         "onComposerSelectionChange",

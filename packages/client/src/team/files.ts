@@ -10,6 +10,7 @@ import {
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { HostTransport } from "../connections/host-transport.js";
+import { ClientOperationError } from "../connections/operation-error.js";
 import { teamCacheKey, type TeamCacheScope } from "./persistence.js";
 
 type TeamFile = z.infer<typeof TeamFileSchema>;
@@ -22,6 +23,32 @@ export interface TeamFileUpload {
   readonly metadata: z.infer<typeof TeamUploadMetadataSchema>;
   readonly signal?: AbortSignal;
 }
+
+export function teamFileTransferFailure(status: number): Error {
+  const reason =
+    status === 413
+      ? "team-file-too-large"
+      : status === 429
+        ? "team-file-capacity"
+        : status === 404
+          ? "not_found"
+          : status === 403
+            ? "forbidden"
+            : status === 401
+              ? "unauthorized"
+              : "team-file-transfer-failed";
+  return new ClientOperationError(
+    "The team file transfer failed.",
+    status === 429 ? "transient" : "blocked",
+    {
+      code: reason,
+      reason,
+      provenance: "host",
+      kind: status === 401 ? "session" : status >= 500 ? "service" : "rejection",
+    },
+  );
+}
+
 export function teamFileTransport(
   transport: Pick<HostTransport, "exchange">,
   scope: TeamCacheScope,
@@ -50,7 +77,7 @@ export function teamFileTransport(
           ...(signal ? { signal } : {}),
         },
         async (response, progress) => {
-          if (!response.ok) throw new Error("The team file is no longer available.");
+          if (!response.ok) throw teamFileTransferFailure(response.status);
           const maximumBytes = preview ? teamPreviewMaxBytes : teamUploadMaxBytes;
           const bytes = await readBoundedResponse(response, {
             maximumBytes,
@@ -92,7 +119,7 @@ export function teamFileTransport(
           ...(input.signal ? { signal: input.signal } : {}),
         },
         async (response, progress) => {
-          if (!response.ok) throw new Error("The team file could not be uploaded.");
+          if (!response.ok) throw teamFileTransferFailure(response.status);
           const bytes = await readBoundedResponse(response, {
             maximumBytes: teamUploadReplyMaxBytes,
             signal: progress.signal,

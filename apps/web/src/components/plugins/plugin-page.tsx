@@ -1,3 +1,4 @@
+import { act, failureWords, readWords } from "../use-action.js";
 import { useId, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
@@ -59,21 +60,21 @@ import {
   formatWhen,
 } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { PluginConnectDialog } from "./plugin-connect.js";
 import { PluginFormFields } from "./plugin-form-fields.js";
 import { EngineNotice, pluginAccountsPath, pluginsPath, usePluginEngine } from "./plugins-area.js";
 
 /** Runs a person's action once at a time, with its failure shown where they acted. */
-function useAction() {
+function usePluginAction() {
+  const { hostClient } = useShell();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const run = (key: string, action: () => Promise<unknown>) => {
     if (pending) return;
     setPending(key);
     setError(null);
-    void action()
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+    void act(hostClient, { label: "change this", done: "changed" }, action)
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(null));
   };
   return { pending, error, run };
@@ -100,7 +101,7 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
     scheduled.error ? (
       <SchedulesSection pluginId={pluginId} data={data} runs={scheduled} />
     ) : null;
-  const refused = data ? null : pluginEngineRefusal(detail.error);
+  const refused = data ? null : pluginEngineRefusal(detail.issue);
   const engine = usePluginEngine(refused);
   return (
     <div className="plugins-area plugin-page">
@@ -109,7 +110,7 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
         Plugins
       </Link>
       <EngineNotice engine={data ? null : engine} />
-      <SettingsError message={detail.error && !refused ? actionErrorMessage(detail.error) : null} />
+      <SettingsError message={!refused ? detail.error : null} />
       {data ? (
         <PluginContent data={data} reload={detail.reload} runs={runs} schedules={schedules} />
       ) : detail.error ? (
@@ -249,7 +250,7 @@ function PluginPageView({
 
 function AccessSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   const [chosen, setChosen] = useState(data.plugin.access);
   const current = action.pending ? chosen : data.plugin.access;
   const choice = pluginAccessChoices.find(({ value }) => value === current)!;
@@ -282,7 +283,7 @@ function AccountsSection({
   readonly reload: () => void;
 }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   const [connecting, setConnecting] = useState<PluginRequirementTarget | null>(null);
   if (!data.requirements.length) return null;
   return (
@@ -386,7 +387,7 @@ function SectionPages({
         <div className="card__row">
           <span className="card__row-body">
             <span className="card__row-detail">
-              Couldn't read all of its {noun}: {actionErrorMessage(section.error)}
+              {readWords({ ...section.error, resource: noun })}
             </span>
           </span>
           <button className="btn btn--small" onClick={section.retry} type="button">
@@ -434,12 +435,14 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
     data.toolCount,
     pluginToolsReader(hostClient, id),
     `tools:${id}:${version}`,
+    hostClient,
   );
   const skills = usePluginSection(
     data.skills ?? [],
     data.skillCount,
     pluginSkillsReader(hostClient, id),
     `skills:${id}:${version}`,
+    hostClient,
   );
   return (
     <>
@@ -503,7 +506,7 @@ function SchedulesSection({
   readonly runs: ReturnType<typeof usePluginScheduleRuns>;
 }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Schedules</h2>
@@ -665,15 +668,13 @@ function RunsReadFailure({
   retry,
   what,
 }: {
-  readonly error: unknown;
+  readonly error: import("@opensteer/client/feedback").ClientIssue;
   readonly retry: () => void;
   readonly what: string;
 }) {
   return (
     <div className="plugin-runs-failure" role="alert">
-      <p className="settings-footnote">
-        Couldn't read {what}: {actionErrorMessage(error)}
-      </p>
+      <p className="settings-footnote">{readWords({ ...error, resource: what })}</p>
       <button className="btn btn--small" onClick={retry} type="button">
         Try again
       </button>
@@ -689,7 +690,7 @@ function WorkflowsSection({
   readonly runs: WorkflowRuns;
 }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   const [starting, setStarting] = useState<
     NonNullable<InstalledPluginView["workflows"]>[number] | null
   >(null);
@@ -795,7 +796,7 @@ function StartWorkflow({
   const { hostClient } = useShell();
   const form = pluginInputForm(workflow.inputSchema);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const action = useAction();
+  const action = usePluginAction();
   const titleId = useId();
   const content = pluginInputContent(form, answers);
   return (
@@ -846,7 +847,7 @@ function WebhooksSection({
   readonly reload: () => void;
 }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   const [setup, setSetup] = useState<string | null>(null);
   return (
     <section className="settings-group">
@@ -928,7 +929,7 @@ function WebhookSetup({
     { pluginId, categories: ["webhooks", "webhookSources"] },
   );
   const titleId = useId();
-  const action = useAction();
+  const action = usePluginAction();
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [secret, setSecret] = useState("");
   const [removing, setRemoving] = useState(false);
@@ -1020,9 +1021,7 @@ function WebhookSetup({
       }
     >
       <div className="plugins-form">
-        <SettingsError
-          message={action.error ?? (setup.error ? actionErrorMessage(setup.error) : null)}
-        />
+        <SettingsError message={action.error ?? setup.error} />
         {data && form ? (
           <>
             {data.unavailable ? (
@@ -1075,13 +1074,14 @@ function WebhookSetup({
 
 function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
-  const action = useAction();
+  const action = usePluginAction();
   const [confirming, setConfirming] = useState<string | null>(null);
   const versions = usePluginSection(
     data.versions,
     data.versionCount,
     pluginVersionsReader(hostClient, data.plugin.id),
     `versions:${data.plugin.id}:${data.plugin.activeVersion}`,
+    hostClient,
   );
   const titleId = useId();
   if (!data.versions.length) return null;
@@ -1161,7 +1161,7 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
 function RemoveSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
   const navigate = useNavigate();
-  const action = useAction();
+  const action = usePluginAction();
   const [confirming, setConfirming] = useState(false);
   const titleId = useId();
   return (

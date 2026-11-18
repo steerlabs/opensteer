@@ -21,16 +21,17 @@ import {
 } from "@opensteer/client/plugins";
 import { useDebouncedValue, usePagedList, usePluginEngine } from "@opensteer/client/react";
 import {
-  HostClientRequestError,
+  isHostRefusal,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import { settingsMutationRejected } from "@opensteer/client/settings";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import type { ActionLineValue } from "../ui/action-line.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type {
@@ -39,7 +40,7 @@ import type {
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
 import { useLocalServerSections } from "./local-server-sections.js";
-import { useSettingsLease, useSettingsRead } from "./use-settings-read.js";
+import { usePluginRead } from "./use-plugin-read.js";
 
 type Params = StaticScreenProps<{ readonly deploymentId: string }>;
 
@@ -50,27 +51,44 @@ export const pluginTone: Record<PluginTone, NativeSettingsTone> = {
   error: "bad",
 };
 
-/** One action at a time, its failure kept for the page to say. */
-export function usePluginAction(host: HostClient) {
-  const isCurrent = useSettingsLease(host);
+/** Keeps one pending control for a settings section; the shared action owns its outcome. */
+export function usePluginAction(
+  host: HostClient,
+  scope: string,
+  label = "change this",
+  done = "changed",
+) {
   const busy = useRef(false);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const action = useScreenAction(host, `plugin:${scope}`, {
+    label,
+    done,
+    execute: (operation: () => Promise<unknown>) => operation(),
+  });
   const run = (key: string, operation: () => Promise<unknown>) => {
-    if (busy.current || !isCurrent()) return;
+    if (busy.current) return;
     busy.current = true;
     setPending(key);
     setError(null);
-    void operation()
-      .catch((reason: unknown) => {
-        if (isCurrent()) setError(operationDetail(reason, "That didn't go through. Try again."));
-      })
-      .finally(() => {
-        busy.current = false;
-        setPending(null);
-      });
+    action.dismiss();
+    void action.run(operation).finally(() => {
+      busy.current = false;
+      setPending(null);
+    });
   };
-  return { pending, error, run, setError };
+  const line: ActionLineValue | null = error
+    ? { key: `plugin:${scope}:validation`, text: error, tone: "danger" }
+    : action.line;
+  return {
+    pending,
+    error: line?.text ?? null,
+    line,
+    footer: settingsFooter(line),
+    outcome: action.state.outcome,
+    run,
+    setError,
+  };
 }
 
 export function engineSection(
@@ -110,7 +128,12 @@ export function PluginsScreen({ route }: Params): ReactNode {
 
 function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClient }) {
   const navigation = useNavigation();
-  const installed = useSettingsRead(host, () => readInstalledPlugins(host));
+  const installed = usePluginRead(
+    host,
+    () => readInstalledPlugins(host),
+    "plugins-installed",
+    "plugins",
+  );
   const engine = usePluginEngine(host, installed.data?.engine ?? null);
   const [adding, setAdding] = useState(false);
   const cursor = installed.data?.cursor ?? null;
@@ -119,6 +142,7 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
   const more = usePagedList(
     cursor && showingMore === cursor ? pluginInstalledReader(host, cursor) : null,
     `installed-more:${cursor}`,
+    host,
   );
   const moreCursor = showingMore === cursor ? more.nextCursor : cursor;
   const sections: NativeSettingsSection[] = [];
@@ -185,7 +209,7 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
       ...(more.error
         ? {
             footer: {
-              text: operationDetail(more.error, "Couldn't load more plugins."),
+              text: presentClientIssue({ ...more.error, resource: "more plugins" }).title,
               tone: "danger" as const,
             },
           }
@@ -285,7 +309,7 @@ function InstallFromAddress(props: {
   const [kind, setKind] = useState<(typeof addressKinds)[number]["value"]>("mcp");
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
-  const action = usePluginAction(props.host);
+  const action = usePluginAction(props.host, "install-folder", "install this plugin", "installed");
   const valid = /^https?:\/\/\S+$/u.test(url.trim()) && name.trim().length > 0;
   return (
     <NativeSettingsPage
@@ -312,11 +336,9 @@ function InstallFromAddress(props: {
               onChange: setName,
             },
           ],
-          footer: action.error
-            ? { text: action.error, tone: "danger" }
-            : {
-                text: "Opensteer generates the plugin's code from the address. Nobody reviews that code, so it's listed as written by an agent.",
-              },
+          footer: action.footer ?? {
+            text: "Opensteer generates the plugin's code from the address. Nobody reviews that code, so it's listed as written by an agent.",
+          },
         },
         {
           key: "install",
@@ -360,10 +382,15 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
   const [query, setQuery] = useState("");
   // Each pause in typing is one read of the Host, not each keystroke.
   const search = useDebouncedValue(query.trim());
-  const installed = useSettingsRead(host, () => readInstalledPlugins(host));
+  const installed = usePluginRead(
+    host,
+    () => readInstalledPlugins(host),
+    "plugins-installed",
+    "plugins",
+  );
   const engine = usePluginEngine(host, installed.data?.engine ?? null);
-  const list = usePagedList(pluginCatalogReader(host, search), `catalog:${search}`);
-  const action = usePluginAction(host);
+  const list = usePagedList(pluginCatalogReader(host, search), `catalog:${search}`, host);
+  const action = usePluginAction(host, "catalog", "install this plugin", "installed");
   const install = (entry: PluginCatalogEntryView) =>
     Alert.alert(
       `Install ${entry.name}?`,
@@ -398,7 +425,11 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
           key: "error",
           kind: "status",
           tone: "bad",
-          label: action.error ?? operationDetail(list.error, "Couldn't load the catalog."),
+          label:
+            action.error ??
+            (list.error
+              ? presentClientIssue({ ...list.error, resource: "the catalog" }).title
+              : ""),
         },
       ],
     });
@@ -464,12 +495,6 @@ export function PluginLocalToolScreen({
   );
 }
 
-/** A local tool the Host no longer has reads as gone, not as a failed read. */
-const gone = (error: unknown): "gone" => {
-  if (error instanceof HostClientRequestError && error.code === "not_found") return "gone";
-  throw error;
-};
-
 function LocalTool({
   deploymentId,
   host,
@@ -480,10 +505,15 @@ function LocalTool({
   id: string;
 }) {
   // Its own read: the installed list counts a local tool's tools, this page lists them.
-  const read = useSettingsRead(host, () => readPluginLocalTool(host, id).catch(gone), id);
-  const action = usePluginAction(host);
+  const read = usePluginRead(
+    host,
+    () => readPluginLocalTool(host, id),
+    `local-tool:${id}`,
+    "this tool",
+  );
+  const action = usePluginAction(host, `local-tool:${id}`, "change access", "changed");
   const [chosen, setChosen] = useState<PluginLocalToolView["access"] | null>(null);
-  const tool = read.data && read.data !== "gone" ? read.data : null;
+  const tool = read.data;
   if (!tool)
     return (
       <NativeSettingsPage
@@ -495,9 +525,10 @@ function LocalTool({
               {
                 key: "gone",
                 kind: "text",
-                label: read.data
-                  ? "This isn't available to agents anymore."
-                  : (read.error ?? "Loading…"),
+                label:
+                  read.issue?.reason === "not_found"
+                    ? "This isn't available to agents anymore."
+                    : (read.error ?? "Loading…"),
               },
             ],
           },
@@ -585,9 +616,9 @@ function LocalToolPage({
                 },
               },
             ],
-            footer: action.error
-              ? { text: action.error, tone: "danger" }
-              : { text: pluginAccessChoices.find(({ value }) => value === access)!.detail },
+            footer: action.footer ?? {
+              text: pluginAccessChoices.find(({ value }) => value === access)!.detail,
+            },
           },
           {
             key: "tools",
@@ -682,10 +713,13 @@ export function PluginSkillsScreen({ route }: Params): ReactNode {
 }
 
 function Skills({ host }: { host: HostClient }) {
-  const overview = useSettingsRead(host, async () =>
-    unwrapRpcResult(await host.rpc["plugins.overview.get"]({})),
+  const overview = usePluginRead(
+    host,
+    () => host.rpc["plugins.overview.get"]({}).then(unwrapRpcResult),
+    "agent-home-skills",
+    "skills",
   );
-  const action = usePluginAction(host);
+  const action = usePluginAction(host, "agent-home-skills", "change this skill", "changed");
   // A lost response may have committed, so a retry repeats the same operation.
   const attempts = useRef(new Map<string, string>());
   const skills = overview.data ? agentHomeSkills(overview.data.rows) : null;
@@ -735,18 +769,16 @@ function Skills({ host }: { host: HostClient }) {
                         });
                         attempts.current.delete(intent);
                       } catch (reason) {
-                        if (settingsMutationRejected(reason)) attempts.current.delete(intent);
+                        if (isHostRefusal(reason)) attempts.current.delete(intent);
                         throw reason;
                       } finally {
                         await overview.reload();
                       }
                     }),
                 })),
-          footer: action.error
-            ? { text: action.error, tone: "danger" }
-            : {
-                text: "Instructions your agent reads from its folder. Off keeps one from your agent.",
-              },
+          footer: action.footer ?? {
+            text: "Instructions your agent reads from its folder. Off keeps one from your agent.",
+          },
         },
       ]}
     />

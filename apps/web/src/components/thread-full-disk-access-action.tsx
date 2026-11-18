@@ -12,6 +12,7 @@ import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { hostsDeployment } from "@opensteer/client/computers";
 import { MacOsPermissionReviewDialog } from "./macos-permission-review-dialog.js";
+import { outcomeWords, runAction } from "./use-action.js";
 
 /**
  * An agent's ask for macOS Full Disk Access on one lent Mac.
@@ -31,14 +32,8 @@ export function ThreadFullDiskAccessAction({
   readonly request: Request;
   readonly disabled?: boolean;
 }) {
-  const {
-    desktopBridge,
-    desktopDeployment,
-    hostClient,
-    localExecutionStatus,
-    reportActionError,
-    snapshot,
-  } = useShell();
+  const { desktopBridge, desktopDeployment, hostClient, localExecutionStatus, snapshot } =
+    useShell();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
@@ -61,24 +56,26 @@ export function ThreadFullDiskAccessAction({
     if (pending || disabled) return;
     setPending(true);
     setError(null);
-    try {
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-        requestId: request.id,
-        response: { kind: "external", value: { decision: "declined" } },
-        type: "request.respond",
-      });
-    } catch (reason) {
-      setError(errorMessage(reason));
-      reportActionError(reason);
-      setPending(false);
-    }
+    const outcome = await runAction(hostClient, {
+      label: "send your answer",
+      done: "sent",
+      happened: "your answer was sent",
+      execute: () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          requestId: request.id,
+          response: { kind: "external", value: { decision: "declined" } },
+          type: "request.respond",
+        }),
+    });
+    if (outcome.kind === "confirmed") return;
+    setError(outcomeWords(outcome));
+    setPending(false);
   }
 
   return (
     <>
       <ActionNote>{fullAccessRequestBody(machineName)}</ActionNote>
-      {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
         <button
           className="btn"
@@ -101,22 +98,14 @@ export function ThreadFullDiskAccessAction({
           </button>
         ) : null}
       </div>
+      {error ? <ActionNote alert>{error}</ActionNote> : null}
       {reviewing && desktopBridge ? (
         <MacOsPermissionReviewDialog
           bridge={desktopBridge}
           onClose={() => setReviewing(false)}
-          onError={(reason) => {
-            setError(errorMessage(reason));
-            reportActionError(reason);
-          }}
+          onError={setError}
         />
       ) : null}
     </>
   );
-}
-
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error
-    ? reason.message
-    : "The macOS Full Disk Access request could not be answered.";
 }

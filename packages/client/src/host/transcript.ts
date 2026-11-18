@@ -1172,6 +1172,10 @@ export function toMessageEntry(
   );
   return {
     ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
+    ...(input?.state === "pending" && input.policy === "queue" && message.runId === null
+      ? { queuePending: true as const }
+      : {}),
+    ...(message.clientSendKey ? { clientSendKey: message.clientSendKey } : {}),
     author: message.author,
     ...(message.addressedToUserId ? { addressedToUserId: message.addressedToUserId } : {}),
     sequence: message.sequence,

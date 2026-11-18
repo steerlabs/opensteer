@@ -1,9 +1,14 @@
 import { getAutomaticModels, type HostClient } from "@opensteer/client/host";
+import { readLine, settingsFooter, useScreenRead } from "../ui/client-feedback.js";
 import type { BackgroundModelsForm } from "./settings-form.types.js";
-import { useSettingsRead } from "./use-settings-read.js";
 
 export function useBackgroundModels(host: HostClient): BackgroundModelsForm | null {
-  const read = useSettingsRead(host, () => getAutomaticModels(host), "automatic-models");
-  if (host.automaticModelsAvailable?.() !== true) return null;
-  return { view: read.data, error: read.error };
+  const available = host.automaticModelsAvailable?.() === true;
+  const read = useScreenRead(host, {
+    key: "automatic-models",
+    label: "background models",
+    read: available ? () => getAutomaticModels(host) : null,
+  });
+  if (!available) return null;
+  return { view: read.data, line: settingsFooter(readLine(read, read.refresh)) ?? null };
 }

@@ -16,6 +16,11 @@ import {
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
 import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
+import { createClientRead } from "@opensteer/client/reads";
+import { useClientRead } from "@opensteer/client/react";
+import { ActionLine } from "./action-line.js";
+import { readWords, Refusal, requestAnswer, useAction } from "./use-action.js";
+import { LoadingRows } from "./loading-rows.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { ComputerAppPicker } from "./computer-apps/computer-app-picker.js";
@@ -36,87 +41,94 @@ export function ThreadIntegrationAction({
   readonly threadId: string;
 }) {
   const { hostClient, snapshot } = useShell();
-  const [loaded, setLoaded] = useState<LoadedAccessRequest | null>(null);
+  const [updatedAccess, setLoaded] = useState<LoadedAccessRequest | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [selectedAccess, setSelectedAccess] = useState<IntegrationAccess | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [accountsExpanded, setAccountsExpanded] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [computerSetupNotice, setComputerSetupNotice] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [requestSettled, setRequestSettled] = useState(false);
   const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
   /** What Try again repeats: a failed install must never become approval. */
   const lastAction = useRef<"allow" | "install" | null>(null);
-  const operationGeneration = useRef(0);
   const requestPayload = request.payload.kind === "integration.access" ? request.payload : null;
 
+  const resource = useMemo(
+    () =>
+      createClientRead(hostClient, {
+        key: `integration-access:${request.id}`,
+        label: "this account",
+        read: () =>
+          Promise.all([
+            hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+            hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+          ]).then(([dashboard, platform]) => ({ dashboard, platform })),
+      }),
+    [hostClient, request.id],
+  );
+  const access = useClientRead(requestPayload ? resource : null);
+  const refresh = access.refresh;
+  const loaded = access.data === null ? null : updatedAccess;
+  const answering = useAction(
+    hostClient,
+    {
+      ...requestAnswer,
+      execute: (operation: () => Promise<void>) => operation(),
+      reconcile: async () => {
+        refresh();
+        return (await integrationRequestStillPending(
+          hostClient,
+          request.originatingThreadId,
+          request.id,
+        ))
+          ? null
+          : { kind: "confirmed", value: undefined };
+      },
+    },
+    `integration-request:${request.id}`,
+  );
+  const pending = answering.running;
+  const error = answering.outcome?.kind !== "not-sent" ? (answering.line?.text ?? null) : null;
+  const line = answering.line ? <ActionLine line={answering.line} wrap /> : null;
+
   useEffect(() => {
-    operationGeneration.current += 1;
     setRequestSettled(false);
     setLoaded(null);
     setConnected(null);
     setSelectedAccountId(null);
     setSelectedAccess(null);
-    setError(null);
     setPickerOpen(false);
     setAccountsExpanded(false);
     setDetailsOpen(false);
     setComputerSetupNotice(null);
-    setPending(false);
   }, [request.id, hostClient]);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!requestPayload) return;
-    Promise.all([
-      hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-      hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-    ])
-      .then(([dashboard, platform]) => {
-        if (!cancelled)
-          setLoaded((current) => ({
-            dashboard,
-            platform,
-            // An install or server choice moves the Request on; keep that until it is read again.
-            request:
-              current &&
-              ((requestPayload.installationId === null &&
-                current.request.installationId !== null) ||
-                (requestPayload.requestedServerId === null &&
-                  current.request.requestedServerId !== null))
-                ? current.request
-                : requestPayload,
-          }));
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(errorMessage(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostClient, reload, requestPayload]);
-
+    if (!access.data || !requestPayload) {
+      setLoaded(null);
+      return;
+    }
+    const data = access.data;
+    setLoaded((current) => ({
+      ...data,
+      request:
+        current &&
+        ((requestPayload.installationId === null && current.request.installationId !== null) ||
+          (requestPayload.requestedServerId === null && current.request.requestedServerId !== null))
+          ? current.request
+          : requestPayload,
+    }));
+  }, [access.data, requestPayload]);
   const plan = useMemo(
     () => (loaded ? accessPlan(loaded, selectedAccountId) : null),
     [loaded, selectedAccountId],
   );
 
   // A failure is said on this card, where the action was taken, and nowhere else.
-  const run = async (operation: () => Promise<void>) => {
+  const run = (operation: () => Promise<void>) => {
     if (pending || disabled) return;
-    const generation = ++operationGeneration.current;
-    setPending(true);
-    setError(null);
-    try {
-      await operation();
-    } catch (reason) {
-      if (operationGeneration.current === generation) setError(errorMessage(reason));
-    } finally {
-      if (operationGeneration.current === generation) setPending(false);
-    }
+    return answering.run(operation);
   };
 
   const decline = () =>
@@ -142,20 +154,18 @@ export function ThreadIntegrationAction({
     return (
       <>
         <RequestNameHead request={request} />
-        <ActionNote alert={Boolean(error)}>{error ?? "Checking access…"}</ActionNote>
-        {error ? (
+        {access.issue ? (
+          <ActionNote alert>{readWords(access.issue) ?? ""}</ActionNote>
+        ) : (
+          <LoadingRows label="Checking access" rows={2} />
+        )}
+        {line}
+        {access.issue ? (
           <>
             <button className="btn" disabled={disabled || pending} onClick={decline} type="button">
               Not now
             </button>
-            <button
-              className="btn btn--primary"
-              onClick={() => {
-                setError(null);
-                setReload((value) => value + 1);
-              }}
-              type="button"
-            >
+            <button className="btn btn--primary" onClick={refresh} type="button">
               Try again
             </button>
           </>
@@ -215,7 +225,7 @@ export function ThreadIntegrationAction({
         type: "request.respond",
       });
       await hostClient.refresh();
-      setReload((value) => value + 1);
+      refresh();
     });
   if (connected)
     return (
@@ -271,7 +281,7 @@ export function ThreadIntegrationAction({
             </button>
           </>,
         )}
-        {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
+        {line ?? (card.error ? <ActionNote alert>{card.error}</ActionNote> : null)}
         {card.serverChoices.length > 0 ? (
           <div className="connect-card__list">
             {card.serverChoices.map((server) => (
@@ -317,7 +327,7 @@ export function ThreadIntegrationAction({
         if (!computer) throw new Error("That phone isn’t one of your devices any more.");
         await setPhoneUseAccess(hostClient, computer, input.access);
         setComputerSetupNotice(`Agents can now use ${computerName} at the access you chose.`);
-        setReload((value) => value + 1);
+        refresh();
         setPickerOpen(false);
         return;
       }
@@ -355,7 +365,7 @@ export function ThreadIntegrationAction({
         selectedAccount: plan.selectedAccount,
       });
       if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
-        throw new Error("This request is still waiting. Try again.");
+        throw new Refusal("This request is still waiting. Try again.");
       if (plan.selectedAccount) setConnected(plan.selectedAccount);
       else setRequestSettled(true);
     });
@@ -363,9 +373,9 @@ export function ThreadIntegrationAction({
 
   const primary = () => {
     if (card.primary?.kind === "retry") {
-      setError(null);
+      answering.dismiss();
       if (lastAction.current === "allow") allow();
-      else setReload((value) => value + 1);
+      else refresh();
       return;
     }
     if (card.primary?.kind === "use") {
@@ -437,14 +447,14 @@ export function ThreadIntegrationAction({
         </>,
         accessChoice,
       )}
-      {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
+      {line ?? (card.error ? <ActionNote alert>{card.error}</ActionNote> : null)}
       {computerSetupNotice ? (
         <>
           <ActionNote>{computerSetupNotice}</ActionNote>
           <button
             className="btn"
             disabled={pending || disabled}
-            onClick={() => setReload((value) => value + 1)}
+            onClick={() => refresh()}
             type="button"
           >
             Check setup
@@ -614,8 +624,4 @@ function ConnectCardFoot({
       ) : null}
     </div>
   );
-}
-
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "This request could not be loaded.";
 }

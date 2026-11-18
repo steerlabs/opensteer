@@ -329,13 +329,10 @@ html.sidebar-drawer-open body {
   white-space: nowrap;
 }
 
-.sidebar__place-status {
-  display: flex;
+.sidebar__place-text.sidebar__place-line {
+  flex-direction: row;
   align-items: center;
-  gap: var(--space-6);
-  color: var(--muted);
-  font-size: var(--text-xs);
-  line-height: 1.35;
+  gap: var(--space-8);
 }
 
 .sidebar__status-dot {

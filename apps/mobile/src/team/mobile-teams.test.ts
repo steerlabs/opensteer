@@ -122,7 +122,23 @@ function fixture(
   let owner = new TeamRuntimeOwner(null);
   const identities = new Set<() => void>();
   let entryGeneration = 0;
+  let visibility: "foreground" | "background" = "foreground";
+  const foregroundListeners = new Set<() => void>(),
+    backgroundListeners = new Set<() => void>();
+  const lifecycle = {
+    getSnapshot: () => ({ network: "online" as const, visibility }),
+    onForeground: (fn: () => void) => {
+      foregroundListeners.add(fn);
+      return () => foregroundListeners.delete(fn);
+    },
+    onBackground: (fn: () => void) => {
+      backgroundListeners.add(fn);
+      return () => backgroundListeners.delete(fn);
+    },
+    onNetworkChange: () => () => {},
+  };
   const client = {
+    lifecycle,
     oauth: {
       teamRuntime: () => owner,
       subscribeAccountIdentityChanges: (listener: () => void) => {
@@ -168,6 +184,14 @@ function fixture(
   });
   return {
     teams,
+    background: () => {
+      visibility = "background";
+      backgroundListeners.forEach((fn) => fn());
+    },
+    foreground: () => {
+      visibility = "foreground";
+      foregroundListeners.forEach((fn) => fn());
+    },
     hosts,
     signOut,
     releaseAcme,
@@ -205,12 +229,21 @@ describe("the one team socket a phone keeps", () => {
     try {
       const session = await f.teams.session(mockFamilyTeamId);
       await f.teams.select(mockFamilyTeamId);
-      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("offline");
+      expect(session.connection.getSnapshot()).toMatchObject({
+        phase: "recovering",
+        showInterruption: false,
+        issue: { code: "connection", reason: "unreachable" },
+      });
       expect(session.getSnapshot().bootstrap).toBeNull();
       await f.teams.select(mockFamilyTeamId);
       expect(session.getSnapshot().bootstrap).not.toBeNull();
       expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live");
-      expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+      await vi.waitFor(
+        () => expect(f.sockets()[mockFamilyTeamId], "team socket never opened").toBe(1),
+        {
+          timeout: 1_000,
+        },
+      );
     } finally {
       f.teams.dispose();
     }
@@ -271,12 +304,12 @@ describe("the one team socket a phone keeps", () => {
   it("does not reconnect in the background when a selection lands late", async () => {
     const f = fixture();
     const acme = f.teams.select(mockTeamId);
-    f.teams.foreground(false);
+    f.background();
     f.releaseAcme();
     await acme;
     expect(f.sockets()[mockTeamId] ?? 0).toBe(0);
     // Back in front, the team that was on screen is the one connected again.
-    f.teams.foreground(true);
+    f.foreground();
     await vi.waitFor(() => expect(f.sockets()[mockTeamId], "Acme never reconnected").toBe(1), {
       timeout: 2_000,
     });
@@ -537,7 +570,7 @@ describe("adding a computer's team to the phone", () => {
       }
       if (mode === "not-member" || mode === "outage") {
         await expect(adding).rejects.toThrow();
-        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
+        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "failed");
       } else await adding;
       expect(browser).toHaveBeenCalledTimes(
         mode.endsWith("no-account") || mode === "old-team" ? 1 : 0,

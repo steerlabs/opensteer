@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   schedulesClient,
   sectionAutomations,
@@ -12,19 +13,14 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { StyleSheet, View } from "react-native";
 import { headerActions } from "../navigation-header.js";
-import { color, space } from "../theme.js";
+import { space } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
+import { readLine } from "../ui/client-feedback.js";
 import { useAppForeground } from "../ui/foreground.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { Notice } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { AutomationList } from "./automation-list.js";
@@ -62,57 +58,48 @@ function SchedulesForHost(props: {
   if (reader === null) {
     return (
       <Screen>
-        <Notice
-          detail="Your automations appear once you are signed in."
-          title="Connecting…"
-          tone="neutral"
-        />
+        <PlaceholderRows />
       </Screen>
     );
   }
   return <ScheduleList key={reader} {...props} />;
 }
 
-/**
- * What a schedule screen shows of the Host's answer. A re-read — after any
- * schedule changes, or a run starts or ends — keeps the last answer in view
- * rather than blanking to a spinner, and so does losing the connection, where
- * the screen says it is offline and offers nothing that would change the Host.
- * A refusal or a failure replaces it: what it showed can no longer be vouched
- * for. Only ever Host answers for this reader, since each reader remounts.
- */
+/** The schedule's own answer, kept through outages and refreshes; null until one arrived. */
 export function useShownSchedule<T>(state: ScheduleState<T>): T | null {
-  const held = useRef<T | null>(null);
-  if (state.status === "ready") held.current = state.data;
-  else if (state.status === "error" || state.status === "unavailable") held.current = null;
-  return state.status === "ready" ? state.data : held.current;
+  return state.status === "ready" ? state.data : null;
 }
 
-/** The read the Host refused or failed, as one notice with the way on from it. */
+/**
+ * Why a schedule read shows nothing, or that an asked-for refresh failed:
+ * still placeholders while waiting, a fact about the read, never the connection.
+ */
 export function ScheduleProblem(props: {
   readonly onRetry: () => void;
   readonly state: ScheduleState<unknown>;
 }): ReactNode {
   const { state } = props;
-  if (state.status === "unavailable") {
+  if (state.issue?.reason === "unknown-method") {
     return (
       <Notice
-        detail="This Host doesn’t offer automations. Update Opensteer on the computer it runs on to see them here."
+        detail="Update Opensteer on your computer to see them here."
         title="Automations aren’t available here"
         tone="neutral"
       />
     );
   }
-  if (state.status === "offline") {
-    return <Notice detail={state.error ?? ""} title="Offline" tone="neutral" />;
+  if (state.issue?.code === "access-lost") {
+    const copy = presentClientIssue(state.issue);
+    return <Notice title={copy.title} detail={copy.detail ?? ""} tone="neutral" />;
   }
-  return (
-    <Notice
-      action={{ label: "Try again", onPress: props.onRetry }}
-      detail={state.error ?? "Automations could not be loaded."}
-      title="Automations didn’t load"
-    />
-  );
+  const line = readLine(state, props.onRetry);
+  if (line !== null)
+    return (
+      <View style={styles.line}>
+        <ActionLine line={line} />
+      </View>
+    );
+  return state.status === "ready" ? null : <PlaceholderRows />;
 }
 
 /** The most `triggers.list` answers with; a full answer may not be all of them. */
@@ -193,22 +180,16 @@ function ScheduleList(props: {
   if (items === null) {
     return (
       <Screen>
-        {state.status === "loading" ? (
-          <View accessibilityLabel="Loading automations" style={styles.loading}>
-            <ActivityIndicator color={color.muted} />
-          </View>
-        ) : (
-          <ScheduleProblem onRetry={() => void reload()} state={state} />
-        )}
+        <ScheduleProblem onRetry={() => void reload()} state={state} />
       </Screen>
     );
   }
   return (
     <AutomationList
       banner={
-        state.status === "offline" ? (
+        state.issue === null ? null : (
           <ScheduleProblem onRetry={() => void reload()} state={state} />
-        ) : null
+        )
       }
       capped={items.length >= hostListCap}
       onOpen={open}
@@ -219,5 +200,5 @@ function ScheduleList(props: {
 }
 
 const styles = StyleSheet.create({
-  loading: { alignItems: "center", paddingVertical: space[48] },
+  line: { paddingHorizontal: space[16], paddingVertical: space[8] },
 });

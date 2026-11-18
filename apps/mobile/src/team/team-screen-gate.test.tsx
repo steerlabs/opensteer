@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   addToPhone: vi.fn(async (_id: string) => {}),
   forget: vi.fn(async (_id: string) => {}),
   popToTop: vi.fn(),
+  openURL: vi.fn(async (_url: string) => true),
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 type Children = { children?: ReactNode };
@@ -19,10 +20,17 @@ vi.mock("react-native", () => ({
   View: ({ children }: Children) => <div>{children}</div>,
   ActivityIndicator: () => <span data-loading="true">Loading</span>,
   Alert: { alert: vi.fn() },
+  Linking: { openURL: h.openURL },
   StyleSheet: { create: (s: object) => s },
 }));
 vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ setOptions: vi.fn(), popToTop: h.popToTop, goBack: h.popToTop }),
+  useIsFocused: () => true,
+  useNavigation: () => ({
+    setOptions: vi.fn(),
+    popToTop: h.popToTop,
+    goBack: h.popToTop,
+    canGoBack: () => true,
+  }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../thread/composer-menu.js", () => ({ NativeMenu: () => null }));
@@ -39,10 +47,33 @@ vi.mock("../ui/primitives.js", () => ({
 }));
 vi.mock("../ui/screen.js", () => ({ Screen: ({ children }: Children) => <main>{children}</main> }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("./connection-banner.js", () => ({
-  useConnectionBanner: () => null,
-  ConnectionBanner: () => null,
+vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null, ActionLineSlot: () => null }));
+vi.mock("../ui/placeholder.js", () => ({
+  PlaceholderRows: () => <span data-loading="true">Loading</span>,
 }));
+vi.mock("../ui/connection-gate.js", () => {
+  type Button = { label: string; onPress: () => void } | null | undefined;
+  return {
+    ConnectionGate: (props: {
+      title: string | null;
+      detail: string;
+      symbol: string | null;
+      primary?: Button;
+      secondary?: Button;
+    }) => (
+      <section data-connecting={props.symbol === null ? "true" : undefined}>
+        {props.title} {props.detail}
+        {[props.primary, props.secondary].map((button) =>
+          button ? (
+            <button key={button.label} onClick={button.onPress}>
+              {button.label}
+            </button>
+          ) : null,
+        )}
+      </section>
+    ),
+  };
+});
 vi.mock("./team-context.js", () => ({
   useMobileTeams: () => ({
     owner: { id: h.ownerId },
@@ -56,7 +87,6 @@ vi.mock("./team-context.js", () => ({
     team: h.team,
     session: h.team?.session ?? null,
     snapshot: h.team?.session?.getSnapshot() ?? {},
-    failure: h.team?.detail ?? null,
   }),
 }));
 const states: readonly TeamState[] = [
@@ -71,59 +101,68 @@ const states: readonly TeamState[] = [
   "join",
 ];
 it.each([
-  ...states.map((state) => ({ state, loaded: false, detail: null as string | null })),
-  { state: "offline" as const, loaded: true, detail: "Offline" },
-  { state: "loading" as const, loaded: false, detail: "Couldn't load" },
-])(
-  "presents the distinct $state recovery branch (loaded: $loaded, detail: $detail)",
-  async ({ state, loaded, detail }) => {
-    const snapshot = {
-      bootstrap: loaded ? { can: {} } : null,
-      sidebar: loaded ? { channels: [], nextCursor: null } : null,
-    };
-    h.team = {
-      teamId: "dep_test",
-      name: "Acme",
-      state,
-      detail,
-      session: loaded ? { subscribe: () => () => {}, getSnapshot: () => snapshot } : null,
-    } as unknown as MobileTeam;
-    const host = document.createElement("div"),
-      root = createRoot(host);
-    try {
-      act(() =>
-        root.render(
-          <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
-            <button>Browse channels</button>
-          </TeamScreenLayout>,
-        ),
-      );
-      if (loaded) expect(host.textContent).toContain("Browse channels");
-      else if (state === "loading" && !detail)
-        expect(host.querySelector("[data-loading]")).not.toBeNull();
-      else {
-        expect(host.querySelector("[data-loading]")).toBeNull();
-        const label =
-          state === "signed-out"
-            ? "Sign in"
-            : state === "offline" || state === "failed"
-              ? "Retry"
+  ...states.map((state) => ({ state, loaded: false })),
+  { state: "offline" as const, loaded: true },
+  { state: "failed" as const, loaded: true },
+])("presents the distinct $state recovery branch (loaded: $loaded)", async ({ state, loaded }) => {
+  const snapshot = {
+    bootstrap: loaded ? { can: {} } : null,
+    sidebar: loaded ? { channels: [], nextCursor: null } : null,
+  };
+  h.team = {
+    teamId: "dep_test",
+    name: "Acme",
+    state,
+    detail: null,
+    session: loaded ? { subscribe: () => () => {}, getSnapshot: () => snapshot } : null,
+  } as unknown as MobileTeam;
+  const host = document.createElement("div"),
+    root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
+          <button>Browse channels</button>
+        </TeamScreenLayout>,
+      ),
+    );
+    if (loaded) expect(host.textContent).toContain("Browse channels");
+    else if (state === "loading" || state === "live")
+      expect(host.querySelector("[data-connecting]")?.textContent).toContain("Connecting to Acme");
+    else {
+      expect(host.querySelector("[data-connecting]")).toBeNull();
+      if (state === "failed") expect(host.textContent).toContain("Couldn't open Acme");
+      const label =
+        state === "signed-out"
+          ? "Sign in"
+          : state === "offline" || state === "failed" || state === "update-server"
+            ? "Try again"
+            : state === "update-app"
+              ? "Update"
               : "Remove from this phone";
-        const action = [...host.querySelectorAll("button")].find(
-          (button) => button.textContent === label,
-        )!;
-        expect(action).toBeTruthy();
-        await act(async () => action.click());
-        expect(
-          state === "signed-out" || state === "offline" || state === "failed" ? h.select : h.forget,
-        ).toHaveBeenCalledWith("dep_test");
-      }
-    } finally {
-      act(() => root.unmount());
-      vi.clearAllMocks();
+      const action = [...host.querySelectorAll("button")].find(
+        (button) => button.textContent === label,
+      )!;
+      expect(action).toBeTruthy();
+      await act(async () => action.click());
+      expect(
+        state === "signed-out" ||
+          state === "offline" ||
+          state === "failed" ||
+          state === "update-server"
+          ? h.select
+          : state === "update-app"
+            ? h.openURL
+            : h.forget,
+      ).toHaveBeenCalled();
+      if (state === "update-app")
+        expect(h.openURL).toHaveBeenCalledWith("https://opensteer.com/download");
     }
-  },
-);
+  } finally {
+    act(() => root.unmount());
+    vi.clearAllMocks();
+  }
+});
 
 vi.mock("expo-haptics", () => ({}));
 vi.mock("../markdown/markdown.js", () => ({ Markdown: () => null }));

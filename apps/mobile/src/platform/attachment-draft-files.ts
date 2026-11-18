@@ -202,13 +202,15 @@ export async function copyFirstMessageDraftFileToThread(
   intro: FirstMessageAttachmentDraftScope,
   thread: AttachmentDraftScope,
   localUri: string,
-): Promise<string> {
+): Promise<string | null> {
   const source = scopedChatDraftFile(intro, localUri);
   const directory = draftDirectory(thread);
   if (intro.deploymentId !== thread.deploymentId || intro.userId !== thread.userId) {
     throw new Error("This draft file cannot move to another account or deployment.");
   }
-  if (!source.exists || source.size > attachmentMaxBytes) {
+  // The pending command already holds an uploaded attachment reference.
+  if (!source.exists) return null;
+  if (source.size > attachmentMaxBytes) {
     throw new Error("This draft file is no longer on this phone. Pick it again.");
   }
   const destination = new File(directory, source.name);

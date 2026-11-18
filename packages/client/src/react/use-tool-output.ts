@@ -10,7 +10,11 @@ export function useToolOutput(client: HostClient | null, threadId: string | null
     () => loadToolOutput(client!, threadId!, tool),
     [client, threadId, tool],
   );
-  const state = useHostRead(cut && client && threadId ? read : null, `${threadId}:${tool.id}`);
+  const state = useHostRead(
+    cut && client && threadId ? read : null,
+    `${threadId}:${tool.id}`,
+    client,
+  );
   return {
     ...state,
     loading: cut && state.data === null && state.error === null,

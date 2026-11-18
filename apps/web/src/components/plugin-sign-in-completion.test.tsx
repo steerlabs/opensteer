@@ -90,7 +90,7 @@ describe("PluginSignInCompletion", () => {
     const container = await render(attemptId);
 
     expect(container.textContent).toContain("We couldn’t check the authorization");
-    expect(container.textContent).toContain("The Host is unreachable.");
+    expect(container.textContent).toContain("Couldn't load authorization status.");
 
     const retry = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Try again",

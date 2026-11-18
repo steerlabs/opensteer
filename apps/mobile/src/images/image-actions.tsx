@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import type { FileResource, FileSource } from "@opensteer/protocol";
 import { useEffect, useRef, type ReactNode } from "react";
@@ -65,12 +66,15 @@ export function useImageActions(source: ImageActionsSource) {
       if (id === "share") await shareFileBytes(bytes, source.name, mediaType, signal);
       else await copyImageBytes(bytes, mediaType, signal);
     })()
-      .catch(() => {
-        if (!signal.aborted)
-          Alert.alert(
-            id === "copy" ? "Copy unavailable" : "Share unavailable",
-            "This image could not be read. Try again.",
-          );
+      .catch((error: unknown) => {
+        // A read the connection stopped is said once, by the connection indicator.
+        const kind = classifyClientFailure(error).kind;
+        if (signal.aborted || kind === "transport" || kind === "service" || kind === "cancelled")
+          return;
+        Alert.alert(
+          id === "copy" ? "Copy unavailable" : "Share unavailable",
+          "This image could not be read. Try again.",
+        );
       })
       .finally(() => {
         if (pending.current === controller) pending.current = null;

@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { failureNotice, type HostClient } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import type { ThreadId } from "@opensteer/core";
 import type { FileResource, FileSource } from "@opensteer/protocol";
 import { canCopyImages, copyImage, saveFile } from "./file-actions.js";
@@ -20,7 +20,7 @@ export function transcriptImageRead(
 ): ImageRead {
   return async () => {
     const original = await client.transcriptFiles.original(threadId, source);
-    if (original.status !== "ok") throw unavailable(client, original.status);
+    if (original.status !== "ok") throw unavailable(original.status);
     return imageFile(original.bytes, original.name, original.mediaType);
   };
 }
@@ -33,7 +33,7 @@ export function openImageRead(
 ): ImageRead {
   return async () => {
     const content = await client.transcriptFiles.download(threadId, file.resource);
-    if (content.status !== "ok") throw unavailable(client, content.status);
+    if (content.status !== "ok") throw unavailable(content.status);
     return imageFile(content.bytes, file.name, file.mediaType);
   };
 }
@@ -42,16 +42,10 @@ function imageFile(bytes: Uint8Array, name: string, mediaType: string): File {
   return new File([bytes as Uint8Array<ArrayBuffer>], fileName(name), { type: mediaType });
 }
 
-function unavailable(
-  client: HostClient,
-  status: "unavailable" | "unreachable" | "failed",
-): ImageUnavailableError {
+function unavailable(status: "unavailable" | "unreachable" | "failed"): ImageUnavailableError {
   return new ImageUnavailableError(
-    status === "unreachable"
-      ? `${failureNotice("unavailable", client.getSnapshot().network).title}.`
-      : status === "unavailable"
-        ? "This image isn't available anymore."
-        : "Couldn't read this image.",
+    // Offline is the pill's to say; the image says only that it couldn't be read.
+    status === "unavailable" ? "This image isn't available anymore." : "Couldn't read this image.",
   );
 }
 

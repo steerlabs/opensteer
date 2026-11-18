@@ -13,6 +13,7 @@ import { useState, type ReactNode } from "react";
 import { Alert, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { space } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
 import { AppText, Field, PrimaryButton, SecondaryButton, SectionLabel } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { GroupNote } from "./settings-rows.js";
@@ -45,10 +46,15 @@ export function ChannelShares({
   return (
     <View style={styles.group}>
       <SectionLabel>{channel ? "Partner team" : "Channel share offers"}</SectionLabel>
-      {state.error ? (
-        <AppText role="secondary" tone="danger">
-          {state.error}
-        </AppText>
+      {state.error && !state.loaded ? (
+        <ActionLine
+          line={{
+            key: "shares",
+            text: "Couldn't load channel shares.",
+            tone: "muted",
+            link: { label: "Try again", onPress: () => void model.refresh() },
+          }}
+        />
       ) : null}
       <SecondaryButton
         compact
@@ -203,7 +209,6 @@ export function ChannelShares({
                 {shareHistoryWarning(channel.name, partner.partnerName)}
               </AppText>
             ) : null}
-            {state.error ? <AppText tone="danger">{state.error}</AppText> : null}
             {error("offer")}
           </View>
         </Sheet>

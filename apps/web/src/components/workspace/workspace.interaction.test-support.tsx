@@ -1,3 +1,4 @@
+import "fake-indexeddb/auto";
 import { act, Fragment, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
@@ -10,7 +11,13 @@ import {
 } from "react-router";
 import { afterEach, beforeAll, vi } from "vitest";
 import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
-import { type HostClient, placeList, type PlaceItem } from "@opensteer/client/host";
+import {
+  disposeMessageOutbox,
+  type HostClient,
+  placeList,
+  type PlaceItem,
+} from "@opensteer/client/host";
+import { initializeBrowserMessageOutbox } from "../../host/message-outbox.js";
 
 import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
@@ -50,6 +57,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 let client: MockHostClient;
 let sessionClient: HostClient | null = null;
+const messageRecords = new Map<string, string>();
 let teamHost: MockTeamHost | null = null;
 let teamSession: TeamSessionClient | null = null;
 /** Teams past the first, for a mount with more than one. */
@@ -87,7 +95,18 @@ beforeAll(async () => {
 
 afterEach(cleanupWorkspace);
 
+/**
+ * Which test owns the page. A test that timed out keeps running in the
+ * background; its next wait here never returns, so it cannot drive the page
+ * the next test mounted into the same shared client and root.
+ */
+let generation = 0;
+async function stillCurrent(started: number): Promise<void> {
+  if (started !== generation) await new Promise<never>(() => undefined);
+}
+
 function cleanupWorkspace() {
+  generation += 1;
   act(() => root?.unmount());
   root = null;
   sessionClient?.dispose();
@@ -102,6 +121,7 @@ function cleanupWorkspace() {
   }
   moreTeams = [];
   client?.dispose();
+  messageRecords.clear();
   history = [];
   goTo = null;
   viewport.queries.clear();
@@ -174,8 +194,14 @@ async function mount(
     await client.load();
   }
   const entry = typeof path === "function" ? path(client) : path;
+  if (options.sameHost) disposeMessageOutbox(sessionClient ?? client);
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
+  initializeBrowserMessageOutbox(sessionClient ?? client, {
+    read: async (key) => messageRecords.get(key) ?? null,
+    write: async (key, value) => void messageRecords.set(key, value),
+    remove: async (key) => void messageRecords.delete(key),
+  });
   let teams: readonly TeamAttachment[] = [];
   if (options.team && options.sameHost && teamHost && teamSession) {
     teams = [
@@ -266,7 +292,7 @@ async function mount(
                     element={
                       <AppShell
                         hostClient={sessionClient ?? client}
-                        loadError={null}
+
                         {...options.shell}
                       />
                     }
@@ -350,9 +376,11 @@ function stubLayout(width: number, touch = false) {
 }
 
 async function settle(ms = 30) {
+  const started = generation;
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, ms));
   });
+  await stillCurrent(started);
 }
 
 function element<T extends Element>(selector: string, scope: ParentNode = document): T {
@@ -362,9 +390,11 @@ function element<T extends Element>(selector: string, scope: ParentNode = docume
 }
 
 async function click(target: Element) {
+  const started = generation;
   await act(async () => {
     (target as HTMLElement).click();
   });
+  await stillCurrent(started);
   await settle();
 }
 

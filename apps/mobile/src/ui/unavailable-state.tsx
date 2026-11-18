@@ -1,47 +1,27 @@
-import {
-  failureNotice,
-  type ClientNetworkState,
-  type FailureNotice,
-  type OperationFailure,
-} from "@opensteer/client/host";
 import type { ReactNode } from "react";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
-import { AppText, PrimaryButton, SecondaryButton } from "./primitives.js";
-import { Symbol, type SFSymbolName } from "./symbol.js";
-
-const symbols: Record<FailureNotice["tone"], SFSymbolName> = {
-  failed: "exclamationmark.circle",
-  gone: "questionmark.circle",
-  offline: "icloud.slash",
-  "signed-out": "exclamationmark.circle",
-  unreachable: "exclamationmark.circle",
-};
+import { AppText, SecondaryButton } from "./primitives.js";
+import { Symbol } from "./symbol.js";
 
 /**
- * What a destination says when what a link named can't be shown. One wording
- * everywhere, and always a way back, so an open never ends in a silent close.
- * Only a failure that may pass offers Retry.
+ * What a destination says when what a link named is gone or not the reader's
+ * to see: a fact about it, never the connection, which the route gate says.
+ * One wording everywhere, and always a way back.
  */
-export function UnavailableState(props: {
-  readonly failure?: OperationFailure | undefined;
-  readonly network?: ClientNetworkState | undefined;
-  readonly onBack: () => void;
-  readonly onRetry?: (() => void) | undefined;
-}): ReactNode {
-  const notice = failureNotice(props.failure ?? "gone", props.network ?? "unknown");
-  const retry = notice.retry ? props.onRetry : undefined;
+export function UnavailableState(props: { readonly onBack: () => void }): ReactNode {
+  const copy = presentClientIssue({ code: "access-lost" });
   return (
     <View accessibilityRole="alert" style={styles.state}>
-      <Symbol name={symbols[notice.tone]} size={32} tint={color.muted} />
+      <Symbol name="questionmark.circle" size={32} tint={color.muted} />
       <AppText role="title" style={styles.centered}>
-        {notice.title}
+        {copy.title}
       </AppText>
       <AppText role="secondary" style={styles.centered} tone="muted">
-        {notice.body}
+        {copy.detail}
       </AppText>
       <View style={styles.actions}>
-        {retry ? <PrimaryButton compact label="Retry" onPress={retry} /> : null}
         <SecondaryButton compact label="Back" onPress={props.onBack} />
       </View>
     </View>

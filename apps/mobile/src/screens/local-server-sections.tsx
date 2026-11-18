@@ -13,7 +13,7 @@ import { useLeaveSheets } from "./leave-sheets.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { usePluginAction } from "./plugins.js";
-import { useSettingsRead } from "./use-settings-read.js";
+import { usePluginRead } from "./use-plugin-read.js";
 
 /**
  * A local server's own controls on a phone: whether its computer approved it,
@@ -30,16 +30,21 @@ export function useLocalServerSections(input: {
 }): { readonly sections: NativeSettingsSection[]; readonly sheet: ReactNode } {
   const { host, by, name } = input;
   const leave = useLeaveSheets(input.deploymentId, host);
-  const action = usePluginAction(host);
-  const platform = useSettingsRead(
+  const key = `local-server:${JSON.stringify(by)}`;
+  const removal = usePluginAction(host, `${key}:remove`, "remove this server", "removed");
+  const save = usePluginAction(host, `${key}:secrets`, "save these values", "saved");
+  const busy = removal.pending !== null || save.pending !== null;
+  const platform = usePluginRead(
     host,
-    async () => (by ? unwrapRpcResult(await host.rpc["integration.platform.get"]({})) : null),
-    JSON.stringify(by),
+    by ? () => host.rpc["integration.platform.get"]({}).then(unwrapRpcResult) : null,
+    `local-servers:${JSON.stringify(by)}`,
+    "local servers",
   );
-  const secrets = useSettingsRead(
+  const secrets = usePluginRead(
     host,
-    async () => (by ? localMcpSecretServers(host) : null),
+    by ? () => localMcpSecretServers(host) : null,
     `secrets:${JSON.stringify(by)}`,
+    "server secrets",
   );
   const [changing, setChanging] = useState<LocalMcpSecretServer | null>(null);
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
@@ -73,10 +78,11 @@ export function useLocalServerSections(input: {
                 kind: "button" as const,
                 label: "Change secrets",
                 detail: server.secrets.map((secret) => secret.title).join(" · "),
-                disabled: action.pending !== null,
+                disabled: busy,
                 onPress: () => {
                   setValues({});
                   setSaved(false);
+                  save.setError(null);
                   setChanging(server);
                 },
               },
@@ -95,7 +101,7 @@ export function useLocalServerSections(input: {
                 kind: "button" as const,
                 label: `Remove ${name}`,
                 destructive: true,
-                disabled: action.pending !== null,
+                disabled: busy,
                 onPress: () =>
                   Alert.alert(
                     `Remove ${name}?`,
@@ -106,7 +112,7 @@ export function useLocalServerSections(input: {
                         text: "Remove",
                         style: "destructive",
                         onPress: () =>
-                          action.run("remove", async () => {
+                          removal.run("remove", async () => {
                             await host.dispatch({
                               type: "plugin.remove",
                               pluginId,
@@ -121,8 +127,8 @@ export function useLocalServerSections(input: {
             ]
           : []),
       ],
-      ...(action.error
-        ? { footer: { text: action.error, tone: "danger" as const } }
+      ...(removal.footer
+        ? { footer: removal.footer }
         : saved
           ? { footer: { text: "Secrets changed" } }
           : {}),
@@ -145,7 +151,7 @@ export function useLocalServerSections(input: {
       sheet={{
         title: `${changing.plugin}’s secrets`,
         onClose: () => {
-          if (action.pending === null) setChanging(null);
+          if (!busy) setChanging(null);
         },
       }}
       sections={[
@@ -165,18 +171,18 @@ export function useLocalServerSections(input: {
             {
               key: "save",
               kind: "primary",
-              label: action.pending === "secrets" ? "Saving…" : "Save",
-              disabled: action.pending !== null,
+              label: save.pending === "secrets" ? "Saving…" : "Save",
+              disabled: busy,
               onPress: () => {
                 const entered = localMcpSecretsToSend(
                   changing.secrets.map((secret) => ({ ...secret, saved: true })),
                   values,
                 );
                 if (!entered.ok || Object.keys(entered.secrets).length === 0) {
-                  action.setError(entered.ok ? "Enter a new value to change." : entered.message);
+                  save.setError(entered.ok ? "Enter a new value to change." : entered.message);
                   return;
                 }
-                action.run("secrets", async () => {
+                save.run("secrets", async () => {
                   await setLocalMcpServerSecrets(host, changing.id, entered.secrets);
                   setChanging(null);
                   setValues({});
@@ -185,9 +191,7 @@ export function useLocalServerSections(input: {
               },
             },
           ],
-          footer: action.error
-            ? { text: action.error, tone: "danger" }
-            : { text: `${changing.name} restarts with the new values.` },
+          footer: save.footer ?? { text: `${changing.name} restarts with the new values.` },
         },
       ]}
     />

@@ -99,6 +99,25 @@ const shell = vi.hoisted(() => ({
   desktopDeployment: null as unknown,
   executionPreferences: { accessMode: "approval-required", history: [] as unknown[] },
   hostClient: {
+    // Connected: the screen's actions go out rather than being held as not sent.
+    connection: {
+      getSnapshot: () => ({
+        phase: "ready",
+        network: "online",
+        scope: {
+          authorityKey: "host",
+          deploymentId: "deployment",
+          viewerId: "viewer",
+          loginId: "login",
+        },
+        readyRevision: 1,
+        showInterruption: false,
+        issue: null,
+        trying: false,
+      }),
+      subscribe: () => () => undefined,
+      retry: () => undefined,
+    },
     dispatch: vi.fn(),
     rememberExecution: vi.fn(),
     rpc: {
@@ -385,7 +404,9 @@ it("keeps the step open with the reason when the choice cannot be saved", async 
   shell.hostClient.rememberExecution.mockRejectedValueOnce(new Error("Opensteer is offline."));
   await mount();
   await act(async () => button("Continue").click());
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Opensteer is offline.");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "Couldn't confirm this was saved.",
+  );
   expect(button("Continue").disabled).toBe(false);
 });
 
@@ -799,7 +820,7 @@ it("keeps an address change and its failure on screen instead of the old code", 
   );
   await act(async () => button("Turn on").click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "That address isn’t this computer’s.",
+    "Couldn't confirm this turned on.",
   );
   expect(container.querySelector('input[aria-label="Your HTTPS address"]')).not.toBeNull();
   expect(container.querySelector(".setup-scan__svg")).toBeNull();

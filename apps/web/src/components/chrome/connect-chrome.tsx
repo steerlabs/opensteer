@@ -11,7 +11,8 @@ import type {
   BrowserSourcePairing,
   BrowserSourceSummary,
 } from "@opensteer/protocol/browser-sources";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
+import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import type { ChromeConnectEnvironment } from "./chrome-environment.js";
 
@@ -177,6 +178,7 @@ export function ConnectChrome({
     }
   }, [stage]);
 
+  const session = useOptionalShell()?.hostClient ?? null;
   /** Every action pairs afresh: a link is one-use and short-lived, so none is kept. */
   const pair = useCallback(async (): Promise<BrowserSourcePairing> => {
     if (!client) throw new Error("Go back to Opensteer and choose Connect Chrome again.");
@@ -208,7 +210,11 @@ export function ConnectChrome({
     }
     setStage({ kind: "working" });
     try {
-      const pairing = await pair();
+      const pairing = await act(
+        session,
+        { label: "connect Chrome", done: "connected", happened: "Chrome connected" },
+        pair,
+      );
       const origin = environment.hostHere
         ? chromeConnectOrigins(pairing).here
         : (chromeConnectOrigins(pairing).elsewhere ?? chromeConnectOrigins(pairing).here);
@@ -235,7 +241,7 @@ export function ConnectChrome({
         if (!copied) setError("Couldn’t copy. Select the link below and copy it.");
       }
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setStage({ detected: false, kind: "ready" });
     }
   };
@@ -244,14 +250,18 @@ export function ConnectChrome({
     if (!client) return;
     setElsewhere({ kind: "working" });
     try {
-      const pairing = await pair();
+      const pairing = await act(
+        session,
+        { label: "connect Chrome", done: "connected", happened: "Chrome connected" },
+        pair,
+      );
       const origins = chromeConnectOrigins(pairing);
       const origin = origins.elsewhere ?? origins.here;
       const link = chromeConnectPageUrl(origin, pairing.invitation);
       const copied = await environment.copy(link);
       setElsewhere({ copied, kind: "copied", link, remote: origins.elsewhere !== null });
     } catch (reason) {
-      setElsewhere({ kind: "failed", message: actionErrorMessage(reason) });
+      setElsewhere({ kind: "failed", message: failureWords(reason) ?? "" });
     }
   };
 

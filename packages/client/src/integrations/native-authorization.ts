@@ -34,6 +34,8 @@ export function parseNativeIntegrationAuthorizationCallback(
 export { IntegrationAuthorizationAttempts } from "./authorization-attempts.js";
 
 export class IntegrationAuthorizationCancelledError extends Error {
+  readonly reason = "cancelled";
+
   constructor() {
     super("Sign-in was cancelled.");
   }

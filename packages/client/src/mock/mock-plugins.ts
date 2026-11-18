@@ -1647,7 +1647,7 @@ export class MockPlugins {
           throw refusal(
             "conflict",
             "Remove this plugin's webhook subscriptions before removing the plugin.",
-            "plugin-conflict",
+            "plugin-webhooks-active",
           );
         if (
           (this.#workflowRuns[plugin.id] ?? []).some((run) =>
@@ -1657,7 +1657,7 @@ export class MockPlugins {
           throw refusal(
             "conflict",
             "Stop this plugin's workflow runs before removing the plugin.",
-            "plugin-conflict",
+            "plugin-workflows-active",
           );
         this.plugins = this.plugins.filter((entry) => entry.id !== command.pluginId);
         this.#changed();
@@ -1670,7 +1670,7 @@ export class MockPlugins {
       case "plugins.account.create": {
         const values = Object.values(command.fields);
         if (values.some((value) => typeof value === "string" && value.startsWith("bad")))
-          throw refusal("bad_request", "The service rejected that key.", "plugin-invalid");
+          throw refusal("bad_request", "The key fields are invalid.", "plugin-key-invalid");
         const account: ConnectedAccountView = {
           id: this.#id("acc"),
           provider: command.provider,

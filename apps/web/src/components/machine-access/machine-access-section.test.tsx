@@ -405,7 +405,7 @@ describe("MachineAccessSection", () => {
     await click(button(page.container, "Stop"));
 
     expect(stop).toHaveBeenCalledWith(live.id);
-    expect(page.container.textContent).toContain("The computer went away.");
+    expect(page.container.textContent).toContain("Couldn't confirm this session stopped.");
     // Without clearing the id the button stays "Stopping…" until some
     // unrelated notification arrives, and the session cannot be stopped.
     const retry = button(page.container, "Stop");

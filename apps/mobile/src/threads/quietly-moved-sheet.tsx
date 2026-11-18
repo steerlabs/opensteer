@@ -2,7 +2,6 @@ import {
   doneTaskList,
   quietlyMoved,
   quietSeenScope,
-  reviewHostAction,
   sameTaskListSource,
   seenThroughOf,
   taskMark,
@@ -16,14 +15,12 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   AccessibilityInfo,
   ActivityIndicator,
-  Alert,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { openTopLevel } from "../top-level.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
@@ -31,6 +28,7 @@ import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
+import { runTaskDone, TaskDoneLine } from "./task-row.js";
 
 export type QuietlyMovedScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
@@ -90,42 +88,32 @@ function QuietlyMoved(props: {
       else next.delete(threadId);
       return next;
     });
+  // Each row says what its own move came to; a refusal or a lost answer stays on it.
   const moveOne = (row: TaskRow): void => {
     busy(row.threadId, true);
-    void moveBack(hostClient, row.threadId)
-      .then(
-        () => {
-          void Haptics.selectionAsync();
-          AccessibilityInfo.announceForAccessibility(`${row.title} moved back to Tasks`);
-        },
-        (error: unknown) =>
-          Alert.alert("Task not moved back", operationDetail(error, "Try again.")),
-      )
+    void runTaskDone(hostClient, row.threadId, false)
+      .then((outcome) => {
+        if (outcome.kind !== "confirmed") return;
+        void Haptics.selectionAsync();
+        AccessibilityInfo.announceForAccessibility(`${row.title} moved back to Tasks`);
+      })
       .finally(() => busy(row.threadId, false));
   };
   const moveAll = (): void => {
     if (movingAll) return;
     setMovingAll(true);
     const queue = rows.map(({ threadId }) => threadId);
-    let failed = 0;
+    let moved = true;
     void Promise.all(
       Array.from({ length: Math.min(moveBackConcurrency, queue.length) }, async () => {
         for (let threadId = queue.shift(); threadId !== undefined; threadId = queue.shift()) {
-          await moveBack(hostClient, threadId).catch(() => {
-            failed += 1;
-          });
+          const outcome = await runTaskDone(hostClient, threadId, false);
+          if (outcome.kind !== "confirmed") moved = false;
         }
       }),
     ).then(() => {
       setMovingAll(false);
-      if (failed === 0) {
-        void Haptics.selectionAsync();
-        return;
-      }
-      Alert.alert(
-        failed === 1 ? "One task wasn’t moved back" : `${failed} tasks weren’t moved back`,
-        "They’re still in Done. Try again in a moment.",
-      );
+      if (moved) void Haptics.selectionAsync();
     });
   };
   // Reached from the sidebar, so a task chosen here is top-level like one chosen there.
@@ -194,14 +182,17 @@ function QuietlyMoved(props: {
                     style={({ pressed }) => [styles.open, pressed && styles.pressed]}
                   >
                     <TaskMark mark={taskMark(row)} quiet />
-                    <AppText
-                      maxFontSizeMultiplier={controlFontScaleLimit}
-                      numberOfLines={1}
-                      role="secondary"
-                      style={styles.title}
-                    >
-                      {row.title}
-                    </AppText>
+                    <View style={styles.words}>
+                      <AppText
+                        maxFontSizeMultiplier={controlFontScaleLimit}
+                        numberOfLines={1}
+                        role="secondary"
+                        style={styles.title}
+                      >
+                        {row.title}
+                      </AppText>
+                      <TaskDoneLine threadId={row.threadId} />
+                    </View>
                   </Pressable>
                   <Pressable
                     accessibilityLabel={`Move ${row.title} back`}
@@ -239,21 +230,14 @@ function QuietlyMoved(props: {
   );
 }
 
-/** Reopens one task; one already reopened by someone else counts as moved back. */
-async function moveBack(hostClient: HostClient, threadId: string): Promise<void> {
-  const review = reviewHostAction(hostClient, { done: false, kind: "task-done", threadId });
-  if (review === null) throw new Error("This deployment isn’t connected.");
-  await review.confirm();
-}
-
 function Unavailable(): ReactNode {
   const navigation = useNavigation();
   return (
     <View style={[styles.sheet, styles.unavailable]}>
       <Notice
         action={{ label: "Close", onPress: () => navigation.goBack() }}
-        detail="This deployment is no longer open."
-        title="This can't be shown"
+        detail="It may have been deleted, or you don't have access."
+        title="This isn't available"
         tone="neutral"
       />
     </View>
@@ -301,6 +285,7 @@ const styles = StyleSheet.create({
   },
   separated: { borderTopColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
   sheet: { backgroundColor: color.surfaceElevated, flex: 1, paddingTop: space[20] },
-  title: { color: color.textSoft, flex: 1 },
+  title: { color: color.textSoft },
+  words: { flex: 1, minWidth: 0 },
   unavailable: { justifyContent: "center", padding: space[24] },
 });

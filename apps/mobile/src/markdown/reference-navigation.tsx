@@ -1,4 +1,5 @@
-import { operationFailure, type HostClient } from "@opensteer/client/host";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
+import type { HostClient } from "@opensteer/client/host";
 import {
   refTarget,
   tabReferenceState,
@@ -51,7 +52,14 @@ function currentHost(
   return selection.hostClient;
 }
 
-function cannotOpen(): void {
+/**
+ * An open that failed for its own reasons. One the connection stopped says
+ * nothing here: the connection indicator is the one place that speaks of it.
+ */
+function cannotOpen(error?: unknown): void {
+  const kind = classifyClientFailure(error).kind;
+  if (kind === "transport" || kind === "service" || kind === "session" || kind === "cancelled")
+    return;
   Alert.alert("Couldn't open this", "Try again.");
 }
 
@@ -187,9 +195,13 @@ export function PersonalReferenceProvider(props: {
       } catch (error) {
         if (error instanceof Superseded || controller.signal.aborted) return;
         // A stale positive the Host now refuses becomes the same unavailable chip.
-        if (link.kind === "reference" && host !== null && operationFailure(error) === "gone")
+        if (
+          link.kind === "reference" &&
+          host !== null &&
+          isMissingClientResource(classifyClientFailure(error))
+        )
           host.references.unavailable(link.reference.id);
-        else cannotOpen();
+        else cannotOpen(error);
       } finally {
         release();
         if (current.current === controller) current.current = null;

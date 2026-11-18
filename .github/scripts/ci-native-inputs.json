@@ -481,6 +481,7 @@
     "apps/host/src/team/session-exchange-routes.ts",
     "apps/host/src/team/setup-routes.ts",
     "apps/host/src/threads/agent-home-files.ts",
+    "apps/host/src/threads/client-send-keys.ts",
     "apps/host/src/threads/quiet-tasks.ts",
     "apps/host/src/threads/rooted-file-reader.ts",
     "apps/host/src/threads/task-admission-service.ts",

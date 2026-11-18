@@ -1,3 +1,4 @@
+import { clientIssue } from "@opensteer/client/feedback";
 import {
   accessModeOptions,
   answerAgentConnection,
@@ -60,10 +61,7 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
       .catch((failure: unknown) => {
         if (!controller.signal.aborted)
           setLoadError(
-            agentConnectionFailure(
-              failure,
-              "This connection request couldn’t be loaded. Check that this phone can reach your computer, then try again.",
-            ),
+            agentConnectionFailure(failure, "This connection request couldn’t be loaded."),
           );
       });
     return () => controller.abort();
@@ -89,12 +87,18 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
       .catch((failure: unknown) => {
         if (!mounted.current) return;
         setBusy(null);
+        // A lost answer may have decided it; only a refusal says it didn't.
+        const refused = clientIssue(failure, { operation: "action", label: "answer" })?.code;
         setError(
           agentConnectionFailure(
             failure,
-            approve
-              ? "The connection couldn’t be approved. Try again."
-              : "The request couldn’t be denied. Try again.",
+            refused === "rejected"
+              ? approve
+                ? "The connection couldn’t be approved. Try again."
+                : "The request couldn’t be denied. Try again."
+              : approve
+                ? "Couldn’t confirm the connection was approved."
+                : "Couldn’t confirm the request was denied.",
           ),
         );
       });

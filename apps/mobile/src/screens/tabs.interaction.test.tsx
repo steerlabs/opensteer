@@ -47,6 +47,22 @@ vi.mock(
   "../thread/composer-menu.js",
   async () => (await import("../../test-support/tab-screen-mocks.js")).composerMenu,
 );
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/connection-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).connectionGate,
+);
+vi.mock(
+  "../ui/route-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).routeGate,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).placeholder,
+);
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../browser/acting-dot.js", () => ({
   ActingDot: () => null,
@@ -399,7 +415,8 @@ describe("moving and grouping without dragging", () => {
     await press(menuChoice(container, "Le Petit Jardin actions", "Move…"));
     await press(row(container, "Launch brief"));
     await waitFor(
-      () => container.textContent?.includes("That group was removed on another device.") === true,
+      // In the moved tab's own row, in place of its subtitle.
+      () => container.textContent?.includes("Couldn't confirm this tab moved.") === true,
       "the failure was shown",
     );
     expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);

@@ -1,3 +1,19 @@
+import { controlledClientSession } from "@opensteer/client/test-support";
+vi.mock("../ui/placeholder.js", () => ({
+  PlaceholderRows: () => <div aria-label="Not loaded yet" />,
+}));
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: (props: {
+    line: { text: string; link?: { label: string; onPress: () => void } | null };
+  }) => (
+    <p>
+      {props.line.text}
+      {props.line.link ? (
+        <button onClick={props.line.link.onPress}>{props.line.link.label}</button>
+      ) : null}
+    </p>
+  ),
+}));
 // @vitest-environment happy-dom
 
 import { act, type ReactNode } from "react";
@@ -778,6 +794,7 @@ function fakeClient(input: {
     },
   );
   return {
+    connection: controlledClientSession().connection,
     dispatch,
     streamUnrelatedThread() {
       snapshot = {

@@ -36,7 +36,14 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("../ui/pane.js", () => ({ useContentInsets: () => ({ bottom: 0 }) }));
 vi.mock("../computers/app-mark.js", () => ({ MacAppIcon: () => null }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../client/mobile-client.js", () => ({ operationDetail: (error: Error) => error.message }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   StatusDot: () => null,

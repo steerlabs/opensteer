@@ -1,3 +1,4 @@
+import { act, failureWords, readWords } from "../use-action.js";
 import { useId, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
@@ -26,7 +27,6 @@ import { IntegrationIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsError, SettingsSegmented } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { AgentHomeSkills } from "./agent-home-skills.js";
 import { LocalTools, LocalToolPage } from "./local-tools.js";
 import { PluginAccounts } from "./plugin-accounts.js";
@@ -89,7 +89,7 @@ function InstalledPlugins() {
     "plugins-installed",
     true,
   );
-  const refused = installed.data ? null : pluginEngineRefusal(installed.error);
+  const refused = installed.data ? null : pluginEngineRefusal(installed.issue);
   const engine = usePluginEngine(installed.data?.engine ?? refused);
   const [installing, setInstalling] = useState(false);
   const cursor = installed.data?.cursor ?? null;
@@ -98,6 +98,7 @@ function InstalledPlugins() {
   const more = usePagedList(
     cursor && showingMore === cursor ? pluginInstalledReader(hostClient, cursor) : null,
     `installed-more:${cursor}`,
+    hostClient,
   );
   const first = installed.data?.plugins ?? null;
   const plugins = first && showingMore === cursor ? [...first, ...more.items] : first;
@@ -115,13 +116,7 @@ function InstalledPlugins() {
         }
       />
       <EngineNotice engine={engine} />
-      <SettingsError
-        message={
-          installed.error && !installed.data && !refused
-            ? actionErrorMessage(installed.error)
-            : null
-        }
-      />
+      <SettingsError message={!refused ? installed.error : null} />
       {installed.error && !installed.data ? (
         <button className="btn plugins-retry" onClick={installed.reload} type="button">
           Try again
@@ -160,7 +155,7 @@ function InstalledPlugins() {
               </div>
             </section>
           ))}
-          <SettingsError message={more.error ? actionErrorMessage(more.error) : null} />
+          <SettingsError message={readWords(more.error)} />
           {moreCursor || more.loading ? (
             <button
               className="btn"
@@ -274,7 +269,11 @@ function PluginCatalog() {
     true,
   );
   const engine = usePluginEngine(installed.data?.engine ?? null);
-  const list = usePagedList(pluginCatalogReader(hostClient, search), `catalog:${search}`);
+  const list = usePagedList(
+    pluginCatalogReader(hostClient, search),
+    `catalog:${search}`,
+    hostClient,
+  );
   const [adding, setAdding] = useState<PluginCatalogEntryView | null>(null);
   return (
     <div className="plugins-area">
@@ -298,7 +297,7 @@ function PluginCatalog() {
         />
       </label>
       <EngineNotice engine={list.loading ? engine : null} />
-      <SettingsError message={list.error ? actionErrorMessage(list.error) : null} />
+      <SettingsError message={readWords(list.error)} />
       {list.loading ? (
         <LoadingRows label="Loading the catalog" rows={4} />
       ) : list.items.length === 0 && !list.error ? (
@@ -386,12 +385,20 @@ function InstallCatalogEntry({
             onClick={() => {
               setPending(true);
               setError(null);
-              void installPlugin(hostClient, { kind: "catalog", catalogId: entry.id })
+              void act(
+                hostClient,
+                {
+                  label: "install this plugin",
+                  done: "installed",
+                  happened: "the plugin was installed",
+                },
+                () => installPlugin(hostClient, { kind: "catalog", catalogId: entry.id }),
+              )
                 .then((result) => {
                   if (result.status === "installed") onInstalled(result.pluginId);
                   else setError(result.message);
                 })
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+                .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setPending(false));
             }}
             type="button"
@@ -455,12 +462,20 @@ function InstallFromAddress({ onClose }: { readonly onClose: () => void }) {
             onClick={() => {
               setPending(true);
               setError(null);
-              void installPlugin(hostClient, { kind, url: url.trim(), name: name.trim() })
+              void act(
+                hostClient,
+                {
+                  label: "install this plugin",
+                  done: "installed",
+                  happened: "the plugin was installed",
+                },
+                () => installPlugin(hostClient, { kind, url: url.trim(), name: name.trim() }),
+              )
                 .then((result) => {
                   if (result.status === "installed") void navigate(pluginPath(result.pluginId));
                   else setError(`It didn't build: ${result.message}`);
                 })
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+                .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setPending(false));
             }}
             type="button"

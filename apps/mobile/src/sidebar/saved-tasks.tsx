@@ -1,3 +1,4 @@
+import { presentSavedView } from "@opensteer/client/feedback";
 import { taskMark, type SavedTask } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { View } from "react-native";
@@ -8,16 +9,13 @@ import { TaskMark } from "../ui/task-mark.js";
 /** Historical group and subject only: no navigation, mutation, attention or status badge. */
 export function SavedTasks(props: {
   readonly tasks: readonly SavedTask[];
-  readonly label: string;
   readonly capturedAt: string;
 }): ReactNode {
+  const label = presentSavedView(props.capturedAt);
   return (
-    <View
-      accessibilityLabel={`Saved view, last updated ${props.capturedAt}.`}
-      style={{ gap: space[8] }}
-    >
+    <View accessibilityLabel={`${label}.`} style={{ gap: space[8] }}>
       <AppText role="caption" tone="muted">
-        {props.label}
+        {label}
       </AppText>
       {(["working", "ready", "done"] as const).map((group) => {
         const tasks = props.tasks.filter((task) => task.group === group);

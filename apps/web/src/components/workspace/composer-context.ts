@@ -19,8 +19,8 @@ import {
   placeContentLabel,
   type PlaceContentPart,
 } from "@opensteer/core";
-import { actionErrorMessage } from "../../ui-utils.js";
-import { composerDrafts } from "../composer-drafts.js";
+import { act, failureWords } from "../use-action.js";
+import { addComposerPlace, composerDrafts, composerPlaceKey } from "../composer-drafts.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { placeEnded, samePlaceEndSource } from "./place-succession.js";
 import { useOptionalWorkspace } from "./workspace-context.js";
@@ -133,12 +133,15 @@ export function useComposerContext({
   // The draft each asynchronous answer was asked for; a later draft never takes it.
   const [generation, setGeneration] = useState(0);
   const generationRef = useRef(0);
-  useEffect(
-    () => () => {
-      generationRef.current += 1;
-    },
-    [],
-  );
+  const mounted = useRef(true);
+  const currentDraftKey = useRef(draftKey);
+  currentDraftKey.current = draftKey;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // The place in the middle, while the draft follows it: a page by its exact
   // document, a Mac app or phone by the whole reference it would send, since
@@ -315,40 +318,63 @@ export function useComposerContext({
       setError(null);
       const draft = generationRef.current;
       const waiting: ContextChip = { ...chipFor(place, null, null), pending: true };
+      const held = draftKey
+        ? composerDrafts
+            .reserveEdit(draftKey, composerDrafts.read(draftKey)?.editId)
+            .catch(() => null)
+        : null;
       hold([
         ...(frozenRef.current ?? chipsRef.current).filter((item) => item.key !== place.key),
         waiting,
       ]);
       const stillWaiting = () =>
-        draft === generationRef.current &&
-        (frozenRef.current?.some((chip) => chip.key === place.key && chip.pending) ?? false);
-      void placePart(hostClient, place).then(
-        async (part) => {
-          if (!stillWaiting()) return;
+        draft === generationRef.current && (frozenRef.current?.includes(waiting) ?? false);
+      const stillEditing = () => mounted.current && currentDraftKey.current === draftKey;
+      const failed = (cause: unknown) => {
+        if (!stillEditing() || !stillWaiting()) return;
+        hold((frozenRef.current ?? []).filter((chip) => chip !== waiting));
+        setError(failureWords(cause));
+      };
+      void act(hostClient, { label: "add this", done: "added", happened: "this was added" }, () =>
+        placePart(hostClient, place),
+      )
+        .then(async (part) => {
+          if (draftKey && held) {
+            const editId = await held;
+            if (editId === null) {
+              failed(null);
+              return;
+            }
+            if (!stillWaiting()) return;
+            const saved = await composerDrafts.transaction((store) => {
+              if (!stillWaiting()) return false;
+              if (!stillEditing())
+                return store.handBack(draftKey, { edit: (text) => text, places: [part] }, editId);
+              const places = (frozenRef.current ?? []).flatMap((chip) =>
+                chip.part ? [chip.part] : [],
+              );
+              return store.update(draftKey, { places: addComposerPlace(places, part) }, editId);
+            });
+            if (!saved) {
+              failed(null);
+              return;
+            }
+          }
+          if (!stillEditing() || !stillWaiting()) return;
           const chip = chipFor(place, part, null);
-          hold(
-            (frozenRef.current ?? []).map((item) =>
-              item.key === place.key && item.pending ? chip : item,
-            ),
-          );
+          hold((frozenRef.current ?? []).map((item) => (item === waiting ? chip : item)));
           const page = pageKey(chip);
           if (page === null || part.type !== "browser-page") return;
           const thumbnail = await frameThumbnail(
             hostClient.browserFrames.get(part.sessionId, part.tabId) ??
               hostClient.browserWatchFrame(part.sessionId, part.tabId),
           );
-          if (thumbnail !== null && draft === generationRef.current) withThumbnail(page, thumbnail);
-        },
-        (cause: unknown) => {
-          if (!stillWaiting()) return;
-          hold(
-            (frozenRef.current ?? []).filter((chip) => !(chip.key === place.key && chip.pending)),
-          );
-          setError(actionErrorMessage(cause));
-        },
-      );
+          if (thumbnail !== null && stillEditing() && draft === generationRef.current)
+            withThumbnail(page, thumbnail);
+        })
+        .catch(failed);
     },
-    [hold, hostClient, withThumbnail],
+    [draftKey, hold, hostClient, withThumbnail],
   );
   const reset = useCallback(() => {
     generationRef.current += 1;
@@ -632,19 +658,13 @@ function pageLabel(part: Extract<PlacePart, { readonly type: "browser-page" }>):
  * refused or recovered send — kept exactly as it was, automatic or not.
  */
 function restoredChip(part: PlacePart): ContextChip {
-  const key =
-    part.type === "browser-page"
-      ? part.tabId
-      : part.type === "phone"
-        ? `phone:${part.machineId}:${part.display}`
-        : `app:${part.machineId}:${part.app.bundleId.toLowerCase()}`;
   const page = part.type === "browser-page" ? part : null;
   return {
     auto: page?.auto === true,
     destination: page ? { kind: "tab", tabId: page.tabId } : null,
     gone: false,
     icon: partMark(part),
-    key,
+    key: composerPlaceKey(part),
     part,
     pending: false,
     site: page ? siteOf(page.url) : null,

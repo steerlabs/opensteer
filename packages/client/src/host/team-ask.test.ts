@@ -151,7 +151,6 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
       baseUrl: "http://mock-host",
       fetch: transport.fetch,
       webSocketFactory: transport.connect,
-      refreshIntervalMs: 0,
     });
     try {
       await client.load();
@@ -248,7 +247,6 @@ it("refreshes the loaded Needs you range without losing an older review or retai
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
     webSocketFactory: transport.connect,
-    refreshIntervalMs: 0,
     fetch: async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname !== "/v1/rpc/needsYou.get") return transport.fetch(input, init);

@@ -46,6 +46,8 @@ export interface NativeComposerEditorProps {
   readonly autoFocus: boolean;
   /** The most one pasted image may hold; a larger one is reported, not written. */
   readonly maxBytes: number;
+  /** The draft identity captured by a paste that may finish after this view leaves. */
+  readonly pasteTarget?: string | null;
   readonly style?: StyleProp<ViewStyle>;
   readonly onComposerChange: (event: NativeSyntheticEvent<NativeComposerState>) => void;
   readonly onComposerSelectionChange: (event: NativeSyntheticEvent<NativeComposerState>) => void;

@@ -6,7 +6,7 @@ import { useLeaveSheets } from "./leave-sheets.js";
 import { useLocalServerSections } from "./local-server-sections.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow } from "./native-settings-page.types.js";
-import { useSettingsRead } from "./use-settings-read.js";
+import { usePluginRead } from "./use-plugin-read.js";
 
 type Params = StaticScreenProps<{ readonly deploymentId: string; readonly pluginId: string }>;
 
@@ -29,8 +29,11 @@ function OtherDevice(props: { deploymentId: string; host: HostClient; pluginId: 
   const { deploymentId, host, pluginId } = props;
   const navigation = useNavigation();
   const leave = useLeaveSheets(deploymentId, host);
-  const overview = useSettingsRead(host, async () =>
-    unwrapRpcResult(await host.rpc["devices.overview.get"]({})),
+  const overview = usePluginRead(
+    host,
+    () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
+    "other-devices",
+    "devices",
   );
   const device = overview.data?.otherDevices?.find((each) => each.pluginId === pluginId) ?? null;
   const server = useLocalServerSections({

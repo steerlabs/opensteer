@@ -1,5 +1,5 @@
+import type { ActionOutcome } from "@opensteer/client/actions";
 import {
-  canRespondToRequests,
   describeEvent,
   describeRepeating,
   formatFullMoment,
@@ -29,7 +29,6 @@ import {
   Text,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   controlFontScaleLimit,
@@ -40,7 +39,10 @@ import {
   type,
 } from "../theme.js";
 import { useAppForeground } from "../ui/foreground.js";
-import { AppText, Notice, StatusDot } from "../ui/primitives.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { actionLine, notDone, useScreenAction } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -86,21 +88,24 @@ function ScheduleForHost(props: {
   if (reader === null) {
     return (
       <Screen>
-        <Notice
-          detail="This schedule appears once you are signed in."
-          title="Connecting…"
-          tone="neutral"
-        />
+        <PlaceholderRows />
       </Screen>
     );
   }
   return <ScheduleView key={`${reader}:${props.triggerId}`} {...props} />;
 }
 
-const selectChangeBlocked = (snapshot: HostSnapshot): string | null =>
-  canRespondToRequests(snapshot) ? null : "Connect to the Host to change schedules.";
-
 type ScheduleAction = "pause" | "resume" | "run";
+const scheduleDone: Record<ScheduleAction, string> = {
+  pause: "paused",
+  resume: "resumed",
+  run: "started",
+};
+const scheduleHappened: Record<ScheduleAction, string> = {
+  pause: "this schedule was paused",
+  resume: "this schedule was resumed",
+  run: "this schedule started",
+};
 
 function ScheduleView(props: {
   readonly deploymentId: string;
@@ -115,9 +120,11 @@ function ScheduleView(props: {
   const foreground = useAppForeground();
   const state = useSchedule(hostClient, triggerId, focused && foreground);
   const detail = useShownSchedule(state);
-  const blocked = useHostSelector(hostClient, selectChangeBlocked);
   const [pending, setPending] = useState<ScheduleAction | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<{
+    readonly action: ScheduleAction;
+    readonly outcome: ActionOutcome<unknown>;
+  } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const name =
@@ -143,19 +150,32 @@ function ScheduleView(props: {
     void reload().finally(() => setRefreshing(false));
   }, [reload]);
 
+  // An unanswered change keeps its idempotency key, so asking again is the check:
+  // the Host answers for the first attempt instead of doing it twice.
   const act = useCallback(
     (action: ScheduleAction) => {
       setPending(action);
-      setFailure(null);
+      setAnswer(null);
       void schedulesClient(hostClient)
         .act(triggerId, action)
-        .catch((error: unknown) =>
-          setFailure(operationDetail(error, "The schedule could not be changed.")),
-        )
+        .then((outcome) => setAnswer({ action, outcome }))
         .finally(() => setPending(null));
     },
     [hostClient, triggerId],
   );
+  const line = useMemo(() => {
+    if (answer === null || answer.outcome.kind === "confirmed") return null;
+    const issue = answer.outcome.issue && {
+      ...answer.outcome.issue,
+      done: scheduleDone[answer.action],
+      happened: scheduleHappened[answer.action],
+    };
+    return actionLine(
+      { outcome: { ...answer.outcome, issue }, issue },
+      { check: () => act(answer.action) },
+      answer.action,
+    );
+  }, [act, answer]);
 
   /**
    * A conversation directly under this screen is returned to rather than
@@ -190,26 +210,17 @@ function ScheduleView(props: {
           <RefreshControl onRefresh={pull} refreshing={refreshing} tintColor={color.muted} />
         }
       >
-        {detail === null && failure !== null ? (
-          <Notice title="Schedule action" detail={failure} tone="danger" />
-        ) : null}
         {detail === null ? (
-          state.status === "loading" ? (
-            <View accessibilityLabel="Loading schedule" style={styles.loading}>
-              <ActivityIndicator color={color.muted} />
-            </View>
-          ) : (
-            <ScheduleProblem onRetry={() => void reload()} state={state} />
-          )
+          <ScheduleProblem onRetry={() => void reload()} state={state} />
         ) : (
           <>
-            {state.status === "offline" ? (
+            {state.issue === null ? null : (
               <ScheduleProblem onRetry={() => void reload()} state={state} />
-            ) : null}
+            )}
             <ScheduleBody
-              blocked={blocked}
               detail={detail}
-              failure={failure}
+              line={line}
+              onDismissLine={() => setAnswer(null)}
               hostClient={hostClient}
               onAct={act}
               onOpenThread={openThread}
@@ -223,9 +234,9 @@ function ScheduleView(props: {
 }
 
 function ScheduleBody(props: {
-  readonly blocked: string | null;
   readonly detail: ScheduleDetail;
-  readonly failure: string | null;
+  readonly line: ActionLineValue | null;
+  readonly onDismissLine: () => void;
   readonly hostClient: HostClient;
   readonly onAct: (action: ScheduleAction) => void;
   readonly onOpenThread: (threadId: string, messageId?: string) => void;
@@ -235,22 +246,38 @@ function ScheduleBody(props: {
   const { item, definition } = detail;
   const managed = item.systemRole != null;
   const worker = definition.anchorThread;
-  const [recovering, setRecovering] = useState(false);
-  const [recoveryError, setRecoveryError] = useState<string | null>(null);
-  const recover = async () => {
-    if (!worker) return;
-    setRecovering(true);
-    setRecoveryError(null);
-    try {
-      if (worker.doneAt) await props.hostClient.setTaskDone(worker.id, false);
-      else await props.hostClient.resumeThreadInputQueue(worker.id);
-      await schedulesClient(props.hostClient).detail(item.id).refresh();
-    } catch (error) {
-      setRecoveryError(operationDetail(error, "The worker could not be changed."));
-    } finally {
-      setRecovering(false);
-    }
-  };
+  // Reopen and Resume are separate actions, so an outcome keeps the words of the verb tapped.
+  const verb = worker?.doneAt ? "reopen" : "resume";
+  const done = verb === "reopen" ? "reopened" : "resumed";
+  const recovery = useScreenAction<"reopen" | "resume", void>(
+    props.hostClient,
+    `schedule-worker:${verb}:${worker?.id ?? item.id}`,
+    {
+      label: "restart the worker",
+      done,
+      happened: `the worker was ${done}`,
+      execute: async (kind) => {
+        if (!worker) return;
+        if (kind === "reopen") await props.hostClient.setTaskDone(worker.id, false);
+        else await props.hostClient.resumeThreadInputQueue(worker.id);
+        void schedulesClient(props.hostClient).detail(item.id).refresh();
+      },
+      reconcile: async (kind) => {
+        const resource = schedulesClient(props.hostClient).detail(item.id);
+        await resource.refresh();
+        const shown = resource.getSnapshot();
+        const anchor = shown.status === "ready" ? shown.data.definition.anchorThread : null;
+        if (!anchor) return null;
+        const stillStopped = kind === "reopen" ? anchor.doneAt !== null : anchor.inputQueuePaused;
+        return stillStopped
+          ? notDone(kind === "reopen" ? "reopened" : "resumed")
+          : { kind: "confirmed", value: undefined };
+      },
+      retry: () => void recovery.run(verb),
+    },
+  );
+  const recovering = recovery.running;
+  const recover = () => recovery.run(verb);
   const source = definition.revision.source;
   const now = Date.now();
   const watch =
@@ -359,7 +386,7 @@ function ScheduleBody(props: {
             {item.status === "paused" ? (
               <ActionButton
                 busy={pending === "resume"}
-                disabled={props.blocked !== null || (pending !== null && pending !== "resume")}
+                disabled={pending !== null && pending !== "resume"}
                 icon="play"
                 label="Resume"
                 onPress={() => props.onAct("resume")}
@@ -367,7 +394,7 @@ function ScheduleBody(props: {
             ) : (
               <ActionButton
                 busy={pending === "pause"}
-                disabled={props.blocked !== null || (pending !== null && pending !== "pause")}
+                disabled={pending !== null && pending !== "pause"}
                 icon="pause"
                 label="Pause"
                 onPress={() => props.onAct("pause")}
@@ -376,26 +403,19 @@ function ScheduleBody(props: {
             {managed ? null : (
               <ActionButton
                 busy={pending === "run"}
-                disabled={props.blocked !== null || (pending !== null && pending !== "run")}
+                disabled={pending !== null && pending !== "run"}
                 icon="play"
                 label="Run now"
                 onPress={() => props.onAct("run")}
               />
             )}
           </View>
-          {props.blocked === null ? null : (
-            <AppText role="caption" tone="muted">
-              {props.blocked}
-            </AppText>
-          )}
-          {props.failure === null ? null : (
-            <AppText
-              accessibilityLabel={`Schedule action. ${props.failure}`}
-              role="caption"
-              tone="danger"
-            >
-              {props.failure}
-            </AppText>
+          {props.line === null ? null : (
+            <ActionLine
+              line={props.line}
+              numberOfLines={2}
+              onDismiss={props.line.tone === "danger" ? props.onDismissLine : undefined}
+            />
           )}
         </View>
       ) : null}
@@ -404,7 +424,7 @@ function ScheduleBody(props: {
         <View style={styles.actionsBlock}>
           <ActionButton
             busy={recovering}
-            disabled={props.blocked !== null || pending !== null}
+            disabled={pending !== null}
             icon="play"
             label={worker.doneAt ? "Reopen worker" : "Resume worker"}
             onPress={() => void recover()}
@@ -416,11 +436,9 @@ function ScheduleBody(props: {
           </AppText>
         </View>
       ) : null}
-      {recoveryError ? (
-        <AppText role="caption" tone="danger">
-          {recoveryError}
-        </AppText>
-      ) : null}
+      {recovery.line === null ? null : (
+        <ActionLine line={recovery.line} numberOfLines={2} onDismiss={recovery.dismiss} />
+      )}
       {managed ? (
         <View style={styles.plate}>
           <Fact label="Source" value={definition.revision.program.source} />
@@ -637,7 +655,6 @@ const styles = StyleSheet.create({
     paddingVertical: space[10],
   },
   factValue: { color: color.text, flexShrink: 1, textAlign: "right" },
-  loading: { alignItems: "center", paddingVertical: space[48] },
   none: { paddingHorizontal: space[4] },
   note: { paddingHorizontal: space[4], paddingTop: space[8] },
   plate: { backgroundColor: color.surface, borderRadius: radius.md, overflow: "hidden" },

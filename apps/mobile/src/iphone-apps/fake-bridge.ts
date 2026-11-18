@@ -160,11 +160,11 @@ export function createFakeIphoneApps(
         platform: options.platform ?? "ios",
         runnerId,
       });
-    } catch (error) {
+    } catch {
       set({
         connection: "stopped",
         issue: "enrollment-refused",
-        issueMessage: error instanceof Error ? error.message : null,
+        issueMessage: null,
       });
       return;
     }

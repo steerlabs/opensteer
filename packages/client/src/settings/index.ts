@@ -1,4 +1,3 @@
-import { HostClientRequestError } from "../host/client.js";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 export * from "./other-devices.js";
 export * from "./desktop-update-controller.js";
@@ -59,49 +58,6 @@ export function redirectSettingsPath(path: string): string | null {
   // Account's remote-access and session pages folded into Account itself.
   return `${to}${pagesWithoutChildren.has(to) ? "" : pathname.slice(from.length)}${tail}`;
 }
-/** A visible page owns one reader. Invalidation bursts collapse into one trailing read. */
-export function createSettingsRead<T>(
-  read: () => Promise<T>,
-  publish: (value: T) => void,
-  fail: (reason: unknown) => void,
-) {
-  let generation = 0;
-  let running = false;
-  let dirty = false;
-  let disposed = false;
-  async function refresh() {
-    if (disposed) return;
-    dirty = true;
-    if (running) return;
-    running = true;
-    try {
-      while (dirty && !disposed) {
-        dirty = false;
-        const own = generation;
-        try {
-          const value = await read();
-          if (!disposed && own === generation) publish(value);
-        } catch (error) {
-          if (!disposed && own === generation) fail(error);
-        }
-      }
-    } finally {
-      running = false;
-    }
-  }
-  return {
-    refresh,
-    reconnect() {
-      generation++;
-      return refresh();
-    },
-    dispose() {
-      disposed = true;
-      generation++;
-      dirty = false;
-    },
-  };
-}
 
 /** Local machine identity is supplied by the platform, never inferred from a session. */
 export function settingsDeviceRows<T extends { id: string; name: string }>(
@@ -116,14 +72,6 @@ export function settingsSessionRows<
   return [...sessions]
     .sort((a, b) => Number(b.current) - Number(a.current))
     .map((session) => ({ ...session, label: session.deviceLabel, thisDevice: session.current }));
-}
-
-/** Only a definite Host refusal releases the original idempotent attempt. */
-export function settingsMutationRejected(reason: unknown): boolean {
-  return (
-    reason instanceof HostClientRequestError &&
-    ["conflict", "bad_request", "forbidden", "not_found", "unauthorized"].includes(reason.code)
-  );
 }
 
 /** How long ago a signed-in device was last used, in the same words everywhere. */

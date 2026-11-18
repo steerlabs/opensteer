@@ -77,15 +77,6 @@
   flex: none;
 }
 
-/* Surface connection problems even while its details page is closed. */
-.settings-navigation__status {
-  padding: var(--space-4) var(--space-8) 0;
-  color: var(--amber-text);
-  font-size: var(--text-xs);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
 .settings-navigation__links {
   display: flex;
   flex-direction: column;
@@ -193,6 +184,7 @@
 /* ---- Content ---- */
 
 .settings-layout__main {
+  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -401,13 +393,6 @@
 .settings-layout .switch:not(:checked) {
   background: var(--fill-plate);
   box-shadow: none;
-}
-
-/* Status is a dot and a word. */
-.settings-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
 }
 
 /* Destructive and minor actions are quiet links. */
@@ -670,6 +655,18 @@ html.electron-shell .settings-navigation__header {
 
 html.electron-shell .settings-navigation__header :is(a, button) {
   app-region: no-drag;
+}
+
+/* With no title strip beside a docked navigation, the page's top band is the
+   strip: the connection pill sits in it, clear of the title and its actions. */
+@media (min-width: 901px) {
+  .settings-layout {
+    --settings-top: var(--space-56);
+  }
+
+  .settings-layout__main > .connection-pill {
+    top: var(--space-12);
+  }
 }
 
 /* Beside a docked navigation the page topbar is nowhere near the window

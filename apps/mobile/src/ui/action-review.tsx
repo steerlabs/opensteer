@@ -13,8 +13,8 @@ export function ActionReviewSheet(props: {
   readonly confirmLabel: string;
   readonly cancelLabel: string;
   readonly onClose: () => void;
-  readonly onConfirmed?: () => void;
-  readonly onError: (error: unknown) => void;
+  /** Runs the reviewed action; its outcome is said beside what asked for it. */
+  readonly onConfirm: (review: ActionReview) => void;
 }): ReactNode {
   const { review } = props;
   if (!review) return null;
@@ -29,13 +29,8 @@ export function ActionReviewSheet(props: {
           label={props.confirmLabel}
           tone="danger"
           onPress={() => {
-            const result = review.confirm();
+            props.onConfirm(review);
             props.onClose();
-            void result
-              .then((confirmed) => {
-                if (confirmed) props.onConfirmed?.();
-              })
-              .catch(props.onError);
           }}
         />
       </View>

@@ -3,7 +3,7 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import { type DesktopPlaces } from "../../desktop/places-context.js";
 import { useComputerFacts } from "../../desktop/use-computer-facts.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { Icon } from "../icon.js";
 import { ErrorNotice } from "../onboarding-card.js";
 import { PlaceList } from "./place-list.js";
@@ -35,9 +35,13 @@ export function PlaceMenuPlaces({
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);
     setError(null);
-    void operation()
+    void act(
+      null,
+      { label: "change this place", done: "changed", happened: "this place changed" },
+      operation,
+    )
       .then(then)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
   const signedIn = snapshot.account.status === "signed-in";

@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { ActionLine } from "../action-line.js";
+import { useAction } from "../use-action.js";
+import { useRef } from "react";
 import { Link } from "react-router";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { agentHomeSkills } from "@opensteer/client/plugins";
-import { settingsMutationRejected } from "@opensteer/client/settings";
 import type { PluginRow } from "@opensteer/protocol";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -31,7 +31,7 @@ export function AgentHomeSkills() {
         title="Skills in Agent home"
         lead="Instructions your agent reads from its folder. Turn one off to keep it from your agent."
       />
-      <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
+      <SettingsError message={overview.error} />
       {!skills ? (
         overview.error ? null : (
           <LoadingRows label="Loading skills" rows={3} />
@@ -52,18 +52,49 @@ export function AgentHomeSkills() {
   );
 }
 
-function SkillRow({ row, reload }: { readonly row: PluginRow; readonly reload: () => void }) {
+function SkillRow({
+  row,
+  reload,
+}: {
+  readonly row: PluginRow & {
+    readonly target: { readonly kind: "skill"; readonly fullName: string };
+  };
+  readonly reload: () => void;
+}) {
   const { hostClient } = useShell();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // A lost response may have committed, so a retry repeats the same operation.
   const attempt = useRef<{ key: string; enabled: boolean; revision: number } | null>(null);
+  const action = useAction(hostClient, {
+    label: "change this skill",
+    done: "changed",
+    happened: "this skill changed",
+    execute: async (operation: NonNullable<typeof attempt.current>) => {
+      await hostClient.dispatch({
+        type: "settings.plugin.enabled.set",
+        idempotencyKey: operation.key,
+        target: row.target,
+        expectedRevision: operation.revision,
+        enabled: operation.enabled,
+      });
+    },
+    reconcile: async (operation) => {
+      const { rows } = unwrapRpcResult(await hostClient.rpc["plugins.overview.get"]({}));
+      const updated = agentHomeSkills(rows).find(
+        (skill) => skill.target.fullName === row.target.fullName,
+      );
+      if (updated?.placement.enabled !== operation.enabled) return null;
+      attempt.current = null;
+      reload();
+      return { kind: "confirmed", value: undefined };
+    },
+  });
+  const pending = action.running;
   return (
     <div className="card__row" role="listitem">
       <span className="card__row-body">
         <span className="card__row-title">{row.title}</span>
         {row.description ? <span className="card__row-detail">{row.description}</span> : null}
-        <SettingsError message={error} />
+        {action.line ? <ActionLine line={action.line} /> : null}
       </span>
       <label className="settings-switch-target">
         <input
@@ -80,28 +111,10 @@ function SkillRow({ row, reload }: { readonly row: PluginRow; readonly reload: (
               revision: row.placement.revision,
             };
             attempt.current = operation;
-            setPending(true);
-            setError(null);
-            void hostClient
-              .dispatch({
-                type: "settings.plugin.enabled.set",
-                idempotencyKey: operation.key,
-                target: row.target,
-                expectedRevision: operation.revision,
-                enabled: operation.enabled,
-              })
-              .then(() => {
-                attempt.current = null;
-                reload();
-              })
-              .catch((reason: unknown) => {
-                if (settingsMutationRejected(reason)) {
-                  attempt.current = null;
-                  reload();
-                }
-                setError(actionErrorMessage(reason));
-              })
-              .finally(() => setPending(false));
+            void action.run(operation).then((outcome) => {
+              if (outcome.kind !== "unconfirmed") attempt.current = null;
+              if (outcome.kind !== "not-sent") reload();
+            });
           }}
           role="switch"
           type="checkbox"

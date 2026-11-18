@@ -53,9 +53,7 @@ it("serves background models to the signed-in person only, behind its capability
     publicUrl: new URL("https://opensteer.example"),
   });
   // A client gates the read on this name; an older Host never advertises it.
-  expect(advertisedCapabilities({ attachments: {} as never, authenticator })).toContain(
-    automaticModelsCapability,
-  );
+  expect(advertisedCapabilities({ authenticator })).toContain(automaticModelsCapability);
   const view = AutomaticModelsViewSchema.parse({
     file: { status: "missing" },
     excludedAccounts: [],

@@ -1,3 +1,4 @@
+import { composerDrafts } from "../composer-drafts.js";
 // @vitest-environment happy-dom
 import { act } from "react";
 
@@ -58,11 +59,11 @@ async function discardFromRow(threadId: string) {
   await settle();
 }
 
-async function remount(path: string) {
+async function remount(path: string, sameHost = false) {
   await act(async () => root?.unmount());
   setRoot(null);
   document.body.replaceChildren();
-  await mount(path);
+  await mount(path, { sameHost });
 }
 
 async function attach(name: string) {
@@ -101,7 +102,22 @@ describe("what a person has written and not sent", () => {
     expect(savedDrafts()).toHaveLength(1);
   });
 
-  it("shows the Host's reason in the composer when it refuses a new task", async () => {
+  it("reopens a named Home draft from the sidebar", async () => {
+    await mount("/?draft=workshop");
+    await write(field(), "Plan the workshop");
+    await newTask();
+    expect(composerText(field())).toBe("");
+
+    await click(element(".side-section--tasks summary"));
+    const reopen = [
+      ...document.querySelectorAll<HTMLButtonElement>(".side-section--tasks details button"),
+    ].find((button) => button.textContent === "Plan the workshop");
+    expect(reopen).toBeDefined();
+    await click(reopen!);
+    expect(composerText(field())).toBe("Plan the workshop");
+  });
+
+  it("shows the safe refusal in the composer when the Host refuses a new task", async () => {
     await mount("/");
     await settle();
     vi.spyOn(client, "createThread").mockRejectedValue(
@@ -115,9 +131,7 @@ describe("what a person has written and not sent", () => {
     await click(element(".composer__send"));
     await settle(50);
 
-    expect(element(".composer__error").textContent).toContain(
-      "This folder is on another computer.",
-    );
+    expect(element(".composer__error").textContent).toBe("Not started. You don't have access.");
     expect(composerText(field())).toBe("Start over there");
   });
 
@@ -193,7 +207,7 @@ describe("what a person has written and not sent", () => {
 
     await back();
     expect(composerText(field())).toBe("Do the thing");
-    expect(element(".composer__error").textContent).toContain("That is not allowed here.");
+    expect(element(".composer__error").textContent).toBe("Not started. You don't have access.");
   });
 
   it("hands a refused task to the draft reopened before the answer came", async () => {
@@ -209,19 +223,18 @@ describe("what a person has written and not sent", () => {
     await openTask(firstTaskId());
     await settle();
     await back();
-    await write(field(), "Written meanwhile");
+    expect(composerText(field())).toBe("Do the thing");
 
     await act(async () => {
       refused.resolve();
     });
     await settle(50);
-    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile");
+    expect(composerText(field())).toBe("Do the thing");
 
-    await write(field(), "Do the thing\nWritten meanwhile, and more");
     const { path, search } = place();
-    await remount(`${path}${search}`);
+    await remount(`${path}${search}`, true);
     await settle();
-    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile, and more");
+    expect(composerText(field())).toBe("Do the thing");
   });
 
   it("finishes an upload after leaving, and the file is there on return", async () => {
@@ -241,15 +254,19 @@ describe("what a person has written and not sent", () => {
     await settle();
     const search = () => place().search;
     await write(field(), "With a file");
-    const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"))!;
-    const saved = JSON.parse(localStorage.getItem(key)!) as Record<string, unknown>;
-    localStorage.setItem(
-      key,
-      JSON.stringify({
-        ...saved,
-        files: [{ mediaType: "text/plain", name: "lost.txt", part: null, sizeBytes: 4 }],
-      }),
+    const key = await vi.waitFor(
+      () => {
+        const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"));
+        expect(key && composerDrafts.read(key)?.text).toBe("With a file");
+        return key!;
+      },
+      { timeout: 1_000 },
     );
+    await act(async () => {
+      await composerDrafts.update(key, {
+        files: [{ mediaType: "text/plain", name: "lost.txt", part: null, sizeBytes: 4 }],
+      });
+    });
     await remount(`/${search()}`);
     await settle();
 

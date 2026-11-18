@@ -12,8 +12,8 @@ import {
 } from "@opensteer/client/host";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { AccountSignInSheet } from "./account-sign-in-sheet.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 export type AccountSignInOutcome =
   | { readonly kind: "done"; readonly message: string }
@@ -56,7 +56,8 @@ export function useAccountSignIn(
   ): void => {
     const flow = startAccountSignIn({
       client,
-      errorMessage: (cause) => operationDetail(cause, "That did not finish. Try again."),
+      errorMessage: (cause) =>
+        failureWords(cause, { label: "sign in" }, "That did not finish. Try again.") ?? "",
       target,
     });
     flowRef.current = flow;

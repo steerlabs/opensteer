@@ -49,6 +49,8 @@ vi.mock("../ui/mobile-client-context.js", () => {
   const mobile = { getSnapshot: () => ({ selection: { hostClient: state.host } }) };
   return { useMobileClient: () => mobile };
 });
+const { useLocalServerSections } = await import("./local-server-sections.js");
+const { NativeSettingsPage } = await import("./native-settings-page.js");
 const { SettingsMessagingScreen } = await import("./settings-messaging.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
@@ -267,5 +269,109 @@ it.each(["ios", "android"])(
       connectionId,
       credentials: { botToken: "replacement", appToken: "replacement-app" },
     });
+  },
+);
+
+it.each(["ios", "android"])(
+  "fences a retained Messaging Link action after the session stops on %s",
+  async (os) => {
+    state.os = os;
+    await open("messaging");
+    await input("Link code", "ABCDEFGH");
+    const retained = row("Link account");
+    const dispatch = vi.spyOn(host, "dispatch");
+    await act(async () => host.connection.stop());
+    if (retained.kind !== "button") throw new Error("Missing link action");
+    await act(async () => retained.onPress());
+    expect(dispatch).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["ios", "android"])(
+  "keeps local-server values secure and submits only changed values on %s",
+  async (os) => {
+    state.os = os;
+    await open("messaging");
+    const serverId = "isv_00000000-0000-4000-8000-000000000009";
+    const installed = {
+      installation: { id: "install-camera", pluginId: "camera", title: "Camera" },
+      servers: [{ id: serverId, status: "active", statusDetail: null }],
+    };
+    const secrets = [
+      { name: "PASSWORD", title: "Camera password" },
+      { name: "TOKEN", title: "Token" },
+    ];
+    Object.defineProperty(host, "rpc", {
+      value: {
+        ...host.rpc,
+        "integration.platform.get": async () => ({
+          ok: true,
+          data: { installations: [installed] },
+        }),
+        "integration.server.secrets.list": async () => ({
+          ok: true,
+          data: {
+            servers: [
+              {
+                id: serverId,
+                installationId: installed.installation.id,
+                plugin: "Camera",
+                computer: "Studio Mac",
+                name: "camera",
+                secrets,
+              },
+            ],
+          },
+        }),
+      },
+    });
+    function ServerSettings() {
+      const local = useLocalServerSections({
+        host,
+        by: { serverId },
+        deploymentId: "deployment",
+        name: "Camera",
+        onRemoved: () => {},
+      });
+      return (
+        <>
+          <NativeSettingsPage sections={local.sections} />
+          {local.sheet}
+        </>
+      );
+    }
+    await act(async () => root!.render(<ServerSettings />));
+    const dispatch = vi
+      .spyOn(host, "dispatch")
+      .mockResolvedValue({ type: "integration.server.secrets.set" } as never);
+    await press("Change secrets");
+    const save = row("Save");
+    if (save.kind !== "primary") throw new Error("Missing save action");
+    await act(async () => save.onPress());
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(
+      [...state.pages.values()].some((page) =>
+        page.sections.some((section) => section.footer?.text === "Enter a new value to change."),
+      ),
+    ).toBe(true);
+    const field = row("Camera password");
+    expect(field.kind === "input" && field.secure).toBe(true);
+    await input("Camera password", "new-secret");
+    const changed = row("Save");
+    if (changed.kind !== "primary") throw new Error("Missing save action");
+    await act(async () => changed.onPress());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "integration.server.secrets.set",
+        serverId,
+        secrets: { PASSWORD: "new-secret" },
+      }),
+    );
+    expect(
+      [...state.pages.values()].some((page) =>
+        page.sections.some((section) => section.footer?.text === "Secrets changed"),
+      ),
+    ).toBe(true);
+    expect(rows().some((row) => row.kind === "input" && row.secure)).toBe(false);
   },
 );

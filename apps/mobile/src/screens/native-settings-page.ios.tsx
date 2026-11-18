@@ -1,6 +1,7 @@
 import {
   BottomSheet,
   Button,
+  Capsule,
   Circle,
   ContextMenu,
   SwipeActions,
@@ -39,6 +40,7 @@ import {
   onSubmit,
   searchable,
   navigationTitle,
+  opacity,
   shapes,
   tag,
   textSelection,
@@ -52,11 +54,17 @@ import { IntegrationIcon } from "../ui/integration-icon.js";
 import type {
   NativeSettingsPageProps,
   NativeSettingsRow,
-  NativeSettingsSection,
   NativeSettingsStep,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
-import { Chevron, IdentityMark, Lines, Tile } from "./settings-form-primitives.ios.js";
+import {
+  Chevron,
+  IdentityMark,
+  LineFooter,
+  Lines,
+  PlaceholderRow,
+  Tile,
+} from "./settings-form-primitives.ios.js";
 
 const toneColor: Record<NativeSettingsTone, string> = {
   neutral: color.muted,
@@ -64,7 +72,6 @@ const toneColor: Record<NativeSettingsTone, string> = {
   attention: color.amber,
   bad: color.red,
 };
-const footnote = font({ textStyle: "footnote" });
 export function NativeSettingsPage(props: NativeSettingsPageProps) {
   const query = useNativeState("");
   const navigation = useNavigation();
@@ -86,7 +93,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
         <Section
           key={section.key}
           title={section.collapsed ? "" : section.title}
-          {...(section.footer ? { footer: <Footer footer={section.footer} /> } : {})}
+          {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
         >
           {section.collapsed ? (
             <DisclosureGroup label={section.title}>
@@ -246,38 +253,52 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
       </SwipeActions>
     );
   }
-  if (row.kind === "toggle")
+  if (row.kind === "placeholder") return <PlaceholderRow label={row.label} />;
+  if (row.kind === "toggle") {
+    const value = row.value;
+    if (value === null) return <UnknownToggleRow row={row} />;
     return row.detail === undefined ? (
       <Toggle
         label={row.label}
-        isOn={row.value}
+        isOn={value}
         modifiers={[disabled(row.disabled ?? false)]}
         onIsOnChange={row.onChange}
       />
     ) : (
       <Toggle
-        isOn={row.value}
+        isOn={value}
         modifiers={[disabled(row.disabled ?? false)]}
         onIsOnChange={row.onChange}
       >
         <Lines detail={row.detail} title={row.label} />
       </Toggle>
     );
+  }
   return <Input row={row} />;
 }
 
-function Footer({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
+/** A switch whose state never arrived: its track with no knob, never drawn as off. */
+function UnknownToggleRow({
+  row,
+}: {
+  readonly row: Extract<NativeSettingsRow, { kind: "toggle" }>;
+}) {
   return (
-    <Text
-      modifiers={[
-        footnote,
-        footer.tone === "danger"
-          ? foregroundStyle(color.red)
-          : foregroundStyle({ type: "hierarchical", style: "secondary" }),
-      ]}
+    <HStack
+      alignment="center"
+      spacing={12}
+      modifiers={[accessibilityLabel(`${row.label}, not loaded yet`)]}
     >
-      {footer.text}
-    </Text>
+      <Lines detail={row.detail ?? null} title={row.label} />
+      <Spacer />
+      <Capsule
+        modifiers={[
+          foregroundStyle(color.surfaceRaised),
+          frame({ width: 51, height: 31 }),
+          opacity(0.4),
+        ]}
+      />
+    </HStack>
   );
 }
 

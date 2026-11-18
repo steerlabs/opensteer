@@ -1,5 +1,6 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AgentEventViewSchema, createId, SequenceSchema } from "@opensteer/core";
+import { ClientToHostMessageSchema } from "@opensteer/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
@@ -44,7 +45,6 @@ async function fixture(
       capabilities: ["quiet-tasks-v1"],
       fetch: fetchOverride?.(host) ?? host.fetch,
       webSocketFactory: host.connect,
-      refreshIntervalMs: 0,
       ...(lifecycle && { lifecycle }),
     });
   cleanups.push(() => {
@@ -427,12 +427,25 @@ it("rereads tasks on the way back when their notice arrived hidden", async () =>
   await f.client.load();
   await vi.waitFor(() => expect(f.client.getSnapshot().tasks?.entries).toHaveLength(1));
   const socket = [...f.host.sockets][0]!;
+  const send = socket.send.bind(socket);
+  const probe = Promise.withResolvers<string>();
+  const deferPong = vi.spyOn(socket, "send").mockImplementation((data) => {
+    const frame = ClientToHostMessageSchema.safeParse(typeof data === "string" && JSON.parse(data));
+    if (frame.success && frame.data.type === "client.ping") probe.resolve(frame.data.nonce);
+    else send(data);
+  });
   turn("background");
   const hiddenAt = reads.count;
   socket.deliver({ type: "host.tasks-changed" });
   socket.deliver({ type: "host.tasks-changed" });
   expect(reads.count, "nothing is read while hidden").toBe(hiddenAt);
   turn("foreground");
+  const nonce = await withTimeout(probe.promise, 1000, {
+    timeoutError: () => new Error("Foreground never probed the held socket"),
+  });
+  expect(reads.count, "nothing is read until the probe is answered").toBe(hiddenAt);
+  deferPong.mockRestore();
+  socket.deliver({ type: "host.pong", nonce });
   await vi.waitFor(() =>
     expect(reads.count, "the hidden task notices were never reread").toBeGreaterThan(hiddenAt),
   );

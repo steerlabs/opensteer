@@ -1,3 +1,5 @@
+import { classifyClientFailure, type ClientScope } from "@opensteer/client/connections";
+import { hostMessageOutbox } from "@opensteer/client/host";
 import {
   memo,
   useEffect,
@@ -11,7 +13,6 @@ import {
 import type { ContentPart, TeamSource } from "@opensteer/core";
 import {
   followWaitingDraft,
-  HostClientRequestError,
   messageAuthorName,
   mutationIdempotencyKey,
   openWaitingDraft,
@@ -20,6 +21,9 @@ import {
   setWaitingDraftText,
   waitingDraftContent,
   waitingDraftSave,
+  waitingMessageRows,
+  type MessageEntry,
+  type TranscriptEntry,
   type HostClient,
   type WaitingAsk,
   type WaitingDraft,
@@ -27,21 +31,20 @@ import {
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import { TranscriptMessage } from "./agent-activity.js";
-import type { PendingSubmission } from "./composer.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
 import { Icon, type IconName } from "./icon.js";
 import { EditedMark } from "./message-revisions.js";
 import {
-  forgetPending,
   sendMessageCommand,
-  unanswered,
-  type PendingSendsState,
-} from "./pending-sends.js";
+  storageUnavailable,
+  type PendingSubmission,
+} from "../host/message-outbox.js";
 import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
 const foldAfter = 3;
+const noLocalMessages: readonly MessageEntry[] = [];
 
 /**
  * Everything waiting to reach the task's agent, at the foot of its
@@ -54,9 +57,10 @@ export const WaitingInputs = memo(function WaitingInputs({
   client,
   disabled,
   inputs,
+  local = noLocalMessages,
+  transcript,
   onError,
   paused,
-  pendingSends,
   resumable,
   threadId,
   viewerUserId,
@@ -65,10 +69,11 @@ export const WaitingInputs = memo(function WaitingInputs({
   /** The reader can't act here at all. Each action is otherwise the Host's to offer. */
   readonly disabled: boolean;
   readonly inputs: readonly WaitingInput[];
+  readonly local?: readonly MessageEntry[];
+  readonly transcript?: readonly TranscriptEntry[];
   readonly onError: (error: unknown) => void;
   readonly paused: boolean;
   /** Where words sent as a new message are kept until the Host answers them, as the composer's are. */
-  readonly pendingSends: PendingSendsState;
   /** The Host runs this task's queue again on Resume: not while it is archived. */
   readonly resumable: boolean;
   readonly threadId: string;
@@ -87,16 +92,37 @@ export const WaitingInputs = memo(function WaitingInputs({
     // Taken while open: it was at the head of the line, so it stays on top.
     const gone = [...editing].flatMap((id) => {
       const last = here.has(id) ? undefined : seen.current.get(id);
-      return last ? [{ gone: true, input: last }] : [];
+      return last
+        ? [
+            {
+              gone: true,
+              input: last,
+              entry: last.entry,
+              key: last.entry.clientSendKey ?? last.messageId,
+            },
+          ]
+        : [];
     });
-    return [...gone, ...inputs.map((input) => ({ gone: false, input }))];
-  }, [editing, inputs]);
+    return [
+      ...gone,
+      ...waitingMessageRows(inputs, local, transcript).map((row) => ({ ...row, gone: false })),
+    ];
+  }, [editing, inputs, local, transcript]);
+  const localKeys = useRef(new Set<string>());
+  localKeys.current = new Set(
+    rows.flatMap((row) => (row.input === null || localKeys.current.has(row.key) ? [row.key] : [])),
+  );
 
   if (!paused && rows.length === 0) return null;
 
-  const folded = !expanded && rows.length > foldAfter;
+  const folded = !expanded && inputs.length > foldAfter;
   const visible = folded
-    ? rows.filter((row, index) => index < foldAfter - 1 || editing.has(row.input.messageId))
+    ? rows.filter(
+        (row, index) =>
+          index < foldAfter - 1 ||
+          localKeys.current.has(row.key) ||
+          (row.input && editing.has(row.input.messageId)),
+      )
     : rows;
 
   const act = (messageId: string, run: () => Promise<void>) => {
@@ -139,25 +165,27 @@ export const WaitingInputs = memo(function WaitingInputs({
       ) : null}
       {visible.length > 0 ? (
         <ol className="queued__list">
-          {visible.map(({ gone, input }, index) => (
+          {visible.map(({ gone, input, entry, key }, index) => (
             <WaitingRow
               act={act}
               blocked={disabled || busyId !== null}
-              busy={busyId === input.messageId}
+              busy={input !== null && busyId === input.messageId}
               client={client}
               disabled={disabled}
               gone={gone}
               input={input}
-              key={input.messageId}
-              onOpenChange={(open) => setOpen(input.messageId, open)}
-              pendingSends={pendingSends}
+              message={entry}
+              key={key}
+              onOpenChange={(open) => {
+                if (input) setOpen(input.messageId, open);
+              }}
               position={`${index + 1} of ${rows.length}`}
               viewerUserId={viewerUserId}
             />
           ))}
         </ol>
       ) : null}
-      {rows.length > foldAfter ? (
+      {inputs.length > foldAfter && (expanded || visible.length < rows.length) ? (
         <button
           aria-expanded={expanded}
           className="queued__more"
@@ -187,6 +215,7 @@ interface EditSession {
   closed: boolean;
   /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
   saving: boolean;
+  readonly scope: ClientScope | null;
   /** The words sent as a new message, kept under one key until the Host answers them. */
   sending: PendingSubmission | null;
 }
@@ -208,9 +237,8 @@ function release(session: EditSession): void {
  */
 function useInPlaceEdit(
   client: HostClient,
-  input: WaitingInput,
+  input: WaitingInput | null,
   gone: boolean,
-  pendingSends: PendingSendsState,
   onOpenChange: (open: boolean) => void,
   trigger: RefObject<HTMLButtonElement | null>,
 ) {
@@ -222,7 +250,7 @@ function useInPlaceEdit(
   const returnFocus = useRef(false);
   const row = useRef<HTMLLIElement | null>(null);
   const draft =
-    kept && !gone && !saving
+    kept && input && !gone && !saving
       ? followWaitingDraft(kept, { content: input.item.message.content, revision: input.revision })
       : kept;
 
@@ -243,11 +271,12 @@ function useInPlaceEdit(
   }, [draft, trigger]);
 
   const open = () => {
-    if (session.current) return;
+    if (!input || session.current) return;
     const held: EditSession = {
       closed: false,
       opening: client.editWaitingMessage(input.threadId, input.messageId),
       saving: false,
+      scope: client.connection.getSnapshot().scope,
       sending: null,
     };
     session.current = held;
@@ -289,7 +318,7 @@ function useInPlaceEdit(
   /** Saves the edit in place; an unchanged one just ends. Resolves to the version now waiting. */
   const save = async (): Promise<number | null> => {
     const held = session.current;
-    if (!held || !draft || held.saving) return null;
+    if (!input || !held || !draft || held.saving) return null;
     held.saving = true;
     const current = await typed();
     held.saving = false;
@@ -333,9 +362,9 @@ function useInPlaceEdit(
    */
   const sendAsNew = async (): Promise<void> => {
     const held = session.current;
-    if (!held || !draft) return;
-    if ("unavailable" in pendingSends) throw new Error(pendingSends.unavailable);
-    const { sends } = pendingSends;
+    if (!input || !held || !draft) return;
+    const outbox = hostMessageOutbox(client);
+    if (!outbox || !held.scope) throw storageUnavailable();
     let submission = held.sending;
     if (!submission) {
       const current = await typed();
@@ -348,22 +377,12 @@ function useInPlaceEdit(
         content,
         idempotencyKey: mutationIdempotencyKey("message"),
       };
-      sends.claim(submission);
       held.sending = submission;
     }
-    try {
-      await client.dispatch(sendMessageCommand(input.threadId, submission));
-    } catch (error) {
-      if (unanswered(error)) {
-        if (session.current === held) setNotice("unconfirmed");
-        return;
-      }
-      held.sending = null;
-      forgetPending(sends, submission.idempotencyKey);
-      throw error;
-    }
+    await outbox.enqueue(sendMessageCommand(input.threadId, submission), {
+      expectedLogin: held.scope,
+    });
     held.sending = null;
-    forgetPending(sends, submission.idempotencyKey);
     finish(held);
   };
 
@@ -406,7 +425,7 @@ function useInPlaceEdit(
 }
 
 function isConflict(error: unknown): boolean {
-  return error instanceof HostClientRequestError && error.code === "conflict";
+  return classifyClientFailure(error).code === "conflict";
 }
 
 function WaitingRow({
@@ -417,8 +436,8 @@ function WaitingRow({
   disabled,
   gone,
   input,
+  message,
   onOpenChange,
-  pendingSends,
   position,
   viewerUserId,
 }: {
@@ -429,20 +448,20 @@ function WaitingRow({
   readonly disabled: boolean;
   /** No longer waiting, kept only for the edit still open on it. */
   readonly gone: boolean;
-  readonly input: WaitingInput;
+  readonly input: WaitingInput | null;
+  readonly message: MessageEntry;
   readonly onOpenChange: (open: boolean) => void;
-  readonly pendingSends: PendingSendsState;
   readonly position: string;
   readonly viewerUserId: string | null;
 }) {
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const edit = useInPlaceEdit(client, input, gone, pendingSends, onOpenChange, trigger);
+  const edit = useInPlaceEdit(client, input, gone, onOpenChange, trigger);
   const [deciding, setDeciding] = useState<"approve" | "decline" | null>(null);
-  const id = input.messageId;
-  const otherDevice = input.lease.kind === "other" ? input.lease.deviceLabel : null;
+  const id = input?.messageId ?? message.id;
+  const otherDevice = input?.lease.kind === "other" ? input.lease.deviceLabel : null;
   const editable =
-    input.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
-  const ask = input.kind === "ask" ? input : null;
+    input?.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
+  const ask = input?.kind === "ask" ? input : null;
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -478,13 +497,15 @@ function WaitingRow({
       }
     });
 
-  const files = input.entry.attachments?.length ?? 0;
+  const files = message.attachments?.length ?? 0;
   const label =
-    input.kind === "ask"
-      ? `Ask from ${input.asker}, ${position}: ${input.text}`
-      : `Queued message ${position}: ${input.text}${
-          files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
-        }`;
+    input === null
+      ? undefined
+      : input.kind === "ask"
+        ? `Ask from ${input.asker}, ${position}: ${input.text}`
+        : `Queued message ${position}: ${input.text}${
+            files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
+          }`;
   const approving = ask !== null && (ask.approving || deciding === "approve");
   const editButton = (name: string) => (
     <button
@@ -513,7 +534,7 @@ function WaitingRow({
       onClick={clickWords}
       ref={edit.row}
     >
-      {edit.draft ? (
+      {edit.draft && input ? (
         <InPlaceEditor
           asker={
             ask?.asker ??
@@ -532,7 +553,12 @@ function WaitingRow({
           onText={edit.setText}
         />
       ) : (
-        <TranscriptMessage message={input.entry} queued reveal={null} viewerUserId={viewerUserId} />
+        <TranscriptMessage
+          message={message}
+          queued={input !== null || message.queuePending === true}
+          reveal={null}
+          viewerUserId={viewerUserId}
+        />
       )}
       {edit.draft ? (
         <EditStatus
@@ -548,7 +574,7 @@ function WaitingRow({
           saving={edit.saving}
         />
       ) : null}
-      {ask ? (
+      {input === null ? null : ask ? (
         <div className="queued__row waiting-ask">
           {approving ? (
             <span className="waiting-ask__line" data-approving role="status">

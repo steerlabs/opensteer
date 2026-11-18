@@ -115,6 +115,10 @@ export class MockPersonalHost {
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {
       const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
+      if (frame.type === "client.ping") {
+        socket.deliver({ nonce: frame.nonce, type: "host.pong" });
+        return;
+      }
       if (frame.type !== "client.subscribe") return;
       if (frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId) {
         socket.close();

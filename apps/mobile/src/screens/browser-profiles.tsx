@@ -2,7 +2,6 @@ import {
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
-  canRespondToRequests,
   mutationIdempotencyKey,
   profileHomeChoice,
   type BrowserProfileSettingsRow,
@@ -23,13 +22,15 @@ import {
   useWindowDimensions,
   type ScrollViewInstance,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { HomeMenu } from "./profile-home-menu.js";
 import { color, material, space, touchTarget } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 
@@ -42,7 +43,7 @@ export function BrowserProfilesScreen({
   const client = useMobileClient();
   const { rows, selection } = useMobileState();
   const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const hostClient =
     selection.deploymentId === deploymentId && row?.signIn === null ? selection.hostClient : null;
@@ -56,7 +57,7 @@ export function BrowserProfilesScreen({
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to manage its browser profiles.`}
           </AppText>
-          {failure === null ? null : <Notice detail={failure} title="That did not open" />}
+          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -66,10 +67,8 @@ export function BrowserProfilesScreen({
                 setFailure(null);
                 void client
                   .openDeployment(deploymentId)
-                  .catch((error: unknown) =>
-                    setFailure(
-                      operationDetail(error, "That deployment still could not be opened."),
-                    ),
+                  .catch(() =>
+                    setFailure({ key: "open", text: `Couldn't open ${row.name}.`, tone: "muted" }),
                   )
                   .finally(() => setOpening(false));
               }}
@@ -97,11 +96,7 @@ function SignedInBrowserProfiles(props: {
   if (userId === null) {
     return (
       <Screen>
-        <View style={styles.away}>
-          <AppText role="secondary" tone="muted">
-            Sign in to this deployment to manage its browser profiles.
-          </AppText>
-        </View>
+        <PlaceholderRows />
       </Screen>
     );
   }
@@ -117,7 +112,6 @@ function BrowserProfilesSettings({
 }): ReactNode {
   const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
-  const online = canRespondToRequests(snapshot);
   const hereId = useHereDeviceId(deploymentId);
   const rows = browserProfileSettingsRows(snapshot, hereId);
   const homes = profileHomeChoice(snapshot, hereId);
@@ -131,24 +125,33 @@ function BrowserProfilesSettings({
   const home = homes
     ? (homes.options.find(({ id }) => id === chosenHome)?.id ?? homes.initial)
     : null;
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const create = () => {
-    const name = draft?.trim() ?? "";
-    if (!online || busy || name === "") return;
-    setBusy(true);
-    setFailure(null);
-    void hostClient
-      .dispatch({
+  const createSpec = {
+    label: "create the profile",
+    done: "created",
+    happened: "the profile was created",
+  } as const;
+  const creation = useScreenAction<string, void>(hostClient, "browser-profile-create", {
+    ...createSpec,
+    execute: async (name) => {
+      await hostClient.dispatch({
         type: "browser.profile.create",
         idempotencyKey: mutationIdempotencyKey("browser-profile"),
         input: { name, ...(home ? { homeRunnerId: home } : {}) },
-      })
-      .then(() => setDraft(null))
-      .catch((error: unknown) =>
-        setFailure(operationDetail(error, "The profile could not be created.")),
-      )
-      .finally(() => setBusy(false));
+      });
+      setDraft(null);
+    },
+    // Profiles are part of the Host's own state, reread on every reconnection.
+    reconcile: async (name) =>
+      hostClient.getSnapshot().browserProfiles.some((profile) => profile.name === name)
+        ? { kind: "confirmed", value: undefined }
+        : notDone(createSpec.done),
+    retry: () => create(),
+  });
+  const busy = creation.running;
+  const create = () => {
+    const name = draft?.trim() ?? "";
+    if (busy || name === "") return;
+    void creation.run(name);
   };
   return (
     <Screen edgeToEdge>
@@ -169,13 +172,6 @@ function BrowserProfilesSettings({
           }}
           ref={scroll}
         >
-          {online ? null : (
-            <Notice
-              title="Not connected"
-              detail="Reconnect to manage browser profiles."
-              tone="neutral"
-            />
-          )}
           {rows.length === 0 && deletions.length === 0 ? (
             <AppText role="secondary" tone="muted">
               No profiles yet.
@@ -188,7 +184,6 @@ function BrowserProfilesSettings({
                   row={row}
                   snapshot={snapshot}
                   hostClient={hostClient}
-                  online={online}
                   onHistory={() =>
                     navigation.navigate("BrowserHistory", {
                       deploymentId,
@@ -210,10 +205,9 @@ function BrowserProfilesSettings({
           {draft === null ? (
             <SecondaryButton
               label="New profile"
-              disabled={!online}
               onPress={() => {
                 setDraft("");
-                setFailure(null);
+                creation.dismiss();
               }}
             />
           ) : (
@@ -240,17 +234,15 @@ function BrowserProfilesSettings({
                 <SecondaryButton
                   label="Create profile"
                   busy={busy}
-                  disabled={!online || draft.trim() === ""}
+                  disabled={draft.trim() === ""}
                   onPress={create}
                 />
                 <SecondaryButton label="Cancel" disabled={busy} onPress={() => setDraft(null)} />
               </View>
             </>
           )}
-          {failure === null ? null : (
-            <AppText role="caption" tone="danger">
-              {failure}
-            </AppText>
+          {creation.line === null ? null : (
+            <ActionLine line={creation.line} numberOfLines={2} onDismiss={creation.dismiss} />
           )}
           <AppText role="caption" tone="muted">
             Your agent can use every profile.
@@ -300,44 +292,69 @@ function ProfileRow({
   row,
   snapshot,
   hostClient,
-  online,
   onHistory,
 }: {
   readonly row: BrowserProfileSettingsRow;
   readonly snapshot: HostSnapshot;
   readonly hostClient: HostClient;
-  readonly online: boolean;
   readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const stacked = useWindowDimensions().fontScale > accessibilityTextScale;
   const [draft, setDraft] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const mutate = (command: Parameters<HostClient["dispatch"]>[0], done?: () => void) => {
-    if (!online || busy) return;
-    setBusy(true);
-    setFailure(null);
-    void hostClient
-      .dispatch(command)
-      .then(() => done?.())
-      .catch((error: unknown) =>
-        setFailure(operationDetail(error, "The profile could not be changed.")),
-      )
-      .finally(() => setBusy(false));
-  };
+  const profileId = row.profile.id;
+  const current = () =>
+    hostClient.getSnapshot().browserProfiles.find((profile) => profile.id === profileId);
+  const renameSpec = {
+    label: `rename ${row.profile.name}`,
+    done: "renamed",
+    happened: `${row.profile.name} was renamed`,
+  } as const;
+  const renaming = useScreenAction<string, void>(
+    hostClient,
+    `browser-profile-rename:${profileId}`,
+    {
+      ...renameSpec,
+      execute: async (name) => {
+        await hostClient.dispatch({
+          type: "browser.profile.rename",
+          profileId,
+          name,
+          idempotencyKey: mutationIdempotencyKey(`browser-profile-rename:${profileId}`),
+        });
+        setDraft(null);
+      },
+      reconcile: async (name) =>
+        current()?.name === name
+          ? { kind: "confirmed", value: undefined }
+          : notDone(renameSpec.done),
+      retry: () => rename(),
+    },
+  );
+  const deleteSpec = {
+    label: `delete ${row.profile.name}`,
+    done: "deleted",
+    happened: `${row.profile.name} was deleted`,
+  } as const;
+  const deleting = useScreenAction<void, void>(hostClient, `browser-profile-delete:${profileId}`, {
+    ...deleteSpec,
+    execute: async () => {
+      await hostClient.dispatch({
+        type: "browser.profile.delete",
+        profileId,
+        idempotencyKey: mutationIdempotencyKey(`browser-profile-delete:${profileId}`),
+      });
+    },
+    reconcile: async () =>
+      current() === undefined ? { kind: "confirmed", value: undefined } : notDone(deleteSpec.done),
+    retry: () => void deleting.run(),
+  });
+  const busy = renaming.running || deleting.running;
+  const line = renaming.line ?? deleting.line;
   const rename = () => {
     const name = draft?.trim() ?? "";
-    if (!snapshot.browserProfileManageAvailable || name === "") return;
-    mutate(
-      {
-        type: "browser.profile.rename",
-        profileId: row.profile.id,
-        name,
-        idempotencyKey: mutationIdempotencyKey(`browser-profile-rename:${row.profile.id}`),
-      },
-      () => setDraft(null),
-    );
+    if (!snapshot.browserProfileManageAvailable || name === "" || busy) return;
+    void renaming.run(name);
   };
   const remove = () =>
     Alert.alert(`Delete “${row.profile.name}”?`, browserProfileDeleteConsequence(row), [
@@ -346,12 +363,8 @@ function ProfileRow({
         text: "Delete profile",
         style: "destructive",
         onPress: () => {
-          if (!snapshot.browserProfileManageAvailable) return;
-          mutate({
-            type: "browser.profile.delete",
-            profileId: row.profile.id,
-            idempotencyKey: mutationIdempotencyKey(`browser-profile-delete:${row.profile.id}`),
-          });
+          if (!snapshot.browserProfileManageAvailable || busy) return;
+          void deleting.run();
         },
       },
     ]);
@@ -408,17 +421,17 @@ function ProfileRow({
                   label="Rename"
                   accessibilityLabel={`Rename ${row.profile.name}`}
                   compact
-                  disabled={!online || busy}
+                  disabled={busy}
                   onPress={() => {
                     setDraft(row.profile.name);
-                    setFailure(null);
+                    renaming.dismiss();
                   }}
                 />
                 <SecondaryButton
                   label="Delete"
                   accessibilityLabel={`Delete ${row.profile.name}`}
                   compact
-                  disabled={!online || busy}
+                  disabled={busy}
                   tone="danger"
                   onPress={remove}
                 />
@@ -441,9 +454,9 @@ function ProfileRow({
               <View style={styles.actions}>
                 <SecondaryButton
                   label="Save"
-                  busy={busy}
+                  busy={renaming.running}
                   compact
-                  disabled={!online || draft.trim() === ""}
+                  disabled={draft.trim() === ""}
                   onPress={rename}
                 />
                 <SecondaryButton
@@ -457,10 +470,12 @@ function ProfileRow({
           )}
         </>
       )}
-      {failure === null ? null : (
-        <AppText role="caption" tone="danger">
-          {failure}
-        </AppText>
+      {line === null ? null : (
+        <ActionLine
+          line={line}
+          numberOfLines={2}
+          onDismiss={renaming.line ? renaming.dismiss : deleting.dismiss}
+        />
       )}
     </View>
   );

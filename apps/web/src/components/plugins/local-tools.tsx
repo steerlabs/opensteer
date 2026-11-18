@@ -1,3 +1,4 @@
+import { act, failureWords } from "../use-action.js";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
@@ -12,7 +13,6 @@ import {
   type PluginLocalToolSummaryView,
   type PluginLocalToolView,
 } from "@opensteer/client/plugins";
-import { HostClientRequestError } from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -23,7 +23,6 @@ import {
   SettingsSegmented,
 } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { deviceRoute } from "../devices/device-routes.js";
 import { LocalServerSection } from "./local-server-section.js";
 import { localToolPath, pluginsPath } from "./plugins-area.js";
@@ -70,8 +69,7 @@ export function LocalToolPage({ id }: { readonly id: string }) {
   const { hostClient } = useShell();
   // Its own read: the installed list counts a local tool's tools, this page lists them.
   const installed = useSettingsRead(() => readPluginLocalTool(hostClient, id), `local-tool:${id}`);
-  const gone =
-    installed.error instanceof HostClientRequestError && installed.error.code === "not_found";
+  const gone = installed.issue?.reason === "not_found";
   const tool = gone ? null : installed.data;
   return (
     <div className="plugins-area plugin-page">
@@ -79,9 +77,7 @@ export function LocalToolPage({ id }: { readonly id: string }) {
         <Icon name="arrow-left" />
         Plugins
       </Link>
-      <SettingsError
-        message={installed.error && !gone ? actionErrorMessage(installed.error) : null}
-      />
+      <SettingsError message={!gone ? installed.error : null} />
       {tool ? (
         <LocalToolContent tool={tool} />
       ) : gone ? (
@@ -131,8 +127,12 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
             onChange={(next) => {
               setPending(next);
               setError(null);
-              void setPluginAccess(hostClient, tool.id, next)
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              void act(
+                hostClient,
+                { label: "change access", done: "changed", happened: "access changed" },
+                () => setPluginAccess(hostClient, tool.id, next),
+              )
+                .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setPending(null));
             }}
             options={pluginAccessChoices}

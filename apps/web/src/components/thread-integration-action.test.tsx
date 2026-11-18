@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { resolveIntegrationAccess, type LoadedAccessRequest } from "@opensteer/client/integrations";
 import type { HostSnapshot } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
@@ -37,6 +38,7 @@ describe("ThreadIntegrationAction computer access", () => {
         : { type: command.type },
     );
     const hostClient = {
+      connection: controlledClientSession().connection,
       dispatch,
       getSnapshot: () => shellSnapshot(),
       refresh: async () => undefined,
@@ -86,6 +88,7 @@ describe("ThreadIntegrationAction for a local server", () => {
     const dispatch = vi.fn(async (command: { readonly type: string }) => ({ type: command.type }));
     shellState.current = {
       hostClient: {
+        connection: controlledClientSession().connection,
         dispatch,
         getSnapshot: () => shellSnapshot(),
         refresh: async () => undefined,

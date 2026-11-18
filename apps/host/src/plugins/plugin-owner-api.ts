@@ -252,11 +252,15 @@ function hostError(error: unknown): never {
             ? "Stop this plugin's workflow runs before removing the plugin."
             : error.message.slice(0, 1_000) || "The plugin engine refused this.",
       reason:
-        error.code === "unavailable"
-          ? "plugin-engine-unavailable"
-          : error.code === "consent-changed"
-            ? "plugin-consent-changed"
-            : `plugin-${error.code}`,
+        error.tag === "AccountFieldsInvalid"
+          ? "plugin-key-invalid"
+          : error.tag === "AppWebhooksActive"
+            ? "plugin-webhooks-active"
+            : error.tag === "AppWorkflowsActive"
+              ? "plugin-workflows-active"
+              : error.code === "unavailable"
+                ? "plugin-engine-unavailable"
+                : `plugin-${error.code}`,
     });
   }
   throw error;

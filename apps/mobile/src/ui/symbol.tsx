@@ -26,6 +26,7 @@ export type SFSymbolName =
   | "archivebox"
   | "arrow.clockwise"
   | "arrow.down"
+  | "arrow.down.circle"
   | "arrow.triangle.branch"
   | "arrow.turn.down.right"
   | "arrow.up"
@@ -93,6 +94,7 @@ export type SFSymbolName =
   | "person.3"
   | "person.badge.plus"
   | "person.crop.circle"
+  | "person.crop.circle.badge.exclamationmark"
   | "photo"
   | "pin"
   | "play"
@@ -248,6 +250,7 @@ const glyph: Record<SFSymbolName, string> = {
   archivebox: "▭",
   "arrow.clockwise": "↻",
   "arrow.down": "↓",
+  "arrow.down.circle": "⇩",
   "arrow.triangle.branch": "⑂",
   "arrow.turn.down.right": "↳",
   "arrow.up": "↑",
@@ -315,6 +318,7 @@ const glyph: Record<SFSymbolName, string> = {
   "person.3": "☷",
   "person.badge.plus": "⊕",
   "person.crop.circle": "☻",
+  "person.crop.circle.badge.exclamationmark": "☻",
   photo: "▨",
   pin: "⚲",
   play: "▶\uFE0E",

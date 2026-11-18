@@ -1,3 +1,4 @@
+import { toastError } from "../components/use-action.js";
 import { TeamPaneGate } from "./team-pane-gate.js";
 import { TeamPartnerSettingsPage } from "./team-partner-settings.js";
 import { useLayoutEffect, useRef, useState } from "react";
@@ -23,7 +24,6 @@ import {
 import { GroupsAdmin, PeopleAdmin, type TeamRole } from "../components/team/team-admin.js";
 import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { AccountNameRow } from "../components/settings/sections/owner-name.js";
 import { useTeams } from "./team-attachments.js";
 import {
@@ -124,7 +124,7 @@ function TeamSettingsContent() {
 
 function useReport() {
   const toast = useToast();
-  return (error: unknown) => toast.error(actionErrorMessage(error));
+  return (error: unknown) => toastError(toast)(error);
 }
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
@@ -572,6 +572,7 @@ function AuditPage({ view }: { readonly view: TeamView }) {
           nextCursor: page.hasMore ? (page.audit.at(-1)?.id ?? null) : null,
         })),
     `audit:${view.team.teamId}`,
+    view.client,
   );
   const rows = list.items.filter((entry) =>
     only === "all"

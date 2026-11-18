@@ -25,7 +25,6 @@ import { ShellContext } from "./components/app-shell.js";
 import { artifactPart, type SentContentPart } from "./components/attachments/attachment-parts.js";
 import { InputSurface } from "./components/input-surface.js";
 import { PersonalReferences } from "./components/references/reference-scope.js";
-import { usePendingSends } from "./components/pending-sends.js";
 import { WaitingInputs } from "./components/waiting-inputs.js";
 import { ToastProvider } from "./components/toast.js";
 
@@ -231,7 +230,6 @@ const deploymentId = snapshot.deploymentId;
 if (threads.length === 0 || !user || !deploymentId) {
   throw new Error("The mock Host has no signed-in deployment with an open thread.");
 }
-const keptFor = { deploymentId, userId: user.id };
 if (scenario === "unreadable") {
   localStorage.setItem(
     `${pendingKeyPrefix}v1:${encodeURIComponent(deploymentId)}:${encodeURIComponent(user.id)}:${encodeURIComponent(threads[0]!.id)}`,
@@ -288,8 +286,6 @@ const initialQueue: ThreadInputQueue | null =
 function useShellContext(): ShellContext {
   const live = useSyncExternalStore(client.subscribe, client.getSnapshot);
   return {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: async () => {
       throw new Error("Tasks don’t start in this preview.");
     },
@@ -326,7 +322,6 @@ function Fixture() {
   const [threadIndex, setThreadIndex] = useState(0);
   const queue = initialQueue;
   const thread = threads[threadIndex % threads.length]!;
-  const pendingSends = usePendingSends({ ...keptFor, threadId: thread.id });
   return (
     <main className="attachments-visual">
       <nav aria-label="Scenarios" className="attachments-visual__nav">
@@ -366,7 +361,6 @@ function Fixture() {
                     inputs={waitingInputs(queue, { ownsLease: () => false })}
                     onError={noOp}
                     paused={queue.paused}
-                    pendingSends={pendingSends}
                     resumable
                     threadId={queue.threadId}
                     viewerUserId={author.userId}

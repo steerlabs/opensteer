@@ -20,6 +20,7 @@ import {
   type ComputerAppLocalApproval,
   type ComputerAppRequestInput,
 } from "./computer-apps-section.js";
+import { localSession } from "../use-action.js";
 
 const macMini = "rnr_11111111-1111-4111-8111-111111111111";
 const mountedRoots: Root[] = [];
@@ -368,7 +369,7 @@ describe("ComputerAppsSection", () => {
 
     await click(button(container, "Finish setup"));
     await click(button(container, "Allow and continue"));
-    expect(container.textContent).toContain("Approval failed");
+    expect(container.textContent).toContain("Couldn't confirm this app changed.");
     expect(button(container, "Allow and continue").disabled).toBe(false);
   });
 
@@ -707,6 +708,7 @@ async function mount(input: MountInput) {
   const root = createRoot(container);
   mountedRoots.push(root);
   const hostClient = {
+    connection: localSession.connection,
     getSnapshot: () => ({ user: { id: "owner" } }),
     subscribe: () => () => undefined,
     dispatch: input.dispatch ?? (async () => ({ type: "integration.computer.setup.set" })),

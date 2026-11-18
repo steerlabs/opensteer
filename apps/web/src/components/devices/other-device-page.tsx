@@ -1,6 +1,5 @@
 import { Link, useNavigate, useParams } from "react-router";
 import { unwrapRpcResult } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -32,7 +31,7 @@ export function OtherDevicePage() {
       <PageTopbar onOpenNavigation={openMobileNavigation} title={device?.name ?? "Device"} />
       <div className="page__content device-page__content">
         <DevicesBackLink />
-        <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
+        <SettingsError message={overview.error} />
         {device ? (
           <>
             <PageHeader title={device.name} />

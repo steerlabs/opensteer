@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import type { ClientSession } from "../connections/connection-controller.js";
+import { useMemo, useRef, useSyncExternalStore } from "react";
 import { PagedList, type PagedListState, type KeysetPage } from "../team/paged-list.js";
 
 const idle: PagedListState<never, never> = {
@@ -19,20 +20,20 @@ const noSubscribe = () => () => {};
 export function usePagedList<First extends KeysetPage<unknown>>(
   read: ((cursor: string | null) => Promise<First>) | null,
   key: string,
+  session: ClientSession | null,
 ) {
   const readRef = useRef(read);
   readRef.current = read;
   const enabled = read !== null;
   const list = useMemo(
     () =>
-      enabled
-        ? new PagedList<First["items"][number], First>((cursor) => readRef.current!(cursor))
+      enabled && session
+        ? new PagedList<First["items"][number], First>(session, (cursor) =>
+            readRef.current!(cursor),
+          )
         : null,
-    [enabled, key],
+    [enabled, key, session],
   );
-  useEffect(() => {
-    void list?.reload();
-  }, [list]);
   const state = useSyncExternalStore(
     list?.subscribe ?? noSubscribe,
     list?.getState ?? (() => idle as PagedListState<First["items"][number], First>),

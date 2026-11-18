@@ -1,3 +1,8 @@
+import {
+  classifyClientFailure,
+  isMissingClientResource,
+  type ClientFailure,
+} from "@opensteer/client/connections";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   AttachmentMediaTypeSchema,
@@ -8,12 +13,7 @@ import {
   type ArtifactContentPart,
   type Attachment,
 } from "@opensteer/core";
-import {
-  HostClientRequestError,
-  mutationIdempotencyKey,
-  stageAttachment,
-  type HostClient,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, stageAttachment, type HostClient } from "@opensteer/client/host";
 import { formatBytes } from "../../app-model.js";
 import { composerDrafts, type DraftFile } from "../composer-drafts.js";
 import { artifactPart, isInlineImage } from "./attachment-parts.js";
@@ -38,7 +38,8 @@ export interface StagedAttachment {
   /** False when the Host refused the file itself, so trying again cannot help. */
   readonly retryable: boolean;
   readonly sizeBytes: number;
-  readonly status: "checking" | "failed" | "ready" | "uploading";
+  /** `waiting`: the connection is not ready; it uploads, or is checked, once it is back. */
+  readonly status: "checking" | "failed" | "ready" | "uploading" | "waiting";
 }
 
 export interface StagedAttachments {
@@ -61,6 +62,8 @@ export interface StagedAttachments {
 interface StagedRecord {
   attachmentId: string | null;
   controller: AbortController | null;
+  /** The ready revision a dropped connection failed it under; it goes again once that changes. */
+  interruptedAt: number | null;
   mediaType: string;
   name: string;
   /** What the draft saves for it, known before a reload's check against the Host confirms it. */
@@ -86,8 +89,8 @@ const addAgain = "This file has to be added again.";
 
 /**
  * The files one draft holds before they are sent. Each one is reserved and
- * uploaded the moment it is chosen, so a message only waits on bytes still in
- * flight. A retry continues the same reservation with the same bytes (see
+ * uploaded the moment it is chosen, or once the connection is ready, so a
+ * message only waits on bytes still in flight. A retry continues the same reservation with the same bytes (see
  * `stageAttachment`).
  *
  * They belong to the draft rather than to a composer, so leaving does not stop
@@ -98,18 +101,23 @@ class StagedFiles {
   readonly client: HostClient;
   readonly #scope: string;
   readonly #deploymentId: string;
+  #draftEditId: string | undefined;
   #state: State = noState;
   #unchecked: string[] = [];
   /** Its draft was discarded and may yet be taken back: uploads go on, the draft is left alone. */
   #asideFromDraft = false;
   readonly #records = new Map<string, StagedRecord>();
   readonly #listeners = new Set<() => void>();
+  #unwatch: (() => void) | null = null;
+  #readyRevision: number | null = null;
 
   constructor(target: AttachmentTarget) {
     this.client = target.client;
     this.#scope = target.scope;
     this.#deploymentId = target.deploymentId;
-    const saved = composerDrafts.read(target.scope)?.files ?? [];
+    const draft = composerDrafts.read(target.scope);
+    this.#draftEditId = draft?.editId;
+    const saved = draft?.files ?? [];
     if (saved.length > 0)
       this.#state = { items: saved.map((file) => this.#saved(file)), notice: null };
   }
@@ -121,6 +129,7 @@ class StagedFiles {
     this.#records.set(localId, {
       attachmentId: part?.artifactId ?? null,
       controller: null,
+      interruptedAt: null,
       mediaType: file.mediaType,
       name: file.name,
       part,
@@ -146,11 +155,55 @@ class StagedFiles {
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
+    this.#watch();
     return () => {
       this.#listeners.delete(listener);
       this.#dropIfIdle();
     };
   };
+
+  #ready(): boolean {
+    return this.client.connection.getSnapshot().phase === "ready";
+  }
+
+  /** Files that waited for the connection, or that it dropped, go again once it is back. */
+  #watch(): void {
+    if (this.#unwatch) return;
+    this.#readyRevision = this.client.connection.getSnapshot().readyRevision;
+    this.#unwatch = this.client.connection.subscribe(() => {
+      const { phase, readyRevision } = this.client.connection.getSnapshot();
+      if (phase !== "ready" || readyRevision === this.#readyRevision) return;
+      this.#readyRevision = readyRevision;
+      for (const item of this.#state.items) {
+        const record = this.#records.get(item.localId);
+        if (!record || record.controller) continue;
+        const interrupted =
+          item.status === "failed" &&
+          record.interruptedAt !== null &&
+          record.interruptedAt < readyRevision;
+        if (item.status === "waiting" || interrupted) this.retry(item.localId);
+      }
+    });
+  }
+
+  /** Whether a failure is the connection's, and if so, parks the file as waiting. */
+  #interrupted(
+    localId: string,
+    record: StagedRecord,
+    revision: number,
+    failure: ClientFailure,
+  ): boolean {
+    if (failure.kind !== "transport") return false;
+    const connection = this.client.connection.getSnapshot();
+    record.interruptedAt = revision;
+    if (connection.phase === "ready") {
+      if (connection.readyRevision === revision) return false;
+      this.retry(localId);
+      return true;
+    }
+    this.#patch(localId, { error: null, part: null, retryable: false, status: "waiting" });
+    return true;
+  }
 
   readonly snapshot = (): State => this.#state;
 
@@ -171,11 +224,14 @@ class StagedFiles {
 
   takeBack(): void {
     if (sessions.get(this.#scope) !== this) return;
+    this.#draftEditId = composerDrafts.read(this.#scope)?.editId;
     this.#asideFromDraft = false;
     this.#saveFiles();
   }
 
   dispose(): void {
+    this.#unwatch?.();
+    this.#unwatch = null;
     for (const record of this.#records.values()) forget(record);
     this.#records.clear();
     this.#unchecked = [];
@@ -184,6 +240,8 @@ class StagedFiles {
 
   #dropIfIdle(): void {
     if (this.#listeners.size > 0 || this.#records.size > 0) return;
+    this.#unwatch?.();
+    this.#unwatch = null;
     if (sessions.get(this.#scope) === this) sessions.delete(this.#scope);
   }
 
@@ -195,14 +253,19 @@ class StagedFiles {
   }
 
   #saveFiles(): void {
-    composerDrafts.update(this.#scope, {
-      files: this.#state.items.map((item) => ({
-        mediaType: item.mediaType,
-        name: item.name,
-        part: item.part ?? this.#records.get(item.localId)?.part ?? null,
-        sizeBytes: item.sizeBytes,
-      })),
-    });
+    const files = this.#state.items.map((item) => ({
+      mediaType: item.mediaType,
+      name: item.name,
+      part: item.part ?? this.#records.get(item.localId)?.part ?? null,
+      sizeBytes: item.sizeBytes,
+    }));
+    void composerDrafts
+      .transaction((drafts) => {
+        if (this.#asideFromDraft || sessions.get(this.#scope) !== this) return;
+        if (drafts.update(this.#scope, { files }, this.#draftEditId))
+          this.#draftEditId = drafts.read(this.#scope)?.editId;
+      })
+      .catch(() => {});
   }
 
   #patch(localId: string, change: Partial<StagedAttachment>): void {
@@ -261,7 +324,14 @@ class StagedFiles {
     const source = record?.source;
     if (!record || !source) return;
     record.controller?.abort();
+    record.controller = null;
+    record.interruptedAt = null;
+    if (!this.#ready()) {
+      this.#patch(localId, { error: null, part: null, retryable: false, status: "waiting" });
+      return;
+    }
     const controller = new AbortController();
+    const revision = this.client.connection.getSnapshot().readyRevision;
     record.controller = controller;
     const deploymentId = this.#deploymentId;
     this.#patch(localId, { error: null, part: null, retryable: false, status: "uploading" });
@@ -292,9 +362,13 @@ class StagedFiles {
         (error: unknown) => {
           if (controller.signal.aborted) return;
           record.controller = null;
+          const failure = classifyClientFailure(error);
+          if (this.#interrupted(localId, record, revision, failure)) return;
           this.#patch(localId, {
-            error: uploadFailure(error),
-            retryable: retryable(error),
+            error: uploadFailure(),
+            retryable:
+              !(error instanceof UploadPreparationError) &&
+              (failure.provenance !== "host" || failure.retryable || failure.code === "not_found"),
             status: "failed",
           });
         },
@@ -304,7 +378,15 @@ class StagedFiles {
   #check(localId: string): void {
     const record = this.#records.get(localId);
     if (!record?.attachmentId) return;
+    record.controller?.abort();
+    record.controller = null;
+    record.interruptedAt = null;
+    if (!this.#ready()) {
+      this.#patch(localId, { error: null, retryable: false, status: "waiting" });
+      return;
+    }
     const controller = new AbortController();
+    const revision = this.client.connection.getSnapshot().readyRevision;
     record.controller = controller;
     this.#patch(localId, { error: null, retryable: false, status: "checking" });
     void recheck(this.client, record.attachmentId, record.mediaType, controller.signal).then(
@@ -321,12 +403,14 @@ class StagedFiles {
       (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
-        const again = retryable(error) && !isNotFound(error);
+        const failure = classifyClientFailure(error);
+        if (this.#interrupted(localId, record, revision, failure)) return;
+        const gone = isMissingClientResource(failure);
         this.#patch(localId, {
-          error: again
-            ? "This file couldn't be checked. Try again."
-            : "This file is no longer available. Remove it and attach it again.",
-          retryable: again,
+          error: gone
+            ? "This file is no longer available. Remove it and attach it again."
+            : "This file couldn't be checked. Try again.",
+          retryable: !gone,
           status: "failed",
         });
       },
@@ -360,6 +444,7 @@ class StagedFiles {
         const record: StagedRecord = {
           attachmentId: null,
           controller: null,
+          interruptedAt: null,
           mediaType: mediaType.success ? mediaType.data : fallbackMediaType,
           name: name.data,
           part: null,
@@ -391,6 +476,7 @@ class StagedFiles {
       items: added.length > 0 ? [...this.#state.items, ...added] : this.#state.items,
       notice: refused.length > 0 ? `Not added: ${refused.join(" ")}` : null,
     });
+    this.#watch();
     for (const item of added) this.#upload(item.localId);
   };
 
@@ -405,6 +491,7 @@ class StagedFiles {
       }),
     );
     this.#set({ items: [...added, ...this.#state.items], notice: null });
+    this.#watch();
     this.begin();
   };
 
@@ -561,21 +648,7 @@ function defaultName(mediaType: string): string {
   return subtype ? `pasted.${subtype}` : "pasted-file";
 }
 
-function uploadFailure(error: unknown): string {
-  if (error instanceof HostClientRequestError) return error.message;
-  // A local fault's own words mean nothing to the person, and say nothing about the connection.
-  if (error instanceof TypeError) return "The upload did not finish. Try again.";
-  return error instanceof Error && error.message ? error.message : "The upload did not finish.";
-}
-
-function isNotFound(error: unknown): boolean {
-  return error instanceof HostClientRequestError && error.status === 404;
-}
-
-function retryable(error: unknown): boolean {
-  if (error instanceof UploadPreparationError) return false;
-  if (!(error instanceof HostClientRequestError)) return true;
-  return (
-    error.status >= 500 || error.status === 404 || error.status === 408 || error.status === 429
-  );
+/** The file's own fact, never the exception's text or the connection's. */
+function uploadFailure(): string {
+  return "Couldn’t upload this file.";
 }

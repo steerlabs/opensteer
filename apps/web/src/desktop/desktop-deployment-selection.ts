@@ -2,11 +2,8 @@ import type {
   DeploymentAccessDeployment,
   DeploymentAccessSnapshot,
   DesktopDeploymentSummary,
-  DesktopSelectDeploymentInput,
-  OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import type { DeploymentStatusInfo } from "@opensteer/protocol/deployment-status";
-import { actionErrorMessage } from "../ui-utils.js";
 
 export function acceptDesktopDeploymentSelection(
   current: DeploymentAccessSnapshot | null,
@@ -84,27 +81,4 @@ export function deploymentConnectionStatusInfo(
     return { reason: "Finish signing in in your browser.", status: "starting" };
   }
   return deployment.statusInfo;
-}
-
-/**
- * The outcome of asking the Desktop to attach to another deployment.
- *
- * Selecting can be refused — another operation already holds the machine, the
- * entry went away, the Host would not answer — and the refusal used to be
- * swallowed into `false`, which left the popover open with no explanation and
- * nothing to read. The reason travels back so the caller can show it.
- */
-type ChooseDeploymentResult =
-  { readonly ok: true } | { readonly ok: false; readonly reason: string };
-
-export async function chooseDeployment(
-  bridge: Pick<OpensteerDesktopBridge, "select">,
-  deploymentId: DesktopSelectDeploymentInput["deploymentId"],
-): Promise<ChooseDeploymentResult> {
-  try {
-    await bridge.select({ deploymentId });
-    return { ok: true };
-  } catch (reason) {
-    return { ok: false, reason: actionErrorMessage(reason) };
-  }
 }
