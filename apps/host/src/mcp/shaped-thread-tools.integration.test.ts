@@ -1462,6 +1462,8 @@ describeStore("shaped agent task tools", (it) => {
       storeFixture,
     }) => {
       const s = await waitingTask(storeFixture, `wait-held-${ending}`);
+      const registered = Promise.withResolvers<void>();
+      s.checkLive.mockImplementationOnce(async () => registered.resolve());
       const abort = new AbortController();
       const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
         s.wait(2_000, s.caller, abort.signal),
@@ -1470,7 +1472,9 @@ describeStore("shaped agent task tools", (it) => {
         (value) => ({ value }),
         (error) => ({ error }),
       );
-      await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+      await withTimeout(registered.promise, 1_000, {
+        timeoutError: () => new Error("Task result wait was not registered"),
+      });
       await s.settle();
       await storeFixture.store.drainAssignmentReturn(s.assignmentId);
       const during = await s.returns();

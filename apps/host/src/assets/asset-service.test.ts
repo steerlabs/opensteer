@@ -261,7 +261,9 @@ it("rejects v1 claims and rechecks session, thread and revision even with a cach
 
 it("caps high-entropy previews and preserves literal percent filenames without a second decode", async () => {
   const p = path.join(root, "home/noise%20image.png");
-  await sharp(randomBytes(1280 * 1280 * 3), { raw: { width: 1280, height: 1280, channels: 3 } })
+  const pixels = Buffer.alloc(1280 * 1280 * 3);
+  randomBytes(1280 * 704 * 3).copy(pixels);
+  await sharp(pixels, { raw: { width: 1280, height: 1280, channels: 3 } })
     .png({ compressionLevel: 0 })
     .toFile(p);
   const image = await mint(p, "preview");
