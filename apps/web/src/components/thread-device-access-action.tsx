@@ -189,7 +189,6 @@ export function ThreadDeviceAccessAction({
       <ActionNote>
         Turning it on may still need an app, browser profile or macOS permission.
       </ActionNote>
-      {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
         <button
           className="btn"
@@ -208,6 +207,7 @@ export function ThreadDeviceAccessAction({
           {pending === "on" ? "Turning on…" : "Turn it on"}
         </button>
       </div>
+      {error ? <ActionNote alert>{error}</ActionNote> : null}
     </>
   );
 }

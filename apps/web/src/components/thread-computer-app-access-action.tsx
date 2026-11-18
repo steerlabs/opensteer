@@ -105,7 +105,6 @@ export function ThreadComputerAppAccessAction({
     <>
       {approval.dialog}
       <ActionNote>{`${computerUseAccessLabel[access]} · ${approveOn}`}</ActionNote>
-      {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
         {
           <button
@@ -126,6 +125,7 @@ export function ThreadComputerAppAccessAction({
           {busy === "decline" ? "Declining…" : "Decline"}
         </button>
       </div>
+      {error ? <ActionNote alert>{error}</ActionNote> : null}
     </>
   );
 }

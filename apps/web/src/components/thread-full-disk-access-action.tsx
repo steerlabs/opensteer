@@ -76,7 +76,6 @@ export function ThreadFullDiskAccessAction({
   return (
     <>
       <ActionNote>{fullAccessRequestBody(machineName)}</ActionNote>
-      {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
         <button
           className="btn"
@@ -99,6 +98,7 @@ export function ThreadFullDiskAccessAction({
           </button>
         ) : null}
       </div>
+      {error ? <ActionNote alert>{error}</ActionNote> : null}
       {reviewing && desktopBridge ? (
         <MacOsPermissionReviewDialog
           bridge={desktopBridge}
