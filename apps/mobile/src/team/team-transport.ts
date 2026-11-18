@@ -14,7 +14,12 @@ import {
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
-import { TeamFileSchema, teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
+import {
+  fileTransferHeadersTimeoutMs,
+  TeamFileSchema,
+  teamPreviewMaxBytes,
+  teamUploadMaxBytes,
+} from "@opensteer/protocol";
 import type { TeamTransport } from "./mobile-teams.js";
 
 /**
@@ -95,6 +100,7 @@ export function networkTeamTransport(options: {
             path: `/v1/team/files/${metadata.id}/${part}`,
             method: "GET",
             headers: { additional: { [teamApiVersionHeader]: String(teamApiVersion) } },
+            timeoutMs: fileTransferHeadersTimeoutMs,
             ...(signal === undefined ? {} : { signal }),
           },
           async (response) => {

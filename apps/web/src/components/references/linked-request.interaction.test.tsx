@@ -62,8 +62,10 @@ async function openLink(answer: Request) {
       }),
   );
   const client = {
+    getSnapshot: () => ({ network: "online" }),
     readRequest,
     references: { unavailable: vi.fn() },
+    subscribe: () => () => undefined,
   } as unknown as HostClient;
   const onPending = vi.fn();
   const router = createMemoryRouter(

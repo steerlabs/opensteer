@@ -38,6 +38,7 @@ import {
   TeamInviteSecretSchema,
   TeamOriginSchema,
 } from "@opensteer/core";
+import type { DeploymentId } from "@opensteer/core";
 import { z } from "zod";
 import {
   HostAccountAdoptionAuthoritySchema,
@@ -1105,141 +1106,71 @@ function boundedUtf8String(minimumBytes: number, maximumBytes: number) {
     }, `Value must contain between ${minimumBytes} and ${maximumBytes} UTF-8 bytes`);
 }
 
-const DesktopAcceptHeaderSchema = z.string().regex(/^[\x20-\x7e]{1,255}$/u);
-const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
-/** A version the calling client states, relayed as it was sent. */
-const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
-
-export const DesktopHostHttpRequestSchema = z.strictObject({
-  expectedDeploymentId: DeploymentIdSchema.optional(),
-  body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
-  headers: z.strictObject({
-    accept: DesktopAcceptHeaderSchema.optional(),
-    apiVersion: DesktopApiVersionSchema.optional(),
-    apiCurrent: DesktopApiVersionSchema.optional(),
-    bootstrapDiagnostics: z
-      .string()
-      .regex(/^[\x20-\x7e]{1,2048}$/u)
-      .optional(),
-    contentType: z.literal("application/json").optional(),
-    idempotencyKey: DesktopIdempotencyKeySchema.optional(),
-  }),
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  path: DesktopHostPathSchema,
-  timeoutMs: z.number().int().min(1).max(120_000).optional(),
+/**
+ * The bundled UI reaches its Hosts with ordinary `fetch` requests to this
+ * route, which desktop main answers with the Host's own response. The pin is
+ * in the address, so every request names the Deployment it was made for.
+ */
+export const desktopHostRouteOrigin = "app://opensteer";
+const desktopHostRoutePrefix = "/host/";
+/** Main names a transport failure here because a protocol response cannot throw one. */
+export const desktopHostTransportErrorHeader = "x-opensteer-desktop-transport-error";
+export const DesktopHostTransportErrorCodeSchema = z.enum([
+  "response-too-large",
+  "timed-out",
+  "deployment-changed",
+  "cancelled",
+  "unreachable",
+]);
+/**
+ * Electron hands main a fresh Request without the renderer's abort signal, so
+ * each request carries an unguessable id the renderer cancels it by.
+ */
+export const desktopHostRequestIdHeader = "x-opensteer-desktop-request";
+export const DesktopHostRequestIdSchema = z.uuid();
+export const DesktopCancelHostRequestInputSchema = z.strictObject({
+  requestId: DesktopHostRequestIdSchema,
 });
-export type DesktopHostHttpRequest = z.infer<typeof DesktopHostHttpRequestSchema>;
-
-export const DesktopHostHttpResponseSchema = z.strictObject({
-  body: boundedUtf8String(0, 16 * 1_024 * 1_024),
-  headers: z.strictObject({ contentType: z.string().min(1).max(255).nullable() }),
-  status: z.number().int().min(100).max(599),
-});
-export type DesktopHostHttpResponse = z.infer<typeof DesktopHostHttpResponseSchema>;
-
-export const DesktopHostTransportFailureSchema = z.strictObject({
-  ok: z.literal(false),
-  error: z.strictObject({
-    code: z.enum([
-      "response-too-large",
-      "timed-out",
-      "deployment-changed",
-      "cancelled",
-      "unreachable",
-    ]),
-  }),
-});
-export type DesktopHostTransportFailure = z.infer<typeof DesktopHostTransportFailureSchema>;
-
-export type DesktopHostResult<Data> =
-  { readonly ok: true; readonly data: Data } | DesktopHostTransportFailure;
-
-function desktopHostResultSchema<Schema extends z.ZodType>(data: Schema) {
-  return z.discriminatedUnion("ok", [
-    z.strictObject({ ok: z.literal(true), data }),
-    DesktopHostTransportFailureSchema,
-  ]);
+export type DesktopCancelHostRequestInput = z.infer<typeof DesktopCancelHostRequestInputSchema>;
+/** The routes whose bodies are file bytes: the Host API's binary requests and team uploads. */
+export function isDesktopHostUploadPath(pathname: string): boolean {
+  return pathname === "/v1/rpc/attachment.upload" || pathname.startsWith("/v1/team/files/upload/");
 }
 
-export const DesktopHostHttpResultSchema = desktopHostResultSchema(DesktopHostHttpResponseSchema);
-export const DesktopHostVoidResultSchema = desktopHostResultSchema(z.null());
+export function desktopHostRouteUrl(deploymentId: DeploymentId, hostUrl: URL): string {
+  return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}${deploymentId}${hostUrl.pathname}${hostUrl.search}`;
+}
 
-const DesktopHostBinaryTransferIdSchema = z.string().uuid();
-const DesktopHostBinaryChunkSchema = z
-  .instanceof(Uint8Array)
-  .refine((bytes) => bytes.byteLength <= 256 * 1_024);
-
-/** A bounded byte stream over IPC, scoped to the renderer that opened it. */
-const teamFileReadPath = /^\/v1\/team\/files\/[A-Za-z0-9_-]{1,128}\/(?:preview|original)$/u;
-const teamFileUploadPath = /^\/v1\/team\/files\/upload\/[A-Za-z0-9_-]{1,128}$/u;
-export const DesktopHostBinaryOpenInputSchema = z
-  .strictObject({
-    /** A joined team's own Host, pinned; absent, the selected Deployment. */
-    expectedDeploymentId: DeploymentIdSchema.optional(),
-    headers: z.strictObject({
-      accept: DesktopAcceptHeaderSchema.optional(),
-      apiVersion: DesktopApiVersionSchema.optional(),
-      apiCurrent: DesktopApiVersionSchema.optional(),
-      contentType: z.literal("application/octet-stream").optional(),
-      teamUpload: z.string().min(1).max(2048).optional(),
-    }),
-    method: z.enum(["GET", "POST"]),
-    path: DesktopHostPathSchema,
-    timeoutMs: z.number().int().min(1).max(120_000).optional(),
-  })
-  .refine(
-    (input) =>
-      (input.headers.teamUpload === undefined || teamFileUploadPath.test(input.path)) &&
-      (input.method === "GET"
-        ? input.path.startsWith("/v1/rpc/attachment.content?input=") ||
-          teamFileReadPath.test(input.path)
-        : input.headers.contentType === "application/octet-stream" &&
-          (input.path.startsWith("/v1/rpc/attachment.upload?input=") ||
-            teamFileUploadPath.test(input.path))),
-    "Binary Host transfer must use an attachment or team file route",
-  );
-export type DesktopHostBinaryOpenInput = z.infer<typeof DesktopHostBinaryOpenInputSchema>;
-export const DesktopHostBinaryOpenResultSchema = z.strictObject({
-  transferId: DesktopHostBinaryTransferIdSchema,
-});
-export type DesktopHostBinaryOpenResult = z.infer<typeof DesktopHostBinaryOpenResultSchema>;
-export const DesktopHostBinaryWriteInputSchema = z.strictObject({
-  bytes: DesktopHostBinaryChunkSchema,
-  transferId: DesktopHostBinaryTransferIdSchema,
-});
-export type DesktopHostBinaryWriteInput = z.infer<typeof DesktopHostBinaryWriteInputSchema>;
-export const DesktopHostBinaryTransferInputSchema = z.strictObject({
-  transferId: DesktopHostBinaryTransferIdSchema,
-});
-export type DesktopHostBinaryTransferInput = z.infer<typeof DesktopHostBinaryTransferInputSchema>;
-export const DesktopHostBinaryReadResultSchema = z.strictObject({
-  bytes: DesktopHostBinaryChunkSchema,
-  contentType: z.string().min(1).max(255).nullable(),
-  done: z.boolean(),
-  etag: z.string().min(1).max(255).nullable(),
-  fileSizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
-  fileTruncated: z.boolean().nullable(),
-  lastModified: z.string().min(1).max(255).nullable(),
-  sizeBytes: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(100 * 1_024 * 1_024 + 64 * 1_024)
-    .nullable(),
-  status: z.number().int().min(100).max(599),
-});
-export type DesktopHostBinaryReadResult = z.infer<typeof DesktopHostBinaryReadResultSchema>;
-
-export const DesktopHostBinaryOpenResponseSchema = desktopHostResultSchema(
-  DesktopHostBinaryOpenResultSchema,
-);
-export const DesktopHostBinaryReadResponseSchema = desktopHostResultSchema(
-  DesktopHostBinaryReadResultSchema,
-);
+export function parseDesktopHostRoute(
+  value: string,
+): { readonly deploymentId: DeploymentId; readonly path: string } | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  // Only Chromium knows `app` as a standard scheme; elsewhere its origin reads as opaque.
+  if (
+    url.protocol !== "app:" ||
+    url.host !== "opensteer" ||
+    url.username ||
+    url.password ||
+    url.hash
+  )
+    return null;
+  const match = /^\/host\/([^/]+)(\/.*)$/u.exec(url.pathname);
+  if (!match) return null;
+  const deploymentId = DeploymentIdSchema.safeParse(match[1]);
+  const path = DesktopHostPathSchema.safeParse(`${match[2]}${url.search}`);
+  return deploymentId.success && path.success
+    ? { deploymentId: deploymentId.data, path: path.data }
+    : null;
+}
 
 export const DesktopOpenHostWebSocketInputSchema = z.strictObject({
-  /** A joined team's own Host, pinned; absent, the selected Deployment. */
-  expectedDeploymentId: DeploymentIdSchema.optional(),
+  /** The Deployment the socket was opened for: the selected one or a joined team's own Host. */
+  expectedDeploymentId: DeploymentIdSchema,
   path: DesktopHostPathSchema,
 });
 export type DesktopOpenHostWebSocketInput = z.infer<typeof DesktopOpenHostWebSocketInputSchema>;
@@ -1979,23 +1910,13 @@ export interface OpensteerDesktopBridge {
   closeComputerUsePermissionsPanel(): Promise<void>;
   addDirect(input: DesktopAddDirectRouteInput): Promise<void>;
   cancel(): Promise<void>;
+  /** Abandons one Host request main is forwarding for this renderer. */
+  cancelHostRequest(input: DesktopCancelHostRequestInput): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
   createPersonalDeployment(input?: DesktopCreatePersonalDeploymentInput): Promise<void>;
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
-  hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
-  hostBinaryOpen(
-    input: DesktopHostBinaryOpenInput,
-  ): Promise<DesktopHostResult<DesktopHostBinaryOpenResult>>;
-  hostBinaryWrite(input: DesktopHostBinaryWriteInput): Promise<DesktopHostResult<null>>;
-  hostBinaryFinish(
-    input: DesktopHostBinaryTransferInput,
-  ): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
-  hostBinaryRead(
-    input: DesktopHostBinaryTransferInput,
-  ): Promise<DesktopHostResult<DesktopHostBinaryReadResult>>;
-  hostBinaryClose(input: DesktopHostBinaryTransferInput): Promise<DesktopHostResult<null>>;
   onDeploymentAccessSnapshotChanged(
     listener: (snapshot: DeploymentAccessSnapshot) => void,
   ): () => void;

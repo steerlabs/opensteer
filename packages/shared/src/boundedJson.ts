@@ -26,7 +26,7 @@ export function createBoundedResponseReader() {
   async function readBoundedResponse(
     response: Response,
     options: BoundedResponseOptions,
-  ): Promise<Uint8Array> {
+  ): Promise<Uint8Array<ArrayBuffer>> {
     const chunks: Uint8Array[] = [];
     const total = await forEachBoundedResponseChunk(response, options, (chunk) => {
       chunks.push(chunk);

@@ -93,7 +93,7 @@ interface DesktopTransport {
   }>;
   sendWebSocket(ownerId: number, input: unknown): void;
   closeWebSocket(ownerId: number, input: unknown): void;
-  request(input: unknown): Promise<unknown>;
+  cancelRequest(input: unknown): void;
   selection(): Promise<unknown>;
 }
 interface DesktopApp {
@@ -323,6 +323,7 @@ async function desktopApp(
   const desktopTransportPath = "../../../desktop/src/connections/host-transport.js";
   const desktopProjectionPath = "../../../desktop/src/connections/access-projection.js";
   const webTransportPath = "../../../web/src/desktop/desktop-host-transport.js";
+  const hostRoutePath = "../../../desktop/src/app/host-route.js";
   const connectionsPath = "@opensteer/client/connections";
   const testSupportPath = "@opensteer/client/test-support";
   const hostClientPath = "@opensteer/client/host";
@@ -333,6 +334,7 @@ async function desktopApp(
     connections,
     { testDiscoveryEnvelope },
     { HttpHostClient },
+    { forwardHostRoute },
   ] = (await Promise.all([
     import(desktopTransportPath),
     import(desktopProjectionPath),
@@ -340,6 +342,7 @@ async function desktopApp(
     import(connectionsPath),
     import(testSupportPath),
     import(hostClientPath),
+    import(hostRoutePath),
   ])) as [
     {
       DesktopHostTransport: new (options: unknown) => DesktopTransport;
@@ -351,10 +354,13 @@ async function desktopApp(
       createDesktopHostFetch: (
         bridge: OpensteerDesktopBridge,
         canonicalOrigin: string,
+        deploymentId: string,
+        fetch: typeof globalThis.fetch,
       ) => typeof globalThis.fetch;
       createDesktopHostWebSocketFactory: (
         bridge: OpensteerDesktopBridge,
         canonicalOrigin: string,
+        deploymentId: string,
       ) => (url: string) => unknown;
     },
     {
@@ -374,6 +380,9 @@ async function desktopApp(
     },
     {
       HttpHostClient: new (options: Record<string, unknown>) => ViewerClient;
+    },
+    {
+      forwardHostRoute: (request: Request, transport: DesktopTransport) => Promise<Response>;
     },
   ];
   const now = new Date(startedAt).toISOString();
@@ -577,24 +586,8 @@ async function desktopApp(
     return structuredClone(await operation());
   };
   const bridge = {
+    cancelHostRequest: (input: unknown) => invoke(() => transport.cancelRequest(input)),
     closeHostWebSocket: (input: unknown) => invoke(() => transport.closeWebSocket(ownerId, input)),
-    hostRequest: (input: unknown) =>
-      invoke(async () => {
-        try {
-          return {
-            data: await transport.request(input),
-            ok: true,
-          };
-        } catch (error) {
-          if (!(error instanceof connections.HostTransportError)) throw error;
-          return {
-            error: {
-              code: error.code,
-            },
-            ok: false,
-          };
-        }
-      }),
     onHostWebSocketEvent: (listener: (event: unknown) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -605,7 +598,13 @@ async function desktopApp(
   } as unknown as OpensteerDesktopBridge;
   const client = new HttpHostClient({
     baseUrl: new URL(canonicalOrigin),
-    fetch: web.createDesktopHostFetch(bridge, canonicalOrigin),
+    // Main's Host route, reached the way the bundled app's frame reaches it.
+    fetch: web.createDesktopHostFetch(bridge, canonicalOrigin, deploymentId, async (input, init) =>
+      forwardHostRoute(
+        Object.assign(new Request(input, init), { initiatorOrigin: "app://opensteer" }),
+        transport,
+      ),
+    ),
     ...(liveness
       ? {
           realtimeLiveness: liveness,
@@ -615,7 +614,7 @@ async function desktopApp(
     reconnectMaxDelayMs: 200,
     // The person's app polls; the poll must not be what repairs a channel.
     refreshIntervalMs: 60_000,
-    webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin),
+    webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin, deploymentId),
   });
   const realtimeSockets = () => sockets.filter((record) => record.path === "/v1/realtime");
   let restoreDeployments: readonly Record<string, unknown>[] | null = null;

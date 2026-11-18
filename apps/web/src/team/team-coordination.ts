@@ -13,6 +13,7 @@ import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opens
 import { AccountRequestError } from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
+  hostUnanswered,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -110,7 +111,6 @@ export function desktopTeamSessions(
     if (!origin) throw new Error("Open the team on this computer first.");
     const client = createHttpHostApiClient({
       baseUrl: new URL(origin),
-      bufferedResponses: true,
       fetch: (url, init) =>
         createDesktopHostFetch(
           bridge,
@@ -204,11 +204,12 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
   const links = new PersonalTeamLinks(hostClient.rpc);
   return {
     join: async (_personal, offer) => {
-      if (hostClient.getSnapshot().connection !== "connected") return { kind: "offline" };
       try {
         return { kind: "joined", link: await links.join(offer) };
       } catch (error) {
-        if (error instanceof TypeError) return { kind: "offline" };
+        // Only no answer from this Opensteer is it being offline; a refusal it sends, even
+        // that it can't reach the team, is reported.
+        if (hostUnanswered(error)) return { kind: "offline" };
         throw error;
       }
     },

@@ -622,7 +622,7 @@ function PeoplePicker(props: {
             </AppText>
             <AppText role="secondary" style={styles.centered} tone="muted">
               {people.status === "failed"
-                ? `Check your connection to ${props.teamName} and try again.`
+                ? "Try again in a moment."
                 : `Invite people to ${props.teamName}, then you can pick them here.`}
             </AppText>
           </>

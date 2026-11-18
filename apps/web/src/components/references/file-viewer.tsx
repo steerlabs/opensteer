@@ -5,11 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { HostClient } from "@opensteer/client/host";
-import type { TranscriptFileState } from "@opensteer/client/host";
+import { failureNotice, type HostClient, type TranscriptFileState } from "@opensteer/client/host";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { fileIcon, type FileOpenInput } from "@opensteer/client/references";
 import type { ThreadId } from "@opensteer/core";
@@ -79,7 +79,8 @@ export function FileViewer({
     );
     return () => controller.abort();
   }, [client, threadId, sourceKey, attempt]);
-  const shown = state?.status === "offline" ? state.cached : state?.status === "ok" ? state : null;
+  const shown =
+    state?.status === "unreachable" ? state.cached : state?.status === "ok" ? state : null;
   const parts = pathParts(input.source);
   const name = shown?.name ? (shown.name.split(/[\\/]/u).at(-1) ?? shown.name) : parts.name;
   const retry = () => setAttempt((value) => value + 1);
@@ -204,6 +205,11 @@ function FileBody({
   readonly state: TranscriptFileState | null;
   readonly threadId: ThreadId | null;
 }) {
+  const network = useSyncExternalStore(
+    client.subscribe,
+    () => client.getSnapshot().network,
+    () => client.getSnapshot().network,
+  );
   if (state === null)
     return (
       <div aria-label="Loading file" className="file-viewer__skeleton" role="status">
@@ -230,12 +236,14 @@ function FileBody({
           title="Couldn't open this file"
         />
       );
-    case "offline":
+    case "unreachable": {
+      const notice = failureNotice("unavailable", network);
+      const offline = notice.tone === "offline";
       return state.cached && state.cached.preview.kind === "text" ? (
         <>
           <p className="file-viewer__banner" role="status">
-            <Icon name="cloud-off" />
-            You're offline. This is the copy you opened before.
+            <Icon name={offline ? "cloud-off" : "alert-circle"} />
+            {notice.title}. This is the copy you opened before.
             <RetryButton retry={retry} />
           </p>
           <TextLines input={input} text={state.cached.preview.text} />
@@ -243,11 +251,12 @@ function FileBody({
       ) : (
         <ViewerState
           action={<RetryButton retry={retry} />}
-          body="Reconnect to open this file."
-          icon="cloud-off"
-          title="You're offline"
+          body={notice.body}
+          icon={offline ? "cloud-off" : "alert-circle"}
+          title={notice.title}
         />
       );
+    }
     case "ok": {
       const { preview } = state;
       if (preview.kind === "text")
@@ -492,8 +501,8 @@ function DownloadButton({
         if (result.status !== "ok") {
           if (mounted.current)
             setError(
-              result.status === "offline"
-                ? "You're offline."
+              result.status === "unreachable"
+                ? `${failureNotice("unavailable", client.getSnapshot().network).title}.`
                 : result.status === "unavailable"
                   ? "This file isn't available."
                   : "Couldn't download this file.",

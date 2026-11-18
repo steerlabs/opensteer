@@ -351,7 +351,7 @@ function PeoplePicker({
         </p>
         <p className="people-picker__empty-detail">
           {view.people === "failed"
-            ? `Check your connection to ${teamName} and try again.`
+            ? "Try again in a moment."
             : `Invite people to ${teamName}, then you can pick them here.`}
         </p>
         {view.people !== "failed" && onInvite ? (

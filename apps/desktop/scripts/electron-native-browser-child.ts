@@ -48,12 +48,14 @@ import {
   BrowserSessionIdSchema,
   BrowserServerMessageSchema,
 } from "@opensteer/protocol";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 import { BrowserController, type NativePresentationSource } from "@opensteer/browser-runtime-core";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
+import { forwardHostRoute } from "../src/app/host-route.js";
 import {
   configureDesktopSession,
   ElectronWindowFactory,
@@ -947,7 +949,12 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     access.dispose();
   });
   const bridgeToken = randomBytes(32).toString("base64url");
-  const uninstallProtocol = installDesktopAppProtocol(protocol, path.join(desktop, "dist/web"));
+  const uninstallProtocol = installDesktopAppProtocol(
+    protocol,
+    path.join(desktop, "dist/web"),
+    undefined,
+    { host: (request) => forwardHostRoute(request, transport) },
+  );
   cleanup.push(function uninstallDesktopProtocol() {
     uninstallProtocol();
   });
@@ -1138,7 +1145,8 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     let denial: unknown = null;
     try {
       await evaluateApp(
-        "window.opensteerDesktop.hostRequest({method:'GET',path:'/.well-known/opensteer',headers:{accept:'application/json'}})",
+        // The renderer's own Host route, as the app reaches it: a /v1 read with its request id.
+        `fetch(${JSON.stringify(`app://opensteer/host/${manifest.deploymentId}/v1/rpc/auth.config?input=%7B%7D`)}, { headers: { ${JSON.stringify(desktopHostRequestIdHeader)}: crypto.randomUUID() } }).then((response) => { if (!response.ok) throw new Error("refused with " + response.status); })`,
       );
     } catch (error) {
       denial = errorText(error);
@@ -1151,7 +1159,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       artifacts.event("capture.failure", { error: errorText(error) });
     }
     const blockedReason = denial
-      ? `Native mount setup failed; descriptor preload request rejected: ${String(denial)}`
+      ? `Native mount setup failed; the app's Host route request was rejected: ${String(denial)}`
       : `Native mount setup failed after descriptor access succeeded; ${authorityEvents.some((event) => event.type === "admitted") ? "Host snapshot admitted" : "no Host snapshot admission observed"}; ${presentationEvents.length} presentation events; ${
           outgoing
             .filter((item) => item.type === "stream.subscribe")

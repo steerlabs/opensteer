@@ -16,6 +16,7 @@ import {
   resolveConnection,
   type DeploymentCatalog,
   type HostNetwork,
+  type HostTransport,
 } from "@opensteer/client/connections";
 import { HostSessionExchange } from "@opensteer/client/auth";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
@@ -30,16 +31,10 @@ import { readBoundedText } from "@opensteer/shared/boundedJson";
 import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
-import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
+import { forwardHostRoute } from "../src/app/host-route.js";
 import type { DesktopBridgeContext } from "../src/bridge/context.js";
-import {
-  handleHostBinaryClose,
-  handleHostBinaryFinish,
-  handleHostBinaryOpen,
-  handleHostBinaryRead,
-  handleHostBinaryWrite,
-  handleHostRequest,
-} from "../src/bridge/methods/host.js";
+import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
+import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
 
 const root = mkdtempSync(
@@ -107,6 +102,8 @@ async function run(): Promise<void> {
       url.pathname === "/v1/oversized-unauthorized" ||
       url.pathname === "/v1/stalled-unauthorized";
     const session = url.pathname === "/v1/auth/session-exchange";
+    // No headers at all, so only the renderer's cancel can end it.
+    if (url.pathname === "/v1/withheld") return;
     const stall =
       url.pathname === "/v1/stall" ||
       url.pathname === "/v1/stalled-unauthorized" ||
@@ -223,8 +220,20 @@ async function run(): Promise<void> {
       ...(sessions ? { sessions } : {}),
     });
   const transport = makeTransport();
-  const request = (target: string) =>
-    transport.request({ headers: {}, method: "GET", path: target, timeoutMs: 500 });
+  // Main-side cases read as a Host consumer would, under the client's own response cap.
+  const read = (
+    subject: HostTransport,
+    input: { readonly path: string; readonly timeoutMs: number },
+  ) =>
+    subject.exchange({ headers: {}, method: "GET", ...input }, async (response, progress) => ({
+      status: response.status,
+      body: await readBoundedText(response, {
+        ...progress,
+        maximumBytes: 16 * 1_024 * 1_024,
+        sizeError: () => new HostTransportError("response-too-large"),
+      }),
+    }));
+  const request = (target: string) => read(transport, { path: target, timeoutMs: 500 });
   const failures: string[] = [];
   try {
     for (let index = 0; index < 8; index += 1) {
@@ -342,10 +351,9 @@ async function run(): Promise<void> {
         },
       });
       const target = `/v1/oversized-unauthorized?chunked=${chunked ? 1 : 0}`;
-      await assert.rejects(
-        recovering.request({ headers: {}, method: "GET", path: target, timeoutMs: 500 }),
-        { code: "response-too-large" },
-      );
+      await assert.rejects(read(recovering, { path: target, timeoutMs: 500 }), {
+        code: "response-too-large",
+      });
       await waitUntil(() => !pending.has(target));
       assert.equal(recoveryCalls, 0);
       assert.equal(counts.get(target), 1);
@@ -366,12 +374,7 @@ async function run(): Promise<void> {
       },
     });
     await assert.rejects(
-      stalledRecovery.request({
-        headers: {},
-        method: "GET",
-        path: "/v1/stalled-unauthorized",
-        timeoutMs: 250,
-      }),
+      read(stalledRecovery, { path: "/v1/stalled-unauthorized", timeoutMs: 250 }),
       { code: "timed-out" },
     );
     await waitUntil(() => !pending.has("/v1/stalled-unauthorized"));
@@ -432,12 +435,7 @@ async function run(): Promise<void> {
     );
     const concurrentResults = await Promise.allSettled(
       Array.from({ length: concurrentCount }, (_, index) =>
-        concurrentRecovery.request({
-          headers: {},
-          method: "GET",
-          path: `/v1/recovery?concurrent=${index}`,
-          timeoutMs: 2_000,
-        }),
+        read(concurrentRecovery, { path: `/v1/recovery?concurrent=${index}`, timeoutMs: 2_000 }),
       ),
     );
     cases.push({
@@ -547,25 +545,19 @@ async function run(): Promise<void> {
     cases.push({ case: "attachment-fence", code: "deployment-changed" });
 
     const bridgeToken = randomBytes(32).toString("base64url");
-    const context = {
-      options: { bridgeToken, hostTransport: transport },
-      trackedHostSenders: new Set<number>(),
-    } as unknown as DesktopBridgeContext;
-    const handlers = [
-      [desktopBridgeChannels.hostRequest, handleHostRequest(context)],
-      [desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context)],
-      [desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context)],
-      [desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context)],
-      [desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context)],
-      [desktopBridgeChannels.hostBinaryFinish, handleHostBinaryFinish(context)],
-    ] as const;
-    for (const [channel, handler] of handlers) ipcMain.handle(channel, handler);
-    protocol.handle(
-      "app",
-      () =>
-        new Response("<!doctype html><title>Host transport smoke</title>", {
-          headers: { "content-type": "text/html" },
-        }),
+    // The renderer's abort reaches main only through this call.
+    ipcMain.handle(
+      desktopBridgeChannels.cancelHostRequest,
+      handleCancelHostRequest({
+        options: { bridgeToken, hostTransport: transport },
+      } as unknown as DesktopBridgeContext),
+    );
+    protocol.handle("app", (request) =>
+      new URL(request.url).pathname.startsWith("/host/")
+        ? forwardHostRoute(request, transport)
+        : new Response("<!doctype html><title>Host transport smoke</title>", {
+            headers: { "content-type": "text/html" },
+          }),
     );
     const window = new BrowserWindow({
       show: false,
@@ -583,13 +575,14 @@ async function run(): Promise<void> {
           "utf8",
         ),
       );
-      const execute = (action: "rpc" | "abort" | "binary"): Promise<unknown> =>
+      const execute = (
+        action: "rpc" | "abort-start" | "abort-finish" | "binary",
+      ): Promise<unknown> =>
         window.webContents.executeJavaScript(
-          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(action)})`,
+          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(connection.authority.document.deploymentId)}, ${JSON.stringify(action)})`,
         );
       for (const [mode, code, retryable] of [
         ["large", "response-too-large", false],
-        ["stall", "timed-out", true],
         ["unreachable", "unreachable", true],
       ] as const) {
         rpcMode = mode;
@@ -620,14 +613,20 @@ async function run(): Promise<void> {
         selectedDeploymentId: connection.authority.document.deploymentId,
       };
       const binary = z
-        .strictObject({ code: z.literal("response-too-large"), retryable: z.literal(false) })
+        .strictObject({
+          code: z.literal("transport-response-too-large"),
+          retryable: z.literal(false),
+        })
         .parse(await execute("binary"));
       cases.push({ case: "renderer-binary-error", ...binary });
+      // The production adapter's cancel before headers: the Host must see the request end.
+      await execute("abort-start");
+      await waitUntil(() => pending.has("/v1/withheld?renderer=1"));
       const aborted = z
         .strictObject({ callerReasonPreserved: z.literal(true) })
-        .parse(await execute("abort"));
-      cases.push({ case: "renderer-caller-abort", ...aborted });
-      await waitUntil(() => !pending.has("/v1/stall?renderer=1"));
+        .parse(await execute("abort-finish"));
+      await waitUntil(() => !pending.has("/v1/withheld?renderer=1"));
+      cases.push({ case: "renderer-cancel-before-headers", ...aborted, upstreamClosed: true });
       rpcMode = "normal";
       const final = z
         .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
@@ -636,8 +635,8 @@ async function run(): Promise<void> {
       cases.push({ case: "renderer-normal-after-failures", ...final });
     } finally {
       window.destroy();
-      for (const [channel] of handlers) ipcMain.removeHandler(channel);
       protocol.unhandle("app");
+      ipcMain.removeHandler(desktopBridgeChannels.cancelHostRequest);
     }
   } finally {
     secureServer.closeAllConnections();
