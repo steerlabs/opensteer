@@ -170,18 +170,24 @@ function asking(
 /** The card above the composer, as the Thread draws them; or the card alone where no composer is. */
 async function render(
   surface: SurfaceModel,
-  options: { readonly composer?: boolean; readonly onStop?: () => void } = {},
+  options: {
+    readonly composer?: boolean;
+    readonly onStop?: () => void;
+    readonly offline?: boolean;
+  } = {},
 ): Promise<ReturnType<typeof vi.fn>> {
   vi.useFakeTimers({ toFake: ["Date"] });
   const dispatch = vi.fn(async () => ({ type: "request.respond" }));
+  const session = controlledClientSession();
+  if (options.offline) session.change({ network: "offline", phase: "recovering" });
   const hostClient = {
-    connection: controlledClientSession().connection,
+    connection: session.connection,
     dispatch,
     getSnapshot: () => ({ user: { id: "usr_00000000-0000-4000-8000-000000000001" } }),
     subscribe: () => () => undefined,
   } as never;
   const gate = createThreadMutationGate(null, () => undefined);
-  const shared = { canRespond: true, canStartResponse: () => true, hostClient, surface };
+  const shared = { canRespond: !options.offline, canStartResponse: () => true, hostClient, surface };
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -356,6 +362,17 @@ describe("answering a question", () => {
     resetRequestSessionsForTests();
     await render(asking([refund]));
     expect(() => control("Dismiss")).toThrow();
+  });
+
+  it("keeps the docked answer editable offline and says Not sent beside it, sending nothing", async () => {
+    const dispatch = await render(asking([notify]), { offline: true });
+    expect(document.querySelector("textarea")?.disabled).toBe(false);
+    await type("Maya");
+    expect(control("Answer").disabled).toBe(false);
+    await tap("Answer");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Not sent");
+    expect(document.querySelector("textarea")?.value).toBe("Maya");
   });
 
   it("takes a typed answer in the card where no composer stands", async () => {
