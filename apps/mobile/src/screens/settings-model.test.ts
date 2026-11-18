@@ -149,6 +149,7 @@ describe("Passwords in settings", () => {
   const macMini = {
     allowedModules: ["agents", "browser", "shell"],
     id: "rnr_11111111-1111-4111-8111-111111111111",
+    kind: "home",
     name: "Studio Mac",
     ownership: "deployment",
   } as MachineSummary;

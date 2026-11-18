@@ -3,12 +3,7 @@ import { act } from "react";
 
 import { describe, expect, it, vi, type MockInstance } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import {
-  HostClientRequestError,
-  placeList,
-  type TranscriptFixtureSnapshot,
-  type PlaceItem,
-} from "@opensteer/client/host";
+import { HostClientRequestError, placeList, type PlaceItem } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 /** The browser session this device was shown a page tab through. */
@@ -259,8 +254,10 @@ describe("the draft's places", () => {
   it.each(["held", "handed back"] as const)(
     "lets its automatic page go when that tab closes, but keeps an explicit pick, greyed (%s)",
     async (how) => {
-      await mount((source) => `/${tabSearch(pageTab(source))}`);
-      await settle(100);
+      await mount((source) => {
+        source.scriptPlaces();
+        return `/${tabSearch(pageTab(source))}`;
+      });
       const place = pageTab();
       const other = placeList(client.getSnapshot()).find(
         (item) => item.key !== place.key && isMockPage(item),
@@ -269,45 +266,67 @@ describe("the draft's places", () => {
         [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
       const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About this");
-      await click(element('.composer__attach[aria-label="Attach"]'));
-      await click(
-        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
-          (button) => button.textContent?.includes(other.title),
-        )!,
+      act(() => element<HTMLButtonElement>('.composer__attach[aria-label="Attach"]').click());
+      act(() =>
+        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")]
+          .find((button) => button.textContent?.includes(other.title))!
+          .click(),
       );
-      await settle(100);
-      expect(titles()).toEqual([place.title, other.title]);
+      await vi.waitFor(() => expect(titles()).toEqual([place.title, other.title]), {
+        timeout: 1000,
+      });
       if (how === "handed back") {
-        // A refused message comes back with its places exactly as they were sent.
-        vi.spyOn(client, "dispatch").mockRejectedValueOnce(
-          new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
+        await vi.waitFor(
+          () => expect(sendEnabled(), "The explicit place read never released Send").toBe(true),
+          { timeout: 1000 },
         );
-        await click(element(".composer__send"));
-        await settle(100);
+        // Refusing task creation hands the draft back with both places.
+        const refused = vi
+          .spyOn(client, "dispatch")
+          .mockRejectedValueOnce(
+            new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
+          );
+        await act(async () => {
+          element<HTMLButtonElement>(".composer__send").click();
+          await vi.waitFor(
+            () =>
+              expect(refused).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ type: "thread.create" }),
+              ),
+            { timeout: 1000 },
+          );
+          await expect(refused.mock.results[0]!.value).rejects.toMatchObject({ code: "forbidden" });
+        });
         expect(titles()).toEqual([place.title, other.title]);
       }
       const close = async (closed: PlaceItem) => {
         await act(async () => client.closeTabs([closed.key]));
-        await settle(100);
       };
       await close(place);
       expect(titles()).toEqual([other.title]);
       // A snapshot that can no longer prove the end never brings the closed page back.
-      const connected = client.getSnapshot.bind(client);
-      const seen = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
-      const offline = vi.spyOn(client, "getSnapshot").mockImplementation(() => {
-        const snapshot = connected();
-        if (!seen.has(snapshot)) seen.set(snapshot, { ...snapshot, connection: "offline" });
-        return seen.get(snapshot)!;
-      });
+      await act(async () => client.goOffline());
       await close(other);
       expect(titles()).toEqual([other.title]);
       expect(document.querySelector(".context-chip--gone")).not.toBeNull();
+      await vi.waitFor(
+        () => expect(sendEnabled(), "The offline draft could not be kept").toBe(true),
+        { timeout: 1000 },
+      );
       const dispatch = vi.spyOn(client, "dispatch");
       dispatch.mockClear();
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sends(dispatch)).toHaveLength(1);
+      await act(async () => element<HTMLButtonElement>(".composer__send").click());
+      expect(sends(dispatch)).toEqual([]);
+
+      await act(async () => client.load());
+      await vi.waitFor(
+        () =>
+          expect(
+            sends(dispatch),
+            "The pending message did not send after synchronization",
+          ).toHaveLength(1),
+        { timeout: 1000 },
+      );
       const command = sends(dispatch)[0]!;
       expect(command.content.filter((part) => part.type !== "text")).toEqual([
         expect.objectContaining({
@@ -316,7 +335,7 @@ describe("the draft's places", () => {
           tabId: other.destination.tabId,
         }),
       ]);
-      offline.mockRestore();
+      await expect(sendResult(dispatch)).resolves.toMatchObject({ type: "thread.sendMessage" });
     },
   );
 
@@ -404,9 +423,21 @@ describe("the draft's places", () => {
     const studioMac = "rnr_88888888-8888-4888-8888-888888888888";
     async function openTile(label: string) {
       if (!document.querySelector(".start-page"))
-        await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
-      await click(element(`.start-tile[aria-label^='${label}']`));
-      await settle(120);
+        await act(async () =>
+          element<HTMLButtonElement>(
+            '.side-section--tabs .side-head__action[aria-label="New tab"]',
+          ).click(),
+        );
+      const open = vi.spyOn(client, "openTab");
+      try {
+        await act(async () => {
+          element<HTMLButtonElement>(`.start-tile[aria-label^='${label}']`).click();
+          expect(open).toHaveBeenCalledTimes(1);
+          await open.mock.results[0]!.value;
+        });
+      } finally {
+        open.mockRestore();
+      }
     }
     function viewed(machineId: string, bundleId: string) {
       const place = placeList(client.getSnapshot()).findLast(
@@ -419,8 +450,11 @@ describe("the draft's places", () => {
       return place;
     }
     async function show(place: PlaceItem) {
-      await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
-      await settle(100);
+      await act(async () =>
+        element<HTMLButtonElement>(
+          `.side-tab[data-place-key="${place.key}"] .side-tab__main`,
+        ).click(),
+      );
     }
     function reference(place: PlaceItem) {
       if (place.kind === "phone")
@@ -447,18 +481,27 @@ describe("the draft's places", () => {
     const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
-      await mount("/?panel=browser");
+      await mount((source) => {
+        source.scriptPlaces();
+        return "/?panel=browser";
+      });
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
-      expect(chip()).toBe(keynote.title);
+      await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
       await openTile("Notes on");
-      expect(chip()).toBe(viewed(macMini, "com.apple.Notes").title);
+      await vi.waitFor(() => expect(chip()).toBe(viewed(macMini, "com.apple.Notes").title), {
+        timeout: 1000,
+      });
       await show(keynote);
-      expect(chip()).toBe(keynote.title);
+      await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
       const dispatch = vi.spyOn(client, "dispatch");
       await write(field(), "Can you see my screen?");
-      await click(element(".composer__send"));
-      await settle(100);
+      await vi.waitFor(
+        () => expect(sendEnabled(), "The app context never released Send").toBe(true),
+        { timeout: 1000 },
+      );
+      act(() => element<HTMLButtonElement>(".composer__send").click());
+      await vi.waitFor(() => expect(sent(dispatch)).toHaveLength(1), { timeout: 1000 });
       const sends = sent(dispatch);
       expect(sends).toHaveLength(1);
       expect(sends[0]!.content).toEqual([

@@ -633,11 +633,18 @@ describe("a conversation's page above it at phone width", () => {
       this.viewport = null;
     },
   };
-  async function opened() {
-    await mount(`/tasks/${waiting}`, {
-      width: 390,
-      mock: { subagents: "absent", automations: "absent" },
-    });
+  async function opened(scriptPlaces = false) {
+    phoneGeometry();
+    await mount(
+      (source) => {
+        if (scriptPlaces) source.scriptPlaces();
+        return `/tasks/${waiting}`;
+      },
+      {
+        width: 390,
+        mock: { subagents: "absent", automations: "absent" },
+      },
+    );
     await vi.waitFor(
       () =>
         expect(
@@ -646,7 +653,6 @@ describe("a conversation's page above it at phone width", () => {
         ).not.toBeNull(),
       { timeout: 1500 },
     );
-    phoneGeometry();
     expect(page() ?? folded(), "The Run was already in a place").toBeNull();
   }
   function browserPlace(title: string) {
@@ -665,31 +671,36 @@ describe("a conversation's page above it at phone width", () => {
   }
 
   it("opens on the first action, folds into the head, unfolds, shows the full tab and ends with the Run", async () => {
-    await opened();
+    await opened(true);
     // A hardware keyboard takes no room: writing in a narrow window still lets it open.
-    await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
-    const place = await acts();
-    expect(page()).not.toBeNull();
+    act(() => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+    const place = browserPlace("Coffee shortlist");
+    act(() => client.actInPlace(waiting, place.key));
+    await vi.waitFor(() => expect(page(), "The first place picture did not open").not.toBeNull(), {
+      timeout: 1500,
+    });
     expect(folded(), "The head kept a picture of the open page").toBeNull();
 
-    await act(async () => element<HTMLElement>(".run-page__handle").click());
+    act(() => element<HTMLElement>(".run-page__handle").click());
     expect(page()).toBeNull();
     expect(folded()?.getAttribute("aria-expanded")).toBe("false");
 
-    await act(async () => folded()!.click());
+    act(() => folded()!.click());
     expect(page()).not.toBeNull();
     // Folding and unfolding never navigate.
     expect(history.at(-1)).toMatchObject({ path: `/tasks/${waiting}`, search: "" });
 
     // The Run moving to another page keeps it open, on that page.
     const next = browserPlace("Your reading list");
-    await act(async () => client.actInPlace(waiting, next.key));
+    act(() => client.actInPlace(waiting, next.key));
     expect(element(".run-page__view").getAttribute("aria-label")).toContain(next.title);
-    await act(async () => client.actInPlace(waiting, place.key));
+    act(() => client.actInPlace(waiting, place.key));
 
-    await act(async () => element<HTMLElement>(".run-page__view").click());
+    act(() => element<HTMLElement>(".run-page__view").click());
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    await act(async () => goTo!(`/tasks/${waiting}`));
+    act(() => {
+      void goTo!(`/tasks/${waiting}`);
+    });
     expect(page(), "Coming back, the page was no longer open").not.toBeNull();
 
     await act(async () => client.stopRun(waiting));

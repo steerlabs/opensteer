@@ -141,6 +141,8 @@ export async function setup(
     native.output.flatMap((entry) =>
       entry.type === "browser.server-message" ? [entry.message] : [],
     );
+  const lastServer = () =>
+    native.output.findLast((entry) => entry.type === "browser.server-message")?.message;
   const presentation = (id = surfaceId) => manager.getTabPresentation(id)!;
   const present = (id = surfaceId) =>
     manager.presentTab(
@@ -245,6 +247,7 @@ export async function setup(
     client,
     channelId: () => channelId,
     server,
+    lastServer,
     reference,
     presentation,
     present,

@@ -243,7 +243,7 @@ async function mount(
   document.body.append(node);
   root = createRoot(node);
   const Wrapper = options.strict ? StrictMode : Fragment;
-  await act(async () =>
+  act(() =>
     root?.render(
       <Wrapper>
         <ToastProvider>
@@ -362,7 +362,7 @@ function element<T extends Element>(selector: string, scope: ParentNode = docume
 }
 
 async function click(target: Element) {
-  await act(async () => {
+  act(() => {
     (target as HTMLElement).click();
   });
   await settle();

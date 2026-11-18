@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import {
   createDocumentPrivateFilesystem,
   type DocumentDirectory,
@@ -229,7 +230,6 @@ describe("createDocumentPrivateFilesystem", () => {
 });
 
 it("persists Account team partitions through the phone's decoded-path boundary", async () => {
-  const { TeamRuntimeOwner } = await import("@opensteer/client/team");
   const owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "A" });
   const { files, platform } = open();
   const storage = owner.files(files);

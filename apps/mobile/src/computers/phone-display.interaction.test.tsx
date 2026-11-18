@@ -6,6 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
+import { mockDeviceMachine } from "@opensteer/client/mock";
+import type { MachineSummary } from "@opensteer/protocol";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
@@ -312,6 +314,40 @@ async function setup(
         data: { tabId: phoneTab.tabId, title: "Phone", site: null },
       }),
     );
+  const machine = {
+    id: machineId,
+    status: "online",
+    // The viewer offers only the navigation and power the Host advertises for a phone.
+    kind: phone ? "agent-phone" : "personal",
+    allowedModules: ["integrations"],
+    computerUse: {
+      displayStreamSupported: true,
+      ownerViews: owner
+        ? [
+            {
+              viewId: "owner-view",
+              generation: 1,
+              state: "ready",
+              target: {
+                kind: "app",
+                app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+              },
+              expiresAt: "2099-01-01T00:00:00.000Z",
+            },
+          ]
+        : [],
+      state: "ready",
+      sessions: [
+        {
+          sessionId,
+          runId,
+          threadId,
+          display: phone,
+          apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
+        },
+      ],
+    },
+  } as MachineSummary;
   let snapshot = {
     tabs: tabStoreFixture(screen === "live" ? [phoneTab] : []),
     connection: "connected",
@@ -321,42 +357,7 @@ async function setup(
     browserPlacements: [],
     browserProfiles: [],
     browserSessions: [],
-    machines: [
-      {
-        id: machineId,
-        status: "online",
-        // The viewer offers only the navigation and power the Host advertises for a phone.
-        kind: phone ? "agent-phone" : "personal",
-        allowedModules: ["integrations"],
-        computerUse: {
-          displayStreamSupported: true,
-          ownerViews: owner
-            ? [
-                {
-                  viewId: "owner-view",
-                  generation: 1,
-                  state: "ready",
-                  target: {
-                    kind: "app",
-                    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
-                  },
-                  expiresAt: "2099-01-01T00:00:00.000Z",
-                },
-              ]
-            : [],
-          state: "ready",
-          sessions: [
-            {
-              sessionId,
-              runId,
-              threadId,
-              display: phone,
-              apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
-            },
-          ],
-        },
-      },
-    ],
+    machines: [phone && screen === "owner" ? mockDeviceMachine(machine) : machine],
   };
   const connect = vi.fn((_source: unknown, _options?: unknown) => socket);
   const listeners = new Set<() => void>();
@@ -512,7 +513,7 @@ async function setup(
       power,
       setDisplay,
       endOwner: () => {
-        snapshot.machines[0]!.computerUse.ownerViews[0]!.state = "closed";
+        snapshot.machines[0]!.computerUse!.ownerViews![0]!.state = "closed";
       },
       client,
     };
@@ -556,7 +557,7 @@ async function setup(
     setDisplay,
     move,
     endOwner: () => {
-      snapshot.machines[0]!.computerUse.ownerViews[0]!.state = "closed";
+      snapshot.machines[0]!.computerUse!.ownerViews![0]!.state = "closed";
     },
     client,
   };

@@ -1,4 +1,5 @@
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +28,7 @@ const macId = "rnr_11111111-1111-4111-8111-111111111111";
 const ready = { checkedAt: null, detail: null, readiness: "ready" } as const;
 
 function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
-  return {
+  const row: MachineSummary = {
     access: null,
     allowedModules: ["integrations", "shell"],
     apps: null,
@@ -51,6 +52,9 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
 
     ...overrides,
   };
+  return row.ownership === "deployment" && !row.allowedModules.includes("agents")
+    ? row
+    : mockDeviceMachine(row);
 }
 
 /** One folder open to the owner's agents. */
@@ -183,7 +187,10 @@ describe("what agents can use on a computer", () => {
   };
 
   it("names apps that are on, apps agents may operate but not blocked ones, then folders and commands", () => {
-    const uses = computerUses(machine({ access: reachable(true) }), apps);
+    const uses = computerUses(
+      machine({ kind: "computer", access: reachable(true), modules: { integrations: ready } }),
+      apps,
+    );
 
     expect(uses).toEqual([
       { definitionId: "apple-messages", kind: "app", name: "Apple Messages" },
@@ -235,6 +242,7 @@ describe("an Android phone in the list", () => {
   const pixel = machine({
     kind: "agent-phone",
     allowedModules: ["integrations"],
+    modules: { integrations: ready },
     device: { form: "phone", platform: "android" },
     id: pixelId,
     name: "Pixel",
@@ -285,21 +293,22 @@ describe("an Android phone in the list", () => {
 });
 
 describe("computerStatus", () => {
-  it.each(["needs-update", "updating", "update-pending"] as const)(
-    "names the installed app for an Android device that is %s",
-    (status) => {
-      const android = { form: "phone", platform: "android" } as const;
-      expect(
-        computerStatus(machine({ kind: "agent-phone", device: android, name: "Pixel 7", status }))
-          .label,
-      ).toBe("Update Agent Phone on Pixel 7.");
-      expect(
-        computerStatus(
-          machine({ device: { ...android, app: "opensteer" }, name: "Pixel 9", status }),
-        ).label,
-      ).toBe("Update Opensteer on Pixel 9.");
-    },
-  );
+  it.each([
+    ["needs-update", "Update Agent Phone on Pixel 7."],
+    ["updating", "Updating Agent Phone on Pixel 7…"],
+    ["update-pending", "Tap Update on Pixel 7."],
+  ] as const)("names the installed app for an Android device that is %s", (status, detail) => {
+    const android = { form: "phone", platform: "android" } as const;
+    expect(
+      computerStatus(
+        machine({ kind: "agent-phone", detail, device: android, name: "Pixel 7", status }),
+      ).label,
+    ).toBe(detail);
+    expect(
+      computerStatus(machine({ device: { ...android, app: "opensteer" }, name: "Pixel 9", status }))
+        .label,
+    ).toBe("Update Opensteer on Pixel 9.");
+  });
 
   it("counts down a pending computer's code, and dates an absent one", () => {
     const now = new Date("2026-09-13T12:00:00.000Z");

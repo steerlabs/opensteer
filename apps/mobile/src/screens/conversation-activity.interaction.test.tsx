@@ -10,7 +10,11 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import {
+  scopedTranscriptFixture,
+  tabFixture,
+  tabStoreFixture,
+} from "@opensteer/client/test-support";
 import { createId, RunIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -283,14 +287,16 @@ function snapshotWith(entries: readonly TranscriptEntry[]): TranscriptFixtureSna
 function fakeHost(initial: TranscriptFixtureSnapshot) {
   let snapshot = initial;
   const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
   const client = {
+    ...scopedTranscriptFixture(() => snapshot, subscribe),
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
+    subscribe,
   } as unknown as HostClient;
   harness.hostClient = client;
   return {

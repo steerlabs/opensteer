@@ -4919,6 +4919,10 @@ export class MockHostClient implements HostClient {
     this.#state.setEnvironmentConnected(environmentId, connected);
   }
 
+  goOffline(): void {
+    this.#state.goOffline();
+  }
+
   /**
    * What a Mac's helper says about computer use. A real Host hears it on that
    * Mac's own Runner stream, never from a client, so the preview takes it here.
@@ -11600,8 +11604,12 @@ class MockHostState {
 
   async load(): Promise<void> {
     if (this.snapshot.connection === "connected") return;
-    await delay(Math.min(this.latencyMs, 180));
+    if (this.latencyMs > 0) await delay(Math.min(this.latencyMs, 180));
     this.update({ ...this.snapshot, connection: "connected" });
+  }
+
+  goOffline(): void {
+    this.update({ ...this.snapshot, connection: "offline" });
   }
 
   async refresh(): Promise<void> {

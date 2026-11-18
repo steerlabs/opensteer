@@ -779,7 +779,7 @@ describe("DesktopHostTransport", () => {
     expect(observed).toHaveLength(4);
   });
 
-  it("logs only sanitized anomalous bootstrap summaries, once per minute", async () => {
+  it("keeps retired bootstrap diagnostic fields out of Personal shell request logs", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const log = vi.fn();
     const request = vi.fn(async () => new Response("{}"));
@@ -790,24 +790,21 @@ describe("DesktopHostTransport", () => {
     });
     const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
     const read = (bootstrapDiagnostics?: string) =>
-      transport.request({
-        headers: { bootstrapDiagnostics },
-        method: "GET",
-        path: "/v1/rpc/bootstrap.get?input=%7B%7D",
-      });
+      expect(
+        transport.request({
+          headers: { bootstrapDiagnostics },
+          method: "GET",
+          path: "/v1/rpc/personal.shell.get?input=%7B%7D",
+        }),
+      ).resolves.toMatchObject({ body: "{}", status: 200 });
     await read();
     await read(
       JSON.stringify({ windowMs: 1, triggers: {}, starts: { load: 6 }, url: "PRIVATE-VALUE" }),
     );
-    expect(log).not.toHaveBeenCalled();
     await read(summary);
     await read(summary);
-    expect(log).toHaveBeenCalledExactlyOnceWith(
-      "host.bootstrap.loop",
-      expect.objectContaining({ triggers: '{"load":6}', starts: '{"load":6}' }),
-    );
     expect(request).toHaveBeenCalledTimes(4);
-    expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE-VALUE");
+    expect(log).not.toHaveBeenCalled();
   });
 
   it("routes bounded requests only through the selected catalog Host", async () => {

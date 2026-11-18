@@ -21,6 +21,12 @@ import {
 import { turnComputer, type TranscriptGroup, type Turn } from "../host/agent-activity-model.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { HostClient } from "../host/index.js";
+import { canWatchComputer } from "./computer-reasons.js";
+
+export {
+  canWatchComputer,
+  canWatchComputer as canStreamComputerDisplay,
+} from "./computer-reasons.js";
 
 /**
  * Computer use on a Mac or a Host-projected phone display, as every client surface
@@ -844,30 +850,6 @@ export async function stopComputerUseSession(
 export interface WatchableComputerSession {
   readonly machine: MachineSummary;
   readonly session: ComputerUseSessionSummary;
-}
-
-/**
- * Whether a computer can show a live picture of its sessions now. Only its
- * owner is shown its sessions, so this asks nothing about who is reading.
- * Macs capture an app window; phones capture their whole display.
- */
-export function canWatchComputer(machine: MachineSummary): boolean {
-  if (machine.capabilities)
-    return machine.phoneDisplay
-      ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
-          machine.phoneDisplay.view.state === "ready"
-      : (machine.kind === "home" || machine.kind === "computer") &&
-          machine.computerUse?.displayStreamSupported === true;
-  return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
-}
-
-/**
- * Whether web and desktop can show a phone's display live. They watch phones
- * only this way; a phone whose app predates the stream is asked to update.
- * Every client uses this transport for phones.
- */
-export function canStreamComputerDisplay(machine: MachineSummary): boolean {
-  return canWatchComputer(machine);
 }
 
 /**

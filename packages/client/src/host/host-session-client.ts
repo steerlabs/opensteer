@@ -1728,7 +1728,8 @@ export class HttpHostClient {
         BigInt(details) < BigInt(installed.revision))
     ) {
       this.#resourceRevisions.delete(kind);
-      this.#clearResource(kind);
+      if (kind === "tab" && installed) this.#tabs.markInventoryStale();
+      else this.#clearResource(kind);
     }
     if (returnHintResources.has(kind)) {
       const known = summary ? installed?.revision : revision;
