@@ -100,7 +100,10 @@ export function replyParts(text: string): readonly ReplyPart[] {
       parts.push({ kind: "draft", text: body.trim() });
       return;
     }
-    const source = [`${marker}${language}`, ...lines, closing ?? marker].join("\n");
+    // A fence the text has not closed yet stays open, so a highlighter sees it is still growing.
+    const source = [`${marker}${language}`, ...lines, ...(closing === null ? [] : [closing])].join(
+      "\n",
+    );
     parts.push({ kind: "code", language, source, text: body });
   };
 
