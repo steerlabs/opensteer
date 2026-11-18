@@ -1,3 +1,4 @@
+// oxlint-disable-next-line typescript/triple-slash-reference -- every program compiling this file needs the ambient module
 /// <reference path="../contracts/swagger-client.d.ts" />
 /** Swagger is most of the OpenAPI module's code. Discovery from a cached catalog never needs it,
  * so a cold app Worker evaluates it only when it resolves a document or builds a request.

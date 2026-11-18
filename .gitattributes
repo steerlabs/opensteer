@@ -1,4 +1,2 @@
-# Imported source and patch context retain upstream whitespace.
-packages/plugin-engine/** -whitespace
+# Patch context must match the patched dependency byte for byte.
 patches/plugin-engine-*.patch -whitespace
-scripts/plugin-engine/patches/*.patch -whitespace

@@ -110,7 +110,7 @@ test("typechecks what CI would, including a test-only owner and a root config", 
   assert.ok(filtered(localPlan(["tsconfig.json"], graph, [])));
 });
 
-test("imported packages keep compiler checks while skipping local style rewrites", () => {
+test("plugin engine packages get the same lint and typecheck as every package", () => {
   const file = "packages/plugin-engine/sdk/src/index.ts";
   const plan = localPlan(
     [file],
@@ -125,5 +125,5 @@ test("imported packages keep compiler checks while skipping local style rewrites
     [file],
   );
   assert.ok(plan.commands.some((command) => command.includes("typecheck")));
-  assert.ok(!plan.commands.some((command) => command.includes("oxlint")));
+  assert.ok(plan.commands.some((command) => command.includes("oxlint")));
 });

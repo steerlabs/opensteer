@@ -2,6 +2,7 @@
  * Git client pieces for the apps CLI: push a directory's files to an app's remote, sending only
  * the blobs the remote lacks in batches under a push's size bound, and read stored files back.
  */
+// oxlint-disable-next-line no-restricted-imports -- isomorphic-git takes the whole fs module
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";

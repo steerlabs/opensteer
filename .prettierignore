@@ -48,5 +48,4 @@ packages/protocol/src/device-wire-v60.fixture.json
 
 # Repeatable third-party source import.
 packages/plugin-engine
-scripts/plugin-engine/overlay
 patches/plugin-engine-*.patch

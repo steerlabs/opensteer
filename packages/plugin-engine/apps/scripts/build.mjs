@@ -3,7 +3,7 @@ import { build } from "esbuild";
 import ts from "typescript-5";
 import { generateFrameworkReference } from "./reference.mjs";
 import { frameworkProtocol } from "../src/contracts/protocol-version.ts";
-import { readFile, writeFile, mkdir, rm, readdir, copyFile, realpath } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, readdir, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 

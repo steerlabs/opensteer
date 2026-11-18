@@ -8,12 +8,7 @@ import { decide } from "./ci-changes.mjs";
  */
 export function localPlan(files, graph, present, baseGraph = graph, platform = process.platform) {
   const plan = decide(files, graph, baseGraph);
-  const code = present.filter(
-    (p) =>
-      /\.[cm]?[jt]sx?$/.test(p) &&
-      !p.startsWith("packages/plugin-engine/") &&
-      !p.startsWith("scripts/plugin-engine/overlay/"),
-  );
+  const code = present.filter((p) => /\.[cm]?[jt]sx?$/.test(p));
   const tests = present.filter(
     (p) =>
       /\.test\.[cm]?[jt]sx?$/.test(p) &&
