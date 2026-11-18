@@ -39,7 +39,6 @@ export const TranscriptOrderCursorSchema = z.strictObject({
   viewerId: UserIdSchema,
   threadId: ThreadIdSchema,
   nodeId: ExecutionNodeIdSchema.nullable(),
-  orderRevision: PersonalRevisionSchema,
   beforePosition: TranscriptPositionSchema,
   beforeId: TranscriptItemIdSchema,
 });
@@ -157,7 +156,6 @@ export const TranscriptPageSchema = z.object({
   kind: z.literal("page"),
   threadId: ThreadIdSchema,
   nodeId: ExecutionNodeIdSchema.nullable(),
-  orderRevision: PersonalRevisionSchema,
   revision: PersonalRevisionSchema,
   items: z.array(TranscriptItemSchema).max(100),
   hasMore: z.boolean(),
@@ -172,7 +170,6 @@ export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
   TranscriptPageSchema,
   z.object({
     kind: z.literal("history-reset"),
-    orderRevision: PersonalRevisionSchema,
     anchorUnavailable: z.literal(true).optional(),
   }),
 ]);

@@ -30,13 +30,14 @@ import {
   type PersonalResourceRevisions,
 } from "@opensteer/protocol/resources";
 export type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
-export type ClientChangeOperation = "upsert" | "remove" | "invalidate";
-export type ClientEntityKind =
-  "task" | "visit" | "attention" | "collection" | "thread" | "run-queue" | "request" | "item";
+/** `reset` rows are Host-only: a scope whose commit outgrew the feed is repaired by snapshot. */
+export type ClientChangeOperation = "upsert" | "remove" | "reset";
+export type ClientEntityKind = PersonalChange["entityKind"] | "scope";
 
 export const emptyPersonalResourceRevisions = Object.fromEntries(
   personalResourceKinds.map((kind) => [kind, "0"]),
@@ -255,14 +256,16 @@ const retainedStateDdl = `
     ordinal smallint not null check (ordinal between 0 and 127),
     entity_kind text not null,
     entity_id text not null,
-    operation text not null check (operation in ('upsert','remove','invalidate')),
+    operation text not null check (operation in ('upsert','remove','reset')),
     payload jsonb not null check (jsonb_typeof(payload) = 'object'),
     created_at timestamptz not null,
     byte_count integer generated always as (octet_length(payload::text)) stored check (byte_count <= 8192),
     primary key (deployment_id, sequence, ordinal),
     check (
-      (scope_key = 'shell' and entity_kind in ('task','visit','attention','collection'))
-      or (scope_key <> 'shell' and entity_kind in ('thread','run-queue','request','item','collection'))
+      (entity_kind = 'scope') = (operation = 'reset')
+      and ((scope_key = 'shell' and entity_kind in ('task','visit','attention','signal','scope'))
+      or (scope_key <> 'shell' and entity_kind in
+        ('thread','run-queue','queue-entry','assignment','request','item','node','scope')))
     )
   );
   create index client_changes_scope on client_changes(deployment_id,scope_key,sequence,ordinal);
