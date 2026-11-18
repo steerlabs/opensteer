@@ -207,7 +207,7 @@ it("sends the public Request decision without its settlement session", async () 
     const sessionId = shell.data.session.sessionId;
     await host.store.database
       .updateTable("authSessions")
-      .set({ deviceLabel: "iPhone" })
+      .set({ deviceLabel: "iPhone", userAgent: null })
       .where("id", "=", sessionId)
       .executeTakeFirstOrThrow();
     const { request } = await host.store.requests.create({
