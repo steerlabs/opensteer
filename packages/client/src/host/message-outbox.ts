@@ -752,7 +752,13 @@ class SessionMessageOutbox implements MessageOutbox {
       return;
     }
     if (this.#cancelled.has(entry.localId)) return;
-    let sending: StoredMessage = { ...entry, phase: "sending", attempted: true };
+    // Where the Host will put it is decided now, from what the Host says as it goes.
+    let sending: StoredMessage = {
+      ...entry,
+      phase: "sending",
+      attempted: true,
+      inTranscript: this.#options.startsRun?.(entry.command.threadId) ? true : undefined,
+    };
     let settleDispatch: ((rejection?: ClientIssue) => Promise<StoredMessage | null>) | undefined;
     try {
       if (!(await this.#replace(scope, entry, sending))) {

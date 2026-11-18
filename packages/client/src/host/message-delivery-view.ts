@@ -39,11 +39,19 @@ export function messageDeliveryStatusShown(
 
 const noLocalMessages: readonly MessageEntry[] = [];
 
-/** A work task draws its local sends in the same list as the Host's queue. */
+/**
+ * A work task draws its local sends in the same list as the Host's queue.
+ *
+ * A message is drawn where the Host will put it, so delivery replaces it in
+ * place. Once sent, that is where the outbox saw it going as it went; before,
+ * where it would go now: the first into an idle task's run, the rest behind it.
+ * `idle` is whether the task would start a run for a message now.
+ */
 export function splitLocalMessages(
   entries: readonly TranscriptEntry[],
   workTask: boolean,
   hostQueue = false,
+  idle = false,
 ): {
   readonly transcript: readonly TranscriptEntry[];
   readonly afterQueue: readonly MessageEntry[];
@@ -51,14 +59,23 @@ export function splitLocalMessages(
   if (!workTask) return { transcript: entries, afterQueue: noLocalMessages };
   const hasWaiting =
     hostQueue || entries.some((entry) => entry.kind === "message" && entry.queuePending);
-  const queued = (entry: TranscriptEntry): entry is MessageEntry =>
-    entry.kind === "message" &&
-    (entry.queuePending === true ||
-      (entry.localDelivery !== undefined && (hasWaiting || !entry.localDelivery.inTranscript)));
-  const afterQueue = entries.filter(queued);
-  return afterQueue.length === 0
+  const queued = new Set<TranscriptEntry>();
+  let first = true;
+  for (const entry of entries) {
+    if (entry.kind !== "message") continue;
+    if (entry.queuePending) queued.add(entry);
+    const local = entry.localDelivery;
+    if (entry.queuePending || local === undefined) continue;
+    const direct = local.attempted ? local.inTranscript === true : first && idle && !hasWaiting;
+    first = false;
+    if (!direct) queued.add(entry);
+  }
+  return queued.size === 0
     ? { transcript: entries, afterQueue: noLocalMessages }
-    : { transcript: entries.filter((entry) => !queued(entry)), afterQueue };
+    : {
+        transcript: entries.filter((entry) => !queued.has(entry)),
+        afterQueue: entries.filter((entry): entry is MessageEntry => queued.has(entry)),
+      };
 }
 
 export function waitingMessageRows(

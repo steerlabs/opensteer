@@ -3648,6 +3648,61 @@ describe("a task", () => {
     }
   });
 
+  it("keeps a waiting bubble mounted through direct admission when its busy task goes idle first", async () => {
+    const task = taskAtWork();
+    const busy = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const idle = snapshotFor({ entries: task.entries, run: null, threadId: workId });
+    const host = fakeHost({ ...busy, network: "offline" });
+    const ack = Promise.withResolvers<Awaited<ReturnType<typeof host.dispatch>>>();
+    host.dispatch.mockReturnValueOnce(ack.promise);
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const body = () =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === "Then file it",
+      );
+    try {
+      await act(async () => {
+        await outbox.enqueue({
+          content: [{ text: "Then file it", type: "text" }],
+          delivery: "queue",
+          idempotencyKey: "after-the-run",
+          threadId: workId,
+          type: "thread.sendMessage",
+        });
+      });
+      // The run ends while the phone still can't send: the message will start the next one.
+      host.move({ ...idle, network: "offline" });
+      await settle();
+      const bubble = body();
+      expect(bubble).toBeDefined();
+      host.move(idle);
+      await settle();
+      expect(host.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: "after-the-run" }),
+        expect.anything(),
+      );
+      expect(body()).toBe(bubble);
+      const runId = createId("run");
+      const message = { ...said("Then file it", runId), clientSendKey: "after-the-run" };
+      host.move(
+        snapshotFor({
+          entries: [...task.entries, message],
+          run: { id: runId, status: "running" },
+          threadId: workId,
+        }),
+      );
+      await settle();
+      expect(body()).toBe(bubble);
+    } finally {
+      ack.resolve({ type: "thread.sendMessage", message: { id: createId("message") } });
+    }
+  });
+
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
     const task = taskAtWork();
     const steer = said("Check the other statement too", task.runId);

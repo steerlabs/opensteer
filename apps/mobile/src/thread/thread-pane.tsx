@@ -535,9 +535,10 @@ function ThreadPaneForUser(
     [conversational, inputQueue, threadId, withOutbox],
   );
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
+  const startsRun = thread?.status === "idle" && !thread.inputQueuePaused;
   const local = useMemo(
-    () => splitLocalMessages(visible, !conversational, hasQueuedInputs),
-    [conversational, hasQueuedInputs, visible],
+    () => splitLocalMessages(visible, !conversational, hasQueuedInputs, startsRun),
+    [conversational, hasQueuedInputs, startsRun, visible],
   );
   const conversation = local.transcript;
   // Messages still on this phone: which carry their status line, and what
