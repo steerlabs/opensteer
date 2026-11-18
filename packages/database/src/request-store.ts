@@ -109,7 +109,12 @@ import {
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
-import { jsonValue, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import {
+  jsonValue,
+  lockThreadRow,
+  threadPathLinks,
+  type ChannelLinks,
+} from "./store-primitives.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 export { cancelPending } from "./request-cancellation.js";
 export { requestFromRow, requestInsert } from "./request-persistence.js";

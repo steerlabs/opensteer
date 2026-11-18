@@ -30,7 +30,12 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
   const database = createDatabase({ connectionString: fixture.url });
   try {
     await sql`drop schema public cascade; create schema public`.execute(database);
-    await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
+    await migrateToLatest(database, {
+      async getMigrations() {
+        const migrations = await migrationProvider().getMigrations();
+        return Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0030"));
+      },
+    });
     const migrations = await sql<{
       name: string;
     }>`select name from kysely_migration order by name desc limit 1`.execute(database);
@@ -143,7 +148,8 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
             'steer',2,'fingerprint',${owner.userId},'unknown',${JSON.stringify(teamSource)}::jsonb)`.execute(
         tx,
       );
-      await tx.insertInto("requests").values(requestInsert(request)).execute();
+      const { originatingWatchActivationId: _watch, ...legacyRequest } = requestInsert(request);
+      await tx.insertInto("requests").values(legacyRequest).execute();
       await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,
         approved_origin,authority_envelope,state)
         values(${createId("teamLink")},${teamSource.teamId},${createId("hostInstance")},'fixture',

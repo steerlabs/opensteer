@@ -5,7 +5,6 @@ import {
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
 import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
-import { lockPersonalSyncState } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
@@ -835,7 +834,6 @@ export async function installIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
-  await lockPersonalSyncState(transaction);
   validateInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction

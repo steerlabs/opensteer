@@ -1,6 +1,6 @@
 import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -2299,7 +2299,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = withPersonalTransaction(database, (transaction) =>
+      replacing = commitPersonalMutation(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
           installation: {
@@ -2378,7 +2378,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
+    const replacing = commitPersonalMutation(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
         installation: {
@@ -2412,7 +2412,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = withPersonalTransaction(database, (transaction) =>
+      revoking = commitPersonalMutation(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,
@@ -2570,8 +2570,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
           transformQuery(args) {
             const node = JSON.stringify(args.node);
             if (
-              args.node.kind === "RawNode" &&
-              /from "?client_sync_state"? .*for no key update/i.test(node)
+              args.node.kind === "SelectQueryNode" &&
+              /"name":"client_?sync_?state"/i.test(node) &&
+              node.includes("ForNoKeyUpdate")
             )
               acquiring.resolve();
             return args.node;
