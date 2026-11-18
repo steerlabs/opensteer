@@ -12,6 +12,7 @@ import {
 } from "@opensteer/core";
 import {
   PluginAgentStore,
+  withPersonalTransaction,
   type OpensteerStore,
   type PluginExecutionRecord,
 } from "@opensteer/database";
@@ -28,6 +29,7 @@ import type { PluginService } from "./plugin-service.js";
 export const pluginInterruptedReason =
   "Plugin program interrupted. Earlier calls may have taken effect. Check current state with a safe read; never rerun the program blindly.";
 const terminal = new Set(["completed", "cancelled", "expired", "interrupted", "failed"]);
+const interactionEnded = new Error("Plugin execution changed before attaching its Request");
 const object = z.record(z.string(), z.json());
 export class PluginExecutions {
   readonly #changes = new EventEmitter();
@@ -96,20 +98,18 @@ export class PluginExecutions {
     if (!row || terminal.has(row.state)) return;
     const result =
       execution.state === "completed" && execution.result ? object.parse(execution.result) : null;
-    if (
-      !(await this.options.records.updateLive(execution.id, {
-        state: execution.state,
-        result,
-        reason: execution.reason ?? null,
-      }))
-    )
-      return;
+    const updated = await this.options.records.updateLive(execution.id, {
+      state: execution.state,
+      result,
+      reason: execution.reason ?? null,
+    });
+    if (!updated) return;
     if (
       ["interrupted", "expired", "cancelled", "failed"].includes(execution.state) &&
-      row.requestId
+      updated.requestId
     ) {
       for (const event of await this.options.store.requests.endPluginExecutionRequest(
-        row.requestId,
+        updated.requestId,
         execution.state === "expired"
           ? "plugin-expired"
           : execution.state === "interrupted"
@@ -124,14 +124,14 @@ export class PluginExecutions {
   async recover() {
     await this.#reports;
     for (const row of await this.options.records.unfinished()) {
-      await this.options.records.update(row.id, {
+      const updated = await this.options.records.updateLive(row.id, {
         state: "interrupted",
         reason: pluginInterruptedReason,
         result: null,
       });
-      if (row.requestId) {
+      if (updated?.requestId) {
         for (const event of await this.options.store.requests.endPluginExecutionRequest(
-          row.requestId,
+          updated.requestId,
           "plugin-interrupted",
         ))
           this.options.publish(event);
@@ -260,35 +260,45 @@ export class PluginExecutions {
             }
           : { subject: { kind: "plugin.input", id: execution.id } }),
       } as RequestPresentation;
-      const created = await this.options.store.requests.create({
-        callId: `plugin:${execution.id}:${interaction.requestId}`,
-        kind,
-        mode: "durable",
-        originatingThreadId: row.threadId,
-        requestedBy: row.ownerUserId,
-        requiredActor: "owner",
-        ...(row.runId
-          ? { originatingRunId: row.runId }
-          : row.occurrenceId
-            ? { originatingOccurrenceId: row.occurrenceId }
-            : { originatingWatchActivationId: row.watchActivationId! }),
-        payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
-        presentation,
-      });
-      const attached = await this.options.records.updateLive(row.id, {
-        requestId: created.request.id,
-        interactionId: interaction.requestId,
-      });
-      for (const event of created.events) this.options.publish(event);
-      if (!attached) {
-        for (const event of await this.options.store.requests.cancelPluginRequests(
-          [created.request.id],
-          "plugin-interrupted",
-        ))
-          this.options.publish(event);
-        this.options.notify();
+      const previous = row;
+      try {
+        const { attached, events } = await withPersonalTransaction(
+          this.options.store.database,
+          async (transaction) => {
+            const created = await this.options.store.requests.create(
+              {
+                callId: `plugin:${execution.id}:${interaction.requestId}`,
+                kind,
+                mode: "durable",
+                originatingThreadId: previous.threadId,
+                requestedBy: previous.ownerUserId,
+                requiredActor: "owner",
+                ...(previous.runId
+                  ? { originatingRunId: previous.runId }
+                  : previous.occurrenceId
+                    ? { originatingOccurrenceId: previous.occurrenceId }
+                    : { originatingWatchActivationId: previous.watchActivationId! }),
+                payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
+                presentation,
+              },
+              transaction,
+            );
+            const attached = await this.options.records.attachInteraction(
+              transaction,
+              previous,
+              created.request.id,
+              interaction.requestId,
+            );
+            if (!attached) throw interactionEnded;
+            return { attached, events: created.events };
+          },
+        );
+        for (const event of events) this.options.publish(event);
+        row = attached;
+      } catch (error) {
+        if (error !== interactionEnded) throw error;
+        row = await this.#owned(caller, execution.id);
       }
-      row = attached ?? (await this.options.records.execution(row.id))!;
     }
     return this.result(row);
   }
