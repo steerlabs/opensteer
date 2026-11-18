@@ -5,6 +5,7 @@ import {
   BackgroundModelChoiceSchema,
   automaticModelDefaults,
   backgroundModelWants,
+  type ModelWant,
 } from "./background-models.js";
 import { createId } from "./ids.js";
 import { HarnessIdSchema, ModelSelectionSchema } from "./models.js";
@@ -15,7 +16,7 @@ import {
   type ResolveModelCandidatesInput,
 } from "./model-candidates.js";
 import { catalogDefaultCandidate, catalogDefaultModelSelection } from "./model-candidates.js";
-import { selectionForModelEffort } from "./voice-models.js";
+import { selectionForModelEffort } from "./model-effort.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
   ModelSelectionSchema.parse({
     modelId,
@@ -60,15 +61,15 @@ function account(
     ...overrides,
   };
 }
-const want = (engine = "codex", model = "gpt-6-luna") =>
-  BackgroundModelChoiceSchema.parse({ engine, model });
-const ranked = (options: Record<string, string>) =>
+const want = (engine = "codex", model?: string, effort?: string) =>
+  BackgroundModelChoiceSchema.parse({ engine, model: model ?? "gpt-6-luna", effort });
+const ranked = (effort: string) =>
   AutomaticModelRankSchema.parse({
     kind: "model",
     driverKind: "codex",
     providerId: "openai",
     modelId: "gpt-6-luna",
-    options,
+    effort,
   });
 function resolve(
   accounts: readonly AuthorizedModelAccountSnapshot[],
@@ -126,7 +127,7 @@ describe("automatic model resolver", () => {
     expect(resolve([retired]).skipped).toMatchObject([
       { reason: "model-unavailable", detail: "Not on your plan" },
     ]);
-    expect(resolve([base], { wants: [ranked({ effort: "max" })] }).skipped).toMatchObject([
+    expect(resolve([base], { wants: [ranked("max")] }).skipped).toMatchObject([
       { reason: "options-unavailable", detail: expect.stringContaining("it takes low, high") },
     ]);
   });
@@ -148,7 +149,7 @@ describe("automatic model resolver", () => {
     const a = account(),
       b = account();
     const result = resolve([a, b], {
-      wants: [ranked({ effort: "low" }), want()],
+      wants: [ranked("low"), want()],
       original: own(a),
     });
     expect(result.candidates.map((c) => c.harnessInstanceId)).toEqual([
@@ -281,7 +282,7 @@ describe("automatic model resolver", () => {
     const light = [want(), ...automaticModelDefaults.light];
     expect(backgroundModelWants(settings, "light")).toEqual(light);
     expect(backgroundModelWants(settings, "deep")).toEqual(automaticModelDefaults.deep);
-    expect(backgroundModelWants({}, "naming")).toEqual(automaticModelDefaults.light);
+    expect(backgroundModelWants({}, "naming")).toEqual(automaticModelDefaults.naming);
     const codex = account("codex", {
       catalog: {
         ...account().catalog!,
@@ -312,6 +313,36 @@ describe("automatic model resolver", () => {
       wants: [{ kind: "catalog-light", driverKind: a.driverKind }],
     });
     expect(result.candidates[0]?.storedModelSelection.nativeModelId).toBe("gateway/gpt-6-luna");
+  });
+  it("runs a person's effort on that model's own ladder, or moves past a model without it", () => {
+    const a = account();
+    const options = (...wants: ModelWant[]) =>
+      resolve([a], { wants }).candidates.map((c) => c.storedModelSelection.options);
+    expect(options(want("codex", undefined, "high"))).toEqual([{ effort: "high" }]);
+    // The model's default and "default" both leave the engine to state it.
+    expect(options(want("codex", undefined, "low"))).toEqual([{}]);
+    expect(options(want("codex", undefined, "default"))).toEqual([{}]);
+    const fallback = resolve([a], { wants: [want("codex", undefined, "xhigh"), ranked("high")] });
+    expect(fallback.skipped).toMatchObject([
+      { reason: "options-unavailable", detail: "Model has no xhigh effort; it takes low, high" },
+    ]);
+    expect(fallback.candidates[0]?.storedModelSelection.options).toEqual({ effort: "high" });
+    // An effort replaces the small model's own, and a model with no ladder has one effort.
+    const small = {
+      ...a,
+      catalog: { ...a.catalog!, lightModel: selection("gpt-6-luna", { effort: "low" }) },
+    };
+    const smallWant = BackgroundModelChoiceSchema.parse({ engine: "codex", effort: "high" });
+    expect(
+      resolve([small], { wants: [smallWant] }).candidates[0]?.storedModelSelection.options,
+    ).toEqual({
+      effort: "high",
+    });
+    const flat = {
+      ...a,
+      catalog: { ...a.catalog!, models: [{ ...a.catalog!.models[0]!, options: [] }] },
+    };
+    expect(resolve([flat], { wants: [ranked("high")] }).candidates).toHaveLength(1);
   });
   it("shares catalog and Chat empty-choice defaults", () => {
     const a = account();

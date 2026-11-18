@@ -25,15 +25,17 @@ with ordinary file edits:
 {
   "backgroundModels": {
     "naming": [],
-    "light": [{ "engine": "claude", "model": "anthropic/claude-haiku-5-5" }],
+    "light": [{ "engine": "claude", "model": "anthropic/claude-haiku-5-5", "effort": "xhigh" }],
     "deep": [{ "engine": "codex", "account": "<aiAccountId>" }],
     "excludedAccounts": ["<aiAccountId>"]
   }
 }
 ```
 
-Each entry names an `engine`, and optionally a `model` and an `account` from
-`opensteer_ai_account_list`; without `model` it uses that account's own small model. Opensteer
+Each entry names an `engine`, and optionally a `model`, an `account` from
+`opensteer_ai_account_list` and an `effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`, `ultra` or `default`); without `model` it uses that account's own small model. A model that
+doesn't offer the effort is passed over for the next entry, and Settings shows the effort in use. Opensteer
 tries the person's entries in order, then its recommended order, so a missing file, key or empty
 list means the recommended order. `excludedAccounts` keeps those AI accounts out of background
 work. Read the file before editing and keep it strict JSON with only these keys. If it is invalid,
