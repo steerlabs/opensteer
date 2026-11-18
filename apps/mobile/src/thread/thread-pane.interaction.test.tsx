@@ -3491,6 +3491,26 @@ describe("a task", () => {
     expect(text(container)).not.toContain("Not stopped");
   });
 
+  it("keeps a lost Stop reply uncertain while the original run is still active", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(running);
+    host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { container } = await mount(host, workId);
+    await press(container, "Stop this run");
+    expect(host.stopRun).toHaveBeenCalledWith(workId, task.runId);
+    expect(text(container)).toContain("Couldn't confirm");
+    host.move({ ...running, network: "offline" });
+    host.move(running);
+    await settle();
+    expect(text(container)).toContain("Couldn't confirm");
+    expect(text(container)).not.toContain("Not stopped");
+  });
+
   it("settles an unconfirmed Stop for its original run when a different run starts", async () => {
     const task = taskAtWork();
     const running = snapshotFor({

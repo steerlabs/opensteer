@@ -40,7 +40,7 @@ export function threadActivity(input: ThreadActivityInput): ThreadActivity {
   const runs = threadRuns(input.runQueue, input.thread.id);
   const executing = runs.find((run) => run.status !== "queued");
   const earliest = executing ?? runs[0];
-  if (earliest && stopRequested(input.entries, earliest.id)) return "stopping";
+  if (earliest && runStopRequested(input.entries, earliest.id)) return "stopping";
   if (status === "waiting") return "waiting_for_you";
   if (executing && inBackground(input.entries, executing.id)) return "background";
   return !executing && runs.length > 0 ? "queued" : "working";
@@ -228,7 +228,7 @@ function inBackground(entries: readonly TranscriptEntry[], runId: string): boole
   );
 }
 
-function stopRequested(entries: readonly TranscriptEntry[], runId: string): boolean {
+export function runStopRequested(entries: readonly TranscriptEntry[], runId: string): boolean {
   return entries.some(
     (entry) => entry.kind === "run" && entry.runId === runId && entry.stopping === true,
   );
