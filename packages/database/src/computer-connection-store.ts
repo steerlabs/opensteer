@@ -15,6 +15,7 @@ import {
 } from "./administration-command.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
+import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { jsonValue } from "./store-primitives.js";
@@ -328,6 +329,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         if (!pending)
           throw new OpensteerError({
             code: "forbidden",
+            reason: computerAppApprovalChangedReason,
             message: "This approval changed or is no longer waiting.",
           });
       }

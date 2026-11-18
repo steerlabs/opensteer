@@ -16,6 +16,7 @@ import {
 import type {
   CallableIntegrationTool,
   DiscoveredIntegrationServer,
+  IntegrationGrantStore,
   InstallIntegrationInput,
   IntegrationPlatformStore,
 } from "@opensteer/database";
@@ -371,41 +372,64 @@ export class LocalServerService {
       server?.runnerName ?? "its computer",
     );
     let admissionError: Error | undefined;
-    const authorize = async () => {
+    const assertCallable = async (store: Pick<IntegrationGrantStore, "listCallableTools">) => {
+      const current = (
+        await store.listCallableTools({
+          ownerUserId: UserIdSchema.parse(callable.grant.ownerUserId),
+          threadId: caller.threadId,
+        })
+      ).find(
+        (candidate) =>
+          candidate.grant.id === callable.grant.id &&
+          candidate.tool.id === callable.tool.id &&
+          candidate.tool.schemaDigest === callable.tool.schemaDigest &&
+          JSON.stringify(candidate.server.transport) === JSON.stringify(callable.server.transport),
+      );
+      if (!current)
+        throw refused(
+          "forbidden",
+          "Local tool authority changed while the call was queued; the call was not sent.",
+        );
+    };
+    const denyAdmission = (error: unknown): never => {
+      admissionError =
+        error instanceof Error
+          ? error
+          : new Error("Local tool authority changed; the call was not sent.");
+      throw admissionError;
+    };
+    const handoff = async (send: () => Promise<void>) => {
+      let sending: Promise<void> | undefined;
       try {
         call.signal.throwIfAborted();
-        const current = (
-          await this.#store.listCallableTools({
-            ownerUserId: UserIdSchema.parse(callable.grant.ownerUserId),
-            threadId: caller.threadId,
-          })
-        ).find(
-          (candidate) =>
-            candidate.grant.id === callable.grant.id &&
-            candidate.tool.id === callable.tool.id &&
-            candidate.tool.schemaDigest === callable.tool.schemaDigest &&
-            JSON.stringify(candidate.server.transport) ===
-              JSON.stringify(callable.server.transport),
-        );
-        if (!current)
-          throw refused(
-            "forbidden",
-            "Local tool authority changed while the call was queued; the call was not sent.",
-          );
-        call.signal.throwIfAborted();
         await caller.authorize?.();
-        call.signal.throwIfAborted();
+        await this.#store.withToolDispatch(async (transaction, grants) => {
+          await assertCallable(grants);
+          await caller.authorizeAtHandoff?.(transaction);
+          call.signal.throwIfAborted();
+          // Start the wire submission under the authority fence. Its transport
+          // acknowledgement and the server's work are outside that fence.
+          sending = send();
+          void sending.catch(() => undefined);
+        });
       } catch (error) {
-        admissionError =
-          error instanceof Error
-            ? error
-            : new Error("Local tool authority changed; the call was not sent.");
-        throw admissionError;
+        if (!sending) denyAdmission(error);
+        throw error;
       }
+      await sending;
     };
-    if (upstream.computer) upstream.computer.beforeToolCall = authorize;
+    if (upstream.computer) upstream.computer.handoffToolCall = handoff;
     try {
-      if (!upstream.computer) await authorize();
+      if (!upstream.computer) {
+        try {
+          call.signal.throwIfAborted();
+          await assertCallable(this.#store);
+          await caller.authorize?.();
+          call.signal.throwIfAborted();
+        } catch (error) {
+          denyAdmission(error);
+        }
+      }
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
@@ -454,8 +478,8 @@ export class LocalServerService {
           : `${computer} did not answer. Try again.`,
       );
     } finally {
-      if (upstream.computer?.beforeToolCall === authorize)
-        upstream.computer.beforeToolCall = undefined;
+      if (upstream.computer?.handoffToolCall === handoff)
+        upstream.computer.handoffToolCall = undefined;
       await this.inputRequests.finish(upstream.client, call);
       release();
     }

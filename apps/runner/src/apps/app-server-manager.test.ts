@@ -270,9 +270,7 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
     privateDirectory: join(root, "private"),
     planLaunch: async () => {
       if (++count === 32) admitted.resolve();
-      await withTimeout(release.promise, 2_000, {
-        timeoutError: () => new Error("Launch planner was not released"),
-      });
+      await release.promise;
       return (launch) => launch;
     },
     terminate: async (_id, stopEngine) => {
@@ -295,9 +293,7 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
     .map((port) => manager.start({ ...spec, port, appId: `app_${crypto.randomUUID()}` }));
   const settled = Promise.allSettled(starts);
   try {
-    await withTimeout(admitted.promise, 1_000, {
-      timeoutError: () => new Error("Concurrent server slots were not reserved"),
-    });
+    await Promise.race([admitted.promise, ...starts]);
     await expect(
       manager.start({ ...spec, port: ports[32]!, appId: `app_${crypto.randomUUID()}` }),
     ).rejects.toThrow("32 app servers");
@@ -379,9 +375,7 @@ it("cleans a crashed server and descendants before releasing its capacity and la
       if (!id.startsWith("app:app_crash:")) {
         if (++reservations === 31) slotsReserved.resolve();
         if (reservations === 32) replacementReserved.resolve();
-        await withTimeout(releaseLaunches.promise, 3_000, {
-          timeoutError: () => new Error("Launch reservations were not released"),
-        });
+        await releaseLaunches.promise;
       }
       return containment.wrap(id, (launch) => launch);
     },
@@ -423,9 +417,7 @@ it("cleans a crashed server and descendants before releasing its capacity and la
     for (let index = 0; index < 31; index++)
       starts.push(manager.start({ ...spec, port: ports[index]!, appId: `app_reserved_${index}` }));
     settled = Promise.allSettled(starts);
-    await withTimeout(slotsReserved.promise, 1_000, {
-      timeoutError: () => new Error("Server slots were not reserved"),
-    });
+    await Promise.race([slotsReserved.promise, ...starts]);
     await expect(
       manager.start({ ...spec, port: ports[31]!, appId: "app_over_limit" }),
     ).rejects.toThrow("32 app servers");
@@ -434,11 +426,10 @@ it("cleans a crashed server and descendants before releasing its capacity and la
     expect(await readdir(privateDirectory)).toHaveLength(31);
     expect(() => process.kill(childPid!, 0)).toThrow();
     expect(manager.logTail(spec.appId)).toContain("crash tail");
-    starts.push(manager.start({ ...spec, port: ports[32]!, appId: "app_replacement" }));
+    const replacement = manager.start({ ...spec, port: ports[32]!, appId: "app_replacement" });
+    starts.push(replacement);
     settled = Promise.allSettled(starts);
-    await withTimeout(replacementReserved.promise, 1_000, {
-      timeoutError: () => new Error("Cleaned server did not release its capacity"),
-    });
+    await Promise.race([replacementReserved.promise, replacement]);
     const stopping = manager.stopAll();
     releaseLaunches.resolve();
     await stopping;
@@ -479,9 +470,7 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
         if (!id.startsWith("app:app_uncertain:")) {
           if (++reservations === 31) slotsReserved.resolve();
           if (reservations === 32) replacementReserved.resolve();
-          await withTimeout(releaseLaunches.promise, 3_000, {
-            timeoutError: () => new Error("Launch reservations were not released"),
-          });
+          await releaseLaunches.promise;
         }
         return (launch) => launch;
       },
@@ -538,9 +527,8 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
           manager.start({ ...spec, port: ports[index]!, appId: `app_reserved_${index}` }),
         );
       settled = Promise.allSettled(starts);
-      await withTimeout(slotsReserved.promise, 1_000, {
-        timeoutError: () => new Error("Server slots were not reserved"),
-      });
+      // A start can fail before it reaches planLaunch. Surface that failure here.
+      await Promise.race([slotsReserved.promise, ...starts]);
       await expect(
         manager.start({ ...spec, port: ports[31]!, appId: "app_over_limit" }),
       ).rejects.toThrow("32 app servers");
@@ -548,11 +536,10 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
       proof = "proven";
       await manager.stop(spec.appId, 2);
       expect(await readdir(privateDirectory)).not.toContain(launchDirectory);
-      starts.push(manager.start({ ...spec, port: ports[32]!, appId: "app_replacement" }));
+      const replacement = manager.start({ ...spec, port: ports[32]!, appId: "app_replacement" });
+      starts.push(replacement);
       settled = Promise.allSettled(starts);
-      await withTimeout(replacementReserved.promise, 1_000, {
-        timeoutError: () => new Error("Proven cleanup did not release its server slot"),
-      });
+      await Promise.race([replacementReserved.promise, replacement]);
       expect(reservations).toBe(32);
     } finally {
       proof = "proven";

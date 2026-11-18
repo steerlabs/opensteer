@@ -99,13 +99,15 @@ export function describeDeploymentRow(
     signIn:
       status !== "needs-sign-in"
         ? null
-        : sessionFailure === "pairing-required"
-          ? "pairing-code"
-          : connection.kind === "team"
-            ? "host-oauth"
-            : access.access === "connect"
-              ? "account-grant"
-              : "pairing-code",
+        : sessionFailure === "account-required"
+          ? "account-grant"
+          : sessionFailure === "pairing-required"
+            ? "pairing-code"
+            : connection.kind === "team"
+              ? "host-oauth"
+              : access.access === "connect"
+                ? "account-grant"
+                : "pairing-code",
     sessionFailure,
     status,
     verification: facts.verification,

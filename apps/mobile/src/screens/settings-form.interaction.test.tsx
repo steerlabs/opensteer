@@ -44,6 +44,11 @@ describe("Settings on a phone", () => {
     expect(document.body.textContent).toContain("Notifications");
     expect(document.body.textContent).not.toContain("Chrome");
   });
+  it("shows the storage problem in General Settings", async () => {
+    const storageError = "Saved views and pending messages are unavailable for this sign-in.";
+    await render({ page: "general", storageError });
+    expect(document.body.textContent).toContain(storageError);
+  });
   it("keeps Sign-ins distinct from Plugins and accounts agents use", async () => {
     await render({ page: "sign-ins" });
     expect(document.body.textContent).toContain("Chrome");

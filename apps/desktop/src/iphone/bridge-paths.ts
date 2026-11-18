@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
+  codesignRequirementOption,
   opensteerAppleTeamId,
   opensteerDeveloperIdRequirement,
 } from "../signed-helpers/developer-id.js";
@@ -82,7 +83,7 @@ export async function verifyIphoneBridge(input: {
       else
         await promisify(execFile)(
           "/usr/bin/codesign",
-          ["--verify", "--strict", "-R", requirement, input.binary],
+          ["--verify", "--strict", codesignRequirementOption(requirement), input.binary],
           { timeout: 10000, maxBuffer: 16384 },
         );
     }

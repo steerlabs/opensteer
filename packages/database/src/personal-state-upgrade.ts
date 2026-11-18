@@ -33,7 +33,7 @@ import {
   legacyRunIdPattern,
 } from "./personal-state-upgrade-activity.js";
 
-export const personalCurrentStateMigrationName = "0035_personal_current_state";
+export const personalCurrentStateMigrationName = "0036_personal_current_state";
 
 const batchSize = 500;
 const messageBatchSize = 500;

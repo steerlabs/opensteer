@@ -1,6 +1,6 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { sql, type Kysely, type Selectable, type Insertable } from "kysely";
+import { sql, type Kysely, type Selectable, type Insertable, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 
@@ -150,6 +150,22 @@ export class PluginAgentStore {
       .values(input)
       .onConflict((c) => c.column("id").doNothing())
       .execute();
+  }
+  attachInteraction(
+    transaction: Transaction<DatabaseSchema>,
+    previous: PluginExecutionRecord,
+    requestId: NonNullable<PluginExecutionRecord["requestId"]>,
+    interactionId: string,
+  ) {
+    return transaction
+      .updateTable("pluginExecutions")
+      .set({ requestId, interactionId, updatedAt: new Date() })
+      .where("id", "=", previous.id)
+      .where("state", "=", "waiting")
+      .where("runId", previous.runId === null ? "is" : "=", previous.runId)
+      .where("interactionId", previous.interactionId === null ? "is" : "=", previous.interactionId)
+      .returningAll()
+      .executeTakeFirst();
   }
   updateLive(
     id: string,

@@ -4,10 +4,11 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { lockPersonalSyncState } from "./personal-transaction.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import {
   IntegrationConnectionAuthStore,
@@ -96,6 +97,20 @@ export class IntegrationPlatformStore {
 
   replayAdministration(identity: AdministrationCommandIdentity) {
     return replayAdministrationCommand(this.#database, identity);
+  }
+
+  /** Serializes a local tool's dispatch with changes to its committed authority. */
+  withToolDispatch<T>(
+    dispatch: (
+      transaction: Transaction<DatabaseSchema>,
+      grants: IntegrationGrantStore,
+    ) => Promise<T>,
+  ): Promise<T> {
+    // Dispatch may have happened even if the transaction fails to finish.
+    return this.#database.transaction().execute(async (transaction) => {
+      await lockPersonalSyncState(transaction);
+      return dispatch(transaction, new IntegrationGrantStore(transaction));
+    });
   }
 
   administer<Result>(

@@ -192,6 +192,8 @@ export const databaseLockOrder = [
   "integration_grants",
   // Request authority settles before Assignments, Commands and input receipts.
   "requests",
+  // A plugin interaction attaches its Request after creating it.
+  "plugin_executions",
   "advisory:browser-profile",
   "advisory:browser-grants",
   // Assignment projections precede Commands, Inputs, Messages and their derived state.

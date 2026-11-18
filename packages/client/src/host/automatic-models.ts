@@ -24,7 +24,14 @@ export function backgroundModelRows(view: AutomaticModelsView) {
       role,
       title: roleTitles[role],
       detail: inUse
-        ? `${inUse.modelDisplayName} · ${inUse.accountDisplayName}${inUse.usageLimited ? " · near its usage limit" : ""}`
+        ? [
+            inUse.modelDisplayName,
+            inUse.effortDisplayName,
+            inUse.accountDisplayName,
+            inUse.usageLimited ? "near its usage limit" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
         : "Nothing can run this now",
     };
   });

@@ -11,6 +11,8 @@ const InUseViewSchema = z
     accountDisplayName: z.string(),
     computerDisplayName: z.string(),
     modelDisplayName: z.string(),
+    /** The effort it runs at, in the engine's words; absent from older Hosts and models without one. */
+    effortDisplayName: z.string().nullable().optional(),
     usageLimited: z.boolean(),
   })
   .nullable();

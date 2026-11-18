@@ -208,6 +208,19 @@ alter table integration_installations add constraint integration_installations_s
   check (source_kind in ('plugin', 'built-in'));
 alter table integration_auth_attempts drop column if exists result_connection_id;
 `;
+/**
+ * Releases before the plugin overhaul stored a null \`apiKey\` on every device-app definition. The
+ * field is gone from the definition, so a stored copy that still has it cannot be read.
+ */
+export const dropStoredDefinitionApiKeyMigrationName = "0035_drop_stored_definition_api_key";
+export const DROP_STORED_DEFINITION_API_KEY_SQL = `
+update integration_installations set manifest = manifest #- '{definition,apiKey}'
+  where manifest->'definition' ? 'apiKey';
+update integration_request_details set manifest = manifest #- '{definition,apiKey}'
+  where manifest->'definition' ? 'apiKey';
+update requests set payload = payload #- '{manifest,definition,apiKey}'
+  where payload->'manifest'->'definition' ? 'apiKey';
+`;
 export const unifyLocalPluginAccessMigrationName = "0034_unify_local_plugin_access_contract";
 const UNIFY_LOCAL_PLUGIN_ACCESS_SQL = `
 insert into plugin_agent_settings (owner_user_id, plugin_id, access, author)
@@ -509,6 +522,11 @@ export function migrationProvider(options?: {
         [unifyLocalPluginAccessMigrationName]: {
           async up(database) {
             await sql.raw(UNIFY_LOCAL_PLUGIN_ACCESS_SQL).execute(database);
+          },
+        },
+        [dropStoredDefinitionApiKeyMigrationName]: {
+          async up(database) {
+            await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
           },
         },
         ...(options?.personalCurrentState !== false

@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { createId, type AuthenticatedSession } from "@opensteer/core";
+import { createId, OpensteerError, type AuthenticatedSession } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   expectedMutationSessionHeader,
@@ -145,6 +145,48 @@ it("checks the expected mutation session against the session authenticated by th
     await app.close();
   }
 });
+
+it.each([undefined, "computer-app-installation-invalid"])(
+  "logs a refused command at info with reason %s",
+  async (reason) => {
+    const authenticator = new HostAuthenticator({
+      identity: { requireSession: async () => session } as never,
+      publicUrl: new URL(canonical),
+    });
+    const logs: string[] = [];
+    const app = Fastify({ logger: { stream: { write: (line: string) => logs.push(line) } } });
+    registerHostApi(app, authenticator, {
+      "commands.dispatch": async () => {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Private refusal detail",
+          ...(reason ? { reason } : {}),
+        });
+      },
+    });
+    try {
+      const response = await injectRpcRequest(
+        app,
+        "commands.dispatch",
+        { type: "tab.close", tabIds: ["tab-from-list"], idempotencyKey: "refusal-log" },
+        { cookie: "canonical=x", origin: canonical },
+      );
+      expect(response.statusCode, response.body).toBe(400);
+      expect(logs.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          code: "bad_request",
+          level: 30,
+          msg: "rpc refused",
+          reason: reason ?? null,
+          rpc: "commands.dispatch",
+        }),
+      );
+      expect(logs.join("")).not.toContain("Private refusal detail");
+    } finally {
+      await app.close();
+    }
+  },
+);
 
 it("registers no personal file, media or reference routes on a team Host", async () => {
   const app = Fastify();

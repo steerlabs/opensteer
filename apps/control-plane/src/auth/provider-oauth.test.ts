@@ -16,7 +16,6 @@ import {
 import {
   buildDeclarativeAuthorizationUrl,
   exchangeDeclarativeAuthorizationToken,
-  extractDeclarativeCredential,
   missingRequiredScopes,
   refreshDeclarativeCredential,
 } from "./provider-oauth-flow.js";
@@ -29,14 +28,6 @@ const oauthConfig = OAuthMethodConfigSchema.parse({
   scopeSeparator: " ",
   extraAuthorizeParams: { audience: "api", prompt: "consent" },
   scopes: ["openid", "profile", "contacts.read"],
-  identity: {
-    accountIdentifierPath: "account.email",
-    source: "userinfo",
-    userinfoUrl: "https://identity.example/userinfo",
-    identityPath: "account.id",
-    tenantPath: "account.tenant.id",
-    displayNamePath: "account.name",
-  },
 });
 
 describe("OAuth primitives", () => {
@@ -365,16 +356,10 @@ describe("OAuth primitives", () => {
     ).resolves.toMatchObject({ access_token: response.access_token, token_type: "bearer" });
   });
 
-  it("accepts Slack's bot token response and preserves its identity fields", async () => {
+  it("accepts Slack's bot token response without identity fields", async () => {
     const slackConfig = OAuthMethodConfigSchema.parse({
       authorizationUrl: "https://slack.com/oauth/v2/authorize",
       clientAuth: "body",
-      identity: {
-        displayNamePath: "team.name",
-        identityPath: "bot_user_id",
-        source: "token-response",
-        tenantPath: "team.id",
-      },
       scopeSeparator: ",",
       scopes: ["chat:write"],
       tokenResponseProfile: "slack-bot",
@@ -390,29 +375,21 @@ describe("OAuth primitives", () => {
         Response.json(
           {
             access_token: "xoxb-access",
-            bot_user_id: "U012BOT",
             ok: true,
             scope: "chat:write",
-            team: { id: "T012TEAM", name: "Acme" },
             token_type: "bot",
           },
           { headers: { "cache-control": "no-store" } },
         )) as typeof fetch,
       redirectUrl: "https://app.example/callback",
     });
-    expect(result.tokenResponse).toMatchObject({
+    expect(result).toMatchObject({
       access_token: "xoxb-access",
-      bot_user_id: "U012BOT",
       token_type: "bearer",
-    });
-    expect(result.tokenResponseIdentity).toEqual({
-      displayName: "Acme",
-      externalIdentityId: "U012BOT",
-      externalTenantId: "T012TEAM",
     });
   });
 
-  it("explicitly ignores incidental ID tokens when userinfo is the identity authority", async () => {
+  it("explicitly ignores incidental ID tokens during token exchange and renewal", async () => {
     const config = OAuthMethodConfigSchema.parse({
       ...oauthConfig,
       idTokenValidation: "ignore",
@@ -435,11 +412,11 @@ describe("OAuth primitives", () => {
       fetch: tokenFetch as typeof fetch,
       redirectUrl: "https://app.example/callback",
     });
-    expect(exchanged.tokenResponse).toMatchObject({
+    expect(exchanged).toMatchObject({
       access_token: "microsoft-access",
       token_type: "bearer",
     });
-    expect(exchanged.tokenResponse).not.toHaveProperty("id_token");
+    expect(exchanged).not.toHaveProperty("id_token");
 
     await expect(
       refreshDeclarativeCredential({
@@ -451,16 +428,6 @@ describe("OAuth primitives", () => {
         refreshToken: "refresh",
       }),
     ).resolves.toMatchObject({ accessToken: "microsoft-access" });
-  });
-
-  it("forbids ignoring an ID token when token response fields are identity authority", () => {
-    expect(() =>
-      OAuthMethodConfigSchema.parse({
-        ...oauthConfig,
-        idTokenValidation: "ignore",
-        identity: { source: "token-response", identityPath: "account.id" },
-      }),
-    ).toThrow("requires userinfo");
   });
 
   it("turns Slack's HTTP-200 error envelope into a bounded provider error", async () => {
@@ -664,155 +631,6 @@ describe("declarative OAuth flow", () => {
     });
     expect(result.codeVerifier).toBeTruthy();
     expect(new URL(result.authorizationUrl).searchParams.get("audience")).toBe("api");
-  });
-
-  it("extracts identity from a token response", async () => {
-    const tokenIdentityConfig = OAuthMethodConfigSchema.parse({
-      ...oauthConfig,
-      identity: {
-        accountIdentifierPath: "account.email",
-        source: "token-response",
-        identityPath: "account.id",
-        tenantPath: "account.tenant",
-        displayNamePath: "account.name",
-      },
-    });
-    await expect(
-      extractDeclarativeCredential({
-        config: tokenIdentityConfig,
-        now: 1_000,
-        tokenResponse: {
-          access_token: "access",
-          refresh_token: "refresh",
-          expires_in: 60,
-          scope: "openid profile",
-          account: { email: "ada@example.com", id: 42, tenant: "tenant", name: "Ada" },
-        },
-      }),
-    ).resolves.toEqual({
-      accessToken: "access",
-      accountIdentifier: "ada@example.com",
-      refreshToken: "refresh",
-      expiresAt: 61_000,
-      externalIdentityId: "42",
-      externalTenantId: "tenant",
-      displayName: "Ada",
-      grantedScopes: ["openid", "profile"],
-    });
-  });
-
-  it("distinguishes an absent scope from an explicitly empty scope", async () => {
-    const tokenIdentityConfig = OAuthMethodConfigSchema.parse({
-      ...oauthConfig,
-      identity: { source: "token-response", identityPath: "account.id" },
-    });
-    const absent = await extractDeclarativeCredential({
-      config: tokenIdentityConfig,
-      tokenResponse: { access_token: "access", account: { id: "account" } },
-    });
-    const empty = await extractDeclarativeCredential({
-      config: tokenIdentityConfig,
-      tokenResponse: { access_token: "access", account: { id: "account" }, scope: "" },
-    });
-    expect(absent.grantedScopes).toEqual(tokenIdentityConfig.scopes);
-    expect(empty.grantedScopes).toEqual([]);
-  });
-
-  it("requires a declared token-response tenant instead of guessing one", async () => {
-    const tokenIdentityConfig = OAuthMethodConfigSchema.parse({
-      ...oauthConfig,
-      identity: {
-        source: "token-response",
-        identityPath: "account.id",
-        tenantPath: "account.tenant",
-      },
-    });
-    const rejected = await extractDeclarativeCredential({
-      config: tokenIdentityConfig,
-      tokenResponse: { access_token: "access", account: { id: "account" } },
-    }).catch((error: unknown) => error);
-    expect(oauthAuthorizationFailure(rejected)).toEqual({
-      failureCode: "invalid-provider-response",
-      providerError: null,
-    });
-  });
-
-  it("fetches and extracts a userinfo identity", async () => {
-    const fetch_ = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
-      return new Response(
-        JSON.stringify({
-          account: {
-            email: "grace@example.com",
-            id: "user",
-            tenant: { id: "workspace" },
-            name: "Grace",
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    });
-    await expect(
-      extractDeclarativeCredential({
-        config: oauthConfig,
-        tokenResponse: { access_token: "access" },
-        fetch: fetch_ as typeof fetch,
-      }),
-    ).resolves.toMatchObject({
-      accountIdentifier: "grace@example.com",
-      externalIdentityId: "user",
-      externalTenantId: "workspace",
-      displayName: "Grace",
-      grantedScopes: ["openid", "profile", "contacts.read"],
-    });
-  });
-
-  it.each([
-    {
-      name: "malformed JSON",
-      response: new Response("not json", { status: 200 }),
-    },
-    {
-      name: "missing identity",
-      response: Response.json({ account: { tenant: { id: "workspace" } } }),
-    },
-    {
-      name: "missing tenant",
-      response: Response.json({ account: { id: "user" } }),
-    },
-  ])("classifies userinfo $name without retaining provider data", async ({ response }) => {
-    const rejected = await extractDeclarativeCredential({
-      config: oauthConfig,
-      tokenResponse: { access_token: "access" },
-      fetch: (async () => response.clone()) as typeof fetch,
-    }).catch((error: unknown) => error);
-    expect(oauthAuthorizationFailure(rejected)).toEqual({
-      failureCode: "invalid-provider-response",
-      providerError: null,
-    });
-    expect(rejected).toBeInstanceOf(OAuth2Error);
-    expect("cause" in (rejected as object)).toBe(false);
-  });
-
-  it("classifies userinfo network and HTTP failures as transport failures", async () => {
-    for (const fetch_ of [
-      (async () => {
-        throw new TypeError("socket included raw provider data");
-      }) as typeof fetch,
-      (async () => new Response("raw provider body", { status: 503 })) as typeof fetch,
-    ]) {
-      const rejected = await extractDeclarativeCredential({
-        config: oauthConfig,
-        tokenResponse: { access_token: "access" },
-        fetch: fetch_,
-      }).catch((error: unknown) => error);
-      expect(oauthAuthorizationFailure(rejected)).toEqual({
-        failureCode: "provider-exchange-failed",
-        providerError: null,
-      });
-      expect((rejected as Error).message).not.toContain("raw provider");
-      expect("cause" in (rejected as object)).toBe(false);
-    }
   });
 });
 

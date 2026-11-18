@@ -433,15 +433,13 @@ export class RequestStore {
       return { request: await refreshRequestState(transaction, request.id) };
     });
   }
-  async create(input: CreateRequestInput): Promise<RequestMutation> {
-    return commitPersonalMutation(this.#database, async (personalTransaction) => {
-      await (async (transaction) => {
-        await lockRequestOrigin(transaction, input);
-      })(personalTransaction);
-      return ((transaction) => createRequestInTransaction(this.#links, transaction, input))(
-        personalTransaction,
-      );
-    });
+  async create(
+    input: CreateRequestInput,
+    transaction?: Transaction<DatabaseSchema>,
+  ): Promise<RequestMutation> {
+    return commitPersonalMutation(transaction ?? this.#database, (t) =>
+      createRequestInTransaction(this.#links, t, input),
+    );
   }
   async settlePluginRequest(input: {
     requestId: RequestId;

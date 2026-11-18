@@ -12,13 +12,6 @@ const providers: Readonly<
         access_type: "offline",
         prompt: "consent",
       },
-      identity: {
-        accountIdentifierPath: "email",
-        displayNamePath: "name",
-        identityPath: "sub",
-        source: "userinfo",
-        userinfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
-      },
       issuer: "https://accounts.google.com",
       revocation: {
         clientAuth: "none",
@@ -66,13 +59,6 @@ const providers: Readonly<
       authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
       clientAuth: "body",
       idTokenValidation: "ignore",
-      identity: {
-        accountIdentifierPath: "email",
-        displayNamePath: "name",
-        identityPath: "sub",
-        source: "userinfo",
-        userinfoUrl: "https://graph.microsoft.com/oidc/userinfo",
-      },
       scopeAliases: {
         "User.Read": ["https://graph.microsoft.com/User.Read"],
       },
@@ -103,12 +89,6 @@ const providers: Readonly<
     oauth: {
       authorizationUrl: "https://slack.com/oauth/v2/authorize",
       clientAuth: "body",
-      identity: {
-        displayNamePath: "team.name",
-        identityPath: "bot_user_id",
-        source: "token-response",
-        tenantPath: "team.id",
-      },
       revocation: {
         clientAuth: "none",
         errorPath: "error",
@@ -153,13 +133,6 @@ const providers: Readonly<
     oauth: {
       authorizationUrl: "https://github.com/login/oauth/authorize",
       clientAuth: "body",
-      identity: {
-        accountIdentifierPath: "login",
-        displayNamePath: "login",
-        identityPath: "id",
-        source: "userinfo",
-        userinfoUrl: "https://api.github.com/user",
-      },
       revocation: {
         clientAuth: "basic",
         method: "delete-json",
@@ -180,13 +153,6 @@ const providers: Readonly<
       clientAuth: "body",
       extraAuthorizeParams: {
         prompt: "consent",
-      },
-      identity: {
-        accountIdentifierPath: "email",
-        displayNamePath: "username",
-        identityPath: "id",
-        source: "userinfo",
-        userinfoUrl: "https://discord.com/api/v10/users/@me",
       },
       revocation: {
         clientAuth: "body",

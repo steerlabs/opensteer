@@ -21,6 +21,7 @@ import {
   OAuthBrokerPluginRevocationContextSchema,
   OAuthBrokerPluginRelaySchema,
   OAuthBrokerTokenBundleSchema,
+  oauthBrokerManagedTokenContextVersion,
   OAuthBrokerAuthorizationResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -586,11 +587,17 @@ export class PluginOAuthService {
             binding: base.binding,
             attemptId: created.attemptId,
             expiresAt: created.expiresAt,
-            schemaVersion: 2,
           };
           const context = prepared
-            ? OAuthBrokerPluginRelayContextSchema.parse({ ...pins, relay: prepared.relay })
-            : OAuthBrokerPluginAuthorizationContextSchema.parse(pins);
+            ? OAuthBrokerPluginRelayContextSchema.parse({
+                ...pins,
+                relay: prepared.relay,
+                schemaVersion: 2,
+              })
+            : OAuthBrokerPluginAuthorizationContextSchema.parse({
+                ...pins,
+                schemaVersion: oauthBrokerManagedTokenContextVersion,
+              });
           session.broker = {
             id: created.attemptId,
             context,
@@ -936,7 +943,7 @@ export class PluginOAuthService {
         const context = OAuthBrokerPluginRefreshContextSchema.parse({
           ...base,
           binding: { ...base.binding, hostPublicKey: keys.publicKey },
-          schemaVersion: 2,
+          schemaVersion: oauthBrokerManagedTokenContextVersion,
           transactionId: `hor_${randomUUID()}`,
           expiresAt: new Date(Date.now() + 2 * 60_000).toISOString(),
         });

@@ -602,12 +602,40 @@ test("plugin access settings keep known tools visible with typed refusals", asyn
 
 test("an ask-mode held write returns the actual result after the person approves", async () => {
   const caller = await run();
+  const attaching = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const attachInteraction = records.attachInteraction.bind(records);
+  const attach = vi.spyOn(records, "attachInteraction").mockImplementation(async (...args) => {
+    attaching.resolve();
+    await release.promise;
+    return attachInteraction(...args);
+  });
   const work = call(
     caller,
     "plugin_call",
     { calls: { path: "tools.fixture.reviewed", input: { amount: 7 } } },
     true,
   );
+  try {
+    await Promise.race([
+      attaching.promise,
+      work.then((result) => {
+        throw new Error(
+          `Plugin call ended before attaching its Request: ${JSON.stringify(result)}`,
+        );
+      }),
+    ]);
+    const premature = await database
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", caller.claims.runId)
+      .where("status", "=", "pending")
+      .executeTakeFirst();
+    expect(premature).toBeUndefined();
+  } finally {
+    release.resolve();
+    attach.mockRestore();
+  }
   const request = await pendingRequest(caller);
   expect(request.kind).toBe("plugin.approval");
   expect(request.presentation.plugin).toMatchObject({
@@ -619,6 +647,49 @@ test("an ask-mode held write returns the actual result after the person approves
     status: "completed",
     result: { execution: { value: { ok: true, value: 8 } } },
   });
+});
+
+test("stopping a Run before its plugin input Request attaches rolls back the Request", async ({
+  signal,
+}) => {
+  const caller = await run("full-access");
+  const attaching = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const abort = () => release.resolve();
+  signal.addEventListener("abort", abort, { once: true });
+  const attachInteraction = records.attachInteraction.bind(records);
+  const attach = vi.spyOn(records, "attachInteraction").mockImplementation(async (...args) => {
+    attaching.resolve();
+    await release.promise;
+    return attachInteraction(...args);
+  });
+  const work = call(caller, "plugin_call", {
+    calls: { path: "tools.fixture.input", input: { label: "Interrupted input" } },
+  });
+  try {
+    await Promise.race([
+      attaching.promise,
+      work.then((result) => {
+        throw new Error(
+          `Plugin call ended before attaching its Request: ${JSON.stringify(result)}`,
+        );
+      }),
+    ]);
+    await executions.stopRun(caller.claims.runId);
+  } finally {
+    release.resolve();
+    signal.removeEventListener("abort", abort);
+    attach.mockRestore();
+  }
+  expect(await work).toMatchObject({ status: "cancelled" });
+  expect(
+    await database
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", caller.claims.runId)
+      .where("kind", "=", "plugin.input")
+      .execute(),
+  ).toEqual([]);
 });
 
 test("declining a held approval returns a refusal without executing the approved mutation", async () => {

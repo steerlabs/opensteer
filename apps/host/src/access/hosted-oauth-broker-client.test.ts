@@ -158,7 +158,7 @@ describe("HostedOAuthBrokerClient refusals", () => {
       issuer: "https://accounts.example.test",
     });
     expect(requestedOrigin).toBe("https://account-control.internal.test");
-    expect(requestedPath).toBe("/v1/oauth-broker/metadata?version=3");
+    expect(requestedPath).toBe("/v1/oauth-broker/metadata?version=4");
     expect(broker.callbackUrl("slack")).toBe(
       "https://accounts.example.test/v1/oauth-broker/callback/slack",
     );

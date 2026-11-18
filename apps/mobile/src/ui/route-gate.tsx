@@ -94,8 +94,7 @@ function primaryButton(
   if (
     (issue.code === "connection" ||
       issue.code === "open-failed" ||
-      issue.code === "update-server" ||
-      issue.code === "login-storage-unavailable") &&
+      issue.code === "update-server") &&
     connection !== null
   )
     return {

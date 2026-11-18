@@ -1,4 +1,5 @@
 import { localNamespace } from "../plugins/provider-names.js";
+import { DROP_STORED_DEFINITION_API_KEY_SQL } from "@opensteer/database";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -20,10 +21,12 @@ import {
   type ComputerAppStatusEntry,
 } from "@opensteer/protocol";
 import {
+  createDeviceLeaveSignature,
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
 
+import { sql } from "kysely";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -69,6 +72,13 @@ const methods = [
 ] as const;
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 const apps = ["apple-calendar", "apple-contacts", "apple-reminders"];
+const iphoneAppAccess = {
+  "apple-calendar": "read-write",
+  "apple-contacts": "read",
+  "apple-reminders": "read-write",
+  "iphone-photos": "read",
+  "iphone-location": "read",
+} as const;
 const mismatch = "runner-device-profile-mismatch";
 
 integration.sequential("iPhone integrations Host contract", () => {
@@ -214,6 +224,162 @@ integration.sequential("iPhone integrations Host contract", () => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "revoked" });
   }, 120_000);
+
+  it.each(["fresh", "pre-overhaul installations"] as const)(
+    "allows each iPhone data app with %s",
+    async (scenario) => {
+      await start();
+      const enroll = async (key: string) => {
+        const phone = keep(
+          await connectPhone(host, (await mint(host, key)).token, iphoneDescriptor(), false),
+        );
+        await phone.report(Object.keys(iphoneAppAccess).map(status));
+        return phone;
+      };
+      const allowApps = async (phone: Awaited<ReturnType<typeof enroll>>) => {
+        for (const [definitionId, access] of Object.entries(iphoneAppAccess)) {
+          const request = await requestComputerAppSetup(
+            host,
+            phone.runnerId,
+            access,
+            randomUUID(),
+            definitionId,
+          );
+          const review = await testRpcData(
+            host.origin,
+            "integration.computer.setup.review",
+            { setupRequestId: request.id },
+            { headers: host.ownerHeaders },
+          );
+          expect(review.request).toMatchObject({ id: request.id, definitionId, access });
+          const answer = await answerSetup(host, request.id, "allow");
+          expect(answer.status, `${definitionId}: ${await answer.text()}`).toBe(200);
+        }
+      };
+      const phone = await enroll("first-phone");
+      await allowApps(phone);
+      if (scenario === "fresh") return;
+
+      // What a pre-overhaul release left: 0033 and 0034 kept these manifests and digests; 0035 corrects them.
+      const legacy = await sql`
+        update integration_installations
+        set manifest = jsonb_set(manifest, '{definition,apiKey}', 'null'::jsonb)
+        where source_kind = 'built-in' and manifest->'definition'->>'adapter' = 'computer'
+      `.execute(host.store.database);
+      expect(legacy.numAffectedRows).toBe(5n);
+      await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(host.store.database);
+      const deployment = await host.store.database
+        .selectFrom("deployments")
+        .select("id")
+        .executeTakeFirstOrThrow();
+      const proof = {
+        deploymentId: deployment.id,
+        issuedAt: new Date().toISOString(),
+        runnerId: phone.runnerId,
+      };
+      const left = await host.runtime.app.inject({
+        method: "POST",
+        url: "/v1/runner/leave",
+        payload: {
+          ...proof,
+          signature: createDeviceLeaveSignature(phone.primary.privateKey, proof),
+        },
+      });
+      expect(left.statusCode, left.body).toBe(200);
+      const replacement = await enroll("replacement-phone");
+      expect(replacement.runnerId).not.toBe(phone.runnerId);
+      await allowApps(replacement);
+    },
+    60_000,
+  );
+
+  it("explains why a reviewed approval can no longer be allowed", async () => {
+    await start();
+    const phone = keep(
+      await connectPhone(
+        host,
+        (await mint(host, "approval-refusals")).token,
+        iphoneDescriptor(),
+        false,
+      ),
+    );
+    const definitionId = "apple-calendar";
+    await phone.report([status(definitionId)]);
+    const request = await requestComputerAppSetup(
+      host,
+      phone.runnerId,
+      "read",
+      "refusal",
+      definitionId,
+    );
+    const review = () =>
+      testRpcRequest(
+        host.origin,
+        "integration.computer.setup.review",
+        { setupRequestId: request.id },
+        { headers: host.ownerHeaders },
+      );
+    expect((await review()).status).toBe(200);
+    const expectRefusal = async (reason: string) => {
+      const response = await answerSetup(host, request.id, "allow");
+      expect(await response.json()).toMatchObject({ error: { code: "conflict", reason } });
+      expect(response.status).toBe(409);
+    };
+    await phone.report([]);
+    await expectRefusal("computer-app-not-offered");
+    await phone.disconnectStream();
+    await waitForCondition(
+      async () => (await machines(host)).find(({ id }) => id === phone.runnerId)?.apps === null,
+    );
+    await expectRefusal("device-offline");
+    await phone.reconnect();
+    await expectRefusal("computer-app-connecting");
+    await phone.report([status(definitionId)]);
+    await host.store.database
+      .updateTable("computerAppSetupRequests")
+      .set({ definitionDigest: "older-catalog-digest" })
+      .where("id", "=", request.id)
+      .executeTakeFirstOrThrow();
+    const stale = await answerSetup(host, request.id, "allow");
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toMatchObject({
+      error: { code: "forbidden", reason: "computer-app-approval-changed" },
+    });
+    await sql`
+      update integration_installations
+      set manifest = manifest #- '{definition,authMethods}'
+      where provenance->>'definitionId' = ${definitionId}
+    `.execute(host.store.database);
+    const invalid = await answerSetup(host, request.id, "allow");
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({
+      error: { code: "bad_request", reason: "computer-app-installation-invalid" },
+    });
+    expect((await answerSetup(host, request.id, "deny")).status).toBe(200);
+    await expectRefusal("computer-app-approval-changed");
+    expect(await (await review()).json()).toMatchObject({
+      error: { code: "conflict", reason: "computer-app-approval-changed" },
+    });
+
+    await phone.report([status("apple-contacts")]);
+    const contacts = await requestComputerAppSetup(
+      host,
+      phone.runnerId,
+      "read",
+      "contacts",
+      "apple-contacts",
+    );
+    await host.store.database
+      .updateTable("computerAppSetupRequests")
+      .set({ access: "read-write" })
+      .where("id", "=", contacts.id)
+      .executeTakeFirstOrThrow();
+    const unavailable = await answerSetup(host, contacts.id, "allow");
+    expect(unavailable.status).toBe(400);
+    expect(await unavailable.json()).toMatchObject({
+      error: { code: "bad_request", reason: "computer-app-definition-changed" },
+    });
+  }, 60_000);
 
   it("admits new iPhone providers only after their authenticated status, without orphan approvals", async () => {
     await start();
@@ -999,6 +1165,18 @@ async function command(host: MachineAccessWireHost, input: unknown, headers = ho
       headers,
     },
   );
+}
+function answerSetup(
+  host: MachineAccessWireHost,
+  setupRequestId: string,
+  decision: "allow" | "deny",
+) {
+  return command(host, {
+    type: "integration.computer.setup.respond",
+    idempotencyKey: `iphone-answer:${setupRequestId}:${randomUUID()}`,
+    setupRequestId,
+    decision,
+  });
 }
 async function mint(
   host: MachineAccessWireHost,

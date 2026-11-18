@@ -85,6 +85,7 @@ function testPort(options: {
   ) => void;
 }) {
   const attached: { deploymentId: string; origin: string }[] = [];
+  const scopes: Parameters<MobileHostPort["attach"]>[0]["clientScope"][] = [];
   const capabilityReaders: Parameters<MobileHostPort["attach"]>[0]["capabilities"][] = [];
   /** Every command any attachment was asked to send. */
   const commands: string[] = [];
@@ -114,6 +115,7 @@ function testPort(options: {
       authorization,
     }) => {
       capabilityReaders.push(capabilities);
+      scopes.push(clientScope);
       const deploymentId = connection.authority.document.deploymentId;
       attached.push({ deploymentId, origin });
       // A real client, so the attachment this port hands back is the shape
@@ -202,6 +204,7 @@ function testPort(options: {
     disposed,
     factory,
     refusals,
+    scopes,
     verified,
   };
 }
@@ -524,6 +527,218 @@ const connectComputer = (generation: number): DeploymentConnectionInput =>
       route: { generation, kind: "connect" },
     }),
   );
+
+function legacyAccountCredential(subject = accountSubject, expiresAt = fixtureSessionExpiresAt) {
+  return {
+    accessToken: "legacy-account-access-0123456789",
+    accessTokenExpiresAt: expiresAt,
+    grantedScopes: ["openid", "profile"],
+    issuerOrigin: accountOrigin,
+    refreshToken: "legacy-account-refresh-0123456789",
+    subject,
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+}
+
+describe("MobileClient upgrades of Account-connected computers", () => {
+  it.each(["missing", "different subject", "refused refresh"] as const)(
+    "asks for Account sign-in with a %s Account credential and a valid stored Host session",
+    async (account) => {
+      const records = createSecureRecordStore({
+        keyPrefix: "opensteer.auth",
+        secureStore: new MemorySecureStore(),
+      });
+      await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+      if (account !== "missing") {
+        await records.write(
+          "account",
+          JSON.stringify(
+            account === "different subject"
+              ? legacyAccountCredential(
+                  ControlPlaneAccountIdSchema.parse("acct_0192f4a1-8888-4000-8000-000000000008"),
+                )
+              : legacyAccountCredential(accountSubject, "2026-08-01T01:00:00.000Z"),
+          ),
+        );
+      }
+      const port = testPort({ held: false, realCredentials: true });
+      const { client } = open(port.factory, undefined, {
+        accountOrigin,
+        records,
+        fetch: async () => Response.json({ error: "invalid_grant" }, { status: 400 }),
+      });
+      try {
+        vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+          syncedDeploymentIds: [],
+          unavailable: [],
+        });
+        await client.initialize();
+        if (account === "refused refresh")
+          expect(await client.oauth.accountAuthorizationHeader()).toBeNull();
+        await client.catalog.upsert({
+          ...connectComputer(1),
+          source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
+        });
+        await client.select(serverId);
+        await vi.waitFor(() =>
+          expect(client.getSnapshot().selection.session?.connection.getSnapshot().issue?.code).toBe(
+            "sign-in",
+          ),
+        );
+        expect(client.getSnapshot().selection).toMatchObject({
+          hostClient: null,
+          row: {
+            status: "needs-sign-in",
+            signIn: "account-grant",
+            sessionFailure: "account-required",
+          },
+        });
+        expect(await records.read(`personal.${serverId}`)).toContain(personalSession().token);
+        expect(port.attached).toEqual([]);
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+
+  it("opens an upgraded Account connection during a refresh and keeps its login IDs after relaunch", async () => {
+    const secureStore = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "opensteer.auth", secureStore });
+    const files = new MemoryPrivateFilesystem();
+    await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+    await records.write(
+      "account",
+      JSON.stringify(legacyAccountCredential(accountSubject, "2026-08-01T01:00:00.000Z")),
+    );
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, files, {
+      accountOrigin,
+      records,
+      fetch: async () =>
+        Response.json({
+          access_token: "rotated-account-access-0123456789",
+          expires_in: 3600,
+          refresh_token: "rotated-account-refresh-0123456789",
+          token_type: "Bearer",
+        }),
+    });
+    const writing = deferred<void>();
+    const release = deferred<void>();
+    const write = records.write.bind(records);
+    const writes = vi.spyOn(records, "write").mockImplementation(async (name, value) => {
+      if (name === "account" && value.includes("rotated-account-refresh")) {
+        writing.resolve();
+        await release.promise;
+      }
+      await write(name, value);
+    });
+    try {
+      vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+        syncedDeploymentIds: [],
+        unavailable: [],
+      });
+      await client.initialize();
+      await client.catalog.upsert({
+        ...connectComputer(1),
+        source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
+      });
+      const refresh = client.oauth.accountAuthorizationHeader();
+      await writing.promise;
+      await client.select(serverId);
+      await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
+      release.resolve();
+      expect(await refresh).toBe("Bearer rotated-account-access-0123456789");
+      const live = client.getSnapshot().selection.hostClient?.connection.getSnapshot().scope;
+      expect(live).toMatchObject({
+        accountLoginId: expect.any(String),
+        loginId: expect.any(String),
+      });
+      client.dispose();
+      const reopened = open(port.factory, files, { accountOrigin, records }).client;
+      try {
+        vi.spyOn(reopened.accountDirectory, "sync").mockResolvedValue({
+          syncedDeploymentIds: [],
+          unavailable: [],
+        });
+        await reopened.initialize();
+        await vi.waitFor(() =>
+          expect(
+            reopened.getSnapshot().selection.hostClient?.connection.getSnapshot().scope,
+          ).toEqual(live),
+        );
+      } finally {
+        reopened.dispose();
+      }
+    } finally {
+      release.resolve();
+      writes.mockRestore();
+      client.dispose();
+    }
+  });
+
+  it.each(["account", `personal.${serverId}`])(
+    "keeps an unreadable %s manifest distinct from Account sign-in",
+    async (brokenRecord) => {
+      const secureStore = new MemorySecureStore();
+      const records = createSecureRecordStore({ keyPrefix: "opensteer.auth", secureStore });
+      await records.write("account", JSON.stringify(legacyAccountCredential()));
+      await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+      secureStore.put(`opensteer.auth.${brokenRecord}`, "{}");
+      const port = testPort({ held: false, realCredentials: true });
+      const { client } = open(port.factory, undefined, { accountOrigin, records });
+      try {
+        vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+          syncedDeploymentIds: [],
+          unavailable: [],
+        });
+        await client.initialize();
+        await client.catalog.upsert({
+          ...connectComputer(1),
+          source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
+        });
+        await expect(client.openDeployment(serverId)).rejects.toMatchObject({
+          cause: { message: "A stored credential record on this device is unreadable." },
+        });
+        expect(client.getSnapshot().selection).toMatchObject({
+          hostClient: null,
+          row: { signIn: null },
+        });
+        expect(client.getSnapshot().selection.session?.connection.getSnapshot()).toMatchObject({
+          issue: { code: "login-storage-unavailable" },
+          phase: "blocked",
+        });
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+
+  it("rechecks Account sign-in when a connection changes source on the same route", async () => {
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, undefined, { accountOrigin });
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      await client.select(serverId);
+      await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
+      await client.catalog.upsert({
+        ...connectComputer(1),
+        source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
+      });
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().selection).toMatchObject({
+          hostClient: null,
+          row: { signIn: "account-grant", sessionFailure: "account-required" },
+        }),
+      );
+      expect(port.attached).toHaveLength(1);
+      expect(port.disposed).toEqual([serverId]);
+    } finally {
+      client.dispose();
+    }
+  });
+});
 
 describe("MobileClient plugin sign-in returns", () => {
   it("requests app finish on a capable Host and deduplicates session and deep-link delivery", async () => {
@@ -3194,26 +3409,31 @@ describe("MobileClient and this iPhone's apps", () => {
     client.dispose();
   });
 
-  it("keeps a cold-start expired phone identity and waits for explicit sign-in", async () => {
-    const phone = iphoneOn(serverId);
-    const port = testPort({ held: false, realCredentials: true });
-    const { client } = open(port.factory, undefined, { iphoneApps: phone.controller.owner });
-    await client.catalog.upsertAndSelect(connectComputer(1));
-    await client.sessions.save({ ...personalSession(), expiresAt: "2020-01-01T00:00:00.000Z" });
-    const establish = vi
-      .spyOn(client.sessionExchange, "establish")
-      .mockResolvedValue(sessionExchangeResponse());
-    await client.initialize();
-    await client.retrySelection();
-    expect(establish).not.toHaveBeenCalled();
-    expect(phone.controller.owner.enrolledDeploymentId()).toBe(serverId);
-    expect(phone.fake.device.calls).toEqual([]);
-    expect(client.getSnapshot().selection.row?.status).toBe("needs-sign-in");
-    await client.openDeployment(serverId);
-    expect(establish).toHaveBeenCalledTimes(1);
-    phone.controller.dispose();
-    client.dispose();
-  });
+  it.each(["expired", "missing"] as const)(
+    "keeps the enrolled phone identity when its Personal session is %s and waits for sign-in",
+    async (session) => {
+      const phone = iphoneOn(serverId);
+      const port = testPort({ held: false, realCredentials: true });
+      const { client } = open(port.factory, undefined, { iphoneApps: phone.controller.owner });
+      await client.catalog.upsertAndSelect(connectComputer(1));
+      if (session === "expired")
+        await client.sessions.save({ ...personalSession(), expiresAt: "2020-01-01T00:00:00.000Z" });
+      const establish = vi
+        .spyOn(client.sessionExchange, "establish")
+        .mockResolvedValue(sessionExchangeResponse());
+      await client.initialize();
+      await client.retrySelection();
+      expect(establish).not.toHaveBeenCalled();
+      expect(port.attached).toEqual([]);
+      expect(phone.controller.owner.enrolledDeploymentId()).toBe(serverId);
+      expect(phone.fake.device.calls).toEqual([]);
+      expect(client.getSnapshot().selection.row?.status).toBe("needs-sign-in");
+      await client.openDeployment(serverId);
+      expect(establish).toHaveBeenCalledTimes(1);
+      phone.controller.dispose();
+      client.dispose();
+    },
+  );
 
   it("J1: stops sharing before a sign-out awaits, then tells the Host while signed in", async () => {
     const port = testPort({ held: false, realCredentials: true });
@@ -4055,39 +4275,55 @@ describe("durable mobile connection admission", () => {
     }
   });
 
-  it("retries a failed durable login upgrade before admitting a usable attachment", async () => {
-    vi.useFakeTimers();
-    const secure = new MemorySecureStore();
-    const records = createSecureRecordStore({ keyPrefix: "login-repair", secureStore: secure });
-    const port = testPort({ held: false, realCredentials: true });
-    const { client } = open(port.factory, undefined, { records });
-    try {
-      await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
-      await client.initialize();
-      await client.catalog.upsert(connectComputer(1));
-      secure.interrupt = () => {
-        throw new Error("secure store unavailable");
-      };
-      await expect(client.openDeployment(serverId)).rejects.toThrow("Could not save");
-      await vi.advanceTimersByTimeAsync(1);
-      expect(client.getSnapshot().selection.hostClient).toBeNull();
-      const connection = client.getSnapshot().selection.session?.connection;
-      expect(connection?.getSnapshot()).toMatchObject({
-        phase: "blocked",
-        issue: { code: "login-storage-unavailable" },
-      });
-      secure.interrupt = () => undefined;
-      connection!.retry();
-      await vi.advanceTimersByTimeAsync(1);
-      const attached = client.getSnapshot().selection.hostClient!;
-      const login = await client.sessions.load(DeploymentIdSchema.parse(serverId));
-      expect(login?.viewLoginId).toBeDefined();
-      expect(attached.connection.getSnapshot().scope?.loginId).toBe(login?.viewLoginId);
-    } finally {
-      client.dispose();
-      vi.useRealTimers();
-    }
-  });
+  it.each(["Personal", "Account"] as const)(
+    "opens a stored Host session even when it cannot persist the %s saved-view login ID",
+    async (kind) => {
+      vi.useFakeTimers();
+      const secure = new MemorySecureStore();
+      const records = createSecureRecordStore({ keyPrefix: "login-repair", secureStore: secure });
+      const port = testPort({ held: false, realCredentials: true });
+      const { client } = open(port.factory, undefined, { records, accountOrigin });
+      try {
+        const write = vi.fn();
+        vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+          syncedDeploymentIds: [],
+          unavailable: [],
+        });
+        await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+        if (kind === "Account")
+          await records.write("account", JSON.stringify(legacyAccountCredential()));
+        const failure = new Error("secure store unavailable");
+        const brokenRecord = kind === "Account" ? "account" : `personal.${serverId}`;
+        secure.interrupt = (step) => {
+          if (step === `set:login-repair.${brokenRecord}`) {
+            write();
+            throw failure;
+          }
+        };
+        await client.initialize();
+        await client.catalog.upsert({
+          ...connectComputer(1),
+          ...(kind === "Account"
+            ? { source: { kind: "account", issuer: accountOrigin, subject: accountSubject } }
+            : {}),
+        });
+        await client.openDeployment(serverId);
+        await vi.advanceTimersByTimeAsync(1);
+        const attached = client.getSnapshot().selection.hostClient!;
+        expect(attached.getSnapshot().session).toBe("authenticated");
+        expect(port.scopes.at(-1)?.()).toBeNull();
+        expect(client.getSnapshot().storageFailure).toMatchObject({
+          message: expect.stringMatching(/pending messages/u),
+          cause: failure,
+        });
+        expect(client.savedViews.getSnapshot().tasks.source).toBe("live");
+        expect(write).toHaveBeenCalledTimes(1);
+      } finally {
+        client.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("recovers only fallback records proved by the authenticated Host session", async () => {
     vi.useFakeTimers();

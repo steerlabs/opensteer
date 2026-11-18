@@ -56,6 +56,10 @@ const effort = {
       value: "medium",
       label: "Medium",
     },
+    {
+      value: "high",
+      label: "High",
+    },
   ],
 };
 interface AccountSpec {
@@ -352,6 +356,7 @@ describe("automatic model resolution on the Host", () => {
         accountDisplayName: "Account 1",
         computerDisplayName: "Laptop",
         modelDisplayName: "Display claude-opus-5-5",
+        effortDisplayName: "Medium",
         usageLimited: false,
       },
       light: null,
@@ -360,6 +365,7 @@ describe("automatic model resolution on the Host", () => {
         accountDisplayName: "Account 2",
         computerDisplayName: "Studio Mac",
         modelDisplayName: "Display gpt-6.1-terra",
+        effortDisplayName: "Medium",
         usageLimited: false,
       },
     });

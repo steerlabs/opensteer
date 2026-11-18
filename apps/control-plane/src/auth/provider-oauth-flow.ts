@@ -1,13 +1,8 @@
-import {
-  OAuthTokenResponseIdentitySchema,
-  type OAuthTokenResponseIdentity,
-} from "@opensteer/control-plane-protocol";
 import { type OAuthMethodConfig } from "./provider-oauth-config.js";
 import {
   buildAuthorizationUrl,
   createPkcePair,
   exchangeAuthorizationCode,
-  OAuth2Error,
   refreshAccessToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -22,7 +17,14 @@ export function normalizeGrantedScopes(
     aliases.set(canonical, canonical);
     for (const alias of values) aliases.set(alias, canonical);
   }
-  return [...new Set(scopes.map((scope) => aliases.get(scope) ?? scope))];
+  return [
+    ...new Set(
+      scopes
+        .map((scope) => scope.trim())
+        .filter(Boolean)
+        .map((scope) => aliases.get(scope) ?? scope),
+    ),
+  ];
 }
 
 export function missingRequiredScopes(input: {
@@ -86,202 +88,6 @@ export async function buildDeclarativeAuthorizationUrl(
   };
 }
 
-function valueAtPath(value: unknown, path: string): unknown {
-  let cursor = value;
-  for (const segment of path.split(".")) {
-    if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return undefined;
-    cursor = (cursor as Record<string, unknown>)[segment];
-  }
-  return cursor;
-}
-
-function optionalStringAt(value: unknown, path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  const found = valueAtPath(value, path);
-  if (typeof found === "string" && found.trim().length > 0) return found;
-  if (typeof found === "number" || typeof found === "bigint") return String(found);
-  return undefined;
-}
-
-export interface DeclarativeCredential {
-  readonly accountIdentifier?: string;
-  readonly accessToken: string;
-  readonly displayName?: string;
-  readonly expiresAt?: number;
-  readonly externalIdentityId: string;
-  readonly externalTenantId?: string;
-  readonly grantedScopes: readonly string[];
-  readonly refreshToken?: string;
-}
-
-/**
- * Selects the registry-declared identity fields from a token response. This is
- * the only provider response metadata that needs to cross the hosted broker
- * boundary; the full provider document remains ephemeral.
- */
-export function extractOAuthTokenResponseIdentity(
-  config: OAuthMethodConfig,
-  tokenResponse: Readonly<Record<string, unknown>>,
-): OAuthTokenResponseIdentity {
-  if (config.identity.source !== "token-response") {
-    throw new OAuth2Error("OAuth identity source is not the token response", {
-      failureKind: "invalid-response",
-    });
-  }
-  const externalIdentityId = optionalStringAt(tokenResponse, config.identity.identityPath);
-  if (!externalIdentityId) {
-    throw new OAuth2Error(`OAuth identity path "${config.identity.identityPath}" was missing`, {
-      failureKind: "invalid-response",
-    });
-  }
-  const externalTenantId = optionalStringAt(tokenResponse, config.identity.tenantPath);
-  if (config.identity.tenantPath && !externalTenantId) {
-    throw new OAuth2Error(`OAuth identity path "${config.identity.tenantPath}" was missing`, {
-      failureKind: "invalid-response",
-    });
-  }
-  return validateOAuthTokenResponseIdentity(config, {
-    externalIdentityId,
-    ...(externalTenantId ? { externalTenantId } : {}),
-    ...optionalIdentityFields(config, tokenResponse),
-  });
-}
-
-function optionalIdentityFields(
-  config: OAuthMethodConfig,
-  document: Readonly<Record<string, unknown>>,
-): Pick<OAuthTokenResponseIdentity, "accountIdentifier" | "displayName"> {
-  const accountIdentifier = optionalStringAt(document, config.identity.accountIdentifierPath);
-  const displayName = optionalStringAt(document, config.identity.displayNamePath);
-  return {
-    ...(accountIdentifier ? { accountIdentifier } : {}),
-    ...(displayName ? { displayName } : {}),
-  };
-}
-
-function validateOAuthTokenResponseIdentity(
-  config: OAuthMethodConfig,
-  identity: OAuthTokenResponseIdentity,
-): OAuthTokenResponseIdentity {
-  const result = OAuthTokenResponseIdentitySchema.safeParse(identity);
-  if (!result.success) {
-    throw new OAuth2Error("OAuth token-response identity was invalid", {
-      failureKind: "invalid-response",
-    });
-  }
-  const parsed = result.data;
-  if (config.identity.source !== "token-response") {
-    throw new OAuth2Error("OAuth token-response identity was provided for a userinfo provider", {
-      failureKind: "invalid-response",
-    });
-  }
-  if (config.identity.tenantPath && !parsed.externalTenantId) {
-    throw new OAuth2Error(`OAuth identity path "${config.identity.tenantPath}" was missing`, {
-      failureKind: "invalid-response",
-    });
-  }
-  return parsed;
-}
-
-export interface ExtractDeclarativeCredentialInput {
-  readonly config: OAuthMethodConfig;
-  readonly fetch?: typeof globalThis.fetch;
-  readonly now?: number;
-  readonly tokenResponse: OAuth2TokenResponse & Readonly<Record<string, unknown>>;
-  readonly tokenResponseIdentity?: OAuthTokenResponseIdentity;
-}
-
-export async function extractDeclarativeCredential(
-  input: ExtractDeclarativeCredentialInput,
-): Promise<DeclarativeCredential> {
-  if (input.tokenResponseIdentity && input.config.identity.source !== "token-response") {
-    throw new OAuth2Error("OAuth token-response identity was provided for a userinfo provider", {
-      failureKind: "invalid-response",
-    });
-  }
-  const accessToken = input.tokenResponse.access_token;
-  let identityDocument: unknown = input.tokenResponse;
-  if (input.config.identity.source === "userinfo") {
-    const userinfoUrl = input.config.identity.userinfoUrl;
-    if (!userinfoUrl)
-      throw new OAuth2Error("OAuth userinfo configuration is invalid", {
-        failureKind: "invalid-response",
-      });
-    let response: Response;
-    try {
-      response = await (input.fetch ?? globalThis.fetch)(userinfoUrl, {
-        headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
-      });
-    } catch {
-      throw new OAuth2Error("OAuth userinfo request failed", { failureKind: "transport" });
-    }
-    if (!response.ok) {
-      throw new OAuth2Error("OAuth userinfo request failed", { failureKind: "transport" });
-    }
-    try {
-      identityDocument = (await response.json()) as unknown;
-    } catch {
-      throw new OAuth2Error("OAuth userinfo endpoint returned an invalid response", {
-        failureKind: "invalid-response",
-      });
-    }
-  }
-  const tokenResponseIdentity =
-    input.config.identity.source === "token-response"
-      ? input.tokenResponseIdentity
-        ? validateOAuthTokenResponseIdentity(input.config, input.tokenResponseIdentity)
-        : extractOAuthTokenResponseIdentity(input.config, input.tokenResponse)
-      : undefined;
-  const externalIdentityId =
-    tokenResponseIdentity?.externalIdentityId ??
-    optionalStringAt(identityDocument, input.config.identity.identityPath);
-  if (!externalIdentityId)
-    throw new OAuth2Error(
-      `OAuth identity path "${input.config.identity.identityPath}" was missing`,
-      {
-        failureKind: "invalid-response",
-      },
-    );
-  const separator = input.config.scopeSeparator;
-  const grantedScopes =
-    typeof input.tokenResponse.scope === "string"
-      ? input.tokenResponse.scope
-          .split(separator)
-          .map((scope) => scope.trim())
-          .filter(Boolean)
-      : [...input.config.scopes];
-  const normalizedScopes = normalizeGrantedScopes(input.config, grantedScopes);
-  const expiresIn = input.tokenResponse.expires_in;
-  const externalTenantId =
-    tokenResponseIdentity?.externalTenantId ??
-    optionalStringAt(identityDocument, input.config.identity.tenantPath);
-  if (input.config.identity.tenantPath && !externalTenantId) {
-    throw new OAuth2Error(`OAuth identity path "${input.config.identity.tenantPath}" was missing`, {
-      failureKind: "invalid-response",
-    });
-  }
-  const accountIdentifier =
-    tokenResponseIdentity?.accountIdentifier ??
-    optionalStringAt(identityDocument, input.config.identity.accountIdentifierPath);
-  const displayName =
-    tokenResponseIdentity?.displayName ??
-    optionalStringAt(identityDocument, input.config.identity.displayNamePath);
-  return {
-    accessToken,
-    externalIdentityId,
-    grantedScopes: normalizedScopes,
-    ...(input.tokenResponse.refresh_token
-      ? { refreshToken: input.tokenResponse.refresh_token }
-      : {}),
-    ...(typeof expiresIn === "number"
-      ? { expiresAt: (input.now ?? Date.now()) + Math.max(0, expiresIn) * 1_000 }
-      : {}),
-    ...(externalTenantId ? { externalTenantId } : {}),
-    ...(accountIdentifier ? { accountIdentifier } : {}),
-    ...(displayName ? { displayName } : {}),
-  };
-}
-
 function clientSecretFor(
   config: OAuthMethodConfig,
   clientSecret: string | undefined,
@@ -303,20 +109,14 @@ export interface ExchangeDeclarativeAuthorizationInput {
   readonly config: OAuthMethodConfig;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
-  readonly now?: number;
   readonly redirectUrl: string;
-}
-
-export interface DeclarativeAuthorizationToken {
-  readonly tokenResponse: OAuth2TokenResponse & Readonly<Record<string, unknown>>;
-  readonly tokenResponseIdentity?: OAuthTokenResponseIdentity;
 }
 
 export async function exchangeDeclarativeAuthorizationToken(
   input: ExchangeDeclarativeAuthorizationInput,
-): Promise<DeclarativeAuthorizationToken> {
+): Promise<OAuth2TokenResponse> {
   const clientAuth = clientAuthFor(input.config);
-  const tokenResponse = await exchangeAuthorizationCode({
+  return exchangeAuthorizationCode({
     ...(clientAuth ? { clientAuth } : {}),
     clientId: input.clientId,
     clientSecret: clientSecretFor(input.config, input.clientSecret),
@@ -334,27 +134,6 @@ export async function exchangeDeclarativeAuthorizationToken(
     redirectUrl: input.redirectUrl,
     tokenUrl: input.config.tokenUrl,
   });
-  return {
-    tokenResponse,
-    ...(input.config.identity.source === "token-response"
-      ? { tokenResponseIdentity: extractOAuthTokenResponseIdentity(input.config, tokenResponse) }
-      : {}),
-  };
-}
-
-export async function exchangeDeclarativeAuthorization(
-  input: ExchangeDeclarativeAuthorizationInput,
-): Promise<DeclarativeCredential & { readonly tokenType: string }> {
-  const { tokenResponse, tokenResponseIdentity } =
-    await exchangeDeclarativeAuthorizationToken(input);
-  const credential = await extractDeclarativeCredential({
-    config: input.config,
-    ...(input.fetch ? { fetch: input.fetch } : {}),
-    ...(input.now === undefined ? {} : { now: input.now }),
-    tokenResponse,
-    ...(tokenResponseIdentity ? { tokenResponseIdentity } : {}),
-  });
-  return { ...credential, tokenType: tokenResponse.token_type ?? "Bearer" };
 }
 
 interface RefreshDeclarativeCredentialInput {
@@ -396,13 +175,16 @@ export async function refreshDeclarativeCredential(
     scopes: input.config.scopes,
     tokenUrl: input.config.tokenUrl,
   });
+  // An omitted scope matches the refresh request, or its prior grant when no scope was sent.
   const scopes =
     typeof response.scope === "string"
       ? response.scope
           .split(input.config.scopeSeparator)
           .map((scope) => scope.trim())
           .filter(Boolean)
-      : [...input.grantedScopes];
+      : input.config.scopes.length > 0
+        ? input.config.scopes
+        : input.grantedScopes;
   return {
     accessToken: response.access_token,
     grantedScopes: [...new Set(scopes)],
