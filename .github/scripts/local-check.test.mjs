@@ -110,14 +110,14 @@ test("typechecks what CI would, including a test-only owner and a root config", 
   assert.ok(filtered(localPlan(["tsconfig.json"], graph, [])));
 });
 
-test("imported packages keep compiler checks while skipping local style rewrites", () => {
-  const file = "vendor/plugin-engine/sdk/src/index.ts";
+test("plugin engine packages get the same lint and typecheck as every package", () => {
+  const file = "packages/plugin-engine/sdk/src/index.ts";
   const plan = localPlan(
     [file],
     [
       {
         name: "@opensteer/plugin-engine-sdk",
-        dir: "vendor/plugin-engine/sdk",
+        dir: "packages/plugin-engine/sdk",
         deps: [],
         coverage: [],
       },
@@ -125,5 +125,15 @@ test("imported packages keep compiler checks while skipping local style rewrites
     [file],
   );
   assert.ok(plan.commands.some((command) => command.includes("typecheck")));
-  assert.ok(!plan.commands.some((command) => command.includes("oxlint")));
+  assert.ok(plan.commands.some((command) => command.includes("oxlint")));
+});
+test("a change only to the lint-ignored plugin example is format-checked and not linted", () => {
+  const file = "packages/plugin-engine/apps/reference-example/index.ts";
+  const p = localPlan(
+    [file],
+    [{ name: "apps", dir: "packages/plugin-engine/apps", deps: [], coverage: [] }],
+    [file],
+  );
+  assert.ok(p.commands.some((c) => c.includes("prettier") && c.includes(file)));
+  assert.ok(!p.commands.some((c) => c.includes("oxlint")));
 });

@@ -1,21 +1,5 @@
-// This table is the importer's only source of upstream spelling.
-export const packageScope = "@executor-js/";
-export const renames = [
-  ["@executor-js/", "@opensteer/plugin-engine-"],
-  ["fumadb-effect", "@opensteer/plugin-engine-database"],
-  ["FumaDB", "PluginDatabase"],
-  ["fumadb", "pluginDatabase"],
-  ["Rhys Sullivan", "Opensteer"],
-  ["rhyssul", "opensteer"],
-  ["https://api.executor.sh", "https://plugins.invalid"],
-  ["executor_", "plugin_engine_"],
-  ["exsec", "oscred"],
-  ["EXECUTOR", "PLUGIN_ENGINE"],
-  ["Executor", "PluginEngine"],
-  ["executor", "pluginEngine"],
-];
+// What names.mjs looks for, and the compatibility values it allows in their two modules.
 export const forbidden = ["executor", "rhys", "sullivan", "fumadb"];
-export const databaseDirectory = "fumadb-effect";
 export const compatibility = {
   apps: {
     contextElement: "executor-context",
@@ -43,5 +27,3 @@ export const compatibility = {
   },
   catalog: { feed: "https://catalog.executor.sh/index.json" },
 };
-
-export const noticeHeading = "## Executor";
