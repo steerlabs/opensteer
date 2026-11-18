@@ -186,6 +186,8 @@ export const AppCopyOrigin = Schema.Struct({
   reference: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   commit: Schema.NullOr(SourceCommit),
+  /** The SHA-256 of the catalog document an official app was installed from. */
+  sha256: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
 });
 export type AppCopyOrigin = typeof AppCopyOrigin.Type;
 /** A host-resolved snapshot. Hosts authorize its origin before invoking the SDK. */

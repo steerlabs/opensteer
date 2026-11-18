@@ -4,7 +4,7 @@ import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { sql } from "kysely";
 import { z } from "zod";
 import { createId, type AuthenticatedSession } from "../packages/core/src/index.js";
@@ -479,6 +479,22 @@ test.each(["catalog", "url", "files"] as const)(
     expect(await service.stopIfIdle()).toBe(true);
     expect(await invoke()).toEqual(first);
     expect(await service.list({}, owner)).toHaveLength(1);
+    if (kind === "catalog") {
+      // The installed plugin keeps where it came from: the document's address and SHA-256.
+      const reference = `${registry.origin}/apps/fixture.json`;
+      const bytes = Buffer.from(await (await fetch(reference)).arrayBuffer());
+      const { rows } = await sql<{
+        origin: unknown;
+      }>`select copied_from as origin from plugin_engine.plugin_engine_apps`.execute(database);
+      expect(rows.map((row) => row.origin)).toEqual([
+        {
+          reference,
+          name: "fixture-plugin",
+          commit: null,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        },
+      ]);
+    }
     if (kind === "url") {
       // A reused key with a different source answers from the receipt and keeps its label.
       const relabel = { ...command, source: { kind: "catalog" as const, catalogId: "fixture" } };

@@ -74,6 +74,7 @@ import {
   WebhookSetupView,
   RuntimeProtocolFailed,
   BlobStore,
+  type AppCopyOrigin,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import {
@@ -90,7 +91,7 @@ import {
   ScheduleAccessRevoked,
   deliverEvents,
 } from "@opensteer/plugin-engine-sdk/scheduling";
-import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
+import { createCatalog, deployedCopy, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource } from "@opensteer/plugin-engine-app-templates";
 import { DestinationRefused, safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
 import {
@@ -808,6 +809,7 @@ export async function startEngine(
               "plugin",
               Effect.gen(function* () {
                 let files: Schema.Schema.Type<typeof SourceFiles>;
+                let origin: AppCopyOrigin | undefined;
                 let name: string | undefined;
                 let app: AppId | undefined;
                 let warnings: string[] | undefined;
@@ -827,6 +829,7 @@ export async function startEngine(
                 } else if (input.kind === "catalog") {
                   const prepared = yield* catalog.prepare({ entry: input.id });
                   files = prepared.files;
+                  origin = prepared.origin;
                   name = (yield* catalog.list).apps.find((entry) => entry.id === input.id)?.name;
                 } else if (input.kind === "mcp") {
                   files = (yield* catalog.custom({ ...input, kind: "mcp" })).files;
@@ -876,27 +879,50 @@ export async function startEngine(
                     status: "build-error" as const,
                     error: { code: "invalid-skills", message: validSkills.failure.message },
                   };
-                return yield* engine.apps
-                  .deploy({
-                    owner,
-                    ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
-                    files,
-                  })
-                  .pipe(
-                    Effect.map((result) => ({
-                      status: "installed" as const,
-                      plugin: result.app,
-                      version: result.version,
-                      origin: input.kind,
-                      ...(warnings ? { warnings } : {}),
-                    })),
-                    Effect.catchTags({
-                      VersionBuildFailed: (error) =>
-                        Effect.succeed({ status: "build-error" as const, error }),
-                      BuildMemoryExceeded: (error) =>
-                        Effect.succeed({ status: "build-error" as const, error }),
-                    }),
-                  );
+                // A catalog install keeps where it came from: the document's address and SHA-256.
+                const deployed =
+                  origin === undefined
+                    ? engine.apps.deploy({
+                        owner,
+                        ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
+                        files,
+                      })
+                    : engine.apps
+                        .copy({
+                          owner,
+                          name: name ?? "Plugin",
+                          from: { files, origin, activation: "deploy" },
+                        })
+                        .pipe(
+                          Effect.flatMap(deployedCopy),
+                          Effect.flatMap((copied) =>
+                            engine.apps
+                              .version({ app: copied.id, owner, version: copied.activeVersion })
+                              .pipe(
+                                Effect.map(
+                                  ({ id, code, owner, sourceCommit, build, createdAt }) => ({
+                                    app: copied,
+                                    version: { id, code, owner, sourceCommit, build, createdAt },
+                                  }),
+                                ),
+                              ),
+                          ),
+                        );
+                return yield* deployed.pipe(
+                  Effect.map((result) => ({
+                    status: "installed" as const,
+                    plugin: result.app,
+                    version: result.version,
+                    origin: input.kind,
+                    ...(warnings ? { warnings } : {}),
+                  })),
+                  Effect.catchTags({
+                    VersionBuildFailed: (error) =>
+                      Effect.succeed({ status: "build-error" as const, error }),
+                    BuildMemoryExceeded: (error) =>
+                      Effect.succeed({ status: "build-error" as const, error }),
+                  }),
+                );
               }),
               (receipt) => Effect.try(() => operations.install.output.parse(receipt.result)),
               input.kind,

@@ -7,8 +7,10 @@ import {
   CatalogFeed,
   CatalogFeedSource,
   CatalogImportFailed,
+  CatalogSourceUnverified,
   CatalogUnavailable,
   PreparedApp,
+  type CatalogFeedEntry,
   type CatalogIcon,
   type CatalogSource,
 } from "../contracts/catalog.ts";
@@ -46,27 +48,49 @@ const resolveIcons = (icons: readonly CatalogIcon[], base: string) =>
 /** The index's apps as last read, with the validator that lets the feed confirm them unchanged. */
 interface KeptIndex {
   readonly etag: string;
-  readonly entries: readonly CatalogEntry[];
+  readonly listed: readonly CatalogFeedEntry[];
 }
+
+/**
+ * The address of an entry's source document, or none unless it is below the index on the index's
+ * own origin: a relative path of plain segments, none of them `.` or `..`.
+ */
+export const sourceAddress = (source: string, feedUrl: string) => {
+  if (!/^[\w.~-]+(?:\/[\w.~-]+)*$/u.test(source)) return undefined;
+  if (source.split("/").some((segment) => segment === "." || segment === "..")) return undefined;
+  const base = new URL(".", feedUrl);
+  const address = new URL(source, base);
+  return address.origin === base.origin && address.pathname.startsWith(base.pathname)
+    ? address.href
+    : undefined;
+};
+
+const hex = (digest: ArrayBuffer) =>
+  Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 /**
  * Read the feed at `feedUrl`, its `index.json`. Redirects are not followed. Listing reads only the
  * index, and asks the feed whether the index changed since the last read: an unchanged index is
- * not downloaded or decoded again. Listings that start while one is reading share its read. Preparing reads only the chosen app's source document, `apps/<id>.json` beside the index:
- * the publisher writes every listed app there and deletes the documents of apps it delists, so the
- * document exists exactly when the entry is listed. Reading the whole index to find one entry cost
- * seconds on every install.
+ * not downloaded or decoded again. Listings that start while one is reading share its read.
+ *
+ * Preparing reads the index the same way, then the chosen entry's `source` document, and installs
+ * it only when it is what the index lists: listed once, below the index, its bytes matching the
+ * entry's `sha256` when it has one, and its package, its `package.json` name and the entry's
+ * package the same. A `verified` feed, Opensteer's own, must list a valid hash for every entry it
+ * installs. Each refusal is `CatalogSourceUnverified`, with its reason logged.
  */
-export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): CatalogSource => {
+export const catalogSource = (
+  client: HttpClient.HttpClient,
+  feedUrl: string,
+  options: { readonly verified: boolean } = { verified: false },
+): CatalogSource => {
   /** A missing document reads as `None`; any other failure is `CatalogUnavailable`. */
-  const read = <A>(url: string, schema: Schema.Decoder<A>) =>
+  const read = (url: string) =>
     Effect.gen(function* () {
       const response = yield* client.get(url);
-      if (response.status === 404) return Option.none<A>();
+      if (response.status === 404) return Option.none<Uint8Array<ArrayBuffer>>();
       if (response.status !== 200) return yield* new CatalogUnavailable();
-      return Option.some(
-        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(yield* response.text),
-      );
+      return Option.some(new Uint8Array(yield* response.arrayBuffer));
     }).pipe(
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
       Effect.timeout("30 seconds"),
@@ -83,17 +107,14 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
         previous === undefined ? undefined : { headers: { "if-none-match": previous.etag } },
       )
       .pipe(Effect.timeout("10 seconds"));
-    if (response.status === 304 && previous !== undefined) return previous.entries;
+    if (response.status === 304 && previous !== undefined) return previous.listed;
     if (response.status !== 200) return yield* new CatalogUnavailable();
     const feed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CatalogFeed))(
       yield* response.text,
     );
-    const entries = feed.apps.map(({ source: _source, ...entry }) =>
-      CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
-    );
     const etag = response.headers["etag"];
-    kept = etag === undefined ? undefined : { etag, entries };
-    return entries;
+    kept = etag === undefined ? undefined : { etag, listed: feed.apps };
+    return feed.apps;
   }).pipe(
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
     Effect.timeout("30 seconds"),
@@ -102,54 +123,88 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
   // Settled through a native promise, so on Workers each waiting request resumes in its own I/O
   // context (see the SDK's Handoff). An interrupted read settles with nothing, and its waiters read.
   let reading:
-    Promise<Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined> | undefined;
-  const list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable> = Effect.suspend(() => {
-    const shared = reading;
-    if (shared !== undefined)
-      return Effect.promise(() => shared).pipe(
-        Effect.flatMap((exit) => (exit === undefined ? list : exit)),
+    Promise<Exit.Exit<readonly CatalogFeedEntry[], CatalogUnavailable> | undefined> | undefined;
+  const listed: Effect.Effect<readonly CatalogFeedEntry[], CatalogUnavailable> = Effect.suspend(
+    () => {
+      const shared = reading;
+      if (shared !== undefined)
+        return Effect.promise(() => shared).pipe(
+          Effect.flatMap((exit) => (exit === undefined ? listed : exit)),
+        );
+      let settle: (
+        exit: Exit.Exit<readonly CatalogFeedEntry[], CatalogUnavailable> | undefined,
+      ) => void = () => undefined;
+      reading = new Promise((resolve) => {
+        settle = resolve;
+      });
+      return readIndex.pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            reading = undefined;
+            settle(Exit.hasInterrupts(exit) ? undefined : exit);
+          }),
+        ),
       );
-    let settle: (
-      exit: Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined,
-    ) => void = () => undefined;
-    reading = new Promise((resolve) => {
-      settle = resolve;
-    });
-    return readIndex.pipe(
-      Effect.onExit((exit) =>
-        Effect.sync(() => {
-          reading = undefined;
-          settle(Exit.hasInterrupts(exit) ? undefined : exit);
-        }),
+    },
+  );
+  const list = listed.pipe(
+    Effect.map((entries) =>
+      entries.map(({ source: _source, sha256: _sha256, ...entry }) =>
+        CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
       ),
+    ),
+  );
+  const refuse = (id: string, reason: string) =>
+    Effect.logWarning("Catalog app source refused").pipe(
+      Effect.annotateLogs({ "catalog.entry.id": id, reason }),
+      Effect.andThen(Effect.fail(new CatalogSourceUnverified())),
     );
-  });
   return {
     list,
     prepare: (id) =>
       Effect.gen(function* () {
         // Feed entry ids are never URLs, so one is refused without reading the feed.
         if (URL.canParse(id)) return yield* entryMissing(id);
-        const reference = new URL(`apps/${encodeURIComponent(id)}.json`, feedUrl).href;
-        const found = yield* read(reference, CatalogFeedSource);
-        if (Option.isNone(found)) return yield* entryMissing(id);
+        const matches = (yield* listed).filter((candidate) => candidate.id === id);
+        const entry = matches[0];
+        if (entry === undefined) return yield* entryMissing(id);
         // Only a listed catalog identifier is recorded, never an arbitrary lookup input.
         yield* Effect.annotateCurrentSpan({ "catalog.entry.id": id });
-        const source = found.value;
+        if (matches.length > 1) return yield* refuse(id, "the index lists this id more than once");
+        const reference = sourceAddress(entry.source, feedUrl);
+        if (reference === undefined)
+          return yield* refuse(id, "the entry's source is not a document below the index");
+        if (entry.sha256 !== undefined && !/^[0-9a-f]{64}$/u.test(entry.sha256))
+          return yield* refuse(id, "the entry's sha256 is not a hex SHA-256");
+        if (options.verified && entry.sha256 === undefined)
+          return yield* refuse(id, "the entry lists no sha256");
+        const found = yield* read(reference);
+        if (Option.isNone(found)) return yield* entryMissing(id);
+        const sha256 = hex(
+          yield* Effect.promise(() => crypto.subtle.digest("SHA-256", found.value)),
+        );
+        if (entry.sha256 !== undefined && sha256 !== entry.sha256)
+          return yield* refuse(id, "the document's bytes do not match the entry's sha256");
+        const source = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CatalogFeedSource))(
+          new TextDecoder().decode(found.value),
+        ).pipe(Effect.mapError(() => new CatalogUnavailable()));
         const manifest = Option.fromNullishOr(
           source.files.find((file) => file.path === "package.json"),
         ).pipe(
           Option.filter(isTextFile),
           Option.flatMap((file) => decodeManifest(file.content)),
         );
-        if (!Option.exists(manifest, ({ name }) => name === source.package))
-          return yield* new CatalogImportFailed({
-            code: "invalid_source",
-            reason: "This app's published source does not match its catalog entry.",
-          });
+        if (
+          source.package !== entry.package ||
+          !Option.exists(manifest, ({ name }) => name === source.package)
+        )
+          return yield* refuse(
+            id,
+            "the entry's package, the document's package and its package.json name differ",
+          );
         return PreparedApp.make({
           files: source.files,
-          origin: { reference, name: source.package, commit: null },
+          origin: { reference, name: source.package, commit: null, sha256 },
         });
       }),
   };
