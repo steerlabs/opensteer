@@ -88,7 +88,7 @@ it.each(["one malformed entry", "localStorage inaccessible"] as const)(
           records.delete(key);
         },
       });
-      const outbox = hostMessageOutbox(client);
+      const outbox = hostMessageOutbox(client)!;
       await vi.advanceTimersByTimeAsync(0);
       expect(outbox.getSnapshot().issue).toBeNull();
       if (problem === "one malformed entry")

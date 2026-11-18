@@ -4468,14 +4468,14 @@ describe("durable mobile connection admission", () => {
       realCredentials: true,
       configureClient(host, authorization) {
         const dispatch = host.dispatch.bind(host);
-        host.dispatch = (async (command: HostApiCommandInput, options) => {
+        host.dispatch = async (command) => {
           if (command.type === "thread.sendMessage") {
             started.resolve();
             await release.promise;
             credentials.push(await authorization.current());
           }
-          return dispatch(command, options);
-        }) as typeof host.dispatch;
+          return dispatch(command);
+        };
       },
     });
     const { client } = open(port.factory);
@@ -4492,7 +4492,7 @@ describe("durable mobile connection admission", () => {
       const original = client.catalog.load.bind(client.catalog);
       const gate = Promise.withResolvers<void>();
       const load = vi.spyOn(client.catalog, "load");
-      await hostMessageOutbox(old).enqueue(send("old-login"));
+      await hostMessageOutbox(old)!.enqueue(send("old-login"));
       await vi.advanceTimersByTimeAsync(0);
       expect(port.commands).toEqual(["thread.sendMessage"]);
       await started.promise;
@@ -4527,7 +4527,14 @@ describe("durable mobile connection admission", () => {
     });
     const files = new MemoryPrivateFilesystem();
     await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
-    const port = testPort({ held: false, realCredentials: true });
+    let mock!: MockHostClient;
+    const port = testPort({
+      held: false,
+      realCredentials: true,
+      configureClient: (host) => {
+        mock = host;
+      },
+    });
     const first = open(port.factory, files, { records }).client;
     try {
       await first.initialize();
@@ -4540,8 +4547,8 @@ describe("durable mobile connection admission", () => {
         .viewLoginId;
       expect(durableLogin).toBeDefined();
       expect(host.connection.getSnapshot().scope?.loginId).toBe(durableLogin);
-      host.connection.stop();
-      await hostMessageOutbox(host).enqueue(send("upgraded-message"));
+      mock.connection.stop();
+      await hostMessageOutbox(host)!.enqueue(send("upgraded-message"));
     } finally {
       first.dispose();
       vi.useRealTimers();
@@ -4553,9 +4560,9 @@ describe("durable mobile connection admission", () => {
       await reopened.select(serverId);
       await vi.advanceTimersByTimeAsync(1);
       const host = reopened.getSnapshot().selection.hostClient!;
-      host.connection.stop();
+      mock.connection.stop();
       await vi.advanceTimersByTimeAsync(0);
-      expect(hostMessageOutbox(host).getSnapshot().messages).toMatchObject([
+      expect(hostMessageOutbox(host)!.getSnapshot().messages).toMatchObject([
         { localId: "upgraded-message" },
       ]);
     } finally {
@@ -4575,7 +4582,9 @@ describe("durable mobile connection admission", () => {
         return bytes && new TextDecoder().decode(bytes);
       },
       write: async (key, value) => files.writeFileAtomic(`${folder}/${key}.json`, value),
-      remove: async (key) => files.removeFile(`${folder}/${key}.json`),
+      remove: async (key) => {
+        await files.removeFile(`${folder}/${key}.json`);
+      },
     });
     const base = testPort({
       held: true,
@@ -4620,7 +4629,7 @@ describe("durable mobile connection admission", () => {
       await client.retrySelection();
       await vi.advanceTimersByTimeAsync(1);
       const next = client.getSnapshot().selection.hostClient!;
-      expect(hostMessageOutbox(next).getSnapshot().messages).toMatchObject([
+      expect(hostMessageOutbox(next)!.getSnapshot().messages).toMatchObject([
         { localId: "same-session", attempted: true, phase: "rejected" },
       ]);
       expect(base.commands).toEqual([]);
