@@ -53,8 +53,11 @@ export const ConnectionPill = memo(function ConnectionPill({
   gated = false,
   notice,
   recoveredLabel = "Connected",
+  source = "",
 }: {
   readonly notice: ConnectionPillNotice | null;
+  /** Which connection it speaks for; the pill stays mounted as the route changes it. */
+  readonly source?: string;
   readonly details?: ConnectionDetailsProps | null;
   /** A gate is explaining instead: the pill steps aside without announcing a recovery. */
   readonly gated?: boolean;
@@ -62,7 +65,7 @@ export const ConnectionPill = memo(function ConnectionPill({
   readonly recoveredLabel?: string;
 }) {
   const current = gated ? null : notice;
-  const spoken = useSpokenConnection(gated ? undefined : current, recoveredLabel);
+  const spoken = useSpokenConnection(gated ? undefined : current, recoveredLabel, source);
   // The last notice stays drawn while it leaves.
   const [drawn, setDrawn] = useState(current);
   if (current !== null && current !== drawn) setDrawn(current);
@@ -181,21 +184,24 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: Connecti
 function useSpokenConnection(
   notice: ConnectionPillNotice | null | undefined,
   recoveredLabel: string,
+  source: string,
 ): string {
   const [spoken, setSpoken] = useState("");
-  const announced = useRef(false);
+  // The connection whose interruption was last heard; only its own recovery is "Connected".
+  const announced = useRef<string | null>(null);
   const label = useRef<string | null>(null);
   label.current = notice?.label ?? null;
   const key = notice === undefined ? undefined : (notice?.key ?? null);
   useEffect(() => {
     if (key === undefined) return;
     if (key !== null) {
-      announced.current = true;
+      announced.current = source;
       setSpoken(label.current ?? "");
-    } else if (announced.current) {
-      announced.current = false;
-      setSpoken(recoveredLabel);
+    } else if (announced.current !== null) {
+      // Switching to a connection that is fine is not a recovery.
+      if (announced.current === source) setSpoken(recoveredLabel);
+      announced.current = null;
     }
-  }, [key, recoveredLabel]);
+  }, [key, recoveredLabel, source]);
   return spoken;
 }

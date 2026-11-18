@@ -64,7 +64,7 @@ function pillNotice(
   if (issue === null) return null;
   const said = presentClientIssue(issue);
   return {
-    key: `${issue.code}:${issue.reason ?? ""}`,
+    key: `${source.key}:${issue.code}:${issue.reason ?? ""}`,
     label: said.title,
     tone: amberCodes.has(issue.code) ? "amber" : "muted",
     trying: state.trying,
@@ -222,7 +222,7 @@ export function ShellConnectionPill({
           ];
     }),
   );
-  return <ConnectionPill details={shown} gated={gated} notice={notice} />;
+  return <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />;
 }
 
 /** The sidebar footer's dot for its place, and the words a screen reader hears for it. */
