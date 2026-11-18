@@ -1,3 +1,4 @@
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";
 import type { TeamCurrentInvite, TeamInviteExpiryDays } from "@opensteer/protocol";
@@ -14,7 +15,6 @@ import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useTeamSession } from "./team-context.js";
-import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
 
 const expiryChoices: readonly TeamInviteExpiryDays[] = [1, 7, 30];
 
@@ -110,8 +110,8 @@ export function TeamInvitesScreen(
     if (session === null) return;
     setBusy(true);
     setLine(null);
-    void teamOutcome(session, { label: "make a new link", done: "made" }, work)
-      .then((outcome) => setLine(teamOutcomeLine(outcome)))
+    void actOnce(session, { label: "make a new link", done: "made" }, work)
+      .then((outcome) => setLine(outcomeLine(outcome)))
       .finally(() => setBusy(false));
   };
 

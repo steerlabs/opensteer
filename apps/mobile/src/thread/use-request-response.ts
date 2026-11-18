@@ -16,6 +16,7 @@ import { integrationRequestStillPending } from "@opensteer/client/integrations";
 import type { ActionLineValue } from "../ui/action-line.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { actionLine, notDone, useScreenAction } from "../ui/client-feedback.js";
+import { DeviceOwnerUnconfirmed } from "./device-owner.js";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import { nextRequestSubmission } from "./request-form-model.js";
 import { updateRequestSession, useRequestSession, type RequestSession } from "./request-session.js";
@@ -108,7 +109,7 @@ export function useRequestResponse(input: {
     void integrationRequestStillPending(hostClient, request.originatingThreadId, request.id).then(
       (pending) => {
         const again = last.current;
-        const untaken = notDone(answerSpec);
+        const untaken = notDone(answerSpec.done);
         updateRequestSession(session, {
           failure: pending
             ? actionLine(
@@ -292,7 +293,7 @@ export function useRequestResponse(input: {
         if (result.status !== "pending") admitted();
       },
       // Before the Host heard, only this phone's own unlock can have stopped it.
-      (error) => (!authenticated && error instanceof Error ? error.message : null),
+      (error) => (!authenticated && error instanceof DeviceOwnerUnconfirmed ? error.words : null),
     );
   };
 

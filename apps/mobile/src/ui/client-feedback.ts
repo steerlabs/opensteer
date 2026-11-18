@@ -93,6 +93,36 @@ export function actionLine(
   return outcome.kind === "rejected" ? { ...line, haptic: "error", tone: "danger" } : line;
 }
 
+/**
+ * One tap's work, run once with an honest outcome: not sent when known out
+ * of reach before anything went out, refused with its reason, or couldn't
+ * confirm when the answer was lost.
+ */
+export async function actOnce<T>(
+  session: ClientSession,
+  words: ActionWords,
+  work: () => Promise<T>,
+): Promise<ActionOutcome<T>> {
+  const action = createClientAction<undefined, T>(session, {
+    key: `once:${words.label}`,
+    ...words,
+    execute: () => work(),
+  });
+  try {
+    return await action.run(undefined);
+  } finally {
+    action.dispose();
+  }
+}
+
+/** An outcome as the line beside the control that asked; null once it worked. */
+export function outcomeLine(outcome: ActionOutcome<unknown>): ActionLineValue | null {
+  if (outcome.kind === "confirmed") return null;
+  const line = actionLine({ outcome, issue: outcome.issue }, {});
+  // Each outcome is said once, even when it repeats the last one's words.
+  return line && { ...line, key: `${line.key}:${++serial}` };
+}
+
 /** The same line as a native settings section's footer. */
 export function settingsFooter(line: ActionLineValue | null): NativeSettingsFooter | undefined {
   if (line === null) return undefined;
@@ -103,15 +133,25 @@ export function settingsFooter(line: ActionLineValue | null): NativeSettingsFoot
   };
 }
 
-/** A reconcile's answer when a check found the action was not done. */
-export function notDone(spec: {
-  readonly label: string;
-  readonly done?: string;
-}): ActionOutcome<never> {
+/**
+ * Known before anything is sent: this session can't reach its computer or
+ * team right now, so `done` ("opened") won't happen. Null when it can.
+ */
+export function unreadyIssue(session: ClientSession, done: string): ClientIssue | null {
+  const state = session.connection.getSnapshot();
+  if (state.phase === "ready" && state.network !== "offline") return null;
   return {
-    kind: "not-sent",
-    issue: { code: "not-sent", action: spec.label, ...(spec.done ? { done: spec.done } : {}) },
+    code: "not-sent",
+    done,
+    reason: state.network === "offline" ? "offline" : "unreachable",
+    target: state.target,
+    ...(state.name ? { name: state.name } : {}),
   };
+}
+
+/** A reconcile's answer when a check found the action was not done: "Not {done}." */
+export function notDone(done?: string): ActionOutcome<never> {
+  return { kind: "not-sent", issue: { code: "not-sent", ...(done ? { done } : {}) } };
 }
 
 /** A refusal an answer carried inside a success, such as one tab of several not closing. */

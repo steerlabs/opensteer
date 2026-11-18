@@ -1,4 +1,5 @@
 import { classifyClientFailure } from "@opensteer/client/connections";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { isIphoneAppId } from "./model.js";
 import {
   isHostRefusal,
@@ -185,7 +186,7 @@ export class IphoneAppsController {
   }
 
   async savePhoneSetup(deploymentId: string, progress: PhoneSetupProgress | null): Promise<void> {
-    if (!this.#setupsLoaded) throw new Error("This phone's setup has not loaded yet.");
+    if (!this.#setupsLoaded) throw new IphoneStop("This phone's setup has not loaded yet.");
     const write = this.#setupWrite.then(async () => {
       const next = { ...this.#phoneSetups };
       if (progress === null) delete next[deploymentId];
@@ -445,7 +446,8 @@ export class IphoneAppsController {
         requestId = result.request.id;
       } catch (error) {
         if (!fence.current()) return superseded;
-        if (isHostRefusal(error)) return notAllowed(error, "Opensteer didn't allow that.");
+        if (isHostRefusal(error))
+          return { kind: "not-allowed", message: refusalWords(error, "turn this on", "turned on") };
         return await this.#reconcile({ ...input, fence, requestId: null, resign: true, runnerId });
       }
       return await this.#approve({ ...input, fence, requestId, runnerId });
@@ -729,7 +731,7 @@ export class IphoneAppsController {
       if (settled === "timeout") return failed("failed");
       if (settled !== "enrollment-expired" && settled !== "enrollment-refused") {
         return {
-          failure: issueFailure(settled, this.#bridge.getSnapshot().issueMessage),
+          failure: issueFailure(settled),
           kind: "failed",
         };
       }
@@ -760,7 +762,7 @@ export class IphoneAppsController {
       this.#host?.hostClient !== hostClient ||
       this.#host.deploymentId !== enrollment.deploymentId
     ) {
-      throw new Error("Open the Opensteer this iPhone was added to, then try again.");
+      throw new IphoneStop("Open the Opensteer this iPhone was added to, then try again.");
     }
     return enrollment.runnerId;
   }
@@ -831,8 +833,8 @@ export class IphoneAppsController {
       this.#readApprovals();
       return { kind: input.decision === "allow" ? "allowed" : "declined" };
     } catch (error) {
-      if (isHostRefusal(error) && error instanceof Error)
-        return { kind: "refused", message: error.message };
+      if (isHostRefusal(error))
+        return { kind: "refused", message: refusalWords(error, "answer this request", "answered") };
       // Not refused: once sent the answer may have landed, so it is never said to have failed.
       return {
         kind: "unavailable",
@@ -1543,7 +1545,8 @@ export type IphoneAddFailure =
   | { readonly kind: "profile-mismatch" }
   | { readonly kind: "remote-access-off" }
   | { readonly kind: "too-long" }
-  | { readonly kind: "host-said"; readonly message: string };
+  /** The Host refused; `reason` is its safe code, said by the presenter. */
+  | { readonly kind: "host-refused"; readonly reason: string };
 
 export type IphoneAddOutcome =
   | { readonly kind: "added"; readonly runnerId: string }
@@ -1586,7 +1589,7 @@ async function readHostRecord(hostClient: HostClient): Promise<HostRecord> {
     hostClient.rpc["integration.computer.setup.list"]({}),
     hostClient.rpc["integrations.get"]({}),
   ]);
-  if (!requests.ok || !connections.ok) throw new Error("Opensteer could not be read.");
+  if (!requests.ok || !connections.ok) throw new IphoneStop("Opensteer could not be read.");
   return {
     connections: connections.data.connections,
     requests: requests.data.requests,
@@ -1596,7 +1599,7 @@ async function readHostRecord(hostClient: HostClient): Promise<HostRecord> {
 /** Whether the Host's catalog lists an app for iPhones; it is read again for every tap. */
 async function hostLists(hostClient: HostClient, app: IphoneAppId): Promise<boolean> {
   const result = await hostClient.rpc["integration.platform.get"]({});
-  if (!result.ok) throw new Error("Opensteer could not be read.");
+  if (!result.ok) throw new IphoneStop("Opensteer could not be read.");
   return result.data.catalog.some(
     ({ definition }) =>
       definition.id === app && definition.computerApp?.platforms.includes("ios") === true,
@@ -1620,28 +1623,31 @@ function covers(
   );
 }
 
-/** This app's own words for a step it stopped itself; never a lower layer's error text. */
-function ownWords(error: unknown): string | null {
-  return error instanceof Error &&
-    error.constructor === Error &&
-    classifyClientFailure(error).kind === "unexpected" &&
-    error.message.trim() !== ""
-    ? error.message
-    : null;
+/** A step this app stopped itself, in words written for the person. */
+class IphoneStop extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.words = words;
+  }
 }
 
-function notAllowed(error: unknown, fallback: string): IphoneAllowOutcome {
-  return {
-    kind: "not-allowed",
-    message: error instanceof Error && error.message.trim() !== "" ? error.message : fallback,
-  };
+function ownWords(error: unknown): string | null {
+  return error instanceof IphoneStop ? error.words : null;
 }
+
+/** The Host's refusal in the presenter's words: its safe reason, never its message. */
+function refusalWords(error: unknown, action: string, done: string): string {
+  const { reason } = classifyClientFailure(error);
+  return presentClientIssue({ code: "rejected", reason, action, done }).title;
+}
+
 const noLongerWaiting: IphoneAnswerOutcome = {
   kind: "unavailable",
   message: "This request is no longer waiting.",
 };
 
-function failed(kind: Exclude<IphoneAddFailure["kind"], "host-said">): IphoneAddOutcome {
+function failed(kind: Exclude<IphoneAddFailure["kind"], "host-refused">): IphoneAddOutcome {
   return { failure: { kind }, kind: "failed" };
 }
 
@@ -1671,7 +1677,7 @@ async function mint(
     result = await hostClient.dispatch(command);
   }
   if (result.type !== "runner.enrollment.createPhone") {
-    throw new Error("Opensteer did not add this iPhone.");
+    throw new IphoneStop("Opensteer did not add this iPhone.");
   }
   return result;
 }
@@ -1689,13 +1695,13 @@ function mintFailure(error: unknown): IphoneAddFailure {
   if (classifyClientFailure(error).reason === "personal-remote-access-off") {
     return { kind: "remote-access-off" };
   }
-  if (isHostRefusal(error) && error instanceof Error && error.message.trim() !== "") {
-    return { kind: "host-said", message: error.message };
+  if (isHostRefusal(error)) {
+    return { kind: "host-refused", reason: classifyClientFailure(error).reason };
   }
-  return { kind: isHostRefusal(error) ? "failed" : "host-unreachable" };
+  return { kind: "host-unreachable" };
 }
 
-function issueFailure(issue: IphoneAppsIssue, message: string | null): IphoneAddFailure {
+function issueFailure(issue: IphoneAppsIssue): IphoneAddFailure {
   switch (issue) {
     case "host-mismatch":
     case "host-unreachable":
@@ -1704,7 +1710,6 @@ function issueFailure(issue: IphoneAppsIssue, message: string | null): IphoneAdd
     case "remote-access-off":
       return { kind: issue };
     case "failed":
-      return message === null ? { kind: "failed" } : { kind: "host-said", message };
     case "enrollment-expired":
     case "enrollment-refused":
     case "protocol-error":

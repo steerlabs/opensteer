@@ -1,20 +1,12 @@
-import { presentClientIssue } from "@opensteer/client/feedback";
+import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import {
   AttachmentIdSchema,
   attachmentNativeImageMediaTypes,
   type ArtifactContentPart,
 } from "@opensteer/core";
-import { createContext, useContext, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-} from "react-native";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { ImageHold, personalImageSource } from "../images/image-actions.js";
 import { shareChatAttachment } from "../platform/attachment-draft-files.js";
@@ -22,7 +14,8 @@ import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { attachmentKey, type ComposerAttachment } from "./draft-attachments.js";
-import { failureWords } from "../ui/client-feedback.js";
+import { RowSubtitle, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine, unreadyIssue } from "../ui/client-feedback.js";
 
 /**
  * The Thread's own client, which a transcript's rows read the files messages
@@ -190,6 +183,13 @@ function SentChip(props: {
   const { client, part } = props;
   const threadId = useContext(TranscriptImageContext)?.threadId ?? null;
   const [opening, setOpening] = useState(false);
+  // How the last open went, in the detail's place.
+  const [line, setLine] = useState<ActionLineValue | null>(null);
+  useEffect(() => {
+    if (line?.tone !== "muted" || line.link) return;
+    const timer = setTimeout(() => setLine(null), 6_000);
+    return () => clearTimeout(timer);
+  }, [line]);
   const detail = attachmentDetail(part.name, part.mediaType, part.sizeBytes);
   const face = (
     <>
@@ -198,9 +198,7 @@ function SentChip(props: {
         <AppText numberOfLines={1} role="secondary">
           {part.name}
         </AppText>
-        <AppText role="caption" tone="muted">
-          {detail}
-        </AppText>
+        <RowSubtitle line={line} subtitle={detail} />
       </View>
       {opening ? <ActivityIndicator color={color.muted} size="small" /> : null}
     </>
@@ -213,18 +211,18 @@ function SentChip(props: {
     );
   }
   const open = () => {
+    // Opening reads the file, so out of reach it is answered at once.
+    const key = `open:${part.artifactId}:${Date.now()}`;
+    const unready = unreadyIssue(client, "opened");
+    if (unready !== null) return setLine(issueLine(unready, key));
+    setLine(null);
     setOpening(true);
     void shareChatAttachment(client, part.artifactId, part.name)
-      .catch((error: unknown) =>
-        Alert.alert(
-          "Attachment not opened",
-          failureWords(
-            error,
-            { label: "open this attachment", done: "opened" },
-            "This attachment could not be read.",
-          ) ?? "",
-        ),
-      )
+      .catch((error: unknown) => {
+        const issue = clientIssue(error, { operation: "read", label: "this attachment" });
+        if (issue !== null)
+          setLine(issueLine(issue, key, { label: clientIssueActions.tryAgain, onPress: open }));
+      })
       .finally(() => setOpening(false));
   };
   if (part.mediaType.startsWith("image/")) {

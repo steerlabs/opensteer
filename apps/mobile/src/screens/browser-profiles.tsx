@@ -144,7 +144,7 @@ function BrowserProfilesSettings({
     reconcile: async (name) =>
       hostClient.getSnapshot().browserProfiles.some((profile) => profile.name === name)
         ? { kind: "confirmed", value: undefined }
-        : notDone(createSpec),
+        : notDone(createSpec.done),
     retry: () => create(),
   });
   const busy = creation.running;
@@ -325,7 +325,9 @@ function ProfileRow({
         setDraft(null);
       },
       reconcile: async (name) =>
-        current()?.name === name ? { kind: "confirmed", value: undefined } : notDone(renameSpec),
+        current()?.name === name
+          ? { kind: "confirmed", value: undefined }
+          : notDone(renameSpec.done),
       retry: () => rename(),
     },
   );
@@ -344,7 +346,7 @@ function ProfileRow({
       });
     },
     reconcile: async () =>
-      current() === undefined ? { kind: "confirmed", value: undefined } : notDone(deleteSpec),
+      current() === undefined ? { kind: "confirmed", value: undefined } : notDone(deleteSpec.done),
     retry: () => void deleting.run(),
   });
   const busy = renaming.running || deleting.running;

@@ -1,7 +1,7 @@
 import { getDefaultHeaderHeight, HeaderHeightContext } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useAnimatedHeaderHeight } from "@react-navigation/native-stack";
-import { useContext, useEffect, type ReactNode } from "react";
+import { useContext, useEffect, useRef, type ReactNode } from "react";
 import { Platform, useWindowDimensions } from "react-native";
 import { makeMutable } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -42,10 +42,11 @@ export function PublishHeaderClearance(props: { readonly largeTitle: boolean }):
     if (focused && !(largeTitle && known)) pillPlacement.value = below;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused, largeTitle, known, below.top]);
-  if (!largeTitle || !known || !focused) return null;
+  if (!largeTitle || !known) return null;
   return (
     <FollowLargeTitle
       collapsedBar={insets.top + bar}
+      focused={focused}
       inRow={{ inset: barButtonClearance, top: insets.top + Math.max(0, (bar - pillHeight) / 2) }}
     />
   );
@@ -58,26 +59,33 @@ const collapsedSlack = 12;
 
 /**
  * Follows a large title as it collapses: the bar's row while the title is
- * large, below the collapsed bar once its small title shows there.
+ * large, below the collapsed bar once its small title shows there. It keeps
+ * listening while another screen is on top, so a return to a screen left
+ * collapsed places the pill from how its header stands, before any scroll.
  */
 function FollowLargeTitle(props: {
   readonly collapsedBar: number;
+  readonly focused: boolean;
   readonly inRow: Placement;
 }): null {
   const live = useAnimatedHeaderHeight();
-  const { collapsedBar, inRow } = props;
+  // A screen first shows its title large.
+  const header = useRef(Number.POSITIVE_INFINITY);
+  const { collapsedBar, focused, inRow } = props;
   useEffect(() => {
-    const place = (header: number) => {
+    const place = (value: number) => {
+      header.current = value;
+      if (!focused) return;
       const next =
-        header <= collapsedBar + collapsedSlack
+        value <= collapsedBar + collapsedSlack
           ? { inset: space[24], top: collapsedBar + space[8] }
           : inRow;
       const shown = pillPlacement.value;
       if (shown.top !== next.top || shown.inset !== next.inset) pillPlacement.value = next;
     };
-    place(Number.POSITIVE_INFINITY);
+    place(header.current);
     const id = live.addListener(({ value }) => place(value));
     return () => live.removeListener(id);
-  }, [collapsedBar, inRow.inset, inRow.top, live]);
+  }, [collapsedBar, focused, inRow.inset, inRow.top, live]);
   return null;
 }

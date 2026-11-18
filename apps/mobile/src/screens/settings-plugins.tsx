@@ -174,7 +174,7 @@ function Plugins({
         ? null
         : settled
           ? { kind: "confirmed", value: null }
-          : notDone({ label: "save", done: "saved" });
+          : notDone("saved");
     },
   });
   const pending = change.running;

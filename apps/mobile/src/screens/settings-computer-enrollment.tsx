@@ -34,7 +34,7 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
         setIssued({ ...result, hostOrigin: target.hostUrl });
     },
     // Its one-time token is never read back, so a lost answer leaves nothing to run.
-    reconcile: async () => notDone({ label: "create", done: "created" }),
+    reconcile: async () => notDone("created"),
     retry: () => void create(),
   });
   const snapshot = host.getSnapshot();

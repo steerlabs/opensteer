@@ -1,3 +1,4 @@
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import {
   isTopicAccessConflict,
@@ -46,7 +47,7 @@ import { Symbol } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
 import { levelWords } from "./knowledge-model.js";
 import { ActionLine, ActionLineSlot, type ActionLineValue } from "../ui/action-line.js";
-import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
+
 import {
   knowledgeStyles,
   Loading,
@@ -316,7 +317,7 @@ export function TeamTopicAccessScreen(
     setSaving(true);
     setFailure(null);
     let stale = false;
-    void teamOutcome(session, { label: "save this list", done: "saved" }, () =>
+    void actOnce(session, { label: "save this list", done: "saved" }, () =>
       teamCommand(session, {
         type: "team.knowledge.topic.access.set",
         topicId,
@@ -335,7 +336,7 @@ export function TeamTopicAccessScreen(
           setFailure(
             stale
               ? { text: "This list changed; reload it.", stale: true }
-              : { text: teamOutcomeLine(outcome)?.text ?? "", stale: false },
+              : { text: outcomeLine(outcome)?.text ?? "", stale: false },
           );
       })
       .finally(() => setSaving(false));
@@ -565,7 +566,7 @@ export function TeamTopicFormScreen(
             name: words,
             description: description.trim(),
           });
-    void teamOutcome(
+    void actOnce(
       session,
       existing === null
         ? { label: "make this topic", done: "made" }
@@ -573,7 +574,7 @@ export function TeamTopicFormScreen(
       () => sent(),
     )
       .then((outcome) => {
-        if (outcome.kind !== "confirmed") return setFailure(teamOutcomeLine(outcome));
+        if (outcome.kind !== "confirmed") return setFailure(outcomeLine(outcome));
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (existing === null) navigation.popTo("TeamKnowledge", { teamId, topicId: id });
         else navigation.goBack();

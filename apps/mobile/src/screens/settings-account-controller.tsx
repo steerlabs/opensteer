@@ -77,7 +77,7 @@ function AccountSettingsContent(props: {
       const listed = sessionsRead?.getSnapshot().data;
       if (!listed) return null;
       return listed.some((row) => row.id === session.id)
-        ? notDone({ label: "sign out", done: "signed out" })
+        ? notDone("signed out")
         : { kind: "confirmed", value: undefined };
     },
   });

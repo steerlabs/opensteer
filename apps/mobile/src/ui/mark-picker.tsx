@@ -93,7 +93,7 @@ export function TaskIconPicker(props: {
       reconcile: async (icon) =>
         (threadInDirectory(props.threadId, props.hostClient.getSnapshot())?.icon ?? null) === icon
           ? { kind: "confirmed", value: undefined }
-          : notDone(spec),
+          : notDone(spec.done),
       retry: () => void choose(chosen.current),
     },
   );

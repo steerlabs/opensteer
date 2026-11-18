@@ -1,37 +1,25 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
-import { AppText, PrimaryButton, SecondaryButton } from "./primitives.js";
+import { AppText, SecondaryButton } from "./primitives.js";
 import { Symbol } from "./symbol.js";
 
 /**
- * What a destination says when what a link named can't be shown: gone or not
- * the reader's to see, or out of reach for now. One wording everywhere, and
- * always a way back, so an open never ends in a silent close.
+ * What a destination says when what a link named is gone or not the reader's
+ * to see: a fact about it, never the connection, which the route gate says.
+ * One wording everywhere, and always a way back.
  */
-export function UnavailableState(props: {
-  readonly onBack: () => void;
-  /** Present when the reader is offline; it tries again. */
-  readonly onRetry?: (() => void) | undefined;
-}): ReactNode {
-  const offline = props.onRetry !== undefined;
+export function UnavailableState(props: { readonly onBack: () => void }): ReactNode {
   return (
     <View accessibilityRole="alert" style={styles.state}>
-      <Symbol
-        name={offline ? "icloud.slash" : "questionmark.circle"}
-        size={32}
-        tint={color.muted}
-      />
+      <Symbol name="questionmark.circle" size={32} tint={color.muted} />
       <AppText role="title" style={styles.centered}>
-        {offline ? "You're offline" : "This isn't available"}
+        This isn't available
       </AppText>
       <AppText role="secondary" style={styles.centered} tone="muted">
-        {offline
-          ? "Check your connection and try again."
-          : "It may have been deleted, or you don't have access."}
+        It may have been deleted, or you don't have access.
       </AppText>
       <View style={styles.actions}>
-        {props.onRetry ? <PrimaryButton compact label="Retry" onPress={props.onRetry} /> : null}
         <SecondaryButton compact label="Back" onPress={props.onBack} />
       </View>
     </View>

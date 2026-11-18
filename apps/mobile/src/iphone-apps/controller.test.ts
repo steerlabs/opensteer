@@ -18,6 +18,7 @@ import {
 import type { RemovedFile, RemovedFrom } from "./removed-file.js";
 import type { ShownApproval, ShownApprovalsFile } from "./shown-approvals-file.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
+import { addIphoneFailureText } from "./model.js";
 
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const otherDeploymentId = "dep_0192f4a1-4444-4000-8000-000000000004";
@@ -310,10 +311,13 @@ describe("adding this iPhone", () => {
       name: "Alex's iPhone",
     });
 
+    // The refusal is carried as its code; the Host's own words never reach the screen.
     expect(outcome).toEqual({
-      failure: { kind: "host-said", message: "That enrollment is still waiting for its computer." },
+      failure: { kind: "host-refused", reason: "conflict" },
       kind: "failed",
     });
+    if (outcome.kind !== "failed") throw new Error("Expected a failed add");
+    expect(addIphoneFailureText(outcome.failure, "Opensteer")).not.toContain("still waiting");
     expect(fake.device.calls).not.toContain("discardPendingEnrollment");
   });
 

@@ -13,6 +13,7 @@ import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import Animated from "react-native-reanimated";
 import { color, controlFontScaleLimit, pillHeight, space, touchTarget } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
 import { GlassSurface } from "../ui/glass.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { enter, exit } from "../ui/motion.js";
@@ -21,7 +22,7 @@ import { Symbol } from "../ui/symbol.js";
 import { heldSelector } from "./agent-select.js";
 import { AgentGround, AgentMark } from "./agent-mark.js";
 import { AgentPhrases, Elapsed } from "./subagent-rows.js";
-import { SubagentStop } from "./subagent-stop.js";
+import { SubagentStop, useSubagentStopLine } from "./subagent-stop.js";
 import { trace } from "./trace-styles.js";
 
 /**
@@ -130,6 +131,7 @@ export const RunningRowView = memo(function RunningRowView(props: {
   readonly row: RunningNow["rows"][number];
 }): ReactNode {
   const { card, depth, within } = props.row;
+  const line = useSubagentStopLine(props.hostClient, card);
   return (
     <View style={[styles.row, { paddingLeft: depth * space[16] }]}>
       <Pressable
@@ -148,7 +150,11 @@ export const RunningRowView = memo(function RunningRowView(props: {
               <AppText role="caption" tone="muted">{`  in ${within}`}</AppText>
             )}
           </AppText>
-          <AgentPhrases phrases={card.detail} />
+          {line === null ? (
+            <AgentPhrases phrases={card.detail} />
+          ) : (
+            <ActionLine line={line} numberOfLines={1} />
+          )}
         </View>
         <Elapsed endedAt={card.endedAt} startedAt={card.startedAt} />
       </Pressable>

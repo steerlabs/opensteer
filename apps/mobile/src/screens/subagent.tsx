@@ -61,7 +61,8 @@ import {
   WorkflowPhases,
   type AgentScope,
 } from "../thread/subagent-rows.js";
-import { SubagentStop } from "../thread/subagent-stop.js";
+import { SubagentStop, useSubagentStopLine } from "../thread/subagent-stop.js";
+import { ActionLine } from "../ui/action-line.js";
 import { SubagentSteps } from "../thread/transcript.js";
 import { QuestionCard } from "../thread/waiting-questions.js";
 import { BarControl } from "../ui/bar-control.js";
@@ -503,17 +504,25 @@ function WatchFooter(props: {
   );
   const noun = card.kind === "workflow" ? "workflow" : "subagent";
   const narrow = useWindowDimensions().width < 340;
+  // How Stop went takes the words' place, beside it, until it settles.
+  const line = useSubagentStopLine(props.hostClient, card);
   return (
     <View style={styles.bar}>
       {narrow ? null : <Symbol name="eye" size={14} tint={color.muted} />}
-      <AppText role="caption" style={styles.barWords} tone="muted">
-        {`A ${noun} reports to `}
-        <AppText role="caption" style={styles.strong} tone="soft">
-          {footer.reportsTo}
+      {line !== null ? (
+        <View style={styles.barWords}>
+          <ActionLine line={line} numberOfLines={2} />
+        </View>
+      ) : (
+        <AppText role="caption" style={styles.barWords} tone="muted">
+          {`A ${noun} reports to `}
+          <AppText role="caption" style={styles.strong} tone="soft">
+            {footer.reportsTo}
+          </AppText>
+          {". You can watch it, not message it."}
+          {footer.noStop === null ? null : ` ${footer.noStop}`}
         </AppText>
-        {". You can watch it, not message it."}
-        {footer.noStop === null ? null : ` ${footer.noStop}`}
-      </AppText>
+      )}
       <SubagentStop card={card} hostClient={props.hostClient} look="button" />
     </View>
   );

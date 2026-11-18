@@ -4144,7 +4144,9 @@ describe("renaming a task on a phone", () => {
         "A better name",
       );
       expect(text(container)).toContain("A better name");
-      rename.mockRejectedValueOnce(new Error("Rename refused"));
+      rename.mockRejectedValueOnce(
+        new HostClientRequestError({ code: "forbidden", status: 403, message: "Rename refused" }),
+      );
       await press(container, "Rename…");
       const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Task title"]')!;
       await act(async () => {
@@ -4155,7 +4157,9 @@ describe("renaming a task on a phone", () => {
         field.dispatchEvent(new Event("input", { bubbles: true }));
       });
       await press(container, "Save");
-      expect(text(container)).toContain("Rename refused");
+      // The refusal in the presenter's words; the Host's own text stays off the screen.
+      expect(text(container)).toContain("Not renamed. You don't have access.");
+      expect(text(container)).not.toContain("Rename refused");
       expect(client.getSnapshot().threads.find(({ id }) => id === workId)?.title).toBe(
         "A better name",
       );

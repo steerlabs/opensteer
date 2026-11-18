@@ -14,6 +14,7 @@ import {
   type TaskFamily,
   type ThreadAutomation,
 } from "@opensteer/client/host";
+import type { ActionOutcome } from "@opensteer/client/actions";
 import { useHostSelector, useTabIcon } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -29,7 +30,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  Alert,
   FlatList,
   Image,
   Pressable,
@@ -65,7 +65,8 @@ import {
   type AroundSection,
 } from "./around-model.js";
 import { TaskStatus } from "./task-status.js";
-import { failureWords } from "../ui/client-feedback.js";
+import { RowSubtitle } from "../ui/action-line.js";
+import { actionLine } from "../ui/client-feedback.js";
 
 export type AroundScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -782,42 +783,47 @@ const ScheduleRow = memo(function ScheduleRow(props: {
     setAsked(null);
   const paused = asked?.paused ?? automation.paused;
   const detail = automationDetail({ ...automation, paused });
+  // What the last switch came to, in the detail's place, until it is turned again.
+  const [answer, setAnswer] = useState<{
+    readonly on: boolean;
+    readonly outcome: ActionOutcome<unknown>;
+  } | null>(null);
   const turn = (on: boolean) => {
     const mine = { paused: null, revision };
     setAsked(mine);
-    schedulesClient(hostClient)
+    setAnswer(null);
+    // An unanswered change keeps its key, so turning it again is the check.
+    void schedulesClient(hostClient)
       .act(automation.id, on ? "resume" : "pause")
-      .then(
-        (confirmed) => {
-          if (confirmed.kind !== "confirmed" || confirmed.value.type !== "trigger.status.set") {
-            setAsked((held) => (held === mine ? null : held));
-            return;
-          }
-          const paused = confirmed.value.trigger.status === "paused";
-          setAsked((held) =>
-            held === mine
-              ? {
-                  paused,
-                  revision: hostClient.getSnapshot().triggerRevision,
-                }
-              : held,
-          );
-        },
-        (error: unknown) => {
+      .then((outcome) => {
+        if (outcome.kind !== "confirmed" || outcome.value.type !== "trigger.status.set") {
           setAsked((held) => (held === mine ? null : held));
-          const words = failureWords(
-            error,
-            {
-              label: `change ${automation.name}`,
-              done: "changed",
-              happened: `${automation.name} changed`,
-            },
-            "The schedule could not be changed.",
-          );
-          if (words !== null) Alert.alert(words);
-        },
-      );
+          setAnswer({ on, outcome });
+          return;
+        }
+        const paused = outcome.value.trigger.status === "paused";
+        setAsked((held) =>
+          held === mine
+            ? {
+                paused,
+                revision: hostClient.getSnapshot().triggerRevision,
+              }
+            : held,
+        );
+      });
   };
+  const line = useMemo(() => {
+    if (answer === null || answer.outcome.kind === "confirmed") return null;
+    const words = answer.on ? scheduleTurned.resume : scheduleTurned.pause;
+    const issue = answer.outcome.issue && { ...answer.outcome.issue, ...words };
+    return actionLine(
+      { outcome: { ...answer.outcome, issue }, issue },
+      { check: () => turn(answer.on) },
+      `schedule:${automation.id}`,
+    );
+    // `turn` is rebuilt each render; the answer it checks is fixed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answer, automation.id]);
   return (
     <View style={styles.scheduleRow}>
       <Pressable
@@ -840,9 +846,7 @@ const ScheduleRow = memo(function ScheduleRow(props: {
           <AppText numberOfLines={1} role="bodyMedium">
             {automation.name}
           </AppText>
-          <AppText numberOfLines={1} role="caption" tone="muted">
-            {detail}
-          </AppText>
+          <RowSubtitle line={line} subtitle={detail} />
         </View>
       </Pressable>
       {automation.ended ? null : (
@@ -861,6 +865,11 @@ const ScheduleRow = memo(function ScheduleRow(props: {
 });
 
 const selectTriggerRevision = (snapshot: HostSnapshot) => snapshot.triggerRevision;
+
+const scheduleTurned = {
+  pause: { done: "paused", happened: "this schedule was paused" },
+  resume: { done: "resumed", happened: "this schedule was resumed" },
+} as const;
 
 const automationGlyph = { schedule: "clock", watch: "eye", webhook: "bolt" } as const;
 

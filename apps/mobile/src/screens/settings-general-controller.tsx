@@ -42,7 +42,7 @@ export function GeneralSettingsController(): ReactNode {
     reconcile: async (days) =>
       hostClient?.getSnapshot().quietTaskDays === days
         ? { kind: "confirmed", value: undefined }
-        : notDone({ label: "change", done: "changed" }),
+        : notDone("changed"),
   });
   const hostQuietDays = snapshot?.quietTaskDays ?? null;
   const quietTasks: QuietTasksSetting | null =
@@ -140,6 +140,6 @@ function notificationFailure(action: NotificationSettingsActionModel): string {
     case "request-permission":
       return "This phone did not finish the notification permission request. Try again.";
     case "retry-notifications":
-      return "This phone could not register for notifications. Check your connection and try again.";
+      return "This phone could not register for notifications. Try again.";
   }
 }

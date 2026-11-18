@@ -112,7 +112,7 @@ function DevicePage(props: {
           ? null
           : settled
             ? { kind: "confirmed", value: undefined }
-            : notDone({ label: "change this device" });
+            : notDone();
       },
     },
   );

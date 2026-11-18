@@ -85,7 +85,7 @@ export function useAiAccounts(host: HostClient): {
     reconcile: async (input) =>
       hasHarness(input.harnessInstanceId)?.isDefault === true
         ? { kind: "confirmed", value: undefined }
-        : notDone({ label: "change", done: "changed" }),
+        : notDone("changed"),
   });
   const remove = useScreenAction(host, "harness-delete", {
     label: "remove the account",
@@ -100,7 +100,7 @@ export function useAiAccounts(host: HostClient): {
     },
     reconcile: async (input) =>
       hasHarness(input.harnessInstanceId)
-        ? notDone({ label: "remove", done: "removed" })
+        ? notDone("removed")
         : { kind: "confirmed", value: undefined },
   });
   const actionLine = refreshModels.line ?? makeDefault.line ?? remove.line;

@@ -59,9 +59,7 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
     // The tab list says whether the lost answer opened it.
     reconcile: async () => {
       const opened = readTab();
-      return opened === null
-        ? notDone({ label: "open", done: "opened" })
-        : { kind: "confirmed", value: opened };
+      return opened === null ? notDone("opened") : { kind: "confirmed", value: opened };
     },
     retry: () => open(),
   });

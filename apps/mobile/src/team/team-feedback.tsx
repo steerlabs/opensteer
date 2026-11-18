@@ -1,45 +1,12 @@
-import { createClientAction, type ActionOutcome } from "@opensteer/client/actions";
 import type { ClientSession } from "@opensteer/client/connections";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useCallback, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
-import { actionLine } from "../ui/client-feedback.js";
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { Screen } from "../ui/screen.js";
-
-let outcomes = 0;
-
-/**
- * One tap's work on a team, with an honest outcome: not sent when the team
- * was known out of reach before anything went out, refused with the team's
- * reason, or couldn't confirm when the answer was lost.
- */
-export async function teamOutcome<T>(
-  session: ClientSession,
-  spec: { readonly label: string; readonly done?: string; readonly happened?: string },
-  work: () => Promise<T>,
-): Promise<ActionOutcome<T>> {
-  const action = createClientAction<undefined, T>(session, {
-    key: `team:${spec.label}`,
-    ...spec,
-    execute: () => work(),
-  });
-  try {
-    return await action.run(undefined);
-  } finally {
-    action.dispose();
-  }
-}
-
-/** A failed outcome as the line beside the control that asked; null once it worked. */
-export function teamOutcomeLine(outcome: ActionOutcome<unknown>): ActionLineValue | null {
-  if (outcome.kind === "confirmed") return null;
-  const line = actionLine({ outcome, issue: outcome.issue }, {});
-  // Each outcome is said once, even when it repeats the last one's words.
-  return line && { ...line, key: `${line.key}:${++outcomes}` };
-}
 
 /**
  * A screen's taps on a team, each answered by one line until the next tap:
@@ -61,8 +28,8 @@ export function useTeamOutcomes(): {
       spec: { readonly label: string; readonly done: string; readonly happened?: string },
       work: () => Promise<unknown>,
     ) =>
-      teamOutcome(on, spec, work).then((outcome) => {
-        say(teamOutcomeLine(outcome));
+      actOnce(on, spec, work).then((outcome) => {
+        say(outcomeLine(outcome));
         return outcome.kind === "confirmed";
       }),
     [],

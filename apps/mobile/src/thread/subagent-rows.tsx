@@ -38,7 +38,8 @@ import { appear, exit } from "../ui/motion.js";
 import { AppText, monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AgentMark } from "./agent-mark.js";
-import { SubagentStop } from "./subagent-stop.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { SubagentStop, useSubagentStopLine } from "./subagent-stop.js";
 import { trace } from "./trace-styles.js";
 
 /**
@@ -242,6 +243,8 @@ interface AgentRowProps {
   readonly owner?: string | null;
   readonly accessibilityActions?: readonly { readonly label: string; readonly name: string }[];
   readonly onAccessibilityAction?: (name: string) => void;
+  /** How an action on it went, said in its second line's place; its own Stop's by default. */
+  readonly line?: ActionLineValue | null;
 }
 
 /**
@@ -260,9 +263,11 @@ export const AgentRow = memo(function AgentRow(props: AgentRowProps): ReactNode 
 export function AgentStep(props: AgentRowProps): ReactNode {
   const scope = useContext(AgentScopeContext);
   const lines = useLines();
+  const stopLine = useSubagentStopLine(scope?.hostClient, props.card);
   if (scope === null) return null;
   const { card } = props;
   const compact = props.compact === true;
+  const line = props.line ?? stopLine;
   const children = card.children;
   const head = (
     actions: AgentRowProps["accessibilityActions"],
@@ -280,7 +285,7 @@ export function AgentStep(props: AgentRowProps): ReactNode {
       <View style={[trace.icon, styles.iconTop]}>
         <AgentMark card={card} />
       </View>
-      {compact ? (
+      {compact && line === null ? (
         <View style={trace.stepText}>
           <AppText numberOfLines={lines} role="caption" tone="muted">
             <AppText role="caption" style={styles.compactTitle} tone="soft">
@@ -300,11 +305,15 @@ export function AgentStep(props: AgentRowProps): ReactNode {
           <AppText numberOfLines={lines} role="secondary" tone="soft">
             {card.title}
           </AppText>
-          <SecondLine
-            lines={lines}
-            noun={props.noun === true ? card.noun : null}
-            phrases={card.detail}
-          />
+          {line === null ? (
+            <SecondLine
+              lines={lines}
+              noun={props.noun === true ? card.noun : null}
+              phrases={card.detail}
+            />
+          ) : (
+            <ActionLine line={line} numberOfLines={1} />
+          )}
         </View>
       )}
       <Elapsed endedAt={card.endedAt} startedAt={card.startedAt} />

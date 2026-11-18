@@ -114,7 +114,7 @@ function HistoryList({
       if (history.failed(profileId)) return null;
       return input.settled(history.entries(profileId))
         ? { kind: "confirmed", value: undefined }
-        : notDone({ label: "change browsing history" });
+        : notDone();
     },
   });
   const busy = change.running;

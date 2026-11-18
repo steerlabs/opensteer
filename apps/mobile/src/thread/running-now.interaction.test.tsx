@@ -85,8 +85,8 @@ vi.mock("../ui/glass.js", () => ({
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
 vi.mock("../ui/composer-editor.js", () => ({ dismissKeyboard: vi.fn() }));
 vi.mock("../ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { readonly line: { readonly text: string } }) => <p>{line.text}</p>,
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ selection: { deploymentId, hostClient: harness.hostClient } }),

@@ -1,3 +1,4 @@
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useChannelDirectory, useMountedRef } from "@opensteer/client/react";
 import {
@@ -57,7 +58,7 @@ import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedba
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
-import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
+
 import { Screen } from "../ui/screen.js";
 import { SheetBar } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
@@ -135,13 +136,13 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
       if (!channel.can.join || session === null) return;
       setJoining(channel.id);
       setJoinLine(null);
-      void teamOutcome(session, { label: "join this channel", done: "joined" }, () =>
+      void actOnce(session, { label: "join this channel", done: "joined" }, () =>
         session.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id }).then(
           unwrapRpcResult,
         ),
       )
         .then((outcome) => {
-          const line = teamOutcomeLine(outcome);
+          const line = outcomeLine(outcome);
           if (line === null) go();
           else setJoinLine({ channelId: channel.id, line });
         })
@@ -379,7 +380,7 @@ export function TeamNewChannelScreen(
     setBusy(true);
     setLine(null);
     let taken = false;
-    void teamOutcome(session, { label: "make this channel", done: "made" }, () =>
+    void actOnce(session, { label: "make this channel", done: "made" }, () =>
       session.rpc["commands.dispatch"](
         newChannelCommand({ id, name, isPrivate, peopleOnly, people: chosen }),
       )
@@ -393,7 +394,7 @@ export function TeamNewChannelScreen(
       if (!shown.current) return;
       setBusy(false);
       if (taken) setRefusal({ name: words, message: "A channel already has this name." });
-      else setLine(teamOutcomeLine(outcome));
+      else setLine(outcomeLine(outcome));
     });
   };
   const one = chosen[0] === undefined ? null : personView(chosen[0], people.directory).name;
@@ -538,7 +539,7 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
     if (!ready || session === null) return;
     setBusy(true);
     setLine(null);
-    void teamOutcome(
+    void actOnce(
       session,
       { label: "start this message", done: "started", happened: "this message was started" },
       () =>
@@ -552,7 +553,7 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
       }
       if (!shown.current) return;
       setBusy(false);
-      setLine(teamOutcomeLine(outcome));
+      setLine(outcomeLine(outcome));
     });
   };
   return (

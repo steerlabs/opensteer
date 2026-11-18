@@ -453,11 +453,13 @@ describe.each(["image", "picture"] as const)(
         throw new Error("Too many browser capture targets are retained.");
       });
       render("synchronized");
-      expect(container.textContent).toContain("Too many browser capture targets are retained.");
+      // The page says it can't be shown in its own words, never the client's error text.
+      expect(container.textContent).toContain("This page can’t be shown.");
+      expect(container.textContent).not.toContain("capture targets");
       const retry = container.querySelector("button");
       expect(retry).not.toBeNull();
       act(() => retry?.click());
-      expect(container.textContent).not.toContain("Too many browser capture targets");
+      expect(container.textContent).not.toContain("This page can’t be shown.");
     });
 
     it("keeps its viewer and last picture off screen, taking no input, and shows it again on the same viewer", async () => {

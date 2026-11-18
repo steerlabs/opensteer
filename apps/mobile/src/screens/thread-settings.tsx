@@ -64,6 +64,7 @@ import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { ActionLine } from "../ui/action-line.js";
+import { unreadyIssue } from "../ui/client-feedback.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
@@ -1451,22 +1452,23 @@ function SubscribedNewThread(props: {
 }
 
 /** A check this sheet made itself, whose words are its own and safe to show. */
-class SettingsChanged extends Error {}
+class SettingsChanged extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.words = words;
+  }
+}
 
 /** Known before anything is sent: the computer can't be reached right now. */
 function notSent(session: ClientSession): string | null {
-  const state = session.connection.getSnapshot();
-  if (state.phase === "ready" && state.network !== "offline") return null;
-  return presentClientIssue({
-    code: "not-sent",
-    reason: state.network === "offline" ? "offline" : "unreachable",
-    ...(state.name ? { name: state.name } : {}),
-  }).title;
+  const issue = unreadyIssue(session, "changed");
+  return issue === null ? null : presentClientIssue(issue).title;
 }
 
 /** A change that didn't land, in the sheet's own words or the shared outcome words. */
 function changeFailure(error: unknown): string | null {
-  if (error instanceof SettingsChanged) return error.message;
+  if (error instanceof SettingsChanged) return error.words;
   const issue = clientIssue(error, { operation: "action", label: "change this" });
   return issue === null ? null : presentClientIssue(issue).title;
 }

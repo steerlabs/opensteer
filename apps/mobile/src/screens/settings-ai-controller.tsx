@@ -41,7 +41,7 @@ export function AiSettingsController(): ReactNode {
         ?.harnessDrivers.find((driver) => driver.driverKind === input.driverKind)?.installation;
       if (installation === undefined || installation === null) return null;
       return installation.update === "available"
-        ? notDone({ label: "update", done: "updated" })
+        ? notDone("updated")
         : { kind: "confirmed", value: undefined };
     },
   });

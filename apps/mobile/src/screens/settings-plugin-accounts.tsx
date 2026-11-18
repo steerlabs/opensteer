@@ -153,7 +153,7 @@ function ConnectedApps(props: {
     reconcile: async (work) => {
       const fresh = await load();
       return fresh.connections.some((connection) => connection.id === work.connectionId)
-        ? notDone({ label: "disconnect", done: "disconnected" })
+        ? notDone("disconnected")
         : { kind: "confirmed", value: null };
     },
   });

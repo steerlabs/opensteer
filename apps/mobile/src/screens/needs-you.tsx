@@ -109,7 +109,7 @@ function NeedsYouRow(props: {
       client
         .getSnapshot()
         .needsYou?.entries.some((candidate) => needsYouEntryKey(candidate) === key)
-        ? notDone(dismissSpec)
+        ? notDone(dismissSpec.done)
         : { kind: "confirmed", value: undefined },
     retry: () => {
       if (ask) void dismissal.run(ask);
