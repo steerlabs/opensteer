@@ -37,10 +37,12 @@ const stablePattern = /^desktop-v(\d+\.\d+\.\d+)$/u;
 const exactSha = /^[a-f0-9]{40}$/u;
 const releaseIdQuery =
   "query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}";
-function execute(executable, args, root) {
+// One page of 100 workflow runs is about 1.4 MB, over Node's 1 MB default for a child's output.
+export function execute(executable, args, root) {
   return execFileSync(executable, args, {
     cwd: root,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 90_000,
   }).trim();
