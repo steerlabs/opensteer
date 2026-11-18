@@ -4,6 +4,7 @@ import type {
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import {
   computerAppConnectionLabel,
   computerAppPermissionNotice,
@@ -392,27 +393,42 @@ describe("computer app targets", () => {
  */
 describe("an Android phone among computer apps", () => {
   const pixelId = "rnr_22222222-2222-4222-8222-222222222222";
-  const pixel = machine({
-    allowedModules: ["integrations"],
-    apps: [
-      {
-        definitionId: "android-phone",
-        operations: [
-          {
-            operation: "observe",
-            detail: null,
-            remedy: "accessibility",
-            state: "permission-required",
-          },
-          { operation: "act", detail: null, remedy: "accessibility", state: "permission-required" },
-          { operation: "release", detail: null, remedy: null, state: "ready" },
-        ],
+  const pixel = mockDeviceMachine(
+    machine({
+      allowedModules: ["integrations"],
+      apps: [
+        {
+          definitionId: "android-phone",
+          operations: [
+            {
+              operation: "observe",
+              detail: null,
+              remedy: "accessibility",
+              state: "permission-required",
+            },
+            {
+              operation: "act",
+              detail: null,
+              remedy: "accessibility",
+              state: "permission-required",
+            },
+            { operation: "release", detail: null, remedy: null, state: "ready" },
+          ],
+        },
+      ],
+      device: { form: "phone", platform: "android" },
+      computerUse: {
+        appApproval: "ask",
+        detail: null,
+        displayStreamSupported: true,
+        permissions: null,
+        sessions: [],
+        state: "permission-required",
       },
-    ],
-    device: { form: "phone", platform: "android" },
-    id: pixelId,
-    name: "Pixel",
-  });
+      id: pixelId,
+      name: "Pixel",
+    }),
+  );
   const screen = {
     ...connection("read-write", pixelId),
     computer: {

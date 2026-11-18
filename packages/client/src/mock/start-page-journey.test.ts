@@ -97,6 +97,15 @@ describe("start page mock journey", () => {
         kind: "phone",
         computerId: DeviceIdSchema.parse(phone.machineId),
       });
+      client.setMachineStatus(phone.machineId, "offline");
+      const unavailable = client.getSnapshot();
+      expect(
+        unavailable.machines
+          .find(({ id }) => id === phone.machineId)
+          ?.computerUse?.ownerViews?.find(({ viewId }) => viewId === phoneView.viewId),
+      ).toMatchObject({ state: "unavailable", unavailableReason: "offline" });
+      expect(client.getSnapshot()).toBe(unavailable);
+      client.setMachineStatus(phone.machineId, "online");
       now = new Date(now.getTime() + 3 * 60000);
       await expect(
         client.renewComputerView(phoneView.viewId, phoneView.generation),

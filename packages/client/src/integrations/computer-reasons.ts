@@ -2,6 +2,17 @@ import { phoneScreenUnavailableWords } from "./phone-screen.js";
 import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
+/** Whether the Host reports a live display for this computer's task sessions. */
+export function canWatchComputer(machine: MachineSummary): boolean {
+  if (machine.capabilities)
+    return machine.phoneDisplay
+      ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
+          machine.phoneDisplay.view.state === "ready"
+      : (machine.kind === "home" || machine.kind === "computer") &&
+          machine.computerUse?.displayStreamSupported === true;
+  return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
+}
+
 /** Why no picture of a computer's app or phone can be asked for now, before any is asked. */
 export type ComputerNotReady =
   | "not-connected"

@@ -2,6 +2,7 @@
 
 import type { HostClient, TranscriptFixtureSnapshot, NodeEntry } from "@opensteer/client/host";
 import { MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,13 +128,15 @@ async function scene(name: MockSubagentScene) {
   let current: TranscriptFixtureSnapshot = { ...client.getSnapshot(), connection: "connected" };
   const thread = current.threads.find(({ title }) => title === "Fix checkout on mobile")!;
   const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
   const hostClient = {
     ...client,
+    ...scopedTranscriptFixture(() => current, subscribe),
     getSnapshot: () => current,
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
+    subscribe,
   } as unknown as HostClient;
   harness.hostClient = hostClient;
   const move = (next: TranscriptFixtureSnapshot) => {

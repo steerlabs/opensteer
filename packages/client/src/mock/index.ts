@@ -9,6 +9,7 @@ export * from "./mock-desktop-updates.js";
 export { mockSubagentScenes, type MockSubagentScene } from "./mock-subagent-scenes.js";
 export * from "./mock-personal-host.js";
 export { mockDeviceAccessRequest } from "./mock-devices.js";
+export { mockDeviceMachine } from "./mock-device-machine.js";
 export * from "./mock-screen-devices.js";
 export * from "./mock-iphone-setup.js";
 

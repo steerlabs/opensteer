@@ -195,27 +195,28 @@ export class MockComputerViews {
     const snapshot = this.#snapshot();
     if (snapshot.session !== "authenticated") return;
     const now = this.#now().getTime();
-    const approved = this.#approvedDevices();
+    let approved: ReturnType<MockComputerViews["approved"]> | undefined;
     for (const machine of snapshot.machines)
       for (const view of machine.computerUse?.ownerViews ?? []) {
         if (view.state === "closed" || view.state === "expired") continue;
-        const valid = approved.some(
+        if (Date.parse(view.expiresAt) <= now) {
+          this.#put({ ...view, state: "expired", unavailableReason: "expired" });
+          continue;
+        }
+        const valid = (approved ??= this.#approvedDevices()).some(
           (item) => item.connectionId === view.connectionId && item.machineId === view.machineId,
         );
-        if (Date.parse(view.expiresAt) <= now)
-          this.#put({ ...view, state: "expired", unavailableReason: "expired" });
-        else if (
+        if (
           !valid ||
           machine.status !== "online" ||
           snapshot.connection === "offline" ||
           (this.#drivers.has(view.viewId) &&
             this.#drivers.get(view.viewId) !== deviceDriverKey(machine))
-        )
-          this.#put({
-            ...view,
-            state: "unavailable",
-            unavailableReason: valid ? "offline" : "connection-revoked",
-          });
+        ) {
+          const unavailableReason = valid ? "offline" : "connection-revoked";
+          if (view.state !== "unavailable" || view.unavailableReason !== unavailableReason)
+            this.#put({ ...view, state: "unavailable", unavailableReason });
+        }
       }
   }
   /** The person's view of an exact window or a phone, as activating its tab opens one. */

@@ -102,6 +102,12 @@ export class TabStore implements TabsReadModel {
     return true;
   }
 
+  markInventoryStale(): void {
+    this.#complete = false;
+    this.#syncing = true;
+    this.#publish();
+  }
+
   invalidateInventory(): void {
     this.#ahead = null;
     this.replaceCurrent({ tabs: [], layout: this.#layout, complete: false });

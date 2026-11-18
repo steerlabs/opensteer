@@ -3,12 +3,7 @@ import { act } from "react";
 
 import { describe, expect, it, vi, type MockInstance } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import {
-  HostClientRequestError,
-  placeList,
-  type TranscriptFixtureSnapshot,
-  type PlaceItem,
-} from "@opensteer/client/host";
+import { HostClientRequestError, placeList, type PlaceItem } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 /** The browser session this device was shown a page tab through. */
@@ -260,7 +255,6 @@ describe("the draft's places", () => {
     "lets its automatic page go when that tab closes, but keeps an explicit pick, greyed (%s)",
     async (how) => {
       await mount((source) => `/${tabSearch(pageTab(source))}`);
-      await settle(100);
       const place = pageTab();
       const other = placeList(client.getSnapshot()).find(
         (item) => item.key !== place.key && isMockPage(item),
@@ -275,39 +269,43 @@ describe("the draft's places", () => {
           (button) => button.textContent?.includes(other.title),
         )!,
       );
-      await settle(100);
-      expect(titles()).toEqual([place.title, other.title]);
+      await vi.waitFor(() => expect(titles()).toEqual([place.title, other.title]), {
+        timeout: 1000,
+      });
       if (how === "handed back") {
         // A refused message comes back with its places exactly as they were sent.
         vi.spyOn(client, "dispatch").mockRejectedValueOnce(
           new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
         );
         await click(element(".composer__send"));
-        await settle(100);
-        expect(titles()).toEqual([place.title, other.title]);
+        await vi.waitFor(() => expect(titles()).toEqual([place.title, other.title]), {
+          timeout: 1000,
+        });
       }
       const close = async (closed: PlaceItem) => {
         await act(async () => client.closeTabs([closed.key]));
-        await settle(100);
       };
       await close(place);
       expect(titles()).toEqual([other.title]);
       // A snapshot that can no longer prove the end never brings the closed page back.
-      const connected = client.getSnapshot.bind(client);
-      const seen = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
-      const offline = vi.spyOn(client, "getSnapshot").mockImplementation(() => {
-        const snapshot = connected();
-        if (!seen.has(snapshot)) seen.set(snapshot, { ...snapshot, connection: "offline" });
-        return seen.get(snapshot)!;
-      });
+      await act(async () => client.goOffline());
       await close(other);
       expect(titles()).toEqual([other.title]);
       expect(document.querySelector(".context-chip--gone")).not.toBeNull();
       const dispatch = vi.spyOn(client, "dispatch");
       dispatch.mockClear();
       await click(element(".composer__send"));
-      await settle(100);
-      expect(sends(dispatch)).toHaveLength(1);
+      expect(sends(dispatch)).toEqual([]);
+
+      await act(async () => client.load());
+      await vi.waitFor(
+        () =>
+          expect(
+            sends(dispatch),
+            "The pending message did not send after synchronization",
+          ).toHaveLength(1),
+        { timeout: 1000 },
+      );
       const command = sends(dispatch)[0]!;
       expect(command.content.filter((part) => part.type !== "text")).toEqual([
         expect.objectContaining({
@@ -316,7 +314,7 @@ describe("the draft's places", () => {
           tabId: other.destination.tabId,
         }),
       ]);
-      offline.mockRestore();
+      await expect(sendResult(dispatch)).resolves.toMatchObject({ type: "thread.sendMessage" });
     },
   );
 
@@ -404,9 +402,21 @@ describe("the draft's places", () => {
     const studioMac = "rnr_88888888-8888-4888-8888-888888888888";
     async function openTile(label: string) {
       if (!document.querySelector(".start-page"))
-        await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
-      await click(element(`.start-tile[aria-label^='${label}']`));
-      await settle(120);
+        await act(async () =>
+          element<HTMLButtonElement>(
+            '.side-section--tabs .side-head__action[aria-label="New tab"]',
+          ).click(),
+        );
+      const open = vi.spyOn(client, "openTab");
+      try {
+        await act(async () => {
+          element<HTMLButtonElement>(`.start-tile[aria-label^='${label}']`).click();
+          expect(open).toHaveBeenCalledTimes(1);
+          await open.mock.results[0]!.value;
+        });
+      } finally {
+        open.mockRestore();
+      }
     }
     function viewed(machineId: string, bundleId: string) {
       const place = placeList(client.getSnapshot()).findLast(
@@ -419,8 +429,11 @@ describe("the draft's places", () => {
       return place;
     }
     async function show(place: PlaceItem) {
-      await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
-      await settle(100);
+      await act(async () =>
+        element<HTMLButtonElement>(
+          `.side-tab[data-place-key="${place.key}"] .side-tab__main`,
+        ).click(),
+      );
     }
     function reference(place: PlaceItem) {
       if (place.kind === "phone")
@@ -450,15 +463,17 @@ describe("the draft's places", () => {
       await mount("/?panel=browser");
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
-      expect(chip()).toBe(keynote.title);
+      await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
       await openTile("Notes on");
-      expect(chip()).toBe(viewed(macMini, "com.apple.Notes").title);
+      await vi.waitFor(() => expect(chip()).toBe(viewed(macMini, "com.apple.Notes").title), {
+        timeout: 1000,
+      });
       await show(keynote);
-      expect(chip()).toBe(keynote.title);
+      await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
       const dispatch = vi.spyOn(client, "dispatch");
       await write(field(), "Can you see my screen?");
       await click(element(".composer__send"));
-      await settle(100);
+      await vi.waitFor(() => expect(sent(dispatch)).toHaveLength(1), { timeout: 1000 });
       const sends = sent(dispatch);
       expect(sends).toHaveLength(1);
       expect(sends[0]!.content).toEqual([

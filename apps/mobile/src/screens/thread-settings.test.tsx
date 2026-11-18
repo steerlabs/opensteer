@@ -12,6 +12,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -140,13 +141,16 @@ describe("Expo engine/account/model journeys", () => {
         },
       ],
     };
+    const subscribe = (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
     mobile.hostClient = {
+      ...scopedTranscriptFixture(() => snapshot, subscribe),
       load: async () => undefined,
       getSnapshot: () => snapshot,
-      subscribe: (listener: () => void) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
+      subscribe,
+      watchPersonalResource: () => () => {},
       updateThreadAccess: access,
       updateThreadExecution: execution,
       rememberExecution: remember,

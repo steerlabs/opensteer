@@ -3,7 +3,7 @@ import { OwnerViewRecords } from "../host/owner-view-records.js";
 import { TabViewers } from "../host/tab-viewers.js";
 import { setPhoneUseAccess } from "./computer-use.js";
 import { mockIphoneScreenDevice, mockIphoneScreenSource } from "../mock/mock-screen-devices.js";
-import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -256,7 +256,7 @@ describe("phone display socket", () => {
     });
     client.connectComputerDisplay(source);
     expect(urls).toEqual([
-      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?opensteer_api_version=${minimumHostApiVersion}&opensteer_api_current=${hostApiVersion}&sharedInput=1&phoneOwnerControl=1&displayWindow=1`,
+      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?opensteer_api_version=${scopedPersonalApiVersion}&sharedInput=1&phoneOwnerControl=1&displayWindow=1`,
     ]);
     client.dispose();
   });

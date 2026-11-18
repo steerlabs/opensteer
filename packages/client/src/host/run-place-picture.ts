@@ -12,7 +12,7 @@ import { browserTabPicture, rememberBrowserLastPicture } from "./browser-last-pi
 import type { HostClient } from "./client.js";
 import { hostSnapshotStore } from "./host-snapshot-store.js";
 import { runPlaceSessionId, runPlacePictureSession } from "./run-place.js";
-import { computerAppIdentityKey } from "@opensteer/protocol";
+import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "./surfaces.js";
 import {
   emptyRunPlacePicture,

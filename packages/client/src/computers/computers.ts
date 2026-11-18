@@ -382,6 +382,8 @@ export interface ComputerStatus {
 export function computerStatus(machine: MachineSummary, now = new Date()): ComputerStatus {
   if (machine.phoneDisplay) {
     const availability = machine.phoneDisplay.control;
+    if (availability.reason?.kind === "driver-update-required" && machine.detail)
+      return { label: machine.detail, tone: "waiting" };
     return {
       label:
         availability.state === "ready"

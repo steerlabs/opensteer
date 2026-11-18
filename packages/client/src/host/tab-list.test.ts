@@ -80,6 +80,7 @@ describe("the device each row names", () => {
   it("is home at the computer that runs the Deployment, wherever the reader is", () => {
     const main = {
       ...machine("mini", "Mac mini"),
+      kind: "home",
       ownership: "deployment",
       allowedModules: ["agents"],
     } as MachineSummary;
