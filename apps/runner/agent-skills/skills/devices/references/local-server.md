@@ -36,7 +36,8 @@ Register it on the computer that reaches the device:
 }
 ```
 
-That computer runs a snapshot of the folder, so register again after changing it. A server already
+That computer runs a snapshot of the folder, so register again after changing it; the person is
+asked again, and the server stays stopped until they allow the change. A server already
 listening on that computer's loopback takes `url` instead of `launch`. `kind` is `tv`, `speaker`,
 `light`, `camera` or `other`; the device name is what the person calls it. A password or token is
 declared in `launch.secrets` by its environment variable name and entered by the person.
