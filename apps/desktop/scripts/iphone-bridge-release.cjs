@@ -2,6 +2,7 @@ const { createHash } = require("node:crypto");
 const childProcess = require("node:child_process");
 const { lstatSync, readFileSync, realpathSync } = require("node:fs");
 const { join } = require("node:path");
+const { developerIdRequirement, requirementOption } = require("./signing-input.cjs");
 
 function verifyIphoneBridgeRelease(directory, { architecture, release, teamId }) {
   const read = (file, executable = false) => {
@@ -54,8 +55,7 @@ function verifyIphoneBridgeRelease(directory, { architecture, release, teamId })
     run("/usr/bin/codesign", [
       "--verify",
       "--strict",
-      "-R",
-      `anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and identifier "com.opensteer.iphone-bridge" and certificate leaf[subject.OU] = "${teamId}" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists`,
+      requirementOption(developerIdRequirement(teamId, "com.opensteer.iphone-bridge")),
       binary,
     ]);
     // codesign descriptions are emitted on stderr, even on success.

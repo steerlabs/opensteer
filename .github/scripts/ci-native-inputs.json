@@ -47,6 +47,7 @@
     ".github/scripts/ci-sharding.mjs",
     ".github/scripts/ci-test-extra-inputs.json",
     ".github/scripts/ci-test-files.mjs",
+    "apps/desktop/scripts/codesign-requirement.test.ts",
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/app/app-protocol.ts",
     "apps/desktop/src/app/electron-window.ts",
