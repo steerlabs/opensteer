@@ -35,7 +35,6 @@ import {
   RunnerAuxiliaryStreamIdSchema,
   RunnerBootIdSchema,
   RunnerChallengeIdSchema,
-  RunnerConnectionFenceSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   runnerEnvironmentIds,
@@ -607,7 +606,11 @@ describe("runnerWebSocketUrl", () => {
         if (message.type === "runner.executions.attach") {
           socket.send(
             JSON.stringify({
-              ...RunnerConnectionFenceSchema.parse(message),
+              bootId: message.bootId,
+              connectionGeneration: message.connectionGeneration,
+              connectionId: message.connectionId,
+              connectionLeaseId: message.connectionLeaseId,
+              runnerId: message.runnerId,
               type: "host.shell.probe-full-disk-access",
             }),
           );
@@ -2283,8 +2286,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     try {
       await host.until(() => host.attaches.length === 1, "the first connection");
       runner.connection.recheckEngines();
-      // A heartbeat rechecks before it sends; one arriving on the first
-      // connection afterwards proves neither recheck hung up.
+      // The heartbeat confirms the explicit recheck left this connection open.
       vi.advanceTimersByTime(1_000);
       await host.until(() => host.heartbeats(1) === 1, "a heartbeat on the first connection");
       expect(host.hellos).toHaveLength(1);
@@ -2305,7 +2307,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         }),
       ]);
       expect(host.attaches[1]).toEqual([heldRun]);
-      // A runnable engine compares equal to its own advertisement too.
+      runner.connection.recheckEngines();
       vi.advanceTimersByTime(1_000);
       await host.until(() => host.heartbeats(2) === 1, "a heartbeat on the second connection");
       expect(host.hellos).toHaveLength(2);
@@ -2319,7 +2321,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     }
   });
 
-  it("waits while trigger work runs, and reconnects at the next heartbeat once it is idle", async () => {
+  it("keeps the connection during trigger work and reconnects on an explicit recheck once idle", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const host = await fakeAgentsHost();
     let installed = false;
@@ -2339,6 +2341,9 @@ describe("ReconnectingHostConnection engine rechecks", () => {
 
       triggerWork.mockReturnValue([]);
       vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 2, "a heartbeat after trigger work ended");
+      expect(host.hellos).toHaveLength(1);
+      runner.connection.recheckEngines();
       await host.until(() => host.hellos.length === 2, "the reconnect once trigger work ended");
       expect(host.hellos[1]).toEqual([
         expect.objectContaining({ driverKind, readiness: "runtime-check" }),
@@ -2362,13 +2367,13 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     const reconcile = Promise.withResolvers<void>();
     try {
       await host.until(() => host.attaches.length === 1, "the first connection");
-      // A slow reconcile holds the ordered queue; a trigger sent after it waits there.
       const reconciling = Promise.withResolvers<void>();
       vi.spyOn(runner.runtime, "reconcileHarnesses").mockImplementation(async () => {
         reconciling.resolve();
         await reconcile.promise;
       });
-      host.send(1, { harnesses: [], requestId: randomUUID(), type: "host.reconcile-harnesses" });
+      const requestId = randomUUID();
+      host.send(1, { harnesses: [], requestId, type: "host.reconcile-harnesses" });
       await withTimeout(reconciling.promise, 2_000, {
         timeoutError: () => new Error("the reconcile never started"),
       });
@@ -2378,12 +2383,12 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       await host.until(() => host.heartbeats(1) === 1, "a heartbeat while the queue is busy");
       expect(host.hellos).toHaveLength(1);
 
-      // The queue empties a few microtasks after the reconcile does; the
-      // heartbeat that follows is the first to see it empty.
       reconcile.resolve();
-      vi.advanceTimersByTime(1_000);
-      await host.until(() => host.heartbeats(1) === 2, "a heartbeat as the queue drains");
-      vi.advanceTimersByTime(1_000);
+      await host.until(
+        () => host.catalogs.some((catalog) => catalog.requestId === requestId),
+        "the queued reconcile response",
+      );
+      runner.connection.recheckEngines();
       await host.until(() => host.hellos.length === 2, "the reconnect once the queue drained");
     } finally {
       reconcile.resolve();
