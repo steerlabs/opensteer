@@ -1585,6 +1585,9 @@ export async function createHostRuntime(
         case "continuationsChanged":
           notifyIntegrationContinuations();
           break;
+        case "automationFailuresChanged":
+          notifyAutomationFailures();
+          break;
         case "authorityChanged":
           passwordSignIns.authorityChanged();
           browser.invalidatePlaceAuthority();
@@ -2028,10 +2031,7 @@ export async function createHostRuntime(
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
-          if (failedTriggerCount > 0) {
-            realtime.publishTriggersChanged();
-            notifyAutomationFailures();
-          }
+          if (failedTriggerCount > 0) realtime.publishTriggersChanged();
         },
         onHeartbeat: async (identity, activeRunIds) => {
           const connectionIsCurrent = await store.touchRunnerConnection({
@@ -2189,18 +2189,16 @@ export async function createHostRuntime(
           });
         },
         onTriggerResult: async (identity, result) => {
-          const occurrence = await triggerStore.completeExecution({
+          await triggerStore.completeExecution({
             executionGeneration: result.executionGeneration,
             output: result.output,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
           realtime.publishTriggersChanged();
-          if (occurrence.status === "failed") notifyAutomationFailures();
         },
         onWatchStatus: async (identity, status) => {
           await watchService?.applyStatus(identity, status);
-          notifyAutomationFailures();
         },
       },
     });

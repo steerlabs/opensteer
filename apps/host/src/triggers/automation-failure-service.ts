@@ -1,9 +1,12 @@
 import { OpensteerError } from "@opensteer/core";
 import type { AutomationFailureStore, PendingAutomationFailure } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-import { CoalescedWake } from "@opensteer/shared/coalescedWake";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 
-const defaultIntervalMs = 30_000;
+type FailureStore = Pick<
+  AutomationFailureStore,
+  "listDue" | "nextDeadline" | "retryLater" | "settle"
+>;
 
 /**
  * Tells the task an automation works for that it stopped: its one scheduled
@@ -14,47 +17,34 @@ const defaultIntervalMs = 30_000;
  */
 export class AutomationFailureService {
   readonly #commands: Pick<CommandService, "enqueueThreadInput">;
-  readonly #intervalMs: number;
   readonly #onError: (error: unknown) => void;
-  readonly #store: Pick<AutomationFailureStore, "listDue" | "retryLater" | "settle">;
-  #closed = false;
-  readonly #drains: CoalescedWake;
-  #timer: NodeJS.Timeout | undefined;
+  readonly #store: FailureStore;
+  readonly #drains: DeadlineDrain;
 
   constructor(options: {
     readonly commands: Pick<CommandService, "enqueueThreadInput">;
-    readonly intervalMs?: number;
     readonly onError: (error: unknown) => void;
-    readonly store: Pick<AutomationFailureStore, "listDue" | "retryLater" | "settle">;
+    readonly store: FailureStore;
   }) {
     this.#commands = options.commands;
-    this.#intervalMs = options.intervalMs ?? defaultIntervalMs;
     this.#onError = options.onError;
     this.#store = options.store;
-    this.#drains = new CoalescedWake({ run: () => this.#drainOnce(), onError: this.#onError });
+    this.#drains = new DeadlineDrain({ drain: () => this.#drainOnce(), onError: this.#onError });
   }
 
   start(): void {
-    if (this.#closed || this.#timer) return;
-    this.#timer = setInterval(() => this.notify(), this.#intervalMs);
-    this.#timer.unref();
-    this.notify();
+    this.#drains.start();
   }
 
-  /** Something may have stopped; read the notices owed now. */
   notify(): void {
-    if (this.#closed) return;
     this.#drains.wake();
   }
 
-  async close(): Promise<void> {
-    this.#closed = true;
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = undefined;
-    await this.#drains.stop();
+  close(): Promise<void> {
+    return this.#drains.close();
   }
 
-  async #drainOnce(): Promise<void> {
+  async #drainOnce(): Promise<Date | null> {
     for (const notice of await this.#store.listDue()) {
       try {
         const delivered = await this.#commands.enqueueThreadInput({
@@ -79,6 +69,7 @@ export class AutomationFailureService {
         this.#onError(error);
       }
     }
+    return this.#store.nextDeadline();
   }
 }
 

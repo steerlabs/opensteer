@@ -8,7 +8,7 @@ import type { RealtimeHub } from "@opensteer/orchestration";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { ChannelStore, OpensteerStore } from "@opensteer/database";
+import { AutomationFailureStore, ChannelStore, OpensteerStore } from "@opensteer/database";
 import {
   ContinuationService,
   type IntegrationInventorySource,
@@ -20,6 +20,7 @@ import {
   type DisplayStreamHubOptions,
 } from "../computer-use/display-stream-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
+import { AutomationFailureService } from "../triggers/automation-failure-service.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { initializePersonalState } from "./personal-state.js";
 
@@ -101,8 +102,10 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   const database = createDatabase({ connectionString: clone.url }, pool);
   const store = new OpensteerStore(database);
   const channelStore = new ChannelStore(database);
+  const failureStore = new AutomationFailureStore(database);
   const channelPlanned = Promise.withResolvers<void>();
   const continuationPlanned = Promise.withResolvers<void>();
+  const failuresPlanned = Promise.withResolvers<void>();
   const onError = vi.fn();
   const nextIngressDeadline = channelStore.nextIngressDeadline.bind(channelStore);
   const nextContinuationDeadline = store.requests.nextContinuationDeadline.bind(store.requests);
@@ -114,6 +117,12 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   vi.spyOn(store.requests, "nextContinuationDeadline").mockImplementation(async (...args) => {
     const result = await nextContinuationDeadline(...args);
     continuationPlanned.resolve();
+    return result;
+  });
+  const nextFailureDeadline = failureStore.nextDeadline.bind(failureStore);
+  vi.spyOn(failureStore, "nextDeadline").mockImplementation(async () => {
+    const result = await nextFailureDeadline();
+    failuresPlanned.resolve();
     return result;
   });
   const acquisitions = vi.fn();
@@ -138,13 +147,18 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
     onError,
     requests: store.requests,
   });
+  const automationFailures = new AutomationFailureService({
+    commands: { enqueueThreadInput: vi.fn() },
+    onError,
+    store: failureStore,
+  });
   const leases = executionLeaseDrain(store, () => {}, onError);
   let display: DisplayStreamHub | undefined;
   try {
     await seedPersonalFixture(database, "/agent-home");
     acquisitions.mockClear();
     const planned = withTimeout(
-      Promise.all([channelPlanned.promise, continuationPlanned.promise]),
+      Promise.all([channelPlanned.promise, continuationPlanned.promise, failuresPlanned.promise]),
       2_000,
       { timeoutError: () => new Error("Idle owners did not finish their startup reads") },
     );
@@ -152,6 +166,7 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
     display = new DisplayStreamHub({} as DisplayStreamHubOptions);
     channels.start();
     continuations.start();
+    automationFailures.start();
     leases.start();
     await Promise.all([planned, leases.settled()]);
     expect(onError).not.toHaveBeenCalled();
@@ -166,7 +181,12 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   } finally {
     vi.useRealTimers();
     display?.close();
-    await Promise.all([channels.close(), continuations.close(), leases.close()]);
+    await Promise.all([
+      channels.close(),
+      continuations.close(),
+      automationFailures.close(),
+      leases.close(),
+    ]);
     await database.destroy();
     await clone.drop();
   }
