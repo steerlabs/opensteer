@@ -1012,10 +1012,11 @@ function makeService(
     requests: {
       get: async (id: Request["id"]) => requests.find((request) => request.id === id) ?? null,
       listPendingContinuations,
+      nextContinuationDeadline: async () => null,
       recordContinuationAttempt,
     } as unknown as Pick<
       OpensteerStore["requests"],
-      "listPendingContinuations" | "recordContinuationAttempt" | "get"
+      "listPendingContinuations" | "nextContinuationDeadline" | "recordContinuationAttempt" | "get"
     >,
   });
   return {

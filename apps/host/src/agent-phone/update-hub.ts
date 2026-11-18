@@ -10,6 +10,9 @@ const Download = z.strictObject({
   type: z.literal("phone.update.download"),
   apkSha256: z.string().regex(/^[a-f0-9]{64}$/u),
 });
+const updateWorkTimeoutMs = 10 * 60_000;
+const updateProgressRetentionMs = 24 * 60 * 60_000;
+
 type State = "downloading" | "installing" | "awaiting-user" | "failed";
 interface Progress {
   readonly apkSha256: string;
@@ -23,7 +26,8 @@ interface Progress {
 export class AgentPhoneUpdateHub {
   readonly #progress = new Map<RunnerId, Progress>();
   readonly #sockets = new Set<WebSocket>();
-  readonly #expiry: ReturnType<typeof setInterval>;
+  #expiry: ReturnType<typeof setTimeout> | undefined;
+  #closed = false;
   #nextAttempt = 0;
 
   readonly #options: {
@@ -40,25 +44,43 @@ export class AgentPhoneUpdateHub {
     readonly changed: () => void;
   }) {
     this.#options = options;
-    this.#expiry = setInterval(() => {
-      let changed = false;
-      for (const [id, entry] of this.#progress) {
-        const age = Date.now() - entry.startedAt;
-        if (age > 24 * 60 * 60_000) {
-          this.#progress.delete(id);
-          changed = true;
-        } else if (
-          age > 10 * 60_000 &&
-          entry.state !== "failed" &&
-          entry.state !== "awaiting-user"
-        ) {
-          entry.state = "failed";
-          changed = true;
-        }
-      }
-      if (changed) this.#options.changed();
-    }, 10_000);
+  }
+
+  #scheduleExpiry(): void {
+    clearTimeout(this.#expiry);
+    this.#expiry = undefined;
+    if (this.#closed || !this.#progress.size) return;
+    let next = Infinity;
+    for (const entry of this.#progress.values()) {
+      const waiting = entry.state === "failed" || entry.state === "awaiting-user";
+      next = Math.min(
+        next,
+        entry.startedAt + (waiting ? updateProgressRetentionMs : updateWorkTimeoutMs),
+      );
+    }
+    this.#expiry = setTimeout(() => this.#expire(), Math.max(0, next - Date.now()));
     this.#expiry.unref();
+  }
+
+  #expire(): void {
+    const now = Date.now();
+    let changed = false;
+    for (const [id, entry] of this.#progress) {
+      const age = now - entry.startedAt;
+      if (age >= updateProgressRetentionMs) {
+        this.#progress.delete(id);
+        changed = true;
+      } else if (
+        age >= updateWorkTimeoutMs &&
+        entry.state !== "failed" &&
+        entry.state !== "awaiting-user"
+      ) {
+        entry.state = "failed";
+        changed = true;
+      }
+    }
+    this.#scheduleExpiry();
+    if (changed) this.#options.changed();
   }
 
   projection(runnerId: RunnerId, generation: number, connected: boolean) {
@@ -66,6 +88,7 @@ export class AgentPhoneUpdateHub {
     if (!entry || entry.connectionGeneration > generation) return null;
     if (connected || entry.connectionGeneration !== generation) {
       this.#progress.delete(runnerId);
+      this.#scheduleExpiry();
       return null;
     }
     return entry.state;
@@ -81,11 +104,13 @@ export class AgentPhoneUpdateHub {
     )
       throw new Error("Phone update was replaced");
     this.#progress.set(runnerId, progress);
+    this.#scheduleExpiry();
     this.#options.changed();
   }
 
   close(): void {
-    clearInterval(this.#expiry);
+    this.#closed = true;
+    this.#scheduleExpiry();
     for (const socket of this.#sockets) socket.close(1001, "Host closing");
     this.#sockets.clear();
   }
@@ -111,7 +136,7 @@ export class AgentPhoneUpdateHub {
     timeout.unref();
     const lifetime = setTimeout(
       () => socket.close(1008, "Phone update deadline exceeded"),
-      10 * 60_000,
+      updateWorkTimeoutMs,
     );
     lifetime.unref();
     const send = (data: string | Buffer) =>
@@ -228,6 +253,7 @@ export class AgentPhoneUpdateHub {
           this.#progress.get(runnerId) === progress
         ) {
           progress.state = "failed";
+          this.#scheduleExpiry();
           this.#options.changed();
         }
       });

@@ -3106,16 +3106,10 @@ export class RequestStore {
       return "refused";
     });
   }
-  async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
-    const pending = this.#database
+  #eligibleContinuations(excludedRuns: ReadonlySet<RunId>) {
+    let pending = this.#database
       .selectFrom("requestContinuations")
       .innerJoin("requests", "requests.id", "requestContinuations.requestId")
-      .selectAll("requests")
-      .select([
-        "requestContinuations.attemptedAt as continuationAttemptedAt",
-        "requestContinuations.reason as continuationReason",
-        "requestContinuations.status as continuationStatus",
-      ])
       .where("requestContinuations.status", "=", "waiting")
       .where((eb) =>
         eb.or([
@@ -3160,11 +3154,58 @@ export class RequestStore {
               ),
           ),
         ]),
+      );
+    if (excludedRuns.size) {
+      pending = pending.where((eb) =>
+        eb.or([
+          eb("requests.originatingRunId", "is", null),
+          eb("requests.originatingRunId", "not in", [...excludedRuns]),
+        ]),
+      );
+    }
+    return pending;
+  }
+
+  async nextContinuationDeadline(
+    retryMs: number,
+    excludedRuns: ReadonlySet<RunId>,
+  ): Promise<Date | null> {
+    const row = await this.#eligibleContinuations(excludedRuns)
+      .select(
+        sql<Date>`coalesce(attempted_at + ${retryMs} * interval '1 millisecond', statement_timestamp())`.as(
+          "deadline",
+        ),
       )
+      .orderBy("deadline")
+      .limit(1)
+      .executeTakeFirst();
+    return row?.deadline ?? null;
+  }
+
+  async listPendingContinuations(
+    limit = 100,
+    retryBefore?: Date,
+    excludedRuns: ReadonlySet<RunId> = new Set(),
+  ): Promise<readonly PendingRequestContinuation[]> {
+    const pending = this.#eligibleContinuations(excludedRuns)
+      .selectAll("requests")
+      .select([
+        "requestContinuations.attemptedAt as continuationAttemptedAt",
+        "requestContinuations.reason as continuationReason",
+        "requestContinuations.status as continuationStatus",
+      ])
       .orderBy(sql`request_continuations.attempted_at asc nulls first`)
       .orderBy("requestContinuations.createdAt", "asc")
       .orderBy("requests.id", "asc");
-    const page = await pending
+    const due = retryBefore
+      ? pending.where((eb) =>
+          eb.or([
+            eb("requestContinuations.attemptedAt", "is", null),
+            eb("requestContinuations.attemptedAt", "<=", retryBefore),
+          ]),
+        )
+      : pending;
+    const page = await due
       .clearSelect()
       .select(["requests.id", "requests.originatingRunId"])
       .limit(clampLimit(limit))

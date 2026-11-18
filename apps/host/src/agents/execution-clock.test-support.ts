@@ -2,6 +2,7 @@ import type { ManualClock } from "@opensteer/shared/test-support/clock";
 import type { PersonalHostRuntime } from "../runtime/runtime.js";
 import type { VerticalStack } from "./vertical-stack.test-support.js";
 import type { RunId } from "@opensteer/core";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 
 export async function executionLeaseExpiresAt(
   host: Pick<PersonalHostRuntime, "store">,
@@ -50,4 +51,20 @@ export async function advanceExecutionClock(
     await host.settleExecutionLeases();
     remaining -= step;
   }
+}
+
+/** Tests shorten hours-long background deadlines through the same commit wake as phase changes. */
+export async function setBackgroundDeadline(
+  host: Pick<PersonalHostRuntime, "store">,
+  runIds: readonly RunId[],
+  at: Date,
+): Promise<void> {
+  await commitPersonalMutation(host.store.database, async (tx, mutation) => {
+    await tx
+      .updateTable("runs")
+      .set({ backgroundDeadlineAt: at })
+      .where("id", "in", [...runIds])
+      .execute();
+    mutation.react({ type: "executionDeadlinesChanged" });
+  });
 }

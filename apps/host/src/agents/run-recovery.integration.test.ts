@@ -2,6 +2,7 @@ import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
+  setBackgroundDeadline,
   advanceExecutionClock,
   executionDisconnected,
   executionLeaseExpiresAt,
@@ -1022,13 +1023,7 @@ integration.sequential("Run recovery acceptance", () => {
     expect(await inputState(current.active, message.id)).toMatchObject({
       state: "claimed",
     });
-    await current.active.host.store.database
-      .updateTable("runs")
-      .set({
-        backgroundDeadlineAt: new Date(Date.now() - 60_000),
-      })
-      .where("id", "=", runId)
-      .execute();
+    await setBackgroundDeadline(current.active.host, [runId], new Date(Date.now() - 60_000));
     await advanceExecutionClock(current.clock!, current.active.host, 5_000);
     checkpoints.push({
       stage: "background deadline sweep completed",

@@ -643,21 +643,14 @@ integration("messaging pipeline", () => {
 
     // 4. A computer coming online picks up a message that is still waiting.
     await commit("Ev-DEFER-3", "1786320000.000203");
-    const parked = await vi.waitFor(
+    await vi.waitFor(
       async () => {
         const row = await ingress("Ev-DEFER-3");
         if (row.lastError === null) throw new Error("Not yet deferred");
-        return row;
       },
       { timeout: 10_000 },
     );
     fixture.computer.online = true;
-    await database
-      .updateTable("channelIngressEvents")
-      .set({ nextAttemptAt: new Date() })
-      .where("id", "=", parked.id)
-      .execute();
-    service.wake();
     const run = await waitForRun(fixture.created.binding.id);
     expect(run).toMatchObject({ status: "queued" });
 

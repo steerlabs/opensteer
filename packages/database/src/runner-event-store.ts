@@ -1,3 +1,4 @@
+import { executionDate } from "./personal-transaction.js";
 import { projectLastReply } from "./thread-status.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
@@ -806,7 +807,9 @@ async function projectRunPhase(
       phase: event.data.phase,
       ...(background && run.backgroundDeadlineAt === null
         ? {
-            backgroundDeadlineAt: new Date(Date.now() + runBackgroundMaxMs),
+            backgroundDeadlineAt: new Date(
+              executionDate(transaction).getTime() + runBackgroundMaxMs,
+            ),
           }
         : {}),
       ...(deliver

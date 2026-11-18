@@ -554,7 +554,8 @@ export class ComputerUseService {
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
   readonly #expireSetupRequests: (() => Promise<void>) | null;
   readonly #onError: (error: unknown) => void;
-  readonly #sweep: NodeJS.Timeout;
+  readonly #sweepIntervalMs: number;
+  #sweep: NodeJS.Timeout | undefined;
   readonly #passwords: ComputerUseServiceOptions["passwords"];
   readonly #loginReceiver: ComputerUseServiceOptions["loginReceiver"];
   #closed = false;
@@ -587,11 +588,7 @@ export class ComputerUseService {
     this.#threadTitle = options.threadTitle;
     this.#expireSetupRequests = options.expireSetupRequests ?? null;
     this.#onError = options.onError ?? (() => undefined);
-    this.#sweep = setInterval(
-      () => this.sweep(),
-      options.sweepIntervalMs ?? defaultSweepIntervalMs,
-    );
-    this.#sweep.unref();
+    this.#sweepIntervalMs = options.sweepIntervalMs ?? defaultSweepIntervalMs;
   }
 
   // ---- calls -----------------------------------------------------------
@@ -1307,6 +1304,7 @@ export class ComputerUseService {
         .catch(() => undefined),
     };
     this.#sessions.set(key, session);
+    this.#scheduleSweep();
     return session;
   }
 
@@ -1383,6 +1381,7 @@ export class ComputerUseService {
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     if (this.#sessions.get(key) !== session) return;
     this.#sessions.delete(key);
+    this.#scheduleSweep();
     session.cancellation.abort();
     this.#onSessionEnded(session.sessionId);
     for (const app of session.apps)
@@ -1660,6 +1659,8 @@ export class ComputerUseService {
       ) {
         this.#undeliveredCloses.add(session);
       }
+    } finally {
+      this.#scheduleSweep();
     }
   }
 
@@ -1702,6 +1703,7 @@ export class ComputerUseService {
     for (const [key, stopped] of this.#unrecordedStops) {
       if (stopped.runId === runId) this.#unrecordedStops.delete(key);
     }
+    this.#scheduleSweep();
     void this.#write(this.#stops.clear(runId)).catch(this.#onError);
     for (const session of this.#snapshot()) {
       if (session.runId !== runId) continue;
@@ -1747,6 +1749,7 @@ export class ComputerUseService {
         this.#forget(session);
       }
     }
+    this.#scheduleSweep();
   }
 
   forgetDriver(binding: DeviceDriverIdentity): void {
@@ -1756,6 +1759,7 @@ export class ComputerUseService {
         this.#onAuthorityRevoked?.(session.authority);
         this.#forget(session);
       }
+    this.#scheduleSweep();
   }
 
   forgetDevice(deviceId: ComputerTargetId, removed = false): void {
@@ -1771,6 +1775,7 @@ export class ComputerUseService {
         if (stop.deviceId === deviceId) this.#unrecordedStops.delete(key);
       for (const key of this.#stopped) if (key.endsWith(`|${deviceId}`)) this.#stopped.delete(key);
     }
+    this.#scheduleSweep();
   }
 
   /** Applies an unsolicited event from the current fenced Runner stream. */
@@ -1884,6 +1889,7 @@ export class ComputerUseService {
       acknowledge: stop.acknowledge || (held?.acknowledge ?? false),
       ownerUserId: held?.ownerUserId ?? stop.ownerUserId,
     });
+    this.#scheduleSweep();
     return this.#recordStop(stop);
   }
 
@@ -1901,6 +1907,7 @@ export class ComputerUseService {
         const recorded = this.#unrecordedStops.get(key);
         if (!recorded) return;
         this.#unrecordedStops.delete(key);
+        this.#scheduleSweep();
         if (recorded.acknowledge) {
           void this.#hub
             .acknowledgeComputerUseStop(recorded.deviceId, {
@@ -2015,6 +2022,19 @@ export class ComputerUseService {
     );
   }
 
+  #scheduleSweep(): void {
+    if (
+      this.#closed ||
+      (!this.#sessions.size && !this.#undeliveredCloses.size && !this.#unrecordedStops.size)
+    ) {
+      clearInterval(this.#sweep);
+      this.#sweep = undefined;
+    } else if (!this.#sweep) {
+      this.#sweep = setInterval(() => this.sweep(), this.#sweepIntervalMs);
+      this.#sweep.unref();
+    }
+  }
+
   /** The minute tick: sessions nobody is using, approvals nobody answered. */
   sweep(): void {
     this.sweepIdle();
@@ -2037,7 +2057,7 @@ export class ComputerUseService {
 
   async shutdown(): Promise<void> {
     this.#closed = true;
-    clearInterval(this.#sweep);
+    this.#scheduleSweep();
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
     while (this.#writes.size > 0) await Promise.allSettled(this.#writes);

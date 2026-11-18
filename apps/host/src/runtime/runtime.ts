@@ -43,7 +43,8 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import { ReconcileLoop } from "./reconcile-loop.js";
+import type { DeadlineDrain } from "./deadline-drain.js";
+import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
@@ -524,6 +525,9 @@ export async function createHostRuntime(
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
+    // The authority lock or Team LISTEN session occupies one pool slot.
+    minConnections: 2,
+    idleTimeoutMs: 5 * 60_000,
   });
   let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;
@@ -531,6 +535,7 @@ export async function createHostRuntime(
   let removeMutationHooks: (() => void) | undefined;
   let retention: PersonalRetentionDeadline | undefined;
   let deadlines: RequestDeadlines | undefined;
+  let executionLeaseLoop: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
@@ -1646,6 +1651,15 @@ export async function createHostRuntime(
         case "deadlinesChanged":
           deadlines?.changed();
           break;
+        case "executionDeadlinesChanged":
+          executionLeaseLoop?.wake();
+          break;
+        case "continuationsChanged":
+          notifyIntegrationContinuations();
+          break;
+        case "automationFailuresChanged":
+          notifyAutomationFailures();
+          break;
         case "authorityChanged":
           passwordSignIns.authorityChanged();
           browser.invalidatePlaceAuthority();
@@ -1673,6 +1687,12 @@ export async function createHostRuntime(
           teamRunEvents?.observe(reaction);
           if (reaction.transition === "restarted") wakeExecutionCoordinator();
           if (reaction.transition === "background") notifyIntegrationContinuations();
+          if (
+            reaction.transition === "background" ||
+            reaction.transition === "foreground" ||
+            reaction.transition === "restarted"
+          )
+            executionLeaseLoop?.wake();
           if (reaction.transition === "finishing" && !drainingFinishes.has(reaction.runId)) {
             const pending = drainRunFinish(database, links, reaction.runId).finally(() =>
               drainingFinishes.delete(reaction.runId),
@@ -1693,6 +1713,7 @@ export async function createHostRuntime(
           }
           break;
         case "runFinished":
+          executionLeaseLoop?.wake();
           liveText.finish(reaction, syncHead);
           realtime.wake(syncHead, new Set(["authority"]));
           if (reaction.attemptOnly) break;
@@ -2088,10 +2109,7 @@ export async function createHostRuntime(
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
-          if (failedTriggerCount > 0) {
-            realtime.publishTriggersChanged();
-            notifyAutomationFailures();
-          }
+          if (failedTriggerCount > 0) realtime.publishTriggersChanged();
         },
         onHeartbeat: async (identity, activeRunIds) => {
           const connectionIsCurrent = await store.touchRunnerConnection({
@@ -2249,18 +2267,16 @@ export async function createHostRuntime(
           });
         },
         onTriggerResult: async (identity, result) => {
-          const occurrence = await triggerStore.completeExecution({
+          await triggerStore.completeExecution({
             executionGeneration: result.executionGeneration,
             output: result.output,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
           realtime.publishTriggersChanged();
-          if (occurrence.status === "failed") notifyAutomationFailures();
         },
         onWatchStatus: async (identity, status) => {
           await watchService?.applyStatus(identity, status);
-          notifyAutomationFailures();
         },
       },
     });
@@ -3197,20 +3213,14 @@ export async function createHostRuntime(
     for (const { assignmentId, error } of returns.failures) {
       reportAssignmentReturnError(assignmentId, error);
     }
-    // An execution lease is the whole grace a Runner out of reach has, so an
-    // expired one is noticed within a fraction of it, whether or not the
-    // Runner is connected: silence is not a terminal event.
-    const executionLeaseLoop = new ReconcileLoop({
-      ...(options.executionClock ? { clock: options.executionClock } : {}),
-      intervalMs: Math.min(10_000, Math.floor(config.executionLeaseMs / 4)),
-      onError: (error) => app.log.error({ err: error }, "Execution lease sweep failed"),
-      reconcile: async () => {
-        await store.recoverRunsWithExpiredExecutionBindings();
-        await store.stopRunsPastBackgroundDeadline(wakeExecutionCoordinator);
-      },
-      sweep: () => undefined,
-    });
-    executionLeaseLoop.start();
+    const executionLeases = executionLeaseDrain(
+      store,
+      wakeExecutionCoordinator,
+      (error) => app.log.error({ err: error }, "Execution lease sweep failed"),
+      options.executionClock,
+    );
+    executionLeaseLoop = executionLeases;
+    executionLeases.start();
     deadlines = new RequestDeadlines({
       next: async () => {
         const [stored, local] = [
@@ -3245,7 +3255,7 @@ export async function createHostRuntime(
       deployment,
       store,
       authorityLost: authorityLease.lost,
-      settleExecutionLeases: () => executionLeaseLoop.settled(),
+      settleExecutionLeases: () => executionLeases.settled(),
       async close() {
         if (closed) return;
         closed = true;
@@ -3262,7 +3272,7 @@ export async function createHostRuntime(
         const notificationsClosed = notificationDispatcher?.close().catch((error) => {
           failures.push(error);
         });
-        await step("execution lease loop", () => executionLeaseLoop.close());
+        await step("execution lease loop", () => executionLeases.close());
         await step("idle compaction", async () => {
           await idleCompactionService?.close();
         });
@@ -3304,6 +3314,7 @@ export async function createHostRuntime(
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
         transcriptFileServices.close();
+        liveText.close();
         realtime.closeAll();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
@@ -3327,6 +3338,7 @@ export async function createHostRuntime(
     await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
+    await executionLeaseLoop?.close();
     await deadlines?.close();
     retention?.close();
     removeMutationHooks?.();

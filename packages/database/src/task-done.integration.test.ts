@@ -18,7 +18,7 @@ import { OpensteerStore } from "./index.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -398,7 +398,7 @@ integration.sequential("Shared task Done", () => {
     ).toEqual({ status: "active" });
 
     // A stopped automation is reported where its owner finds it: the Done parent.
-    await withPersonalTransaction(database, (transaction) =>
+    await commitPersonalMutation(database, (transaction) =>
       recordAutomationFailure(transaction, {
         detail: "Site changed",
         reason: "paused",

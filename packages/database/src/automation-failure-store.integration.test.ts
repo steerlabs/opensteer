@@ -1,5 +1,5 @@
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 
 import {
   cloneTestDatabase,
@@ -735,25 +735,52 @@ integration.sequential("automation failure notices", () => {
     const fixture = await createFixture("bounded");
     const created = await createOneShotTrigger(fixture, "bounded");
     const occurrence = await fireOneShot(created.trigger.id);
-    for (const detailText of ["x".repeat(3_000), "a second record of the same Occurrence"]) {
+    const reactions: string[] = [];
+    const removeHooks = installPersonalMutationHooks(database, {
+      wake() {},
+      react: (reaction) => {
+        if (reaction.type === "automationFailuresChanged") reactions.push(reaction.type);
+      },
+      onFailure: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await expect(
+        commitPersonalMutation(database, async (tx) => {
+          await recordAutomationFailure(tx, {
+            detail: "This insert rolls back",
+            occurrenceId: occurrence.id,
+            reason: "final-occurrence-failed",
+            triggerId: created.trigger.id,
+          });
+          throw new Error("rollback");
+        }),
+      ).rejects.toThrow("rollback");
+      expect(reactions).toEqual([]);
+      for (const detailText of ["x".repeat(3_000), "a second record of the same Occurrence"]) {
+        await commitPersonalMutation(database, (transaction) =>
+          recordAutomationFailure(transaction, {
+            detail: detailText,
+            occurrenceId: occurrence.id,
+            reason: "final-occurrence-failed",
+            triggerId: created.trigger.id,
+          }),
+        );
+      }
+      const manual = await fireManual(fixture, created.trigger.id);
       await commitPersonalMutation(database, (transaction) =>
         recordAutomationFailure(transaction, {
-          detail: detailText,
-          occurrenceId: occurrence.id,
-          reason: "final-occurrence-failed",
+          detail: "   ",
+          occurrenceId: manual.id,
+          reason: "paused",
           triggerId: created.trigger.id,
         }),
       );
+      expect(reactions).toEqual(["automationFailuresChanged", "automationFailuresChanged"]);
+    } finally {
+      removeHooks();
     }
-    const manual = await fireManual(fixture, created.trigger.id);
-    await commitPersonalMutation(database, (transaction) =>
-      recordAutomationFailure(transaction, {
-        detail: "   ",
-        occurrenceId: manual.id,
-        reason: "paused",
-        triggerId: created.trigger.id,
-      }),
-    );
     expect((await storedNotices()).map(({ detail: text }) => text)).toEqual([
       "x".repeat(2_000),
       "No error was reported.",
@@ -778,6 +805,7 @@ integration.sequential("automation failure notices", () => {
       .select([
         "attempts",
         "lastError",
+        "nextAttemptAt",
         sql<number>`extract(epoch from next_attempt_at - now())`.as("delaySeconds"),
       ])
       .where("id", "=", due!.id)
@@ -786,6 +814,7 @@ integration.sequential("automation failure notices", () => {
       attempts: 1,
       lastError: "Thread busy",
     });
+    expect(await notices.nextDeadline()).toEqual(backedOff.nextAttemptAt);
     expect(Number(backedOff.delaySeconds)).toBeGreaterThan(0);
     expect(Number(backedOff.delaySeconds)).toBeLessThanOrEqual(3_600);
     await database
@@ -814,6 +843,7 @@ integration.sequential("automation failure notices", () => {
       id: due!.id,
     });
     await expect(notices.listDue()).resolves.toEqual([]);
+    await expect(notices.nextDeadline()).resolves.toBeNull();
     await expect(
       database
         .selectFrom("automationFailureNotices")

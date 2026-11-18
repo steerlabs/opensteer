@@ -665,7 +665,7 @@ export async function attachRunnerExecutions(
       await transaction
         .updateTable("providerSessions")
         .set({
-          leaseExpiresAt: input.leaseExpiresAt,
+          leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
           updatedAt: now,
         })
         .where("id", "=", run.providerSessionId)
@@ -882,6 +882,50 @@ export async function restartExecutionLeases(
     .execute();
 }
 
+function unstoppedBackgroundRuns(database: Kysely<DatabaseSchema>) {
+  return database
+    .selectFrom("runs")
+    .where("phase", "=", "background")
+    .where("status", "in", ["queued", "starting", "running", "waiting"])
+    .where(({ not, exists, selectFrom }) =>
+      not(
+        exists(
+          selectFrom("commands")
+            .select("commands.id")
+            .whereRef("commands.runId", "=", "runs.id")
+            .where("commands.type", "=", "run.interrupt"),
+        ),
+      ),
+    );
+}
+
+function leasedRuns(database: Kysely<DatabaseSchema>) {
+  return database
+    .selectFrom("runs")
+    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+    .where("runs.status", "in", ["starting", "running", "waiting"])
+    .where("providerSessions.active", "=", true)
+    .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration");
+}
+
+export async function nextExecutionDeadline(
+  database: Kysely<DatabaseSchema>,
+): Promise<Date | null> {
+  const row = await leasedRuns(database)
+    .select("providerSessions.leaseExpiresAt as deadline")
+    .where("providerSessions.leaseExpiresAt", "is not", null)
+    .unionAll(
+      unstoppedBackgroundRuns(database)
+        .select("backgroundDeadlineAt as deadline")
+        .where("backgroundDeadlineAt", "is not", null),
+    )
+    .orderBy("deadline")
+    .limit(1)
+    .executeTakeFirst();
+  // Both recovery sweeps consider the stored instant itself inside the lease.
+  return row?.deadline ? new Date(row.deadline.getTime() + 1) : null;
+}
+
 /** One overdue Run whose stop committed, and everything it owes after commit. */
 export interface BackgroundDeadlineStop {
   readonly commandId: CommandRow["id"] | null;
@@ -905,13 +949,10 @@ export async function stopRunsPastBackgroundDeadline(
   links: ChannelLinks,
   now = new Date(),
 ): Promise<void> {
-  const candidates = await database
-    .selectFrom("runs")
-    .select("id")
-    .where("phase", "=", "background")
+  const candidates = await unstoppedBackgroundRuns(database)
+    .select("runs.id")
     .where("backgroundDeadlineAt", "<", now)
-    .where("status", "in", ["queued", "starting", "running", "waiting"])
-    .orderBy("id", "asc")
+    .orderBy("runs.id")
     .execute();
   for (const candidate of candidates) {
     const stopped = await commitPersonalMutation(database, async (transaction) => {
@@ -1074,18 +1115,12 @@ export async function recoverRunsWithExpiredExecutionBindings(
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   now = new Date(),
 ): Promise<RunRecoveryOutcome> {
-  const candidates = await database
-    .selectFrom("runs")
-    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+  // A session keeps its last Run's lease after that Run ends; only the Run
+  // that acquired the current binding is judged by it.
+  const candidates = await leasedRuns(database)
     .select("runs.id")
-    .distinct()
-    .where("runs.status", "in", ["starting", "running", "waiting"])
-    .where("providerSessions.active", "=", true)
     .where("providerSessions.leaseExpiresAt", "<", now)
-    // A session keeps its last Run's lease after that Run ends; only the Run
-    // that acquired the current binding is judged by it.
-    .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration")
-    .orderBy("runs.id", "asc")
+    .orderBy("runs.id")
     .execute();
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];

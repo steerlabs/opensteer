@@ -1,7 +1,11 @@
 import type { AuthSessionId, ThreadId, UserId } from "@opensteer/core";
 import type { HostToClientMessage } from "@opensteer/protocol";
 import type { PersonalScope } from "@opensteer/protocol/personal-sync";
-import type { PersonalSyncSocket, PersonalLiveUpdate } from "./personal-sync.js";
+import type {
+  LiveDeliveryOptions,
+  PersonalSyncSocket,
+  PersonalLiveUpdate,
+} from "./personal-sync.js";
 
 export interface RealtimeSink {
   readonly id: string;
@@ -152,8 +156,12 @@ export class RealtimeHub {
     return (await Promise.all(deliveries)).filter(Boolean).length;
   }
 
-  publishLive(scope: Exclude<PersonalScope, { kind: "shell" }>, update: PersonalLiveUpdate): void {
-    for (const { sync } of this.#connections) sync.offerLive(scope, update);
+  publishLive(
+    scope: Exclude<PersonalScope, { kind: "shell" }>,
+    update: PersonalLiveUpdate,
+    options?: LiveDeliveryOptions,
+  ): void {
+    for (const { sync } of this.#connections) sync.offerLive(scope, update, options);
   }
 
   publishConnectionsChanged(userId: UserId): void {
