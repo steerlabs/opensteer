@@ -19,7 +19,6 @@ type Read = Transaction<DatabaseSchema>;
 const TranscriptOverlayKindSchema = z.enum(["requests", "tools", "nodes"]);
 const TranscriptOverlayCursorSchema = TranscriptOrderCursorSchema.omit({
   beforePosition: true,
-  orderRevision: true,
 }).extend({ kind: TranscriptOverlayKindSchema, revision: PersonalRevisionSchema });
 type TranscriptOverlayCursor = z.infer<typeof TranscriptOverlayCursorSchema>;
 type TranscriptOverlayKind = z.infer<typeof TranscriptOverlayKindSchema>;

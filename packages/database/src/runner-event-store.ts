@@ -1,13 +1,12 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { executionDate } from "./personal-transaction.js";
-import { projectLastReply } from "./thread-status.js";
+import { projectLastReply, publishThreadSummary } from "./thread-status.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
-  invalidateExecution,
   publishExecutionInput,
   recordExecutionRunChange,
   updateExecutionThread,
@@ -1057,7 +1056,7 @@ export async function commitRunnerEvent(
             if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
           }
           if (event.type === "run.context-measured" || event.type === "run.compaction")
-            invalidateExecution(mutation, run.threadId, "return-hint");
+            await publishThreadSummary(tx, run.threadId);
           return "applied";
         },
         {

@@ -45,12 +45,7 @@ import { recordIncludedBrowserPages } from "./browser-session-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 
 import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-insertion.js";
-import {
-  projectThreadState,
-  publishRunQueue,
-  publishThreadSummary,
-  invalidateThreadCollection,
-} from "./thread-status.js";
+import { projectThreadState, publishRunQueue, publishThreadSummary } from "./thread-status.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -1452,7 +1447,7 @@ export async function claimRunInputBatch(
       .where("id", "=", run.id)
       .execute();
     run.providerSessionId = providerSessionId;
-    await invalidateThreadCollection(transaction, thread.id, "thread-details");
+    await publishThreadSummary(transaction, thread.id);
   }
   const seedMessage = await transaction
     .selectFrom("messages")

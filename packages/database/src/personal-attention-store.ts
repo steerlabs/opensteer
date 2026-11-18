@@ -5,6 +5,7 @@ import {
   type RequestId,
   type TeamAgentRequestId,
   type ThreadId,
+  utf8Prefix,
 } from "@opensteer/core";
 import { sql, type Kysely, type Insertable } from "kysely";
 import {
@@ -13,6 +14,7 @@ import {
   type PersonalMutationTransaction,
 } from "./personal-mutation.js";
 import type { PersonalAttentionTable } from "./personal-state-schema.js";
+import { publishThreadSummary } from "./thread-status.js";
 
 type Tx = PersonalMutationTransaction;
 const liveLinkStates = ["active", "unreachable", "needs_update"] as const;
@@ -22,15 +24,36 @@ function eligibleLink(state: LinkState): boolean {
   return state === "active" || state === "unreachable" || state === "needs_update";
 }
 
-function needsYouChanged(mutation: PersonalMutation) {
-  mutation.change(
-    {
+function attentionChanged(
+  mutation: PersonalMutation,
+  id: string,
+  value: {
+    readonly kind: PersonalAttentionTable["kind"];
+    readonly threadId: ThreadId | null;
+    readonly revision: string;
+    readonly title: string | null;
+    readonly preview?: string | null;
+  } | null,
+) {
+  if (!value) {
+    mutation.change({
       scopeKey: "shell",
-      entityKind: "collection",
-      entityId: "needs-you",
-      operation: "invalidate",
-    },
-    () => ({ revision: mutation.sequence }),
+      entityKind: "attention",
+      entityId: id,
+      operation: "remove",
+    });
+    return;
+  }
+  mutation.change(
+    { scopeKey: "shell", entityKind: "attention", entityId: id, operation: "upsert" },
+    () => ({
+      id,
+      kind: value.kind,
+      threadId: value.threadId,
+      revision: value.revision,
+      title: utf8Prefix(value.title || (value.kind === "request" ? "Request" : "Team ask"), 240),
+      ...(value.preview ? { preview: utf8Prefix(value.preview, 500) } : {}),
+    }),
   );
 }
 
@@ -79,7 +102,16 @@ export async function refreshRequestAttention(
 ) {
   const source = await tx
     .selectFrom("requests")
-    .select(["id", "kind", "status", "originatingThreadId", "originatingRunId", "createdAt"])
+    .select([
+      "id",
+      "kind",
+      "status",
+      "originatingThreadId",
+      "originatingRunId",
+      "createdAt",
+      "revision",
+    ])
+    .select(sql<string | null>`left(presentation->>'title',192)`.as("title"))
     .where("id", "=", requestId)
     .executeTakeFirst();
   if (!source) throw new Error("The Request must be refreshed before deleting its source");
@@ -111,7 +143,18 @@ export async function refreshRequestAttention(
           }
         : null,
     );
-    needsYouChanged(mutation);
+    attentionChanged(
+      mutation,
+      id,
+      pending
+        ? {
+            kind: "request",
+            threadId: source.originatingThreadId,
+            revision: source.revision,
+            title: source.title,
+          }
+        : null,
+    );
   }
   mutation.react({
     type: "requestChanged",
@@ -144,6 +187,7 @@ export async function refreshTeamAskAttention(
       "createdAt",
       "consentExpiresAt",
     ])
+    .select(sql<string | null>`left(presentation->>'title',192)`.as("title"))
     .where("teamDeploymentId", "=", teamDeploymentId)
     .where("requestId", "=", requestId)
     .executeTakeFirst();
@@ -203,7 +247,20 @@ export async function refreshTeamAskAttention(
           }
         : null,
     );
-    if (visible) needsYouChanged(mutation);
+    if (visible)
+      attentionChanged(
+        mutation,
+        id,
+        failed || (ordinary && eligibleLink(link.state))
+          ? {
+              kind: failed ? "failed-ask" : "team-ask",
+              threadId: source.localTaskId,
+              revision: mutation.sequence,
+              title: source.title,
+              preview: failed ? utf8Prefix(source.blockedReason ?? "", 160) : null,
+            }
+          : null,
+      );
   }
   if (source.kind === "ask") mutation.react({ type: "deadlinesChanged" });
 }
@@ -215,7 +272,8 @@ export function updateAttentionLinkContribution(
   const delta = Number(eligibleLink(input.after)) - Number(eligibleLink(input.before));
   if (delta && input.bucket) {
     mutation.count("needsYouCount", delta * input.bucket);
-    needsYouChanged(mutation);
+    // A whole team's approval asks appear or disappear: the shell is repaired by snapshot.
+    mutation.resetScope("shell");
   }
 }
 
@@ -246,13 +304,7 @@ export async function refreshLatestRunCompletion(
     .executeTakeFirst();
   const delta = (await unreadTaskContribution(tx, threadId)) - before;
   if (delta) mutation.count("unreadTaskCount", delta);
-  if (delta || changed.numUpdatedRows > 0n) {
-    for (const scopeKey of ["shell", `thread:${threadId}`] as const)
-      mutation.change(
-        { scopeKey, entityKind: "collection", entityId: "task-summary", operation: "invalidate" },
-        () => ({ revision: mutation.sequence }),
-      );
-  }
+  if (delta || changed.numUpdatedRows > 0n) await publishThreadSummary(tx, threadId);
 }
 
 export async function requireFreshPersonalAttention(tx: Tx) {

@@ -343,7 +343,6 @@ export async function readAgentThreadActivity(
       viewerId: input.ownerId,
       threadId: input.threadId,
       nodeId: input.nodeId ?? null,
-      orderRevision: thread.transcriptOrderRevision,
       view: input.messagesOnly ? ("messages" as const) : ("activity" as const),
     };
     const before = input.before === undefined ? null : activityCursor(input.before);
@@ -354,8 +353,7 @@ export async function readAgentThreadActivity(
         before.viewerId !== address.viewerId ||
         before.threadId !== address.threadId ||
         before.nodeId !== address.nodeId ||
-        before.view !== address.view ||
-        before.orderRevision !== address.orderRevision)
+        before.view !== address.view)
     )
       throw new OpensteerError({
         code: "bad_request",

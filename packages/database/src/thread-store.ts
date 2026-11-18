@@ -137,7 +137,6 @@ import {
 import {
   projectThreadState,
   publishRunQueue,
-  invalidateThreadCollection,
   publishThreadSummary,
   threadMutationHead,
 } from "./thread-status.js";
@@ -1487,7 +1486,7 @@ export async function updateThreadExecutionSelection(
           .where("threadId", "=", thread.id)
           .where("contextSnapshot", "is not", null)
           .execute();
-        await invalidateThreadCollection(transaction, thread.id, "return-hint");
+        await publishThreadSummary(transaction, thread.id);
       }
       let providerSessionId = selected?.id ?? null;
       if (compatible && selected && input.continuation === undefined) {
@@ -1777,7 +1776,6 @@ export async function renameThread(
         .executeTakeFirstOrThrow();
       if (thread.title !== title) {
         await publishThreadSummary(transaction, row.id);
-        await invalidateThreadCollection(transaction, row.id, "thread-details");
         await refreshAssignmentWorkerSummaries(transaction, row.id);
       }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
@@ -1895,7 +1893,6 @@ export async function setThreadIcon(
         .executeTakeFirstOrThrow();
       if (thread.icon !== icon) {
         await publishThreadSummary(transaction, row.id);
-        await invalidateThreadCollection(transaction, row.id, "thread-details");
         await refreshAssignmentWorkerSummaries(transaction, row.id);
       }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
@@ -2012,7 +2009,6 @@ export async function applyGeneratedThreadName(
         .where("id", "=", input.threadId)
         .executeTakeFirstOrThrow();
       await publishThreadSummary(transaction, row.id);
-      await invalidateThreadCollection(transaction, row.id, "thread-details");
       await refreshAssignmentWorkerSummaries(transaction, row.id);
       return row.id;
     },
@@ -2079,7 +2075,6 @@ export async function updateThreadAccessMode(
       ...row,
     });
     await publishThreadSummary(transaction, updated.id);
-    await invalidateThreadCollection(transaction, updated.id, "thread-details");
     return { asOfSequence: await threadMutationHead(transaction, updated.id), thread: updated };
   });
 }

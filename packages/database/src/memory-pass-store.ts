@@ -1,4 +1,5 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   createId,
@@ -25,7 +26,6 @@ import "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
-import { invalidateExecution } from "./execution-changes.js";
 
 import { createThreadInTransaction } from "./thread-store.js";
 import { createTriggerInTransaction } from "./trigger-store.js";
@@ -185,7 +185,7 @@ export async function startMemoryPassInTransaction(
       .set({ revision: mutation.sequence })
       .where("id", "=", updated.id)
       .execute();
-    invalidateExecution(mutation, updated.id, "thread");
+    await publishThreadSummary(tx, updated.id);
   });
   return { worker: updated };
 }

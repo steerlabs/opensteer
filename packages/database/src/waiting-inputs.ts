@@ -1,5 +1,6 @@
 import { syncTranscriptMessage } from "./message-visibility.js";
-import { invalidateThreadCollection, projectThreadState } from "./thread-status.js";
+import { projectThreadState, publishThreadSummary } from "./thread-status.js";
+import { publishThreadQueues } from "./personal-queue-view.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   ContentPartSchema,
@@ -157,8 +158,8 @@ export async function refreshInputQueue(
       .set({ inputQueueRevision: mutation.sequence, revision: mutation.sequence })
       .where("id", "=", threadId)
       .execute();
-    await invalidateThreadCollection(tx, threadId, "input-queue");
-    await invalidateThreadCollection(tx, threadId, "return-hint");
+    await publishThreadQueues(tx, threadId, messageId ? [messageId] : []);
+    await publishThreadSummary(tx, threadId);
     await projectThreadState(tx, threadId);
   });
 }
