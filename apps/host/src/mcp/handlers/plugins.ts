@@ -235,7 +235,7 @@ export class PluginToolHandlers {
         c.caller.userId,
         result.plugin.id,
         result.version.id,
-        i.source === "catalog" ? "catalog" : "agent",
+        result.origin === "catalog" ? "catalog" : "agent",
       );
     if (result.status === "installed") this.options.changed?.(c.caller.userId);
     return {

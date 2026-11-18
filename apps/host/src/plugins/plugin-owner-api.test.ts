@@ -186,10 +186,11 @@ function setup(
       feed: {},
     })),
     catalogDetail: vi.fn(),
-    install: vi.fn(async (_input: unknown, _context: unknown) => ({
+    install: vi.fn(async (input: { kind: string }, _context: unknown) => ({
       status: "installed" as const,
       plugin: plugin("new"),
       version: { id: "new-v1" },
+      origin: input.kind,
     })),
     activate: vi.fn(async () => null),
     remove: vi.fn(async () => null),

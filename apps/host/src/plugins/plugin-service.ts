@@ -1,10 +1,11 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
-import { MutationQueue } from "@opensteer/shared/mutationQueue";
+import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { fork, type ChildProcess } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { engineDemand } from "./engine-storage.js";
@@ -78,10 +79,6 @@ export interface PluginServiceOptions {
     signal: AbortSignal,
     elicit: PluginElicit,
   ) => Promise<PluginJson>;
-  readonly eventAuthorize?: (
-    input: Record<string, PluginJson>,
-    signal: AbortSignal,
-  ) => Promise<boolean>;
   readonly oauthConfiguration?: (linked: boolean) => Promise<PluginOAuthConfiguration>;
   readonly oauthBroker?: <K extends PluginBrokerOperation>(
     operation: K,
@@ -107,6 +104,7 @@ const idleCheckMs = 60_000;
 const keepForMs = 120_000;
 /** A stopped engine starts this long before its next saved background work is due. */
 const wakeLeadMs = 15_000;
+const versionTarget = z.object({ plugin: z.string().optional(), key: z.string().optional() });
 const liveExecution = new Set(["running", "waiting", "answered"]);
 // Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
 // instead of V8's machine-sized default; the supervisor then restarts the lost process.
@@ -121,7 +119,7 @@ interface Pending {
 /** Host-owned Promise boundary. Its callbacks are the only route back to Host authority and tools. */
 export class PluginService {
   readonly skillCache: PluginSkillCache;
-  readonly #versionChanges = new MutationQueue();
+  readonly #versionChanges = new KeyedMutationQueue();
   readonly #config: EngineInit;
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
@@ -600,7 +598,7 @@ export class PluginService {
             callbackOperations.providers.input.parse(message.input),
             controller.signal,
           )) ?? [];
-      else if (message.operation === "providerCall") {
+      else {
         if (!this.#options.providerCall)
           throw new PluginServiceError("unavailable", "Host provider is unavailable");
         result = await this.#options.providerCall(
@@ -608,12 +606,7 @@ export class PluginService {
           controller.signal,
           (request, signal) => this.#elicit(child, message.id, request, signal),
         );
-      } else
-        result =
-          (await this.#options.eventAuthorize?.(
-            callbackOperations.eventAuthorize.input.parse(message.input),
-            controller.signal,
-          )) ?? false;
+      }
       this.#send(child, {
         type: "callbackResult",
         id: message.id,
@@ -646,9 +639,13 @@ export class PluginService {
     context: PluginCaller,
     signal?: AbortSignal,
   ): Promise<PluginOutput<K>> {
-    return operation === "install" || operation === "activate" || operation === "remove"
-      ? this.#versionChanges.run(() => this.#request(operation, input, context, signal))
-      : this.#request(operation, input, context, signal);
+    if (operation !== "install" && operation !== "activate" && operation !== "remove")
+      return this.#request(operation, input, context, signal);
+    // A new install is keyed by its creation identity: nothing else can name its plugin yet.
+    const { plugin, key } = versionTarget.parse(input);
+    return this.#versionChanges.run(plugin ?? `new:${key ?? randomUUID()}`, () =>
+      this.#request(operation, input, context, signal),
+    );
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,
@@ -727,18 +724,7 @@ export class PluginService {
   }
   async #cacheVersion(plugin: string, signal?: AbortSignal) {
     const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
-    const [bundle, source, plugins] = await Promise.all([
-      this.skillFiles({ plugin }, context, signal),
-      this.export({ plugin }, context, signal),
-      this.list({}, context, signal),
-    ]);
-    const current = plugins.find((entry) => entry.id === plugin);
-    if (!current) throw new PluginServiceError("invalid", "Plugin disappeared during activation");
-    await this.skillCache.record(
-      current,
-      bundle,
-      source.some((file) => file.path === "ui/index.html"),
-    );
+    await this.skillCache.record(await this.skillFiles({ plugin }, context, signal));
   }
   discardStream(id: string): void {
     if (this.#child) this.#send(this.#child, { type: "cancel", id });

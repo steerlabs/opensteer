@@ -353,6 +353,18 @@ test.each(["catalog", "url", "files"] as const)(
     expect(await service.stopIfIdle()).toBe(true);
     expect(await invoke()).toEqual(first);
     expect(await service.list({}, owner)).toHaveLength(1);
+    if (kind === "url") {
+      // A reused key with a different source answers from the receipt and keeps its label.
+      const relabel = { ...command, source: { kind: "catalog" as const, catalogId: "fixture" } };
+      expect(await freshOwnerApi().command(relabel, context)).toEqual(first);
+      const [installed] = await service.list({}, owner);
+      const version = { pluginId: installed!.id, version: installed!.activeVersion! };
+      expect(
+        (await records.versionAuthors(personal.userId, [version])).get(
+          `${version.pluginId}\u0000${version.version}`,
+        ),
+      ).toBe("agent");
+    }
     if (kind === "files") {
       const plugin = (await service.list({}, owner))[0]!.id;
       const update = {

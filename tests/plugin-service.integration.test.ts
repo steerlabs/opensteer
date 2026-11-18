@@ -36,6 +36,9 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   context.onTestFinished(() => registry.close());
   const origin = registry.origin;
   let refused = false;
+  const authorized: string[] = [];
+  let heldInstall:
+    { reached: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
   const interrupted: PluginExecution[] = [];
   const calls: { caller: string; execution: string }[] = [];
   const hostProvider: PluginHostProvider = {
@@ -69,7 +72,14 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     npmRegistry: origin,
     catalogUrl: origin + "/catalog",
     selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
-    authorize: async () => ({ allowed: !refused }),
+    authorize: async (input) => {
+      authorized.push(`${input.operation}:${input.plugin ?? ""}`);
+      if (input.operation === "install" && heldInstall) {
+        heldInstall.reached.resolve();
+        await heldInstall.release.promise;
+      }
+      return { allowed: !refused };
+    },
     providers: async () => [hostProvider],
     providerCall: async (input) => {
       calls.push(input);
@@ -136,7 +146,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     expect.objectContaining({ caller: caller.caller, execution: expect.any(String) }),
   ]);
   const skillBundle = await service.skillFiles({ plugin }, caller);
-  expect(skillBundle.digest).toMatch(/^[a-f0-9]{64}$/u);
+  expect(skillBundle).toMatchObject({ plugin, slug: "fixture", version: v1, hasPage: false });
   expect(skillBundle.files).toEqual(
     expect.arrayContaining([expect.objectContaining({ path: "demo/SKILL.md" })]),
   );
@@ -245,6 +255,39 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     status: "completed",
     execution: { ok: false },
   });
+  const spare = await service.install(
+    { kind: "files", name: "Spare", files: pluginFixtureFiles(1) },
+    caller,
+  );
+  if (spare.status !== "installed") throw new Error("Spare fixture did not install");
+  heldInstall = { reached: Promise.withResolvers(), release: Promise.withResolvers() };
+  const held = service.install(
+    {
+      kind: "files",
+      plugin: secured.plugin.id,
+      files: pluginFixtureFiles(1, ["api.fixture.invalid"]),
+    },
+    caller,
+  );
+  await deadline(heldInstall.reached.promise, "Held install never reached authorization");
+  const sameAfterHeld = service.activate(
+    { plugin: secured.plugin.id, version: secured.version.id },
+    caller,
+  );
+  await deadline(
+    Promise.all([
+      service.activate({ plugin, version: v1 }, caller),
+      service.remove({ plugin: spare.plugin.id }, caller),
+    ]),
+    "Another plugin's version change waited behind an install",
+  );
+  expect(authorized).not.toContain(`activate:${secured.plugin.id}`);
+  heldInstall.release.resolve();
+  heldInstall = undefined;
+  await deadline(Promise.all([held, sameAfterHeld]), "Queued same-plugin activation never ran");
+  expect(authorized.slice(authorized.lastIndexOf(`install:${secured.plugin.id}`))).toContain(
+    `activate:${secured.plugin.id}`,
+  );
   console.log("Plugin service one plugin RSS", pluginFixtureProcesses(health.pid));
   const waiting = once(events, "waiting");
   const pending = service.execute({ code: "return await tools.fixture.wait({});" }, caller);

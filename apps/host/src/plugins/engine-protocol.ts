@@ -192,8 +192,6 @@ const management = z.enum([
   "schedules.list",
   "schedules.definitions",
   "schedules.configure",
-  "schedules.update",
-  "schedules.remove",
   "schedules.runNow",
   "schedules.runs",
   "schedules.approval",
@@ -203,11 +201,6 @@ const management = z.enum([
   "workflowRuns.list",
   "workflowRuns.get",
   "workflowRuns.stop",
-  "webhooks.list",
-  "webhooks.definitions",
-  "webhooks.sources",
-  "webhooks.link",
-  "webhooks.unlink",
   "webhooks.remove",
   "webhooks.confirmRemoval",
   "webhookSetup.read",
@@ -280,6 +273,7 @@ export const operations = {
         status: z.literal("installed"),
         plugin: PluginSchema,
         version: VersionSchema,
+        origin: z.enum(["files", "catalog", "mcp", "openapi", "graphql"]),
       }),
       z.strictObject({ status: z.literal("build-error"), error: object }),
     ]),
@@ -407,7 +401,7 @@ export const operations = {
   },
   skillFiles: {
     input: plugin,
-    output: z.strictObject({ plugin: id, version: id, digest: id, files }),
+    output: z.strictObject({ plugin: id, slug: id, version: id, hasPage: z.boolean(), files }),
   },
   // `outputs` is the Host's decision that this caller may read run outputs, not the agent's.
   resourcesRead: {
@@ -559,7 +553,6 @@ export const callbackOperations = {
     }),
     output: JsonSchema,
   },
-  eventAuthorize: { input: object, output: z.boolean() },
   webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },
 } as const;
 export type PluginCallback = keyof typeof callbackOperations;

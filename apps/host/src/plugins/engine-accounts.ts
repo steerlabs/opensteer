@@ -33,10 +33,9 @@ import {
 const table = ["opensteer_account_links"];
 type CreationKind =
   "plugin" | "account" | "connection" | "oauth-client" | "schedule-run" | "schedule-configuration";
-const Creation = Context.Reference<{ key: string; kind: CreationKind } | undefined>(
-  "opensteer/PluginCreation",
-  { defaultValue: () => undefined },
-);
+const Creation = Context.Reference<
+  { key: string; kind: CreationKind; origin?: string | undefined } | undefined
+>("opensteer/PluginCreation", { defaultValue: () => undefined });
 const rows = Schema.Array(
   Schema.Struct({
     requirement: Schema.String,
@@ -81,13 +80,14 @@ export function engineAccounts(options: {
     kind: CreationKind,
     work: Effect.Effect<A, E, R>,
     recover: (receipt: { result: unknown }) => Effect.Effect<B, Error>,
+    origin?: string,
   ) => {
     if (!key) return work;
     return Effect.gen(function* () {
       const receipt = yield* creationReceipt(key, kind);
       return receipt
         ? yield* recover(receipt)
-        : yield* work.pipe(Effect.provideService(Creation, { key, kind }));
+        : yield* work.pipe(Effect.provideService(Creation, { key, kind, origin }));
     }).pipe(
       Effect.catch((error) =>
         Effect.flatMap(creationReceipt(key, kind), (receipt) =>
@@ -550,8 +550,16 @@ export function engineAccounts(options: {
       ),
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
+    // The saved origin, not a later request's input, labels a recovered install.
     appDeployed: (app, version) =>
-      rememberCreation("plugin", { status: "installed", plugin: app, version }),
+      Effect.flatMap(Creation, (creation) =>
+        rememberCreation("plugin", {
+          status: "installed",
+          plugin: app,
+          version,
+          origin: creation?.origin,
+        }),
+      ),
     appRemoving: () => Effect.void,
     appAccountConnected: (input) =>
       Effect.gen(function* () {
