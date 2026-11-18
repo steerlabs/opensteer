@@ -101,6 +101,7 @@ export async function inputLeaseBarrier(
 export async function lockInputQueueProjection(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
+  inputMessageIds?: readonly MessageId[],
 ): Promise<ThreadRow> {
   const runs = await transaction
     .selectFrom("runs")
@@ -114,6 +115,7 @@ export async function lockInputQueueProjection(
   await lockRunProjectionRows(transaction, {
     threadIds: [threadId],
     runIds: runs.map((row) => row.id),
+    ...(inputMessageIds ? { inputMessageIds } : {}),
   });
   return transaction
     .selectFrom("threads")

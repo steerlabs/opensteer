@@ -10,7 +10,6 @@ import {
 import { advanceThreadQueue, lockInputQueueProjection, clearInputLease } from "./waiting-inputs.js";
 import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { sql } from "kysely";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
 import type { RevokedRunGrant } from "./run-grants.js";
 import {
   OpensteerError,
@@ -262,15 +261,15 @@ export async function cancelTeamTaskRequest(
       task.createdBy,
       `team-cancel:${input.teamId}:${input.requestId}`,
     );
+    await lockInputQueueProjection(transaction, task.id, [request.localInputId]);
     const run = await transaction
       .selectFrom("runs")
       .selectAll()
       .where(sql<string>`reply_target->>'requestId'`, "=", input.requestId)
       .where("threadId", "=", request.localTaskId)
       .where("seedInputId", "=", request.localInputId)
-      .forNoKeyUpdate()
+      .limit(1)
       .executeTakeFirst();
-    await lockInputQueueProjection(transaction, task.id);
     await terminalize();
 
     let revokedGrants: readonly RevokedRunGrant[] = [];
@@ -283,20 +282,8 @@ export async function cancelTeamTaskRequest(
         requestedBy: run.requestedBy,
         idempotencyKey: `team-cancel:${input.teamId}:${input.requestId}`,
       });
-      {
-      }
       revokedGrants = stopped.revokedGrants;
     } else if (!run || run.status === "queued") {
-      await transaction
-        .selectFrom("threads")
-        .select("id")
-        .where("id", "=", task.id)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      await lockRunProjectionRows(transaction, {
-        threadIds: [task.id],
-        runIds: run ? [run.id] : [],
-      });
       const inbox = await transaction
         .selectFrom("threadInputs")
         .selectAll()

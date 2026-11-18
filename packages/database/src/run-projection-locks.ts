@@ -3,6 +3,7 @@ import {
   type AssignmentId,
   type CausalChainId,
   type CommandId,
+  type MessageId,
   type ProviderSessionId,
   type RunId,
   type ThreadId,
@@ -21,6 +22,7 @@ type ProjectionScope = {
   readonly requestIds?: readonly RequestId[];
   readonly commandIds?: readonly CommandId[];
   readonly threadIds: readonly ThreadId[];
+  readonly inputMessageIds?: readonly MessageId[];
   readonly assignmentIds?: readonly AssignmentId[];
   readonly causalChainIds?: readonly CausalChainId[];
 };
@@ -34,6 +36,9 @@ function projectionInputs(transaction: Transaction<DatabaseSchema>, input: Proje
         eb.or([
           eb("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
           eb("editLeaseId", "is not", null),
+          ...(input.inputMessageIds?.length
+            ? [eb("messageId", "in", [...input.inputMessageIds])]
+            : []),
         ]),
       ),
     );
