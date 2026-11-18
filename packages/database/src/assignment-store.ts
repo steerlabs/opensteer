@@ -491,7 +491,7 @@ async function requireCancelScope(
   const worker = await transaction
     .selectFrom("delegations")
     .innerJoin("threads", "threads.id", "delegations.childThreadId")
-    .select(["threads.specialistId", "threads.lineageRootThreadId"])
+    .select("delegations.childThreadId")
     .where("delegations.id", "=", input.assignmentId)
     .executeTakeFirst();
   if (!worker) {
@@ -499,6 +499,9 @@ async function requireCancelScope(
       code: "forbidden",
       message: "This task is outside the agent's consent scope",
     });
+  }
+  if (worker.childThreadId === actor.threadId) {
+    throw new OpensteerError({ code: "forbidden", message: "A Run cannot stop its own task" });
   }
 }
 

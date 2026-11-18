@@ -1165,7 +1165,6 @@ integration("personal task delegation lifecycle", () => {
     const terminal = await end(worker, "completed");
     const replayed = await store.commitRunnerEvent(terminal.commit);
     expect(replayed).toMatchObject({
-      compensatingEvents: [],
       wasDuplicate: true,
     });
     expect(await assignmentRow(task.delegationId)).toMatchObject({
@@ -1182,7 +1181,6 @@ integration("personal task delegation lifecycle", () => {
     ]);
     expect(deliveries[1].failures).toEqual([]);
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
       failures: [],
     });
     const returned = await returnMessages(fixture.parentThreadId);
@@ -1400,7 +1398,10 @@ integration("personal task delegation lifecycle", () => {
         ownerId: fixture.userId,
         assignmentId: task.delegationId,
       }),
-    ).toMatchObject({ workerThread: { pendingRequests: 1 } });
+    ).toMatchObject({ workerThreadId: first.threadId });
+    expect(await store.getThreadForOwner(first.threadId, fixture.userId)).toMatchObject({
+      pendingRequests: 1,
+    });
     await reply(first, "I asked for file access and will continue once it is answered.");
     await end(first, "completed");
     expect(await assignmentRow(task.delegationId)).toMatchObject({
@@ -1409,7 +1410,6 @@ integration("personal task delegation lifecycle", () => {
       status: "open",
     });
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
       failures: [],
     });
     const waiting = await store.listThreadAssignmentsForOwner({
@@ -1749,7 +1749,6 @@ integration("personal task delegation lifecycle", () => {
       status: "open",
     });
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
       failures: [],
     });
     const nudge = await commands.enqueueThreadInput({
@@ -2303,7 +2302,7 @@ integration("personal task delegation lifecycle", () => {
         ownerId: fixture.userId,
         assignmentId: task.delegationId,
       }),
-    ).toMatchObject({ modelLabel: alternateModel.modelId });
+    ).toMatchObject({ resultRunId: worker.runId });
     acceptanceEvidence.push({
       caseId: "assignment-model-reload",
       firstAssignmentId: task.delegationId,
@@ -2354,7 +2353,6 @@ integration("personal task delegation lifecycle", () => {
         .execute(),
     ).resolves.toEqual([]);
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
       failures: [],
     });
     acceptanceEvidence.push({
@@ -2803,7 +2801,14 @@ integration("personal task delegation lifecycle", () => {
   function assignmentRow(id: AssignmentId) {
     return database
       .selectFrom("delegations")
-      .select(["resultReason", "resultRunId", "resultStatus", "resultText", "status"])
+      .select([
+        "resultMessageId",
+        "resultReason",
+        "resultRunId",
+        "resultStatus",
+        "resultText",
+        "status",
+      ])
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
   }
