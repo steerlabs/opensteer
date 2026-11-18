@@ -447,29 +447,36 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     });
     expect(helper.invocations).toHaveLength(sent + 1);
 
-    // Offline: the provider says so instead of listing tools, and nothing is rerouted.
+    // Offline: its tools stay listed as they are, the call says it is offline, and nothing is
+    // rerouted.
     await computer.close();
+    // The person's Plugins screen says it is offline; an agent's listing does not.
     await waitForCondition(async () => {
-      const found = await gateway.call("plugin_search", { query: "list_events" });
-      return !JSON.stringify(found.items).includes(
-        localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+      const owned = await testRpcData(
+        host.origin,
+        "plugins.installed.list",
+        {},
+        { headers: host.ownerHeaders },
       );
+      return JSON.stringify(owned.local).includes("Studio Mac is offline");
     }, 30_000);
     const offlineSearch = await gateway.call("plugin_search", {
       namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
     });
-    expect(JSON.stringify(offlineSearch)).toContain("Studio Mac is offline");
-    expect(offlineSearch.unavailableApps).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          blocked: {
-            code: "unavailable",
-            message: expect.stringContaining("Studio Mac is offline"),
-            next: "Continue without it and tell the person what the message says.",
-          },
-        }),
-      ]),
-    );
+    expect(offlineSearch).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
+      unavailableApps: [],
+    });
+    expect(JSON.stringify(offlineSearch)).not.toContain("offline");
+    // Its writes keep their own read-only marker; nothing marks the reads or the namespace.
+    expect(
+      (offlineSearch.items as { path: string; blocked?: unknown }[]).find(
+        ({ path }) => path === listEvents,
+      ),
+    ).not.toHaveProperty("blocked");
+    expect(offlineSearch.namespaces).toEqual([
+      expect.not.objectContaining({ blocked: expect.anything() }),
+    ]);
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",

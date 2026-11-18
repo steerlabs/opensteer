@@ -38,16 +38,20 @@ import {
 
 /**
  * A device or local-server tool's own refusal or failure. Its text is written by the Host for the
- * agent (offline computer, missing approval, unconfirmed write), never a service's raw reply.
+ * agent (offline computer, missing approval, unconfirmed write), never a service's raw reply. The
+ * explanation is the description and the next step the recovery, each said once.
  */
 export const HostToolFailed = UserFacingError.define({
   tag: "HostToolFailed",
   status: 422,
-  fields: { explanation: Schema.String },
-  presentation: ({ explanation }) => ({
+  fields: { explanation: Schema.String, next: Schema.optional(Schema.String) },
+  presentation: ({ explanation, next }) => ({
     title: "Local tool unavailable",
     description: explanation,
-    recovery: { action: "Follow the explanation.", instructions: explanation },
+    recovery:
+      next === undefined
+        ? { action: "Follow the message.", instructions: "Do what the message says." }
+        : { action: "Follow the next step.", instructions: next },
     retryable: false,
   }),
   recorded: () => "Host tool failed",
@@ -91,18 +95,24 @@ export function compositeBackend(
     const namespace = namespaces.get(app);
     return namespace === undefined ? undefined : localToolPath(namespace, tool);
   };
-  const projectTool = (tool: Tool, blocked: Blocked | undefined, annotate = true): Tool => {
-    if (!blocked) return tool;
-    const path = toolPath(tool.app, tool.name);
+  /**
+   * A tool that cannot be called now is listed as it is, with one marker saying why. What keeps
+   * its whole app (the person's Off, or what keeps a local provider) is said once, on the app's
+   * namespace; a tool carries only what keeps it alone (Read-only for a write, one operation's
+   * own blocker).
+   */
+  const projectTool = (
+    tool: Tool,
+    access: "all" | "read-only" | "off" | undefined,
+    local?: PluginHostProvider,
+  ): Tool => {
+    if (access === "off" || local?.blocked) return tool;
+    const blocked =
+      pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
+    const path = blocked && toolPath(tool.app, tool.name);
     if (path) toolBlockers.set(path, blocked);
-    return annotate
-      ? { ...tool, description: `${blocked.message} ${blocked.next}\n${tool.description ?? ""}` }
-      : tool;
+    return tool;
   };
-  const projectLocalTool = (tool: Tool, setting: Blocked | undefined, local: PluginHostProvider) =>
-    setting
-      ? projectTool(tool, setting)
-      : projectTool(tool, local.toolBlockers?.[tool.name], false);
 
   const permissionFor = (operation: string, plugin?: string, tool?: string) =>
     Effect.flatMap(CurrentMcpExecution, (execution) =>
@@ -126,11 +136,6 @@ export function compositeBackend(
           providers.find((provider) => provider.id === app),
         )
       : Effect.succeed(undefined);
-  // An unavailable provider lists nothing; its sentence reaches the agent as the namespace's reason.
-  const available = (local: PluginHostProvider) =>
-    local.unavailable === undefined
-      ? Effect.succeed(local)
-      : Effect.fail(new HostToolFailed({ explanation: local.unavailable }));
   const version = (provider: PluginHostProvider) => VersionId.make(provider.version);
   const hostTools = (provider: PluginHostProvider) =>
     provider.tools.map((tool) =>
@@ -217,10 +222,8 @@ export function compositeBackend(
           const blocked = pluginAccessBlocked(grants?.[id], false);
           if (blocked) appBlockers.set(id, blocked);
         }
-        for (const provider of providers) {
-          if (provider.blocked && !appBlockers.has(provider.id))
-            appBlockers.set(provider.id, provider.blocked);
-        }
+        for (const { id, blocked } of providers)
+          if (blocked && !appBlockers.has(id)) appBlockers.set(id, blocked);
         return listing;
       }),
     listAccounts: (input) =>
@@ -235,38 +238,30 @@ export function compositeBackend(
         const { grants } = yield* checked("listTools", input.app);
         const access = grants?.[input.app];
         const local = yield* provider(input.app);
-        if (local) {
-          if (!direct && access !== "off") yield* available(local);
+        if (local)
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
-            items: hostTools(local).map((tool) =>
-              projectLocalTool(tool, pluginAccessBlocked(access, tool.readOnly !== true), local),
-            ),
+            items: hostTools(local).map((tool) => projectTool(tool, access, local)),
             routers: [],
           };
-        }
         const page = yield* listCloud(input, options, access === "off");
         return {
           ...page,
-          items: page.items.map((tool) =>
-            projectTool(tool, pluginAccessBlocked(access, tool.readOnly !== true)),
-          ),
+          items: page.items.map((tool) => projectTool(tool, access)),
         };
       }),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
         const { grants } = yield* checked("searchableTools", input.app);
         const local = yield* provider(input.app);
-        if (local) {
-          if (grants?.[input.app] !== "off") yield* available(local);
+        if (local)
           return {
             listing: ToolSearchListing.make(`host:${local.id}:${local.version}`),
             version: version(local),
             accounts: { app: {}, user: {} },
             routers: [],
           };
-        }
         if (grants?.[input.app] === "off") {
           const page = yield* listCloud(input, { unboundedPages: true }, true);
           retained.set(input.app, page.items);
@@ -300,35 +295,24 @@ export function compositeBackend(
             })
           : { items: [], remaining: 0, missing: [] };
         const hostCatalog = new Map(
-          providers
-            .filter((entry) => !entry.unavailable || grants?.[entry.id] === "off")
-            .map((entry) => [
-              entry.id,
-              {
-                name: entry.name,
-                tools: hostTools(entry).map((tool) =>
-                  projectLocalTool(
-                    tool,
-                    pluginAccessBlocked(grants?.[entry.id], tool.readOnly !== true),
-                    entry,
-                  ),
-                ),
-              },
-            ]),
+          providers.map((entry) => [
+            entry.id,
+            {
+              name: entry.name,
+              tools: hostTools(entry).map((tool) => projectTool(tool, grants?.[entry.id], entry)),
+            },
+          ]),
         );
         for (const [app, tools] of retained)
           hostCatalog.set(app, {
             name: namespaces.get(app) ?? app,
-            tools: tools.map((tool) => projectTool(tool, pluginAccessBlocked("off", false))),
+            tools: tools.map((tool) => projectTool(tool, "off")),
           });
         const local = searchHost(input, hostCatalog);
         const all = [
           ...remote.items.map((item) => ({
             ...item,
-            tool: projectTool(
-              item.tool,
-              pluginAccessBlocked(grants?.[item.tool.app], item.tool.readOnly !== true),
-            ),
+            tool: projectTool(item.tool, grants?.[item.tool.app]),
             target: remoteTargets[item.target]!.index,
             also: item.also.map((index) => remoteTargets[index]!.index),
           })),
@@ -349,7 +333,6 @@ export function compositeBackend(
         if (!permission.allowed) return yield* Effect.fail(forbidden());
         const local = yield* provider(input.app);
         if (local) {
-          if (!direct) yield* available(local);
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (
             !current ||
@@ -383,7 +366,8 @@ export function compositeBackend(
             case "blocked":
               if (!direct)
                 return yield* new HostToolFailed({
-                  explanation: `${result.blocked.message} ${result.blocked.next}`,
+                  explanation: result.blocked.message,
+                  next: result.blocked.next,
                 });
               return { status: "completed", value: result, toolError: true };
             case "mcp":
@@ -520,6 +504,14 @@ export function compositeBackend(
     ...backend,
     toolBlockers,
     appBlockers,
+    /** What keeps the app whose namespace this is, as search and describe list it. */
+    namespaceBlocker: (path: string) => {
+      for (const [app, blocked] of appBlockers) {
+        const namespace = namespaces.get(app);
+        if (namespace !== undefined && localToolPath(namespace) === path) return blocked;
+      }
+      return undefined;
+    },
     blockedNamespace: (path: string) => {
       for (const [app, blocked] of appBlockers) {
         const namespace = namespaces.get(app);
@@ -532,20 +524,30 @@ export function compositeBackend(
   };
 }
 
+/** Each blocked app said once on its namespace, and each blocked tool on its own item. */
 export function withCatalogBlockers<
   Result extends {
     readonly items: readonly { readonly path: string }[];
+    readonly namespaces: readonly { readonly path?: unknown }[];
     readonly unavailableApps?: readonly { readonly app: string }[];
   },
 >(
   result: Result,
-  backend: Pick<ReturnType<typeof compositeBackend>, "appBlockers" | "toolBlockers">,
+  backend: Pick<
+    ReturnType<typeof compositeBackend>,
+    "appBlockers" | "toolBlockers" | "namespaceBlocker"
+  >,
 ) {
   return {
     ...result,
     items: result.items.map((item) => {
       const blocked = backend.toolBlockers.get(item.path);
       return blocked ? { ...item, blocked } : item;
+    }),
+    namespaces: result.namespaces.map((space) => {
+      const blocked =
+        typeof space.path === "string" ? backend.namespaceBlocker(space.path) : undefined;
+      return blocked ? { ...space, blocked } : space;
     }),
     ...(result.unavailableApps
       ? {

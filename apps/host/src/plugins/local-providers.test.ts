@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createId, ToolBlockedError } from "@opensteer/core";
 import { resolveIntegrationReadiness } from "@opensteer/integration-core/readiness";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerCallable } from "../devices/device-service.test-support.js";
 import { LocalProviders } from "./local-providers.js";
 
@@ -196,13 +197,10 @@ it.each([false, true])(
     const context = { caller: "test", mode: "automatic" as const };
     const [provider] = await providers.providers(context);
     expect(store.listDiscoveryInventory).toHaveBeenCalledTimes(1);
-    expect(provider?.unavailable).toBeUndefined();
-    expect(provider?.tools.find((tool) => tool.name === read.name)?.description).not.toContain(
-      "Blocked",
-    );
-    expect(provider?.tools.find((tool) => tool.name === "create_event")?.description).toContain(
-      "another app or server grant cannot raise this task's ceiling",
-    );
+    expect(provider?.blocked).toBeUndefined();
+    // The reason is said once, in the tool's blocker; its description stays its own.
+    for (const tool of provider?.tools ?? [])
+      expect(tool.description).not.toMatch(/Blocked|ceiling/u);
     expect(provider?.toolBlockers).toMatchObject({
       create_event: {
         code: "read_only_task",
@@ -340,3 +338,167 @@ it.each([
     expect(getToolSchemas).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  [
+    "without a grant",
+    {
+      code: "ACCESS_GRANT_REQUIRED",
+      detail: null,
+      requiredAccess: "read",
+    },
+    { code: "access_required", next: expect.stringContaining("app_access_request") },
+  ],
+  [
+    "needing an update",
+    {
+      code: "INTEGRATION_UNAVAILABLE",
+      detail: "Update Opensteer on Test iPhone to use its apps.",
+      requiredAccess: null,
+    },
+    {
+      code: "unavailable",
+      message: "apple-calendar is unavailable: Update Opensteer on Test iPhone to use its apps.",
+      next: "Continue without it and tell the person what the message says.",
+    },
+  ],
+] as const)(
+  "lists a device app %s with its tools and one blocker, and refuses its calls so",
+  async (_, state, expected) => {
+    const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+    const callable = computerCallable("read", definition);
+    const readiness = {
+      ...state,
+      serverId: callable.server.id,
+      connectionId: callable.grant.connectionId,
+    };
+    const store = {
+      listDiscoveryInventory: async () => [
+        {
+          installation: callable.installation,
+          servers: [callable.server],
+          accounts: [{ connectionId: callable.grant.connectionId }],
+          tools: [callable.tool],
+          readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [],
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_phone",
+        runnerName: "Test iPhone",
+        access: "read",
+      }),
+    };
+    const callTool = vi.fn();
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+        localDeviceAccessBlocked: async () => undefined,
+        callTool,
+      },
+      localServers: {},
+      authority: {
+        caller: () => ({
+          kind: "run",
+          userId: createId("user"),
+          thread: { id: createId("thread") },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    expect(provider).toMatchObject({ blocked: expected });
+    expect(provider).not.toHaveProperty("toolBlockers");
+    // Its tools come from Opensteer's definition, whatever keeps them now.
+    if (!isComputerAppDefinition(definition)) throw new Error("Calendar is a computer app");
+    expect(provider!.tools.map(({ name }) => name)).toEqual(
+      definition.config.operations.map(({ name }) => name),
+    );
+    for (const tool of provider!.tools)
+      expect(tool.description).not.toContain(provider!.blocked!.message);
+    expect(
+      await providers.call(
+        {
+          ...context,
+          execution: "execution",
+          plugin: provider!.id,
+          tool: callable.tool.name,
+          input: {},
+        },
+        AbortSignal.timeout(5_000),
+        async () => {
+          throw new Error("Unexpected approval");
+        },
+      ),
+    ).toEqual({ kind: "blocked", blocked: provider!.blocked });
+    expect(callTool).not.toHaveBeenCalled();
+  },
+);
+
+it("lists a server awaiting its approved launch as blocked, and refuses its calls so", async () => {
+  const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+  const base = computerCallable("read", definition);
+  const server = { ...base.server, transport: { type: "runner", runnerId: "run_mac" } };
+  const tool = { ...base.tool, connectionId: null };
+  const readiness = { code: "READY", serverId: server.id, connectionId: null };
+  const callTool = vi.fn();
+  const providers = new LocalProviders({
+    store: {
+      listDiscoveryInventory: async () => [
+        {
+          installation: base.installation,
+          servers: [server],
+          accounts: [],
+          tools: [tool],
+          readiness: { servers: [readiness], tools: [{ toolId: tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [
+        { ...base, server, tool, grant: { ...base.grant, connectionId: null } },
+      ],
+      getToolSchemas: async () => ({ inputSchema: { type: "object" } }),
+    },
+    devices: {
+      withAvailability: async (entries: unknown) => entries,
+      localDiscoveryFacts: () => ({
+        localServers: async () => [
+          {
+            id: server.id,
+            approvedLaunchDigest: "approved",
+            launchDigest: "changed",
+            declined: false,
+            status: "needs-attention",
+            deviceId: "dev_mac",
+            runnerName: "Studio Mac",
+            statusDetail: "Waiting for approval on the computer that runs it.",
+            installationTitle: "Living Room TV",
+          },
+        ],
+      }),
+    },
+    localServers: { callTool },
+    authority: {
+      caller: () => ({ kind: "run", userId: createId("user"), thread: { id: createId("thread") } }),
+    },
+  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+  const context = { caller: "test", mode: "automatic" as const };
+  const [provider] = await providers.providers(context);
+  const waiting = {
+    code: "setup_required",
+    message: "Waiting for approval on the computer that runs it.",
+    next: "Wait for the person to review it on the computer that runs it.",
+  };
+  expect(provider).toMatchObject({ blocked: waiting, tools: [{ name: tool.name }] });
+  expect(
+    await providers.call(
+      { ...context, execution: "execution", plugin: provider!.id, tool: tool.name, input: {} },
+      AbortSignal.timeout(5_000),
+      async () => {
+        throw new Error("Unexpected approval");
+      },
+    ),
+  ).toEqual({ kind: "blocked", blocked: waiting });
+  expect(callTool).not.toHaveBeenCalled();
+});

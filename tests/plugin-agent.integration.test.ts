@@ -568,12 +568,18 @@ test("plugin access settings keep known tools visible with typed refusals", asyn
       message: expect.stringContaining(label),
       next: expect.stringMatching(/person.*Plugins/u),
     };
-    expect(await call(caller, "plugin_search", { namespace: "fixture" })).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
-    });
-    expect(await call(caller, "plugin_describe", { paths: [path] })).toMatchObject({
-      items: [expect.objectContaining({ path, blocked })],
-    });
+    // Off keeps the whole plugin, so its namespace says so once; Read-only keeps each write.
+    for (const found of [
+      await call(caller, "plugin_search", { namespace: "fixture" }),
+      await call(caller, "plugin_describe", { paths: [path] }),
+    ]) {
+      const items = found.items as { path: string; blocked?: unknown }[];
+      expect(items.map((item) => item.path)).toContain(path);
+      if (access === "off") {
+        expect(found.namespaces).toEqual([expect.objectContaining({ blocked })]);
+        expect(items.filter((item) => "blocked" in item)).toEqual([]);
+      } else expect(items.find((item) => item.path === path)).toMatchObject({ blocked });
+    }
     expect(await call(caller, "plugin_call", { calls: { path, input } }, true)).toMatchObject({
       error: blocked,
     });

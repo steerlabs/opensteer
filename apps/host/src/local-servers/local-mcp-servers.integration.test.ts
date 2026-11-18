@@ -307,18 +307,34 @@ integration("MCP servers on a computer", () => {
         orphan,
       });
 
-      // 8. Offline: the program ends, the tools say so, and return with the Mac.
+      // 8. Offline: the program ends, its tools stay listed, a call says the Mac is away, and
+      // they work again with the Mac.
       const running = await readPid(fixture.pidFile);
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = JSON.stringify(await gateway.call("plugin_search", { namespace }));
-      expect(offline).toContain("Studio Mac");
-      expect(await listed()).toBe(false);
+      const offline = await gateway.call("plugin_search", { namespace });
+      expect(offline).toMatchObject({ unavailableApps: [] });
+      expect(JSON.stringify(offline)).not.toContain("blocked");
+      expect(await listed()).toBe(true);
+      const away = await call("echo", { text: "away" });
+      expect(away.isError).toBe(true);
+      expect(said(away)).toContain("Studio Mac");
+      // The person's Plugins screen says when the Mac is back.
+      const ownerSees = async () =>
+        (
+          await testRpcData(
+            host.origin,
+            "plugins.installed.list",
+            {},
+            { headers: host.ownerHeaders },
+          )
+        ).local.find(({ id }) => id === `app_server_${server.id}`)?.unavailable ?? null;
+      expect(await ownerSees()).toContain("Studio Mac");
       await computer.reconnectModule();
-      await waitForCondition(listed, 30_000);
+      await waitForCondition(async () => (await ownerSees()) === null, 30_000);
       expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
-      record("offline and back", offline);
+      record("offline and back", { offline, away: said(away) });
 
       // Host-held exact-launch consent survives a fresh Runner instance.
       await computer.disconnectModule();

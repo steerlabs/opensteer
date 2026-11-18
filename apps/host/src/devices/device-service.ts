@@ -413,10 +413,16 @@ export class DeviceService {
   /**
    * An inventory as an agent should read it: each tool of an app, a phone or
    * a server a computer runs that is there but cannot be used now says why.
+   * With `offlineAtCall`, a device or computer that is only unreachable is
+   * left to the call, which says it is offline; its tools stay listed.
    */
   async withAvailability<Entry extends DiscoveryInventoryEntry>(
     inventory: readonly Entry[],
-    input: { readonly ownerUserId: UserId; readonly ownerView?: boolean },
+    input: {
+      readonly ownerUserId: UserId;
+      readonly ownerView?: boolean;
+      readonly offlineAtCall?: boolean;
+    },
     facts = this.localDiscoveryFacts(input.ownerUserId),
   ): Promise<Entry[]> {
     const { connectionFor, localServers } = facts;
@@ -472,6 +478,8 @@ export class DeviceService {
             return readiness;
           const runnerId = runnerServers.get(readiness.serverId);
           if (runnerId) {
+            // A server a computer runs is unavailable here only while that computer is away.
+            if (input.offlineAtCall) return readiness;
             const unavailable = await this.#localServers.availability(
               runnerId,
               entry.installation.title,
@@ -494,6 +502,14 @@ export class DeviceService {
             connection.deviceId,
             definitionId,
           );
+          const reachable = runnerConnected && attached;
+          if (
+            input.offlineAtCall &&
+            !reachable &&
+            !isPhoneDisplayDefinitionId(definitionId) &&
+            !(connection.deviceProfile === "iphone" && connection.runnerUpdateRequired)
+          )
+            return readiness;
           const operationStatus =
             operation === undefined
               ? null

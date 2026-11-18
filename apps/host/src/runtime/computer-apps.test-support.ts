@@ -771,12 +771,19 @@ export async function expectPluginSettingRefusal(
     message: expect.stringContaining(label),
     next: expect.stringMatching(/person.*Plugins/u),
   };
-  expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
-    items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
-  });
-  expect(await gateway.call("plugin_describe", { paths: [path] })).toMatchObject({
-    items: [expect.objectContaining({ path, blocked })],
-  });
+  // Off keeps the whole app, so its namespace says so once; Read-only keeps each write.
+  const search = await gateway.call("plugin_search", { namespace });
+  const describe = await gateway.call("plugin_describe", { paths: [path] });
+  for (const found of [search, describe]) {
+    const items = found.items as { path: string; blocked?: unknown }[];
+    expect(items.map((item) => item.path)).toContain(path);
+    if (label === "Off") {
+      expect(found.namespaces).toEqual([expect.objectContaining({ blocked })]);
+      expect(items.filter((item) => "blocked" in item)).toEqual([]);
+    } else {
+      expect(items.find((item) => item.path === path)).toMatchObject({ blocked });
+    }
+  }
   expect((await pluginCall(gateway, path, input)).raw).toMatchObject({
     isError: true,
     structuredContent: { error: blocked },

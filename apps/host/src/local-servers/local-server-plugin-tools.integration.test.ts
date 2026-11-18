@@ -339,17 +339,21 @@ integration("local servers as plugin tools", () => {
     const blocked = await gateway.call("plugin_search", {
       namespace: /"([^"]+)"/u.exec(pair)?.[1],
     });
-    expect(blocked.unavailableApps).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
+    // Its saved tools are listed; its namespace says once why none can be called yet.
+    expect(blocked).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: pair })]),
+      namespaces: [
+        {
           blocked: {
             code: "access_required",
             message: expect.any(String),
             next: expect.stringContaining('"server":"tv"'),
           },
-        }),
-      ]),
-    );
+        },
+      ],
+      unavailableApps: [],
+    });
+    expect(JSON.stringify(blocked.items)).not.toContain("blocked");
     await dispatch(host, {
       type: "integration.grant.create",
       input: {

@@ -45,7 +45,10 @@ import type { PluginElicit } from "./plugin-service.js";
 /**
  * Device data apps and local MCP servers as providers in the plugin tool namespace. Every listing
  * and call is read live from the device stack for the caller behind the engine's caller string;
- * nothing is cached, and a call goes only to the computer its provider names.
+ * nothing is cached, and a call goes only to the computer its provider names. A provider's tools
+ * are always listed, from Opensteer's definitions or the list its last approved launch saved:
+ * what keeps an agent from them now is one blocked marker, and an unreachable device is said by
+ * the call.
  */
 type Located = PluginHostProvider & {
   readonly kind: "device-app" | "local-server";
@@ -77,10 +80,7 @@ export class LocalProviders {
   constructor(options: LocalProvidersOptions) {
     this.#options = options;
   }
-  async providers(
-    context: PluginCaller,
-    includeUnavailableTools = false,
-  ): Promise<PluginHostProvider[]> {
+  async providers(context: PluginCaller): Promise<PluginHostProvider[]> {
     const caller = this.#options.authority.caller(context.caller);
     if (!caller) return [];
     return (await this.#list(caller)).providers.map(
@@ -96,11 +96,9 @@ export class LocalProviders {
         transport: _t,
         requestName: _r,
         waitingForLaunchApproval: _approval,
+        toolBlockers,
         ...provider
-      }) => ({
-        ...provider,
-        tools: provider.unavailable && !includeUnavailableTools ? [] : provider.tools,
-      }),
+      }) => (Object.keys(toolBlockers).length ? { ...provider, toolBlockers } : provider),
     );
   }
 
@@ -173,7 +171,7 @@ export class LocalProviders {
         const [current] = live.providers;
         if (
           !current ||
-          current.unavailable ||
+          current.blocked ||
           current.version !== provider.version ||
           !live.callables.some(
             (entry) =>
@@ -272,7 +270,7 @@ export class LocalProviders {
         computer: entry.computer,
         unavailable: (entry.ownerUnavailable ?? entry.blocked?.message)?.slice(0, 1000) ?? null,
         ...(entry.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
-        tools: entry.unavailable
+        tools: entry.blocked
           ? []
           : entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
       };
@@ -286,7 +284,7 @@ export class LocalProviders {
     readOnlyConnections: ReadonlyMap<string, boolean>,
     canAsk: boolean,
   ): Located {
-    if (provider.unavailable) return provider;
+    if (provider.blocked) return provider;
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
     const stateFor = (tool: string) => {
       const row = entry?.tools.find(
@@ -343,24 +341,7 @@ export class LocalProviders {
         },
       ] as const;
     });
-    const toolBlockers = Object.fromEntries(blockers);
-    return {
-      ...provider,
-      toolBlockers,
-      tools: provider.tools.map((tool) => {
-        const blocked = toolBlockers[tool.name];
-        return blocked
-          ? {
-              ...tool,
-              description:
-                `Blocked (${blocked.code}); call tools.search.describe for this tool before using it.\n${blocked.message} ${blocked.next}\n${tool.description}`.slice(
-                  0,
-                  2000,
-                ),
-            }
-          : tool;
-      }),
-    };
+    return { ...provider, toolBlockers: Object.fromEntries(blockers) };
   }
 
   async #list(
@@ -393,7 +374,7 @@ export class LocalProviders {
         .then((entries) =>
           this.#options.devices.withAvailability(
             entries,
-            { ...requester, ownerView: metadataOnly },
+            { ...requester, ownerView: metadataOnly, offlineAtCall: !metadataOnly },
             facts,
           ),
         ),
@@ -570,7 +551,7 @@ export class LocalProviders {
         version: metadataOnly
           ? entry.version
           : `dpl_${createHash("sha256")
-              .update(JSON.stringify([entry.slug, entry.unavailable ?? null, entry.tools]))
+              .update(JSON.stringify([entry.slug, entry.tools]))
               .digest("hex")
               .slice(0, 32)}`,
       }));
@@ -632,10 +613,7 @@ function provider(input: {
     ...(input.unavailable ? { ownerUnavailable: input.unavailable } : {}),
     ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
     ...(input.blocked
-      ? {
-          blocked: input.blocked,
-          unavailable: `${input.blocked.message} ${input.blocked.next}`.slice(0, 2000),
-        }
+      ? { blocked: input.blocked }
       : input.unavailable
         ? {
             blocked: {
@@ -643,11 +621,6 @@ function provider(input: {
               message: input.unavailable.slice(0, 2000),
               next: "Continue without it and tell the person what the message says.",
             },
-            unavailable:
-              `${input.unavailable} Continue without it and tell the person what the message says.`.slice(
-                0,
-                2000,
-              ),
           }
         : {}),
   };
