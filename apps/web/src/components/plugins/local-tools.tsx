@@ -48,7 +48,7 @@ export function LocalTools({ tools }: { readonly tools: readonly PluginLocalTool
               </span>
               <span className="card__row-body">
                 <span className="card__row-title">{tool.title}</span>
-                <span className="card__row-detail">
+                <span className="card__row-detail card__row-detail--wrap">
                   <span className={`plugins-status plugins-status--${status.tone}`}>
                     {status.label}
                   </span>
@@ -179,7 +179,9 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
           <div className="card">
             <Link className="card__row plugins-link-row" to={deviceRoute(tool.computer.id)}>
               <span className="card__row-body">
-                <span className="card__row-title">{tool.computer.name}</span>
+                <span className="card__row-title">
+                  {tool.kind === "device-app" ? `Manage ${tool.computer.name}` : tool.computer.name}
+                </span>
                 <span className="card__row-detail">
                   {tool.kind === "device-app"
                     ? "What this device lets agents read and change"

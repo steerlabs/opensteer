@@ -51,6 +51,8 @@ export async function finishDeviceRemoval(
   if (removed.cancelledRequestIds.length) dependencies.integrations.continuations.notify();
   dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
   notifyMachinesChanged(dependencies.realtime, "machine.command");
+  if (removed.revokedComputerConnectionIds.length)
+    dependencies.realtime.broadcast({ type: "host.plugins-changed" });
 }
 function withRemovalAdmission<T>(
   dependencies: Dependencies,

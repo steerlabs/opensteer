@@ -201,11 +201,13 @@ export class IphoneAppsController {
 
   /** A leave persisted before a restart or while offline goes out again; it never needs a session. */
   async retryLeave(): Promise<LeaveDelivery | null> {
-    const snapshot = this.#bridge.getSnapshot();
-    const pending =
-      snapshot.pendingLeaves ?? (snapshot.pendingLeave ? [snapshot.pendingLeave] : []);
-    const outcomes = await Promise.all(pending.map((leave) => this.#deliver(leave)));
+    const outcomes = await Promise.all(this.#pendingLeaves().map((leave) => this.#deliver(leave)));
     return outcomes.find((outcome) => outcome !== "removed") ?? outcomes[0] ?? null;
+  }
+
+  #pendingLeaves(): readonly IphonePendingLeave[] {
+    const { pendingLeaves, pendingLeave } = this.#bridge.getSnapshot();
+    return pendingLeaves ?? (pendingLeave ? [pendingLeave] : []);
   }
 
   /**
@@ -652,6 +654,19 @@ export class IphoneAppsController {
     generation: number,
   ): Promise<IphoneAddOutcome> {
     const current = () => generation === this.#generation;
+    // Sign-out can finish offline. Clear its Host-side device before adding this phone again.
+    const leaves = this.#pendingLeaves().filter(
+      ({ deploymentId }) => deploymentId === input.deploymentId,
+    );
+    if (leaves.length > 0) {
+      const outcomes = await Promise.all(
+        leaves.map((leave) =>
+          this.#deliver(leave, (command) => input.hostClient.dispatch(command)),
+        ),
+      );
+      if (!current()) return superseded;
+      if (outcomes.some((outcome) => outcome !== "removed")) return failed("host-unreachable");
+    }
     let mintKey: string;
     let runnerId: string;
     let publicKeyPem: string | undefined;
@@ -735,8 +750,8 @@ export class IphoneAppsController {
           kind: "failed",
         };
       }
-      // A dead enrollment is retired before another is minted, so two can
-      // never both be redeemable; the Host's answer names why it is dead.
+      // Only discard the token if it never created a Runner. A consumed token
+      // can still recover the same identity if its welcome was lost.
       try {
         const retired = await input.hostClient.dispatch({
           enrollmentId: minted.enrollmentId,
@@ -745,6 +760,7 @@ export class IphoneAppsController {
         });
         if (!current()) return superseded;
         if (retired.type !== "runner.enrollment.retire") return failed("failed");
+        if (retired.state === "consumed") return { failure: issueFailure(settled), kind: "failed" };
         ({ mintKey } = await this.#bridge.discardPendingEnrollment());
       } catch (error) {
         return current() ? { failure: mintFailure(error), kind: "failed" } : superseded;
@@ -1226,10 +1242,7 @@ export class IphoneAppsController {
     stopped: IphoneAppsStopped,
     dispatch: HostClient["dispatch"] | null,
   ): Promise<IphoneLeaveOutcome> {
-    const snapshot = this.#bridge.getSnapshot();
-    const pending = (
-      snapshot.pendingLeaves ?? (snapshot.pendingLeave ? [snapshot.pendingLeave] : [])
-    ).find(
+    const pending = this.#pendingLeaves().find(
       (leave) =>
         leave.deploymentId === stopped.deploymentId &&
         ((stopped.leaveRunnerId ?? stopped.machineId) === null ||
