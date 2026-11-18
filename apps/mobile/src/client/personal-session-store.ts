@@ -36,7 +36,11 @@ export interface PersonalSessionStore {
    * scheme belongs to a Host's own OAuth server, and the two credential
    * families must never be readable by one parser.
    */
-  authorization(deploymentId: DeploymentId, now: Date): Promise<string | null>;
+  authorization(
+    deploymentId: DeploymentId,
+    now: Date,
+    expectedLoginId?: string,
+  ): Promise<string | null>;
   clear(deploymentId: DeploymentId): Promise<void>;
   load(deploymentId: DeploymentId): Promise<PersonalRemoteSession | null>;
   save(session: PersonalRemoteSession): Promise<void>;
@@ -47,6 +51,7 @@ export function createPersonalSessionStore(
   records: SecureRecordStore,
   options: {
     readonly beforeChange?: (deploymentId: DeploymentId) => Promise<void>;
+    readonly willChange?: (deploymentId: DeploymentId, nextLoginId?: string) => void;
     readonly changed?: (session: PersonalRemoteSession) => void;
   } = {},
 ): PersonalSessionStore {
@@ -70,16 +75,20 @@ export function createPersonalSessionStore(
   };
 
   return {
-    async authorization(deploymentId, now): Promise<string | null> {
+    async authorization(deploymentId, now, expectedLoginId): Promise<string | null> {
       const session = await load(deploymentId);
       if (session === null) return null;
+      if (expectedLoginId !== undefined && session.viewLoginId !== expectedLoginId) return null;
       if (Date.parse(session.expiresAt) <= now.getTime()) return null;
       return `${personalRemoteAuthorizationScheme} ${session.token}`;
     },
 
     clear: async (deploymentId) => {
       await options.beforeChange?.(deploymentId);
-      await mutations.run(() => records.remove(recordName(deploymentId)));
+      await mutations.run(() => {
+        options.willChange?.(deploymentId);
+        return records.remove(recordName(deploymentId));
+      });
     },
 
     load: (deploymentId) => mutations.run(() => load(deploymentId)),
@@ -100,9 +109,10 @@ export function createPersonalSessionStore(
         viewLoginId: session.viewLoginId ?? globalThis.crypto.randomUUID(),
       });
       await options.beforeChange?.(parsed.deploymentId);
-      await mutations.run(() =>
-        records.write(recordName(parsed.deploymentId), JSON.stringify(parsed)),
-      );
+      await mutations.run(() => {
+        options.willChange?.(parsed.deploymentId, parsed.viewLoginId);
+        return records.write(recordName(parsed.deploymentId), JSON.stringify(parsed));
+      });
       options.changed?.(parsed);
     },
   };

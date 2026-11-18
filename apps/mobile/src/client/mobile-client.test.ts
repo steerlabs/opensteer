@@ -21,6 +21,8 @@ import {
   HostClientRequestError,
   createHttpHostApiClient,
   createMemorySavedViews,
+  hostMessageOutbox,
+  createMessageOutboxStorage,
   unwrapRpcResult,
 } from "@opensteer/client/host";
 import { HostTransportError } from "@opensteer/client/connections";
@@ -84,7 +86,10 @@ function testPort(options: {
    */
   readonly realCredentials?: boolean;
   readonly verification?: HostEpochAgreement;
-  readonly configureClient?: (client: MockHostClient) => void;
+  readonly configureClient?: (
+    client: MockHostClient,
+    authorization: Parameters<MobileHostPort["attach"]>[0]["authorization"],
+  ) => void;
 }) {
   const attached: { deploymentId: string; origin: string }[] = [];
   const capabilityReaders: Parameters<MobileHostPort["attach"]>[0]["capabilities"][] = [];
@@ -107,7 +112,14 @@ function testPort(options: {
             },
             held: async () => options.held,
           },
-    attach: ({ connection, origin, capabilities, connectionController, clientScope }) => {
+    attach: ({
+      connection,
+      origin,
+      capabilities,
+      connectionController,
+      clientScope,
+      authorization,
+    }) => {
       capabilityReaders.push(capabilities);
       const deploymentId = connection.authority.document.deploymentId;
       attached.push({ deploymentId, origin });
@@ -115,7 +127,7 @@ function testPort(options: {
       // `MobileClient` actually owns and disposes.
       // No latency: `connected` is a real crossing these tests wait for.
       const hostClient = new MockHostClient({ latencyMs: 0 });
-      options.configureClient?.(hostClient);
+      options.configureClient?.(hostClient, authorization);
       if (connectionController) hostClient.adoptConnection(connectionController, clientScope);
       const release = hostClient.dispose.bind(hostClient);
       hostClient.dispose = () => {
@@ -1953,7 +1965,7 @@ describe("MobileClient attachment reconciliation", () => {
       expect(verify).toHaveBeenCalledTimes(1);
       await client.retrySelection();
       expect(verify).toHaveBeenCalledTimes(2);
-      await expect(read()).rejects.toThrow(/attachment changed/u);
+      await expect(read()).rejects.toMatchObject({ code: "deployment-changed" });
     } finally {
       client.dispose();
     }
@@ -2055,7 +2067,7 @@ describe("MobileClient attachment reconciliation", () => {
 
     await client.select(otherId);
 
-    expect(firstSettled).toBe(false);
+    expect(firstSettled).toBe(true);
     expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
     expect(port.attached.map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
 
@@ -3307,6 +3319,7 @@ describe("MobileClient per-deployment sign out", () => {
     // The Host ended the session this phone was presenting, and the record it
     // presented is gone from the device.
     expect(port.commands).toEqual(["session.revoke"]);
+    expect(attachment?.connection.getSnapshot().scope).toBeNull();
     expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
     const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
     expect(row?.status).toBe("needs-sign-in");
@@ -4435,4 +4448,225 @@ it("does not let a cancelled first verification revoke the foreground attachment
     late.resolve("unreachable");
     client.dispose();
   }
+});
+
+describe("durable mobile connection admission", () => {
+  const send = (id: string) => ({
+    type: "thread.sendMessage" as const,
+    threadId: createId("thread"),
+    content: [{ type: "text" as const, text: id }],
+    idempotencyKey: id,
+    delivery: "queue" as const,
+  });
+
+  it("never acquires a replacement login's credential for a claimed send", async () => {
+    const release = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const credentials: (string | null)[] = [];
+    const port = testPort({
+      held: false,
+      realCredentials: true,
+      configureClient(host, authorization) {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = (async (command: HostApiCommandInput, options) => {
+          if (command.type === "thread.sendMessage") {
+            started.resolve();
+            await release.promise;
+            credentials.push(await authorization.current());
+          }
+          return dispatch(command, options);
+        }) as typeof host.dispatch;
+      },
+    });
+    const { client } = open(port.factory);
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      vi.useFakeTimers();
+      await client.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const old = client.getSnapshot().selection.hostClient!;
+      // Keep the old attachment current through the credential commit, as can happen
+      // while another operation holds the selection queue.
+      const original = client.catalog.load.bind(client.catalog);
+      const gate = Promise.withResolvers<void>();
+      const load = vi.spyOn(client.catalog, "load");
+      await hostMessageOutbox(old).enqueue(send("old-login"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(port.commands).toEqual(["thread.sendMessage"]);
+      await started.promise;
+      load.mockImplementation(async () => {
+        await gate.promise;
+        return original();
+      });
+      try {
+        await client.sessions.save({
+          ...personalSession(),
+          token: `${"c".repeat(43)}.${"d".repeat(43)}=`,
+        });
+        release.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(credentials).toEqual([]);
+        expect(old.connection.getSnapshot().scope).toBeNull();
+      } finally {
+        load.mockRestore();
+        gate.resolve();
+      }
+    } finally {
+      release.resolve();
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens the same durable queue on the first upgrade launch and after relaunch", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "legacy-login",
+      secureStore: new MemorySecureStore(),
+    });
+    const files = new MemoryPrivateFilesystem();
+    await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+    const port = testPort({ held: false, realCredentials: true });
+    const first = open(port.factory, files, { records }).client;
+    try {
+      await first.initialize();
+      await first.catalog.upsert(connectComputer(1));
+      vi.useFakeTimers();
+      await first.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = first.getSnapshot().selection.hostClient!;
+      const durableLogin = (await first.sessions.load(DeploymentIdSchema.parse(serverId)))!
+        .viewLoginId;
+      expect(durableLogin).toBeDefined();
+      expect(host.connection.getSnapshot().scope?.loginId).toBe(durableLogin);
+      host.connection.stop();
+      await hostMessageOutbox(host).enqueue(send("upgraded-message"));
+    } finally {
+      first.dispose();
+      vi.useRealTimers();
+    }
+    const reopened = open(port.factory, files, { records }).client;
+    try {
+      await reopened.initialize();
+      vi.useFakeTimers();
+      await reopened.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = reopened.getSnapshot().selection.hostClient!;
+      host.connection.stop();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hostMessageOutbox(host).getSnapshot().messages).toMatchObject([
+        { localId: "upgraded-message" },
+      ]);
+    } finally {
+      reopened.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers only fallback records proved by the authenticated Host session", async () => {
+    vi.useFakeTimers();
+    const hostSessionId = createId("authSession");
+    const files = new MemoryPrivateFilesystem();
+    const folder = "/private/message-outbox";
+    const store = createMessageOutboxStorage({
+      read: async (key) => {
+        const bytes = await files.readFile(`${folder}/${key}.json`, 10 * 1024 * 1024);
+        return bytes && new TextDecoder().decode(bytes);
+      },
+      write: async (key, value) => files.writeFileAtomic(`${folder}/${key}.json`, value),
+      remove: async (key) => files.removeFile(`${folder}/${key}.json`),
+    });
+    const base = testPort({
+      held: true,
+      realCredentials: true,
+      configureClient(host) {
+        const get = host.getSnapshot.bind(host);
+        vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+          ...get(),
+          deploymentId: serverId,
+          sessionId: hostSessionId,
+        }));
+      },
+    });
+    const { client } = open(base.factory, files);
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      await client.sessions.save(personalSession());
+      await client.select(serverId);
+      await vi.advanceTimersByTimeAsync(1);
+      const host = client.getSnapshot().selection.hostClient!;
+      const scope = host.connection.getSnapshot().scope!;
+      expect(scope).not.toBeNull();
+      const fallback = {
+        authorityKey: new URL(base.attached[0]!.origin).origin,
+        deploymentId: scope.deploymentId,
+        viewerId: scope.viewerId,
+        loginId: hostSessionId,
+      };
+      const other = { ...fallback, loginId: createId("authSession") };
+      const record = (key: string) => ({
+        command: send(key),
+        localId: key,
+        createdAt: new Date().toISOString(),
+        attempted: false,
+        phase: "waiting" as const,
+        order: 1,
+      });
+      await files.ensureDirectory(folder);
+      await store.put(fallback, record("same-session"));
+      await store.put(other, record("different-session"));
+      await client.retrySelection();
+      await vi.advanceTimersByTimeAsync(1);
+      const next = client.getSnapshot().selection.hostClient!;
+      expect(hostMessageOutbox(next).getSnapshot().messages).toMatchObject([
+        { localId: "same-session", attempted: true, phase: "rejected" },
+      ]);
+      expect(base.commands).toEqual([]);
+      expect(await store.load(fallback)).toEqual([]);
+      expect(await store.load(other)).toMatchObject([{ localId: "different-session" }]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles opening and retrying a selection offline before any dial", async () => {
+    vi.useFakeTimers();
+    const port = testPort({ held: true });
+    const { client } = open(port.factory, undefined, {
+      lifecycle: {
+        getSnapshot: () => ({ network: "offline", visibility: "foreground" }),
+        onNetworkChange: () => () => {},
+        onForeground: () => () => {},
+        onBackground: () => () => {},
+      },
+    });
+    try {
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      let opened = false;
+      const opening = client.openDeployment(serverId).then(() => {
+        opened = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
+      expect(port.verified).toEqual([]);
+      expect(opened).toBe(true);
+      await opening;
+      let retried = false;
+      const retrying = client.retrySelection().then(() => {
+        retried = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await client.deselect();
+      expect(retried).toBe(true);
+      await retrying;
+      expect(port.verified).toEqual([]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
 });
