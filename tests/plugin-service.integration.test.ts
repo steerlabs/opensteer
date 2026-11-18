@@ -136,7 +136,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     expect.objectContaining({ caller: caller.caller, execution: expect.any(String) }),
   ]);
   const skillBundle = await service.skillFiles({ plugin }, caller);
-  expect(skillBundle.digest).toMatch(/^[a-f0-9]{64}$/u);
+  expect(skillBundle).toMatchObject({ plugin, slug: "fixture", version: v1, hasPage: false });
   expect(skillBundle.files).toEqual(
     expect.arrayContaining([expect.objectContaining({ path: "demo/SKILL.md" })]),
   );
@@ -262,7 +262,10 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   for (const row of final) expect(() => process.kill(row.pid, 0)).toThrow();
 });
 
-async function outputFixture(context: import("vitest").TestContext) {
+async function outputFixture(
+  context: import("vitest").TestContext,
+  authorize?: ConstructorParameters<typeof PluginService>[0]["authorize"],
+) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
@@ -278,11 +281,57 @@ async function outputFixture(context: import("vitest").TestContext) {
     catalogUrl: registry.origin + "/catalog",
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
+    ...(authorize ? { authorize } : {}),
   });
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
   context.onTestFinished(() => service.close());
   return service;
 }
+
+test("a version change of one plugin waits only for that plugin's earlier changes", async (context) => {
+  const authorized: string[] = [];
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<boolean>();
+  let hold = false;
+  const service = await outputFixture(context, async (input) => {
+    authorized.push(`${input.operation}:${input.plugin ?? ""}`);
+    if (!hold || input.operation !== "install") return { allowed: true };
+    reached.resolve();
+    return { allowed: await release.promise };
+  });
+  const installed = await Promise.all(
+    ["First", "Second"].map((name) =>
+      service.install({ kind: "files", name, files: pluginFixtureFiles(1) }, caller),
+    ),
+  );
+  const [a, b] = installed.map((result) => {
+    if (result.status !== "installed") throw new Error("Fixture did not install");
+    return { plugin: result.plugin.id, version: result.version.id };
+  });
+  hold = true;
+  const held = service.install(
+    { kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(2) },
+    caller,
+  );
+  const heldOutcome = expect(held).rejects.toMatchObject({ code: "forbidden" });
+  await deadline(reached.promise, "The held install never reached authorization");
+  const queued = service.activate(a!, caller);
+  await deadline(
+    service.activate(b!, caller),
+    "Another plugin's activation waited behind an install",
+  );
+  await deadline(
+    service.remove({ plugin: b!.plugin }, caller),
+    "Another plugin's removal waited behind an install",
+  );
+  expect(authorized).not.toContain(`activate:${a!.plugin}`);
+  release.resolve(false);
+  await heldOutcome;
+  await deadline(queued, "The same plugin's queued activation never ran");
+  expect(authorized.slice(authorized.indexOf(`install:${a!.plugin}`))).toContain(
+    `activate:${a!.plugin}`,
+  );
+});
 
 test("consent discloses a raw secret that reaches plugin code", async (context) => {
   const service = await outputFixture(context);

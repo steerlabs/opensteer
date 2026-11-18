@@ -1030,7 +1030,7 @@ export class PluginOwnerApi {
           userId,
           result.plugin.id,
           result.version.id,
-          source.kind === "catalog" ? "catalog" : "agent",
+          result.origin === "catalog" ? "catalog" : "agent",
         );
         changed();
         return {

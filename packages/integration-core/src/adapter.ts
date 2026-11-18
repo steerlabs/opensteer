@@ -67,7 +67,7 @@ export const IntegrationDefinitionSummarySchema = IntegrationDefinitionBaseSchem
   .strict();
 export const IntegrationDefinitionSummaryViewSchema = z.object({
   ...IntegrationDefinitionSummarySchema.shape,
-  // API 64 pins this response vocabulary; native definitions only produce computer entries.
+  // API 62 pins this response vocabulary; native definitions only produce computer entries.
   adapter: z.enum(["computer", "graphql", "mcp", "openapi"]),
   hostedOAuth: z
     .object({

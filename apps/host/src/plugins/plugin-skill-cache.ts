@@ -26,12 +26,8 @@ export class PluginSkillCache {
     this.#root = join(dataDirectory, "plugins", "active");
     this.#packages = join(dataDirectory, "plugins", "data", "packages");
   }
-  async record(
-    plugin: { id: string; slug: string },
-    bundle: PluginOutput<"skillFiles">,
-    hasPage: boolean,
-  ) {
-    const pluginId = entrySchema.shape.pluginId.parse(plugin.id);
+  async record(bundle: PluginOutput<"skillFiles">) {
+    const pluginId = entrySchema.shape.pluginId.parse(bundle.plugin);
     const files = bundle.files.map((file) => {
       if (
         !("content" in file) ||
@@ -55,11 +51,11 @@ export class PluginSkillCache {
       const digest = pluginSnapshotDigest(await readPluginSnapshot(stage));
       const entry = entrySchema.parse({
         pluginId,
-        name: plugin.slug,
+        name: bundle.slug,
         version: bundle.version,
         digest,
         hasSkills: files.length > 0,
-        hasPage,
+        hasPage: bundle.hasPage,
       });
       const target = join(this.#packages, digest);
       try {

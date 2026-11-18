@@ -1,11 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { Effect, Stream, Schedule } from "effect";
 import type { ReactiveStore } from "@opensteer/plugin-engine-reactivity";
-import type { SqlClient } from "effect/sql";
 import { backgroundResourceChanges } from "./engine-storage.js";
 
 afterEach(() => vi.useRealTimers());
-test("continuous committed changes notify within the coalescing window without history queries", async () => {
+test("continuous committed changes notify within the coalescing window", async () => {
   vi.useFakeTimers();
   const notify = vi.fn();
   let started = false;
@@ -16,9 +15,6 @@ test("continuous committed changes notify within the coalescing window without h
       }),
     ),
   );
-  const sql = vi.fn(() =>
-    Effect.succeed([{ signature: "history" }]),
-  ) as unknown as SqlClient.SqlClient;
   const database = {
     reactivity: {
       changes: stream.pipe(
@@ -30,7 +26,7 @@ test("continuous committed changes notify within the coalescing window without h
     } as unknown as ReactiveStore,
   };
   const controller = new AbortController();
-  const running = Effect.runPromise(backgroundResourceChanges(database, sql, notify), {
+  const running = Effect.runPromise(backgroundResourceChanges(database, notify), {
     signal: controller.signal,
   }).catch(() => undefined);
   try {
@@ -38,7 +34,6 @@ test("continuous committed changes notify within the coalescing window without h
     expect(started, "Committed-change stream never registered").toBe(true);
     await vi.advanceTimersByTimeAsync(150);
     expect(notify).toHaveBeenCalled();
-    expect(sql).not.toHaveBeenCalled();
   } finally {
     controller.abort();
     await running;

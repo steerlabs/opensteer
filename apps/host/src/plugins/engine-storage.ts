@@ -99,7 +99,6 @@ export const readEngineLinks = (sql: SqlClient.SqlClient, app: string) =>
 /** Coalesce committed metadata without waiting for background activity to become quiet. */
 export function backgroundResourceChanges(
   database: { readonly reactivity: ReactiveStore },
-  _sql: SqlClient.SqlClient,
   notify: () => void,
 ) {
   const tables = new Set([

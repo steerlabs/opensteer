@@ -63,9 +63,7 @@ import {
   WorkflowApp,
   WorkflowTarget,
   webhookCallback,
-  WebhookDefinitionsInput,
   WebhookTarget,
-  LinkWebhookSource,
   CompleteWebhookSetup,
   WebhookSetupView,
   RuntimeProtocolFailed,
@@ -101,7 +99,6 @@ import {
   callbackOperations,
   PluginServiceError,
   PluginBrokerError,
-  JsonSchema,
   executionResultBytes,
   interactionBytes,
   jsonBytes,
@@ -474,21 +471,11 @@ export async function startEngine(
           oauth,
           events: {
             sender: httpEventSender(egress),
-            authorize: (target) =>
-              callback(
-                "eventAuthorize",
-                JsonSchema.parse(JSON.parse(JSON.stringify(target))) as Record<
-                  string,
-                  z.infer<typeof JsonSchema>
-                >,
-              ).pipe(
-                Effect.flatMap((allowed) =>
-                  allowed ? Effect.void : Effect.fail(new EventAccessRevoked()),
-                ),
-              ),
+            // No Opensteer surface subscribes to plugin events yet.
+            authorize: () => Effect.fail(new EventAccessRevoked()),
           },
         });
-        yield* Effect.forkScoped(backgroundResourceChanges(database, sql, changed));
+        yield* Effect.forkScoped(backgroundResourceChanges(database, changed));
         yield* Deferred.succeed(ready, engine);
         phase("recovery");
         yield* engine[RepositoryHost].recover;
@@ -767,6 +754,7 @@ export async function startEngine(
                       status: "installed" as const,
                       plugin: result.app,
                       version: result.version,
+                      origin: input.kind,
                     })),
                     Effect.catchTags({
                       VersionBuildFailed: (error) =>
@@ -777,6 +765,7 @@ export async function startEngine(
                   );
               }),
               (receipt) => Effect.try(() => operations.install.output.parse(receipt.result)),
+              input.kind,
             );
             const result = operations.install.output.parse(JSON.parse(JSON.stringify(installed)));
             return result.status === "installed"
@@ -1112,8 +1101,9 @@ export async function startEngine(
             );
             return {
               plugin: app,
+              slug: pluginNamespace(plugin.slug),
               version: plugin.activeVersion,
-              digest: createHash("sha256").update(JSON.stringify(files)).digest("hex"),
+              hasPage: source.files.some((file) => file.path === "ui/index.html"),
               files,
             };
           }
@@ -1481,10 +1471,6 @@ export async function startEngine(
               }).pipe(Effect.flatMap(engine.schedules.configure));
             }),
           );
-        case "schedules.update":
-          return decode(ScheduleInputs.update).pipe(Effect.flatMap(engine.schedules.update));
-        case "schedules.remove":
-          return decode(ScheduleInputs.remove).pipe(Effect.flatMap(engine.schedules.remove));
         case "schedules.runNow":
           return decode(ScheduleInputs.runNow).pipe(Effect.flatMap(engine.schedules.runNow));
         case "schedules.runs":
@@ -1524,16 +1510,6 @@ export async function startEngine(
           return decode(WorkflowTarget).pipe(Effect.flatMap(engine.apps.workflowRuns.get));
         case "workflowRuns.stop":
           return decode(WorkflowTarget).pipe(Effect.flatMap(engine.apps.workflowRuns.terminate));
-        case "webhooks.definitions":
-          return linked(WebhookDefinitionsInput, engine.webhooks.definitions);
-        case "webhooks.list":
-          return decode(WorkflowApp).pipe(Effect.flatMap(engine.webhooks.list));
-        case "webhooks.sources":
-          return decode(WorkflowApp).pipe(Effect.flatMap(engine.webhooks.sources));
-        case "webhooks.link":
-          return decode(LinkWebhookSource).pipe(Effect.flatMap(engine.webhooks.link));
-        case "webhooks.unlink":
-          return decode(LinkWebhookSource).pipe(Effect.flatMap(engine.webhooks.unlink));
         case "webhooks.remove":
           return decode(WebhookTarget).pipe(Effect.flatMap(engine.webhooks.remove));
         case "webhooks.confirmRemoval":
