@@ -1,3 +1,4 @@
+import type { WebSocket } from "ws";
 import { openVerticalViewer } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { join } from "node:path";
 import { sql } from "kysely";
@@ -449,7 +450,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       personalClient,
       () =>
         personalClient!.getSnapshot().threads.find((thread) => thread.id === localTaskId)
-          ?.latestRunCompletedAt,
+          ?.latestRunCompletedAt ?? undefined,
       "Personal completion never arrived before the visible reply visit",
     );
     const unresolved = Promise.withResolvers<void>();
