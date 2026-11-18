@@ -193,6 +193,10 @@ async function claudeAccount(f: StoreFixture, base: Awaited<ReturnType<typeof fi
                 value: "low",
                 label: "Low",
               },
+              {
+                value: "high",
+                label: "High",
+              },
             ],
           },
         ],
@@ -1491,7 +1495,7 @@ describeStore("managed memory passes", (it) => {
           providerId: "anthropic",
           modelId: "claude-haiku-5-5",
           options: {
-            effort: "low",
+            effort: "high",
           },
         }),
       },
