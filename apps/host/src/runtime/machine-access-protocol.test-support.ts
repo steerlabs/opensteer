@@ -31,6 +31,8 @@ import {
   type RunnerDescriptor,
   type RunnerProof,
 } from "@opensteer/protocol";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import {
   isMachineAccessRoutes,
   isMachineAccessSetup,
@@ -1029,6 +1031,7 @@ export async function acceptCallerRun(
     attempt: CallerAttempt,
     type: "request.opened" | "run.completed" | "run.interrupted" | "run.phase",
     data: Readonly<Record<string, unknown>>,
+    emittedAt = new Date().toISOString(),
   ): Promise<void> => {
     const acknowledged = eventAcknowledged(
       caller.primary.socket,
@@ -1041,7 +1044,7 @@ export async function acceptCallerRun(
         event: {
           bindingGeneration: attempt.bindingGeneration,
           data,
-          emittedAt: new Date().toISOString(),
+          emittedAt,
           environmentId: caller.environmentId,
           ordinal: attempt.nextOrdinal,
           runId: context.runId,
@@ -1067,6 +1070,7 @@ export async function acceptCallerRun(
     return attempt;
   };
   let current = await take(command);
+  const interruptions = new Map<number, string>();
   return {
     get toolsToken() {
       return current.toolsToken;
@@ -1108,7 +1112,9 @@ export async function acceptCallerRun(
     },
     reportInterrupted: (attempt = current) => {
       if (attempt === current) release();
-      return report(attempt, "run.interrupted", { status: "interrupted" });
+      const emittedAt = interruptions.get(attempt.bindingGeneration) ?? new Date().toISOString();
+      interruptions.set(attempt.bindingGeneration, emittedAt);
+      return report(attempt, "run.interrupted", { status: "interrupted" }, emittedAt);
     },
     openLiveRequest: async (kind = "harness.input") => {
       const requestId = createId("request");
@@ -1499,14 +1505,14 @@ export async function waitForValue<Value>(
 export async function openRealtime(
   host: MachineAccessHost,
   headers: Record<string, string>,
-  apiVersion = hostApiVersion,
+  interests?: readonly PersonalResourceKind[],
 ): Promise<{
   readonly messages: Record<string, unknown>[];
   readonly socket: WebSocket;
   close(): Promise<void>;
 }> {
   const socket = new WebSocket(
-    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${apiVersion}`,
+    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
     { headers },
   );
   await new Promise<void>((resolve, reject) => {
@@ -1515,8 +1521,38 @@ export async function openRealtime(
   });
   const messages: Record<string, unknown>[] = [];
   socket.on("message", (frame: WebSocket.RawData) => {
-    messages.push(JSON.parse(frame.toString()) as Record<string, unknown>);
+    const message = JSON.parse(frame.toString()) as Record<string, unknown>;
+    messages.push(message);
+    if (!interests) return;
+    const decoded = ScopedHostMessageSchema.safeParse(message);
+    if (!decoded.success) return;
+    const data = decoded.data;
+    if (data.type === "host.snapshot" || data.type === "host.changes") {
+      const { generation, subscriptionId, throughSequence } = data;
+      socket.send(
+        JSON.stringify({ type: "client.ack", generation, subscriptionId, throughSequence }),
+      );
+    }
   });
+  if (interests) {
+    const ready = waitForMessage(socket, (message) => message.type === "host.synchronized");
+    socket.send(
+      JSON.stringify({
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests,
+        installed: {},
+      }),
+    );
+    try {
+      await ready;
+    } catch (error) {
+      socket.terminate();
+      await closed(socket);
+      throw error;
+    }
+  }
   // Machine notifications belong to the authenticated owner session.
   return {
     close: async () => {

@@ -640,14 +640,14 @@ integration("Warm engines", () => {
       });
       const runId = queued.runId!;
       const request = await pendingRequest(active, runId);
-      await answer(active, request.id, "allow-run");
+      await answer(active, request, "allow-run");
       await settled(active, runId);
       const queuedAgain = await active.queueMessage({
         text: "Run them again",
         threadId,
       });
       const again = await pendingRequest(active, queuedAgain.runId!);
-      await answer(active, again.id, "allow-once");
+      await answer(active, again, "allow-once");
       await settled(active, queuedAgain.runId!);
       const engines = turnServers(await captured(captureFile));
       expect(engines).toBe(2);
@@ -1059,12 +1059,13 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   let found:
     | {
         readonly id: string;
+        readonly revision: string;
       }
     | undefined;
   await waitFor(async () => {
     found = await active.host.store.database
       .selectFrom("requests")
-      .select("id")
+      .select(["id", "revision"])
       .where("originatingRunId", "=", runId)
       .where("status", "=", "pending")
       .executeTakeFirst();
@@ -1072,14 +1073,19 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   }, "a pending Request");
   return found!;
 }
-async function answer(active: VerticalStack, requestId: string, optionId: string) {
+async function answer(
+  active: VerticalStack,
+  request: { readonly id: string; readonly revision: string },
+  optionId: string,
+) {
   const key = `respond-${randomUUID()}`;
   await testRpcData(
     active.hostOrigin,
     "commands.dispatch",
     {
       idempotencyKey: key,
-      requestId,
+      requestId: request.id,
+      expectedRevision: request.revision,
       response: {
         kind: "choice",
         optionId,

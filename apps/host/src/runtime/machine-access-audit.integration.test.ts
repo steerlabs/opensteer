@@ -355,8 +355,8 @@ integration("Machine access audit, transfer and realtime", () => {
     });
     const { alias, host, launch, target } = scenario;
     const otherOwnerHeaders = await additionalOwnerSession(host);
-    const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
+    const ownerFeed = await openRealtime(host, host.ownerHeaders, []);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders, []);
     try {
       expect(await runShim(launch, "ssh", [alias, "echo watched"])).toMatchObject({ code: 0 });
       const started = await waitForValueOf(async () =>
@@ -426,16 +426,20 @@ integration("Machine access audit, transfer and realtime", () => {
     }
   }, 180_000);
 
-  it("tells every connected client the computers list changed, and names nothing", async () => {
+  it("publishes the machine resource revision to both owner sessions", async () => {
     scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
     });
     const { host, target } = scenario;
     const otherOwnerHeaders = await additionalOwnerSession(host);
-    const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
+    const ownerFeed = await openRealtime(host, host.ownerHeaders, ["machine"]);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders, ["machine"]);
+    ownerFeed.messages.length = 0;
+    bystanderFeed.messages.length = 0;
     const changes = (feed: { readonly messages: readonly Record<string, unknown>[] }) =>
-      feed.messages.filter((message) => message.type === "host.machines.changed");
+      feed.messages.filter(
+        (message) => message.type === "host.resource" && message.kind === "machine",
+      );
     const settle = async (atLeast: number) => {
       await waitForCondition(async () => changes(ownerFeed).length >= atLeast);
       return changes(ownerFeed).length;
@@ -480,14 +484,10 @@ integration("Machine access audit, transfer and realtime", () => {
       await revokeMachine(host, { key: "changed-revoke", runnerId: target.runnerId });
       seen = await settle(seen + 1);
 
-      // It names nothing: the machine, the person, and what happened are all
-      // absent, because every client answers it by rereading the list.
-      expect(changes(ownerFeed)).toEqual(
-        Array.from({ length: seen }, () => ({ type: "host.machines.changed" })),
-      );
-      // And it goes to everybody, unlike the two session messages, which are
-      // facts about one machine and reach only its managers.
       await waitForCondition(async () => changes(bystanderFeed).length === seen);
+      expect(changes(bystanderFeed).map(({ revision }) => revision)).toEqual(
+        changes(ownerFeed).map(({ revision }) => revision),
+      );
       expect(
         bystanderFeed.messages.filter((message) =>
           String(message.type).startsWith("host.machine.access."),

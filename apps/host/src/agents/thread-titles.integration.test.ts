@@ -1016,7 +1016,7 @@ integration.sequential("Thread title lifecycle", () => {
     expect((await row(both.thread.id)).icon).toBe("plane");
   });
 
-  it("carries marks through snapshots, task pages, catalog and history without unread or notifications", async () => {
+  it("stores a task mark and advances its shell revision without unread or notifications", async () => {
     const f = await fixture();
     const { thread } = await f.create({
       generateTitle: true,
@@ -1039,10 +1039,10 @@ integration.sequential("Thread title lifecycle", () => {
     });
     if (before.kind !== "snapshot" || snapshot.kind !== "snapshot")
       throw new Error("Expected shell snapshots");
-    expect(snapshot.snapshot.tasks.find((value) => value.id === thread.id)).toMatchObject({
-      icon: "plane",
-      color: thread.color,
-    });
+    const beforeTask = before.snapshot.tasks.find((value) => value.id === thread.id);
+    const revised = snapshot.snapshot.tasks.find((value) => value.id === thread.id);
+    expect(revised).toMatchObject({ id: thread.id, title: thread.title });
+    expect(BigInt(revised!.revision)).toBeGreaterThan(BigInt(beforeTask!.revision));
     expect(snapshot.snapshot.visits).toEqual(before.snapshot.visits);
     expect(snapshot.snapshot.counts).toEqual(before.snapshot.counts);
     expect(
@@ -1061,8 +1061,7 @@ integration.sequential("Thread title lifecycle", () => {
         })
       ).tasks.find((value) => value.id === thread.id),
     ).toMatchObject({
-      icon: "plane",
-      color: thread.color,
+      revision: revised!.revision,
     });
     const current = await store.getThreadForOwner(thread.id, f.userId);
     expect(current).toMatchObject({ icon: "plane", color: thread.color });

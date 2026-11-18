@@ -1830,6 +1830,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
   let pending:
     | {
         readonly id: string;
+        readonly revision: string;
         readonly kind: string;
         readonly presentation: unknown;
       }
@@ -1838,7 +1839,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
     async () => {
       pending = await active.host.store.database
         .selectFrom("requests")
-        .select(["id", "kind", "presentation"])
+        .select(["id", "revision", "kind", "presentation"])
         .where("originatingRunId", "=", runId as never)
         .where("status", "=", "pending")
         .executeTakeFirst();
@@ -1861,6 +1862,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
   const answered = await active.api["commands.dispatch"]({
     idempotencyKey: key,
     requestId: pending.id,
+    expectedRevision: pending.revision,
     response: {
       kind: "choice",
       optionId: allow.id,

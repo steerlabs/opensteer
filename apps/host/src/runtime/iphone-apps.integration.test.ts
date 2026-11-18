@@ -664,7 +664,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         token: host.hostingRunnerEnrollmentToken,
       }),
     );
-    const realtime = keep(await openRealtime(host, host.ownerHeaders));
+    const realtime = keep(await openRealtime(host, host.ownerHeaders, ["machine"]));
     const macCalls: unknown[] = [];
     const mac = keep(
       await connectComputerAppMachine(
@@ -784,7 +784,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       "apple-calendar",
     );
     await waitForCondition(async () =>
-      realtime.messages.some(({ type }) => type === "host.machines.changed"),
+      realtime.messages.some(({ type, kind }) => type === "host.resource" && kind === "machine"),
     );
     const rpc: { method: (typeof methods)[number]; data: unknown }[] = [];
     for (const method of methods) {
@@ -808,7 +808,9 @@ integration.sequential("iPhone integrations Host contract", () => {
           iphoneMachineId: phone.runnerId,
           setupRequestId: pending.id,
           rpc,
-          frames: realtime.messages.filter(({ type }) => type === "host.machines.changed"),
+          frames: realtime.messages.filter(
+            ({ type, kind }) => type === "host.resource" && kind === "machine",
+          ),
         },
         null,
         2,
@@ -1186,6 +1188,7 @@ async function grant(
       type: "request.respond",
       idempotencyKey: randomUUID(),
       requestId: request.request.id,
+      expectedRevision: (await host.store.requests.revision(request.request.id))!,
       response: {
         kind: "external",
         value: {

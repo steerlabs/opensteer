@@ -140,11 +140,14 @@ integration("Machine access session lifecycle", () => {
           detail: "Read Mail",
         },
       });
-      const feed = await openRealtime(host, host.ownerHeaders);
+      const feed = await openRealtime(host, host.ownerHeaders, ["machine"]);
       closers.unshift(() => feed.close());
+      const firstChange = feed.messages.length;
       target.reportFullDiskAccess(true);
       await waitForCondition(async () =>
-        feed.messages.some((message) => message.type === "host.machines.changed"),
+        feed.messages
+          .slice(firstChange)
+          .some((message) => message.type === "host.resource" && message.kind === "machine"),
       );
       await waitForCondition(
         async () => (await host.store.requests.get(requestId))?.status === "fulfilled",

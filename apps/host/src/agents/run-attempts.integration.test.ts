@@ -316,8 +316,11 @@ integration("Run attempts", () => {
         [1, "interrupted"],
         [2, "cancelled"],
       ]);
-      expect(journey.attempts[1]?.dispatchedAt).toBeNull();
-      expect(journey.attempts.some((attempt) => attempt.reason === "steer_restart")).toBe(false);
+      expect(journey.attempts[1]).toMatchObject({
+        reason: "steer_restart",
+        dispatchedAt: null,
+        startedAt: null,
+      });
       expect(journey.inputs).toEqual([
         {
           cancelReason: "steer-not-delivered",
@@ -404,7 +407,11 @@ integration("Run attempts", () => {
         [1, "completed"],
         [2, "cancelled"],
       ]);
-      expect(journey.attempts.some((attempt) => attempt.reason === "steer_restart")).toBe(false);
+      expect(journey.attempts[1]).toMatchObject({
+        reason: "steer_restart",
+        dispatchedAt: null,
+        startedAt: null,
+      });
       expect(journey.inputs).toEqual([
         {
           cancelReason: "steer-not-delivered",

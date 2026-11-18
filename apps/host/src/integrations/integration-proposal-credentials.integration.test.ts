@@ -230,6 +230,7 @@ integration("proposal credential guidance", () => {
         {
           type: "request.respond",
           requestId: requesting.request.id,
+          expectedRevision: (await host.store.requests.revision(requesting.request.id))!,
           response: { kind: "external", value: { decision: "declined" } },
           idempotencyKey: "gmail-access-decline",
         },
@@ -285,18 +286,21 @@ integration("proposal credential guidance", () => {
           check,
           ...overrides,
         });
-      const approve = (requestId: string, key: string) =>
-        testRpcData(
+      const approve = async (requestId: string, key: string) => {
+        const id = RequestIdSchema.parse(requestId);
+        return testRpcData(
           host.origin,
           "commands.dispatch",
           {
             idempotencyKey: key,
-            requestId: RequestIdSchema.parse(requestId),
+            requestId: id,
+            expectedRevision: (await host.store.requests.revision(id))!,
             response: { kind: "choice", optionId: "installed" },
             type: "request.respond",
           },
           { headers: host.ownerHeaders },
         );
+      };
 
       const refused: string[] = [];
       for (const method of ["post", "put", "patch", "delete"]) {
@@ -355,6 +359,7 @@ integration("proposal credential guidance", () => {
           {
             type: "request.respond",
             requestId: held.request.id,
+            expectedRevision: (await host.store.requests.revision(held.request.id))!,
             response: { kind: "choice", optionId: "declined" },
             idempotencyKey: `decline-valid-${JSON.stringify(limit)}`,
           },
@@ -1150,18 +1155,21 @@ integration("proposal credential guidance", () => {
         if (row.manifest?.kind !== "proposal") throw new Error("Expected a proposal manifest");
         return { proposal: row.manifest.proposal, title: row.presentation.title };
       };
-      const approve = (requestId: unknown, key: string) =>
-        testRpcData(
+      const approve = async (requestId: unknown, key: string) => {
+        const id = RequestIdSchema.parse(requestId);
+        return testRpcData(
           host.origin,
           "commands.dispatch",
           {
             idempotencyKey: key,
-            requestId: RequestIdSchema.parse(requestId),
+            requestId: id,
+            expectedRevision: (await host.store.requests.revision(id))!,
             response: { kind: "choice", optionId: "installed" },
             type: "request.respond",
           },
           { headers: host.ownerHeaders },
         );
+      };
       const installedTitle = async (digest: string) => {
         const row = await host.store.database
           .selectFrom("integrationInstallations")

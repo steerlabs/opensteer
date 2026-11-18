@@ -979,6 +979,7 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   let found:
     | {
         readonly id: string;
+        readonly revision: string;
         readonly originatingNodeId: string | null;
         readonly presentation: unknown;
       }
@@ -986,7 +987,7 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   await waitFor(async () => {
     found = await active.host.store.database
       .selectFrom("requests")
-      .select(["id", "originatingNodeId", "presentation"])
+      .select(["id", "revision", "originatingNodeId", "presentation"])
       .where("originatingRunId", "=", runId)
       .where("status", "=", "pending")
       .executeTakeFirst();
@@ -1000,6 +1001,7 @@ async function answer(
   active: VerticalStack,
   request: {
     readonly id: string;
+    readonly revision: string;
     readonly presentation: unknown;
   },
 ) {
@@ -1019,6 +1021,7 @@ async function answer(
     {
       idempotencyKey: key,
       requestId: request.id,
+      expectedRevision: request.revision,
       response: {
         kind: "choice",
         optionId: allow.id,

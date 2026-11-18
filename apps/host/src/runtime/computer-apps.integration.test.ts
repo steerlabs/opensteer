@@ -236,6 +236,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "messages-read-access",
         requestId: readRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(readRequest.request.id))!,
         response: {
           kind: "external",
           value: {
@@ -291,6 +292,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "messages-write-access",
         requestId: writeRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(writeRequest.request.id))!,
         response: {
           kind: "external",
           value: {
@@ -608,6 +610,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "personal-messages-read-access",
         requestId: readRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(readRequest.request.id))!,
         response: {
           kind: "external",
           value: {
@@ -984,6 +987,7 @@ async function grantAccess(
     {
       idempotencyKey: `${input.integration}-access`,
       requestId: request.request.id,
+      expectedRevision: (await host.store.requests.revision(request.request.id))!,
       response: {
         kind: "external",
         value: {

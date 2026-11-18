@@ -636,6 +636,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       const response = await rpc.command({
         decision: { decision: "allow", sourceId },
         requestId: pendingRequestId,
+        expectedRevision: (await runtime.store.requests.revision(pendingRequestId))!,
         type: "browser.sign-in.respond",
       });
       expect(response.outcome).toMatchObject({ site: "https://beta.test", status: "applied" });
