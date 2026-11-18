@@ -373,11 +373,6 @@ beforeAll(async () => {
           authorizationUrl: providerOrigin + "/managed/authorize",
           tokenUrl: providerOrigin + "/managed/token",
           scopes: ["read"],
-          identity: {
-            source: "userinfo",
-            userinfoUrl: providerOrigin + "/userinfo",
-            identityPath: "sub",
-          },
           revocation: {
             url: providerOrigin + "/revoke",
             method: "post-form",
@@ -408,7 +403,6 @@ beforeAll(async () => {
           status: revokeFails ? 503 : 200,
         });
       }
-      if (url.pathname === "/userinfo") return Response.json({ sub: "fixture-owner" });
       throw new Error("Unexpected provider endpoint");
     },
   });
