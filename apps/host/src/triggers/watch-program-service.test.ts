@@ -18,12 +18,12 @@ describe("WatchProgramService", () => {
       jti: crypto.randomUUID(),
       revisionId,
       triggerId: createId("trigger"),
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     };
     const program = {
       language: "javascript",
       source: "export default async () => {}",
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     } as const;
     const watchProgram = vi.fn(async () => program);
     const service = new WatchProgramService({

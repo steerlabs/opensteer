@@ -7,7 +7,7 @@ import {
 } from "./machine-access-protocol.test-support.js";
 import { initializePersonalState } from "./personal-state.js";
 import { describe } from "vitest";
-import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 
 import { parseHostConfig, type HostConfig } from "@opensteer/config";
 import {

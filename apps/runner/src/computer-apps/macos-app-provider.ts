@@ -1,4 +1,4 @@
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { ComputerUsePermissions } from "@opensteer/protocol";
 import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
@@ -137,7 +137,7 @@ function accessibilityRequired(): OperationState {
  * reported rather than silently missing from the status entry.
  */
 function operationNames(): readonly string[] {
-  const definition = getIntegrationDefinition(macosAppDefinitionId);
+  const definition = getDeviceDefinition(macosAppDefinitionId);
   if (!definition || !isComputerAppDefinition(definition)) return [];
   return definition.config.operations.map(({ name }) => name);
 }

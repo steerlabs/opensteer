@@ -2378,7 +2378,7 @@ function executeCommand(
       assignment: null,
       teamTurnContext: null,
       agentTools: {
-        tools: ["opensteer_task_read", "integration_call", "computer_use"],
+        tools: ["opensteer_task_read", "plugin_call", "computer_use"],
         toolsRevision: "test-tools-v1",
         instructions: "Host Opensteer instructions",
         skills: ["opensteer:tasks"],
@@ -2541,7 +2541,7 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
       },
       occurrenceId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },

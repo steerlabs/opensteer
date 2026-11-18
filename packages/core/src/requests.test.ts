@@ -24,11 +24,12 @@ describe("agent answer classification", () => {
     "browser.sign-in": false,
     "browser.password-sign-in": false,
     "integration.access": false,
-    "integration.install": false,
     "machine.full-disk-access": false,
     "device.access": false,
     "computer.app.access": false,
-    "integration.input": false,
+    "plugin.account": false,
+    "plugin.approval": false,
+    "plugin.input": false,
     "person.question": false,
   };
   it("deliberately classifies every Request kind", () => {
@@ -181,17 +182,21 @@ describe("Request contracts", () => {
     const request = pendingApproval();
     const durableInstall = {
       ...request,
-      kind: "integration.install",
+      kind: "integration.access",
       mode: "durable",
       payload: {
-        kind: "integration.install",
+        kind: "integration.access",
+        installationId: null,
         manifest: { kind: "catalog" },
-        reason: "The schedule needs Linear",
+        reason: "The schedule needs Calendar",
+        access: "read",
+        requestedConnectionId: null,
+        requestedServerId: null,
       },
       presentation: {
-        kind: "choice",
-        options: [{ hint: "confirm", id: "installed", label: "Install" }],
-        title: "Install Linear?",
+        kind: "external",
+        subject: { id: "calendar", kind: "integration.access" },
+        title: "Calendar access",
       },
       requiredActor: "owner",
     } as const;

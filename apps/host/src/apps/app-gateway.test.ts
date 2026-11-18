@@ -263,7 +263,7 @@ it("hijacks app authorities before Host hooks, matched routes, parsing and compr
       expect(result.headers["clear-site-data"]).toBeUndefined();
       expect(result.headers["x-frame-options"]).toBeUndefined();
       expect(result.headers["content-security-policy"]).toBe(
-        "frame-ancestors app://opensteer http://localhost:1234 http://127.0.0.1:1234 http://[::1]:1234",
+        "frame-ancestors app://opensteer http://localhost:1234 http://127.0.0.1:1234",
       );
       expect(result.headers["cache-control"]).toBe("private, max-age=20");
       expect(result.headers["referrer-policy"]).toBe("same-origin");

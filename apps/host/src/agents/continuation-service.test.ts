@@ -1,6 +1,6 @@
-import { gatherComputerAccess } from "../integrations/computer-access.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
-import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { gatherComputerAccess } from "../devices/computer-access.js";
+import type { DeviceService } from "../devices/device-service.js";
+import { localTargetBlocked } from "../devices/target-blocked.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
@@ -8,8 +8,8 @@ import { createHash } from "node:crypto";
 import { OpensteerError, PendingRequestSchema, RequestSchema, createId } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
-import type { IntegrationReadiness } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import type { IntegrationReadiness } from "@opensteer/integration-core/models";
 import type { CommandService } from "@opensteer/orchestration";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -22,7 +22,6 @@ const ownerId = createId("user");
 const threadId = createId("thread");
 
 const definitionId = "google-gmail";
-const proposalDigest = "0123456789abcdef0123456789abcdef0123456789a";
 const installationId = createIntegrationId("installation");
 const serverId = createIntegrationId("server");
 const accountConnectionId = createIntegrationId("connection");
@@ -213,7 +212,7 @@ describe("ContinuationService", () => {
     const requests = [
       fulfilledRequest("browser.access"),
       fulfilledRequest("integration.access"),
-      fulfilledRequest("integration.install"),
+      fulfilledRequest("machine.full-disk-access"),
     ];
     const fixture = makeService(requests, {
       enqueueThreadInput: vi
@@ -336,8 +335,10 @@ describe("ContinuationService", () => {
     });
     expect(fixture.errors).toEqual([]);
   });
+});
+describe("continuationMessage", () => {
   it("marks a cancelled Thread input as undeliverable instead of queued", async () => {
-    const request = fulfilledRequest("integration.install");
+    const request = fulfilledRequest("machine.full-disk-access");
     const fixture = makeService([request], {
       enqueueThreadInput: vi.fn(async () => delivery("cancelled")),
     });
@@ -581,35 +582,7 @@ describe("continuationMessage", () => {
   it("does not claim access when the Mac has been removed", async () => {
     await expect(
       continuationMessage(computerAppAccessRequest("fulfilled"), withMacs(false)),
-    ).resolves.toContain('is unavailable. Use integration_search {query:"Computer use"}');
-  });
-  it("reports a ready installation and points the agent at integration_search", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and ready. Call integration_search now to pick up its tools and continue the task.`,
-    );
-  });
-  it("says an installation with no personal grant is not yet usable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "ACCESS_GRANT_REQUIRED",
-          }),
-        ),
-      ),
-    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ACCESS_GRANT_REQUIRED")}`);
+    ).resolves.toContain("is unavailable. Use computer_apps");
   });
   it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
@@ -625,106 +598,6 @@ describe("continuationMessage", () => {
       ),
     ).toBe(
       `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("ACCESS_GRANT_REQUIRED")}`,
-    );
-  });
-  it("sends the agent to integration_request when the installation has no account", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "USER_AUTHORIZATION_REQUIRED",
-            detail: "No Google account",
-          }),
-        ),
-      ),
-    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("USER_AUTHORIZATION_REQUIRED")}`);
-  });
-  it("reports the statusDetail of an installation that landed unusable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "INTEGRATION_UNAVAILABLE",
-            detail: "The OpenAPI document could not be compiled",
-            status: "needs-attention",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. ${blockedText("INTEGRATION_UNAVAILABLE", "The OpenAPI document could not be compiled")}`,
-    );
-  });
-  it("directs a misconfigured provider through the agent-owned setup request", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "ADMIN_CONFIGURATION_REQUIRED",
-            detail: "No Google application",
-          }),
-        ),
-      ),
-    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ADMIN_CONFIGURATION_REQUIRED")}`);
-  });
-  it("never claims an installation that the inventory does not hold", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-            provenance: {
-              definitionId: "slack",
-            },
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was approved, but Gmail is not present in the current integration inventory. Call integration_search now to see what is actually installed and continue from there.`,
-    );
-  });
-  it("locates a proposal installation by the approved artifact digest", async () => {
-    const request = fulfilledRequest("integration.install", {
-      proposal: true,
-    });
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-            provenance: {
-              artifactDigest: proposalDigest,
-            },
-            sourceKind: "proposed",
-            title: "Weather API",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Weather API is installed and ready. Call integration_search now to pick up its tools and continue the task.`,
-    );
-  });
-  it("reports an installation that exposes no servers as unusable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            servers: [],
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. google-gmail exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
     );
   });
   it("names the connected account once the access grant is verified", async () => {
@@ -881,12 +754,12 @@ function withMacs(
           },
           store: {
             listDeviceComputerAppSetupRequests: async () => [],
-            requests: { listPendingIntegrationAccessRequests: async () => [] },
+            integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
           },
           listCallableTools: this.listCallableTools,
           computerToolEnabled: () => true,
           computerUseVersion: () => 2,
-        } as unknown as IntegrationPlatformService,
+        } as unknown as DeviceService,
         input,
         run,
       );
@@ -939,7 +812,7 @@ function entry(
     readonly detail?: string;
     readonly provenance?: Readonly<Record<string, string>>;
     readonly servers?: readonly IntegrationReadiness[];
-    readonly sourceKind?: "built-in" | "proposed";
+    readonly sourceKind?: "built-in" | "plugin";
     readonly status?: "active" | "needs-attention";
     readonly title?: string;
   } = {},
@@ -969,7 +842,6 @@ function entry(
           code: input.code ?? "READY",
           connectionId: input.connectionId ?? null,
           detail: input.detail ?? null,
-          provider: null,
           requiredAccess: (input.code ?? "READY") === "ACCESS_GRANT_REQUIRED" ? "read" : null,
           serverId,
         },
@@ -1042,18 +914,12 @@ function triggerOriginatedRequest(): Request {
   });
 }
 function fulfilledRequest(
-  kind:
-    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
-  account?:
-    | {
-        readonly accountIdentifier: string | null;
-        readonly displayName: string;
-      }
-    | {
-        readonly proposal: true;
-      },
+  kind: "browser.access" | "integration.access" | "machine.full-disk-access",
+  account?: {
+    readonly accountIdentifier: string | null;
+    readonly displayName: string;
+  },
 ) {
-  const proposal = account !== undefined && "proposal" in account;
   const pending = PendingRequestSchema.parse({
     callId: crypto.randomUUID(),
     cancellationReason: null,
@@ -1064,35 +930,14 @@ function fulfilledRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: threadId,
-    payload: payloadFor(kind, proposal),
-    presentation:
-      kind === "integration.install"
-        ? {
-            kind: "choice",
-            options: [
-              {
-                hint: "confirm",
-                id: "installed",
-                label: "Install",
-              },
-              {
-                hint: "cancel",
-                id: "declined",
-                label: "Decline",
-              },
-            ],
-            title: "Install Gmail?",
-          }
-        : {
-            kind: "external",
-            subject: {
-              id: threadId,
-              kind: "thread",
-            },
-            title: "Request",
-          },
+    payload: payloadFor(kind),
+    presentation: {
+      kind: "external",
+      subject: { id: threadId, kind: "thread" },
+      title: "Request",
+    },
     requestedBy: ownerId,
-    requiredActor: kind === "integration.install" ? "owner" : "requester",
+    requiredActor: "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
@@ -1102,32 +947,18 @@ function fulfilledRequest(
     ...pending,
     resolvedAt: now,
     resolvedBy: ownerId,
-    response:
-      kind === "integration.install"
-        ? {
-            kind: "choice",
-            optionId: "installed",
-          }
-        : {
-            kind: "external",
-            value: {
-              ...(account && !proposal
-                ? {
-                    account,
-                  }
-                : {}),
-              connectionId: account && !proposal ? accountConnectionId : null,
-              decision: "fulfilled",
-            },
-          },
+    response: {
+      kind: "external",
+      value: {
+        ...(account ? { account } : {}),
+        connectionId: account ? accountConnectionId : null,
+        decision: "fulfilled",
+      },
+    },
     status: "fulfilled",
   });
 }
-function payloadFor(
-  kind:
-    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
-  proposal: boolean,
-) {
+function payloadFor(kind: "browser.access" | "integration.access" | "machine.full-disk-access") {
   switch (kind) {
     case "browser.access":
       return {
@@ -1147,35 +978,6 @@ function payloadFor(
         requestedConnectionId: null,
         requestedServerId: null,
       };
-    case "integration.install":
-      return {
-        kind,
-        manifest: proposal
-          ? {
-              kind: "proposal",
-              proposal: {
-                authMethods: ["api-key"],
-                digest: proposalDigest,
-                kind: "openapi",
-                preview: {
-                  title: "Weather API",
-                },
-                source: {
-                  origin: "https://weather.example.test",
-                  type: "url",
-                },
-              },
-            }
-          : {
-              definition: {
-                id: definitionId,
-                name: "Gmail",
-              },
-              digest: proposalDigest,
-              kind: "catalog",
-            },
-        reason: "Need records",
-      };
     case "machine.full-disk-access":
       return {
         kind,
@@ -1188,6 +990,6 @@ function payloadFor(
 
 function blockedText(code: IntegrationReadiness["code"], detail?: string) {
   const current = entry({ code, ...(detail === undefined ? {} : { detail }) });
-  const blocked = integrationBlocked(current.readiness.servers[0], current.installation.name)!;
+  const blocked = localTargetBlocked(current.readiness.servers[0], current.installation.name)!;
   return `${blocked.message} ${blocked.next}`;
 }

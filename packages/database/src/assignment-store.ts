@@ -469,13 +469,7 @@ async function requireCancelScope(
   const actor = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select([
-      "runs.requestedBy",
-      "runs.status",
-      "runs.threadId",
-      "threads.specialistId",
-      "threads.lineageRootThreadId",
-    ])
+    .select(["runs.requestedBy", "runs.status", "runs.threadId", "threads.lineageRootThreadId"])
     .where("runs.id", "=", input.actorRunId)
     .executeTakeFirst();
   if (

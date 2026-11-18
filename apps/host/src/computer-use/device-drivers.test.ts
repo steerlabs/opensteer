@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createId, DeviceIdSchema, type DeviceDriverIdentity } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { DeviceDriverResolver } from "./device-drivers.js";
@@ -75,4 +76,26 @@ it("retains a detached Device in assignment snapshots until that Device is remov
   removedAt = new Date();
   await resolver.refresh();
   expect(resolver.retainedScreenDeviceIds(runnerId)).toEqual([]);
+});
+
+it("admits overlapping Device sets in stable order and locks repeated Devices once", async () => {
+  const resolver = new DeviceDriverResolver({
+    store: { getDevice: async () => null, listDeviceDrivers: async () => [] },
+  });
+  const first = createId("device"),
+    second = createId("device");
+  const completed: string[] = [];
+  await withTimeout(
+    Promise.all([
+      resolver.withAdmissions([second, first, second], async () => {
+        completed.push("first");
+      }),
+      resolver.withAdmissions([first, second], async () => {
+        completed.push("second");
+      }),
+    ]),
+    1_000,
+    { timeoutError: () => new Error("Overlapping Device admissions did not finish") },
+  );
+  expect(completed).toEqual(["first", "second"]);
 });

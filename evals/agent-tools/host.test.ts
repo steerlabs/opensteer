@@ -17,11 +17,8 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
       profile: "task",
       source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
       turns: ["Inspect availability"],
-      mocks: {
-        integration_search: { $error: "Service is offline." },
-        saved_login_request: { status: "pending" },
-      },
-      expect: { calls: [{ tool: "integration_search", args: { query: "mail" } }] },
+      mocks: { plugin_search: { $error: "Service is offline." } },
+      expect: { calls: [{ tool: "plugin_search", args: { query: "mail" } }] },
     }),
   )[0]!;
   const host = await startFakeHost(testCase);
@@ -71,24 +68,20 @@ it("serves the production inventory and validates mocked calls through real MCP 
       profile: "task",
       turns: ["hi"],
       mocks: {
-        integration_search: {
+        plugin_search: {
           $responses: [
             {
-              operations: [],
-              results: [],
-              catalog: [],
-              total: 0,
-              nextCursor: null,
-              guidance: { catalog: "first" },
+              items: [],
+              namespaces: [{ app: "first", path: "tools.fixture" }],
+              remaining: 0,
+              next: null,
               stale: "must be stripped",
             },
             {
-              operations: [],
-              results: [],
-              catalog: [],
-              total: 0,
-              nextCursor: null,
-              guidance: { catalog: "second" },
+              items: [],
+              namespaces: [{ app: "second", path: "tools.fixture" }],
+              remaining: 0,
+              next: null,
             },
           ],
         },
@@ -119,23 +112,21 @@ it("serves the production inventory and validates mocked calls through real MCP 
       expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer_use")).toBe(
         true,
       );
-      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "integration_call")).toBe(
-        true,
-      );
+      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "plugin_call")).toBe(true);
       const valid = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { query: "mail" },
       });
       expect(valid.isError).not.toBe(true);
       expect(JSON.stringify(valid)).toContain("first");
       expect(JSON.stringify(valid)).not.toContain("must be stripped");
       const invalid = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { unexpected: true },
       });
       expect(invalid.isError).toBe(true);
       const second = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { query: "mail" },
       });
       expect(JSON.stringify(second)).toContain("second");
@@ -176,32 +167,38 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
     "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
     "0c9e437c0ae12ad1e3ea45f9730996a73d0ce511",
   ];
-  for (const file of ["integrations", "triggers", "browser", "apps", "computer-use"]) {
+  for (const file of ["integrations", "plugins", "triggers", "browser", "apps", "computer-use"]) {
     const cases = parseCases(
       await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
     );
-    for (const c of cases.filter((c) => commits.includes(c.source.commit))) {
+    for (const c of cases.filter(
+      (c) => commits.includes(c.source.commit) && c.expect.calls.length > 0,
+    )) {
       const host = await startFakeHost(c);
-      const clients: Client[] = [];
+      const clients = new Map<string, Client>();
       try {
         for (const required of c.expect.calls) {
           const endpoint = [...host.endpoints].find(([, endpoint]) =>
             endpoint.tools.some((t) => t.name === required.tool),
           );
           expect(endpoint, `${c.id}: ${required.tool} is offered`).toBeDefined();
-          const client = new Client({ name: "eval-case-validation", version: "1" });
-          clients.push(client);
-          await client.connect(
-            new StreamableHTTPClientTransport(new URL(`/${endpoint![0]}`, host.url), {
-              requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
-            }) as unknown as Transport,
-          );
+          const name = endpoint![0];
+          let client = clients.get(name);
+          if (!client) {
+            client = new Client({ name: "eval-case-validation", version: "1" });
+            clients.set(name, client);
+            await client.connect(
+              new StreamableHTTPClientTransport(new URL(`/${name}`, host.url), {
+                requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+              }) as unknown as Transport,
+            );
+          }
           const args =
             required.tool === "computer_use"
               ? { code: 'return await app("Notes")' }
-              : required.tool === "integration_call"
-                ? { ...required.args, arguments: {} }
-                : required.tool === "integration_search"
+              : required.tool === "plugin_call"
+                ? { calls: { ...(required.args.calls as object), input: {} } }
+                : required.tool === "plugin_search"
                   ? { query: "Notes" }
                   : required.args;
           await client.callTool({
@@ -219,7 +216,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           ).toBe(true);
         }
       } finally {
-        await Promise.allSettled(clients.map((c) => c.close()));
+        await Promise.allSettled([...clients.values()].map((c) => c.close()));
         await host.close();
       }
     }
@@ -248,9 +245,12 @@ it("validates the new surface cases with each caller's production inventory", as
           name: required.tool,
           arguments: {
             ...required.args,
-            ...(["integration_request", "saved_login_request", "chrome_cookies_request"].includes(
-              required.tool,
-            )
+            ...([
+              "plugin_account_request",
+              "app_access_request",
+              "saved_login_request",
+              "chrome_cookies_request",
+            ].includes(required.tool)
               ? { reason: "Complete the account check" }
               : {}),
             ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)
@@ -339,7 +339,7 @@ it("preserves production action validation before consuming mocks", async () => 
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
         program: {
           language: "javascript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async function () {}",
         },
       },
@@ -429,7 +429,7 @@ it("reads back successful automation changes and the requested one-shot time", a
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
         program: {
           language: "typescript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async function () {}",
         },
       },

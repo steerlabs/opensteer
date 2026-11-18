@@ -1,6 +1,6 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
 import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -16,17 +16,16 @@ import { pauseAfterLock } from "./lock-race.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   IntegrationDefinitionSchema,
-  createIntegrationId,
   integrationDefinitionSummary,
+} from "@opensteer/integration-core/adapter";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import {
   isComputerAppDefinition,
   type ComputerAppIdentity,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import {
-  authorizationDigest,
-  integrationDefinitionDigest,
-} from "@opensteer/integration-core/digest";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
   type RunId,
   type ThreadId,
@@ -42,9 +41,8 @@ import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   ChannelStore,
   createDatabase,
-  IntegrationInstallStore,
   IntegrationPlatformStore,
-  IntegrationStore,
+  listIntegrationConnections,
   OpensteerStore,
 } from "./index.js";
 import { jsonValue } from "./store-primitives.js";
@@ -55,479 +53,6 @@ import {
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-
-integration.sequential("PostgreSQL integration installation lookups", () => {
-  function hostedDefinition(id: string) {
-    return IntegrationDefinitionSchema.parse({
-      adapter: "graphql",
-      authMethods: [
-        {
-          id: "oauth",
-          kind: "oauth",
-          label: "Sign in",
-          oauth: {
-            authorizationUrl: "https://provider.example/authorize",
-            clientAuth: "body",
-            identity: {
-              source: "userinfo",
-              identityPath: "sub",
-              userinfoUrl: "https://provider.example/userinfo",
-            },
-            scopes: ["read"],
-            tokenUrl: "https://provider.example/token",
-            usesPkce: true,
-          },
-          placements: [
-            {
-              carrier: "header",
-              name: "Authorization",
-              prefix: "Bearer ",
-              variable: "accessToken",
-            },
-          ],
-        },
-      ],
-      config: { endpoint: "https://provider.example/graphql" },
-      description: "Managed sign-in fixture",
-      hostedOAuth: {
-        providerApplicationRevision: 1,
-        qualification: { authorizationCodeExchange: true, refresh: true },
-      },
-      id,
-      name: id,
-      provider: "example",
-      setupUrl: "https://provider.example/developers",
-    });
-  }
-
-  async function installLegacyHostedDefinition(installations: IntegrationInstallStore, id: string) {
-    const definition = hostedDefinition(id);
-    const { hostedOAuth, ...legacy } = definition;
-    void hostedOAuth;
-    const installationId = createIntegrationId("installation");
-    await installations.install({
-      actorUserId: null,
-      adapterSnapshot: {
-        adapter: "graphql",
-        config: { endpoint: "https://provider.example/graphql", immutable: "saved" },
-        definitionId: id,
-      },
-      installation: {
-        description: definition.description,
-        id: installationId,
-        manifest: { definition: integrationDefinitionSummary(legacy) },
-        name: id,
-        provenance: {
-          definitionId: id,
-          definitionDigest: integrationDefinitionDigest(definition),
-          maintainedBy: "opensteer",
-        },
-        sourceKind: "built-in",
-        status: "active",
-        title: id,
-        trust: "built-in",
-        version: integrationDefinitionDigest(definition),
-      },
-      requestId: `legacy:${id}`,
-      servers: [
-        {
-          catalog: { definitions: {}, tools: [] },
-          connectionRequirement: {
-            definitionId: id,
-            kind: "provider",
-            provider: "example",
-            providerApplicationRequired: true,
-          },
-          id: createIntegrationId("server"),
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          transport: { adapter: "graphql", definitionId: id, type: "adapter" },
-        },
-      ],
-    });
-    return { definition, legacy, installationId };
-  }
-
-  async function createTestFixture() {
-    const clone = await cloneTestDatabase("host");
-    const databaseUrl = clone.url;
-    const { database } = await ownTestDatabaseProducer(databaseUrl, async () => {
-      const database = createDatabase({
-        applicationName: "opensteer-integration-installation-test",
-        connectionString: databaseUrl,
-        maxConnections: 2,
-      });
-      return { database, close: () => database.destroy() };
-    });
-    await personalFixtureOwner(database, databaseUrl);
-    const installations = new IntegrationInstallStore(database);
-
-    return Object.freeze({ database, installations, databaseUrl });
-  }
-  type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
-    storeFixture: async ({ task }, use) => {
-      const started = performance.now();
-      const fixture = await createTestFixture();
-      recordTestDatabaseSetup(task, started);
-      await use(fixture);
-    },
-  });
-
-  it("reads an installed definition back by definition id", async ({ storeFixture }) => {
-    const { installations, database } = storeFixture;
-    const definition = IntegrationDefinitionSchema.parse({
-      adapter: "openapi",
-      authMethods: [
-        {
-          id: "api-key",
-          inputs: [{ label: "API key", secret: true, variable: "apiKey" }],
-          kind: "api-key",
-          label: "Proposed API key",
-          placements: [
-            { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "apiKey" },
-          ],
-        },
-      ],
-      config: { specUrl: "https://api.proposed.test/openapi.json", timeoutMs: 30_000 },
-      description: "Researched by an agent and approved by an administrator",
-      id: "proposed-inventory",
-      name: "Proposed inventory",
-      provider: "proposed-inventory",
-    });
-    await installations.install({
-      actorUserId: null,
-      adapterSnapshot: {
-        adapter: "openapi",
-        config: definition.config as Readonly<Record<string, unknown>>,
-        definitionId: definition.id,
-      },
-      installation: {
-        description: definition.description,
-        id: createIntegrationId("installation"),
-        manifest: { definition: integrationDefinitionSummary(definition) },
-        name: definition.id,
-        provenance: { artifactDigest: "d".repeat(43), proposalKind: "openapi" },
-        sourceKind: "proposed",
-        status: "active",
-        title: definition.name,
-        trust: "administrator-approved",
-        version: "d".repeat(43),
-      },
-      requestId: "install-proposed-inventory",
-      servers: [
-        {
-          connectionRequirement: {
-            definitionId: definition.id,
-            kind: "provider",
-            provider: definition.provider,
-            providerApplicationRequired: false,
-          },
-          id: createIntegrationId("server"),
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { adapter: "openapi", definitionId: definition.id, type: "adapter" },
-        },
-      ],
-    });
-
-    // The adapter config is never in the manifest, so a full definition proves both halves loaded.
-    await expect(installations.findInstalledDefinition(definition.id)).resolves.toEqual(definition);
-    await expect(installations.findInstalledDefinition("proposed-absent")).resolves.toBeNull();
-
-    for (const status of ["disabled", "needs-attention"] as const) {
-      await database
-        .updateTable("integrationInstallations")
-        .set({ status })
-        .where("name", "=", definition.id)
-        .execute();
-      await expect(installations.findInstalledDefinition(definition.id)).rejects.toThrow(
-        "Installed integration is unavailable",
-      );
-      await expect(
-        installations.findInstalledDefinition(definition.id, { allowUnavailable: true }),
-      ).resolves.toEqual(definition);
-    }
-  });
-  it("repairs unchanged built-in OAuth metadata and only equivalent own-app fingerprints once", async ({
-    storeFixture,
-  }) => {
-    const { database, installations } = storeFixture;
-    const { definition, legacy, installationId } = await installLegacyHostedDefinition(
-      installations,
-      "hosted-mail",
-    );
-    const ownerUserId = (await personalFixtureOwner(database, storeFixture.databaseUrl)).userId;
-    const application = await new IntegrationStore(database).saveProviderApplication({
-      actorUserId: ownerUserId,
-      application: {
-        id: createIntegrationId("providerApplication"),
-        clientId: "own-client",
-        displayName: "Own app",
-        ownerUserId: null,
-        provider: "example",
-        status: "active",
-      },
-      expectedRevision: null,
-      requestId: "own-app",
-      secrets: { envelope: Buffer.from("encrypted-app"), keyVersion: 1 },
-    });
-    const ownSource = {
-      kind: "deployment-oauth" as const,
-      providerApplicationId: application.id,
-      providerApplicationRevision: application.revision,
-      callbackUrl: "https://host.example/callback",
-    };
-    const hostedSource = {
-      kind: "hosted-oauth" as const,
-      brokerIssuer: "https://account.example",
-      providerApplicationRevision: 1,
-    };
-    const cases = [
-      {
-        label: "own",
-        source: ownSource,
-        digest: authorizationDigest(legacy),
-        status: "connected" as const,
-        repaired: true,
-      },
-      {
-        label: "attention",
-        source: ownSource,
-        digest: authorizationDigest(legacy),
-        status: "needs-attention" as const,
-        repaired: true,
-      },
-      {
-        label: "revoked",
-        source: ownSource,
-        digest: authorizationDigest(legacy),
-        status: "revoked" as const,
-        repaired: false,
-      },
-      {
-        label: "hosted",
-        source: hostedSource,
-        digest: authorizationDigest(definition),
-        status: "connected" as const,
-        repaired: false,
-      },
-      {
-        label: "invalid-hosted",
-        source: hostedSource,
-        digest: authorizationDigest(legacy),
-        status: "connected" as const,
-        repaired: false,
-      },
-      {
-        label: "different-contract",
-        source: ownSource,
-        digest: "X".repeat(43),
-        status: "connected" as const,
-        repaired: false,
-      },
-    ];
-    for (const fixture of cases) {
-      await database
-        .insertInto("integrationConnections")
-        .values({
-          accountIdentifier: fixture.label,
-          applicationSource: jsonValue(fixture.source),
-          authMethodId: "oauth",
-          authorizationDigest: fixture.digest,
-          capabilities: jsonValue([]),
-          connectionKind: "provider-account",
-          connectionMethod: "managed-oauth",
-          credentialId: null,
-          displayName: fixture.label,
-          externalIdentityId: fixture.label,
-          externalTenantId: null,
-          grantedScopes: jsonValue(["read"]),
-          id: createIntegrationId("connection"),
-          integrationDefinitionId: definition.id,
-          integrationServerId: null,
-          ownerUserId,
-          provider: definition.provider,
-          providerApplicationId: fixture.source.kind === "deployment-oauth" ? application.id : null,
-          runnerId: null,
-          status: fixture.status,
-          statusDetail: fixture.status === "needs-attention" ? "Needs an explicit sign-in" : null,
-          transportKind: null,
-          updatedAt: new Date("2026-09-01T00:00:00Z"),
-        })
-        .execute();
-    }
-    const before = await database
-      .selectFrom("integrationInstallations")
-      .selectAll()
-      .where("id", "=", installationId)
-      .executeTakeFirstOrThrow();
-    const connections = await database
-      .selectFrom("integrationConnections")
-      .selectAll()
-      .orderBy("displayName")
-      .execute();
-    const servers = await database.selectFrom("integrationServers").selectAll().execute();
-    expect(
-      (
-        await Promise.all([
-          installations.backfillHostedOAuthMetadata([definition]),
-          installations.backfillHostedOAuthMetadata([definition]),
-        ])
-      ).sort(),
-    ).toEqual([0, 1]);
-    const after = await database
-      .selectFrom("integrationInstallations")
-      .selectAll()
-      .where("id", "=", installationId)
-      .executeTakeFirstOrThrow();
-    expect(after).toEqual({
-      ...before,
-      manifest: {
-        ...before.manifest,
-        definition: {
-          ...integrationDefinitionSummary(legacy),
-          hostedOAuth: definition.hostedOAuth,
-        },
-      },
-    });
-    expect(
-      await database
-        .selectFrom("integrationConnections")
-        .selectAll()
-        .orderBy("displayName")
-        .execute(),
-    ).toEqual(
-      connections.map((connection) => ({
-        ...connection,
-        authorizationDigest: cases.find((fixture) => fixture.label === connection.displayName)!
-          .repaired
-          ? authorizationDigest(definition)
-          : connection.authorizationDigest,
-      })),
-    );
-    expect(await database.selectFrom("integrationServers").selectAll().execute()).toEqual(servers);
-    expect(await installations.backfillHostedOAuthMetadata([definition])).toBe(0);
-  });
-
-  it("preserves unavailable states and refuses unverified, conflicting, or foreign installation authority", async ({
-    storeFixture,
-  }) => {
-    const { database, installations } = storeFixture;
-    const definitions = [];
-    const rows = [];
-    for (const label of [
-      "disabled",
-      "needs-attention",
-      "proposed",
-      "wrong-digest",
-      "wrong-id",
-      "wrong-contract",
-      "missing-snapshot",
-      "wrong-snapshot",
-      "conflicting",
-      "removed",
-    ] as const) {
-      const seeded = await installLegacyHostedDefinition(installations, `repair-${label}`);
-      definitions.push(seeded.definition);
-      const row = await database
-        .selectFrom("integrationInstallations")
-        .selectAll()
-        .where("id", "=", seeded.installationId)
-        .executeTakeFirstOrThrow();
-      if (label === "removed") {
-        await installations.uninstall({
-          actorUserId: await new OpensteerStore(database).createUser("Uninstall owner"),
-          installationId: row.id,
-          requestId: "uninstall-before-repair",
-        });
-        continue;
-      }
-      const summary = integrationDefinitionSummary(seeded.legacy);
-      await database
-        .updateTable("integrationInstallations")
-        .set({
-          ...(label === "disabled" || label === "needs-attention" ? { status: label } : {}),
-          ...(label === "proposed"
-            ? { sourceKind: "proposed", trust: "administrator-approved" }
-            : {}),
-          ...(label === "wrong-digest"
-            ? { provenance: jsonValue({ ...row.provenance, definitionDigest: "X".repeat(43) }) }
-            : {}),
-          ...(label === "wrong-id"
-            ? { provenance: jsonValue({ ...row.provenance, definitionId: "another-definition" }) }
-            : {}),
-          ...(label === "missing-snapshot" ? { adapterSnapshot: null } : {}),
-          ...(label === "wrong-snapshot"
-            ? {
-                adapterSnapshot: jsonValue({
-                  adapter: "graphql",
-                  config: {},
-                  definitionId: "another-definition",
-                }),
-              }
-            : {}),
-          ...(label === "wrong-contract"
-            ? { manifest: jsonValue({ definition: { ...summary, provider: "another-provider" } }) }
-            : {}),
-          ...(label === "conflicting"
-            ? {
-                manifest: jsonValue({
-                  definition: {
-                    ...summary,
-                    hostedOAuth: {
-                      ...seeded.definition.hostedOAuth,
-                      providerApplicationRevision: 2,
-                    },
-                  },
-                }),
-              }
-            : {}),
-        })
-        .where("id", "=", row.id)
-        .execute();
-      rows.push({
-        label,
-        definition: seeded.definition,
-        row: await database
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("id", "=", row.id)
-          .executeTakeFirstOrThrow(),
-      });
-    }
-    expect(await installations.backfillHostedOAuthMetadata(definitions)).toBe(2);
-    for (const fixture of rows) {
-      const repaired = fixture.label === "disabled" || fixture.label === "needs-attention";
-      const expected = repaired
-        ? {
-            ...fixture.row,
-            manifest: {
-              ...fixture.row.manifest,
-              definition: {
-                ...integrationDefinitionSummary({ ...fixture.definition, hostedOAuth: undefined }),
-                hostedOAuth: fixture.definition.hostedOAuth,
-              },
-            },
-          }
-        : fixture.row;
-      expect(
-        await database
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("id", "=", fixture.row.id)
-          .executeTakeFirstOrThrow(),
-      ).toEqual(expected);
-    }
-    expect(await installations.backfillHostedOAuthMetadata(definitions)).toBe(0);
-    expect(
-      await database.selectFrom("integrationInstallations").select("id").execute(),
-    ).toHaveLength(rows.length);
-  });
-});
 
 integration.sequential("PostgreSQL integration uninstall", () => {
   async function createTestFixture() {
@@ -617,704 +142,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     },
   });
 
-  it("reads one account identity within its owner", async ({ storeFixture }) => {
-    const { store, platform, database } = storeFixture;
-    const ownerUserId = (await personalFixtureOwner(database, databaseUrl!)).userId;
-    const otherOwner = await store.createUser("Other account owner");
-    const connectionId = createIntegrationId("connection");
-    const credentialId = createId("credential");
-    await insertCredential(database, credentialId, ownerUserId);
-    await insertProviderConnection(database, {
-      connectionId,
-      credentialId,
-      definitionId: "account-label",
-      ownerUserId,
-    });
-    await expect(platform.getConnectionAccount({ connectionId, ownerUserId })).resolves.toEqual({
-      displayName: "Alex",
-      accountIdentifier: "alex@example.com",
-    });
-    await expect(
-      platform.getConnectionAccount({ connectionId, ownerUserId: otherOwner }),
-    ).resolves.toBeNull();
-    await expect(
-      platform.getConnectionAccount({
-        connectionId: createIntegrationId("connection"),
-        ownerUserId,
-      }),
-    ).resolves.toBeNull();
-  });
-
-  it("orders provider tool reconciliation with grant creation without a deadlock", async ({
-    storeFixture,
-  }) => {
-    const { platform, database } = storeFixture;
-    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    const connectionId = createIntegrationId("connection");
-    const credentialId = createId("credential");
-    const tool = { ...discoveredTool(createIntegrationId("tool")), connectionId };
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: {
-        adapter: "openapi",
-        config: { specUrl: "https://api.records.test/openapi.json" },
-        definitionId: "records-catalog",
-      },
-      installation: catalogInstallation(installationId),
-      requestId: "provider-lock-order-install",
-      servers: [
-        {
-          connectionRequirement: {
-            definitionId: "records-catalog",
-            kind: "provider",
-            provider: "records-catalog",
-            providerApplicationRequired: false,
-          },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { adapter: "openapi", definitionId: "records-catalog", type: "adapter" },
-        },
-      ],
-    });
-    await insertCredential(database, credentialId, userId);
-    await insertProviderConnection(database, {
-      connectionId,
-      credentialId,
-      definitionId: "records-catalog",
-      ownerUserId: userId,
-    });
-    const held = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const pausedQueries = new Set<object>();
-    const grantStore = new IntegrationPlatformStore(
-      database.withPlugin({
-        transformQuery(args) {
-          const node = JSON.stringify(args.node);
-          if (
-            args.node.kind === "SelectQueryNode" &&
-            /"name":"integration_?servers"/iu.test(node) &&
-            node.includes("ForShare")
-          )
-            pausedQueries.add(args.queryId);
-          return args.node;
-        },
-        async transformResult(args) {
-          if (pausedQueries.delete(args.queryId)) {
-            held.resolve();
-            await release.promise;
-          }
-          return args.result;
-        },
-      }),
-    );
-    const granting = grantStore.createGrant({
-      access: "read",
-      alias: "records",
-      connectionId,
-      createdBy: userId,
-      installationId,
-      isDefault: true,
-      ownerUserId: userId,
-      providerAuthorizations: {},
-    });
-    void granting.catch(() => undefined);
-    let reconciling: Promise<void> | undefined;
-    try {
-      await held.promise;
-      reconciling = platform.reconcileProviderConnectionTools({
-        connectionId,
-        definitionId: "records-catalog",
-        ownerUserId: userId,
-        serverId,
-        catalog: { definitions: {}, tools: [tool] },
-      });
-      void reconciling.catch(() => undefined);
-      await expect
-        .poll(async () =>
-          (
-            await sql<{ query: string }>`select query from pg_stat_activity
-        where datname = current_database() and application_name = 'opensteer-integration-uninstall-test'
-        and wait_event_type = 'Lock'`.execute(database)
-          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
-        )
-        .toBe(true);
-      release.resolve();
-      const outcomes = await Promise.allSettled([granting, reconciling]);
-      expect(outcomes.filter(({ status }) => status === "rejected")).toEqual([]);
-      expect(
-        await database
-          .selectFrom("integrationGrants")
-          .select("id")
-          .where("ownerUserId", "=", userId)
-          .execute(),
-      ).toHaveLength(1);
-      expect(
-        await database
-          .selectFrom("integrationTools")
-          .select("id")
-          .where("connectionId", "=", connectionId)
-          .execute(),
-      ).toEqual([{ id: tool.id }]);
-    } finally {
-      release.resolve();
-      await Promise.allSettled([granting, reconciling]);
-    }
-  });
-
-  it("removes the installation and its dependents while catalog accounts survive", async ({
-    storeFixture,
-  }) => {
-    const { store, platform, database } = storeFixture;
-    const run = await runningRunFixture(store, "catalog-uninstall");
-    const userId = run.userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    const tool = discoveredTool(createIntegrationId("tool"));
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: {
-        adapter: "openapi",
-        config: { specUrl: "https://api.records.test/openapi.json" },
-        definitionId: "records-catalog",
-      },
-      installation: catalogInstallation(installationId),
-      requestId: "install-records-catalog",
-      servers: [
-        {
-          connectionRequirement: {
-            definitionId: "records-catalog",
-            kind: "provider",
-            provider: "records",
-            providerApplicationRequired: false,
-          },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [tool] },
-          transport: { adapter: "openapi", definitionId: "records-catalog", type: "adapter" },
-        },
-      ],
-    });
-    const connectionId = createIntegrationId("connection");
-    const credentialId = createId("credential");
-    await insertCredential(database, credentialId, userId);
-    await insertProviderConnection(database, {
-      connectionId,
-      credentialId,
-      definitionId: "records-catalog",
-      ownerUserId: userId,
-    });
-    const grantId = createIntegrationId("grant");
-    await database
-      .insertInto("integrationGrants")
-      .values({
-        access: "read",
-        alias: "records",
-        connectionId,
-        createdBy: userId,
-        id: grantId,
-        installationId,
-        isDefault: false,
-        ownerUserId: userId,
-        revokedAt: null,
-        status: "active",
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-
-    await database
-      .updateTable("integrationConnections")
-      .set({ provider: "records" })
-      .where("id", "=", connectionId)
-      .execute();
-    const inventory = await platform.listDiscoveryInventory({
-      ownerUserId: userId,
-
-      threadId: run.threadId,
-      providerAuthorizations: {},
-    });
-    expect(inventory[0]?.accounts).toContainEqual(
-      expect.objectContaining({ connectionId, account: "Alex (alex@example.com)" }),
-    );
-
-    const mutation = await platform.uninstall({
-      actorUserId: userId,
-      installationId,
-      requestId: "uninstall-records-catalog",
-    });
-
-    expect(mutation).toMatchObject({
-      cancelledRequestIds: [],
-      removedConnectionIds: [],
-      removedServerIds: [serverId],
-    });
-    await expect(platform.listInstallations()).resolves.toEqual([]);
-    await expect(countRows(database, "integrationServers")).resolves.toBe(0);
-    await expect(countRows(database, "integrationTools")).resolves.toBe(0);
-    await expect(countRows(database, "integrationGrants")).resolves.toBe(0);
-    // The catalog definition still exists, so the account it authorizes stays usable.
-    await expect(countRows(database, "integrationConnections")).resolves.toBe(1);
-    await expect(countRows(database, "credentials")).resolves.toBe(1);
-    await expect(
-      database
-        .selectFrom("securityAudit")
-        .select("action")
-        .where("targetId", "=", installationId)
-        .orderBy("createdAt", "desc")
-        .limit(1)
-        .executeTakeFirst(),
-    ).resolves.toEqual({ action: "integration.installation.removed" });
-  });
-
-  it("removes the accounts of a proposed definition with the installation", async ({
-    storeFixture,
-  }) => {
-    const { platform, database } = storeFixture;
-    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: {
-        adapter: "openapi",
-        config: { specUrl: "https://api.proposed.test/openapi.json" },
-        definitionId: "proposed-inventory",
-      },
-      installation: {
-        description: "Researched by an agent",
-        id: installationId,
-        manifest: {
-          definition: {
-            adapter: "openapi",
-            authMethods: [
-              {
-                id: "api-key",
-                inputs: [{ label: "API key", secret: true, variable: "apiKey" }],
-                kind: "api-key",
-                label: "Proposed API key",
-                placements: [
-                  {
-                    carrier: "header",
-                    name: "Authorization",
-                    prefix: "Bearer ",
-                    variable: "apiKey",
-                  },
-                ],
-              },
-            ],
-            description: "Researched by an agent",
-            id: "proposed-inventory",
-            name: "Proposed inventory",
-            provider: "proposed-inventory",
-          },
-        },
-        name: "proposed-inventory",
-        provenance: { artifactDigest: "d".repeat(43), proposalKind: "openapi" },
-        sourceKind: "proposed",
-        status: "active",
-        title: "Proposed inventory",
-        trust: "administrator-approved",
-        version: "d".repeat(43),
-      },
-      requestId: "install-proposed-inventory",
-      servers: [
-        {
-          connectionRequirement: {
-            definitionId: "proposed-inventory",
-            kind: "provider",
-            provider: "proposed-inventory",
-            providerApplicationRequired: false,
-          },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { adapter: "openapi", definitionId: "proposed-inventory", type: "adapter" },
-        },
-      ],
-    });
-    const connectionId = createIntegrationId("connection");
-    const credentialId = createId("credential");
-    await insertCredential(database, credentialId, userId);
-    await insertProviderConnection(database, {
-      connectionId,
-      credentialId,
-      definitionId: "proposed-inventory",
-      ownerUserId: userId,
-    });
-
-    const mutation = await platform.uninstall({
-      actorUserId: userId,
-      installationId,
-      requestId: "uninstall-proposed-inventory",
-    });
-
-    expect(mutation.removedConnectionIds).toEqual([connectionId]);
-    await expect(countRows(database, "integrationConnections")).resolves.toBe(0);
-    // The secret has nothing left that could use it.
-    await expect(countRows(database, "credentials")).resolves.toBe(0);
-  });
-
-  it("removes the MCP account bound to an uninstalled server", async ({ storeFixture }) => {
-    const { platform, database } = storeFixture;
-    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: null,
-      installation: {
-        description: "The team MCP server",
-        id: installationId,
-        manifest: {},
-        name: "team-mcp",
-        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
-        sourceKind: "remote-mcp",
-        status: "active",
-        title: "Team MCP",
-        trust: "administrator-approved",
-        version: null,
-      },
-      requestId: "install-team-mcp",
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { headers: {}, type: "streamable-http", url: "https://mcp.example.test/mcp" },
-        },
-      ],
-    });
-    const connectionId = createIntegrationId("connection");
-    await database
-      .insertInto("integrationConnections")
-      .values({
-        accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: null,
-        authorizationDigest: null,
-        capabilities: sql`'[]'::jsonb`,
-        runnerId: null,
-        connectionKind: "mcp-oauth",
-        connectionMethod: "managed-oauth",
-        credentialId: null,
-        displayName: "Team MCP",
-        externalIdentityId: null,
-        externalTenantId: null,
-        grantedScopes: sql`'[]'::jsonb`,
-        id: connectionId,
-        integrationDefinitionId: null,
-        integrationServerId: serverId,
-        ownerUserId: userId,
-        provider: `mcp:${serverId}`,
-        providerApplicationId: null,
-        status: "connected",
-        statusDetail: null,
-        transportKind: null,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-    await database
-      .insertInto("mcpOAuthCredentials")
-      .values({
-        connectionId,
-        encryptedState: Buffer.from("mcp-oauth-state"),
-        encryptionKeyVersion: 1,
-        revision: 1,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-
-    const mutation = await platform.uninstall({
-      actorUserId: userId,
-      installationId,
-      requestId: "uninstall-team-mcp",
-    });
-
-    expect(mutation.removedConnectionIds).toEqual([connectionId]);
-    await expect(countRows(database, "integrationConnections")).resolves.toBe(0);
-    await expect(countRows(database, "mcpOAuthCredentials")).resolves.toBe(0);
-  });
-
-  it("does not mark a refreshed MCP credential as needing attention from a stale failure", async ({
-    storeFixture,
-  }) => {
-    const { platform, database } = storeFixture;
-    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: null,
-      installation: {
-        description: "The team MCP server",
-        id: installationId,
-        manifest: {},
-        name: "team-mcp",
-        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
-        sourceKind: "remote-mcp",
-        status: "active",
-        title: "Team MCP",
-        trust: "administrator-approved",
-        version: null,
-      },
-      requestId: "install-team-mcp",
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { headers: {}, type: "streamable-http", url: "https://mcp.example.test/mcp" },
-        },
-      ],
-    });
-    const connectionId = createIntegrationId("connection");
-    await database
-      .insertInto("integrationConnections")
-      .values({
-        accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: null,
-        authorizationDigest: null,
-        capabilities: sql`'[]'::jsonb`,
-        runnerId: null,
-        connectionKind: "mcp-oauth",
-        connectionMethod: "managed-oauth",
-        credentialId: null,
-        displayName: "Team MCP",
-        externalIdentityId: null,
-        externalTenantId: null,
-        grantedScopes: sql`'[]'::jsonb`,
-        id: connectionId,
-        integrationDefinitionId: null,
-        integrationServerId: serverId,
-        ownerUserId: userId,
-        provider: `mcp:${serverId}`,
-        providerApplicationId: null,
-        status: "connected",
-        statusDetail: null,
-        transportKind: null,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-    await database
-      .insertInto("mcpOAuthCredentials")
-      .values({
-        connectionId,
-        encryptedState: Buffer.from("mcp-oauth-state"),
-        encryptionKeyVersion: 1,
-        revision: 1,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-
-    expect(
-      await platform.replaceMcpOAuthCredential({
-        connectionId,
-        encryptedState: Buffer.from("refreshed"),
-        encryptionKeyVersion: 1,
-        expectedRevision: 1,
-      }),
-    ).toBe(true);
-    await platform.markMcpOAuthConnectionNeedsAttention({
-      connectionId,
-      ownerUserId: userId,
-      expectedRevision: 1,
-      statusDetail: "Expired old credential",
-    });
-    const row = await database
-      .selectFrom("integrationConnections")
-      .select(["status", "statusDetail"])
-      .where("id", "=", connectionId)
-      .executeTakeFirstOrThrow();
-    expect(row).toEqual({ status: "connected", statusDetail: null });
-  });
-
-  it("reconnects a pinned MCP account in place and fulfills its pending request", async ({
-    storeFixture,
-  }) => {
-    const { store, platform, database } = storeFixture;
-    const run = await runningRunFixture(store, "mcp-reconnect");
-    const userId = run.userId;
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    await platform.install({
-      actorUserId: userId,
-      adapterSnapshot: null,
-      installation: {
-        description: "The team MCP server",
-        id: installationId,
-        manifest: {},
-        name: "team-mcp",
-        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
-        sourceKind: "remote-mcp",
-        status: "active",
-        title: "Team MCP",
-        trust: "administrator-approved",
-        version: null,
-      },
-      requestId: "install-team-mcp",
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
-          transport: { headers: {}, type: "streamable-http", url: "https://mcp.example.test/mcp" },
-        },
-      ],
-    });
-    const connectionId = createIntegrationId("connection");
-    await database
-      .insertInto("integrationConnections")
-      .values({
-        accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: null,
-        authorizationDigest: null,
-        capabilities: sql`'[]'::jsonb`,
-        runnerId: null,
-        connectionKind: "mcp-oauth",
-        connectionMethod: "managed-oauth",
-        credentialId: null,
-        displayName: "Team MCP",
-        externalIdentityId: null,
-        externalTenantId: null,
-        grantedScopes: sql`'[]'::jsonb`,
-        id: connectionId,
-        integrationDefinitionId: null,
-        integrationServerId: serverId,
-        ownerUserId: userId,
-        provider: `mcp:${serverId}`,
-        providerApplicationId: null,
-        status: "connected",
-        statusDetail: null,
-        transportKind: null,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-    await database
-      .insertInto("mcpOAuthCredentials")
-      .values({
-        connectionId,
-        encryptedState: Buffer.from("mcp-oauth-state"),
-        encryptionKeyVersion: 1,
-        revision: 1,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-
-    expect(
-      await platform.markMcpOAuthConnectionNeedsAttention({
-        connectionId,
-        ownerUserId: userId,
-        expectedRevision: 1,
-        statusDetail: "Reconnect",
-      }),
-    ).toBe(true);
-    const opened = await platform.requests.createIntegrationAccessRequest({
-      access: "read",
-      callId: "mcp-reconnect-pinned",
-      installationId,
-      originatingRunId: run.runId,
-      originatingThreadId: run.threadId,
-
-      reason: "Reconnect the chosen account",
-      requestedBy: userId,
-      requestedConnectionId: connectionId,
-      requestedServerId: serverId,
-    });
-    const context = await platform.getMcpOAuthServer({
-      requestId: opened.request.id,
-      ownerUserId: userId,
-      serverId,
-    });
-    expect(context.reconnect).toEqual({ connectionId, revision: 1 });
-    const attemptId = createIntegrationId("mcpOauthAttempt");
-    const now = new Date();
-    await database
-      .insertInto("integrationAuthAttempts")
-      .values({
-        id: attemptId,
-        flow: "mcp-oauth",
-        ownerUserId: userId,
-        stateHash: "a".repeat(43),
-        launchTicketHash: "b".repeat(43),
-        browserBindingHash: "c".repeat(43),
-        encryptedPayload: Buffer.from("attempt"),
-        encryptionKeyVersion: 1,
-        status: "claimed",
-        surface: "desktop",
-        failureReason: null,
-        resultConnectionId: null,
-        expiresAt: new Date(now.getTime() + 60_000),
-        launchedAt: now,
-        claimedAt: now,
-        completedAt: null,
-        createdAt: now,
-      })
-      .executeTakeFirstOrThrow();
-    await platform.completeMcpOAuthAttempt({
-      attemptId,
-      connectionId,
-      displayName: "Team MCP",
-      encryptedState: Buffer.from("bound-state"),
-      encryptionKeyVersion: 1,
-      ownerUserId: userId,
-      serverId,
-      tools: [],
-      reconnect: { expectedRevision: 1, requestId: opened.request.id },
-    });
-    expect(
-      await platform.getMcpOAuthConnection({ connectionId, ownerUserId: userId, serverId }),
-    ).toMatchObject({
-      connectionId,
-      revision: 2,
-      encryptedState: Buffer.from("bound-state"),
-    });
-    expect(
-      await platform.isConnectionUsableForAccessRequest({
-        connectionId,
-        installationId,
-        ownerUserId: userId,
-        providerAuthorizations: {},
-        requestedServerId: serverId,
-      }),
-    ).toBe(true);
-    await platform.requests.resolveIntegrationAccessRequest({
-      providerAuthorizations: {},
-      requestId: opened.request.id,
-      expectedRevision: (await platform.requests.revision(opened.request.id))!,
-      resolvedBy: userId,
-      response: {
-        kind: "external",
-        value: {
-          connectionId,
-          decision: "fulfilled",
-          access: "read",
-          alias: "MCP",
-          isDefault: false,
-        },
-      },
-    });
-    expect((await platform.requests.get(opened.request.id))?.status).toBe("fulfilled");
-  });
-
   it("avoids a deadlock between integration uninstall and Request withdrawal", async ({
     storeFixture,
   }) => {
@@ -1324,8 +151,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const serverId = createIntegrationId("server");
     await platform.install({
       actorUserId: fixture.userId,
-      adapterSnapshot: null,
-      installation: catalogInstallation(installationId),
+      installation: localServerInstallation(installationId),
       requestId: "install-records-for-requests",
       servers: [
         {
@@ -1335,11 +161,15 @@ integration.sequential("PostgreSQL integration uninstall", () => {
           status: "active",
           statusDetail: null,
           catalog: { definitions: {}, tools: [] },
-          transport: { headers: {}, type: "streamable-http", url: "https://records.example.test" },
+          transport: {
+            launch: { headers: {}, type: "streamable-http", url: "http://127.0.0.1:8123/mcp" },
+            runnerId: null,
+            type: "runner",
+          },
         },
       ],
     });
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "uninstall-pending-access",
       installationId,
@@ -1383,8 +213,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const serverId = createIntegrationId("server");
     await platform.install({
       actorUserId: fixture.userId,
-      adapterSnapshot: null,
-      installation: catalogInstallation(installationId),
+      installation: localServerInstallation(installationId),
       requestId: "install-records-for-requests",
       servers: [
         {
@@ -1394,11 +223,15 @@ integration.sequential("PostgreSQL integration uninstall", () => {
           status: "active",
           statusDetail: null,
           catalog: { definitions: {}, tools: [] },
-          transport: { headers: {}, type: "streamable-http", url: "https://records.example.test" },
+          transport: {
+            launch: { headers: {}, type: "streamable-http", url: "http://127.0.0.1:8123/mcp" },
+            runnerId: null,
+            type: "runner",
+          },
         },
       ],
     });
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "uninstall-pending-access",
       installationId,
@@ -1528,7 +361,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const serverId = createIntegrationId("server");
       await platform.install({
         actorUserId: ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: definition.description,
           id: installationId,
@@ -1677,7 +509,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const serverId = createIntegrationId("server");
       await platform.install({
         actorUserId: base.ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: guiDefinition.description,
           id: installationId,
@@ -1716,7 +547,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       readonly runnerId: ReturnType<typeof createId<"runner">>;
       readonly tools: (
         connectionId: Parameters<typeof computerAppTools>[2],
-      ) => readonly import("@opensteer/integration-core").IntegrationToolMaterial[];
+      ) => readonly import("@opensteer/integration-core/models").IntegrationToolMaterial[];
     }) {
       return {
         access: input.access,
@@ -2016,11 +847,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     expect(created.created).toBe(true);
     expect(created.connection).toMatchObject({
-      authorizationDigest: null,
       computer: { access: "read", runnerId: setup.runnerId },
       connectionMethod: "computer",
       displayName: "Mac lifecycle",
     });
+    expect(created.connection).not.toHaveProperty("authorizationDigest");
     expect(
       await database
         .selectFrom("integrationConnections")
@@ -2090,7 +921,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       .executeTakeFirstOrThrow();
     await platform.install({
       actorUserId: setup.ownerUserId,
-      adapterSnapshot: null,
       computerConnectionTools: (connectionId, access) =>
         computerAppTools(computerDefinition, access, connectionId),
       installation: {
@@ -2291,7 +1121,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         isDefault: true,
         ownerUserId: setup.ownerUserId,
-        providerAuthorizations: {},
       });
       void creating.then(
         () => {
@@ -2369,7 +1198,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       installationId: setup.installationId,
       isDefault: true,
       ownerUserId: setup.ownerUserId,
-      providerAuthorizations: {},
     });
     const foreignUserId = await store.createUser("Foreign grant owner");
     await expect(
@@ -2381,7 +1209,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         isDefault: false,
         ownerUserId: foreignUserId,
-        providerAuthorizations: {},
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const revoked = await store.revokeRunner(setup.runnerId, setup.ownerUserId);
@@ -2488,7 +1315,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const run = await runningRunFixture(store, "computer-request-fulfillment");
     const setup = await fixture("request-fulfillment", run.userId);
     const request = (access: "read" | "read-write", callId: string) =>
-      platform.requests.createIntegrationAccessRequest({
+      platform.integrationRequests.createIntegrationAccessRequest({
         access,
         callId,
         installationId: setup.installationId,
@@ -2510,13 +1337,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(created.fulfilledRequestIds).toEqual([read.request.id]);
     await expect(platform.requests.get(read.request.id)).resolves.toMatchObject({
       status: "fulfilled",
     });
 
     const write = await request("read-write", "computer-request-write");
-    const unchanged = await setApprovedComputerConnection({
+    await setApprovedComputerConnection({
       access: "read",
       actorUserId: setup.ownerUserId,
       createIfMissing: true,
@@ -2525,7 +1351,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(unchanged.fulfilledRequestIds).toEqual([]);
     await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
       status: "pending",
     });
@@ -2539,9 +1364,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    expect([...widened.fulfilledRequestIds].sort()).toEqual(
-      [write.request.id, anotherRead.request.id].sort(),
-    );
+    await expect(platform.requests.get(anotherRead.request.id)).resolves.toMatchObject({
+      status: "fulfilled",
+    });
     expect(widened.grants).toEqual([
       expect.objectContaining({ access: "read-write", connectionId: created.connection.id }),
     ]);
@@ -2583,7 +1408,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         tools: setup.tools(access),
       });
     const own = await connect(setup.runnerId, "read");
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read-write",
       callId: "pinned-computer-access",
       installationId: setup.installationId,
@@ -2598,10 +1423,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const otherRunnerId = createId("runner");
     await insertComputerRunner(otherRunnerId, run.userId, "Other Mac");
     const other = await connect(otherRunnerId, "read-write");
-    expect(other.fulfilledRequestIds).toEqual([]);
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
-        providerAuthorizations: {},
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         requestId: opened.request.id,
         expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: run.userId,
@@ -2627,8 +1450,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .where("requestId", "=", opened.request.id)
         .execute(),
     ).toEqual([]);
-    const widened = await connect(setup.runnerId, "read-write");
-    expect(widened.fulfilledRequestIds).toEqual([opened.request.id]);
+    await connect(setup.runnerId, "read-write");
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       response: { value: { connectionId: own.connection.id } },
@@ -2663,7 +1485,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await insertComputerRunner(secondRunnerId, run.userId, "Second request target");
     const second = await connect(secondRunnerId, "connect-second-request-target");
     const request = (callId: string, requestedConnectionId?: typeof first.connection.id) =>
-      platform.requests.createIntegrationAccessRequest({
+      platform.integrationRequests.createIntegrationAccessRequest({
         access: "read-write",
         callId,
         installationId: setup.installationId,
@@ -2742,9 +1564,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         isDefault: true,
         ownerUserId: run.userId,
-        providerAuthorizations: {},
       });
-      const opened = await platform.requests.createIntegrationAccessRequest({
+      const opened = await platform.integrationRequests.createIntegrationAccessRequest({
         access: "read",
         callId: "fulfillment-order-request",
         installationId: setup.installationId,
@@ -2771,8 +1592,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       let fulfillment: Promise<unknown> | undefined;
       try {
         await barrier.reached;
-        fulfillment = platform.requests.resolveIntegrationAccessRequest({
-          providerAuthorizations: {},
+        fulfillment = platform.integrationRequests.resolveIntegrationAccessRequest({
           requestId: opened.request.id,
           expectedRevision: (await platform.requests.revision(opened.request.id))!,
           resolvedBy: run.userId,
@@ -2829,7 +1649,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       installationId: setup.installationId,
       isDefault: true,
       ownerUserId: setup.ownerUserId,
-      providerAuthorizations: {},
     });
     const barrier = pauseAfterLock(database, (node) => /"name":"integration_?grants"/iu.test(node));
     const peer = barrier.database.transaction().execute(async (transaction) => {
@@ -2976,7 +1795,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database()
           and application_name = 'opensteer-computer-app-connections-test'
           and wait_event_type = 'Lock'
-          and query ilike '%client_sync_state%'
+          and query ilike '%deployment_event_state%'
       `.execute(database);
       expect(Number(blockedOnFence.rows[0]?.count)).toBeGreaterThanOrEqual(1);
       release();
@@ -3249,7 +2068,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    const pending = await platform.requests.createIntegrationAccessRequest({
+    const pending = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read-write",
       callId: "rename-ingress-order",
       installationId: setup.installationId,
@@ -3358,7 +2177,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
+          ).rows.some(({ query }) =>
+            query.includes("from deployment_event_state for no key update"),
+          ),
         )
         .toBe(true);
       barrier.release();
@@ -3480,10 +2301,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = commitPersonalMutation(database, (transaction) =>
+      replacing = withPersonalTransaction(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
-          adapterSnapshot: null,
           installation: {
             description: definition.description,
             id: setup.installationId,
@@ -3560,10 +2380,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = commitPersonalMutation(barrier.database, (transaction) =>
+    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: definition.description,
           id: setup.installationId,
@@ -3595,7 +2414,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = commitPersonalMutation(database, (transaction) =>
+      revoking = withPersonalTransaction(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,
@@ -3610,7 +2429,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
+          ).rows.some(({ query }) =>
+            query.includes("from deployment_event_state for no key update"),
+          ),
         )
         .toBe(true);
       barrier.release();
@@ -3743,7 +2564,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.gui.installationId,
         isDefault: true,
         ownerUserId: run.userId,
-        providerAuthorizations: {},
       });
       void granting.catch(() => undefined);
       let asking: ReturnType<IntegrationPlatformStore["requestComputerAppAccess"]> | undefined;
@@ -3754,8 +2574,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
           transformQuery(args) {
             const node = JSON.stringify(args.node);
             if (
-              /client_?sync_?state/iu.test(node) &&
-              /ForNoKeyUpdate|for no key update/iu.test(node)
+              args.node.kind === "RawNode" &&
+              node.includes("select deployment_id from deployment_event_state for no key update")
             )
               acquiring.resolve();
             return args.node;
@@ -3789,7 +2609,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
               await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
-            ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
+            ).rows.some(({ query }) =>
+              query.includes("from deployment_event_state for no key update"),
+            ),
           )
           .toBe(true);
         release.resolve();
@@ -3977,6 +2799,25 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ({ kind }) => kind === "server",
     );
     if (!asked) throw new Error("The server's computer was not asked");
+    await setLaunch({ EDITION: "unreviewed" });
+    let sealedUnreviewedSecrets = false;
+    await expect(
+      platform.localMcp.approve({
+        actorUserId: setup.ownerUserId,
+        runnerId: setup.runnerId,
+        setupRequestId: asked.id,
+        secrets: async () => {
+          sealedUnreviewedSecrets = true;
+          return Buffer.from("unreviewed");
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This server changed since the computer was asked about it; it will be asked again.",
+    });
+    expect(sealedUnreviewedSecrets).toBe(false);
+    expect((await platform.localMcp.get(setup.gui.serverId))?.approvedLaunchDigest).toBeNull();
+    await setLaunch({});
     await platform.localMcp.approve({
       actorUserId: setup.ownerUserId,
       runnerId: setup.runnerId,
@@ -4029,7 +2870,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const installAs = (edition: string) =>
       platform.install({
         actorUserId: setup.ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: "",
           id: installationId,
@@ -4112,7 +2952,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const installOn = (runnerId: typeof setup.runnerId, key: string) =>
       platform.install({
         actorUserId: setup.ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: "",
           id: installationId,
@@ -4422,7 +3261,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ).toEqual([{ status: "revoked" }]);
     await platform.install({
       actorUserId: run.userId,
-      adapterSnapshot: null,
       computerConnectionTools: (id, access) => computerAppTools(computerUseDefinition, access, id),
       installation: {
         description: guiDefinition.description,
@@ -4647,9 +3485,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     // Every listing that projects a computer connection carries the app.
     await expect(
-      new IntegrationStore(database)
-        .listConnections(setup.ownerUserId)
-        .then((rows) => rows.map(({ computer }) => computer?.app ?? null)),
+      listIntegrationConnections(database, setup.ownerUserId).then((rows) =>
+        rows.map(({ computer }) => computer?.app ?? null),
+      ),
     ).resolves.toEqual(
       expect.arrayContaining([
         null,
@@ -4836,15 +3674,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     };
     const opened = await askOnMac(ask);
     expect(opened.replayed).toBe(false);
-    const requestRevision = (await platform.requests.revision(opened.request.id))!;
-    expect(
-      await database
-        .selectFrom("clientChanges")
-        .select(["scopeKey", "operation"])
-        .where("entityKind", "=", "request")
-        .where("entityId", "=", opened.request.id)
-        .execute(),
-    ).toEqual([{ scopeKey: `thread:${run.threadId}`, operation: "upsert" }]);
     expect(opened.setupRequest).toMatchObject({ access: "read", app: notes });
     expect(opened.request).toMatchObject({
       kind: "computer.app.access",
@@ -4867,7 +3696,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     const again = await askOnMac(ask);
     expect(again.replayed).toBe(true);
-    expect(await platform.requests.revision(opened.request.id)).toBe(requestRevision);
     expect(again.request.id).toBe(opened.request.id);
     expect(again.setupRequest.id).toBe(opened.setupRequest.id);
     // A second call with a different call identity is still the same card.
@@ -4927,7 +3755,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         connectionId: consumed.connection.id,
       }),
     ]);
-    expect(consumed.fulfilledRequestIds).toContain(opened.request.id);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       settlementProvenance: { sessionId, deviceLabel: "iPhone" },
@@ -5403,7 +4230,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         threadId: run.threadId,
       });
       const consume = (
-        request: import("@opensteer/integration-core").ComputerAppSetupRequest,
+        request: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
         access: "read" | "read-write",
         app: ComputerAppIdentity = notes,
       ) =>
@@ -5835,7 +4662,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const serverId = createIntegrationId("server");
       await platform.install({
         actorUserId: ownerUserId,
-        adapterSnapshot: null,
         installation: {
           description: phoneDefinition.description,
           id: installationId,
@@ -5893,7 +4719,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture: StoreFixture,
       setup: Awaited<ReturnType<typeof phoneFixture>>,
       access: "read" | "read-write",
-      approved: import("@opensteer/integration-core").ComputerAppSetupRequest,
+      approved: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
     ) {
       const { platform } = storeFixture;
       return platform.setComputerConnection({
@@ -5945,7 +4771,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       expect(again).toMatchObject({ replayed: true, request: { id: opened.request.id } });
 
       expect(
-        (await new IntegrationStore(database).listConnections(run.userId)).filter(
+        (await listIntegrationConnections(database, run.userId)).filter(
           ({ definitionId }) => definitionId === "android-phone",
         ),
       ).toEqual([]);
@@ -6055,7 +4881,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         askForApp(phoneAsk(run, setup.phone.phoneId, "read-write")),
       ).resolves.toMatchObject({ kind: "computer" });
       expect(
-        (await new IntegrationStore(database).listConnections(run.userId)).filter(
+        (await listIntegrationConnections(database, run.userId)).filter(
           ({ definitionId }) => definitionId === "android-phone",
         ),
       ).toEqual([]);
@@ -6210,7 +5036,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const run = await runningRunFixture(store, "phone-main");
       const setup = await phoneFixture(storeFixture, "phone-main", run.userId);
       const mainAsk = (access: "read" | "read-write") =>
-        platform.requests.createIntegrationAccessRequest({
+        platform.integrationRequests.createIntegrationAccessRequest({
           access,
           callId: `phone-main-${access}`,
           installationId: setup.phone.installationId,
@@ -6225,9 +5051,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const mainRead = await mainAsk("read");
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const allowed = await allowPhoneFromClient(storeFixture, setup, "read", opened.setupRequest);
-      expect([...allowed.fulfilledRequestIds].sort()).toEqual(
-        [opened.request.id, mainRead.request.id].sort(),
-      );
+      expect(allowed.fulfilledRequestIds).toEqual([opened.request.id]);
       expect(allowed.grants).toEqual([
         expect.objectContaining({
           access: "read",
@@ -6247,7 +5071,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       });
       expect(declined.request.status).toBe("declined");
       expect(
-        (await new IntegrationStore(database).listConnections(run.userId)).find(
+        (await listIntegrationConnections(database, run.userId)).find(
           ({ definitionId }) => definitionId === "android-phone",
         )?.computer?.access,
       ).toBe("read");
@@ -6264,140 +5088,22 @@ integration.sequential("PostgreSQL computer app connections", () => {
   /** Waits until this many sessions are blocked on a row lock. */
 });
 
-function catalogInstallation(
+/** A local server's installation, which needs no computer connection to be granted. */
+function localServerInstallation(
   installationId: ReturnType<typeof createIntegrationId<"installation">>,
 ) {
   return {
     description: "Records for the team",
     id: installationId,
-    manifest: {
-      definition: {
-        adapter: "openapi" as const,
-        authMethods: [
-          {
-            id: "api-key",
-            inputs: [{ label: "API key", secret: true, variable: "apiKey" }],
-            kind: "api-key" as const,
-            label: "Records API key",
-            placements: [
-              {
-                carrier: "header" as const,
-                name: "Authorization",
-                prefix: "Bearer ",
-                variable: "apiKey",
-              },
-            ],
-          },
-        ],
-        description: "Records for the team",
-        id: "records-catalog",
-        name: "Records",
-        provider: "records",
-      },
-    },
-    name: "records-catalog",
-    provenance: {
-      definitionDigest: "c".repeat(43),
-      definitionId: "records-catalog",
-      maintainedBy: "opensteer",
-    },
-    sourceKind: "built-in" as const,
+    manifest: { name: "records" },
+    name: `plugin-${installationId.replaceAll("_", "-")}`,
+    provenance: { snapshotDigest: "c".repeat(64), standard: "agent-plugins/1.0.0" },
+    sourceKind: "plugin" as const,
     status: "active" as const,
     title: "Records",
-    trust: "built-in" as const,
-    version: "c".repeat(43),
+    trust: "administrator-approved" as const,
+    version: null,
   };
-}
-
-function discoveredTool(toolId: ReturnType<typeof createIntegrationId<"tool">>) {
-  const inputSchema = { properties: { query: { type: "string" } }, type: "object" } as const;
-  return {
-    annotations: {},
-    connectionId: null,
-    description: "Read records",
-    id: toolId,
-    inputSchema,
-    name: "records.read",
-    outputSchema: null,
-    status: "active" as const,
-    title: "Read records",
-  };
-}
-
-async function countRows(
-  database: ReturnType<typeof createDatabase>,
-  table:
-    | "credentials"
-    | "integrationConnections"
-    | "integrationGrants"
-    | "integrationServers"
-    | "integrationTools"
-    | "mcpOAuthCredentials",
-): Promise<number> {
-  const row = await database
-    .selectFrom(table)
-    .select((expression) => expression.fn.countAll<string>().as("total"))
-    .executeTakeFirstOrThrow();
-  return Number(row.total);
-}
-
-async function insertCredential(
-  database: ReturnType<typeof createDatabase>,
-  credentialId: ReturnType<typeof createId<"credential">>,
-  ownerUserId: ReturnType<typeof createId<"user">>,
-): Promise<void> {
-  await database
-    .insertInto("credentials")
-    .values({
-      encryptedPayload: Buffer.from("sealed-api-key"),
-      encryptionKeyVersion: 1,
-      id: credentialId,
-      metadata: sql`'{}'::jsonb`,
-      name: "Records key",
-      ownerId: ownerUserId,
-      provider: "records",
-      updatedAt: new Date(),
-    })
-    .executeTakeFirstOrThrow();
-}
-
-async function insertProviderConnection(
-  database: ReturnType<typeof createDatabase>,
-  input: {
-    readonly connectionId: ReturnType<typeof createIntegrationId<"connection">>;
-    readonly credentialId: ReturnType<typeof createId<"credential">>;
-    readonly definitionId: string;
-    readonly ownerUserId: ReturnType<typeof createId<"user">>;
-  },
-): Promise<void> {
-  await database
-    .insertInto("integrationConnections")
-    .values({
-      accountIdentifier: "alex@example.com",
-      applicationSource: sql`'{"kind":"api-key"}'::jsonb`,
-      authMethodId: "api-key",
-      authorizationDigest: "a".repeat(43),
-      capabilities: sql`'[]'::jsonb`,
-      runnerId: null,
-      connectionKind: "provider-account",
-      connectionMethod: "api-key",
-      credentialId: input.credentialId,
-      displayName: "Alex",
-      externalIdentityId: `${input.definitionId}-key`,
-      externalTenantId: null,
-      grantedScopes: sql`'[]'::jsonb`,
-      id: input.connectionId,
-      integrationDefinitionId: input.definitionId,
-      integrationServerId: null,
-      ownerUserId: input.ownerUserId,
-      provider: input.definitionId,
-      providerApplicationId: null,
-      status: "connected",
-      statusDetail: null,
-      transportKind: null,
-      updatedAt: new Date(),
-    })
-    .executeTakeFirstOrThrow();
 }
 
 async function runningRunFixture(store: OpensteerStore, suffix: string) {

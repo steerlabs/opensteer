@@ -2,7 +2,7 @@ import type { RunToolCapabilities } from "./registry.js";
 import { z } from "zod";
 
 export const OpensteerAgentSkillNameSchema = z.enum([
-  "opensteer:integrations",
+  "opensteer:plugins",
   "opensteer:computer-use",
   "opensteer:tasks",
   "opensteer:automations",

@@ -1,4 +1,5 @@
 import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
   createConnectionController,
   type ClientScope,
@@ -26,7 +27,11 @@ import {
   personalDetailFrameMaxBytes,
   affectedPersonalSubscriptions,
 } from "@opensteer/protocol/personal-sync";
-import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import {
+  pluginCategoryResources,
+  pluginChangeResources,
+  type PersonalResourceKind,
+} from "@opensteer/protocol/resources";
 import type { PersonalShellStore } from "./personal-shell-store.js";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
@@ -52,7 +57,7 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
@@ -607,9 +612,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
-  readonly #pluginsChangedListeners = new Set<
-    (message: { type: "host.plugins-changed" }) => void
-  >();
+  readonly #pluginEngineListeners = new Set<(engine: PluginEngineStateView) => void>();
   readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #connectionsListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
@@ -1034,6 +1037,12 @@ export class HttpHostClient {
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
     return { title: view.app.name, url: view.entryUrl ?? this.#url(view.path) };
+  }
+  async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
+    const view = unwrapRpcResult(
+      await this.rpc["plugins.page.view"]({ pluginId, theme }, signal ? { signal } : undefined),
+    );
+    return { title: pluginId, url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
@@ -1789,6 +1798,7 @@ export class HttpHostClient {
   }
 
   #resourceChanged(kind: PersonalResourceKind) {
+    if (pluginChangeResources.some((resource) => resource === kind)) return;
     const installed = this.#stream.resources.get(kind);
     const revision = this.#stream.resources.getKnownRevision(kind);
     const summary =
@@ -1909,6 +1919,7 @@ export class HttpHostClient {
   }
 
   #readResource(kind: PersonalResourceKind) {
+    if (pluginChangeResources.some((resource) => resource === kind)) return;
     const installed = this.#stream.resources.get(kind);
     if (
       !installed ||
@@ -1978,6 +1989,9 @@ export class HttpHostClient {
   ) {
     const snapshot = this.#snapshot;
     switch (data.kind) {
+      case "plugin-engine":
+        for (const listener of this.#pluginEngineListeners) listener(data.engine);
+        break;
       case "settings":
         this.#update({
           ...snapshot,
@@ -2585,10 +2599,34 @@ export class HttpHostClient {
   }
 
   subscribePluginsChanged(
-    listener: (message: { type: "host.plugins-changed" }) => void,
+    listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void {
-    this.#pluginsChangedListeners.add(listener);
-    return () => this.#pluginsChangedListeners.delete(listener);
+    const resource = this.#stream.resources;
+    const watch = (kind: PersonalResourceKind, category?: PluginResourceCategory) => {
+      let seen = resource.getKnownRevision(kind);
+      return this.#stream.watchResource(kind, () => {
+        const revision = resource.getKnownRevision(kind);
+        if (revision === undefined || revision === seen) return;
+        seen = revision;
+        listener({ type: "host.plugins-changed", ...(category ? { categories: [category] } : {}) });
+      });
+    };
+    const releases = [
+      watch("plugin"),
+      ...Object.entries(pluginCategoryResources).map(([category, kind]) =>
+        watch(kind, category as PluginResourceCategory),
+      ),
+    ];
+    return () => releases.forEach((release) => release());
+  }
+  subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void {
+    this.#pluginEngineListeners.add(listener);
+    const release = this.watchPersonalResource("plugin-engine", () => {});
+    return () => {
+      this.#pluginEngineListeners.delete(listener);
+      release();
+      if (!this.#pluginEngineListeners.size) this.#resourceRevisions.delete("plugin-engine");
+    };
   }
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#personalRemoteAccessListeners.add(listener);
@@ -3977,9 +4015,6 @@ export class HttpHostClient {
         break;
       case "host.connections-changed":
         for (const listener of this.#connectionsListeners) listener();
-        break;
-      case "host.plugins-changed":
-        for (const listener of this.#pluginsChangedListeners) listener(message);
         break;
     }
   }

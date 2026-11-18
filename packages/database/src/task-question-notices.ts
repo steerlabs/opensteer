@@ -66,8 +66,5 @@ export async function taskQuestionNoticeIsPending(
   const worker = threads.find(({ id }) => id === question.request.originatingThreadId);
   if (!parent || !worker || !threadAccessModeAtMost(worker.accessMode, parent.accessMode))
     return false;
-  return (
-    (parent.specialistId === null || parent.specialistId === worker.specialistId) &&
-    (await threadExecutionIsAvailableToUser(transaction, worker.id, input.requestedBy))
-  );
+  return threadExecutionIsAvailableToUser(transaction, worker.id, input.requestedBy);
 }

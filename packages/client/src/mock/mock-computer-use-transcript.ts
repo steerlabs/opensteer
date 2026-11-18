@@ -119,11 +119,11 @@ export function mockComputerUseTurn(options: {
       tool: fields.tool,
     };
   };
-  const search = { name: "integration_search", namespace: "opensteer.integrations" };
-  const integrationCall = { name: "integration_call", namespace: "opensteer.integrations" };
+  const search = { name: "computer_apps", namespace: "opensteer" };
+  const integrationCall = { name: "computer.observe", namespace: "opensteer.integrations" };
   const observe = (started: string, completed: string, id: string, title?: string): ToolEntry =>
     call(started, completed, {
-      arguments: { arguments: {}, toolRef: observeRef },
+      arguments: {},
       integration: mockComputerUseSubject("observe", place),
       output: observation({ id, performed: null, ...(title ? { title } : {}) }),
       tool: integrationCall,
@@ -139,14 +139,14 @@ export function mockComputerUseTurn(options: {
     },
   ): ToolEntry =>
     call(started, completed, {
-      arguments: {
-        arguments: { actions: fields.actions, observationId: fields.cited },
-        toolRef: actRef,
-      },
+      arguments: { window: 101 },
       ...(fields.error === true ? { error: true } : {}),
       integration: mockComputerUseSubject("act", place),
       output: fields.output,
-      tool: integrationCall,
+      tool: {
+        name: fields.actions[0]?.type === "click" ? "computer.click" : "computer.act",
+        namespace: "opensteer.integrations",
+      },
     });
 
   const note: MessageEntry = {
@@ -160,7 +160,7 @@ export function mockComputerUseTurn(options: {
   };
   const steps: ToolEntry[] = [
     call("28:11.406", "28:11.720", {
-      arguments: { limit: 20, query: "Computer use", runnerId: place.runnerId },
+      arguments: { limit: 20, query: "Computer use", computerId: place.runnerId },
       integration: null,
       output: '{"apps":[],"total":0,"nextOffset":null}',
       tool: search,
@@ -169,7 +169,7 @@ export function mockComputerUseTurn(options: {
       arguments: {
         limit: 20,
         query: "Slack",
-        runnerId: "rnr_35a353b8-9b64-460e-bc46-7d984637b47b",
+        computerId: "rnr_35a353b8-9b64-460e-bc46-7d984637b47b",
       },
       error: true,
       integration: null,
@@ -177,7 +177,7 @@ export function mockComputerUseTurn(options: {
       tool: search,
     }),
     call("28:19.266", "28:19.480", {
-      arguments: { limit: 20, query: "Slack", runnerId: place.runnerId },
+      arguments: { limit: 20, query: "Slack", computerId: place.runnerId },
       integration: null,
       output: JSON.stringify({
         apps: [
@@ -185,12 +185,11 @@ export function mockComputerUseTurn(options: {
             access: "read-write",
             bundleId: mockComputerUseSlack.bundleId,
             name: "Slack",
-            nextAction: "Call integration_call with the toolRef.",
+            nextAction: 'Use app("Slack") in computer_use.',
             status: "approved",
-            toolRefs: { act: actRef, observe: observeRef },
           },
         ],
-        nextOffset: null,
+        nextCursor: null,
         total: 1,
       }),
       tool: search,
@@ -203,25 +202,13 @@ export function mockComputerUseTurn(options: {
       output: "Invalid Act arguments at $.actions[0]: must match exactly one allowed schema",
     }),
     call("28:35.368", "28:35.590", {
-      arguments: { toolRef: actRef },
-      integration: mockComputerUseSubject("act", place),
-      output: [
-        JSON.stringify({
-          account: {
-            alias: "This computer",
-            connectionId: "con_9df27711-7b35-4eee-94bd-4f2d7b86a306",
-            isDefault: false,
-          },
-          integration: { name: "macos-app", title: "Computer use", trust: "built-in" },
-          operation: { annotations: { readOnlyHint: false }, name: "act", title: "Act" },
-          path: "",
-          schemaBytes: 92,
-          cursor: 0,
-          nextCursor: null,
-        }),
-        '{"inputSchema":{"type":"object","required":["observationId","actions"]},"outputSchema":null}',
-      ].join("\n"),
-      tool: { name: "integration_describe", namespace: "opensteer.integrations" },
+      arguments: {},
+      integration: {
+        ...mockComputerUseSubject("observe", place),
+        operation: { name: "windows", title: "List windows" },
+      },
+      output: JSON.stringify({ windows: [{ id: 101, title: "Slack", app: place.app }] }),
+      tool: { name: "computer.windows", namespace: "opensteer.integrations" },
     }),
     act("28:40.639", "28:41.020", {
       actions: [{ target: { index: 19 }, type: "click" }],

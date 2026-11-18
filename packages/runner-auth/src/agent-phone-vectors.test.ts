@@ -2,8 +2,8 @@ import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tokenDigest } from "@opensteer/core/crypto";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
-import { parseComputerAppConfig } from "@opensteer/integration-core";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
+import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
   AndroidPhoneDispatchActParamsSchema,
@@ -558,7 +558,7 @@ function vectors() {
     descriptor,
     publicKeyPem: canonicalRunnerPublicKeyPem(createPublicKey(runnerKey.privateKey)),
   };
-  const definition = getIntegrationDefinition(androidPhoneDefinitionId);
+  const definition = getDeviceDefinition(androidPhoneDefinitionId);
   if (!definition) throw new Error("The catalog must define android-phone");
   return {
     auxiliary: {

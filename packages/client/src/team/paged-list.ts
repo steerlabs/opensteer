@@ -40,11 +40,13 @@ export class PagedList<Item, First extends KeysetPage<Item> = KeysetPage<Item>> 
     session: ClientSession,
     read: (cursor: string | null) => Promise<First>,
     bound = pagedListBound,
+    subscribeInvalidation?: (listener: () => void) => () => void,
   ) {
     this.#resource = createClientRead(session, {
       key: "pages",
       label: "this list",
       remember: true,
+      ...(subscribeInvalidation === undefined ? {} : { subscribeInvalidation }),
       read: async (signal) => {
         const scope = clientScopeKey(session.connection.getSnapshot().scope);
         const current = this.#resource.getSnapshot();

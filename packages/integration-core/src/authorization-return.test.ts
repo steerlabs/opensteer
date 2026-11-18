@@ -3,7 +3,6 @@ import {
   integrationAuthorizationAppReturnBase,
   integrationAuthorizationBrowserReturn,
 } from "./authorization-return.js";
-import { BeginIntegrationAuthorizationSchema, BeginMcpAuthorizationSchema } from "./models.js";
 
 const attemptId = "ioa_00000000-0000-4000-8000-000000000001";
 const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
@@ -143,30 +142,5 @@ describe("desktop loopback handoff", () => {
     expect(() =>
       integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 3_000 }),
     ).toThrow();
-  });
-
-  it.each([
-    ["provider", BeginIntegrationAuthorizationSchema, { definitionId: "google-gmail" }],
-    [
-      "MCP",
-      BeginMcpAuthorizationSchema,
-      {
-        displayName: "Linear",
-        requestId: `req_${crypto.randomUUID()}`,
-        serverId: `isv_${crypto.randomUUID()}`,
-      },
-    ],
-  ] as const)("admits a %s port only for a desktop app finish", (_flow, schema, base) => {
-    const begin = { ...base, finish: "app", surface: "desktop" };
-    expect(schema.safeParse({ ...begin, appReturnPort: 48_200 }).success).toBe(true);
-    expect(schema.safeParse({ ...begin, appReturnPort: 48_215 }).success).toBe(true);
-    for (const port of [47_999, 48_199, 48_216, 3_000, 48_200.5, "48200"])
-      expect(schema.safeParse({ ...begin, appReturnPort: port }).success).toBe(false);
-    expect(schema.safeParse({ ...begin, appReturnPort: 48_200, surface: "native" }).success).toBe(
-      false,
-    );
-    expect(schema.safeParse({ ...base, appReturnPort: 48_200, surface: "desktop" }).success).toBe(
-      false,
-    );
   });
 });

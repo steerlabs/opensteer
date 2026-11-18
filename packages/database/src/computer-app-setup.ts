@@ -1,3 +1,4 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { randomUUID } from "node:crypto";
 import type { RequestPresentation, DeviceId, UserId, ThreadId } from "@opensteer/core";
 import {
@@ -228,7 +229,7 @@ export async function insertComputerAppSetupRequestInTransaction(
     .select("id")
     .where("singletonKey", "=", "primary")
     .executeTakeFirstOrThrow();
-  return transaction
+  const request = await transaction
     .insertInto("computerAppSetupRequests")
     .values({
       kind: input.kind ?? "app",
@@ -251,6 +252,12 @@ export async function insertComputerAppSetupRequestInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  await commitPersonalMutation(transaction, async (_tx, mutation) => {
+    mutation.react({ type: "deadlinesChanged" });
+    mutation.bumpResource("plugin");
+    mutation.bumpResource("machine");
+  });
+  return request;
 }
 
 /** Whether an existing pending approval is the same ask, and therefore replayable. */

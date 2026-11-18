@@ -293,7 +293,7 @@ export const connectedAppsSettingsRow = {
 
 /** Installed, then turned on or off, apart from what it may access. */
 export const pluginsSettingsRow = {
-  detail: "Skills, tools and specialists for your agents",
+  detail: "Skills and tools for your agents",
   title: "Plugins",
 } as const;
 

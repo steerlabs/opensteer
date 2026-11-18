@@ -128,8 +128,8 @@ it("keeps a meeting ongoing at the actual Run time rather than a stale wake time
   expect((wake as { text: string }).text).toMatch(
     /^Light pass due \(2026-11-16T20:00:00\.000Z\)\. Load opensteer:memory and follow its light-pass reference\.\n\n/u,
   );
-  expect(JSON.stringify(shifted.mocks.integration_call)).toContain("2026-11-16T19:35:00.000Z");
-  expect(JSON.stringify(shifted.mocks.integration_call)).toContain("2026-11-16T21:00:00.000Z");
+  expect(JSON.stringify(shifted.mocks.plugin_call)).toContain("2026-11-16T19:35:00.000Z");
+  expect(JSON.stringify(shifted.mocks.plugin_call)).toContain("2026-11-16T21:00:00.000Z");
   expect(shifted.tasks.find((task) => task.self)!.items[0]!.createdAt).toBe(
     "2026-11-16T19:30:00.000Z",
   );

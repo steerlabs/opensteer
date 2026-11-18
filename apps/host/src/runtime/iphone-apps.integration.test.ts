@@ -1,3 +1,4 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -5,12 +6,10 @@ import type {
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
 
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import {
-  isComputerAppDefinition,
-  type ComputerAppSetupSummary,
-  type IntegrationAccess,
-} from "@opensteer/integration-core";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import { type ComputerAppSetupSummary } from "@opensteer/integration-core/computer-app-setup";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import {
   HostIntegrationsInvokeSchema,
   RunnerChallengeSchema,
@@ -37,12 +36,9 @@ import {
   connectComputerAppMachine,
   integrationGateway,
   openAuxiliaryStream,
-  operation,
-  operations,
+  pluginCall,
   requestComputerAppSetup,
   setComputerApp,
-  toolBlocked,
-  toolText,
   waitForClose,
   waitForMessage,
 } from "./computer-apps.test-support.js";
@@ -539,16 +535,12 @@ integration.sequential("iPhone integrations Host contract", () => {
       { headers: admin },
     );
     const calendar = catalog.catalog.find(({ definition }) => definition.id === "apple-calendar")!;
-    await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        type: "integration.catalog.install",
-        idempotencyKey: "install",
-        input: { definitionId: "apple-calendar", digest: calendar.digest },
-      },
-      { headers: admin },
-    );
+    await host.runtime.devices.installDefinition({
+      actorUserId: host.ownerId,
+      definitionId: "apple-calendar",
+      digest: calendar.digest!,
+      requestId: "install",
+    });
     const request = await requestComputerAppSetup(
       host,
       phone.runnerId,
@@ -599,32 +591,18 @@ integration.sequential("iPhone integrations Host contract", () => {
     });
     const pluginDirectory = join(directory, "refused-plugin");
     await mkdir(pluginDirectory, { recursive: true });
-    await writeFile(
-      join(pluginDirectory, "plugin.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-        name: "iphone-refusal-fixture",
+
+    await expect(
+      host.runtime.localServers.installPackage({
+        actorUserId: host.ownerId,
+        directory: pluginDirectory,
+        registration: { name: "iphone-refusal-fixture", launch: { command: "node", args: [] } },
+        requestId: "iphone-local-server-refused",
+        runnerId: phone.runnerId,
       }),
-    );
-    await writeFile(
-      join(pluginDirectory, "mcp.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        mcpServers: { fixture: { type: "stdio", command: "node", args: [] } },
-      }),
-    );
-    const mcp = await command(
-      host,
-      {
-        type: "plugin.install",
-        idempotencyKey: randomUUID(),
-        input: { directory: pluginDirectory, runnerId: phone.runnerId },
-      },
-      admin,
-    );
-    expect(mcp.status, await mcp.clone().text()).toBe(403);
-    expect(await mcp.json()).toMatchObject({
-      error: { message: "Local servers can't run on an iPhone." },
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Local servers can't run on an iPhone.",
     });
     const connection = await host.store.database
       .selectFrom("integrationConnections")
@@ -710,28 +688,21 @@ integration.sequential("iPhone integrations Host contract", () => {
     closers.unshift(() => run.complete());
     const gateway = keep(await integrationGateway(run.integrationTools));
     await grant(host, gateway, connection.id, "read-write");
-    const search = await gateway.call("integration_search", { query: "Calendar" });
-    const writeAddress = operation(search, "create_event").address;
-    expect(
-      await gateway.call("integration_call", {
-        arguments: {},
-        ...operation(search, "list_calendars").address,
-      }),
-    ).toEqual({ calendars: [] });
+    const phoneNamespace = localNamespace("calendar-test-iphone", `app_device_${connection.id}`);
+    const phoneCalendar = `tools[${JSON.stringify(phoneNamespace)}]`;
+    const createEvent = { title: "no write", start: "2026-10-28T12:00", end: "2026-10-28T13:00" };
+    expect((await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).value).toEqual({
+      calendars: [],
+    });
     const before = phone.invocations.length;
     for (const args of [
       { start: "nonsense", end: "2026-10-29" },
       { start: "2026-10-28" },
       { start: "2026-10-28", end: "2026-10-29", unknown: true },
     ])
-      expect(
-        (
-          await gateway.callRaw("integration_call", {
-            arguments: args,
-            ...operation(search, "list_events").address,
-          })
-        ).isError,
-      ).toBe(true);
+      expect((await pluginCall(gateway, `${phoneCalendar}.list_events`, args)).raw.isError).toBe(
+        true,
+      );
     expect(phone.invocations).toHaveLength(before);
     await testRpcData(
       host.origin,
@@ -749,20 +720,18 @@ integration.sequential("iPhone integrations Host contract", () => {
       },
       { headers: host.ownerHeaders },
     );
-    const read = await gateway.call("integration_search", { query: "Calendar" });
     expect(
-      operations(read)
-        .map(({ name }) => name)
-        .sort(),
-    ).toEqual(["list_calendars", "list_events"]);
-    expect(
-      (
-        await gateway.callRaw("integration_call", {
-          arguments: { title: "no write", start: "2026-10-28T12:00", end: "2026-10-28T13:00" },
-          ...writeAddress,
-        })
-      ).isError,
-    ).toBe(true);
+      (await pluginCall(gateway, `${phoneCalendar}.create_event`, createEvent)).raw,
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message: "Calendar on Test iPhone allows reading only.",
+          next: `To create_event, call app_access_request with dataApp "calendar", computerId "${phone.runnerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
+        },
+      },
+    });
     expect(phone.invocations).toHaveLength(before);
     const widen = await requestComputerAppSetup(
       host,
@@ -818,16 +787,17 @@ integration.sequential("iPhone integrations Host contract", () => {
         2,
       ),
     );
-    const phoneTools = await gateway.call("integration_search", { query: "Calendar" });
-    const phoneReadAddress = operation(phoneTools, "list_calendars").address;
-    const phoneWriteAddress = operation(phoneTools, "create_event").address;
     await phone.disconnectStream();
-    expect(
-      toolBlocked(await gateway.call("integration_search", { query: "Calendar" }), "list_events"),
-    ).toEqual({
-      code: "unavailable",
-      message: `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
-      next: "Continue without it and tell the person what the message says.",
+    expect(await gateway.call("plugin_search", { namespace: phoneNamespace })).toMatchObject({
+      unavailableApps: [
+        {
+          blocked: {
+            code: "unavailable",
+            message: `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+            next: "Continue without it and tell the person what the message says.",
+          },
+        },
+      ],
     });
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
@@ -862,26 +832,25 @@ integration.sequential("iPhone integrations Host contract", () => {
       { headers: host.ownerHeaders },
     );
     if (macGrant.type !== "integration.grant.create") throw new Error("Wrong Mac grant response");
-    const alternatives = operations(
-      await gateway.call("integration_search", { query: "Calendar" }),
+    // The Mac's Calendar is its own provider; the phone's call below never moves to it.
+    const macNamespace = localNamespace(
+      "calendar-studio-mac",
+      `app_device_${macConnection.connection.id}`,
     );
-    expect(
-      alternatives.some(
-        ({ connectionId, name }) =>
-          connectionId === macConnection.connection.id && name === "create_event",
-      ),
-    ).toBe(true);
     await mac.heartbeat();
-    phone.dropWriteAnswer = true;
-    const lost = await gateway.callRaw("integration_call", {
-      arguments: {
-        title: "one uncertain event",
-        start: "2026-10-28T12:00",
-        end: "2026-10-28T13:00",
-      },
-      ...phoneWriteAddress,
+    expect(await gateway.call("plugin_search", { namespace: macNamespace })).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ path: `tools[${JSON.stringify(macNamespace)}].create_event` }),
+      ]),
     });
-    expect(toolText(lost)).toBe(
+    await phone.heartbeat();
+    phone.dropWriteAnswer = true;
+    const lost = await pluginCall(gateway, `${phoneCalendar}.create_event`, {
+      title: "one uncertain event",
+      start: "2026-10-28T12:00",
+      end: "2026-10-28T13:00",
+    });
+    expect(lost.failure).toBe(
       "Test iPhone did not confirm this. Check whether it happened before trying again.",
     );
     expect(phone.invocations.filter(({ operation }) => operation === "create_event")).toHaveLength(
@@ -894,20 +863,19 @@ integration.sequential("iPhone integrations Host contract", () => {
     );
     expect(macCalls).toHaveLength(0);
     await phone.disconnectStream();
-    expect(
-      toolText(await gateway.callRaw("integration_call", { arguments: {}, ...phoneReadAddress })),
-    ).toBe(offline("Test iPhone"));
+    expect((await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).failure).toBe(
+      `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+    );
     await phone.close();
     await waitForCondition(
       async () =>
         (await machines(host)).find(({ id }) => id === phone.runnerId)?.status === "offline",
     );
-    const offlineCall = await gateway.callRaw("integration_call", {
-      arguments: {},
-      ...phoneReadAddress,
+    const offlineCall = await gateway.callRaw("plugin_call", {
+      calls: { path: `${phoneCalendar}.list_calendars`, input: {} },
     });
-    expect(offlineCall).toMatchObject({ isError: true });
     expect(offlineCall).toMatchObject({
+      isError: true,
       structuredContent: {
         error: {
           code: "computer_offline",
@@ -1175,12 +1143,13 @@ async function grant(
   connectionId: string,
   access: IntegrationAccess,
 ) {
-  const held = gateway.call("integration_request", {
+  const held = gateway.call("app_access_request", {
     access,
-    integration: "apple-calendar",
+    dataApp: "calendar",
     reason: "Use phone Calendar",
   });
-  const pending = () => host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+  const pending = () =>
+    host.store.integrationRequests.listPendingIntegrationAccessRequests(host.ownerId);
   await waitForCondition(async () => (await pending()).length > 0);
   const request = (await pending()).at(-1)!;
   await testRpcData(

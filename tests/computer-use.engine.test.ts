@@ -165,11 +165,11 @@ describe("real-engine computer use", () => {
       const transcript = await readVerticalRunTools(stack.host.store.database, turn.runId);
       evidence.transcriptExcerpt = transcript;
       const starts = transcript.filter((call) => call.startedAt !== null);
-      const outer = starts.filter((call) => /(?:^|__)computer$/u.test(call.tool?.name ?? ""));
+      const outer = starts.filter((call) => /(?:^|__)computer_use$/u.test(call.tool?.name ?? ""));
       expect(outer.length, "real engine invoked the outer computer MCP tool").toBeGreaterThan(0);
       expect(
-        starts.filter((call) => call.tool?.name.endsWith("integration_call")),
-        "no legacy computer integration calls",
+        starts.filter((call) => call.tool?.name.endsWith("plugin_call")),
+        "computer use stays in the computer tool",
       ).toEqual([]);
       const operations = starts.filter((call) => call.tool?.name.startsWith("computer."));
       for (const operation of ["windows", "bind", "observe"]) {

@@ -1467,7 +1467,9 @@ function rowHead(
     case "integrations": {
       // Every search here was a Mac listing its apps, or some were integration lookups.
       const listingApps = tools.every(listsAppsOnMac);
-      const searches = tools.filter((entry) => entry.tool?.name === "integration_search");
+      const searches = tools.filter(
+        (entry) => entry.tool?.name === "computer_apps" || entry.tool?.name === "plugin_search",
+      );
       const looked = [...new Set(presentations.map((presentation) => presentation.hint))];
       return {
         detail:
@@ -1482,10 +1484,10 @@ function rowHead(
         label: running
           ? listingApps
             ? "Listing apps on a Mac"
-            : "Looking up integrations"
+            : "Looking up tools"
           : listingApps
             ? "Listed apps on a Mac"
-            : "Looked up integrations",
+            : "Looked up tools",
         tone,
       };
     }
@@ -1595,8 +1597,8 @@ function computerStepPlace(tool: ToolEntry): string {
 
 function listsAppsOnMac(tool: ToolEntry): boolean {
   return (
-    tool.tool?.name === "integration_search" &&
-    stringField(effectiveArguments(tool), "runnerId") !== null
+    (tool.tool?.name === "computer_apps" || tool.tool?.name === "plugin_search") &&
+    stringField(effectiveArguments(tool), "computerId") !== null
   );
 }
 
@@ -1716,8 +1718,15 @@ function nodeHead(node: NodeEntry): ActivityStepHead {
 
 function toolTone(tool: ToolEntry): ActivityTone {
   switch (tool.state) {
-    case "failed":
-      return computerUseHeadline(tool) === null ? "error" : "stopped";
+    case "failed": {
+      const headline = computerUseHeadline(tool);
+      return headline === null ||
+        (tool.tool?.name.startsWith("computer.") &&
+          !headline.includes("Stopped") &&
+          !headline.includes("stopped"))
+        ? "error"
+        : "stopped";
+    }
     case "stopped":
       return "stopped";
     case "done":
@@ -2184,6 +2193,28 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     said(["Changing new-task defaults", "Changed new-task defaults"], "pencil"),
   ],
 
+  ["plugin_execute", said(["Running a plugin program", "Ran a plugin program"], "puzzle")],
+  ["plugin_resume", said(["Continuing a plugin program", "Continued a plugin program"], "puzzle")],
+  ["plugin_skills", said(["Reading a plugin's skills", "Read a plugin's skills"], "puzzle")],
+  [
+    "plugin_resources",
+    said(["Checking a plugin's background work", "Checked a plugin's background work"], "puzzle"),
+  ],
+  [
+    "opensteer_plugin_export",
+    said(["Exporting plugin source", "Exported plugin source"], "folder"),
+  ],
+  [
+    "opensteer_plugin_activate",
+    said(["Switching plugin versions", "Switched plugin versions"], "puzzle"),
+  ],
+  ["local_server_add", said(["Registering a local server", "Registered a local server"], "puzzle")],
+  ["local_server_list", said(["Listing local servers", "Listed local servers"], "puzzle")],
+  ["local_server_remove", said(["Removing a local server", "Removed a local server"], "puzzle")],
+  [
+    "plugin_account_request",
+    said(["Requesting a connected account", "Requested a connected account"], "puzzle"),
+  ],
   ["computer_list", said(["Looking up computers", "Looked up computers"], "laptop")],
   [
     "computer_update",
@@ -2267,25 +2298,6 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
 
   [
-    "integration_list",
-    said(["Looking up integration access", "Looked up integration access"], "puzzle"),
-  ],
-  [
-    "integration_remove",
-    (tool, args) => {
-      const target = stringField(args, "target");
-      return said(
-        target === "integration"
-          ? ["Uninstalling an integration", "Uninstalled an integration"]
-          : target === "grant"
-            ? ["Revoking integration access", "Revoked integration access"]
-            : ["Disconnecting an integration", "Disconnected an integration"],
-        "puzzle",
-      )(tool, args);
-    },
-  ],
-
-  [
     "opensteer_messaging_bridge_list",
     said(["Looking up messaging bridges", "Looked up messaging bridges"], "share"),
   ],
@@ -2303,9 +2315,14 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     said(["Removing a messaging bridge", "Removed a messaging bridge"], "share"),
   ],
 
+  ["opensteer_plugin_list", said(["Looking up plugins", "Looked up plugins"], "puzzle")],
   [
-    "opensteer_plugin_list",
-    said(["Looking up plugins and specialists", "Looked up plugins and specialists"], "puzzle"),
+    "opensteer_plugin_catalog",
+    said(["Searching the plugin catalog", "Searched the plugin catalog"], "puzzle"),
+  ],
+  [
+    "opensteer_plugin_resource_update",
+    said(["Updating a plugin's background work", "Updated a plugin's background work"], "puzzle"),
   ],
   [
     "opensteer_plugin_install",
@@ -2319,22 +2336,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         label: "Installed a plugin",
       }),
   ],
-  [
-    "opensteer_plugin_update",
-    saidByFlag(
-      "enabled",
-      ["Turning on a plugin", "Turned on a plugin"],
-      ["Turning off a plugin", "Turned off a plugin"],
-      "puzzle",
-    ),
-  ],
-  [
-    "opensteer_plugin_remove",
-    (tool, args) =>
-      (stringField(args, "target") === "specialist"
-        ? said(["Removing a specialist", "Removed a specialist"], "puzzle")
-        : said(["Removing a plugin", "Removed a plugin"], "puzzle"))(tool, args),
-  ],
+  ["opensteer_plugin_remove", said(["Removing a plugin", "Removed a plugin"], "puzzle")],
 
   ["app_list", said(["Listing apps", "Listed apps"], "share")],
   ["app_publish", said(["Publishing an app", "Published an app"], "share")],
@@ -2567,67 +2569,46 @@ function integrationPresentation(
 ): ToolPresentation | null {
   const subject = tool.integration;
   const place = computerPlace(tool);
-  // An address is `name@digest`; the digest only pins the schema.
-  const asked = stringField(args, "operation")?.replace(/@[^@]*$/u, "") || null;
+  const input = isRecord(args) && isRecord(args.calls) ? args.calls : args;
+  const asked = stringField(input, "path");
   switch (name) {
-    case "integration_call":
-      if (subject && place) return computerPresentation(tool, subject, place);
-      if (subject) {
-        return gatewayStep({
-          activeLabel: `Using ${subject.integration}`,
-          hint: `${subject.integration} · ${subject.account}`,
-          kind: "integration-call",
-          label: subject.operation.title,
-        });
-      }
+    case "plugin_call":
       return gatewayStep({
-        activeLabel: asked ? `Calling ${asked}` : "Calling an integration",
-        hint: "",
+        activeLabel: subject ? `Using ${subject.integration}` : "Calling plugin tools",
+        hint: subject ? `${subject.integration} · ${subject.account}` : "",
         kind: "integration-call",
-        label: asked ? `Called ${asked}` : "Called an integration",
+        label: subject?.operation.title ?? (asked ? `Called ${asked}` : "Called plugin tools"),
       });
-    case "integration_describe":
+    case "plugin_describe":
       return gatewayStep({
-        activeLabel: subject
-          ? `Looking up ${subject.operation.title}`
-          : asked
-            ? `Looking up ${asked}`
-            : "Looking up an integration",
-        hint: place?.kind === "phone" ? place.computer : (subject?.integration ?? ""),
-        // Reading how to use an app is part of using it, so it stays in that app's row.
+        activeLabel: "Reading plugin tools",
+        hint: place?.kind === "phone" ? place.computer : "",
         kind: place ? "computer" : "integration-lookup",
-        label: subject
-          ? `Looked up ${subject.operation.title}`
-          : asked
-            ? `Looked up ${asked}`
-            : "Looked up an integration",
+        label: subject ? `Looked up ${subject.operation.title}` : "Read plugin tools",
       });
-    case "integration_search": {
-      const onMac = stringField(args, "computerId") !== null;
+    case "plugin_search":
       return gatewayStep({
-        activeLabel: onMac ? "Listing apps on a Mac" : "Searching integrations",
+        activeLabel: "Finding plugin tools",
         hint: searchedFor([stringField(args, "query")]),
         kind: "integration-lookup",
-        label: onMac ? "Listed apps on a Mac" : "Searched integrations",
+        label: "Found plugin tools",
+      });
+    case "computer_apps": {
+      const onComputer = stringField(args, "computerId") !== null;
+      return gatewayStep({
+        activeLabel: onComputer ? "Listing installed apps" : "Listing Macs and phones",
+        hint: searchedFor([stringField(args, "query")]),
+        kind: "integration-lookup",
+        label: onComputer ? "Listed installed apps" : "Listed Macs and phones",
       });
     }
-    case "integration_request":
     case "app_access_request": {
-      const target = name === "app_access_request" ? "app access" : "integration access";
+      const target = stringField(args, "server") ? "local server access" : "app access";
       return gatewayStep({
         activeLabel: `Requesting ${target}`,
         hint: stringField(args, "reason") ?? "",
         kind: "integration-request",
         label: `Requested ${target}`,
-      });
-    }
-    case "custom_integration_request": {
-      const target = `${sourceKinds[stringField(args, "kind") ?? ""] ?? "an"} integration`;
-      return gatewayStep({
-        activeLabel: `Proposing ${target}`,
-        hint: stringField(args, "reason") ?? "",
-        kind: "integration-request",
-        label: `Proposed ${target}`,
       });
     }
     default:
@@ -2707,12 +2688,6 @@ function searchedFor(queries: readonly (string | null)[]): string {
   const last = quoted.pop();
   return `for ${quoted.length > 0 ? `${quoted.join(", ")} and ${last}` : last}`;
 }
-
-const sourceKinds: Partial<Record<string, string>> = {
-  graphql: "a GraphQL",
-  mcp: "an MCP",
-  openapi: "an OpenAPI",
-};
 
 /**
  * A Computer use step says what happened in the app. A finished observe or
@@ -2817,8 +2792,8 @@ function isComputerUseCall(tool: ToolEntry): boolean {
   return (
     computerPlace(tool) !== null &&
     tool.tool?.name !== "computer_use" &&
-    tool.tool?.name !== "integration_describe" &&
-    tool.tool?.name !== "integration_search"
+    tool.tool?.name !== "plugin_describe" &&
+    tool.tool?.name !== "plugin_search"
   );
 }
 
@@ -3108,23 +3083,14 @@ export function toolArgumentsText(tool: ToolEntry): string {
   }
 }
 
-/**
- * The arguments a reader can follow. A gateway call's reference is an opaque
- * token that means nothing to a person; what was sent to the operation is its
- * own `arguments`, and a describe sent nothing else.
- */
+/** Show the called tool's input; the wrapper adds no information to a single call. */
 function shownArguments(tool: ToolEntry): unknown {
   const args = effectiveArguments(tool);
-  if (!isIntegrationGateway(tool) || !isRecord(args)) return args;
-  // `toolRef` was the address before `operation` and `account`; old transcripts still hold it.
-  const { toolRef: _reference, ...unaddressed } = args;
-  const addressed =
-    tool.tool?.name === "integration_call" || tool.tool?.name === "integration_describe";
-  const { account: _account, operation: _operation, ...named } = unaddressed;
-  const rest = addressed ? named : unaddressed;
-  const sent =
-    tool.tool?.name === "integration_call" && "arguments" in rest ? rest.arguments : rest;
-  return isRecord(sent) && Object.keys(sent).length === 0 ? undefined : sent;
+  if (tool.tool?.name === "plugin_call" && isRecord(args)) {
+    if (isRecord(args.calls)) return args.calls.input;
+    if (typeof args.calls === "string") return args.calls;
+  }
+  return args;
 }
 
 /** Completed output is already provider-neutral at the harness boundary. */

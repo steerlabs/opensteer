@@ -223,11 +223,6 @@ export const PluginInstallOutputSchema = z.object({
       }),
     )
     .optional(),
-  specialist: z.boolean().optional(),
-  registration: z
-    .object({ id: z.string(), status: z.string(), plugin: z.string() })
-    .nullable()
-    .optional(),
 });
 export const PersonMessageOutputSchema = z.object({
   messageId: MessageIdSchema,
@@ -452,7 +447,7 @@ export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
   webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
 });
 
-export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
+export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";
 
 /** A timeline entry addressed by its stable item ID. */
 export const ThreadItemSchema = z.object({

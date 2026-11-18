@@ -174,21 +174,19 @@ const codexIsolatedPermissionProfile = Object.freeze({
 });
 
 /**
- * The output budget Codex gives `integration_call`, `integration_describe` and
- * `computer_use`, in its own approximate tokens (UTF-8 bytes / 4), before its
- * 20% allowance.
+ * The output budget Codex gives `computer_use`, in its own approximate tokens
+ * (UTF-8 bytes / 4), before its 20% allowance.
  *
  * A computer-use observation is one text block of up to about 33,000 bytes
  * (a 32,000-byte tree plus its header and notes) and one image, which Codex
- * does not count, and a describe page is at most 32,000 bytes. Codex cuts each
- * model's tool output to that model's policy: 10,000 tokens for most, but
- * 10,000 *bytes* for gpt-5.2 and for any slug its catalog does not know, which
- * would cut the middle out of the tree or the schema. A per-tool limit
+ * does not count. Codex cuts each model's tool output to that model's policy:
+ * 10,000 tokens for most, but 10,000 *bytes* for gpt-5.2 and for any slug its
+ * catalog does not know, which would cut the middle out of the tree. A per-tool limit
  * replaces the policy with tokens. 10,000 is the budget the token-policy
  * models already have, so it raises only the byte-policy ones and lowers
  * nothing.
  */
-const codexIntegrationOutputTokenLimit = 10_000;
+const codexComputerUseOutputTokenLimit = 10_000;
 
 const codexAuthenticationTimeoutMs = 10 * 60_000;
 
@@ -4262,10 +4260,8 @@ async function codexThreadRuntimeConfig(
       runtimeConfig[codexMcpConfigPath(name, "omit_tools_from")] = ["code_mode", "deferred"];
     }
   }
-  for (const tool of ["integration_call", "integration_describe", "computer_use"]) {
-    runtimeConfig[codexMcpConfigPath("opensteer", `tools.${tool}.output_token_limit`)] =
-      codexIntegrationOutputTokenLimit;
-  }
+  runtimeConfig[codexMcpConfigPath("opensteer", "tools.computer_use.output_token_limit")] =
+    codexComputerUseOutputTokenLimit;
   return runtimeConfig;
 }
 

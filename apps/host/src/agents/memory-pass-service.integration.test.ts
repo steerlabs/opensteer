@@ -47,7 +47,7 @@ async function fixture(
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: sql`'["trigger-program-v4"]'::jsonb`,
+      capabilities: sql`'["trigger-program-v5"]'::jsonb`,
     })
     .where("id", "=", base.runnerId)
     .execute();
@@ -352,7 +352,7 @@ describeStore("managed memory passes", (it) => {
       .set({
         program: {
           ...memoryPassProgram("memory-light"),
-          toolContractVersion: 3 as unknown as 4,
+          toolContractVersion: 3 as unknown as 5,
           source: "export default () => {}",
         },
       })

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
   createToolOutput,
-  legacyIntegrationsNamespace,
+  computerToolNamespace,
   type EnvironmentId,
   type IntegrationCallSubject,
   type RunId,
@@ -71,7 +71,7 @@ export class ComputerOperationStore {
         nodeId: null,
         callId,
         origin: "host-computer",
-        tool: { namespace: legacyIntegrationsNamespace, name: `computer.${input.operation}` },
+        tool: { namespace: computerToolNamespace, name: `computer.${input.operation}` },
         arguments: input.window === undefined ? {} : { window: input.window },
         integration: input.subject,
       });

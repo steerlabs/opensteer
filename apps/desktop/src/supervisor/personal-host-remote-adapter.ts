@@ -25,7 +25,6 @@ export class DesktopPersonalHostRemoteAdapter
     | "publishConnectProjection"
     | "revokeConnectResource"
     | "removeAccountLinkForUnlink"
-    | "repairHostedOAuthConnectionsForUnlink"
     | "revokeAccountSessionsForUnlink"
     | "resumeAccountLink"
     | "status"
@@ -40,7 +39,6 @@ export class DesktopPersonalHostRemoteAdapter
       | "publishConnectProjection"
       | "revokeConnectResource"
       | "removeAccountLinkForUnlink"
-      | "repairHostedOAuthConnectionsForUnlink"
       | "revokeAccountSessionsForUnlink"
       | "resumeAccountLink"
       | "status"
@@ -91,10 +89,6 @@ export class DesktopPersonalHostRemoteAdapter
 
   async removeAccountLinkForUnlink(): Promise<void> {
     await this.#host.removeAccountLinkForUnlink(await this.#requireRuntime());
-  }
-
-  async repairHostedOAuthConnectionsForUnlink(): Promise<void> {
-    await this.#host.repairHostedOAuthConnectionsForUnlink(await this.#requireRuntime());
   }
 
   async publish(projection: PersonalHostConnectProjection): Promise<void> {

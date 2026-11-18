@@ -2,11 +2,9 @@ import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
 import type { HostClient } from "@opensteer/client/host";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router";
@@ -87,9 +85,6 @@ const connections = access
   ? [
       {
         accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: "computer",
-        authorizationDigest: null,
         computer: { access, runnerId },
         connectionMethod: "computer",
         createdAt: "2026-09-19T00:00:00.000Z",
@@ -97,10 +92,8 @@ const connections = access
         displayName: machine.name,
         externalIdentityId: null,
         externalTenantId: null,
-        grantedScopes: [],
         id: "con_00000000-0000-4000-8000-000000000009",
         provider: "apple-messages",
-        providerApplicationId: null,
         status: "connected",
         statusDetail: null,
         updatedAt: "2026-09-19T00:00:00.000Z",

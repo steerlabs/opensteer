@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { createId } from "../packages/core/src/index.js";
 import { afterEach, expect, it } from "vitest";
 import { signHostDiscovery } from "../apps/host/src/identity/host-keys.js";
-import { RunFileRelay } from "../apps/host/src/integrations/run-file-relay.js";
+import { RunFileRelay } from "../apps/host/src/agents/run-file-relay.js";
 import { hostServerTestDependencies } from "../apps/host/src/server/host-server-test-harness.js";
 import { createHostServer } from "../apps/host/src/server.js";
 import { RunFiles } from "../apps/runner/src/attachments/run-files.js";

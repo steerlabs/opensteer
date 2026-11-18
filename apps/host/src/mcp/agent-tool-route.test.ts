@@ -42,13 +42,13 @@ function fixture() {
       return caller;
     }),
   };
-  const handler = vi.fn(async (_call: ToolCall<"integration_search">) => ({
+  const handler = vi.fn(async (_call: ToolCall<"computer_apps">) => ({
     total: 0,
     nextCursor: null,
   }));
   const service = new OpensteerMcpService({
     callers,
-    handlers: { integration_search: handler },
+    handlers: { computer_apps: handler },
     store: { getThreadForOwner: async () => thread, requests: { get: async () => null } },
     publicUrl: new URL("http://host.test"),
   });
@@ -146,8 +146,8 @@ function fixture() {
 it("derives the Run from its token and matches MCP success, input, unknown-tool and tool-failure results", async () => {
   const f = fixture();
   const cases = [
-    ["integration_search", { query: "mail", cursor: "2" }],
-    ["integration_search", { unexpected: true }],
+    ["computer_apps", { query: "mail", cursor: "2" }],
+    ["computer_apps", { unexpected: true }],
     ["missing", {}],
   ] as const;
   for (const [name, input] of cases) {
@@ -163,13 +163,13 @@ it("derives the Run from its token and matches MCP success, input, unknown-tool 
     "completed",
   ]);
   expect([...f.saved.values()][1]?.arguments).toBeNull();
-  expect(f.handler.mock.calls[0]![0].input).toMatchObject({ cursor: 2, limit: 10, query: "mail" });
+  expect(f.handler.mock.calls[0]![0].input).toMatchObject({ cursor: 2, limit: 20, query: "mail" });
   expect(f.handler.mock.calls[0]![0].caller).toEqual(f.caller);
   expect(
     (
       await f.call({
         callId: crypto.randomUUID(),
-        name: "integration_search",
+        name: "computer_apps",
         input: { query: "mail" },
         caller: { kind: "connection" },
       })
@@ -178,7 +178,7 @@ it("derives the Run from its token and matches MCP success, input, unknown-tool 
   expect(
     (
       await f.call(
-        { callId: crypto.randomUUID(), name: "integration_search", input: { query: "mail" } },
+        { callId: crypto.randomUUID(), name: "computer_apps", input: { query: "mail" } },
         "foreign-token",
       )
     ).statusCode,
@@ -189,7 +189,7 @@ it("derives the Run from its token and matches MCP success, input, unknown-tool 
   const refused = (
     await f.call({
       callId: crypto.randomUUID(),
-      name: "integration_search",
+      name: "computer_apps",
       input: { query: "mail" },
     })
   ).json();
@@ -211,7 +211,7 @@ it("joins in-flight retries, persists a single pair and replays without another 
   });
   const request = {
     callId: crypto.randomUUID(),
-    name: "integration_search",
+    name: "computer_apps",
     input: { query: "mail" },
   };
   const first = f.call(request);
@@ -229,7 +229,7 @@ it("joins in-flight retries, persists a single pair and replays without another 
   ]);
   expect([...f.saved.values()][0]).toMatchObject({
     callId: `harness:${f.caller.claims.runId}:1:${request.callId}`,
-    arguments: { query: "mail", limit: 10 },
+    arguments: { query: "mail", limit: 20 },
   });
 });
 
@@ -255,7 +255,7 @@ it.each(["Stop", "deadline"])(
     const pending = f.call(
       {
         callId: crypto.randomUUID(),
-        name: "integration_search",
+        name: "computer_apps",
         input: { query: "mail" },
       },
       "run-token",

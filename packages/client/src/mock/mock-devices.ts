@@ -2,8 +2,8 @@ import { RequestSchema, type Request } from "@opensteer/core";
 import {
   ComputerAppSetupRequestSchema,
   type ComputerAppSetupRequest,
-  type PluginDeviceKind,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app-setup";
+import { type PluginDeviceKind } from "@opensteer/integration-core/models";
 import { mockMessagesRunnerId } from "./mock-integration-fixtures.js";
 
 /**
@@ -100,16 +100,16 @@ export function mockTvPairingRequest(userId: string): Request {
     cancellationReason: null,
     createdAt: "2026-08-09T11:02:00.000Z",
     id: "req_0192f4a1-dddd-4000-8000-0000000000d1",
-    kind: "integration.input",
+    kind: "plugin.input",
     mode: "durable",
     originatingOccurrenceId: null,
     originatingRunId: mockTvRunId,
     originatingThreadId: mockTvThreadId,
 
     payload: {
-      installationId: "iin_0192f4a1-dddd-4000-8000-0000000000d1",
-      kind: "integration.input",
-      serverId: "isv_0192f4a1-dddd-4000-8000-0000000000d1",
+      executionId: "mock-tv-execution",
+      kind: "plugin.input",
+      interactionId: "mock-tv-pairing",
     },
     presentation: {
       detail: "Enter the code your TV shows.",

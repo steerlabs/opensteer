@@ -15,7 +15,7 @@ import {
 import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import type { FastifyInstance } from "fastify";
 import { rpcSuccess, AssetUrlsSchema, type HostApiServerContext } from "@opensteer/protocol";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "../server/rpc-context.js";
 import {
   TranscriptFileAccess,
   type FileActor,

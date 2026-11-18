@@ -8,6 +8,7 @@ import {
   opensteer_request_withdraw,
 } from "./requests.js";
 import { pluginTools } from "./plugins.js";
+import { localServerTools } from "./local-servers.js";
 import { messagingBridgeTools } from "./messaging-bridges.js";
 import {
   opensteer_team_file_download,
@@ -43,7 +44,6 @@ import {
   opensteer_automation_list,
   opensteer_automation_create,
 } from "./triggers.js";
-import { integrationTools } from "./integrations.js";
 import {
   opensteer_knowledge_search,
   opensteer_knowledge_remove,
@@ -58,6 +58,7 @@ export const agentTools = [
   ...computerTools,
   ...browserTools,
   ...pluginTools,
+  ...localServerTools,
   ...messagingBridgeTools,
   opensteer_request_list,
   opensteer_request_read,
@@ -87,7 +88,6 @@ export const agentTools = [
   opensteer_automation_control,
   opensteer_automation_list,
   opensteer_automation_create,
-  ...integrationTools,
   opensteer_team_file_download,
   opensteer_team_read,
   opensteer_team_search,
@@ -113,11 +113,11 @@ export * from "./ai-accounts.js";
 export * from "./messaging-bridges.js";
 export * from "./person.js";
 export * from "./plugins.js";
+export * from "./local-servers.js";
 export * from "./team.js";
 export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";
-export * from "./integrations.js";
 export * from "./knowledge.js";
 
 export * from "./tabs.js";

@@ -14,7 +14,7 @@ const targetArchitecture = (process.env.GOARCH?.trim() || arch()).replace("x64",
 // Go's internal linker writes a Mach-O UUID only when asked with `-B gobuildid`.
 // A stable, per-target Go build ID makes that UUID deterministic without
 // reusing one across architectures or test builds.
-const deterministicBuildId = `opensteer-native-fs-v1.6.0-${targetOperatingSystem}-${targetArchitecture}-${
+const deterministicBuildId = `opensteer-native-fs-v1.7.0-${targetOperatingSystem}-${targetArchitecture}-${
   testBuild ? "test" : "production"
 }`;
 const linkerFlags = [

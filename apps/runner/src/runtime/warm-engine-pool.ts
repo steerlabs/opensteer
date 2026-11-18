@@ -16,7 +16,6 @@ import type { CachedRunPlugins } from "../skills/plugin-cache.js";
  * scope, and the skills directory it reads.
  */
 export interface WarmEngine {
-  readonly specialistId?: string;
   /** The Run whose authority the proxy and relay carry; none while idle. */
   readonly authority: { credentials: RunCredentials | undefined };
   readonly browserCdpRelay: BrowserCdpRelay;
@@ -187,7 +186,6 @@ export function warmEngineKey(input: {
         input.instructions,
         context.accessMode,
         input.writableRoots,
-        context.specialistId ?? null,
         // Names the Host's whole tool inventory, guide and skills.
         context.agentTools.toolsRevision,
         context.agentTools.instructions,

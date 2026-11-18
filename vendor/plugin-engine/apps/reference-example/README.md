@@ -1,0 +1,49 @@
+# Live inbox
+
+A configured app owns its records. Activating a version or changing selected
+accounts keeps the same data. Adding another copy starts with separate data.
+
+`listMessages` reads rows with plain SQL through `ctx.sql`. `receiveMessage`
+inserts one. A successful write reruns live subscriptions, including subscribers
+connected through a different SDK instance sharing the same host storage.
+
+Queries receive read-only SQL; mutations receive writable SQL. Each statement
+commits on its own, and `ctx.sql.transaction(...)` groups statements atomically.
+A transaction is synchronous, so network requests always happen between
+transactions, never inside one. The schema lives in `migrations/`; the host
+applies new migrations when you deploy.
+
+Use `pluginEngine.appData.query` or `pluginEngine.appData.mutate` with the configured app
+ID, operation name and JSON input. Native serving hosts use `subscribeAppQuery`
+from `@opensteer/plugin-engine-sdk/core`; trusted Promise callers can iterate
+`await pluginEngine.appData.subscribe(...)`.
+The descriptor contains names and arguments, never executable closures or
+credentials. The local host now provides private UI hosting and browser authentication.
+
+The current coordinator supports one local/Docker server process.
+Cloudflare Durable Object restoration and multi-server delivery are not implemented.
+
+`client.ts` builds typed references using type-only imports of the server
+operations. Its `messagesAtom(transport)` consumes a host-bound subscription and
+validates each result with the shared message schema. The embedding host supplies
+the transport for that lower-level sketch. `ui/main.tsx` uses the built-in host
+transport from `createAppClient` instead.
+
+## Open the UI
+
+With the local PluginEngine server running, run from the repository root:
+
+```sh
+node --env-file=.env playground/sdk/deploy-ui.ts
+```
+
+Open the printed dashboard URL. PluginEngine opens the app on its own localhost
+subdomain. Open it twice and add a message to see both windows update. Running
+the deploy command again reloads both windows; messages persist.
+
+## Agent instructions
+
+The `skills/inbox/` directory ships with the app through `playground/sdk/deploy-ui.ts`.
+Ask the MCP `skills` tool for `{ app: "live-inbox", name: "inbox" }`, using the
+actual installed slug. It returns the document and the version ID for reading
+its reference file. Skills never execute code or change tool grants.

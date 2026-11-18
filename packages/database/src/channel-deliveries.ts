@@ -1,4 +1,4 @@
-import { computerConnectionDeviceId } from "./integration-store.js";
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { placeContentLabel } from "@opensteer/core";

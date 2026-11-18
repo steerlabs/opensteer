@@ -14,3 +14,5 @@ performs these steps:
 
 Snapshots exclude native browser storage
 ([what a restore covers](../../../../docs/releases.md#personal-database-snapshots)).
+
+Plugin state spans PostgreSQL and files. A database snapshot alone is not a consistent plugin backup; use the [plugin runtime backup procedure](plugin-runtime.md#consistent-backup).

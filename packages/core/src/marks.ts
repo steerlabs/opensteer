@@ -2,11 +2,10 @@ import { z } from "zod";
 import type { IconName } from "./icons.js";
 
 /**
- * The colours a task or a specialist is drawn in. A task's colour is fixed at
- * creation so its row, the faces on its tabs and its cursor match; a
- * specialist's is chosen. Red and amber are absent because they mean failed
- * and needs you. Stored by name, so redrawing the palette never recolours
- * anything.
+ * The colours a task is drawn in. A task's colour is fixed at creation so its
+ * row, the faces on its tabs and its cursor match. Red and amber are absent
+ * because they mean failed and needs you. Stored by name, so redrawing the
+ * palette never recolours anything.
  */
 export const markColors = ["lime", "green", "teal", "sky", "blue", "purple", "magenta"] as const;
 export const MarkColorSchema = z.enum(markColors);

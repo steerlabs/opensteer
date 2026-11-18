@@ -28,7 +28,13 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const list = (
     <SettingsList>
-      {props.search ? <InputRow label="Search plugins" {...props.search} /> : null}
+      {props.search ? (
+        <InputRow
+          label={props.search.prompt ?? "Search plugins"}
+          onChange={props.search.onChange}
+          value={props.search.value}
+        />
+      ) : null}
       {props.sections.map((section) => {
         const open = !section.collapsed || expanded.has(section.key);
         return [

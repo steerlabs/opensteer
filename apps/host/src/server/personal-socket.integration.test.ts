@@ -39,7 +39,7 @@ import {
   stopRun,
   startPrivateMachineHost,
   type PrivateMachineHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 function deadline<T>(work: Promise<T>, purpose: string) {
   return withTimeout(work, 5_000, { timeoutError: () => new Error(purpose) });

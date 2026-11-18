@@ -19,20 +19,34 @@ describe("settings tools", () => {
       if (tool.access === "read") expect(readOnly.has(tool.name), tool.name).toBe(true);
     }
   });
-  it("strips credentials and nested launch configuration from plugin listings", () => {
+  it("strips credentials and nested configuration from plugin listings", () => {
+    const plugin = {
+      id: "p",
+      name: "Plugin",
+      slug: "plugin",
+      activeVersion: "v1",
+      versions: [{ id: "v1", active: true }],
+      versionCount: 1,
+      requirements: { api: { scope: "user" as const, provider: "Example" } },
+      access: "all" as const,
+      links: [{ requirement: "api", scope: "user", account: "acc" }],
+      status: "ready",
+    };
     expect(
       opensteer_plugin_list.output.parse({
         plugins: [
           {
-            id: "p",
-            name: "Plugin",
+            ...plugin,
             config: { token: "secret" },
-            versions: [{ env: { SECRET: "secret" } }],
+            versions: [{ id: "v1", active: true, env: { SECRET: "secret" } }],
+            requirements: { api: { ...plugin.requirements.api, fields: { token: "secret" } } },
+            links: [{ ...plugin.links[0], consent: { digest: "d" } }],
           },
         ],
-        specialists: [],
+        local: [],
+        cursor: null,
         token: "secret",
       }),
-    ).toEqual({ plugins: [{ id: "p", name: "Plugin" }], specialists: [] });
+    ).toEqual({ plugins: [plugin], local: [], cursor: null });
   });
 });

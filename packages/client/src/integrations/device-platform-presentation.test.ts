@@ -292,7 +292,6 @@ function definition(
 ) {
   return {
     adapter: "computer",
-    apiKey: null,
     authMethods: [{ id: "computer", kind: "computer", label: "This computer" }],
     computerApp: {
       accessLabels: { read: "Can read", readWrite: "Can read and change" },

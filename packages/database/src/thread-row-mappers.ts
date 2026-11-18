@@ -65,7 +65,6 @@ type ThreadReadRow = {
   readonly doneReason?: Thread["doneReason"];
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
-  readonly specialistId?: string | null;
   readonly purpose: Thread["purpose"];
   readonly teamId: import("@opensteer/core").DeploymentId | null;
   readonly channelId: import("@opensteer/core").TeamChannelId | null;

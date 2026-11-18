@@ -3,6 +3,8 @@ import { clientScopeKey } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
+import { isPluginRequest } from "@opensteer/client/plugins";
+import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
@@ -22,8 +24,6 @@ import {
   type ComposerSubmission,
 } from "./composer.js";
 import { Icon, type IconName } from "./icon.js";
-import { IntegrationInstallReview } from "./integration-install-review.js";
-import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
@@ -55,7 +55,6 @@ import {
   waitingRequestPresentationSource,
   type SurfaceModel,
 } from "@opensteer/client/host";
-import { integrationInstallNextStep } from "@opensteer/client/integrations";
 import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
 import { useAnswersInComposer } from "./question-session.js";
 
@@ -648,8 +647,8 @@ function RequestPanel({
         ? request.payload.reason
         : request.presentation.detail;
   const title = requestTitle(request);
-  // An integration card names the integration, the reason and the proposal
-  // itself, so the panel's own head would only say them twice.
+  // An access card names the app and the reason itself, so the panel's own
+  // head would only say them twice.
   const ownHead = request.kind === "integration.access" && !surface.denied;
   return (
     <fieldset
@@ -665,7 +664,6 @@ function RequestPanel({
             <Icon name={requestIcon(request)} />
           </span>
           <span className="action-panel__title">{title}</span>
-          {request.presentation.agentProposed ? <AgentProposedChip /> : null}
         </div>
       )}
       <div className="action-panel__content">
@@ -718,7 +716,7 @@ function ActionBody({
   );
 
   if (surface.denied) {
-    return <DeniedRequestBody denied={surface.denied} request={request} />;
+    return <DeniedRequestBody denied={surface.denied} />;
   }
   if (request.kind === "browser.access") {
     return <ThreadBrowserRequestAction disabled={disabled} request={request} />;
@@ -741,6 +739,9 @@ function ActionBody({
   if (request.kind === "computer.app.access") {
     return <ThreadComputerAppAccessAction disabled={disabled} request={request} />;
   }
+  if (isPluginRequest(request)) {
+    return <ThreadPluginAction disabled={disabled} request={request} />;
+  }
 
   const respond = (response: RequestResponse, busyId: string) => {
     if (pendingId || disabled) return;
@@ -752,18 +753,6 @@ function ActionBody({
   if (request.presentation.kind === "choice") {
     return (
       <>
-        {request.payload.kind === "integration.install" ? (
-          <>
-            <IntegrationInstallReview manifest={request.payload.manifest} />
-            <ActionNote>
-              {integrationInstallNextStep({
-                canInstall: true,
-                continuesToAccess: false,
-                installedTitle: null,
-              })}
-            </ActionNote>
-          </>
-        ) : null}
         <ChoiceRows
           autoFocus
           onSelect={(option) => respond({ kind: "choice", optionId: option.id }, option.id)}
@@ -776,9 +765,6 @@ function ActionBody({
   }
   return (
     <>
-      {request.kind === "integration.input" ? (
-        <ActionNote>Only this plugin receives your answer. The agent never sees it.</ActionNote>
-      ) : null}
       <ActionForm
         request={request}
         onRespond={(response) => respond(response, "form")}
@@ -789,30 +775,14 @@ function ActionBody({
   );
 }
 
-/**
- * Only the decision is withheld from a viewer who cannot make it. What the agent
- * asked to install is still what that viewer would relay to whoever can approve
- * it, so the review stays above the note and only the action rows go.
- */
-export function DeniedRequestBody({
-  denied,
-  request,
-}: {
-  denied: NonNullable<SurfaceModel["denied"]>;
-  request: Request;
-}) {
+/** Only the decision is withheld from a viewer who cannot make it. */
+export function DeniedRequestBody({ denied }: { denied: NonNullable<SurfaceModel["denied"]> }) {
   return (
-    <>
-      {request.payload.kind === "integration.install" ||
-      (request.payload.kind === "integration.access" && request.payload.manifest !== null) ? (
-        <IntegrationInstallReview manifest={request.payload.manifest} />
-      ) : null}
-      <ActionNote>
-        {denied === "administrator"
-          ? "A Host administrator must complete this request."
-          : "The person who started this task must answer this request."}
-      </ActionNote>
-    </>
+    <ActionNote>
+      {denied === "administrator"
+        ? "A Host administrator must complete this request."
+        : "The person who started this task must answer this request."}
+    </ActionNote>
   );
 }
 
@@ -831,15 +801,10 @@ function requestIcon(request: Request): IconName {
     request.kind === "device.access"
   )
     return "laptop";
-  if (
-    request.kind === "browser.sign-in" ||
-    request.kind === "browser.password-sign-in" ||
-    request.kind === "integration.input"
-  ) {
+  if (request.kind === "browser.sign-in" || request.kind === "browser.password-sign-in")
     return "key";
-  }
   if (request.kind.startsWith("browser.")) return "browser";
-  if (request.kind.startsWith("integration.")) {
+  if (request.kind.startsWith("integration.") || request.kind.startsWith("plugin.")) {
     return "puzzle";
   }
   return "shield";

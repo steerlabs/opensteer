@@ -31,7 +31,7 @@ import {
   legacyRunIdPattern,
 } from "./personal-state-upgrade-activity.js";
 
-export const personalCurrentStateMigrationName = "0030_personal_current_state";
+export const personalCurrentStateMigrationName = "0035_personal_current_state";
 
 const batchSize = 500;
 const messageBatchSize = 500;
@@ -189,7 +189,9 @@ async function retireOfflineChildren(tx: Tx, runId: RunId, cutAt: Date) {
     .selectFrom("requests")
     .select("id")
     .where("originatingRunId", "=", runId)
-    .where(sql<boolean>`status='pending' and (mode='live' or kind='integration.input')`)
+    .where(
+      sql<boolean>`status='pending' and (mode='live' or (kind in ('plugin.approval','plugin.input') and not exists (select 1 from plugin_executions where request_id=requests.id and handoff)))`,
+    )
     .orderBy("id")
     .limit(settlementBatchSize)
     .forNoKeyUpdate()

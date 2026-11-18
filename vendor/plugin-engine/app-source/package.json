@@ -1,0 +1,28 @@
+{
+  "name": "@opensteer/plugin-engine-app-source",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./node": "./src/node.ts",
+    "./cloudflare": "./src/cloudflare.ts",
+    "./host": "./src/host.ts",
+    "./git-client": "./src/git-client.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.1.4",
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-telemetry": "workspace:*",
+    "effect": "4.1.4",
+    "isomorphic-git": "1.37.4",
+    "memfs": "4.57.7"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

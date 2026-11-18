@@ -1,5 +1,4 @@
 import { lazy, Suspense } from "react";
-import { subscribeIntegrationAuthorizationReturns } from "./integrations/integration-authorization.js";
 import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import {
@@ -57,8 +56,13 @@ import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { outcomeWords, runAction } from "./components/use-action.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
-import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
+import { PluginSignInCompletion } from "./components/plugin-sign-in-completion.js";
+import {
+  pluginAuthorizationCompletionPath,
+  subscribePluginSignInReturns,
+} from "./integrations/plugin-sign-in-surface.js";
 import { DevicePage } from "./components/devices/device-page.js";
+import { OtherDevicePage } from "./components/devices/other-device-page.js";
 
 const McpAuthorization = lazy(() =>
   import("./components/mcp-authorization.js").then((module) => ({
@@ -116,10 +120,7 @@ export function App({
   const { snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   usePersonalResources(snapshot.session === "authenticated" ? hostClient : null, appResources);
   useEffect(
-    () =>
-      desktopBridge
-        ? subscribeIntegrationAuthorizationReturns(desktopBridge, hostClient)
-        : undefined,
+    () => (desktopBridge ? subscribePluginSignInReturns(desktopBridge, hostClient) : undefined),
     [desktopBridge, hostClient],
   );
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
@@ -436,9 +437,9 @@ export function App({
       </Suspense>
     );
 
-  if (window.location.pathname === "/integration-authorization") {
+  if (window.location.pathname === pluginAuthorizationCompletionPath) {
     return (
-      <IntegrationAuthorizationCompletion
+      <PluginSignInCompletion
         client={hostClient}
         integrationAttempt={new URLSearchParams(window.location.search).get("integrationAttempt")}
       />
@@ -554,6 +555,7 @@ export function App({
                   <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
                   <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
                   <Route path="devices/:deviceId" element={<DevicePage />} />
+                  <Route path="devices/other/:pluginId" element={<OtherDevicePage />} />
                   <Route
                     path="sign-ins/chrome/*"
                     element={<SettingsSectionRoute section="chrome" />}

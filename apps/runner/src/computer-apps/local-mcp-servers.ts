@@ -12,7 +12,7 @@ import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/s
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { isLoopbackHostname } from "@opensteer/core";
-import type { LocalMcpLaunch } from "@opensteer/integration-core";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import {
   computerAppFrameFits,
   computerMcpLastOutputLabel,

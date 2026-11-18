@@ -36,12 +36,40 @@ SOFTWARE.
 
 ## Executor
 
-Portions of `packages/integration-auth` and `packages/integration-adapters` are derived from
+The OAuth helpers in `apps/control-plane/src/auth/provider-oauth*.ts` and broker sealing in
+`packages/control-plane-protocol/src/broker-sealing.ts` are derived from
 [Executor](https://github.com/UsefulSoftwareCo/executor).
+
+The vendored source in `vendor/plugin-engine` is imported from snapshot `59ad4395588e3241223aca6e83d66e5369ccf4f2`.
 
 MIT License
 
 Copyright (c) 2026 Rhys Sullivan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+### packages/database/LICENSE
+
+MIT License
+
+Copyright (c) 2026 Rhys Sullivan
+Portions derived from fumadb, Copyright (c) 2025 Fuma Nama (MIT).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

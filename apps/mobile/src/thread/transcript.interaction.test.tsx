@@ -844,7 +844,7 @@ describe("a Computer use row", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Listed apps on a Mac");
     expect(text).toContain("Used Slack");
-    expect(text).toContain("9 steps on Alex's MacBook Pro");
+    expect(text).toContain("10 steps on Alex's MacBook Pro");
     expect(text).not.toContain("Integration call");
     for (const reference of mockComputerUseToolRefs) expect(text).not.toContain(reference);
     expect(container.querySelector('[data-symbol="laptopcomputer"]')).not.toBeNull();

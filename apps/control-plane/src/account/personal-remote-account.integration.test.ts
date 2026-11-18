@@ -3,7 +3,7 @@ import { registerControlPlaneRoutes } from "../portal/routes.js";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   createHash,
   createPublicKey,

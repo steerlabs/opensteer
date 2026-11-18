@@ -1,8 +1,8 @@
 import { createId } from "@opensteer/core";
 import { createChannelId } from "@opensteer/channel-core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { sql } from "kysely";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ChannelStore } from "./channel-store.js";
 import { channelInputAuthorityIsCurrent } from "./channel-execution.js";
 import { createDatabase } from "./connection.js";
@@ -20,7 +20,7 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
     const identityId = createChannelId("identity");
     const principalId = createChannelId("principal");
     const store = new ChannelStore(database);
-    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,runner_id,transport_kind) values(${connectionId},${p.userId},'channel','telegram','api-token','connected','Bot','[]','[]',${p.runnerId},'polling')`.execute(
+    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,runner_id,transport_kind) values(${connectionId},${p.userId},'channel','telegram','api-token','connected','Bot','[]',${p.runnerId},'polling')`.execute(
       database,
     );
     await sql`insert into channel_accounts(id,connection_id,provider,external_account_id,display_name,routing_mode,status,metadata) values(${accountId},${connectionId},'telegram','bot','Bot','shared','connected','{}')`.execute(
@@ -178,7 +178,14 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1,now()-interval '1 second')`.execute(
       database,
     );
-    const allowed = await store.claimDelivery(p.runnerId);
+    let allowed: Awaited<ReturnType<ChannelStore["claimDelivery"]>>;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() - 1_000);
+    try {
+      allowed = await store.claimDelivery(p.runnerId);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(allowed?.delivery.id).toBe(allowedDeliveryId);
     await store.startDeliveryAttempt(allowedDeliveryId, allowed!.claimToken);
     await store.finishDelivery({

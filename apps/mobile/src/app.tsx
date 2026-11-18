@@ -13,10 +13,8 @@ import { VoiceProvider } from "./voice/context.js";
 import { DictationProvider } from "./dictation/context.js";
 import * as Application from "expo-application";
 import { OAuthDeepLinkBroker, type NativeOAuthIdentity } from "@opensteer/client/auth";
-import {
-  integrationAuthorizationError,
-  parseNativeIntegrationAuthorizationCallback,
-} from "@opensteer/client/integrations";
+import { parseNativeIntegrationAuthorizationCallback } from "@opensteer/client/integrations";
+import { pluginSignInEnd } from "@opensteer/client/plugins";
 import { AccountNotificationDevicesClient } from "@opensteer/client/connections";
 import {
   buildMobilePairingDeepLink,
@@ -56,6 +54,7 @@ import { MobileClient } from "./client/mobile-client.js";
 import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
+  mockIntegrationAuthorizationBrowser,
   mockDeploymentId,
   mockSignedOutDeploymentId,
   mockTeamId,
@@ -145,6 +144,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
     EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM,
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
+    EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
@@ -356,6 +356,7 @@ function mobileClient(): MobileRoot {
       ? createMockHostPort({
           hosts: mockHosts,
           subagents: configuration.mockSubagents,
+          plugins: configuration.mockPlugins,
         })
       : createNetworkHostPort({
           browserPreferencesStorage: createBrowsingChoiceStorage(
@@ -385,7 +386,9 @@ function mobileClient(): MobileRoot {
       browser: WebBrowser,
       oauth: oauthIdentity,
     }),
-    openIntegrationAuthorization: createIntegrationAuthorizationBrowser({ browser: WebBrowser }),
+    openIntegrationAuthorization: configuration.mock
+      ? mockIntegrationAuthorizationBrowser()
+      : createIntegrationAuthorizationBrowser({ browser: WebBrowser }),
     privateFiles,
     randomBytes: (size) => getRandomValues(new Uint8Array(size)),
     records: createSecureRecordStore({
@@ -502,21 +505,14 @@ export function App(): ReactNode {
             setIntegrationNotice(null);
             const result = await client.handleIntegrationAuthorizationCallback(url);
             if (!current() || result === null) return null;
-            if (result.status === "completed") {
-              await client.getSnapshot().selection.hostClient?.refresh();
-              if (current())
-                setIntegrationNotice({
-                  detail: "The provider account is ready to use.",
-                  title: "Integration connected",
-                });
-            } else {
-              setIntegrationNotice({
-                detail:
-                  integrationAuthorizationError(result.status, result.failureCode) ??
-                  "The provider did not complete authorization. Try again.",
-                title: "Integration was not connected",
-              });
-            }
+            const end = pluginSignInEnd(result);
+            await client.getSnapshot().selection.hostClient?.refresh();
+            if (!current()) return null;
+            setIntegrationNotice(
+              end.kind === "completed"
+                ? { detail: "The plugin can use it now.", title: "Account connected" }
+                : { detail: end.message, title: "Account wasn't connected" },
+            );
             return null;
           }
           const outcome = await resolveRefreshedApplicationLink(url, {

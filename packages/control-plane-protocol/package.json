@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./broker-sealing": "./src/broker-sealing.ts",
     "./hosted-teams": "./src/hosted-teams.ts"
   },
   "scripts": {

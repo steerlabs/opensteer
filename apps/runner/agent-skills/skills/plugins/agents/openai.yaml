@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opensteer Plugins"
+  short_description: "Find, call and build sandboxed plugins"
+  default_prompt: "Use $opensteer:plugins to find the tools needed for this task."

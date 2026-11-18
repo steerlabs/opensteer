@@ -13,7 +13,7 @@ import type { TeamFileSchema } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import type { PersonalTeamAttachmentPort, PersonalTeamRunPort } from "../team-links/index.js";
-import type { RunFileRelay } from "../integrations/run-file-relay.js";
+import type { RunFileRelay } from "../agents/run-file-relay.js";
 import type { AttachmentService, RunAttachmentsTokenService } from "./attachment-service.js";
 
 const failure = (message: string) => new OpensteerError({ code: "conflict", message });

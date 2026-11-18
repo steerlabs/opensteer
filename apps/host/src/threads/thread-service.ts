@@ -78,7 +78,6 @@ export class ThreadService {
       placed,
       ...selection
     }: {
-      readonly specialistId?: string;
       readonly expectedHarnessRevision?: number;
       /** Placement a delegation already resolved; its model is carried as stored, not re-offered. */
       readonly placed?: true;

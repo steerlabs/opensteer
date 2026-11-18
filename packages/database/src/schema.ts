@@ -104,18 +104,14 @@ import type {
 import type {
   ComputerAppIdentity,
   IntegrationAccess,
-  IntegrationApplicationSource,
   IntegrationConnectionMethod,
   IntegrationGrantId,
   IntegrationInstallationId,
   IntegrationInstallManifest,
-  IntegrationProvider,
-  IntegrationProviderApplicationId,
   IntegrationServerId,
   IntegrationToolId,
   LocalMcpServerSetup,
 } from "@opensteer/integration-core";
-import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
   IntegrationAuthAttemptFailureReason,
   IntegrationAuthAttemptFlow,
@@ -735,7 +731,6 @@ export interface ThreadTable {
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
-  specialistId: Generated<string | null>;
 
   purpose: TaskPurpose;
   teamId: DeploymentId | null;
@@ -1086,6 +1081,9 @@ export interface RequestTable {
   /** Exactly one origin is present; a Trigger Occurrence creates no Run row. */
   originatingRunId: RunId | null;
   originatingOccurrenceId: TriggerOccurrenceId | null;
+  originatingWatchActivationId: Generated<
+    import("@opensteer/core").TriggerWatchActivationId | null
+  >;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1540,14 +1538,11 @@ interface PrincipalTable {
 
 export interface IntegrationConnectionTable {
   accountIdentifier: string | null;
-  applicationSource: JsonColumn<IntegrationApplicationSource | null>;
-  authMethodId: string | null;
-  authorizationDigest: string | null;
   id: IntegrationConnectionId;
   ownerUserId: UserId;
   credentialId: CredentialId | null;
   credentialGeneration: Generated<number>;
-  connectionKind: "provider-account" | "channel" | "computer" | "mcp-oauth";
+  connectionKind: "channel" | "computer";
   computerAccess: IntegrationAccess | null;
   /**
    * Which app this computer connection names, for a definition whose
@@ -1565,14 +1560,12 @@ export interface IntegrationConnectionTable {
   computerPolicyRevision: Generated<number | null>;
   provider: string;
   integrationServerId: IntegrationServerId | null;
-  providerApplicationId: IntegrationProviderApplicationId | null;
   connectionMethod: IntegrationConnectionMethod;
   status: "pending" | "connected" | "needs-attention" | "paused" | "revoked";
   displayName: string;
   externalIdentityId: string | null;
   externalTenantId: string | null;
   capabilities: JsonColumn<readonly string[]>;
-  grantedScopes: JsonColumn<readonly string[]>;
   integrationDefinitionId: string | null;
   /** Channel assignment, also retained for previous Hosts reading self-backed computer targets. */
   runnerId: RunnerId | null;
@@ -1590,13 +1583,6 @@ export interface IntegrationConnectionTable {
   updatedAt: Timestamp;
 }
 
-interface IntegrationApplicationSourceDefaultTable {
-  provider: string;
-  sourceKind: "deployment-oauth" | "hosted-oauth";
-  updatedAt: Timestamp;
-  updatedBy: UserId;
-}
-
 interface IntegrationAuthAttemptTable {
   id: IntegrationAuthAttemptId;
   flow: IntegrationAuthAttemptFlow;
@@ -1609,7 +1595,6 @@ interface IntegrationAuthAttemptTable {
   status: "pending" | "launched" | "claimed" | "completed" | "failed";
   surface: "desktop" | "native" | "web";
   failureReason: IntegrationAuthAttemptFailureReason | null;
-  resultConnectionId: IntegrationConnectionId | null;
   expiresAt: Timestamp;
   launchedAt: NullableTimestamp;
   claimedAt: NullableTimestamp;
@@ -1628,41 +1613,14 @@ interface IntegrationAuthorityGenerationTable {
   updatedAt: Timestamp;
 }
 
-interface McpOAuthCredentialTable {
-  connectionId: IntegrationConnectionId;
-  encryptedState: Buffer;
-  encryptionKeyVersion: number;
-  revision: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface IntegrationProviderApplicationTable {
-  id: IntegrationProviderApplicationId;
-  provider: IntegrationProvider;
-  displayName: string;
-  clientId: string;
-  encryptedSecrets: Buffer;
-  encryptionKeyVersion: number;
-  installationUrl: Generated<string | null>;
-  ownerUserId: UserId | null;
-  revision: number;
-  status: "active" | "disabled";
-  createdBy: UserId;
-  updatedBy: UserId;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
 export interface IntegrationInstallationTable {
-  adapterSnapshot: JsonColumn<IntegrationAdapterSnapshot> | null;
   id: IntegrationInstallationId;
   name: string;
   title: string;
   description: string;
   version: string | null;
   pluginId: Generated<string | null>;
-  sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
+  sourceKind: "plugin" | "built-in";
   trust: "built-in" | "verified-publisher" | "administrator-approved";
   manifest: JsonColumn<Readonly<Record<string, unknown>>>;
   provenance: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -1949,6 +1907,46 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  pluginOauthRecords: {
+    id: string;
+    ownerUserId: UserId;
+    expiresAt: NullableTimestamp;
+    begunAt: NullableTimestamp;
+    encryptedPayload: Buffer;
+  };
+  pluginAgentSettings: {
+    ownerUserId: UserId;
+    pluginId: string;
+    access: "all" | "read-only" | "off";
+    author: "catalog" | "agent";
+    versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
+  };
+  pluginExecutions: {
+    id: string;
+    ownerUserId: UserId;
+    threadId: ThreadId;
+    runId: RunId | null;
+    occurrenceId: TriggerOccurrenceId | null;
+    watchActivationId: import("@opensteer/core").TriggerWatchActivationId | null;
+    caller: string;
+    mode: "ask" | "automatic";
+    state:
+      | "running"
+      | "waiting"
+      | "answered"
+      | "completed"
+      | "cancelled"
+      | "expired"
+      | "interrupted"
+      | "failed";
+    requestId: RequestId | null;
+    interactionId: string | null;
+    handoff: boolean;
+    result: JsonColumn<Record<string, z.infer<ReturnType<typeof z.json>>> | null>;
+    reason: string | null;
+    createdAt: Generated<Date>;
+    updatedAt: Generated<Date>;
+  };
   devices: DeviceTable;
   deviceDrivers: DeviceDriverTable;
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
@@ -2229,12 +2227,10 @@ export interface DatabaseSchema {
   browserSignIns: BrowserSignInTable;
   credentialAccessAudit: CredentialAccessAuditTable;
   principals: PrincipalTable;
-  integrationProviderApplications: IntegrationProviderApplicationTable;
   integrationAuthAttempts: IntegrationAuthAttemptTable;
   integrationAuthorityGenerations: IntegrationAuthorityGenerationTable;
   integrationAuthorityPending: IntegrationAuthorityPendingTable;
   integrationConnections: IntegrationConnectionTable;
-  integrationApplicationSourceDefaults: IntegrationApplicationSourceDefaultTable;
   integrationInstallations: IntegrationInstallationTable;
   integrationServers: IntegrationServerTable;
   integrationServerSecrets: IntegrationServerSecretTable;
@@ -2243,7 +2239,7 @@ export interface DatabaseSchema {
   pluginOwnerSettings: {
     ownerUserId: UserId;
     targetKey: string;
-    target: JsonColumn<import("@opensteer/protocol").PluginTarget>;
+    target: JsonColumn<Exclude<import("@opensteer/protocol").PluginTarget, { kind: "device-app" }>>;
     enabled: boolean;
 
     revision: number;
@@ -2266,29 +2262,15 @@ export interface DatabaseSchema {
     pluginId: string;
     createdAt: Timestamp;
   };
-  specialists: {
-    removedAt: Generated<Date | null>;
-    id: string;
-
-    pluginId: string;
-    pluginVersionId: string;
-    ownerUserId: UserId;
-    createdBy: UserId;
-    status: "pending" | "ready" | "removing" | "removal-failed";
-    createdAt: Timestamp;
-    updatedAt: Timestamp;
-  };
   pluginVersions: {
     id: string;
     pluginId: string;
     digest: string;
     manifest: JsonColumn<Readonly<Record<string, unknown>>>;
-    specialistManifest: JsonColumn<Readonly<Record<string, unknown>>> | null;
     createdAt: Timestamp;
   };
 
   integrationGrants: IntegrationGrantTable;
-  mcpOAuthCredentials: McpOAuthCredentialTable;
   channelAccounts: ChannelAccountTable;
   channelAccessGrants: ChannelAccessGrantTable;
   channelBindings: ChannelBindingTable;

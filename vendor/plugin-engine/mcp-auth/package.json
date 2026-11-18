@@ -1,0 +1,24 @@
+{
+  "name": "@opensteer/plugin-engine-mcp-auth",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-authorization": "workspace:*",
+    "@opensteer/plugin-engine-mcp": "workspace:*",
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  }
+}

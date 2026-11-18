@@ -23,7 +23,7 @@ export const computerGuestLibrary = String.raw`
     const entries = await call(kind);
     const q = String(query).toLowerCase();
     const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,entry.computerId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
-    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], 'Use integration_search {query:"' + (kind === "apps" ? "Computer use" : "Phone display") + '"} to find targets and access instructions.');
+    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], "Call computer_apps to find targets and access instructions.");
     if(matches[0].blocked) { const {code,message,next}=matches[0].blocked; throw new ComputerError(code,message,[],next); }
     return matches[0];
   }

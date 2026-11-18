@@ -13,12 +13,12 @@ export async function triggerProgramCompatibilityReason(
   environmentId: EnvironmentId,
   version: number,
 ): Promise<string | null> {
-  if (version !== 4) return TRIGGER_PROGRAM_VERSION_REFUSAL;
+  if (version !== 5) return TRIGGER_PROGRAM_VERSION_REFUSAL;
   const environment = await store.getEnvironment(environmentId);
   const capabilities = environment?.runnerId
     ? await store.runnerCapabilities(environment.runnerId)
     : null;
-  return capabilities?.includes("trigger-program-v4")
+  return capabilities?.includes("trigger-program-v5")
     ? null
-    : "Update this computer to run automation programs with tool contract version 4.";
+    : "Update this computer to run automation programs with tool contract version 5.";
 }

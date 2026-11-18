@@ -26,4 +26,5 @@ Procedures for `Opensteer.app` (`com.opensteer.opensteer`). Read
 - [Local builds](references/local-builds.md): keyless proof, signed local install, helpers.
 - [Releases](references/releases.md): dispatch, evidence, promotion, packaging, baseline.
 - [Draft certification](references/draft-certification.md): a draft's ZIP in disposable VMs.
+- [Plugin runtime](references/plugin-runtime.md): sandbox packaging, cost measurement and consistent backup.
 - [Snapshot restore](references/snapshot-restore.md): restoring a Personal database snapshot.

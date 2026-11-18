@@ -1,5 +1,5 @@
 import { OpensteerError } from "@opensteer/core";
-import { HostClientRequestError } from "../host/client.js";
+import { HostClientRequestError, isHostRefusal } from "../host/client.js";
 import { describe, expect, it } from "vitest";
 import {
   classifyClientFailure,
@@ -126,4 +126,26 @@ it("tells a Host that answered from one that never did", () => {
   expect(unanswered(refused("runner_offline", 503, { retryable: true }))).toBe(false);
   expect(unanswered(new HostTransportError("deployment-changed"))).toBe(false);
   expect(unanswered(new TypeError("Failed to fetch"))).toBe(false);
+});
+
+it("distinguishes confirmed refusal from an unknown commit outcome", () => {
+  expect(
+    isHostRefusal(
+      new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: "Revision changed",
+      }),
+    ),
+  ).toBe(true);
+  expect(isHostRefusal(new Error("Lost response"))).toBe(false);
+  expect(
+    isHostRefusal(
+      new HostClientRequestError({
+        code: "internal",
+        status: 500,
+        message: "Unavailable",
+      }),
+    ),
+  ).toBe(false);
 });

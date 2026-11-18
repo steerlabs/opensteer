@@ -1454,7 +1454,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "typescript",
         source: "export default async function ({ event }) { return event.payload; }",
       },
@@ -1476,7 +1476,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "typescript",
         source: "export default async function ({ event }) { return event.payload; }",
       },
@@ -1586,7 +1586,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-webhook-create",
       name: "Git provider",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1634,7 +1634,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-backlog-create",
       name: "Busy webhook",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1708,7 +1708,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-collapse-create",
       name: "Every minute",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1763,7 +1763,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-cancel-create",
       name: "Cancelable webhook",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1878,7 +1878,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-rearm-create",
       name: "One shot",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1897,7 +1897,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "One shot, renamed",
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => 1",
       },
@@ -1950,7 +1950,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-authority-pause-create",
       name: "Hourly report",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -2009,7 +2009,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "trigger-admission-create",
       name: "Control caller",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },

@@ -1,0 +1,329 @@
+{
+  "protocol": 2,
+  "previous": 1,
+  "messages": {
+    "skills": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "skills",
+              "type": {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "Objects",
+                    "propertySignatures": [
+                      {
+                        "name": "name",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "_tag": "Filter"
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "description",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter"
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "license",
+                        "type": {
+                          "_tag": "String"
+                        },
+                        "isOptional": true
+                      },
+                      {
+                        "name": "compatibility",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter"
+                            }
+                          ]
+                        },
+                        "isOptional": true
+                      },
+                      {
+                        "name": "metadata",
+                        "type": {
+                          "_tag": "Objects",
+                          "propertySignatures": [],
+                          "indexSignatures": [
+                            {
+                              "parameter": {
+                                "_tag": "String"
+                              },
+                              "type": {
+                                "_tag": "String"
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": true
+                      },
+                      {
+                        "name": "allowed-tools",
+                        "type": {
+                          "_tag": "String"
+                        },
+                        "isOptional": true
+                      },
+                      {
+                        "name": "files",
+                        "type": {
+                          "_tag": "Arrays",
+                          "rest": [
+                            {
+                              "_tag": "Objects",
+                              "propertySignatures": [
+                                {
+                                  "name": "path",
+                                  "type": {
+                                    "_tag": "String",
+                                    "checks": [
+                                      {
+                                        "_tag": "Filter",
+                                        "representation": {
+                                          "id": "effect/schema/isMinLength",
+                                          "payload": {
+                                            "minLength": 1
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "_tag": "Filter"
+                                      }
+                                    ]
+                                  },
+                                  "isOptional": false
+                                },
+                                {
+                                  "name": "content",
+                                  "type": {
+                                    "_tag": "String"
+                                  },
+                                  "isOptional": false
+                                }
+                              ]
+                            }
+                          ],
+                          "checks": [
+                            {
+                              "_tag": "Filter"
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      }
+                    ]
+                  }
+                ],
+                "checks": [
+                  {
+                    "_tag": "Filter"
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "dynamic",
+              "type": {
+                "_tag": "Boolean"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "cached",
+              "type": {
+                "_tag": "Boolean"
+              },
+              "isOptional": true
+            }
+          ]
+        },
+        {
+          "_tag": "Arrays",
+          "rest": [
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "description",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "license",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": true
+                },
+                {
+                  "name": "compatibility",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": true
+                },
+                {
+                  "name": "metadata",
+                  "type": {
+                    "_tag": "Objects",
+                    "propertySignatures": [],
+                    "indexSignatures": [
+                      {
+                        "parameter": {
+                          "_tag": "String"
+                        },
+                        "type": {
+                          "_tag": "String"
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": true
+                },
+                {
+                  "name": "allowed-tools",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": true
+                },
+                {
+                  "name": "files",
+                  "type": {
+                    "_tag": "Arrays",
+                    "rest": [
+                      {
+                        "_tag": "Objects",
+                        "propertySignatures": [
+                          {
+                            "name": "path",
+                            "type": {
+                              "_tag": "String",
+                              "checks": [
+                                {
+                                  "_tag": "Filter",
+                                  "representation": {
+                                    "id": "effect/schema/isMinLength",
+                                    "payload": {
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                {
+                                  "_tag": "Filter"
+                                }
+                              ]
+                            },
+                            "isOptional": false
+                          },
+                          {
+                            "name": "content",
+                            "type": {
+                              "_tag": "String"
+                            },
+                            "isOptional": false
+                          }
+                        ]
+                      }
+                    ],
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                }
+              ]
+            }
+          ],
+          "checks": [
+            {
+              "_tag": "Filter"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "unchanged": [
+    "invocation",
+    "request",
+    "response",
+    "requirements",
+    "tools",
+    "toolSummaries",
+    "elicitationRequest",
+    "elicitationReply",
+    "workflowStep",
+    "workflowStepReply",
+    "workflowControl",
+    "cacheCommand",
+    "cacheReply"
+  ],
+  "references": {},
+  "shared": {}
+}

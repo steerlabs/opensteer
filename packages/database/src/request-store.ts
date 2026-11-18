@@ -1,5 +1,5 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
-import { computerConnectionDeviceId } from "./integration-store.js";
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
   ComputerAppSetupRequest as LegacyComputerAppSetupRequest,
@@ -46,29 +46,24 @@ import {
   type RunnerId,
   type ThreadId,
   type TriggerOccurrenceId,
+  type TriggerWatchActivationId,
   type UserId,
   type WaitingRequest,
 } from "@opensteer/core";
 import {
   ComputerAppIdentitySchema,
   IntegrationAccessSchema,
-  IntegrationConnectionIdSchema,
   IntegrationConnectionRequirementSchema,
   IntegrationInstallManifestSchema,
-  IntegrationInstallationSchema,
   computerAppIdentitiesEqual,
   integrationAccessCovers,
-  integrationInstallManifestSummary,
-  integrationProposalName,
   type ComputerAppIdentity,
   type DeviceComputerAppSetupRequest as ComputerAppSetupRequest,
   type IntegrationAccess,
-  type IntegrationGrant,
   type IntegrationConnectionId,
   type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationInstallManifest,
   type IntegrationInstallationId,
-  type IntegrationProviderAuthorization,
   type IntegrationServerId,
   type IntegrationToolMaterial,
 } from "@opensteer/integration-core";
@@ -85,7 +80,6 @@ import {
   type BrowserSignInRequestResponse,
 } from "@opensteer/protocol/browser-sources";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
-import { isDeepStrictEqual } from "node:util";
 import {
   assignmentClosedToRequestsMessage,
   runAssignmentAcceptsRequests,
@@ -101,15 +95,8 @@ import {
   computerAppSetupRequestFromRow,
 } from "./computer-app-setup.js";
 import "./connection.js";
-import {
-  IntegrationGrantStore,
-  approveComputerAppAutomaticallyInTransaction,
-  installIntegrationInTransaction,
-  lockIntegrationCatalogDefinitionInTransaction,
-  lockIntegrationInstallationIdentityInTransaction,
-  type InstallIntegrationInput,
-  type InstallIntegrationMutation,
-} from "./integration-platform-stores.js";
+import { lockIntegrationCatalogDefinitionInTransaction } from "./integration-platform-stores.js";
+import { approveComputerAppAutomaticallyInTransaction } from "./computer-connection-writes.js";
 import { deviceAccessStates } from "./device-store.js";
 import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
@@ -122,12 +109,7 @@ import {
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
-import {
-  jsonValue,
-  lockThreadRow,
-  threadPathLinks,
-  type ChannelLinks,
-} from "./store-primitives.js";
+import { jsonValue, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 export { cancelPending } from "./request-cancellation.js";
 export { requestFromRow, requestInsert } from "./request-persistence.js";
@@ -148,11 +130,18 @@ export interface IntegrationRequestDetailInput {
 export type RequestOriginInput =
   | {
       readonly originatingOccurrenceId?: never;
+      readonly originatingWatchActivationId?: never;
       readonly originatingRunId: RunId;
     }
   | {
       readonly originatingOccurrenceId: TriggerOccurrenceId;
+      readonly originatingWatchActivationId?: never;
       readonly originatingRunId?: never;
+    }
+  | {
+      readonly originatingRunId?: never;
+      readonly originatingOccurrenceId?: never;
+      readonly originatingWatchActivationId: TriggerWatchActivationId;
     };
 interface CreateRequestFields {
   readonly callId: string;
@@ -194,21 +183,6 @@ export type ComputerAppAccessDecision =
       readonly setupRequest: LegacyComputerAppSetupRequest;
     })
   | Extract<DeviceComputerAppAccessDecision, { kind: "personal-grant" }>;
-
-/**
- * What makes two integration Requests the same ask: the resource an access
- * Request would grant, or the exact artifact an installation Request would
- * install.
- */
-type IntegrationRequestSubject =
-  | {
-      readonly definitionId: string;
-      readonly kind: "integration.install";
-    }
-  | {
-      readonly kind: "integration.install";
-      readonly proposalDigest: string;
-    };
 export interface RequestMutation {
   readonly replayed: boolean;
   readonly request: Request;
@@ -227,39 +201,6 @@ interface PendingRequestContinuation {
   readonly reason: string | null;
   readonly request: Request;
   readonly status: "waiting" | "queued" | "undeliverable";
-}
-interface PendingIntegrationAccessRequest {
-  readonly revision: string;
-  readonly access: IntegrationAccess;
-  readonly installationId: IntegrationInstallationId;
-  readonly request: Request;
-  readonly requestedConnectionId: IntegrationConnectionId | null;
-  readonly requestedServerId: IntegrationServerId | null;
-}
-interface ResolvedIntegrationAccessRequest {
-  readonly request: Request;
-  readonly grant: IntegrationGrant | null;
-}
-interface ResolvedIntegrationInstallRequest {
-  readonly installation: InstallIntegrationMutation["installation"] | null;
-  readonly request: Request;
-}
-interface BoundIntegrationAccessInstallation {
-  readonly installation: InstallIntegrationMutation["installation"];
-  readonly request: Request;
-}
-interface SelectedIntegrationAccessServer {
-  readonly request: Request;
-}
-
-/**
- * Material prepared outside the resolution transaction, bound to the exact
- * private manifest the administrator approved. The installation manifest is
- * a public metadata projection and must not be used as this authority proof.
- */
-export interface PreparedIntegrationInstallFulfillment {
-  readonly approvalManifest: IntegrationInstallManifest;
-  readonly material: Omit<InstallIntegrationInput, "actorUserId" | "requestId">;
 }
 
 /**
@@ -294,32 +235,6 @@ export class RequestStore {
    * is accepted — this is dedup, not an invariant, and its cost is one extra
    * card to approve rather than a broken guarantee.
    */
-  async #pendingTriggerEquivalent(
-    input: RequestOriginInput & {
-      readonly requestedBy: UserId;
-    },
-    subject: IntegrationRequestSubject,
-  ): Promise<RequestMutation | null> {
-    if (input.originatingOccurrenceId === undefined) return null;
-    const row = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .selectAll("requests")
-      .where("requests.kind", "=", subject.kind)
-      .where("requests.status", "=", "pending")
-      .where("requests.requestedBy", "=", input.requestedBy)
-      .where((expression) => integrationSubjectFilter(expression, subject))
-      .orderBy("requests.createdAt", "asc")
-      .orderBy("requests.id", "asc")
-      .limit(1)
-      .executeTakeFirst();
-    return row
-      ? {
-          replayed: true,
-          request: requestFromRow(row),
-        }
-      : null;
-  }
   async createDeviceAccessRequest(
     input: {
       readonly callId: string;
@@ -515,489 +430,39 @@ export class RequestStore {
       );
     });
   }
-  async createIntegrationInstallRequest(
-    input: {
-      readonly callId: string;
-      readonly manifest: IntegrationInstallManifest;
-      readonly originatingThreadId: ThreadId;
-      readonly reason: string;
-      readonly requestedBy: UserId;
-    } & RequestOriginInput,
-  ): Promise<RequestMutation> {
-    const manifest = IntegrationInstallManifestSchema.parse(input.manifest);
-    const equivalent = await this.#pendingTriggerEquivalent(input, {
-      kind: "integration.install",
-      ...(manifest.kind === "catalog"
-        ? {
-            definitionId: manifest.definition.id,
-          }
-        : {
-            proposalDigest: manifest.proposal.digest,
-          }),
-    });
-    if (equivalent) return equivalent;
-    return this.create({
-      ...requestOriginOf(input),
-      callId: input.callId,
-      integrationDetail: {
-        access: null,
-        installationId: null,
-        manifest,
-        requestedConnectionId: null,
-        requestedServerId: null,
-      },
-      kind: "integration.install",
-      mode: "durable",
-      originatingThreadId: input.originatingThreadId,
-      payload: {
-        kind: "integration.install",
-        manifest: RequestJsonObjectSchema.parse(integrationInstallManifestSummary(manifest)),
-        reason: input.reason,
-      },
-      presentation: {
-        ...(manifest.kind === "proposal"
-          ? {
-              agentProposed: true,
-            }
-          : {}),
-        detail: input.reason,
-        kind: "choice",
-        options: [
-          {
-            hint: "reject-once",
-            id: "declined",
-            label: "Not now",
-          },
-          {
-            hint: "confirm",
-            id: "installed",
-            label: "Install",
-          },
-        ],
-        risk: "high",
-        title: `Install ${integrationInstallDisplayName(manifest)}?`,
-      },
-      requestedBy: input.requestedBy,
-      requiredActor: "owner",
-    });
-  }
-  async createIntegrationAccessRequest(
-    input: IntegrationAccessRequestInput,
-  ): Promise<RequestMutation> {
-    return this.create(await integrationAccessRequestInput(this.#database, input));
-  }
-  async resolveIntegrationAccessRequest(input: {
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly response: RequestResponse;
-  }): Promise<ResolvedIntegrationAccessRequest> {
+  async settlePluginRequest(input: {
+    requestId: RequestId;
+    expectedRevision?: string;
+    resolvedBy: UserId;
+    settlementSessionId?: string;
+    decision: "fulfilled" | "declined";
+  }): Promise<RequestMutation> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.access as detailAccess",
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.access" ||
-        observed.status !== "pending" ||
-        observed.requestedBy !== input.resolvedBy ||
-        !observed.detailAccess
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration Request is no longer pending",
-        });
-      }
-      assertRequestRevision(observed, input.expectedRevision);
-      const observedRequest = requestFromRow(observed);
-      await lockActiveDurableRequestAuthority(transaction, observedRequest);
-      const response = withoutClientIntegrationAccount(RequestResponseSchema.parse(input.response));
-      const decision = parseIntegrationAccessDecision(response);
-      if (observed.detailInstallationId === null) {
-        if (decision.decision !== "declined") {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Install the reviewed integration before granting access",
-          });
-        }
-        const pending = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select("integrationRequestDetails.installationId as detailInstallationId")
-          .where("requests.id", "=", input.requestId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        if (
-          !pending ||
-          pending.kind !== "integration.access" ||
-          pending.status !== "pending" ||
-          pending.requestedBy !== input.resolvedBy ||
-          pending.detailInstallationId !== null
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration Request is no longer pending",
-          });
-        }
-        const now = new Date();
-        const declinedRow = await transaction
-          .updateTable("requests")
-          .set({
-            resolvedAt: now,
-            resolvedBy: input.resolvedBy,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-            response: jsonValue(response),
-            status: "declined",
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const declined = requestFromRow(declinedRow);
-        await enqueueContinuation(transaction, declined, now);
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        await refreshRequestState(transaction, declined.id);
-        return {
-          grant: null,
-          request: declined,
-        };
-      }
-      if (decision.decision === "fulfilled") {
-        await lockAndValidateIntegrationAccessResources(transaction, {
-          installationId: observed.detailInstallationId,
-          ownerUserId: input.resolvedBy,
-          requestedConnectionId: observed.detailRequestedConnectionId,
-          requestedServerId: observed.detailRequestedServerId,
-        });
-      }
-      const row = {
-        ...observed,
-        detailInstallationId: observed.detailInstallationId,
-        detailAccess: observed.detailAccess,
-      };
-      const request = requestFromRow(row);
-      if (
-        decision.decision === "fulfilled" &&
-        row.detailRequestedConnectionId !== null &&
-        decision.connectionId !== row.detailRequestedConnectionId
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Integration access requires the requested account",
-        });
-      }
-      if (
-        decision.decision === "fulfilled" &&
-        "access" in decision &&
-        row.detailAccess === "read-write" &&
-        decision.access !== "read-write"
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Integration access does not cover the requested write operations",
-        });
-      }
-      if (decision.decision === "fulfilled" && row.detailRequestedServerId === null) {
-        const activeServers = await transaction
-          .selectFrom("integrationServers")
-          .select("id")
-          .where("installationId", "=", row.detailInstallationId)
-          .where("status", "!=", "disabled")
-          .limit(2)
-          .execute();
-        if (activeServers.length > 1) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Choose the integration server before granting access",
-          });
-        }
-      }
-      if (decision.decision === "fulfilled" && decision.connectionId !== null) {
-        await validateIntegrationAccessFulfillmentConnection(transaction, {
-          connectionId: decision.connectionId,
-          installationId: row.detailInstallationId,
-          ownerUserId: input.resolvedBy,
-          providerAuthorizations: input.providerAuthorizations,
-          requestedAccess: row.detailAccess,
-          requestedServerId: row.detailRequestedServerId,
-        });
-      }
-      const grant =
-        decision.decision === "fulfilled"
-          ? await createPersonalIntegrationGrantForRequest(transaction, {
-              ...decision,
-              installationId: row.detailInstallationId,
-              ownerUserId: input.resolvedBy,
-              providerAuthorizations: input.providerAuthorizations,
-              requestedServerId: row.detailRequestedServerId,
-            })
-          : null;
-      // Resource and grant fences precede Request projection; a changed discovery
-
-      await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .select("requests.id")
-        .where("requests.kind", "=", "integration.access")
-        .where("requests.status", "=", "pending")
-        .where("requests.requestedBy", "=", input.resolvedBy)
-        .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
-        .orderBy("requests.id", "asc")
-        .forNoKeyUpdate("requests")
-        .execute();
-      const lockedRequest = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.access as detailAccess",
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .forNoKeyUpdate("requests")
-        .executeTakeFirst();
-      if (
-        !lockedRequest ||
-        lockedRequest.kind !== "integration.access" ||
-        lockedRequest.status !== "pending" ||
-        lockedRequest.requestedBy !== input.resolvedBy ||
-        !lockedRequest.detailInstallationId ||
-        !lockedRequest.detailAccess ||
-        lockedRequest.detailInstallationId !== observed.detailInstallationId ||
-        lockedRequest.detailRequestedConnectionId !== observed.detailRequestedConnectionId ||
-        lockedRequest.detailRequestedServerId !== observed.detailRequestedServerId ||
-        lockedRequest.detailAccess !== observed.detailAccess
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration Request is no longer pending",
-        });
-      }
-      const persistedResponse =
-        decision.decision === "fulfilled" && decision.connectionId
-          ? await withAuthoritativeIntegrationAccount(
-              transaction,
-              response,
-              decision.connectionId,
-              input.resolvedBy,
-            )
-          : response;
-      const now = new Date();
-      const resolvedRow = await transaction
-        .updateTable("requests")
-        .set({
-          resolvedAt: now,
-          resolvedBy: input.resolvedBy,
-          settlementProvenance: await readRequestSettlementProvenance(
-            transaction,
-            input.resolvedBy,
-            input.settlementSessionId,
-          ),
-          response: jsonValue(persistedResponse),
-          status: decision.decision === "fulfilled" ? "fulfilled" : "declined",
-        })
-        .where("id", "=", request.id)
-        .where("status", "=", "pending")
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      const resolved = requestFromRow(resolvedRow);
-      await enqueueContinuation(transaction, resolved, now);
-      const grantedAccess =
-        decision.decision === "fulfilled" && "access" in decision
-          ? decision.access
-          : row.detailAccess;
-      if (decision.decision === "fulfilled" && grantedAccess === "read-write") {
-        const covered = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .where("requests.id", "!=", resolved.id)
-          .where("requests.kind", "=", "integration.access")
-          .where("requests.status", "=", "pending")
-          .where("requests.requestedBy", "=", input.resolvedBy)
-          .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
-          .where("integrationRequestDetails.access", "=", "read")
-          .where(
-            "integrationRequestDetails.requestedConnectionId",
-            row.detailRequestedConnectionId === null ? "is" : "=",
-            row.detailRequestedConnectionId,
-          )
-          .where(
-            "integrationRequestDetails.requestedServerId",
-            row.detailRequestedServerId === null ? "is" : "=",
-            row.detailRequestedServerId,
-          )
-          .forNoKeyUpdate("requests")
-          .execute();
-        for (const pending of covered) {
-          const coveredRow = await transaction
-            .updateTable("requests")
-            .set({
-              resolvedAt: now,
-              resolvedBy: input.resolvedBy,
-              response: jsonValue(persistedResponse),
-              responseCommandId: null,
-              status: "fulfilled",
-            })
-            .where("id", "=", pending.id)
-            .where("status", "=", "pending")
-            .returningAll()
-            .executeTakeFirst();
-          if (!coveredRow) continue;
-          const coveredRequest = requestFromRow(coveredRow);
-          await enqueueContinuation(transaction, coveredRequest, now);
-          await refreshRequestState(transaction, coveredRequest.id);
-        }
-      }
-      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      await refreshRequestState(transaction, resolved.id);
-      return {
-        grant,
-        request: resolved,
-      };
-    });
-  }
-  async resolveIntegrationInstallRequest(input: {
-    readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly response: RequestResponse;
-  }): Promise<ResolvedIntegrationInstallRequest> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select("integrationRequestDetails.manifest as detailManifest")
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.install" ||
-        observed.status !== "pending" ||
-        !observed.detailManifest
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Installation Request is no longer pending",
-        });
-      }
-      const observedRequest = requestFromRow(observed);
-      await lockActiveDurableRequestAuthority(transaction, observedRequest);
-      const response = RequestResponseSchema.parse(input.response);
-      if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Installation decision is invalid",
-        });
-      }
-      const fulfilled = response.optionId === "installed";
-      if (fulfilled !== (input.preparedFulfillment !== undefined)) {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: fulfilled
-            ? "Installation fulfillment requires prepared installation material"
-            : "A declined installation cannot carry installation material",
-        });
-      }
-      if (input.preparedFulfillment) {
-        await lockIntegrationInstallationIdentityInTransaction(
-          transaction,
-          input.preparedFulfillment.material.installation,
-        );
-      }
       const row = await transaction
         .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select("integrationRequestDetails.manifest as detailManifest")
-        .where("requests.id", "=", input.requestId)
-        .forNoKeyUpdate("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
         .executeTakeFirst();
-      if (
-        !row ||
-        row.kind !== "integration.install" ||
-        row.status !== "pending" ||
-        !row.detailManifest
-      ) {
+      if (!row || !row.kind.startsWith("plugin."))
+        throw new OpensteerError({ code: "not_found", message: "Plugin Request is unavailable." });
+      if (row.requestedBy !== input.resolvedBy)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person asked may answer this Request.",
+        });
+      if (row.status !== "pending")
         throw new OpensteerError({
           code: "conflict",
-          message: "Installation Request is no longer pending",
+          message: "Plugin Request is no longer pending.",
         });
-      }
+      if (input.expectedRevision !== undefined) assertRequestRevision(row, input.expectedRevision);
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
       await requirePersonalOwner(transaction, input.resolvedBy);
-      assertRequestRevision(row, input.expectedRevision);
-      if (
-        input.preparedFulfillment &&
-        !isDeepStrictEqual(
-          IntegrationInstallManifestSchema.parse(row.detailManifest),
-          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-        )
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Prepared installation does not match the approved manifest",
-        });
-      }
-      const installationMutation = input.preparedFulfillment
-        ? await installIntegrationInTransaction(transaction, {
-            ...input.preparedFulfillment.material,
-            actorUserId: input.resolvedBy,
-            requestId: input.requestId,
-          })
-        : null;
       const now = new Date();
-      const resolvedRow = await transaction
+      const resolved = await transaction
         .updateTable("requests")
         .set({
+          status: input.decision,
           resolvedAt: now,
           resolvedBy: input.resolvedBy,
           settlementProvenance: await readRequestSettlementProvenance(
@@ -1005,374 +470,91 @@ export class RequestStore {
             input.resolvedBy,
             input.settlementSessionId,
           ),
-          response: jsonValue(response),
-          status: fulfilled ? "fulfilled" : "declined",
+          response: jsonValue({ kind: "external", value: { decision: input.decision } }),
         })
-        .where("id", "=", input.requestId)
-        .where("status", "=", "pending")
+        .where("id", "=", row.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const request = requestFromRow(resolvedRow);
+      const request = requestFromRow(resolved);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      await refreshRequestState(transaction, request.id);
-      return {
-        installation: installationMutation?.installation ?? null,
-        request,
-      };
+      return { request: await refreshRequestState(transaction, request.id), replayed: false };
     });
   }
-  async loadIntegrationInstallManifest(input: {
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<IntegrationInstallManifest> {
-    await requirePersonalOwner(this.#database, input.resolvedBy);
-    const row = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .innerJoin("users", (join) => join.on("users.id", "=", input.resolvedBy))
-      .select("integrationRequestDetails.manifest")
-      .where("requests.id", "=", input.requestId)
-      .where("requests.kind", "=", "integration.install")
-      .where("requests.status", "=", "pending")
-      .executeTakeFirst();
-    if (!row?.manifest) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Installation Request is unavailable or the personal owner is required",
-      });
-    }
-    return IntegrationInstallManifestSchema.parse(row.manifest);
+  cancelPluginRequests(
+    requestIds: readonly RequestId[],
+    reason: RequestCancellationReason,
+  ): Promise<readonly RequestId[]> {
+    return commitPersonalMutation(this.#database, (tx) =>
+      cancelPending(tx, { requestIds, reason, resolvedAt: new Date() }),
+    );
   }
-  async loadIntegrationAccessInstallManifest(input: {
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<IntegrationInstallManifest> {
-    await requirePersonalOwner(this.#database, input.resolvedBy);
-    const row = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .innerJoin("users", (join) => join.on("users.id", "=", input.resolvedBy))
-      .select(["integrationRequestDetails.installationId", "integrationRequestDetails.manifest"])
-      .where("requests.id", "=", input.requestId)
-      .where("requests.kind", "=", "integration.access")
-      .where("requests.status", "=", "pending")
-      .executeTakeFirst();
-    if (!row?.manifest || row.installationId !== null) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Integration access installation is unavailable",
-      });
-    }
-    return IntegrationInstallManifestSchema.parse(row.manifest);
-  }
-  async tryBindExistingIntegrationAccessInstallation(input: {
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<BoundIntegrationAccessInstallation | null> {
+  async endPluginExecutionRequest(
+    requestId: RequestId,
+    reason: "plugin-interrupted" | "plugin-expired" | "run-ended",
+  ): Promise<readonly RequestId[]> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.manifest as detailManifest",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.access" ||
-        observed.status !== "pending" ||
-        observed.detailInstallationId !== null ||
-        !observed.detailManifest
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration access installation is no longer pending",
-        });
-      }
-      assertRequestRevision(observed, input.expectedRevision);
-      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-      await requirePersonalOwner(transaction, input.resolvedBy);
-      const manifest = IntegrationInstallManifestSchema.parse(observed.detailManifest);
-      const candidates = await transaction
-        .selectFrom("integrationInstallations")
-        .selectAll()
-        .where("status", "=", "active")
-        .where("sourceKind", "=", manifest.kind === "catalog" ? "built-in" : "proposed")
-        .where(
-          manifest.kind === "catalog"
-            ? sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${manifest.definition.id}`
-            : sql<boolean>`integration_installations.provenance ->> 'artifactDigest' = ${manifest.proposal.digest}`,
-        )
-        .execute();
-      const candidate = candidates.find((row) =>
-        installedIntegrationMatchesReviewedManifest(row, manifest),
-      );
-      if (!candidate) return null;
-      await lockIntegrationInstallationIdentityInTransaction(transaction, candidate);
-      const current = await transaction
-        .selectFrom("integrationInstallations")
-        .selectAll()
-        .where("id", "=", candidate.id)
-        .where("status", "=", "active")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest)) return null;
-      const bound = await bindIntegrationAccessInstallation(transaction, {
-        installation: integrationInstallationFromRequestRow(current),
-        requestId: input.requestId,
-      });
-      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      return bound;
-    });
-  }
-  async installForIntegrationAccessRequest(input: {
-    readonly preparedFulfillment: PreparedIntegrationInstallFulfillment;
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<BoundIntegrationAccessInstallation> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.manifest as detailManifest",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.access" ||
-        observed.status !== "pending" ||
-        observed.detailInstallationId !== null ||
-        !observed.detailManifest
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration access installation is no longer pending",
-        });
-      }
-      if (
-        !isDeepStrictEqual(
-          IntegrationInstallManifestSchema.parse(observed.detailManifest),
-          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-        )
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Prepared installation does not match the reviewed manifest",
-        });
-      }
-      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-      await lockIntegrationInstallationIdentityInTransaction(
-        transaction,
-        input.preparedFulfillment.material.installation,
-      );
+      // The Personal mutation fence serializes Request settlement. Read the kind
+      // under that fence, then write the continuation before locking the Request.
       const row = await transaction
         .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.manifest as detailManifest",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .forNoKeyUpdate("requests")
-        .executeTakeFirst();
-      await requirePersonalOwner(transaction, input.resolvedBy);
-      const current = await transaction
-        .selectFrom("integrationInstallations")
         .selectAll()
-        .where("name", "=", input.preparedFulfillment.material.installation.name)
-        .forNoKeyUpdate()
+        .where("id", "=", requestId)
         .executeTakeFirst();
       if (
         !row ||
-        row.kind !== "integration.access" ||
-        row.status !== "pending" ||
-        row.detailInstallationId !== null ||
-        !row.detailManifest ||
-        !isDeepStrictEqual(
-          IntegrationInstallManifestSchema.parse(row.detailManifest),
-          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-        )
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration access installation is no longer pending",
-        });
-      }
-      const exactCurrent =
-        current && currentIntegrationMatchesPrepared(current, input.preparedFulfillment.material);
-      assertRequestRevision(row, input.expectedRevision);
-      const installationMutation = exactCurrent
-        ? {
-            installation: IntegrationInstallationSchema.parse({
-              createdAt: current.createdAt.toISOString(),
-              description: current.description,
-              id: current.id,
-              manifest: current.manifest,
-              name: current.name,
-              provenance: current.provenance,
-              revision: current.revision,
-              sourceKind: current.sourceKind,
-              status: current.status,
-              title: current.title,
-              trust: current.trust,
-              updatedAt: current.updatedAt.toISOString(),
-              version: current.version,
+        !["plugin.approval", "plugin.input"].includes(row.kind) ||
+        row.status === "cancelled" ||
+        row.status === "withdrawn"
+      )
+        return [];
+      const now = new Date();
+      if (reason === "run-ended")
+        await transaction
+          .updateTable("requestContinuations")
+          .set({
+            status: "undeliverable",
+            reason: "Plugin execution stopped with its Run",
+            updatedAt: now,
+          })
+          .where("requestId", "=", requestId)
+          .execute();
+      else
+        await transaction
+          .insertInto("requestContinuations")
+          .values({
+            requestId,
+            status: "waiting",
+            reason: null,
+            attemptedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflict((c) =>
+            c.column("requestId").doUpdateSet({
+              status: "waiting",
+              reason: null,
+              attemptedAt: null,
+              updatedAt: now,
             }),
-          }
-        : await installIntegrationInTransaction(transaction, {
-            ...input.preparedFulfillment.material,
-            actorUserId: input.resolvedBy,
-            requestId: input.requestId,
-          });
-      const bound = await bindIntegrationAccessInstallation(transaction, {
-        installation: installationMutation.installation,
-        requestId: input.requestId,
-      });
-      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      return bound;
-    });
-  }
-  async selectIntegrationAccessServer(input: {
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly requestedServerId: IntegrationServerId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<SelectedIntegrationAccessServer> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.access" ||
-        observed.status !== "pending" ||
-        observed.requestedBy !== input.resolvedBy ||
-        !observed.detailInstallationId ||
-        observed.detailRequestedServerId !== null
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration server selection is no longer available",
-        });
-      }
-      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-      await lockAndValidateIntegrationAccessResources(transaction, {
-        installationId: observed.detailInstallationId,
-        ownerUserId: input.resolvedBy,
-        requestedConnectionId: observed.detailRequestedConnectionId,
-        requestedServerId: input.requestedServerId,
-      });
-      const server = await transaction
-        .selectFrom("integrationServers")
-        .select("id")
-        .where("id", "=", input.requestedServerId)
-        .where("installationId", "=", observed.detailInstallationId)
-        .where("status", "!=", "disabled")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!server) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration server is unavailable",
-        });
-      }
-      const row = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select([
-          "integrationRequestDetails.installationId as detailInstallationId",
-          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-        ])
-        .where("requests.id", "=", input.requestId)
-        .forNoKeyUpdate("requests")
-        .executeTakeFirst();
-      if (
-        !row ||
-        row.kind !== "integration.access" ||
-        row.status !== "pending" ||
-        row.requestedBy !== input.resolvedBy ||
-        !row.detailInstallationId ||
-        row.detailRequestedServerId !== null
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Integration server selection is no longer available",
-        });
-      }
-      assertRequestRevision(row, input.expectedRevision);
-      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      const previous = requestFromRow(row);
-      if (previous.payload.kind !== "integration.access")
-        throw new Error("Invalid Request payload");
-      const payload = {
-        ...previous.payload,
-        requestedServerId: server.id,
-      } satisfies RequestPayload;
-      await transaction
-        .updateTable("integrationRequestDetails")
-        .set({
-          requestedServerId: server.id,
-        })
-        .where("requestId", "=", input.requestId)
-        .where("requestedServerId", "is", null)
-        .executeTakeFirstOrThrow();
+          )
+          .execute();
       const updated = await transaction
         .updateTable("requests")
         .set({
-          payload: jsonValue(payload),
+          status: "cancelled",
+          cancellationReason: reason,
+          response: null,
+          resolvedBy: null,
+          settlementProvenance: null,
+          resolvedAt: now,
         })
-        .where("id", "=", input.requestId)
-        .where("status", "=", "pending")
+        .where("id", "=", requestId)
         .returningAll()
         .executeTakeFirstOrThrow();
       const request = requestFromRow(updated);
-      return { request: await refreshRequestState(transaction, request.id) };
+      await refreshRequestState(transaction, request.id);
+      return [request.id];
     });
   }
   async get(id: RequestId): Promise<Request | null> {
@@ -1391,170 +573,6 @@ export class RequestStore {
       .executeTakeFirst();
     return row?.revision ?? null;
   }
-  async settleIntegrationInput(input: {
-    readonly caller: Parameters<typeof assertActiveGrant>[1];
-    readonly requestId: RequestId;
-    readonly expectedRevision: string;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly action: "accept" | "decline" | "cancel";
-  }): Promise<RequestMutation> {
-    return commitPersonalMutation(this.#database, async (personalTransaction) => {
-      await (async (transaction) => {
-        const request = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (request) {
-          const origin = await lockRequestOrigin(transaction, request);
-          if (!origin?.running)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "The calling Run has ended",
-            });
-          await lockThreadRow(transaction, request.originatingThreadId);
-        }
-      })(personalTransaction);
-      return (async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.input" ||
-          observed.status !== "pending" ||
-          observed.originatingRunId !== input.caller.runId ||
-          observed.requestedBy !== input.resolvedBy
-        )
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Device input is no longer pending",
-          });
-        assertRequestRevision(observed, input.expectedRevision);
-        const pending = requestFromRow(observed);
-        await lockActiveDurableRequestAuthority(transaction, pending);
-        await assertActiveGrant(transaction, input.caller, this.#executionNow);
-        if (
-          pending.presentation.kind !== "form" ||
-          pending.presentation.fields.some((field) => !field.secret)
-        )
-          throw new Error("Device input requires secret form fields");
-        const response: RequestResponse =
-          input.action === "accept"
-            ? {
-                kind: "form",
-                answers: Object.fromEntries(
-                  pending.presentation.fields.map((field) => [field.id, []]),
-                ),
-              }
-            : {
-                kind: "external",
-                value: {
-                  decision: input.action,
-                },
-              };
-        const row = await transaction
-          .updateTable("requests")
-          .set({
-            status: input.action === "accept" ? "fulfilled" : "declined",
-            resolvedAt: new Date(),
-            resolvedBy: input.resolvedBy,
-            response: jsonValue(response),
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirst();
-        if (!row)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Device input is no longer pending",
-          });
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return { request: await refreshRequestState(transaction, row.id), replayed: false };
-      })(personalTransaction);
-    });
-  }
-  async cancelIntegrationInputs(
-    reason: RequestCancellationReason,
-    requestId?: RequestId,
-  ): Promise<readonly RequestId[]> {
-    const cancelled: RequestId[] = [];
-    for (;;) {
-      const batch = await commitPersonalMutation(this.#database, async (transaction) => {
-        const rows = await transaction
-          .selectFrom("requests")
-          .select(["id", "originatingThreadId"])
-          .where("kind", "=", "integration.input")
-          .where("status", "=", "pending")
-          .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
-          .orderBy("id")
-          .limit(128)
-          .execute();
-        if (rows.length)
-          await transaction
-            .selectFrom("threads")
-            .select("id")
-            .where("id", "in", [
-              ...new Set(rows.map(({ originatingThreadId }) => originatingThreadId)),
-            ])
-            .orderBy("id")
-            .forNoKeyUpdate()
-            .execute();
-        return cancelPending(transaction, {
-          reason,
-          resolvedAt: new Date(),
-          requestIds: rows.map(({ id }) => id),
-        });
-      });
-      cancelled.push(...batch);
-      if (batch.length < 128) return cancelled;
-    }
-  }
-
-  async listPendingIntegrationAccessRequests(
-    requestedBy: UserId,
-  ): Promise<readonly PendingIntegrationAccessRequest[]> {
-    const rows = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .selectAll("requests")
-      .select([
-        "integrationRequestDetails.access as detailAccess",
-        "integrationRequestDetails.installationId as detailInstallationId",
-        "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-        "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-      ])
-      .where("requests.kind", "=", "integration.access")
-      .where("requests.requestedBy", "=", requestedBy)
-      .where("requests.status", "=", "pending")
-      .orderBy("requests.createdAt", "asc")
-      .orderBy("requests.id", "asc")
-      .execute();
-    return rows.flatMap((row) =>
-      row.detailInstallationId && row.detailAccess
-        ? [
-            {
-              access: row.detailAccess,
-              installationId: row.detailInstallationId,
-              request: requestFromRow(row),
-              revision: row.revision,
-              requestedConnectionId: row.detailRequestedConnectionId,
-              requestedServerId: row.detailRequestedServerId,
-            },
-          ]
-        : [],
-    );
-  }
-
   /** The Request a call opened, or the one it joined. */
   async findByCallIdentity(
     input: {
@@ -3268,25 +2286,8 @@ export class RequestStore {
   }
 }
 
-/**
- * The one Request-creation path, exposed to the transaction so a caller that
- * must write a Request together with the authority row it names — a computer
- * app's setup request, for instance — commits both or neither.
- */
-type IntegrationAccessRequestInput = {
-  readonly access: IntegrationAccess;
-  readonly callId: string;
-  readonly installationId: IntegrationInstallationId | null;
-  readonly manifest?: IntegrationInstallManifest | null;
-  readonly originatingThreadId: ThreadId;
-  readonly reason: string;
-  readonly requestedConnectionId?: IntegrationConnectionId | null;
-  readonly requestedBy: UserId;
-  readonly requestedServerId: IntegrationServerId | null;
-} & RequestOriginInput;
-
 /** An ordinary `integration.access` Request, which the person can approve from anywhere. */
-async function integrationAccessRequestInput(
+export async function integrationAccessRequestInput(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   input: IntegrationAccessRequestInput,
 ): Promise<CreateRequestInput> {
@@ -3314,16 +2315,8 @@ async function integrationAccessRequestInput(
       message: "Integration installation is no longer available",
     });
   }
-  const title = installation?.title ?? integrationInstallDisplayName(manifest!);
-  // A proposed installation's title came from the document an agent
-  // researched, so every surface says so beside it, as the install card does:
-  // untrusted text must not read as Opensteer's own prose.
-  const agentProposed = installation
-    ? installation.sourceKind === "proposed"
-    : manifest!.kind === "proposal";
-  const summary = manifest
-    ? RequestJsonObjectSchema.parse(integrationInstallManifestSummary(manifest))
-    : null;
+  const title = installation?.title ?? manifest!.definition.name;
+  const summary = manifest ? RequestJsonObjectSchema.parse(manifest) : null;
   return {
     ...requestOriginOf(input),
     callId: input.callId,
@@ -3347,11 +2340,6 @@ async function integrationAccessRequestInput(
       requestedServerId: input.requestedServerId,
     },
     presentation: {
-      ...(agentProposed
-        ? {
-            agentProposed: true,
-          }
-        : {}),
       detail: input.reason,
       kind: "external",
       subject: {
@@ -3364,6 +2352,177 @@ async function integrationAccessRequestInput(
     requiredActor: "requester",
   };
 }
+
+export function installManifestSubject(manifest: IntegrationInstallManifest): string {
+  return `catalog:${manifest.definition.id}:${manifest.digest}`;
+}
+export async function validateIntegrationRequestDetail(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateRequestInput,
+): Promise<void> {
+  const detail = input.integrationDetail;
+  if (!detail) {
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Integration Request detail is required",
+    });
+  }
+  if (
+    input.kind !== "integration.access" ||
+    !detail.access ||
+    (detail.installationId === null) === (detail.manifest === null)
+  ) {
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Access Request detail is invalid",
+    });
+  }
+  if (detail.installationId) {
+    await lockAndValidateIntegrationAccessResources(transaction, {
+      installationId: detail.installationId,
+      ownerUserId: input.requestedBy,
+      requestedConnectionId: detail.requestedConnectionId,
+      requestedServerId: detail.requestedServerId,
+    });
+  } else {
+    if (detail.requestedConnectionId || detail.requestedServerId) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Pre-install access cannot bind an account or server",
+      });
+    }
+    const manifest = IntegrationInstallManifestSchema.parse(detail.manifest);
+    if (manifest.kind === "catalog") {
+      await lockIntegrationCatalogDefinitionInTransaction(transaction, manifest.definition.id);
+    }
+  }
+}
+export async function assertCatalogDefinitionAvailable(
+  transaction: Transaction<DatabaseSchema>,
+  definitionId: string,
+): Promise<void> {
+  // Installation takes the same exact-definition lock. The active check and
+  // Request insert therefore share one linearized transaction boundary.
+  await lockIntegrationCatalogDefinitionInTransaction(transaction, definitionId);
+  const installed = await transaction
+    .selectFrom("integrationInstallations")
+    .select("id")
+    .where("sourceKind", "=", "built-in")
+    .where("status", "=", "active")
+    .where(sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${definitionId}`)
+    .executeTakeFirst();
+  if (installed) {
+    throw new OpensteerError({
+      code: "conflict",
+      message:
+        "Catalog integration is already installed; search current integration inventory before requesting setup",
+    });
+  }
+}
+export async function lockAndValidateIntegrationAccessResources(
+  transaction: Transaction<DatabaseSchema>,
+  detail: {
+    readonly installationId: IntegrationInstallationId;
+    readonly ownerUserId: UserId;
+    readonly requestedConnectionId: IntegrationConnectionId | null;
+    readonly requestedServerId: IntegrationServerId | null;
+  },
+): Promise<void> {
+  const installation = await transaction
+    .selectFrom("integrationInstallations")
+    .select("id")
+    .where("id", "=", detail.installationId)
+    .where("status", "=", "active")
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  if (!installation) {
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Integration is inactive",
+    });
+  }
+  if (detail.requestedServerId) {
+    const server = await transaction
+      .selectFrom("integrationServers")
+      .select("id")
+      .where("id", "=", detail.requestedServerId)
+      .where("installationId", "=", detail.installationId)
+      .where("status", "!=", "disabled")
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (!server) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Integration server is inactive",
+      });
+    }
+  }
+  if (detail.requestedConnectionId) {
+    const connection = await transaction
+      .selectFrom("integrationConnections")
+      .select([
+        "connectionKind",
+        "id",
+        "integrationDefinitionId",
+        "integrationServerId",
+        "provider",
+      ])
+      .where("id", "=", detail.requestedConnectionId)
+      .where("ownerUserId", "=", detail.ownerUserId)
+      .where("status", "!=", "revoked")
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    const servers = connection
+      ? await transaction
+          .selectFrom("integrationServers")
+          .select(["connectionRequirement", "id"])
+          .where("installationId", "=", detail.installationId)
+          .where("status", "=", "active")
+          .$if(detail.requestedServerId !== null, (query) =>
+            query.where("id", "=", detail.requestedServerId!),
+          )
+          .execute()
+      : [];
+    const compatible = connection
+      ? servers.some((server) => {
+          const requirement = IntegrationConnectionRequirementSchema.parse(
+            server.connectionRequirement,
+          );
+          return (
+            requirement.kind === "computer" &&
+            connection.connectionKind === "computer" &&
+            connection.integrationServerId === server.id &&
+            connection.integrationDefinitionId === requirement.definitionId
+          );
+        })
+      : false;
+    if (!compatible) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Requested integration account is unavailable",
+      });
+    }
+  }
+}
+
+export type IntegrationAccessRequestInput = {
+  readonly access: IntegrationAccess;
+  readonly callId: string;
+  readonly installationId: IntegrationInstallationId | null;
+  readonly manifest?: IntegrationInstallManifest | null;
+  readonly originatingThreadId: ThreadId;
+  readonly reason: string;
+  readonly requestedConnectionId?: IntegrationConnectionId | null;
+  readonly requestedBy: UserId;
+  readonly requestedServerId: IntegrationServerId | null;
+} & RequestOriginInput;
+
+/**
+ * The one Request-creation path, exposed to the transaction so a caller that
+ * must write a Request together with the authority row it names — a computer
+ * app's setup request, for instance — commits both or neither.
+ */
+
 async function createRequestInTransaction(
   links: ChannelLinks,
   transaction: Transaction<DatabaseSchema>,
@@ -3531,7 +2690,7 @@ async function createRequestInTransaction(
       });
     }
   }
-  if (input.kind === "integration.access" || input.kind === "integration.install") {
+  if (input.kind === "integration.access") {
     await validateIntegrationRequestDetail(transaction, input);
   }
   const integrationDetail = input.integrationDetail;
@@ -3649,6 +2808,7 @@ async function createRequestInTransaction(
     createdAt: new Date().toISOString(),
     id: createId("request"),
     originatingOccurrenceId: input.originatingOccurrenceId ?? null,
+    originatingWatchActivationId: input.originatingWatchActivationId ?? null,
     originatingRunId: input.originatingRunId ?? null,
     resolvedAt: null,
     resolvedBy: null,
@@ -3661,15 +2821,20 @@ async function createRequestInTransaction(
     // Call identity is unique per origin through a partial index, so the
     // conflict target has to name that index's predicate too.
     .onConflict((conflict) =>
-      input.originatingRunId === undefined
+      input.originatingWatchActivationId !== undefined
         ? conflict
-            .columns(["originatingOccurrenceId", "callId"])
-            .where("originatingOccurrenceId", "is not", null)
+            .columns(["originatingWatchActivationId", "callId"])
+            .where("originatingWatchActivationId", "is not", null)
             .doNothing()
-        : conflict
-            .columns(["originatingRunId", "callId"])
-            .where("originatingRunId", "is not", null)
-            .doNothing(),
+        : input.originatingRunId === undefined
+          ? conflict
+              .columns(["originatingOccurrenceId", "callId"])
+              .where("originatingOccurrenceId", "is not", null)
+              .doNothing()
+          : conflict
+              .columns(["originatingRunId", "callId"])
+              .where("originatingRunId", "is not", null)
+              .doNothing(),
     )
     .returningAll()
     .executeTakeFirst();
@@ -3714,543 +2879,7 @@ async function createRequestInTransaction(
   return { replayed: false, request: await refreshRequestState(transaction, canonical.id) };
 }
 
-/**
- * The name an approver sees on an installation card. A catalog manifest names
- * its definition outright; a proposal has no definition until it is installed,
- * so it is called what it will be called once installed.
- *
- * A proposal's name is text an agent researched rather than a name Opensteer
- * vouches for, so the Request carrying it is marked `agentProposed`: unmarked,
- * a title like `Gmail — approved by your administrator` would read as the
- * platform's own prose on the card that grants it.
- */
-export function integrationInstallDisplayName(manifest: IntegrationInstallManifest): string {
-  return manifest.kind === "catalog"
-    ? manifest.definition.name
-    : integrationProposalName(manifest.proposal);
-}
-function installManifestSubject(manifest: IntegrationInstallManifest): string {
-  return manifest.kind === "catalog"
-    ? `catalog:${manifest.definition.id}:${manifest.digest}`
-    : `proposal:${manifest.proposal.digest}`;
-}
-function currentIntegrationMatchesPrepared(
-  current: {
-    readonly adapterSnapshot: unknown;
-    readonly description: string;
-    readonly manifest: unknown;
-    readonly name: string;
-    readonly provenance: unknown;
-    readonly sourceKind: string;
-    readonly status: string;
-    readonly title: string;
-    readonly trust: string;
-    readonly version: string | null;
-  },
-  prepared: PreparedIntegrationInstallFulfillment["material"],
-): boolean {
-  const installation = prepared.installation;
-  return (
-    current.status === "active" &&
-    current.name === installation.name &&
-    current.sourceKind === installation.sourceKind &&
-    current.title === installation.title &&
-    current.description === installation.description &&
-    current.trust === installation.trust &&
-    current.version === installation.version &&
-    isDeepStrictEqual(current.manifest, installation.manifest) &&
-    isDeepStrictEqual(current.provenance, installation.provenance) &&
-    isDeepStrictEqual(current.adapterSnapshot, prepared.adapterSnapshot)
-  );
-}
-function installedIntegrationMatchesReviewedManifest(
-  installation: {
-    readonly manifest: unknown;
-    readonly provenance: unknown;
-    readonly sourceKind: string;
-    readonly status: string;
-    readonly version: string | null;
-  },
-  reviewed: IntegrationInstallManifest,
-): boolean {
-  if (installation.status !== "active") return false;
-  const provenance = RequestJsonObjectSchema.safeParse(installation.provenance);
-  const installedManifest = RequestJsonObjectSchema.safeParse(installation.manifest);
-  if (!provenance.success || !installedManifest.success) return false;
-  if (reviewed.kind === "catalog") {
-    return (
-      installation.sourceKind === "built-in" &&
-      installation.version === reviewed.digest &&
-      provenance.data.definitionId === reviewed.definition.id &&
-      provenance.data.definitionDigest === reviewed.digest &&
-      isDeepStrictEqual(installedManifest.data.definition, reviewed.definition)
-    );
-  }
-  const summary = integrationInstallManifestSummary(reviewed);
-  if (summary.kind !== "proposal") throw new Error("Invalid proposal summary");
-  return (
-    installation.sourceKind === "proposed" &&
-    installation.version === reviewed.proposal.digest &&
-    provenance.data.artifactDigest === reviewed.proposal.digest &&
-    provenance.data.proposalKind === reviewed.proposal.kind &&
-    isDeepStrictEqual(provenance.data.source, summary.proposal.source) &&
-    isDeepStrictEqual(installedManifest.data.proposal, summary.proposal)
-  );
-}
-function integrationInstallationFromRequestRow(row: {
-  readonly createdAt: Date;
-  readonly description: string;
-  readonly id: IntegrationInstallationId;
-  readonly manifest: unknown;
-  readonly name: string;
-  readonly provenance: unknown;
-  readonly revision: number;
-  readonly sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
-  readonly status: "active" | "disabled" | "needs-attention";
-  readonly title: string;
-  readonly trust: "administrator-approved" | "built-in" | "verified-publisher";
-  readonly updatedAt: Date;
-  readonly version: string | null;
-}): InstallIntegrationMutation["installation"] {
-  return IntegrationInstallationSchema.parse({
-    createdAt: row.createdAt.toISOString(),
-    description: row.description,
-    id: row.id,
-    manifest: row.manifest,
-    name: row.name,
-    provenance: row.provenance,
-    revision: row.revision,
-    sourceKind: row.sourceKind,
-    status: row.status,
-    title: row.title,
-    trust: row.trust,
-    updatedAt: row.updatedAt.toISOString(),
-    version: row.version,
-  });
-}
-async function bindIntegrationAccessInstallation(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly installation: InstallIntegrationMutation["installation"];
-    readonly requestId: RequestId;
-  },
-): Promise<BoundIntegrationAccessInstallation> {
-  const row = await transaction
-    .selectFrom("requests")
-    .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-    .selectAll("requests")
-    .select([
-      "integrationRequestDetails.installationId as detailInstallationId",
-      "integrationRequestDetails.manifest as detailManifest",
-    ])
-    .where("requests.id", "=", input.requestId)
-    .forNoKeyUpdate("requests")
-    .executeTakeFirst();
-  if (
-    !row ||
-    row.kind !== "integration.access" ||
-    row.status !== "pending" ||
-    row.detailInstallationId !== null ||
-    !row.detailManifest
-  ) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Integration access installation is no longer pending",
-    });
-  }
-  const availableServers = await transaction
-    .selectFrom("integrationServers")
-    .select("id")
-    .where("installationId", "=", input.installation.id)
-    .where("status", "!=", "disabled")
-    .orderBy("id", "asc")
-    .limit(2)
-    .execute();
-  const requestedServerId = availableServers.length === 1 ? availableServers[0]!.id : null;
-  const oldRequest = requestFromRow(row);
-  if (oldRequest.payload.kind !== "integration.access") throw new Error("Invalid Request payload");
-  const payload = {
-    ...oldRequest.payload,
-    installationId: input.installation.id,
-    manifest: null,
-    requestedServerId,
-  } satisfies RequestPayload;
-  await transaction
-    .updateTable("integrationRequestDetails")
-    .set({
-      installationId: input.installation.id,
-      requestedServerId,
-    })
-    .where("requestId", "=", input.requestId)
-    .where("installationId", "is", null)
-    .executeTakeFirstOrThrow();
-  const updatedRow = await transaction
-    .updateTable("requests")
-    .set({
-      payload: jsonValue(payload),
-    })
-    .where("id", "=", input.requestId)
-    .where("status", "=", "pending")
-    .returningAll()
-    .executeTakeFirstOrThrow();
-  const request = requestFromRow(updatedRow);
-  return {
-    installation: input.installation,
-    request: await refreshRequestState(transaction, request.id),
-  };
-}
-async function validateIntegrationRequestDetail(
-  transaction: Transaction<DatabaseSchema>,
-  input: CreateRequestInput,
-): Promise<void> {
-  const detail = input.integrationDetail;
-  if (!detail) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Integration Request detail is required",
-    });
-  }
-  if (input.kind === "integration.install") {
-    if (
-      detail.access !== null ||
-      !detail.manifest ||
-      detail.installationId ||
-      detail.requestedConnectionId ||
-      detail.requestedServerId
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Installation Request detail is invalid",
-      });
-    }
-    const manifest = IntegrationInstallManifestSchema.parse(detail.manifest);
-    if (manifest.kind === "catalog") {
-      await assertCatalogDefinitionAvailable(transaction, manifest.definition.id);
-    }
-    return;
-  }
-  if (
-    input.kind !== "integration.access" ||
-    !detail.access ||
-    (detail.installationId === null) === (detail.manifest === null)
-  ) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Access Request detail is invalid",
-    });
-  }
-  if (detail.installationId) {
-    await lockAndValidateIntegrationAccessResources(transaction, {
-      installationId: detail.installationId,
-      ownerUserId: input.requestedBy,
-      requestedConnectionId: detail.requestedConnectionId,
-      requestedServerId: detail.requestedServerId,
-    });
-  } else {
-    if (detail.requestedConnectionId || detail.requestedServerId) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Pre-install access cannot bind an account or server",
-      });
-    }
-    const manifest = IntegrationInstallManifestSchema.parse(detail.manifest);
-    if (manifest.kind === "catalog") {
-      await lockIntegrationCatalogDefinitionInTransaction(transaction, manifest.definition.id);
-    }
-  }
-}
-async function assertCatalogDefinitionAvailable(
-  transaction: Transaction<DatabaseSchema>,
-  definitionId: string,
-): Promise<void> {
-  // Installation takes the same exact-definition lock. The active check and
-  // Request insert therefore share one linearized transaction boundary.
-  await lockIntegrationCatalogDefinitionInTransaction(transaction, definitionId);
-  const installed = await transaction
-    .selectFrom("integrationInstallations")
-    .select("id")
-    .where("sourceKind", "=", "built-in")
-    .where("status", "=", "active")
-    .where(sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${definitionId}`)
-    .executeTakeFirst();
-  if (installed) {
-    throw new OpensteerError({
-      code: "conflict",
-      message:
-        "Catalog integration is already installed; search current integration inventory before requesting setup",
-    });
-  }
-}
-async function lockAndValidateIntegrationAccessResources(
-  transaction: Transaction<DatabaseSchema>,
-  detail: {
-    readonly installationId: IntegrationInstallationId;
-    readonly ownerUserId: UserId;
-    readonly requestedConnectionId: IntegrationConnectionId | null;
-    readonly requestedServerId: IntegrationServerId | null;
-  },
-): Promise<void> {
-  const installation = await transaction
-    .selectFrom("integrationInstallations")
-    .select("id")
-    .where("id", "=", detail.installationId)
-    .where("status", "=", "active")
-    .forNoKeyUpdate()
-    .executeTakeFirst();
-  if (!installation) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Integration is inactive",
-    });
-  }
-  if (detail.requestedServerId) {
-    const server = await transaction
-      .selectFrom("integrationServers")
-      .select("id")
-      .where("id", "=", detail.requestedServerId)
-      .where("installationId", "=", detail.installationId)
-      .where("status", "!=", "disabled")
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!server) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Integration server is inactive",
-      });
-    }
-  }
-  if (detail.requestedConnectionId) {
-    const connection = await transaction
-      .selectFrom("integrationConnections")
-      .select([
-        "connectionKind",
-        "id",
-        "integrationDefinitionId",
-        "integrationServerId",
-        "provider",
-      ])
-      .where("id", "=", detail.requestedConnectionId)
-      .where("ownerUserId", "=", detail.ownerUserId)
-      .where("status", "!=", "revoked")
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    const servers = connection
-      ? await transaction
-          .selectFrom("integrationServers")
-          .select(["connectionRequirement", "id"])
-          .where("installationId", "=", detail.installationId)
-          .where("status", "=", "active")
-          .$if(detail.requestedServerId !== null, (query) =>
-            query.where("id", "=", detail.requestedServerId!),
-          )
-          .execute()
-      : [];
-    const compatible = connection
-      ? servers.some((server) => {
-          const requirement = IntegrationConnectionRequirementSchema.parse(
-            server.connectionRequirement,
-          );
-          return requirement.kind === "mcp-oauth"
-            ? connection.connectionKind === "mcp-oauth" &&
-                connection.integrationServerId === server.id
-            : requirement.kind === "computer"
-              ? connection.connectionKind === "computer" &&
-                connection.integrationServerId === server.id &&
-                connection.integrationDefinitionId === requirement.definitionId
-              : requirement.kind === "provider" &&
-                connection.connectionKind === "provider-account" &&
-                connection.integrationDefinitionId === requirement.definitionId &&
-                connection.provider === requirement.provider;
-        })
-      : false;
-    if (!compatible) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Requested integration account is unavailable",
-      });
-    }
-  }
-}
-async function withAuthoritativeIntegrationAccount(
-  transaction: Transaction<DatabaseSchema>,
-  response: RequestResponse,
-  connectionId: IntegrationConnectionId,
-  ownerUserId: UserId,
-): Promise<RequestResponse> {
-  if (response.kind !== "external" || !response.value) {
-    throw new Error("Integration access response is not external");
-  }
-  const account = await transaction
-    .selectFrom("integrationConnections")
-    .select(["accountIdentifier", "displayName"])
-    .where("id", "=", connectionId)
-    .where("ownerUserId", "=", ownerUserId)
-    .where("connectionKind", "in", ["provider-account", "computer", "mcp-oauth"])
-    .executeTakeFirst();
-  if (!account) return response;
-  return {
-    kind: "external",
-    value: RequestJsonObjectSchema.parse({
-      ...response.value,
-      account,
-    }),
-  };
-}
-async function validateIntegrationAccessFulfillmentConnection(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly installationId: IntegrationInstallationId;
-    readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    readonly requestedAccess: IntegrationAccess;
-    readonly requestedServerId: IntegrationServerId | null;
-  },
-): Promise<void> {
-  const connection = await transaction
-    .selectFrom("integrationConnections")
-    .select(["computerAccess", "connectionKind"])
-    .where("id", "=", input.connectionId)
-    .where("ownerUserId", "=", input.ownerUserId)
-    .where("status", "=", "connected")
-    .forNoKeyUpdate()
-    .executeTakeFirst();
-  if (!connection) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "The selected integration connection is unavailable",
-    });
-  }
-  const usable = await new IntegrationGrantStore(transaction).isConnectionUsableForAccessRequest({
-    connectionId: input.connectionId,
-    installationId: input.installationId,
-    ownerUserId: input.ownerUserId,
-    providerAuthorizations: input.providerAuthorizations,
-    requestedServerId: input.requestedServerId,
-  });
-  if (!usable) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "The selected connection belongs to a different integration",
-    });
-  }
-  if (
-    connection.connectionKind === "computer" &&
-    input.requestedAccess === "read-write" &&
-    connection.computerAccess !== "read-write"
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "The selected computer app allows reading only",
-    });
-  }
-}
-function withoutClientIntegrationAccount(response: RequestResponse): RequestResponse {
-  if (response.kind !== "external" || !response.value) return response;
-  const value = {
-    ...response.value,
-  };
-  delete value.account;
-  return {
-    kind: "external",
-    value: RequestJsonObjectSchema.parse(value),
-  };
-}
-type IntegrationAccessDecision =
-  | { readonly decision: "declined" }
-  | {
-      readonly decision: "fulfilled";
-      readonly access: IntegrationAccess;
-      readonly alias: string;
-      readonly connectionId: IntegrationConnectionId | null;
-      readonly isDefault: boolean;
-    };
-function parseIntegrationAccessDecision(response: RequestResponse): IntegrationAccessDecision {
-  if (response.kind !== "external" || !response.value)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Integration Request response is invalid",
-    });
-  const value = response.value;
-  if (value.decision === "declined") return { decision: "declined" };
-  if (
-    value.decision !== "fulfilled" ||
-    !IntegrationAccessSchema.safeParse(value.access).success ||
-    typeof value.alias !== "string" ||
-    typeof value.isDefault !== "boolean" ||
-    !("connectionId" in value) ||
-    (value.connectionId !== null && typeof value.connectionId !== "string")
-  )
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Choose the personal account and access to grant.",
-    });
-  const alias = value.alias.trim();
-  if (!alias || alias.length > 80)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Integration grant alias is invalid",
-    });
-  return {
-    decision: "fulfilled",
-    access: IntegrationAccessSchema.parse(value.access),
-    alias,
-    isDefault: value.isDefault,
-    connectionId:
-      value.connectionId === null ? null : IntegrationConnectionIdSchema.parse(value.connectionId),
-  };
-}
-async function createPersonalIntegrationGrantForRequest(
-  transaction: Transaction<DatabaseSchema>,
-  input: Extract<IntegrationAccessDecision, { alias: string }> & {
-    readonly installationId: IntegrationInstallationId;
-    readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    readonly requestedServerId: IntegrationServerId | null;
-  },
-): Promise<IntegrationGrant> {
-  const grantStore = new IntegrationGrantStore(transaction);
-  if (input.requestedServerId) {
-    const requestedServer = await transaction
-      .selectFrom("integrationServers")
-      .select("connectionRequirement")
-      .where("id", "=", input.requestedServerId)
-      .where("installationId", "=", input.installationId)
-      .where("status", "=", "active")
-      .executeTakeFirst();
-    const requiresConnection =
-      requestedServer &&
-      IntegrationConnectionRequirementSchema.parse(requestedServer.connectionRequirement).kind !==
-        "none";
-    const usable =
-      input.connectionId !== null &&
-      (await grantStore.isConnectionUsableForAccessRequest({
-        connectionId: input.connectionId,
-        installationId: input.installationId,
-        ownerUserId: input.ownerUserId,
-        providerAuthorizations: input.providerAuthorizations,
-        requestedServerId: input.requestedServerId,
-      }));
-    if (!requestedServer || (requiresConnection ? !usable : input.connectionId !== null)) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Grant targets a different integration server",
-      });
-    }
-  }
-  return grantStore.createGrantInTransaction(transaction, {
-    access: input.access,
-    alias: input.alias,
-    connectionId: input.connectionId,
-    createdBy: input.ownerUserId,
-    installationId: input.installationId,
-    isDefault: input.isDefault,
-    ownerUserId: input.ownerUserId,
-    providerAuthorizations: input.providerAuthorizations,
-  });
-}
-
-async function insertIntegrationDetail(
+export async function insertIntegrationDetail(
   transaction: Transaction<DatabaseSchema>,
   requestId: RequestId,
   detail: IntegrationRequestDetailInput,
@@ -4390,13 +3019,12 @@ export async function fulfilBrowserSignInRequestInTransaction(
     request: resolved,
   };
 }
-async function enqueueContinuation(
+export async function enqueueContinuation(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
   createdAt: Date,
 ): Promise<void> {
   if (
-    request.kind === "integration.input" ||
     request.mode !== "durable" ||
     (request.status !== "fulfilled" && request.status !== "declined")
   ) {
@@ -4499,11 +3127,12 @@ function boundedProfileName(value: string): string {
 }
 type RequestOriginSelector = {
   readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+  readonly originatingWatchActivationId?: TriggerWatchActivationId | null | undefined;
   readonly originatingRunId?: RunId | null;
 };
 
 /** Narrows an origin-carrying input back to the exclusive pair `create` takes. */
-function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
+export function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
   if (input.originatingRunId != null)
     return {
       originatingRunId: input.originatingRunId,
@@ -4513,6 +3142,8 @@ function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
       originatingOccurrenceId: input.originatingOccurrenceId,
     };
   }
+  if (input.originatingWatchActivationId != null)
+    return { originatingWatchActivationId: input.originatingWatchActivationId };
   throw new OpensteerError({
     code: "bad_request",
     message: "A Request must originate from a Run or an automation occurrence",
@@ -4543,26 +3174,12 @@ function callIdentityFilter(
   return (expression: ExpressionBuilder<DatabaseSchema, "requests">) =>
     expression.and([
       expression("callId", "=", input.callId),
-      origin.originatingRunId === undefined
-        ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
-        : expression("originatingRunId", "=", origin.originatingRunId),
+      origin.originatingWatchActivationId !== undefined
+        ? expression("originatingWatchActivationId", "=", origin.originatingWatchActivationId)
+        : origin.originatingRunId === undefined
+          ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
+          : expression("originatingRunId", "=", origin.originatingRunId),
     ]);
-}
-function integrationSubjectFilter(
-  expression: ExpressionBuilder<DatabaseSchema, "integrationRequestDetails" | "requests">,
-  subject: IntegrationRequestSubject,
-) {
-  return "definitionId" in subject
-    ? expression(
-        sql<string>`integration_request_details.manifest -> 'definition' ->> 'id'`,
-        "=",
-        subject.definitionId,
-      )
-    : expression(
-        sql<string>`integration_request_details.manifest -> 'proposal' ->> 'digest'`,
-        "=",
-        subject.proposalDigest,
-      );
 }
 function originMismatchMessage(input: RequestOriginSelector): string {
   return input.originatingRunId != null
@@ -4584,6 +3201,23 @@ async function lockRequestOrigin(
   lock = true,
 ): Promise<LockedRequestOrigin | undefined> {
   const origin = requestOriginOf(input);
+  if (origin.originatingWatchActivationId !== undefined) {
+    const watch = await transaction
+      .selectFrom("triggerWatchActivations")
+      .selectAll()
+      .where("id", "=", origin.originatingWatchActivationId)
+      .$if(lock, (q) => q.forNoKeyUpdate())
+      .executeTakeFirst();
+    return watch
+      ? {
+          environmentId: watch.environmentId,
+          requestedBy: watch.createdBy,
+          runId: null,
+          running: watch.desired === "active" && watch.observed === "running",
+          threadId: watch.anchorThreadId,
+        }
+      : undefined;
+  }
   if (origin.originatingRunId === undefined) {
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")
@@ -4622,7 +3256,7 @@ async function lockRequestOrigin(
     threadId: run.threadId,
   };
 }
-async function lockActiveDurableRequestAuthority(
+export async function lockActiveDurableRequestAuthority(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
 ): Promise<void> {

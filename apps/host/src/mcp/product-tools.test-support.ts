@@ -35,7 +35,6 @@ import {
   ThreadIdSchema,
   ThreadInputPolicySchema,
   readableRequestList,
-  ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
@@ -301,7 +300,6 @@ export class ProductToolsTestClient {
       deviceAccess: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
-      harnessAccessModes: () => ThreadAccessModeSchema.options,
       isEnvironmentConnected: () => true,
       execution: unavailableDefaults as never,
       ...options,
@@ -326,14 +324,11 @@ export class ProductToolsTestClient {
         },
       ) as never,
       product,
-      integrations: unavailable as never,
+      devices: unavailable as never,
       apps: unavailable as never,
       triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
       teamRequestForRun: async () => null,
       personalContextForRun: async () => true,
-      pluginInstall: async () => {
-        throw new Error("Unexpected install");
-      },
     });
     this.service = new OpensteerMcpService({
       store: options.store,

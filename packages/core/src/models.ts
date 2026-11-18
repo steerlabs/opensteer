@@ -162,7 +162,7 @@ export const RunnerCapabilitySchema = z.enum([
   "browser-profile-create-v1",
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
-  "trigger-program-v4",
+  "trigger-program-v5",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",
@@ -338,7 +338,6 @@ export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 
 export const ThreadSchema = z.object({
   returnHint: CompactionReturnHintSchema.nullable().optional(),
-  specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   askedAt: IsoDateTimeSchema.optional(),
 

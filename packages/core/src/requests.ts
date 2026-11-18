@@ -16,6 +16,7 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
+  TriggerWatchActivationIdSchema,
   UserIdSchema,
   type UserId,
   type ExecutionNodeId,
@@ -36,11 +37,12 @@ export const RequestKindSchema = z.enum([
   "browser.sign-in",
   "browser.password-sign-in",
   "integration.access",
-  "integration.install",
   "machine.full-disk-access",
   "device.access",
   "computer.app.access",
-  "integration.input",
+  "plugin.account",
+  "plugin.approval",
+  "plugin.input",
   "person.question",
 ]);
 type RequestKind = z.infer<typeof RequestKindSchema>;
@@ -73,6 +75,8 @@ export const RequestCancellationReasonSchema = z.enum([
   "task-deleted",
   "resource-deleted",
   "authority-revoked",
+  "plugin-interrupted",
+  "plugin-expired",
 ]);
 export type RequestCancellationReason = z.infer<typeof RequestCancellationReasonSchema>;
 
@@ -184,17 +188,67 @@ export function requestFormAnswersProblem(
 }
 
 /**
- * Set when the title names something an agent proposed, such as an integration
- * it researched, rather than something Opensteer vouches for. The title stays
+ * Set when the title names something an agent proposed, such as a plugin it
+ * wrote, rather than something Opensteer vouches for. The title stays
  * the plain name and every surface shows the provenance beside it, so a name
  * like `Gmail — approved by your administrator` never reads as Opensteer's own
  * words.
  */
 const RequestAgentProposedSchema = z.literal(true).optional();
 
+export const PluginRequestContextSchema = z.strictObject({
+  id: RequestIdentifierSchema,
+  name: z.string().min(1).max(240),
+  author: z.enum(["catalog", "agent"]),
+});
+export const PluginAccountConsentSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+  sites: z.array(z.string().max(2048)).max(100),
+  credential: z.enum(["sealed", "value"]),
+});
+const pluginPresentation = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("account"),
+    requirement: RequestIdentifierSchema,
+    scope: z.enum(["app", "user"]),
+    consent: PluginAccountConsentSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("approval"),
+    executionId: RequestIdentifierSchema,
+    tool: RequestIdentifierSchema,
+    arguments: z.json(),
+  }),
+  z.strictObject({
+    kind: z.literal("input"),
+    executionId: RequestIdentifierSchema,
+    tool: RequestIdentifierSchema,
+    schema: z.record(z.string(), z.json()),
+  }),
+]);
+const pluginContext = z.strictObject({
+  plugin: PluginRequestContextSchema,
+  decision: pluginPresentation,
+});
+const PluginAccountConsentViewSchema = z.object(PluginAccountConsentSchema.shape);
+const pluginContextView = z
+  .object({
+    plugin: z.object(PluginRequestContextSchema.shape),
+    decision: z.discriminatedUnion("kind", [
+      z.object({
+        ...pluginPresentation.options[0].shape,
+        consent: PluginAccountConsentViewSchema,
+      }),
+      z.object(pluginPresentation.options[1].shape),
+      z.object(pluginPresentation.options[2].shape),
+    ]),
+  })
+  .optional();
+
 const requestPresentationVariants = [
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     kind: z.literal("choice"),
     options: z.array(RequestOptionSchema).min(1).max(32),
@@ -203,6 +257,7 @@ const requestPresentationVariants = [
   }),
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     fields: z.array(RequestFormFieldSchema).min(1).max(16),
     kind: z.literal("form"),
@@ -210,6 +265,7 @@ const requestPresentationVariants = [
   }),
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     kind: z.literal("external"),
     subject: z.strictObject({
@@ -223,14 +279,17 @@ export const RequestPresentationSchema = z.discriminatedUnion("kind", requestPre
 const RequestPresentationViewSchema = z.discriminatedUnion("kind", [
   z.object({
     ...requestPresentationVariants[0].shape,
+    plugin: pluginContextView,
     options: z.array(RequestOptionViewSchema).min(1).max(32),
   }),
   z.object({
     ...requestPresentationVariants[1].shape,
+    plugin: pluginContextView,
     fields: z.array(RequestFormFieldViewSchema).min(1).max(16),
   }),
   z.object({
     ...requestPresentationVariants[2].shape,
+    plugin: pluginContextView,
     subject: z.object(requestPresentationVariants[2].shape.subject.shape),
   }),
 ]);
@@ -238,13 +297,12 @@ export type RequestPresentation = z.infer<typeof RequestPresentationSchema>;
 
 /**
  * What a surface shows beside the title of a Request whose subject an agent
- * proposed, and beside the proposed integration itself wherever it is listed.
+ * proposed.
  */
 export const requestAgentProposedLabel = "Proposed by an agent";
 
 /**
- * What the label means, for its tooltip and the proposed integration's own page.
- * Only an integration is ever proposed by an agent.
+ * What the label means, for its tooltip.
  */
 export const requestAgentProposedDetail =
   "An agent proposed this integration; it isn’t part of Opensteer’s reviewed catalog.";
@@ -362,11 +420,6 @@ const requestPayloadVariants = [
     requestedConnectionId: IntegrationIdentifierSchema.nullable(),
     requestedServerId: IntegrationIdentifierSchema.nullable(),
   }),
-  z.strictObject({
-    kind: z.literal("integration.install"),
-    manifest: RequestJsonObjectSchema,
-    reason: RequestReasonSchema,
-  }),
   /**
    * An agent needs macOS Full Disk Access on one lent Mac. The machine's name
    * is copied in at creation so the card and the continuation read the name the
@@ -433,16 +486,6 @@ const requestPayloadVariants = [
         });
       }
     }),
-  /**
-   * A computer-run MCP server asked the person for values during a tool call,
-   * such as the code a TV shows while pairing. The answer goes only to that
-   * server's waiting call: never to the agent, the Request row or an event.
-   */
-  z.strictObject({
-    installationId: IntegrationIdentifierSchema,
-    kind: z.literal("integration.input"),
-    serverId: IntegrationIdentifierSchema,
-  }),
   z.strictObject({
     kind: z.literal("device.access"),
     machineId: DeviceIdSchema,
@@ -455,10 +498,27 @@ const requestPayloadVariants = [
    * the form's fields; the answer wakes the task that asked, however late.
    */
   z.strictObject({ kind: z.literal("person.question") }),
+  z.strictObject({
+    kind: z.literal("plugin.account"),
+    plugin: RequestIdentifierSchema,
+    requirement: RequestIdentifierSchema,
+    scope: z.enum(["app", "user"]),
+    consent: PluginAccountConsentSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("plugin.approval"),
+    executionId: RequestIdentifierSchema,
+    interactionId: RequestIdentifierSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("plugin.input"),
+    executionId: RequestIdentifierSchema,
+    interactionId: RequestIdentifierSchema,
+  }),
 ] as const;
 const canonicalRequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
 export const LegacyComputerAppAccessPayloadSchema = z
-  .strictObject({ ...requestPayloadVariants[8].shape, runnerId: RunnerIdSchema })
+  .strictObject({ ...requestPayloadVariants[7].shape, runnerId: RunnerIdSchema })
   .omit({ deviceId: true });
 function normalizeLegacyComputerAccess(value: unknown) {
   const legacy = LegacyComputerAppAccessPayloadSchema.safeParse(value);
@@ -481,14 +541,18 @@ const canonicalRequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[4].shape),
   z.object(requestPayloadVariants[5].shape),
   z.object(requestPayloadVariants[6].shape),
-  z.object(requestPayloadVariants[7].shape),
   z.object({
-    ...requestPayloadVariants[8].shape,
+    ...requestPayloadVariants[7].shape,
     app: z.object(computerAppIdentityShape).nullable(),
   }),
+  z.object(requestPayloadVariants[8].shape),
   z.object(requestPayloadVariants[9].shape),
-  z.object(requestPayloadVariants[10].shape),
+  z.object({
+    ...requestPayloadVariants[10].shape,
+    consent: PluginAccountConsentViewSchema,
+  }),
   z.object(requestPayloadVariants[11].shape),
+  z.object(requestPayloadVariants[12].shape),
 ]);
 const RequestPayloadViewSchema = z.preprocess(
   normalizeLegacyComputerAccess,
@@ -535,6 +599,7 @@ const requestBaseShape = {
    * nullable and the pair carries the invariant instead.
    */
   originatingOccurrenceId: TriggerOccurrenceIdSchema.nullable(),
+  originatingWatchActivationId: TriggerWatchActivationIdSchema.nullable().optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),
@@ -556,6 +621,7 @@ function validateRequestInvariants(
     readonly kind: RequestKind;
     readonly mode: RequestMode;
     readonly originatingOccurrenceId: string | null;
+    readonly originatingWatchActivationId?: string | null | undefined;
     readonly originatingRunId: string | null;
     readonly payload: RequestPayload;
     readonly resolvedBy?: UserId | null;
@@ -580,11 +646,17 @@ function validateRequestInvariants(
       });
     }
   }
-  if ((request.originatingRunId === null) === (request.originatingOccurrenceId === null)) {
+  if (
+    [
+      request.originatingRunId,
+      request.originatingOccurrenceId,
+      request.originatingWatchActivationId,
+    ].filter((id) => id != null).length !== 1
+  ) {
     context.addIssue({
       code: "custom",
       message:
-        "A Request originates from exactly one of a Run or a Trigger Occurrence, never both and never neither",
+        "A Request originates from exactly one of a Run, a Trigger Occurrence or a Watch activation",
       path: ["originatingRunId"],
     });
   }
@@ -611,7 +683,7 @@ function validateRequestInvariants(
     context.addIssue({
       code: "custom",
       message:
-        "An integration access Request targets exactly one installed integration or install manifest",
+        "An access Request targets exactly one installed app or server, or one device app to install",
       path: ["payload", "installationId"],
     });
   }
@@ -812,11 +884,12 @@ export function requestIsAgentAnswerable(
     "browser.sign-in": false,
     "browser.password-sign-in": false,
     "integration.access": false,
-    "integration.install": false,
     "machine.full-disk-access": false,
     "device.access": false,
     "computer.app.access": false,
-    "integration.input": false,
+    "plugin.account": false,
+    "plugin.approval": false,
+    "plugin.input": false,
     // It asks the person by name; another agent answering would be a guess.
     "person.question": false,
   };
@@ -877,7 +950,13 @@ export function requestSettlementLabel(
 
 export function requestOutcomeText(request: Request): string {
   if (request.status === "pending") return "Pending";
-  if (request.status === "cancelled") return `Cancelled · ${request.cancellationReason}`;
+  if (request.status === "cancelled") {
+    if (request.cancellationReason === "plugin-interrupted")
+      return "Cancelled · Plugin execution was interrupted";
+    if (request.cancellationReason === "plugin-expired")
+      return "Cancelled · Plugin request expired";
+    return `Cancelled · ${request.cancellationReason}`;
+  }
   if (request.status === "withdrawn") return "Withdrawn";
   const settlement = requestSettlementLabel(request);
   if (settlement) return settlement;

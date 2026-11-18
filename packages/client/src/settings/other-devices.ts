@@ -1,4 +1,4 @@
-import type { OtherDevice, PluginRow } from "@opensteer/protocol";
+import type { OtherDevice } from "@opensteer/protocol";
 
 /** What a device under "Other devices" says, and where tapping it goes. */
 export interface OtherDeviceLine {
@@ -12,7 +12,7 @@ export interface OtherDeviceLine {
 /**
  * The row for one device a plugin controls. While its setup task waits on the
  * person or its server is not running, the row leads to the task that set it
- * up; otherwise it leads to the plugin's own page. `taskNeedsYou` is whether
+ * up; otherwise it leads to the device's own page. `taskNeedsYou` is whether
  * that task has a pending Request, which the caller reads from its threads.
  */
 export function otherDeviceLine(device: OtherDevice, taskNeedsYou: boolean): OtherDeviceLine {
@@ -30,11 +30,6 @@ export function otherDeviceLine(device: OtherDevice, taskNeedsYou: boolean): Oth
     tone: "ok",
     opens: plugin,
   };
-}
-
-/** Plugins listed on the Plugins page: a plugin that declares a device is listed under Devices. */
-export function pluginsPageRows(rows: readonly PluginRow[]): readonly PluginRow[] {
-  return rows.filter((row) => !row.device);
 }
 
 /** The first words of the task "Connect something else" starts; the person finishes the sentence. */

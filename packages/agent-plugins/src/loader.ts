@@ -2,31 +2,19 @@ import { maximumSkillBytes } from "@opensteer/shared/agentSkills";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import type { Stats } from "node:fs";
-import { validateHeaderName, validateHeaderValue } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import {
-  SpecialistManifestSchema,
-  type SpecialistManifest,
-  isLoopbackHostname,
-} from "@opensteer/core";
+import { isLoopbackHostname } from "@opensteer/core";
 import {
   LocalMcpSecretSchema,
-  PluginDeviceSchema,
   localMcpMaxSecrets,
   type LocalMcpSecret,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { PluginDeviceSchema } from "@opensteer/integration-core/models";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 
-export const agentPluginManifestSchemaUrl =
-  "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" as const;
-export const agentPluginMcpSchemaUrl =
-  "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json" as const;
-
-const maximumDocumentBytes = 1 * 1_024 * 1_024;
-const maximumServers = 128;
 const maximumArguments = 256;
 const maximumEnvironmentEntries = 128;
 const maximumPackageBytes = 64 * 1_024 * 1_024;
@@ -38,64 +26,6 @@ const PluginNameSchema = z
   .min(1)
   .max(64)
   .regex(/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u);
-
-const PluginManifestSchema = z
-  .object({
-    $schema: z.literal(agentPluginManifestSchemaUrl),
-    author: z
-      .strictObject({
-        email: z.string().optional(),
-        name: z.string().optional(),
-        url: z.string().optional(),
-      })
-      .optional(),
-    description: z.string().optional(),
-    extensions: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-    homepage: z.string().optional(),
-    keywords: z.array(z.string()).optional(),
-    license: z.string().optional(),
-    name: PluginNameSchema,
-    repository: z.string().optional(),
-    version: z.string().optional(),
-  })
-  .strip();
-
-/** The plugin.json name, or null when it can't be read; loading the plugin then says why. */
-export async function readAgentPluginName(directory: string): Promise<string | null> {
-  try {
-    const manifest = PluginManifestSchema.safeParse(
-      await readJsonDocument(join(directory, "plugin.json")),
-    );
-    return manifest.success ? manifest.data.name : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Opensteer's own manifest data (Agent Plugins §8). `secrets` names, per
- * stdio server, the environment variables its computer's owner enters when
- * approving it, because Agent Plugins leaves credentials to the client and
- * forbids them in `env`. `device` names the physical thing the plugin
- * controls, which lists it under Devices instead of Plugins.
- */
-export const opensteerExtensionNamespace = "com.opensteer";
-const OpensteerExtensionSchema = z.strictObject({
-  device: PluginDeviceSchema.optional(),
-  secrets: z
-    .record(
-      z.string().min(1).max(128),
-      z
-        .array(LocalMcpSecretSchema)
-        .min(1)
-        .max(localMcpMaxSecrets)
-        .refine(
-          (secrets) => new Set(secrets.map(({ name }) => name)).size === secrets.length,
-          "Each secret needs its own name",
-        ),
-    )
-    .optional(),
-});
 
 const AgentSkillFrontmatterSchema = z
   .object({
@@ -111,51 +41,6 @@ const AgentSkillFrontmatterSchema = z
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
   })
   .passthrough();
-
-const HeaderSchema = z
-  .record(
-    z
-      .string()
-      .min(1)
-      .max(256)
-      .refine((value) => !/[\r\n\0]/u.test(value)),
-    z
-      .string()
-      .max(8_192)
-      .refine((value) => !/[\r\n\0]/u.test(value)),
-  )
-  .superRefine((headers, context) => {
-    const seen = new Set<string>();
-    for (const [name, value] of Object.entries(headers)) {
-      const normalized = name.toLowerCase();
-      try {
-        validateHeaderName(name);
-        validateHeaderValue(name, value);
-      } catch {
-        context.addIssue({ code: "custom", message: `Invalid HTTP header ${name}` });
-      }
-      if (seen.has(normalized)) {
-        context.addIssue({ code: "custom", message: `Duplicate header name ${name}` });
-      }
-      seen.add(normalized);
-      if (
-        normalized === "authorization" ||
-        normalized === "connection" ||
-        normalized === "content-length" ||
-        normalized === "cookie" ||
-        normalized === "host" ||
-        normalized === "mcp-protocol-version" ||
-        normalized === "mcp-session-id" ||
-        normalized === "proxy-authorization" ||
-        isSecretBearingName(normalized)
-      ) {
-        context.addIssue({
-          code: "custom",
-          message: `Secret-bearing remote header ${name} is not stored in Agent Plugin manifests; use MCP OAuth`,
-        });
-      }
-    }
-  });
 
 const StdioServerSchema = z.strictObject({
   args: z.array(z.string().max(32_768)).max(maximumArguments).optional(),
@@ -184,7 +69,7 @@ const StdioServerSchema = z.strictObject({
         if (isSecretBearingName(name.toLowerCase())) {
           context.addIssue({
             code: "custom",
-            message: `Secret-bearing environment variable ${name} is not stored in Agent Plugin manifests; declare it in extensions["${opensteerExtensionNamespace}"].secrets so the computer's owner enters it`,
+            message: `Secret-bearing environment variable ${name} is not stored in local-server registrations; declare it in launch.secrets so the computer's owner enters it`,
           });
         }
       }
@@ -194,44 +79,39 @@ const StdioServerSchema = z.strictObject({
 });
 
 const StreamableHttpServerSchema = z.strictObject({
-  headers: HeaderSchema.optional(),
   type: z.literal("streamable-http"),
-  url: z.string().min(1).max(8_192),
+  url: z.string().min(1).max(8192),
 });
-
-const LegacySseServerSchema = z.strictObject({
-  headers: HeaderSchema.optional(),
-  type: z.literal("sse"),
-  url: z.string().min(1).max(8_192),
-});
-
-const McpServerSchema = z.discriminatedUnion("type", [
-  StdioServerSchema,
-  StreamableHttpServerSchema,
-  LegacySseServerSchema,
-]);
-const McpDocumentSchema = z.strictObject({
-  $schema: z.literal(agentPluginMcpSchemaUrl),
-  mcpServers: z.record(z.string().min(1).max(128), z.unknown()),
-});
-
-export interface AgentPluginIssue {
-  readonly component: "manifest" | "mcp" | "skill";
+const secrets = z
+  .array(LocalMcpSecretSchema)
+  .min(1)
+  .max(localMcpMaxSecrets)
+  .refine(
+    (items) => new Set(items.map(({ name }) => name)).size === items.length,
+    "Each secret needs its own name",
+  );
+export const LocalServerPackageRegistrationSchema = z
+  .strictObject({
+    name: PluginNameSchema,
+    description: z.string().optional(),
+    launch: StdioServerSchema.omit({ type: true })
+      .extend({ secrets: secrets.optional() })
+      .optional(),
+    url: z.string().min(1).max(8192).optional(),
+    device: PluginDeviceSchema.optional(),
+  })
+  .refine(
+    (input) => (input.launch !== undefined) !== (input.url !== undefined),
+    "Provide a launch or a loopback URL",
+  );
+export type LocalServerPackageRegistration = z.infer<typeof LocalServerPackageRegistrationSchema>;
+export interface LocalServerPackageIssue {
+  readonly component: "skill";
   readonly entry: string | null;
   readonly message: string;
 }
 
-interface LoadedAgentPlugin {
-  readonly specialistManifest: SpecialistManifest | null;
-  readonly issues: readonly AgentPluginIssue[];
-  readonly manifest: z.infer<typeof PluginManifestSchema>;
-  readonly root: string;
-  readonly sourceRoot: string;
-  readonly servers: readonly LoadedAgentPluginServer[];
-  readonly skills: readonly LoadedAgentPluginSkill[];
-}
-
-export interface LoadedAgentPluginSkill {
+interface LocalServerPackageSkill {
   readonly description: string;
   readonly digest: string;
   readonly directory: string;
@@ -239,7 +119,7 @@ export interface LoadedAgentPluginSkill {
   readonly skillFile: string;
 }
 
-export type LoadedAgentPluginServer =
+export type LocalServerPackageServer =
   | {
       readonly args: readonly string[];
       readonly command: string;
@@ -257,102 +137,69 @@ export type LoadedAgentPluginServer =
       readonly url: string;
     };
 
-/**
- * Loads one Agent Plugins 1.0 package without executing it. Filesystem paths
- * are resolved before use so a package cannot extend its authority with a
- * symlink, junction, or reparse point.
- */
-export async function loadAgentPlugin(input: {
+/** Snapshot approved launch material without interpreting a second package format. */
+export async function snapshotLocalServerPackage(input: {
   readonly pluginId: string;
-  readonly migrateLegacyData?: boolean;
   readonly dataDirectory: string;
   readonly directory: string;
-}): Promise<LoadedAgentPlugin> {
-  if (!isAbsolute(input.directory) || !isAbsolute(input.dataDirectory)) {
-    throw new Error("Agent Plugin and data directories must be absolute");
-  }
-  const requestedRoot = resolve(input.directory);
-  await requireRealDirectory(requestedRoot, "Agent Plugin root");
-  const sourceRoot = await realpath(requestedRoot);
-  const sourceManifestPath = join(sourceRoot, "plugin.json");
-  await requireContainedRegularFile(sourceRoot, sourceManifestPath, "plugin.json");
-  const root = await snapshotPackage(sourceRoot, resolve(input.dataDirectory, "packages"));
-  const manifestPath = join(root, "plugin.json");
-  const rawManifest = await readJsonDocument(manifestPath);
-  const manifestInput = recordValue(rawManifest, "plugin.json");
-  const issues: AgentPluginIssue[] = [];
-  for (const key of Object.keys(manifestInput)) {
-    if (!PluginManifestSchema.keyof().options.includes(key as never)) {
-      issues.push({ component: "manifest", entry: null, message: `Ignored unknown field ${key}` });
-    }
-  }
-  if ("extensions" in manifestInput && !isRecord(manifestInput.extensions)) {
-    issues.push({
-      component: "manifest",
-      entry: null,
-      message: "Ignored non-object extensions field",
-    });
-    delete manifestInput.extensions;
-  }
-  const manifest = PluginManifestSchema.parse(manifestInput);
-  const extension = OpensteerExtensionSchema.safeParse(
-    manifest.extensions?.[opensteerExtensionNamespace] ?? {},
-  );
-  if (!extension.success) {
-    throw new Error(
-      `Invalid extensions["${opensteerExtensionNamespace}"]: ${safeIssue(extension.error)}`,
-    );
-  }
-  let specialistManifest: SpecialistManifest | null = null;
-  const specialistPath = join(root, "specialist.json");
-  if (await optionalLstat(specialistPath)) {
-    await requireContainedRegularFile(root, specialistPath, "specialist.json");
-    await requireContainedRegularFile(
-      root,
-      join(root, "INSTRUCTIONS.md"),
-      "Specialists require INSTRUCTIONS.md",
-    );
-    try {
-      specialistManifest = SpecialistManifestSchema.parse(await readJsonDocument(specialistPath));
-    } catch (error) {
-      throw new Error(
-        `Invalid specialist.json: ${error instanceof Error ? error.message : "invalid manifest"}`,
-      );
-    }
-  }
+  readonly registration: unknown;
+}) {
+  const registration = LocalServerPackageRegistrationSchema.parse(input.registration);
+  if (!isAbsolute(input.directory) || !isAbsolute(input.dataDirectory))
+    throw new Error("Package and data directories must be absolute");
   if (!/^[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)*$/u.test(input.pluginId))
     throw new Error("Invalid plugin id");
+  const requestedRoot = resolve(input.directory);
+  await requireRealDirectory(requestedRoot, "Local-server package root");
+  const sourceRoot = await realpath(requestedRoot);
+  const root = await snapshotPackage(
+    sourceRoot,
+    resolve(input.dataDirectory, "packages"),
+    registration,
+  );
   const pluginData = join(resolve(input.dataDirectory), input.pluginId);
-  if (input.migrateLegacyData && !(await optionalLstat(pluginData))) {
-    const legacy = join(resolve(input.dataDirectory), manifest.name);
-    const legacyStat = await optionalLstat(legacy);
-    if (legacyStat) {
-      await requireRealDirectory(legacy, "Legacy plugin data");
-      await rename(legacy, pluginData);
-    }
-  }
   await mkdir(pluginData, { mode: 0o700, recursive: true });
-  const resolvedData = await realpath(pluginData);
-
-  const [skills, servers] = await Promise.all([
-    loadSkills(root, issues),
-    loadMcpServers(root, resolvedData, extension.data.secrets ?? {}, issues),
-  ]);
+  const issues: LocalServerPackageIssue[] = [];
+  const launch = registration.launch;
+  const server = launch
+    ? await materializeStdio(
+        registration.name,
+        {
+          ...StdioServerSchema.parse({
+            type: "stdio",
+            command: launch.command,
+            args: launch.args,
+            env: launch.env,
+            cwd: launch.cwd,
+          }),
+        },
+        root,
+        await realpath(pluginData),
+        launch.secrets,
+      )
+    : materializeRemote(registration.name, { type: "streamable-http", url: registration.url! });
+  const extension = {
+    ...(registration.device ? { device: registration.device } : {}),
+    ...(launch?.secrets ? { secrets: { [registration.name]: launch.secrets } } : {}),
+  };
   return Object.freeze({
-    issues: Object.freeze(issues),
-    manifest: Object.freeze(manifest),
-    specialistManifest,
     root,
     sourceRoot,
-    servers: Object.freeze(servers),
-    skills: Object.freeze(skills),
+    servers: Object.freeze([server]),
+    skills: Object.freeze(await loadSkills(root, issues)),
+    issues: Object.freeze(issues),
+    manifest: Object.freeze({
+      name: registration.name,
+      ...(registration.description ? { description: registration.description } : {}),
+      ...(Object.keys(extension).length ? { extensions: { "com.opensteer": extension } } : {}),
+    }),
   });
 }
 
 async function loadSkills(
   root: string,
-  issues: AgentPluginIssue[],
-): Promise<LoadedAgentPluginSkill[]> {
+  issues: LocalServerPackageIssue[],
+): Promise<LocalServerPackageSkill[]> {
   const skillsRoot = join(root, "skills");
   const stat = await optionalLstat(skillsRoot);
   if (!stat) return [];
@@ -366,7 +213,7 @@ async function loadSkills(
     return [];
   }
   const entries = await readdir(resolvedSkillsRoot, { withFileTypes: true });
-  const loaded: LoadedAgentPluginSkill[] = [];
+  const loaded: LocalServerPackageSkill[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const directory = join(resolvedSkillsRoot, entry.name);
@@ -424,7 +271,7 @@ export interface SnapshotFile {
 }
 
 export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFile[]> {
-  await requireRealDirectory(sourceRoot, "Agent Plugin snapshot");
+  await requireRealDirectory(sourceRoot, "Local-server package snapshot");
   const files: SnapshotFile[] = [];
   let totalBytes = 0;
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
@@ -433,22 +280,23 @@ export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFi
       const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
       const path = join(directory, entry.name);
       const stat = await lstat(path);
-      if (stat.isSymbolicLink()) throw new Error(`Agent Plugin contains symlink ${relativePath}`);
+      if (stat.isSymbolicLink())
+        throw new Error(`Local-server package contains symlink ${relativePath}`);
       if (stat.isDirectory()) {
         await visit(path, relativePath);
         continue;
       }
       if (!stat.isFile())
-        throw new Error(`Agent Plugin contains unsupported entry ${relativePath}`);
+        throw new Error(`Local-server package contains unsupported entry ${relativePath}`);
       if (stat.size > maximumPackageFileBytes) {
         throw new Error(
-          `Agent Plugin file ${relativePath} exceeds ${maximumPackageFileBytes} bytes`,
+          `Local-server package file ${relativePath} exceeds ${maximumPackageFileBytes} bytes`,
         );
       }
       const bytes = await readFile(path);
       totalBytes += bytes.byteLength;
       if (files.length >= maximumPackageFiles || totalBytes > maximumPackageBytes) {
-        throw new Error("Agent Plugin package exceeds the installation limit");
+        throw new Error("Local-server package package exceeds the installation limit");
       }
       files.push({ bytes, mode: stat.mode & 0o777, path: relativePath });
     }
@@ -465,13 +313,25 @@ export function pluginSnapshotDigest(files: readonly SnapshotFile[]): string {
   return hash.digest("hex");
 }
 
-async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promise<string> {
+async function snapshotPackage(
+  sourceRoot: string,
+  snapshotRoot: string,
+  registration: LocalServerPackageRegistration,
+): Promise<string> {
   const files = await readPluginSnapshot(sourceRoot);
+  if (files.some(({ path }) => path === "local-server-registration.json"))
+    throw new Error("local-server-registration.json is reserved for the validated registration");
+  files.push({
+    path: "local-server-registration.json",
+    mode: 0o600,
+    bytes: Buffer.from(JSON.stringify(registration)),
+  });
+  files.sort((a, b) => a.path.localeCompare(b.path));
   const digest = pluginSnapshotDigest(files);
   await mkdir(snapshotRoot, { mode: 0o700, recursive: true });
   const destination = join(snapshotRoot, digest);
   try {
-    await requireRealDirectory(destination, "Agent Plugin snapshot");
+    await requireRealDirectory(destination, "Local-server package snapshot");
     return await realpath(destination);
   } catch (error) {
     if (!isRecord(error) || error.code !== "ENOENT") throw error;
@@ -531,78 +391,13 @@ function parseSkillFrontmatter(content: string): z.infer<typeof AgentSkillFrontm
   return AgentSkillFrontmatterSchema.parse(parseYaml(match[1]!));
 }
 
-async function loadMcpServers(
-  root: string,
-  pluginData: string,
-  secrets: Readonly<Record<string, readonly LocalMcpSecret[]>>,
-  issues: AgentPluginIssue[],
-): Promise<LoadedAgentPluginServer[]> {
-  const mcpPath = join(root, "mcp.json");
-  const stat = await optionalLstat(mcpPath);
-  const undeclared = (names: readonly string[]) => {
-    for (const name of Object.keys(secrets).filter((server) => !names.includes(server))) {
-      issues.push({
-        component: "manifest",
-        entry: null,
-        message: `Ignored secrets for ${name}: mcp.json declares no server by that name`,
-      });
-    }
-  };
-  if (!stat) {
-    undeclared([]);
-    return [];
-  }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    issues.push({ component: "mcp", entry: null, message: "mcp.json must be a regular file" });
-    return [];
-  }
-  let document: z.infer<typeof McpDocumentSchema>;
-  try {
-    document = McpDocumentSchema.parse(await readJsonDocument(mcpPath));
-  } catch (error) {
-    issues.push({ component: "mcp", entry: null, message: safeIssue(error) });
-    return [];
-  }
-  const entries = Object.entries(document.mcpServers);
-  undeclared(entries.map(([name]) => name));
-  if (entries.length > maximumServers) {
-    issues.push({
-      component: "mcp",
-      entry: null,
-      message: `mcp.json exceeds ${maximumServers} servers`,
-    });
-    return [];
-  }
-  const servers: LoadedAgentPluginServer[] = [];
-  for (const [name, candidate] of entries) {
-    try {
-      const parsed = McpServerSchema.parse(candidate);
-      if (parsed.type === "sse") {
-        throw new Error("Legacy HTTP+SSE is not supported by this client");
-      }
-      const declared = secrets[name];
-      if (declared && parsed.type !== "stdio") {
-        throw new Error("Only a server that starts a program can take secrets");
-      }
-      servers.push(
-        parsed.type === "stdio"
-          ? await materializeStdio(name, parsed, root, pluginData, declared)
-          : materializeRemote(name, parsed),
-      );
-    } catch (error) {
-      issues.push({ component: "mcp", entry: name, message: safeIssue(error) });
-    }
-  }
-  return servers;
-}
-
 async function materializeStdio(
   name: string,
   server: z.infer<typeof StdioServerSchema>,
   root: string,
   pluginData: string,
   secrets: readonly LocalMcpSecret[] | undefined,
-): Promise<LoadedAgentPluginServer> {
+): Promise<LocalServerPackageServer> {
   for (const { name } of secrets ?? []) {
     if (server.env && Object.hasOwn(server.env, name)) {
       throw new Error(`Secret ${name} is also set in env; declare it only as a secret`);
@@ -642,30 +437,24 @@ async function materializeStdio(
 function materializeRemote(
   name: string,
   server: z.infer<typeof StreamableHttpServerSchema>,
-): LoadedAgentPluginServer {
+): LocalServerPackageServer {
   const url = new URL(server.url);
   const loopback = isLoopbackHostname(url.hostname);
   if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    !loopback ||
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
     url.username ||
     url.password ||
     url.hash
   ) {
-    throw new Error("remote MCP URL must be HTTPS, or HTTP on an exact loopback host");
+    throw new Error("A local server URL must use HTTP or HTTPS on an exact loopback host");
   }
   return Object.freeze({
-    headers: Object.freeze({ ...server.headers }),
+    headers: Object.freeze({}),
     name,
     type: server.type,
     url: url.toString(),
   });
-}
-
-async function readJsonDocument(path: string): Promise<unknown> {
-  const stat = await lstat(path);
-  if (stat.size > maximumDocumentBytes)
-    throw new Error(`${path} exceeds ${maximumDocumentBytes} bytes`);
-  return JSON.parse(await readFile(path, "utf8")) as unknown;
 }
 
 async function requireRealDirectory(path: string, label: string): Promise<void> {
@@ -700,14 +489,10 @@ function isWithin(root: string, candidate: string): boolean {
   return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
-function recordValue(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error(`${label} must contain a JSON object`);
-  return { ...value };
-}
-
 function safeIssue(error: unknown): string {
-  if (error instanceof z.ZodError) return error.issues[0]?.message ?? "Invalid Agent Plugin data";
-  return error instanceof Error ? error.message : "Invalid Agent Plugin data";
+  if (error instanceof z.ZodError)
+    return error.issues[0]?.message ?? "Invalid Local-server package data";
+  return error instanceof Error ? error.message : "Invalid Local-server package data";
 }
 
 function isSecretBearingName(name: string): boolean {

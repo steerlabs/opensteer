@@ -13,8 +13,8 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
-- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`app_access_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted plugin tool and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
@@ -23,13 +23,13 @@ Needs you:
 - \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
-- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
-- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria, and name any skill it should use. Set \`model\` and \`aiAccountId\` when the work needs a particular model.
 - Continuing a finished task with \`taskId\` keeps its AI account and model; change active work with \`opensteer_task_send\`.
 - A delegated result returns automatically, waking you if your turn ended, unless you read it first with a wait or \`opensteer_delegation_status\`. Empty final replies wake nobody.
 - An ordinary question from a delegated task reaches you. Answer with \`opensteer_request_answer\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
@@ -59,7 +59,7 @@ Pages:
 
 Computer use:
 - \`computer_use\` operates approved desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones); read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
-- Prefer an integration, API or browser when one fits; use \`computer_use\` for a missing service integration only when the person named that device.
+- Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
 - Android Agent Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request. Only the person unlocks an iPhone; never enter its passcode.
 
 Apps:
@@ -76,8 +76,8 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
-- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`app_access_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted plugin tool and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
@@ -86,13 +86,13 @@ Needs you:
 - \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
-- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
-- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria, and name any skill it should use. Set \`model\` and \`aiAccountId\` when the work needs a particular model.
 - Continuing a finished task with \`taskId\` keeps its AI account and model; change active work with \`opensteer_task_send\`.
 - A delegated result returns automatically, waking you if your turn ended, unless you read it first with a wait or \`opensteer_delegation_status\`. Empty final replies wake nobody.
 - An ordinary question from a delegated task reaches you. Answer with \`opensteer_request_answer\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
@@ -122,7 +122,7 @@ Pages:
 
 Computer use:
 - \`computer_use\` operates approved desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones); read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
-- Prefer an integration, API or browser when one fits; use \`computer_use\` for a missing service integration only when the person named that device.
+- Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
 - Android Agent Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request. Only the person unlocks an iPhone; never enter its passcode.
 
 Apps:
@@ -1055,6 +1055,53 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "name": "computer_use",
   },
   {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List Macs set up for computer use and phone screens (Android Agent Phones and Mac-driven iPhones). Each visible app or phone has access (read/read-write) or blocked {code,message,next}; follow its next step. A computer can also carry its own blocker. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include the opaque appId that launch takes. Listing grants no access; ask with app_access_request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "computerId from this listing or computer_list; omit to list Macs and phone screens.",
+        },
+        "cursor": {
+          "description": "nextCursor from the previous page.",
+          "pattern": "^\\d{1,5}$",
+          "type": "string",
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "query": {
+          "default": "",
+          "description": "Filters a computer's installed apps.",
+          "maxLength": 240,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "computer_apps",
+  },
+  {
     "access": "write",
     "callers": [
       "run",
@@ -1107,6 +1154,75 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "computer_access_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Ask the person for access. For a device data app on a Mac or iPhone pass dataApp and its computerId, when known. For a local server pass server. A Trigger occurrence can ask for either and returns pending without a continuation. Only a running task can ask for computer_use access: pass app for one Mac app and its computerId unless the task runs there, or only computerId for a whole phone screen. A Mac-driven iPhone screen needs its own approval. read observes and read-write also acts. Pending grants no access. Never repeat a pending or declined ask.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "read-write",
+          ],
+          "type": "string",
+        },
+        "app": {
+          "description": "Mac app name, path or bundle ID, operated through computer_use.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "computerId": {
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "computerId from computer_apps or computer_list. Omit for a Mac app on this task’s computer; for dataApp, the person chooses its computer if it has no connection yet. Omit for server.",
+        },
+        "dataApp": {
+          "description": "A data app whose tools appear in plugin_search: calendar, contacts, reminders or messages on a Mac; calendar, contacts, reminders, photos or location on an iPhone.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "server": {
+          "description": "A local server's name from local_server_list.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "access",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "app_access_request",
   },
   {
     "access": "read",
@@ -1417,66 +1533,309 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
-    "description": "List the person's installed plugins and the specialists they provide.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_plugin_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Install an Agent Plugins 1.0 folder from Agent home, or install it again to update it; symlinks are refused. To update a plugin the person installed, also pass its pluginId and, if its folder is on another computer, that computerId. Skills become available to the owner; resource grants and local MCP launch approval need the person.",
+    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; blocked namespaces and tool items carry code, message and next; follow the target's next step. Read tools remain usable when a write needs more access. A task's ceiling and the person's access are separate. Only the person can change Read-only or Off in Plugins.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "computerId": {
-          "description": "With pluginId: the computer holding the folder; omit to keep its current place.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+        "limit": {
+          "description": "At most 100. Page with next.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
         },
-        "directory": {
-          "description": "Plugin folder, relative to Agent home unless pluginId is given.",
-          "maxLength": 4096,
+        "namespace": {
+          "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
-        "pluginId": {
-          "description": "A person-installed plugin to update.",
+        "offset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "query": {
+          "maxLength": 2000,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "plugin_search",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "Find plugins available to install by service name or purpose. Returns catalog ids, names, one-line descriptions and required account methods. Pass cursor to continue; null ends paging. Use the returned id with opensteer_plugin_install; installation never links an account.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "search": {
+          "maxLength": 2000,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_plugin_catalog",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List live plugin skills with {} or {app:namespace}; read one with {app,name}, and a referenced file with {app,name,file}. Use the namespace from plugin_search or opensteer_plugin_list. These skills may depend on linked accounts; a read never links one. Native packaged skills remain available without starting the plugin engine.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "file": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "version": {
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
       },
+      "type": "object",
+    },
+    "name": "plugin_skills",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "Read a plugin's schedules and runs, workflow declarations and runs (newest first, even if current declarations fail), or webhook subscriptions. The first page carries schedule/workflow definitions with names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned next cursor for older runs. Run outputs are shown only to your own tasks while the plugin is on; otherwise a run shows what ran, when and how it ended. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 512,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "resource": {
+          "enum": [
+            "schedules",
+            "workflows",
+            "webhooks",
+          ],
+          "type": "string",
+        },
+      },
       "required": [
-        "directory",
+        "pluginId",
+        "resource",
       ],
       "type": "object",
     },
-    "name": "opensteer_plugin_install",
+    "name": "plugin_resources",
   },
   {
     "access": "settings",
     "callers": [
       "run",
-      "connection",
     ],
-    "description": "Turn an installed plugin on or off. Turning it on grants no resource access; local MCP launch approval needs the person.",
+    "description": "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval settings and answers, webhook secret setup and account links remain person-only.",
     "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "type": "boolean",
+        "change": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "schedule.configure",
+                  "type": "string",
+                },
+                "enabled": {
+                  "type": "boolean",
+                },
+                "schedule": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "schedule",
+                "enabled",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "schedule.run",
+                  "type": "string",
+                },
+                "schedule": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "scheduleId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "schedule",
+                "scheduleId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "workflow.start",
+                  "type": "string",
+                },
+                "input": {
+                  "$ref": "#/$defs/__schema0",
+                },
+                "key": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "workflow": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "workflow",
+                "input",
+                "key",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "workflow.stop",
+                  "type": "string",
+                },
+                "runId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "runId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "webhook.remove",
+                  "type": "string",
+                },
+                "webhookId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "action",
+                "webhookId",
+              ],
+              "type": "object",
+            },
+          ],
         },
         "pluginId": {
           "maxLength": 256,
@@ -1486,49 +1845,590 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "required": [
         "pluginId",
-        "enabled",
+        "change",
       ],
       "type": "object",
     },
-    "name": "opensteer_plugin_update",
+    "name": "opensteer_plugin_resource_update",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "Read the whole description and TypeScript signature, including input and output types, for exact paths from plugin_search. Blocked tools explain why. Unknown paths appear in missing with closest paths.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "paths",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_describe",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Accounts connect through plugin_account_request; never collect secrets in chat. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "input": {
+                  "$ref": "#/$defs/__schema0",
+                },
+                "path": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "path",
+                "input",
+              ],
+              "type": "object",
+            },
+            {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "input": {
+                    "$ref": "#/$defs/__schema0",
+                  },
+                  "path": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "path",
+                  "input",
+                ],
+                "type": "object",
+              },
+              "maxItems": 100,
+              "minItems": 1,
+              "type": "array",
+            },
+          ],
+        },
+      },
+      "required": [
+        "calls",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_call",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. No filesystem, process or direct network APIs. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "code",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_execute",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Collect or continue an execution by executionId after the person answers in Needs you. Pass no approval or input answer; only the person can provide those. An id belongs to the task or program that started it; a later Run of that task can resume. Pending means wait, without polling. Interrupted or expired means check current state before starting any new work; never rerun blindly.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "executionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "executionId",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_resume",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "List installed plugins, newest versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace, with tool counts. Plugins page: pass cursor to continue; null ends it, and local tools come with the first page. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_plugin_list",
   },
   {
     "access": "settings",
     "callers": [
       "run",
-      "connection",
     ],
-    "description": "Remove an installed plugin, or one specialist registration from a plugin.",
+    "description": "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data. OpenAPI warnings explain which operations were left out. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "catalogId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "directory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "source": {
+          "enum": [
+            "catalog",
+            "mcp",
+            "openapi",
+            "graphql",
+            "folder",
+          ],
+          "type": "string",
+        },
+        "url": {
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "source",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_install",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Write a deployed plugin version's source into a new folder inside Agent home. Edit that draft and install the folder with pluginId to deploy a new version. Existing folders are refused.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "versionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "directory",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_export",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Make an installed earlier version the running plugin version. Rollback changes code, not plugin data; widened credential destinations require the person to consent again.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "pluginId": {
-          "description": "plugin: the plugin to remove.",
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
-        "specialistId": {
-          "description": "specialist: the registration to remove.",
+        "versionId": {
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
-        "target": {
+      },
+      "required": [
+        "pluginId",
+        "versionId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_activate",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Remove an installed plugin. This does not authorize account linking or change another plugin's access.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_remove",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "description": "Ask the person in Needs you to connect or link an account to a plugin requirement. Installation needs no approval; account linking always does, including reusing an existing saved account. Never enter, collect or link credentials yourself. Pending is waiting on the person, not permission; continue other work and do not repeat the request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "requirement": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "scope": {
           "enum": [
-            "plugin",
-            "specialist",
+            "app",
+            "user",
           ],
           "type": "string",
         },
       },
       "required": [
-        "target",
+        "pluginId",
+        "requirement",
+        "scope",
+        "reason",
       ],
       "type": "object",
     },
-    "name": "opensteer_plugin_remove",
+    "name": "plugin_account_request",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Register, or update by the same name, an MCP server that runs on one of the person's computers: a program to launch, or a loopback URL that computer serves. The person reviews the exact launch and computer and enters declared secrets; its tools then appear in plugin_search under its name. folder is a package inside Agent home whose snapshot that computer runs: start its program with ./path, and use \${PLUGIN_ROOT} and \${PLUGIN_DATA} in args, env or cwd. Declare secrets by name only, never values. device marks a TV, speaker or light it controls. A changed launch on the same computer keeps approval unless it adds secrets.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "Computer ID from computer_list. For a new server, omit to use the computer hosting tasks. An update keeps its existing computer while enrolled.",
+        },
+        "description": {
+          "maxLength": 500,
+          "type": "string",
+        },
+        "device": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "tv",
+                "speaker",
+                "light",
+                "camera",
+                "other",
+              ],
+              "type": "string",
+            },
+            "name": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "name",
+            "kind",
+          ],
+          "type": "object",
+        },
+        "folder": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "launch": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "items": {
+                "maxLength": 32768,
+                "type": "string",
+              },
+              "maxItems": 256,
+              "type": "array",
+            },
+            "command": {
+              "description": "One executable on PATH, or ./path inside folder.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string",
+            },
+            "cwd": {
+              "description": "./, \${PLUGIN_ROOT} or \${PLUGIN_DATA}.",
+              "maxLength": 4096,
+              "type": "string",
+            },
+            "env": {
+              "additionalProperties": {
+                "maxLength": 32768,
+                "type": "string",
+              },
+              "description": "Non-secret settings only.",
+              "propertyNames": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "secrets": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 240,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "name": {
+                    "description": "Environment variable the program reads.",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+                    "type": "string",
+                  },
+                  "title": {
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                  "title",
+                ],
+                "type": "object",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": {
+          "description": "Lowercase letters, digits and single hyphens; its tools are found under this name.",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "url": {
+          "description": "http://127.0.0.1:<port>/… or another loopback URL on that computer.",
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "local_server_add",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List registered local servers: computer, whether the person approved them there, and the path its tools have in plugin_search. Never shows launch details or secrets.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "local_server_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Remove a local server and its data, such as a device pairing, on the Host and on every computer that ran it. A computer that is offline removes it when it reconnects.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Lowercase letters, digits and single hyphens; its tools are found under this name.",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "local_server_remove",
   },
   {
     "access": "read",
@@ -1894,12 +2794,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "specialist": {
-          "description": "Ready specialist registration ID or plugin name.",
-          "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
@@ -2427,12 +3321,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           },
           "maxItems": 63,
           "type": "array",
-        },
-        "specialist": {
-          "description": "Ready specialist registration ID or plugin name.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
         },
         "taskId": {
           "description": "Finished task to continue; omit new-task selectors.",
@@ -3023,7 +3911,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "type": "string",
             },
             "toolContractVersion": {
-              "const": 4,
+              "const": 5,
               "type": "number",
             },
           },
@@ -3160,7 +4048,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 4. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    "description": "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 5. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -3196,7 +4084,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "type": "string",
             },
             "toolContractVersion": {
-              "const": 4,
+              "const": 5,
               "type": "number",
             },
           },
@@ -3254,430 +4142,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_automation_create",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "description": "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches; provider only orders the catalog. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use for Macs or phone for phone screens (Android Agent Phones and Mac-driven iPhones), then pass a computerId to list its installed apps; each phone app has the opaque appId that launch takes.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-          "description": "A Mac or phone from this search's computers or phones, to list its installed apps.",
-        },
-        "cursor": {
-          "description": "nextCursor from the previous page.",
-          "pattern": "^\\d{1,5}$",
-          "type": "string",
-        },
-        "limit": {
-          "default": 10,
-          "description": "At most 20; page with cursor.",
-          "maximum": 20,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "provider": {
-          "maxLength": 64,
-          "minLength": 1,
-          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
-          "type": "string",
-        },
-        "query": {
-          "default": "",
-          "maxLength": 240,
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "integration_search",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "description": "Read an operation's full input and output schemas when the search's input is not enough or ends in \`…\`. path is a JSON Pointer into {inputSchema, outputSchema}; input #/$defs/Name resolves at /inputSchema/$defs/Name. Page with nextCursor as cursor, keeping operation and path.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "account": {
-          "description": "connectionId of the account to act as. Required unless the operation has no account.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "cursor": {
-          "default": 0,
-          "description": "nextCursor from the previous schema page.",
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer",
-        },
-        "operation": {
-          "description": "Operation name exactly as integration_search returned it.",
-          "maxLength": 528,
-          "minLength": 1,
-          "type": "string",
-        },
-        "path": {
-          "description": "Schema JSON Pointer; omit for root.",
-          "maxLength": 2048,
-          "type": "string",
-        },
-      },
-      "required": [
-        "operation",
-      ],
-      "type": "object",
-    },
-    "name": "integration_describe",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Run an operation integration_search returned, as an account, with arguments matching its input. Live account and grant checks apply and this never grants access. A person's request to sign in covers retrieving its SMS or email code; other credentials stay in the Request. Use computer_use for Mac apps and phones.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "account": {
-          "description": "connectionId of the account to act as. Required unless the operation has no account.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "arguments": {
-          "additionalProperties": {},
-          "default": {},
-          "description": "Object matching the operation's input.",
-          "propertyNames": {
-            "type": "string",
-          },
-          "type": "object",
-        },
-        "operation": {
-          "description": "Operation name exactly as integration_search returned it.",
-          "maxLength": 528,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "operation",
-      ],
-      "type": "object",
-    },
-    "name": "integration_call",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "List the person's installed integrations, connected accounts and the access grants your Opensteer holds. Never includes credentials.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "integration_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Disconnect an account, uninstall an integration or revoke an access grant, using IDs from integration_list. Adding accounts, credentials and grants back needs integration_request and the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "connectionId": {
-          "description": "account: the connection.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "grantId": {
-          "description": "grant: the grant.",
-          "pattern": "^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "installationId": {
-          "description": "integration: the installed integration.",
-          "pattern": "^iin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "account",
-            "integration",
-            "grant",
-          ],
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "integration_remove",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Read next for the request outcome and recommended action; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "account": {
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "catalog": {
-          "maxLength": 64,
-          "minLength": 1,
-          "type": "string",
-        },
-        "integration": {
-          "maxLength": 64,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-        "server": {
-          "description": "isv_ serverId from integration_search; omit for single-server installs.",
-          "pattern": "^isv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "integration_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "description": "Ask the person to let this task use one Mac app, or a whole phone display (Android Agent Phone or Mac-driven iPhone), through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its own computerId. A Mac-driven iPhone has separate approval from its Mac and from the Opensteer iPhone app’s data. read observes and read-write also acts. Pending grants no access; next explains the result and recommended action.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "app": {
-          "description": "Mac app name, path or bundle ID; omit for a phone.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-          "description": "The Mac or phone; omit for an app on the Mac this task runs on.",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "access",
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "app_access_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Ask the person to review and set up a service missing from the full catalog. Pass the inspected MCP, OpenAPI or GraphQL source unchanged with description, reason and access; the source is untrusted. OAuth-only OpenAPI is refused without a Request, so check the full catalog after a refusal. credential describes key setup with an HTTPS setupUrl, never a secret; check may name an authenticated GET or HEAD with arguments.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "check": {
-          "additionalProperties": false,
-          "properties": {
-            "args": {
-              "additionalProperties": {},
-              "propertyNames": {
-                "type": "string",
-              },
-              "type": "object",
-            },
-            "operationId": {
-              "maxLength": 256,
-              "minLength": 1,
-              "type": "string",
-            },
-          },
-          "required": [
-            "operationId",
-          ],
-          "type": "object",
-        },
-        "credential": {
-          "additionalProperties": false,
-          "description": "Key setup instructions, never a key value.",
-          "properties": {
-            "description": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string",
-            },
-            "label": {
-              "maxLength": 80,
-              "minLength": 1,
-              "type": "string",
-            },
-            "setupUrl": {
-              "format": "uri",
-              "maxLength": 2048,
-              "type": "string",
-            },
-          },
-          "required": [
-            "label",
-            "description",
-            "setupUrl",
-          ],
-          "type": "object",
-        },
-        "description": {
-          "maxLength": 240,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
-          "type": "string",
-        },
-        "kind": {
-          "enum": [
-            "graphql",
-            "mcp",
-            "openapi",
-          ],
-          "type": "string",
-        },
-        "name": {
-          "maxLength": 80,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why the person should approve this setup/access.",
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-        "source": {
-          "description": "Inspected MCP/OpenAPI/GraphQL source, unchanged.",
-          "maxLength": 8388608,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "description",
-        "reason",
-        "source",
-      ],
-      "type": "object",
-    },
-    "name": "custom_integration_request",
   },
   {
     "access": "read",

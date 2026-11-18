@@ -16,7 +16,7 @@ import { safeMessage } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
@@ -408,7 +408,6 @@ export class RunnerRuntime {
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
-  readonly #removedSpecialists = new Set<string>();
   readonly #warm: WarmEnginePool;
   /**
    * Threads whose last execution left processes the Runner could not prove
@@ -599,21 +598,6 @@ export class RunnerRuntime {
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
-  }
-
-  async removeSpecialist(specialistId: string, remove: () => Promise<void>): Promise<void> {
-    this.#removedSpecialists.add(specialistId);
-    const active = [...this.#runs.values()].filter(
-      (run) => run.command.context.specialistId === specialistId,
-    );
-    this.revokeRuns(
-      active.map((run) => ({ runId: run.command.context.runId, reason: "Specialist removed" })),
-    );
-    await withTimeout(Promise.all(active.map((run) => run.task)), runtimeTaskStopWaitMs, {
-      timeoutError: () => new Error("Specialist Runs did not stop before folder removal"),
-    });
-    await this.#warm.evict((engine) => engine.specialistId === specialistId);
-    await remove();
   }
 
   activeRunIds(): readonly RunId[] {
@@ -1617,11 +1601,6 @@ export class RunnerRuntime {
       }
       switch (command.type) {
         case "run.execute":
-          if (
-            command.context.specialistId &&
-            this.#removedSpecialists.has(command.context.specialistId)
-          )
-            return reject("forbidden", "Specialist was removed", false);
           return this.#admitExecution(command, sink);
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
@@ -2602,33 +2581,6 @@ export class RunnerRuntime {
         threadId: context.threadId,
       });
       plugins = runSkills;
-      if (context.specialistId) {
-        const plugin = context.plugins.versions[0];
-        if (!plugin || context.plugins.versions.length !== 1)
-          throw new Error("Specialist requires exactly one pinned plugin");
-        const pluginRoot = join(this.#privateStateDirectory, "plugins", plugin.digest);
-        const parent = join(workspace.path, ".specialists");
-        await mkdir(parent, { recursive: true });
-        if ((await lstat(parent)).isSymbolicLink())
-          throw new Error("Specialist directory cannot be a symlink");
-        const pluginData = join(parent, context.specialistId);
-        await mkdir(pluginData, { recursive: true });
-        if ((await lstat(pluginData)).isSymbolicLink())
-          throw new Error("Specialist directory cannot be a symlink");
-        const pluginInstructions = (await readFile(join(pluginRoot, "INSTRUCTIONS.md"), "utf8"))
-          .replaceAll("${PLUGIN_ROOT}", pluginRoot)
-          .replaceAll("${PLUGIN_DATA}", pluginData);
-        workspace = {
-          ...workspace,
-          instructions: [
-            workspace.instructions,
-            pluginInstructions,
-            `PLUGIN_ROOT=${pluginRoot}\nPLUGIN_DATA=${pluginData}\nName outputs per task; this folder is shared by this registration's tasks.`,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-        };
-      }
       const homeSkills = context.personalContext
         ? await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration)
         : { skills: [], warnings: [], digest: "personal-context-disabled" };
@@ -2833,16 +2785,6 @@ export class RunnerRuntime {
           (await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory: undefined })),
       );
       const runVariables = {
-        ...(context.specialistId
-          ? {
-              PLUGIN_ROOT: join(
-                this.#privateStateDirectory,
-                "plugins",
-                context.plugins.versions[0]!.digest,
-              ),
-              PLUGIN_DATA: join(workspace.path, ".specialists", context.specialistId),
-            }
-          : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
@@ -2941,7 +2883,6 @@ export class RunnerRuntime {
             credentialProxy,
             harnessInstanceId: context.harnessInstanceId,
             plugins: runSkills,
-            ...(context.specialistId ? { specialistId: context.specialistId } : {}),
             // The next Run continues the conversation this session now holds.
             // A launch that failed its probe matches no Run's plan, so the
             // next Run with routes tries again on an engine of its own.

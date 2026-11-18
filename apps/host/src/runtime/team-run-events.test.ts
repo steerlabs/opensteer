@@ -7,7 +7,7 @@ it("publishes the typed Request, integration and finish reactions to the team st
   const threadId = createId("thread");
   const request = {
     type: "requestChanged",
-    kind: "integration.input",
+    kind: "plugin.input",
     requestId: createId("request"),
     runId,
     threadId,

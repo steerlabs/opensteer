@@ -106,7 +106,23 @@ export async function readFinishChildren(
           .select("id")
           .where("originatingRunId", "=", runId)
           .where("status", "=", "pending")
-          .where((eb) => eb.or([eb("mode", "=", "live"), eb("kind", "=", "integration.input")]))
+          .where((eb) =>
+            eb.or([
+              eb("mode", "=", "live"),
+              eb.and([
+                eb("kind", "in", ["plugin.approval", "plugin.input"]),
+                eb.not(
+                  eb.exists(
+                    eb
+                      .selectFrom("pluginExecutions")
+                      .select("id")
+                      .whereRef("pluginExecutions.requestId", "=", "requests.id")
+                      .where("handoff", "=", true),
+                  ),
+                ),
+              ]),
+            ]),
+          )
           .orderBy("id")
           .limit(limit)
           .execute(),

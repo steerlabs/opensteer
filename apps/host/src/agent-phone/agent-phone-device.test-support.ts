@@ -27,6 +27,7 @@ import {
 } from "@opensteer/agent-phone-setup";
 import { HttpHostClient } from "@opensteer/client/host";
 import { DeploymentIdSchema, type RunnerId } from "@opensteer/core";
+import { computer_apps } from "@opensteer/agent-tools/tools";
 import {
   AgentPhoneArtifactManifestSchema,
   AgentPhoneHostTargetSchema,
@@ -41,7 +42,6 @@ import {
   agentPhonePairingExtra,
   agentPhoneSetupActions,
   agentPhoneSetupReceiver,
-  androidPhoneDefinitionId,
   type AgentPhoneArtifactManifest,
   type AgentPhoneHostTarget,
   type AgentPhoneSetupStatus,
@@ -74,7 +74,7 @@ import {
   type CallerMachine,
   type CallerRun,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 
@@ -1960,35 +1960,26 @@ export function resultImages(
   );
 }
 
-const PhoneRowSchema = z.object({
-  access: z.enum(["read", "read-write"]).optional(),
-  approval: z.string(),
-  inUse: z.boolean(),
-  name: z.string(),
-  nextAction: z.string(),
-  runnerId: z.string(),
-  state: z.string(),
-  toolRefs: z
-    .object({ act: z.string().optional(), observe: z.string(), release: z.string() })
-    .nullable(),
-});
+const PhoneRowSchema = computer_apps.output.shape.phones.unwrap().element;
 export type PhoneRow = z.infer<typeof PhoneRowSchema>;
-export type PhoneToolRefs = NonNullable<PhoneRow["toolRefs"]>;
-
-const SearchCatalogSchema = z.object({
-  catalog: z.array(
-    z.object({ definitionId: z.string(), phones: z.array(PhoneRowSchema).optional() }).loose(),
-  ),
-});
-
-/** One phone's row in an `integration_search` for "Android phone", as an agent reads it. */
+export interface PhoneCommands {
+  readonly observe: string;
+  readonly release: string;
+  readonly act?: string;
+}
+export function phoneCommands(row: PhoneRow): PhoneCommands {
+  const binding = `const p=await phone(${JSON.stringify(row.computerId)});`;
+  return {
+    observe: binding + "await p.observe()",
+    release: binding + "return await p.release()",
+    ...(row.access === "read-write" ? { act: binding + "await p.act" } : {}),
+  };
+}
+/** A phone's current discovery row, without invocation capabilities. */
 export function phoneRowOf(search: ToolResult, runnerId: RunnerId): PhoneRow {
-  const entry = SearchCatalogSchema.parse(resultJson(search)).catalog.find(
-    ({ definitionId }) => definitionId === androidPhoneDefinitionId,
-  );
-  const row = entry?.phones?.find((candidate) => candidate.runnerId === runnerId);
-  if (!row)
-    throw new Error(`The Android phone entry does not list the phone: ${JSON.stringify(entry)}`);
+  const listing = z.object({ phones: z.array(PhoneRowSchema) }).parse(resultJson(search));
+  const row = listing.phones.find((candidate) => candidate.computerId === runnerId);
+  if (!row) throw new Error(`computer_apps does not list the phone: ${JSON.stringify(listing)}`);
   return row;
 }
 
@@ -2024,9 +2015,10 @@ interface TreeLine {
  */
 export function readObservation(text: string): PhoneObservationText {
   const lines = text.split("\n");
+  const headerLine = lines.find((line) => line.startsWith("Observation "));
   const header =
     /^Observation (\S+) of .+ — (\d+) elements(?:, truncated)?\. Screenshot (\d+)×(\d+) px; /u.exec(
-      lines[1] ?? "",
+      headerLine ?? "",
     );
   if (!header) throw new Error(`Not an observation:\n${text}`);
   const state = (name: string) => {

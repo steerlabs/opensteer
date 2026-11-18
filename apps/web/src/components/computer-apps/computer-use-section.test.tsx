@@ -3,7 +3,7 @@
 import type { ClientConnection, ClientConnectionState } from "@opensteer/client/connections";
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
-import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import type { DesktopOpenComputerUsePermissionsPanelResult } from "@opensteer/protocol/desktop";
 import { act } from "react";

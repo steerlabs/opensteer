@@ -4,7 +4,7 @@ import {
   startPrivateMachineHost,
   type CallerMachine,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 import { createDatabase, migrateToLatest } from "@opensteer/database";
 

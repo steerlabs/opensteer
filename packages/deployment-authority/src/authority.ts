@@ -168,7 +168,7 @@ export const HostCapabilitySchema = z.enum([
   "native-oauth",
   /**
    * Account-brokered consent started from an app may finish in that app: it
-   * returns the browser's one-use proof through `integration.authorization.return`
+   * returns the browser's one-use proof through `plugin.authorization.return`
    * instead of the browser signing into the Opensteer Account.
    */
   "integration-app-finish-v1",

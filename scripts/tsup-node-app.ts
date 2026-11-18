@@ -56,6 +56,8 @@ export function nodeApp(options: NodeAppOptions): Options {
     sourcemap: true,
     // Node 24 is the engines floor and the container's runtime.
     target: "node24",
+    // Prefix-only builtins (node:sqlite) stop resolving if tsup removes node:.
+    removeNodeProtocol: false,
     ...rest,
     external: [...external, ...optional],
     // tsup externalises every production dependency by default; this overrides

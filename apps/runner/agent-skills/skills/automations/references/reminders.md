@@ -2,7 +2,7 @@
 
 An automation queues a message to its real task. That task's agent replies in its history, which produces the normal personal notification or Needs you. A report is passive context and never notifies.
 
-For a one-shot reminder, use the task where the person asked as `taskId`; omission inside a Run selects it. An external connection must name a task. Name the automation for the reminder. Set source to { kind: "schedule", at }, computing at from the person's context time zone and the offset on that date. Ask for the zone if unknown. The program declares toolContractVersion: 4:
+For a one-shot reminder, use the task where the person asked as `taskId`; omission inside a Run selects it. An external connection must name a task. Name the automation for the reminder. Set source to { kind: "schedule", at }, computing at from the person's context time zone and the offset on that date. Ask for the zone if unknown. The program declares toolContractVersion: 5:
 
 ```ts
 export default async function ({ event, opensteer }) {

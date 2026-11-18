@@ -8,7 +8,7 @@ import {
 import {
   IntegrationConnectionIdSchema,
   IntegrationInstallationIdSchema,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -19,7 +19,6 @@ import type {
   PrivateIntegrationGrant,
 } from "./private-resources-port.js";
 import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
-import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 
 export interface PrivatePasswordsGrants {
   get(
@@ -32,17 +31,9 @@ export interface PrivatePasswordsGrants {
 export class PrivateResourceStore implements PrivateResourceStorePort {
   private readonly database: Kysely<DatabaseSchema>;
   private readonly passwords: PrivatePasswordsGrants;
-  private readonly providerAuthorizations: () => Readonly<
-    Record<string, IntegrationProviderAuthorization>
-  >;
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    passwords: PrivatePasswordsGrants,
-    providerAuthorizations: () => Readonly<Record<string, IntegrationProviderAuthorization>>,
-  ) {
+  constructor(database: Kysely<DatabaseSchema>, passwords: PrivatePasswordsGrants) {
     this.database = database;
     this.passwords = passwords;
-    this.providerAuthorizations = providerAuthorizations;
   }
 
   async assertOwner(actor: PrivateResourceActor): Promise<void> {
@@ -95,7 +86,6 @@ export class PrivateResourceStore implements PrivateResourceStorePort {
         ownerUserId: actor.ownerId,
         installationId: IntegrationInstallationIdSchema.parse(grant.installationId),
         isDefault: grant.isDefault,
-        providerAuthorizations: this.providerAuthorizations(),
       });
     });
   }

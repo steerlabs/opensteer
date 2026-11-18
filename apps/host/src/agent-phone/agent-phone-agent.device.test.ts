@@ -45,7 +45,7 @@ import { stagePhonePin } from "./agent-phone-pin.test-support.js";
 import { PasswordsJourneyEvidence } from "../browser/passwords-evidence.test-support.js";
 import { startPersonalPasswordsBridge } from "../browser/passwords-personal-bridge.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { waitForValue } from "../integrations/personal-machine.test-support.js";
+import { waitForValue } from "../runtime/private-machine-host.test-support.js";
 import { passwordFixture } from "../browser/passwords-authority.test-support.js";
 import { AndroidPhoneActionSchema } from "@opensteer/protocol";
 import { browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
@@ -70,7 +70,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
-import { freePort } from "../integrations/personal-machine.test-support.js";
+import { freePort } from "../runtime/private-machine-host.test-support.js";
 import {
   readObservation,
   writeDeviceTestManifest,
@@ -588,7 +588,7 @@ describe.skipIf(requestedEngine === undefined)(
 
           const calls = turn.tools.filter((call) => call.startedAt !== null).map(toolCall);
           const listedApps = calls.filter(
-            (call) => call.name === "integration_search" && call.runnerId === runnerId,
+            (call) => call.name === "computer_apps" && call.runnerId === runnerId,
           );
           const onPhone = calls.filter((call) => call.phoneRunnerId === runnerId);
           await writeArtifact(
@@ -752,22 +752,20 @@ interface ToolCallSeen {
   /** For an Android phone's operation, the operation and the phone it addressed. */
   readonly operation: string | null;
   readonly phoneRunnerId: string | null;
-  /** The `runnerId` an `integration_search` named, which lists that computer's apps. */
+  /** The target named by `computer_apps` when it lists that Device's apps. */
   readonly runnerId: string | null;
 }
 
-const SearchArgumentsSchema = z.object({ runnerId: z.string().optional() }).loose();
+const SearchArgumentsSchema = z.object({ computerId: z.string().optional() }).loose();
 
 function toolCall(call: VerticalToolCall): ToolCallSeen {
   const search =
-    call.tool?.name === "integration_search"
-      ? SearchArgumentsSchema.safeParse(call.arguments)
-      : null;
+    call.tool?.name === "computer_apps" ? SearchArgumentsSchema.safeParse(call.arguments) : null;
   return {
     name: call.tool?.name ?? "",
     operation: call.integration?.phone ? call.integration.operation.name : null,
     phoneRunnerId: call.integration?.phone?.runnerId ?? null,
-    runnerId: search?.success ? (search.data.runnerId ?? null) : null,
+    runnerId: search?.success ? (search.data.computerId ?? null) : null,
   };
 }
 

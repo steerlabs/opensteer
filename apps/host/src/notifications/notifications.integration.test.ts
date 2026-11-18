@@ -381,7 +381,7 @@ integration("Notifications", () => {
                 }) +
                 " [[reply Reminder: buy groceries]]",
             ),
-            toolContractVersion: 4,
+            toolContractVersion: 5,
           },
           source: {
             at,
@@ -771,7 +771,7 @@ async function createTrigger(
       program: {
         language: "javascript",
         source: input.program,
-        toolContractVersion: 4,
+        toolContractVersion: 5,
       },
       source: input.source,
     },

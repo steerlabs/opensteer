@@ -1,0 +1,59 @@
+--- a/sdk/src/node.ts
++++ b/sdk/src/node.ts
+@@ -1,4 +1,5 @@
+ /** Node host adapters. Products use workerdApps to isolate authored code. */
++export { appProtocol } from "./implementation/app-protocols.ts";
+ export { filesystemBlobStore } from "./implementation/filesystem-blobs.ts";
+ 
+ export { workerdApps, WorkerdMigrationRequired } from "./implementation/workerd-apps.ts";
+--- a/mcp/src/contracts/execute.ts
++++ b/mcp/src/contracts/execute.ts
+@@ -502,6 +502,7 @@
+  * size of a result: `execute` and `call` return the whole value, or fail with the platform's error.
+  */
+ export const McpLimits = Schema.Struct({
++  interactionTtlMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+   maxToolCalls: Schema.Int.check(Schema.isGreaterThan(0)),
+ });
+--- a/mcp/src/implementation/executions.ts
++++ b/mcp/src/implementation/executions.ts
+@@ -366,7 +366,7 @@
+             requestId: ElicitationRequestId.make(`elc_${crypto.randomUUID()}`),
+             tool,
+             elicitation: form.request,
+-            expiresAt: (yield* Clock.currentTimeMillis) + defaultElicitationLimits.timeoutMs,
++            expiresAt: (yield* Clock.currentTimeMillis) + (limits.interactionTtlMs ?? defaultElicitationLimits.timeoutMs),
+           };
+           const pending: Pending = {
+             kind: "input",
+--- a/sdk/src/contracts/tools.ts
++++ b/sdk/src/contracts/tools.ts
+@@ -76,6 +76,7 @@
+ export type ToolApprovalLimits = typeof ToolApprovalLimits.Type;
+ /** Current consume-once approval lifetime; this does not extend a live tool invocation. */
+ export const defaultToolApprovalLimits = ToolApprovalLimits.make({ ttlMs: 15 * 60 * 1000 });
++export const ToolApprovalTtlMs = Context.Reference<number>("pluginEngine/ToolApprovalTtlMs", { defaultValue: () => defaultToolApprovalLimits.ttlMs });
+ 
+ /**
+  * Names where a host issued a call, such as one person's run from its dashboard. A pending approval
+--- a/sdk/src/implementation/tool-approvals.ts
++++ b/sdk/src/implementation/tool-approvals.ts
+@@ -3,7 +3,7 @@
+ import { Clock, Effect, Redacted, Schema } from "effect";
+ import type { HostCrypto } from "./host-crypto.ts";
+ import {
+-  defaultToolApprovalLimits,
++  ToolApprovalTtlMs,
+   ToolApprovalIssuer,
+   ToolApprovalNotFound,
+   ToolInvocation,
+@@ -113,7 +113,7 @@
+         const id = ApprovalRequestId.make(`apr_${yield* next}`);
+         yield* Effect.annotateCurrentSpan("pluginEngine.approval.id", id);
+         const expiresAt = new Date(
+-          (yield* Clock.currentTimeMillis) + defaultToolApprovalLimits.ttlMs,
++          (yield* Clock.currentTimeMillis) + (yield* ToolApprovalTtlMs),
+         );
+         const payload = yield* Schema.encodeEffect(ApprovalPayload)({
+           invocation,

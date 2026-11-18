@@ -23,6 +23,7 @@ import {
   withPersonalStateStartupLock,
 } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
+import { PLUGIN_HOST_SQL } from "./plugin-host-migration.js";
 
 /**
  * One current reusable invite per team, with unlimited (`null`) or capped uses. Its verifier is
@@ -92,6 +93,152 @@ const messageOriginMigrationName = "0027_message_origin";
 export { personalCurrentStateMigrationName } from "./personal-state-upgrade.js";
 const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
+`;
+/** Databases created from the current baseline never had this storage. */
+export const dropSpecialistsMigrationName = "0030_drop_specialists_contract";
+const DROP_SPECIALISTS_SQL = `
+drop table if exists specialists;
+alter table threads drop column if exists specialist_id;
+alter table plugin_versions drop column if exists specialist_manifest;
+delete from plugin_owner_settings where target->>'kind' = 'specialist';
+`;
+/**
+ * Service integrations are gone: provider applications, their OAuth sources and MCP OAuth
+ * credentials, every installation that is not a device app or a local server, and the Requests
+ * only they could answer. Computer, messaging and local-server rows stay. Databases created from
+ * the current baseline never had the dropped storage.
+ */
+export const dropServiceIntegrationsMigrationName = "0033_drop_service_integrations_contract";
+const DROP_SERVICE_INTEGRATIONS_SQL = `
+create temporary table service_servers on commit drop as
+  select id from integration_servers where transport->>'type' not in ('computer', 'runner');
+create temporary table service_installations on commit drop as
+  select id from integration_installations installation
+    where source_kind in ('proposed', 'remote-mcp')
+      or (plugin_id is null and not exists (
+        select 1 from integration_servers server
+          where server.installation_id = installation.id
+            and server.id not in (select id from service_servers)));
+create temporary table service_connections on commit drop as
+  select id, credential_id from integration_connections
+    where connection_kind in ('provider-account', 'mcp-oauth');
+create temporary table service_requests on commit drop as
+  select id from requests where kind in ('integration.install', 'integration.input')
+  union select request_id from integration_request_details
+    where installation_id in (select id from service_installations)
+      or requested_server_id in (select id from service_servers)
+      or requested_connection_id in (select id from service_connections)
+      or (installation_id is null and manifest is not null
+        and (manifest->>'kind' <> 'catalog' or manifest->'definition'->>'adapter' is distinct from 'computer'))
+  union select id from requests where kind = 'integration.access' and (
+    payload->>'installationId' in (select id from service_installations)
+    or payload->>'requestedServerId' in (select id from service_servers)
+    or payload->>'requestedConnectionId' in (select id from service_connections)
+    or (payload->'manifest' is not null and payload->'manifest' <> 'null'::jsonb
+      and payload->'manifest'->'definition'->>'adapter' is distinct from 'computer'))
+  union select data->'request'->>'id' from deployment_events
+    where type like 'request.%' and (
+      data->'request'->>'kind' in ('integration.install', 'integration.input')
+      or (data->'request'->>'kind' = 'integration.access' and (
+        data->'request'->'payload'->>'installationId' in (select id from service_installations)
+        or data->'request'->'payload'->>'requestedServerId' in (select id from service_servers)
+        or data->'request'->'payload'->>'requestedConnectionId' in (select id from service_connections)
+        or (data->'request'->'payload'->'manifest' is not null
+          and data->'request'->'payload'->'manifest' <> 'null'::jsonb
+          and data->'request'->'payload'->'manifest'->'definition'->>'adapter' is distinct from 'computer'))));
+delete from deployment_events where type like 'request.%' and (
+  data->>'requestId' in (select id from service_requests)
+  or data->'request'->>'id' in (select id from service_requests)
+  or data->'request'->>'kind' in ('integration.install', 'integration.input')
+  or (data->'request'->>'kind' = 'integration.access' and
+    data->'request'->'payload'->'manifest' is not null and
+    data->'request'->'payload'->'manifest' <> 'null'::jsonb and
+    data->'request'->'payload'->'manifest'->'definition'->>'adapter' is distinct from 'computer'));
+update deployment_events set data = jsonb_set(data - 'integration', '{tool}',
+  '{"name":"retired_service","namespace":"history"}'::jsonb)
+  where type = 'tool.started' and data->'tool'->>'name' in
+    ('integration_search', 'integration_describe', 'integration_call', 'integration_request',
+      'integration_list', 'integration_remove', 'custom_integration_request');
+delete from task_question_notices where request_id in (select id from service_requests);
+delete from request_call_joins where request_id in (select id from service_requests);
+delete from watch_control_requests where request_id in (select id from service_requests);
+delete from trigger_control_requests where request_id in (select id from service_requests);
+delete from agent_control_requests where request_id in (select id from service_requests);
+delete from request_continuations where request_id in (select id from service_requests);
+delete from requests where id in (select id from service_requests);
+
+delete from integration_grants where connection_id in (select id from service_connections)
+  or installation_id in (select id from service_installations);
+delete from integration_tools where connection_id in (select id from service_connections)
+  or server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from integration_tool_definitions where connection_id in (select id from service_connections)
+  or server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from credential_access_audit where connection_id in (select id from service_connections)
+  or credential_id in (select credential_id from service_connections);
+delete from integration_connections where id in (select id from service_connections);
+delete from credentials where id in (select credential_id from service_connections);
+delete from integration_server_secrets where server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from integration_servers where id in (select id from service_servers)
+  or installation_id in (select id from service_installations);
+delete from integration_installations where id in (select id from service_installations);
+delete from plugin_owner_settings where target->>'kind' = 'service';
+
+drop index if exists integration_connections_definition_identity_unique;
+drop table if exists mcp_oauth_credentials;
+drop table if exists integration_application_source_defaults;
+alter table integration_connections
+  drop column if exists provider_application_id,
+  drop column if exists application_source,
+  drop column if exists auth_method_id,
+  drop column if exists authorization_digest,
+  drop column if exists granted_scopes;
+drop table if exists integration_provider_applications;
+alter table integration_connections drop constraint if exists integration_connections_connection_kind_check;
+alter table integration_connections add constraint integration_connections_connection_kind_check
+  check (connection_kind in ('channel', 'computer'));
+alter table integration_installations drop column if exists adapter_snapshot;
+alter table integration_installations drop constraint if exists integration_installations_source_kind_check;
+alter table integration_installations add constraint integration_installations_source_kind_check
+  check (source_kind in ('plugin', 'built-in'));
+alter table integration_auth_attempts drop column if exists result_connection_id;
+`;
+export const unifyLocalPluginAccessMigrationName = "0034_unify_local_plugin_access_contract";
+const UNIFY_LOCAL_PLUGIN_ACCESS_SQL = `
+insert into plugin_agent_settings (owner_user_id, plugin_id, access, author)
+  select setting.owner_user_id, 'app_device_' || connection.id, 'off', 'agent'
+  from plugin_owner_settings setting
+  join integration_connections connection
+    on connection.owner_user_id = setting.owner_user_id
+    and connection.integration_definition_id = setting.target->>'definitionId'
+  where setting.target->>'kind' = 'device-app' and not setting.enabled
+    and connection.connection_kind = 'computer' and connection.status <> 'revoked'
+    and connection.integration_definition_id not in ('macos-app', 'android-phone', 'iphone-screen')
+  union
+  select setting.owner_user_id, 'app_server_' || server.id, 'off', 'agent'
+  from plugin_owner_settings setting
+  join integration_installations installation on installation.plugin_id = setting.target->>'pluginId'
+  join integration_servers server on server.installation_id = installation.id
+  where setting.target->>'kind' = 'plugin' and not setting.enabled and server.transport->>'type' = 'runner'
+  on conflict (owner_user_id, plugin_id) do update set access = excluded.access;
+
+drop trigger if exists plugin_owner_settings_authority_generation on plugin_owner_settings;
+delete from plugin_owner_settings setting
+  where setting.target->>'kind' = 'device-app'
+    or (setting.target->>'kind' = 'plugin' and exists (
+      select 1 from integration_installations installation
+      join integration_servers server on server.installation_id = installation.id
+      where installation.plugin_id = setting.target->>'pluginId' and server.transport->>'type' = 'runner'
+    ));
+
+update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '5')
+  where program->'toolContractVersion' = '4'::jsonb
+    and program->>'source' !~ 'integration_(call|describe|list|remove|request|search)';
 `;
 export function migrationProvider(options?: {
   readonly personalCurrentState?: boolean;
@@ -330,6 +477,38 @@ export function migrationProvider(options?: {
           async up(database) {
             await sql`create index messages_created_at on messages(created_at);
               create index thread_inputs_updated_at on thread_inputs(updated_at)`.execute(database);
+          },
+        },
+        [dropSpecialistsMigrationName]: {
+          async up(database) {
+            await sql.raw(DROP_SPECIALISTS_SQL).execute(database);
+          },
+        },
+        "0031_plugin_host": {
+          async up(database) {
+            await sql.raw(PLUGIN_HOST_SQL).execute(database);
+          },
+        },
+        "0032_plugin_oauth": {
+          async up(database) {
+            await sql
+              .raw(
+                `CREATE TABLE plugin_oauth_records (
+              id text PRIMARY KEY, owner_user_id text NOT NULL REFERENCES users(id),
+              expires_at timestamptz, begun_at timestamptz, encrypted_payload bytea NOT NULL
+            ); CREATE INDEX plugin_oauth_records_expiry ON plugin_oauth_records(expires_at) WHERE expires_at IS NOT NULL;`,
+              )
+              .execute(database);
+          },
+        },
+        [dropServiceIntegrationsMigrationName]: {
+          async up(database) {
+            await sql.raw(DROP_SERVICE_INTEGRATIONS_SQL).execute(database);
+          },
+        },
+        [unifyLocalPluginAccessMigrationName]: {
+          async up(database) {
+            await sql.raw(UNIFY_LOCAL_PLUGIN_ACCESS_SQL).execute(database);
           },
         },
         ...(options?.personalCurrentState !== false

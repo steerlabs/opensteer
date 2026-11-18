@@ -27,7 +27,7 @@ import {
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
 import { z } from "zod";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "./rpc-context.js";
 import type { AuthenticatedHostSession } from "../identity/auth.js";
 import type { HostServerDependencies } from "../server.js";
 import type { PersonalResources } from "./personal-resources.js";

@@ -282,7 +282,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         selection = {
           providerId: model?.providerId ?? (reference.providerId as ModelSelection["providerId"]),
           modelId: model?.modelId ?? (reference.modelId as ModelSelection["modelId"]),
-          options: ("options" in exact ? exact.options : undefined) ?? {},
+          options: {},
         };
         if (matches.length > 1) {
           skipped.push({

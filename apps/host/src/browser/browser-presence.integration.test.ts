@@ -14,7 +14,7 @@ import {
   startPrivateMachineHost,
   waitForMessage,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;

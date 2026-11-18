@@ -1,0 +1,47 @@
+// This table is the importer's only source of upstream spelling.
+export const packageScope = "@executor-js/";
+export const renames = [
+  ["@executor-js/", "@opensteer/plugin-engine-"],
+  ["fumadb-effect", "@opensteer/plugin-engine-database"],
+  ["FumaDB", "PluginDatabase"],
+  ["fumadb", "pluginDatabase"],
+  ["Rhys Sullivan", "Opensteer"],
+  ["rhyssul", "opensteer"],
+  ["https://api.executor.sh", "https://plugins.invalid"],
+  ["executor_", "plugin_engine_"],
+  ["exsec", "oscred"],
+  ["EXECUTOR", "PLUGIN_ENGINE"],
+  ["Executor", "PluginEngine"],
+  ["executor", "pluginEngine"],
+];
+export const forbidden = ["executor", "rhys", "sullivan", "fumadb"];
+export const databaseDirectory = "fumadb-effect";
+export const compatibility = {
+  apps: {
+    contextElement: "executor-context",
+    accountNoticeElement: "executor-account-notice",
+    deploymentEvent: "executor:deployment-changed",
+    versionPath: "/_executor/version",
+    assetsPath: "/_executor/assets/",
+    browserTracePath: "/_executor/api/telemetry/traces",
+    uiMarker: "<!--executor-ui-->",
+    uiMarkerData: "executor-ui",
+    internalSegment: "_executor",
+    reservedPublicPrefix: "_executor/",
+    refusedHeader: "x-executor-refused",
+    signingSecretSource: "executor",
+    queryPath: "/_executor/api/query",
+    mutatePath: "/_executor/api/mutate",
+    subscribePath: "/_executor/api/subscribe",
+    signInPath: "/_executor/auth/callback",
+    tablePrefix: "_executor_",
+  },
+  sdk: {
+    unreachableHeader: "x-executor-unreachable",
+    changingHeader: "x-executor-api-changing",
+    changingCode: "EXECUTOR_API_CHANGING",
+  },
+  catalog: { feed: "https://catalog.executor.sh/index.json" },
+};
+
+export const noticeHeading = "## Executor";

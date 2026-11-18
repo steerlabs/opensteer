@@ -5,11 +5,7 @@ import {
   type ToolIdentity,
 } from "@opensteer/core";
 import { generatedImage, opensteerToolIdentity } from "@opensteer/harness";
-import {
-  cursorAgentToolsServerName,
-  cursorIntegrationToolsServerName,
-  cursorMcpServerIdentifier,
-} from "./plugin.js";
+import { cursorAgentToolsServerName, cursorMcpServerIdentifier } from "./plugin.js";
 
 /**
  * One `--output-format stream-json` frame. Cursor's own shape is unversioned
@@ -168,7 +164,7 @@ function mcpToolArguments(args: Record<string, unknown>): Record<string, unknown
 }
 
 /**
- * Opensteer's own two servers are reported under their Opensteer names; every
+ * Opensteer's server is reported under its Opensteer name; every
  * other server keeps Cursor's namespaced spelling, which is what the model saw.
  */
 function cursorMcpToolIdentity(args: Record<string, unknown>): ToolIdentity {
@@ -176,9 +172,6 @@ function cursorMcpToolIdentity(args: Record<string, unknown>): ToolIdentity {
   const toolName = typeof args.toolName === "string" ? args.toolName : "unknown";
   if (provider === cursorMcpServerIdentifier(cursorAgentToolsServerName)) {
     return opensteerToolIdentity(cursorAgentToolsServerName, toolName);
-  }
-  if (provider === cursorMcpServerIdentifier(cursorIntegrationToolsServerName)) {
-    return opensteerToolIdentity(cursorIntegrationToolsServerName, toolName);
   }
   return opensteerToolIdentity(provider || "mcp", toolName);
 }

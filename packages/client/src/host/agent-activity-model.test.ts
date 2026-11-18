@@ -743,7 +743,7 @@ describe("workSummary", () => {
           run(),
           reasoning(),
           command("ls", { completedAt: at(5) }),
-          request({ createdAt: decidedHoursLater, requestKind: "integration.install" }),
+          request({ createdAt: decidedHoursLater, requestKind: "plugin.account" }),
         ])[0]!,
       )?.label,
     ).toBe("Worked for 5s");
@@ -808,49 +808,37 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
-  it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
-    "keeps integration summaries and model-only details consistent in %s",
-    (namespace) => {
-      const entry = tool({
-        arguments: { toolRef: "opaque-reference", arguments: { query: "mail" } },
-        tool: { namespace, name: "integration_call" },
-        output: { text: "model-only output" },
-      });
-      expect(toolPresentation(entry)).toMatchObject({
-        label: "Called an integration",
-        activeLabel: "Calling an integration",
-        hint: "",
-      });
-      expect(toolBody(entry)).toMatchObject({
-        collapsed: true,
-        argumentsText: JSON.stringify({ query: "mail" }, null, 2),
-      });
-      expect(activityFeedPresentation(entry).detail).not.toContain("model-only output");
-    },
-  );
-
-  // A call the Host could not name still says which operation it asked for;
-  // the digest after `@` only pins the schema.
-  it("names the operation an unresolved call asked for", () => {
-    const asked = (name: string) =>
-      toolPresentation(
-        tool({
-          arguments: {
-            operation: "gmail.usersMessagesGet@7UgI628u",
-            account: "con_1",
-            arguments: { id: "1a18" },
-          },
-          tool: { namespace: "opensteer", name },
-        }),
-      );
-    expect(asked("integration_call")).toMatchObject({
-      activeLabel: "Calling gmail.usersMessagesGet",
+  it("keeps a plugin call's model output inside its collapsed body", () => {
+    const entry = tool({
+      arguments: { calls: { path: "tools.mail.list_messages", input: { query: "mail" } } },
+      tool: { namespace: "opensteer", name: "plugin_call" },
+      output: { text: "model-only output" },
+    });
+    expect(toolPresentation(entry)).toMatchObject({
+      label: "Called tools.mail.list_messages",
+      activeLabel: "Calling plugin tools",
       hint: "",
-      label: "Called gmail.usersMessagesGet",
     });
-    expect(asked("integration_describe")).toMatchObject({
-      label: "Looked up gmail.usersMessagesGet",
+    expect(toolBody(entry)).toMatchObject({
+      collapsed: true,
+      argumentsText: JSON.stringify({ query: "mail" }, null, 2),
     });
+    expect(activityFeedPresentation(entry).detail).not.toContain("model-only output");
+  });
+
+  it("names the exact plugin tool path a call asked for", () => {
+    expect(
+      opensteer("plugin_call", {
+        calls: { path: "tools.gmail.usersMessagesGet", input: { id: "1a18" } },
+      }),
+    ).toMatchObject({
+      label: "Called tools.gmail.usersMessagesGet",
+      activeLabel: "Calling plugin tools",
+      hint: "",
+    });
+    expect(opensteer("plugin_describe", { paths: ["tools.gmail.usersMessagesGet"] })).toMatchObject(
+      { label: "Read plugin tools" },
+    );
   });
 
   it("say what an action did, not which tool did it", () => {
@@ -1285,17 +1273,15 @@ describe("toolPresentation", () => {
 
     const integration = tool({
       arguments: createToolArguments({
-        toolRef: "igr_private.itl_private.operation",
-        arguments: { rows: Array.from({ length: 20_000 }, (_, id) => ({ id })) },
+        calls: {
+          path: "tools.records.list",
+          input: { rows: Array.from({ length: 20_000 }, (_, id) => ({ id })) },
+        },
       }),
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
-    });
-    expect(integration.arguments).toMatchObject({
-      arguments: expect.stringMatching(/… \d+ bytes omitted …/u),
+      tool: { name: "plugin_call", namespace: "opensteer" },
     });
     const input = toolArgumentsText(integration);
     expect(input).toContain('{"id":19999}');
-    expect(input).not.toMatch(/toolRef|igr_private/u);
     expect(toolBody(integration).argumentsText).toBe(input);
     expect(input.length).toBeLessThanOrEqual(20_001);
   });
@@ -1494,11 +1480,6 @@ function result(
   })}\n[0] window "general - Slack" (0,0 1440×904)`;
 }
 
-/** A batch that stopped with no observation to show for it, as the Host words it. */
-function withoutObservation(performed: readonly string[], stoppedBecause: string): string {
-  return `${computerUseActHeadline({ performed, stoppedBecause })}\n${performed.length} action${performed.length === 1 ? "" : "s"} completed before the batch stopped. The failed action may also have partially changed the app; observe the app before acting further.`;
-}
-
 function computerStep(
   operation: "act" | "observe",
   overrides: Partial<ToolEntry> & { place?: IntegrationCallSubject["computerApp"] } = {},
@@ -1508,7 +1489,10 @@ function computerStep(
     arguments: { arguments: {}, toolRef: mockComputerUseToolRefs[0] },
     integration: mockComputerUseSubject(operation, place ?? mockComputerUseSlack),
     output: { text: result(operation === "observe" ? null : ['Clicked "Save"']) },
-    tool: { name: "integration_call", namespace: "opensteer.integrations" },
+    tool: {
+      name: operation === "observe" ? "computer.observe" : "computer.act",
+      namespace: "opensteer.integrations",
+    },
     ...rest,
   });
 }
@@ -1528,7 +1512,7 @@ describe("a Computer use turn", () => {
       },
       {
         // Looking up how to act is in the row, but it was not done in Slack.
-        detail: "9 steps on Alex's MacBook Pro",
+        detail: "10 steps on Alex's MacBook Pro",
         errors: 1,
         group: "computer",
         label: "Used Slack",
@@ -1634,7 +1618,7 @@ describe("a Computer use turn", () => {
     expect(endedOnStop).toMatchObject({ head: { errors: 0, tone: "stopped" } });
     const broken = computerStep("act", {
       isError: true,
-      output: { text: withoutObservation(['Clicked "Send"'], "Slack quit.") },
+      output: { text: "Slack quit." },
       state: "failed",
     });
     const [endedOnError] = workRows([computerStep("observe"), broken]);
@@ -1743,25 +1727,21 @@ describe("Computer use on a phone", () => {
     return turn;
   }
 
-  it("groups calls and descriptions by phone, counts only calls and names the phone once", () => {
-    const lookup = phoneStep("act", {
-      output: { text: "{}" },
-      tool: { name: "integration_describe", namespace: "opensteer.integrations" },
-    });
+  it("groups calls by phone, counts their steps and names the phone once", () => {
     const calls = Array.from({ length: 6 }, () => phoneStep("act"));
-    const entries = [lookup, ...calls];
+    const entries = calls;
     expect(rowShape(workRows(entries))).toEqual([
       {
         detail: "6 steps",
         errors: 0,
         group: "computer",
         label: "Used Pixel 7",
-        steps: 7,
+        steps: 6,
         tone: "done",
       },
     ]);
-    expect(toolPresentation(lookup).kind).toBe("computer");
-    expect(activityFeedPresentation(lookup).detail).toBe("Pixel 7");
+    expect(toolPresentation(calls[0]!).kind).toBe("computer");
+    expect(activityFeedPresentation(calls[0]!).detail).toBe("Pixel 7");
     const live = phoneStep("act", {
       arguments: { arguments: { actions: [{ type: "tap", target: { index: 1 } }] } },
       completedAt: null,
@@ -1820,8 +1800,8 @@ describe("Computer use on a phone", () => {
       state: "failed",
     });
     expect(activityStepHead(failed)).toMatchObject({
-      label: "Couldn't use Pixel 7",
-      detail: "Phone offline.",
+      label: "Phone offline.",
+      detail: "",
       tone: "error",
     });
     expect(turnComputer(phoneTurn([failed]))).toBeNull();
@@ -1857,7 +1837,7 @@ describe("Computer use on a phone", () => {
 
 describe("integration gateway steps", () => {
   const gateway = (name: string, overrides: Partial<ToolEntry> = {}): ToolEntry =>
-    tool({ tool: { name, namespace: "opensteer.integrations" }, ...overrides });
+    tool({ tool: { name, namespace: "opensteer" }, ...overrides });
 
   const capturedRequest = {
     arguments: {
@@ -1875,13 +1855,13 @@ describe("integration gateway steps", () => {
   it.each([
     {
       arguments: capturedRequest.arguments,
-      name: "integration_request",
-      target: "integration access",
+      name: "app_access_request",
+      target: "app access",
     },
     {
       arguments: { catalog: "google-gmail", reason: "Read the requested email." },
-      name: "integration_request",
-      target: "integration access",
+      name: "app_access_request",
+      target: "app access",
     },
     {
       arguments: {
@@ -1933,39 +1913,22 @@ describe("integration gateway steps", () => {
     },
   );
 
-  it("reads a call recorded before the Host named its subject as a call, and nothing more", () => {
-    const old = gateway("integration_call", {
-      arguments: { arguments: {}, toolRef: mockComputerUseToolRefs[0] },
-      output: { text: result(null) },
-    });
-    expect(toolPresentation(old)).toMatchObject({
-      activeLabel: "Calling an integration",
-      hint: "",
-      icon: "puzzle",
-      kind: "integration-call",
-      label: "Called an integration",
-    });
-    expect(toolBody(old)).toMatchObject({ argumentsText: "", collapsed: true, summary: "" });
-    const failed = gateway("integration_call", {
+  it("keeps an unsuccessful plugin call in its own row", () => {
+    const failed = gateway("plugin_call", {
+      arguments: { calls: { path: "tools.mail.read", input: {} } },
       isError: true,
-      output: {
-        text: result([], { stoppedBecause: "Another window of this app came to the front." }),
-      },
       state: "failed",
+      output: { text: "Unavailable" },
     });
     expect(activityStepHead(failed)).toMatchObject({ errors: 1, tone: "error" });
-    expect(
-      toolPresentation(
-        gateway("integration_describe", { arguments: { toolRef: "igr_x.itl_y.z" } }),
-      ),
-    ).toMatchObject({ hint: "", label: "Looked up an integration" });
-    expect(workRows([old, old]).map((row) => row.kind)).toEqual(["steps", "steps"]);
+    expect(toolPresentation(failed)).toMatchObject({ hint: "", label: "Called tools.mail.read" });
+    expect(workRows([failed, failed]).map((row) => row.kind)).toEqual(["steps", "steps"]);
   });
 
   it("gathers adjacent lookups into one row", () => {
     const rows = workRows([
-      gateway("integration_search", { arguments: { query: "gmail" } }),
-      gateway("integration_search", { arguments: { query: "calendar" } }),
+      gateway("plugin_search", { arguments: { query: "gmail" } }),
+      gateway("plugin_search", { arguments: { query: "calendar" } }),
     ]);
     expect(rows).toMatchObject([
       {
@@ -1974,50 +1937,51 @@ describe("integration gateway steps", () => {
           detail: 'for "gmail" and "calendar"',
           detailKind: "prose",
           icon: "puzzle",
-          label: "Looked up integrations",
+          label: "Looked up tools",
         },
       },
     ]);
     expect(
       workRows([
-        gateway("integration_search", { arguments: { query: "gmail" } }),
-        gateway("integration_search", { arguments: { query: "gmail" } }),
-        gateway("integration_search", { arguments: { query: "calendar" } }),
-        gateway("integration_search", { arguments: { query: "drive" } }),
+        gateway("plugin_search", { arguments: { query: "gmail" } }),
+        gateway("plugin_search", { arguments: { query: "gmail" } }),
+        gateway("plugin_search", { arguments: { query: "calendar" } }),
+        gateway("plugin_search", { arguments: { query: "drive" } }),
       ])[0],
     ).toMatchObject({ head: { detail: 'for "gmail", "calendar" and "drive"' } });
     expect(
-      toolPresentation(gateway("integration_search", { arguments: { query: "gmail" } })),
+      toolPresentation(gateway("plugin_search", { arguments: { query: "gmail" } })),
     ).toMatchObject({
-      activeLabel: "Searching integrations",
+      activeLabel: "Finding plugin tools",
       hint: 'for "gmail"',
       hintKind: "prose",
-      label: "Searched integrations",
+      label: "Found plugin tools",
     });
-    expect(toolPresentation(gateway("integration_search", { arguments: {} })).hint).toBe("");
+    expect(toolPresentation(gateway("plugin_search", { arguments: {} })).hint).toBe("");
   });
 
-  it("keeps a gateway result closed, and out of the Workspace activity feed", () => {
-    const [, , listed] = gatewayTools(slackTurn("settled"));
-    expect(toolBody(listed!)).toMatchObject({ collapsed: true, outputLabel: "Output" });
-    expect(toolBody(listed!).output).toContain("toolRefs");
-    const described = gateway("integration_describe", {
-      arguments: { toolRef: "igr_a.itl_b.c" },
-      output: { text: '{"toolRef":"igr_a.itl_b.c","inputSchema":{}}' },
+  it("keeps plugin schemas out of the Workspace activity feed", () => {
+    const described = gateway("plugin_describe", {
+      arguments: { paths: ["tools.mail.read"] },
+      output: { text: '{"signature":"private schema"}' },
     });
-    for (const entry of [listed!, described]) {
-      expect(activityFeedPresentation(entry).detail).not.toMatch(/igr_|itl_|toolRef/u);
-    }
+    expect(toolBody(described)).toMatchObject({ collapsed: true, outputLabel: "Output" });
     expect(activityFeedPresentation(described)).toMatchObject({
       detail: "",
-      label: "Looked up an integration",
+      label: "Read plugin tools",
     });
+    expect(activityFeedPresentation(described).detail).not.toContain("private schema");
   });
 
   it("gives an unknown gateway tool no hint from its arguments", () => {
     expect(
-      toolPresentation(gateway("integration_future", { arguments: { toolRef: "igr_a.itl_b.c" } })),
-    ).toMatchObject({ hint: "", icon: "puzzle", label: "Integration future" });
+      toolPresentation(
+        tool({
+          tool: { name: "computer.future", namespace: "opensteer.integrations" },
+          arguments: {},
+        }),
+      ),
+    ).toMatchObject({ hint: "", icon: "puzzle", label: "Computer future" });
   });
 });
 
@@ -2601,8 +2565,8 @@ describe("page stops", () => {
     };
     const call = (overrides: Partial<ToolEntry> = {}) =>
       tool({
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
-        arguments: { operation: "gmail.usersMessagesGet@account-1" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
+        arguments: { calls: { path: "tools.gmail.usersMessagesGet", input: {} } },
         integration: subject,
         ...overrides,
       });
@@ -2620,7 +2584,9 @@ describe("page stops", () => {
       { kind: "place", entry: marker },
     ]);
     const stableAccount = call({
-      arguments: { operation: "gmail.usersMessagesGet@account-1", account: "account-1" },
+      arguments: {
+        calls: { path: "tools.gmail.usersMessagesGet", input: { account: "account-1" } },
+      },
     });
     const renamed = call({
       arguments: stableAccount.arguments,
@@ -2633,7 +2599,14 @@ describe("page stops", () => {
     });
     expect(workRows([stableAccount, renamed])).toHaveLength(2);
     expect(
-      workRows([first, call({ arguments: { operation: "gmail.usersMessagesGet@account-2" } })]),
+      workRows([
+        first,
+        call({
+          arguments: {
+            calls: { path: "tools.gmail.usersMessagesGet", input: { account: "account-2" } },
+          },
+        }),
+      ]),
     ).toHaveLength(1);
     const otherAccount = call({ integration: { ...subject, account: "Personal" } });
     const otherOperation = call({
@@ -2649,7 +2622,7 @@ describe("page stops", () => {
     }
     expect(workRows([write, write])).toHaveLength(2);
     expect(workRows([unresolved, unresolved])).toHaveLength(2);
-    expect(toolPresentation(unresolved).label).toBe("Called gmail.usersMessagesGet");
+    expect(toolPresentation(unresolved).label).toBe("Called tools.gmail.usersMessagesGet");
     expect(workRows([first, call({ state: "running" })])[0]).toMatchObject({
       head: { label: "Get message", tone: "running" },
     });
@@ -2664,7 +2637,7 @@ describe("page stops", () => {
     };
     const call = (overrides: Partial<ToolEntry> = {}) =>
       tool({
-        tool: { name: "integration_call", namespace: "opensteer" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
         integration: subject,
         ...overrides,
       });

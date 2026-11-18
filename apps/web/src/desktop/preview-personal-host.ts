@@ -102,6 +102,13 @@ export function previewPersonalHost(
     "browser-placement": { placements: [] },
     "browser-home": { homes: [] },
     "browser-availability": { available: false },
+    plugin: {},
+    "plugin-scheduled-runs": {},
+    "plugin-workflow-runs": {},
+    "plugin-webhooks": {},
+    "plugin-webhook-sources": {},
+    "plugin-schedules": {},
+    "plugin-engine": { engine: { status: "idle" } },
   } satisfies Record<PersonalResourceKind, object>;
   const shell = PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: selected.id,

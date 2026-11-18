@@ -71,11 +71,15 @@ export const databaseLockOrder = [
   "advisory:origin",
   "advisory:browser-source-pairing",
   "advisory:browser-profile-session",
-  "advisory:integration-provider",
   "advisory:channel-link-code",
   "advisory:account-host-session",
+  // The OAuth broker reserves its attempt/refresh identity before its Account and Deployment quotas.
+  "advisory:hosted-oauth-attempt-id",
+  "advisory:hosted-oauth-attempt-account",
+  "advisory:hosted-oauth-attempt-deployment",
   "advisory:hosted-oauth-refresh-id",
   "advisory:hosted-oauth-refresh-account",
+  "advisory:hosted-oauth-refresh-deployment",
   "advisory:account-adoption-proof",
   "advisory:managed-owner-bootstrap",
   "advisory:native-oauth-client",
@@ -152,12 +156,9 @@ export const databaseLockOrder = [
   "host_oauth_clients",
   "host_oauth_refresh_tokens",
   "host_oauth_consents",
-  // Provider identity and Connection authority precede channel routing.
-  "integration_application_source_defaults",
+  // Account authorization and Connection authority precede channel routing.
   "integration_auth_attempts",
-  "advisory:provider-account",
   "integration_connections",
-  "integration_provider_applications",
   // Complete channel parents precede Binding, Identity, Grant and conversation state.
   "channel_accounts",
   "channel_bindings",
@@ -191,8 +192,6 @@ export const databaseLockOrder = [
   "requests",
   "advisory:browser-profile",
   "advisory:browser-grants",
-  // Specialist binding guards follow parent/Request fences before creating Assignments.
-  "specialists",
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",
@@ -215,7 +214,6 @@ export const databaseLockOrder = [
   "machine_access_events",
   "machine_access_sessions",
   "advisory:personal-remote-access",
-  "mcp_oauth_credentials",
   "automation_failure_notices",
   "task_question_notices",
   "owner_enrollments",
@@ -248,8 +246,9 @@ export const databaseLockOrder = [
   "advisory:browser-session-use",
   "browser_session_uses",
   // Personal plugin policy changes follow their resource mutations.
-  "plugin_settings_revision_pending",
   "plugin_owner_settings",
+  "plugin_agent_settings",
+  "plugin_oauth_records",
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",
   "integration_authority_generations",
@@ -334,11 +333,14 @@ export function advisoryLockResource(key: string, seed: number): string {
     "integration-grant",
     "integration-installation",
     "integration-catalog-definition",
-    "integration-provider",
     "channel-link-code",
     "account-host-session",
+    "hosted-oauth-attempt-id",
+    "hosted-oauth-attempt-account",
+    "hosted-oauth-attempt-deployment",
     "hosted-oauth-refresh-id",
     "hosted-oauth-refresh-account",
+    "hosted-oauth-refresh-deployment",
     "account-adoption-proof",
   ] as const;
   for (const prefix of prefixes) if (key.startsWith(prefix + ":")) return `advisory:${prefix}`;
@@ -366,12 +368,7 @@ export function advisoryLockResource(key: string, seed: number): string {
   }
   if (!Array.isArray(value)) return "advisory:identity";
   if (value[1] === "runner-enrollment-idempotency") return "advisory:runner-enrollment";
-  for (const name of [
-    "command-idempotency",
-    "trigger-create",
-    "attachment-upload",
-    "provider-account",
-  ])
+  for (const name of ["command-idempotency", "trigger-create", "attachment-upload"])
     if (value[0] === name) return `advisory:${name}`;
   if (value.length === 5) return "advisory:lane";
   if (value.length === 3) return "advisory:channel-identity";

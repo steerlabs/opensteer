@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./devices": "./src/devices.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
@@ -14,11 +15,11 @@
   },
   "dependencies": {
     "@opensteer/protocol": "workspace:*",
-    "@opensteer/integration-adapters": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@opensteer/shared": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

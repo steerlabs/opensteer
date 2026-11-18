@@ -1,23 +1,6 @@
-import { DeviceIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import {
-  RequestIdSchema,
-  RunnerIdSchema,
-  ThreadIdSchema,
-  UserIdSchema,
-  utf8ByteLength,
-} from "@opensteer/core";
-import {
-  IntegrationConnectionIdSchema,
-  IntegrationInstallationIdSchema,
-} from "@opensteer/integration-core/ids";
-import {
-  IntegrationGrantViewSchema,
-  IntegrationAccessSchema,
-  IntegrationConnectionSummarySchema,
-  IntegrationConnectionStatusReasonSchema,
-  PluginDeviceViewSchema,
-} from "@opensteer/integration-core/models";
+import { RunnerIdSchema, ThreadIdSchema, utf8ByteLength } from "@opensteer/core";
+import { PluginDeviceViewSchema } from "@opensteer/integration-core/models";
 import { MachineSummarySchema } from "./machines.js";
 
 const name = z.string().min(1).max(120);
@@ -25,18 +8,14 @@ const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const pluginsOverviewMaxRows = 2000;
 export const pluginsOverviewMaxBytes = 1024 * 1024;
 export const PluginTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("service"), definitionId: z.string().min(1).max(64) }),
   z.strictObject({ kind: z.literal("device-app"), definitionId: z.string().min(1).max(64) }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: name }),
   z.strictObject({ kind: z.literal("skill"), fullName: name }),
-  z.strictObject({ kind: z.literal("specialist"), pluginId: name, ownerUserId: UserIdSchema }),
 ]);
 export const PluginTargetViewSchema = z.discriminatedUnion("kind", [
   PluginTargetSchema.options[0].strip(),
   PluginTargetSchema.options[1].strip(),
   PluginTargetSchema.options[2].strip(),
-  PluginTargetSchema.options[3].strip(),
-  PluginTargetSchema.options[4].strip(),
 ]);
 export type PluginTarget = z.infer<typeof PluginTargetSchema>;
 export const PluginIssueCodeSchema = z.enum([
@@ -61,17 +40,16 @@ export const PluginRowSchema = z.object({
   title: name,
   description: z.string().max(320).nullable(),
   source: z.object({
-    kind: z.enum(["built-in", "plugin", "proposed", "remote-mcp", "folder"]),
+    kind: z.enum(["built-in", "plugin", "folder"]),
     version: name.nullable(),
   }),
-  tags: z.array(z.enum(["accounts", "devices", "skills", "specialists"])).max(4),
+  tags: z.array(z.enum(["accounts", "devices", "skills"])).max(4),
   placement: PluginPlacementSummarySchema,
   accountCount: z.number().int().nonnegative(),
   issues: z.array(PluginIssueCodeSchema).max(16),
   contents: z.object({
     skills: z.number().int().nonnegative(),
     tools: z.number().int().nonnegative(),
-    specialists: z.number().int().nonnegative(),
   }),
   permissions: z.object({
     canEnable: z.boolean(),
@@ -93,72 +71,6 @@ export const PluginsOverviewViewSchema = z
       ctx.addIssue({ code: "custom", message: "Plugins overview exceeds byte budget" });
   });
 export type PluginsOverviewView = z.infer<typeof PluginsOverviewViewSchema>;
-export const PluginAccountViewSchema = z.object({
-  connectionId: IntegrationConnectionIdSchema,
-  displayName: z.string().min(1).max(512),
-  status: IntegrationConnectionSummarySchema.shape.status,
-  statusReason: IntegrationConnectionStatusReasonSchema.nullable(),
-  access: IntegrationAccessSchema.nullable(),
-  runnerId: RunnerIdSchema.nullable(),
-  deviceId: DeviceIdSchema.nullable().optional(),
-});
-export const PluginDetailViewSchema = z.object({
-  deviceTargets: z
-    .array(z.object({ deviceId: DeviceIdSchema, name, status: MachineSummarySchema.shape.status }))
-    .max(400)
-    .optional(),
-  row: PluginRowSchema,
-  installationIds: z.array(IntegrationInstallationIdSchema).max(100),
-  grants: z.array(IntegrationGrantViewSchema).max(1000),
-  registrations: z.array(z.object({ id: name, ownerUserId: UserIdSchema })).max(1000),
-  accounts: z.array(PluginAccountViewSchema).max(100),
-  devices: z
-    .array(z.object({ runnerId: RunnerIdSchema, name, status: MachineSummarySchema.shape.status }))
-    .max(400),
-  permissions: z
-    .array(
-      z.object({
-        label: name,
-        layer: z.enum(["app-policy", "os-permission", "account-scope", "personal-grant"]),
-        state: z.enum(["allowed", "ask", "denied", "unknown"]),
-      }),
-    )
-    .max(100),
-  contents: z.array(z.object({ name, kind: z.enum(["skill", "tool", "specialist"]) })).max(500),
-  sourceFolder: z.string().max(4096).nullable(),
-  /** The task whose agent last installed this plugin, when the viewer can open it. */
-  setupThreadId: ThreadIdSchema.nullable().optional(),
-});
-export type PluginDetailView = z.infer<typeof PluginDetailViewSchema>;
-export const PluginsDirectoryViewSchema = z.object({
-  hasMoreRequests: z.boolean(),
-  catalog: z
-    .array(
-      z.object({
-        definitionId: z.string().min(1).max(64),
-        title: name,
-        description: z.string().max(320),
-        added: z.boolean(),
-        contents: PluginDetailViewSchema.shape.contents.optional(),
-        access: z.array(z.string().max(512)).max(100).optional(),
-        // A Host before product listings sends neither: each entry is then its own product.
-        product: z
-          .object({
-            id: z.string().min(1).max(64),
-            title: name,
-            // Open-ended so a Host's new category never fails an older client's read.
-            category: z.string().min(1).max(40),
-            popular: z.boolean(),
-          })
-          .optional(),
-        /** How this entry reaches its product, when the product offers more than one way. */
-        variant: name.optional(),
-      }),
-    )
-    .max(1000),
-  requests: z.array(z.object({ requestId: RequestIdSchema, title: name })).max(100),
-});
-export type PluginsDirectoryView = z.infer<typeof PluginsDirectoryViewSchema>;
 /**
  * One device a plugin package declares. Everything but the label comes from the
  * Host's own records: the computer its server runs on and that server's state.

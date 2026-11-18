@@ -1,46 +1,21 @@
-import { requestTitleText, type UserId, type WaitingRequest } from "@opensteer/core";
+import type { UserId } from "@opensteer/core";
 import {
   hostApi,
   rpcSuccess,
-  type DurableWindow,
   type HostApiHandlers,
-  type PluginsDirectoryView,
   type MachineSummary,
   type OtherDevice,
 } from "@opensteer/protocol";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "./rpc-context.js";
 
 export function createSettingsReadHandlers(options: {
   readonly otherDevices: (
     owner: UserId,
     machines: readonly MachineSummary[],
   ) => Promise<readonly OtherDevice[]>;
-  readonly catalog: () => Promise<PluginsDirectoryView["catalog"]>;
-  readonly requests: (
-    owner: UserId,
-  ) => Promise<{ readonly requests: readonly WaitingRequest[]; readonly window: DurableWindow }>;
   readonly machines: HostApiHandlers["machines.list"];
-}): Pick<HostApiHandlers, "plugins.directory.get" | "devices.overview.get"> {
+}): Pick<HostApiHandlers, "devices.overview.get"> {
   return {
-    "plugins.directory.get": async (_input, context) => {
-      const owner = requireSession(context).user.id;
-      const [catalog, pending] = await Promise.all([options.catalog(), options.requests(owner)]);
-      return rpcSuccess(
-        hostApi["plugins.directory.get"].success.parse({
-          catalog,
-          requests: pending.requests
-            .filter(
-              ({ request }) =>
-                request.kind === "integration.install" || request.kind === "integration.access",
-            )
-            .map(({ request }) => ({
-              requestId: request.id,
-              title: requestTitleText(request.presentation).slice(0, 120),
-            })),
-          hasMoreRequests: pending.window.hasMore,
-        }),
-      );
-    },
     "devices.overview.get": async (_input, context) => {
       const owner = requireSession(context).user.id;
       const result = await options.machines({}, context);

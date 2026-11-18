@@ -4,7 +4,7 @@ import { PersonalDesktopUpdateStore } from "@opensteer/database";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalRemoteAdministration,
   requirePersonalAdministrator,
@@ -711,26 +711,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         : undefined;
     });
     if (linked) await this.#executeAccountOperation(linked, afterResponse);
-  }
-
-  async markHostedOAuthConnectionsForRepair(caller: {
-    readonly session: AuthenticatedSession;
-  }): Promise<void> {
-    await requirePersonalAdministrator(this.#database, caller.session);
-    await this.#database.transaction().execute(async (transaction) => {
-      await transaction
-        .updateTable("integrationConnections")
-        .set({
-          status: "needs-attention",
-          statusDetail: "Link Opensteer Account or Use your own OAuth app",
-          statusReason: null,
-          updatedAt: this.#now(),
-        })
-        .where(sql<boolean>`application_source ->> 'kind' = 'hosted-oauth'`)
-        .where("status", "!=", "revoked")
-        .execute();
-      await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-    });
   }
 
   /**

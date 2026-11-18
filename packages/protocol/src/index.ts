@@ -44,6 +44,7 @@ export * from "./run-files.js";
 
 export * from "./agent-connections.js";
 export * from "./settings.js";
+export * from "./plugins.js";
 export * from "./team-access.js";
 export * from "./runner-skill-metadata.js";
 export * from "./runner-agent-home-settings.js";
@@ -94,6 +95,7 @@ export {
   type ToolFailure,
 } from "@opensteer/core";
 
+export * from "./plugin-oauth.js";
 export * from "./phone-display.js";
 
 export * from "./personal-input-queue.js";

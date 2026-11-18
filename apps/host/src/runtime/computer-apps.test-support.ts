@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { expect, vi } from "vitest";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import { once } from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { BlockedSchema, createId, type Blocked, type EnvironmentId } from "@opensteer/core";
-import type { ComputerAppSetupSummary, IntegrationAccess } from "@opensteer/integration-core";
+import { createId, type EnvironmentId } from "@opensteer/core";
+import type { ComputerAppSetupSummary } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type { MessagingModule } from "@opensteer/messaging-module";
 import {
   ComputerUseBridgeRequestSchema,
@@ -22,12 +27,16 @@ import {
   type RunnerIntegrationsModule,
   type RunnerModuleName,
   type RunnerDevice,
+  type ComputerUseDataGrants,
+  type ComputerUseDataInvokeParams,
 } from "@opensteer/protocol";
 import { createRunnerAuxiliarySignature } from "@opensteer/runner-auth";
 import {
   ComputerAppModuleHandler,
   type ComputerAppProvider,
   type ComputerAppModuleHandlerOptions,
+  type ComputerAppValue,
+  type HelperDataPort,
 } from "@opensteer/runner";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -598,60 +607,6 @@ export async function integrationGateway(plan: { readonly token: string; readonl
   };
 }
 
-/** Search rows, one per account, each with the address that calls it. */
-export function operations(search: Record<string, unknown>) {
-  const rows = search.operations as readonly {
-    readonly accounts?: readonly string[];
-    readonly installation: string;
-    readonly name: string;
-  }[];
-  const results = search.results as readonly {
-    readonly accounts: readonly { readonly account: string; readonly connectionId: string }[];
-    readonly name: string;
-  }[];
-  return rows.flatMap((row) => {
-    const accounts = results.find(({ name }) => name === row.installation)?.accounts ?? [];
-    const shown = row.accounts
-      ? accounts.filter(({ connectionId }) => row.accounts?.includes(connectionId))
-      : accounts;
-    const name = row.name.slice(0, row.name.lastIndexOf("@"));
-    return shown.length > 0
-      ? shown.map(({ account, connectionId }) => ({
-          account,
-          address: { account: connectionId, operation: row.name },
-          connectionId: connectionId as string | null,
-          name,
-        }))
-      : [
-          {
-            account: row.installation,
-            address: { operation: row.name },
-            connectionId: null as string | null,
-            name,
-          },
-        ];
-  });
-}
-
-export function toolBlocked(search: Record<string, unknown>, name: string): Blocked | undefined {
-  const results = search.results as readonly {
-    readonly tools?: readonly {
-      readonly name: string;
-      readonly blocked: Blocked;
-    }[];
-  }[];
-  const found = results.flatMap(({ tools }) => tools ?? []).find((tool) => tool.name === name);
-  if (found) return BlockedSchema.parse(found.blocked);
-  if (operations(search).some((candidate) => candidate.name === name)) return undefined;
-  throw new Error(`Tool ${name} was not found in ${JSON.stringify(search)}`);
-}
-
-export function operation(search: Record<string, unknown>, name: string) {
-  const found = operations(search).find((candidate) => candidate.name === name);
-  if (!found) throw new Error(`Operation ${name} was not found in ${JSON.stringify(search)}`);
-  return found;
-}
-
 export function toolText(value: unknown): string {
   return (
     (value as { readonly content: readonly { readonly text: string }[] }).content[0]?.text ?? ""
@@ -665,3 +620,172 @@ export type ComputerAppApprovalAnswer = {
 export type ComputerAppApprovalOutcome =
   | { readonly kind: "allowed" | "declined" }
   | { readonly kind: "refused"; readonly message: string };
+
+/**
+ * The signed helper as the Runner reaches it: the grants its person allowed,
+ * and each call it was sent, answered by the step that is running.
+ */
+export function scriptedHelper() {
+  const grants: { -readonly [K in keyof ComputerUseDataGrants]: ComputerUseDataGrants[K] } = {
+    automation: "unknown",
+    calendars: "requestable",
+    contacts: "requestable",
+    "full-disk-access": "denied",
+    reminders: "requestable",
+  };
+  const invocations: ComputerUseDataInvokeParams[] = [];
+  const script: { answer: () => ComputerAppValue } = {
+    answer: () => {
+      throw new Error("No step expects a call to the helper now");
+    },
+  };
+  const port: HelperDataPort = {
+    dataGrants: async () => ({ ...grants }),
+    dataInvoke: async (params) => {
+      invocations.push(params);
+      return script.answer();
+    },
+  };
+  return {
+    grants,
+    invocations,
+    port,
+    /** How the helper answers the calls of the step that is running. */
+    set answer(answer: () => ComputerAppValue) {
+      script.answer = answer;
+    },
+  };
+}
+
+/** The agent asks for access, and the owner fulfils it with the Mac's connection. */
+export async function grantAccess(
+  host: MachineAccessHost,
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  input: {
+    readonly access: IntegrationAccess;
+    readonly connectionId: string;
+    readonly integration: string;
+  },
+) {
+  const held = gateway.call("app_access_request", {
+    access: input.access,
+    dataApp: input.integration.replace(/^(?:apple|iphone)-/u, ""),
+    reason: `Use ${input.integration}`,
+  });
+  const request = await vi.waitFor(
+    async () => {
+      const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+        host.ownerId,
+      );
+      const row = pending.at(-1);
+      expect(row, "The access Request was not created").toBeDefined();
+      return row!;
+    },
+    { timeout: 10_000 },
+  );
+  if (!request) throw new Error(`The ${input.integration} access Request was not created`);
+  await testRpcData(
+    host.origin,
+    "commands.dispatch",
+    {
+      idempotencyKey: `${input.integration}-access`,
+      requestId: request.request.id,
+      response: {
+        kind: "external",
+        value: {
+          access: input.access,
+          alias: `${input.integration} on Studio Mac`,
+          connectionId: input.connectionId,
+          decision: "fulfilled",
+          isDefault: true,
+        },
+      },
+      type: "request.respond",
+    },
+    { headers: host.ownerHeaders },
+  );
+  await expect(held).resolves.toMatchObject({ status: "fulfilled" });
+}
+
+export function contractOf(definitionId: string, name: string): string {
+  const definition = computerAppIntegrations.find(({ id }) => id === definitionId);
+  const found =
+    definition && isComputerAppDefinition(definition)
+      ? definition.config.operations.find((candidate) => candidate.name === name)
+      : undefined;
+  if (!found) throw new Error(`The catalog must define ${definitionId}.${name}`);
+  return computerAppOperationContract(found);
+}
+
+/** A plugin tool's exact path, found by searching as an agent does. */
+export async function pluginPath(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  query: string,
+  tool: string,
+): Promise<string> {
+  const found = await gateway.call("plugin_search", { query });
+  const path = (found.items as readonly { readonly path: string }[]).find(({ path }) =>
+    path.endsWith(`.${tool}`),
+  )?.path;
+  if (!path) throw new Error(`plugin_search found no ${tool}: ${JSON.stringify(found)}`);
+  return path;
+}
+
+/** One plugin tool call as the agent reads it: the tool's value, or why it failed. */
+export async function pluginCall(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  path: string,
+  input: Record<string, unknown>,
+): Promise<{
+  readonly value?: unknown;
+  readonly failure?: string;
+  readonly raw: Awaited<ReturnType<typeof gateway.callRaw>>;
+}> {
+  const raw = await gateway.callRaw("plugin_call", { calls: { path, input } });
+  const result = raw.structuredContent as Record<string, unknown> | undefined;
+  const execution = (result?.result as { execution?: { ok?: boolean; value?: unknown } })
+    ?.execution;
+  // One direct call answers { ok, path, value } or { ok: false, path, error }.
+  const call = execution?.value as { ok?: boolean; value?: unknown; error?: unknown } | undefined;
+  if (execution?.ok && call?.ok) return { value: call.value, raw };
+  const error = call?.error ?? result?.error ?? raw;
+  const message =
+    typeof error === "object" && error !== null && "message" in error ? error.message : error;
+  return { failure: typeof message === "string" ? message : JSON.stringify(message), raw };
+}
+
+/** The explanation inside a failed call's one-line summary, as the agent reads it. */
+export function failureMessage(failure: string): string {
+  return /^\S+ \(HTTP \d+\): ([\s\S]*?) Recovery:/u.exec(failure)?.[1] ?? failure;
+}
+
+export async function expectPluginSettingRefusal(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  namespace: string,
+  path: string,
+  input: Record<string, unknown>,
+  label: "Read-only" | "Off",
+) {
+  const blocked = {
+    code: "access_denied",
+    message: expect.stringContaining(label),
+    next: expect.stringMatching(/person.*Plugins/u),
+  };
+  expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
+    items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
+  });
+  expect(await gateway.call("plugin_describe", { paths: [path] })).toMatchObject({
+    items: [expect.objectContaining({ path, blocked })],
+  });
+  expect((await pluginCall(gateway, path, input)).raw).toMatchObject({
+    isError: true,
+    structuredContent: { error: blocked },
+  });
+  expect(
+    await gateway.call("plugin_execute", {
+      code: `return await ${path}(${JSON.stringify(input)})`,
+    }),
+  ).toMatchObject({
+    result: { execution: { value: { kind: "blocked", blocked } } },
+  });
+}

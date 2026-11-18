@@ -139,18 +139,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/host/src/integrations/computer-app-approval-service.ts": {
+  "apps/host/src/devices/computer-app-approval-service.ts": {
     counts: {
       "request.kind": 3,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/host/src/integrations/integration-service.ts": {
-    counts: {
-      requestedAvailability: 3,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
+
   "apps/host/src/server/host-api-registration.ts": {
     counts: {
       "options.kind": 2,
@@ -391,16 +386,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/client/src/integrations/connect-selection.ts": {
-    counts: {
-      "application?.availability": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
   "packages/client/src/mock/mock-host-client.ts": {
     counts: {
       "request.kind": 1,
-      availability: 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -472,7 +460,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/integration-core/src/models.ts": {
+  "packages/integration-core/src/computer-app-setup.ts": {
     counts: {
       "request.kind": 1,
     },

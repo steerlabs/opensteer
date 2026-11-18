@@ -27,6 +27,7 @@ import type { PersonalMutationTransaction } from "@opensteer/database/personal-m
 import { authorizedSyncState, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
 import { maxHarnessModelsPerCatalog, rpcSuccess, type MachineSummary } from "@opensteer/protocol";
 import {
+  pluginChangeResources,
   PersonalResourceDetailSchema,
   PersonalResourceViewSchema,
   type PersonalResourceKind,
@@ -214,6 +215,14 @@ export class PersonalResources {
           rows.length > 32,
         );
       }
+      case "plugin":
+      case "plugin-scheduled-runs":
+      case "plugin-workflow-runs":
+      case "plugin-webhooks":
+      case "plugin-webhook-sources":
+      case "plugin-schedules":
+      case "plugin-engine":
+        return summary([]);
       case "browser-availability":
         return summary([
           {
@@ -357,6 +366,21 @@ export class PersonalResources {
       }
       const afterId = after ? { after } : {};
       const targetId = input.id ? { id: input.id } : {};
+      if (input.kind === "plugin-engine")
+        return PersonalResourceDetailSchema.parse({
+          revision,
+          data: {
+            kind: input.kind,
+            engine: this.#dependencies.plugins?.engineState() ?? { status: "idle" },
+          },
+          next: null,
+        });
+      if (pluginChangeResources.some((kind) => kind === input.kind))
+        return PersonalResourceDetailSchema.parse({
+          revision,
+          data: { kind: input.kind },
+          next: null,
+        });
       const store = new OpensteerStore(tx);
       const page = <Row extends { id: string }>(
         rows: readonly Row[],

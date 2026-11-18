@@ -1,7 +1,7 @@
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
-import { computerConnectionDeviceId } from "./integration-store.js";
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
 import { retryDatabaseTransaction } from "./connection.js";
 import {
@@ -47,7 +47,7 @@ import {
   type IntegrationConnectionId,
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
-import type { IntegrationConnectionMethod } from "@opensteer/integration-core";
+import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
 import {
   deriveThreadStatus,
   DEFAULT_THREAD_ACCESS_MODE,
@@ -462,8 +462,6 @@ export class ChannelStore {
         .insertInto("integrationConnections")
         .values({
           accountIdentifier: null,
-          applicationSource: null,
-          authMethodId: null,
           capabilities: jsonValue(input.connection.capabilities ?? []),
           computerAccess: null,
           runnerId: input.connection.runnerId,
@@ -473,12 +471,10 @@ export class ChannelStore {
           displayName: input.connection.displayName,
           externalIdentityId,
           externalTenantId: input.connection.externalTenantId ?? null,
-          grantedScopes: jsonValue([]),
           id: createChannelId("connection"),
           integrationDefinitionId: null,
           ownerUserId: input.createdBy,
           provider: input.connection.provider,
-          providerApplicationId: null,
           sourceConnectionId: input.connection.sourceConnectionId ?? null,
           status: "pending",
           statusDetail: "Checking messaging provider setup",
@@ -2029,7 +2025,8 @@ export class ChannelStore {
           "integrationConnections.provider",
         ])
         .where("channelDeliveries.status", "in", ["pending", "retryable-failed", "unknown"])
-        .where("channelDeliveries.nextAttemptAt", "<=", now)
+        // PostgreSQL defaults retain finer precision than JavaScript's clock.
+        .where("channelDeliveries.nextAttemptAt", "<=", sql<Date>`statement_timestamp()`)
         .where(
           sql<boolean>`not exists (
             select 1 from public.channel_deliveries ahead

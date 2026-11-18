@@ -16,7 +16,7 @@ import { RunnerIdSchema, type RunnerId } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { createId } from "@opensteer/core";
 import {
@@ -199,7 +199,7 @@ export async function createStoreFixture() {
         idempotencyKey: "trigger-" + suffix,
         name: "Trigger " + suffix,
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default async () => null",
         },

@@ -1037,7 +1037,6 @@ export const DesktopPersonalAccountLinkStatusSchema = z.strictObject({
       "revoke-account-sessions",
       "revoke-connect-resource",
       "remove-host-link",
-      "repair-hosted-oauth-connections",
       "retain-local-data",
     ])
     .nullable(),

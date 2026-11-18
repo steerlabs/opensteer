@@ -105,7 +105,7 @@ export class MemoryPassService {
       .select("id")
       .where("runnerId", "=", settings.agentHome.computerId)
       .executeTakeFirst();
-    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 4))) return;
+    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 5))) return;
     let instructions: string | null;
     try {
       instructions = await this.options.readAgentInstructions(AbortSignal.timeout(10_000));

@@ -1,7 +1,5 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { mockDeviceMachine } from "../mock/mock-device-machine.js";
@@ -549,9 +547,6 @@ function connection(
 ): IntegrationConnectionSummary {
   return {
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, runnerId },
     connectionMethod: "computer",
     createdAt: "2026-09-02T10:20:00.000Z",
@@ -559,10 +554,8 @@ function connection(
     displayName: "Mac mini",
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: "con_00000000-0000-4000-8000-000000000009",
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-02T10:20:00.000Z",

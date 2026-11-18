@@ -88,7 +88,7 @@ const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
     "opensteer:memory": "/runner/agent-skills/skills/memory",
-    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:plugins": "/runner/agent-skills/skills/plugins",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
@@ -139,7 +139,9 @@ describe("RunnerRuntime", () => {
         request.on("end", () => {
           response.writeHead(200, {
             "content-type": "application/json",
-            ...(body.includes("integration_request") ? { "x-opensteer-request-pending": "1" } : {}),
+            ...(body.includes("plugin_account_request")
+              ? { "x-opensteer-request-pending": "1" }
+              : {}),
           });
           response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
         });
@@ -181,7 +183,7 @@ describe("RunnerRuntime", () => {
               authorization: `Bearer ${context.agentTools.token}`,
               "content-type": "application/json",
             },
-            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plugin_account_request"}}',
           })
         ).arrayBuffer();
         const initialSteer = await runtime.handleCommand(
@@ -3910,11 +3912,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it.each([
-    [false, false],
-    [true, false],
-    [false, true],
-  ])("resolves skill layers with specialist=%s disabled=%s", async (specialist, disabled) => {
+  it.each([false, true])("resolves skill layers with disabled=%s", async (disabled) => {
     const temporaryRoot = await realpath(
       await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
     );
@@ -3923,16 +3921,7 @@ describe("RunnerRuntime", () => {
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
     await writeWorkspaceSkill(workspacePath, "opensteer:tasks");
-    const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
-    await mkdir(pluginRoot, { recursive: true });
-    await writeFile(
-      join(pluginRoot, "INSTRUCTIONS.md"),
-      "Plugin instructions ${PLUGIN_ROOT} ${PLUGIN_DATA}",
-    );
-    let hold = false;
-    const driver = new FakeHarnessDriver("test-driver", () =>
-      hold ? new HeldHarnessSession() : new FakeHarnessSession(),
-    );
+    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -3997,61 +3986,12 @@ describe("RunnerRuntime", () => {
           revision: 1,
           disabledFullNames: ["research"],
         };
-      if (specialist) {
-        command.context.specialistId = "registration-1";
-        command.context.plugins.versions = [
-          { pluginId: "example", name: "example", digest: "a".repeat(64) },
-        ];
-      }
       await reconcile(registry, command);
       await expect(runtime.handleCommand(command, sink)).resolves.toEqual({
         status: "accepted",
       });
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
-      if (specialist) {
-        const pluginData = join(workspacePath, ".specialists", "registration-1");
-        expect(driver.context?.workspacePath).toBe(workspacePath);
-        expect(driver.context?.writableRoots).toEqual([workspacePath]);
-        expect(driver.context?.instructions).toContain(
-          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
-        );
-        expect(driver.context?.environment).toMatchObject({
-          PLUGIN_ROOT: pluginRoot,
-          PLUGIN_DATA: pluginData,
-        });
-        expect(
-          driver.context?.skills?.skills
-            .filter((skill) => skill.plugin === null)
-            .map((skill) => skill.fullName),
-        ).toEqual(["release-notes", "research"]);
-        expect(
-          driver.context?.skills?.skills
-            .filter((skill) => skill.plugin === "example")
-            .map((skill) => skill.fullName),
-        ).toEqual(["example:research", "example:helper"]);
-        hold = true;
-        const running = executeCommand(environmentId);
-        running.agentHome.path = workspacePath;
-        running.context.specialistId = "registration-1";
-        running.context.plugins.versions = command.context.plugins.versions;
-        await reconcile(registry, running);
-        await runtime.handleCommand(running, sink);
-        await vi.waitFor(() => expect(driver.contexts).toHaveLength(2), { timeout: 5_000 });
-        let removed = false;
-        await runtime.removeSpecialist("registration-1", async () => {
-          expect(runtime.activeRunIds()).toEqual([]);
-          removed = true;
-        });
-        expect(removed).toBe(true);
-        const stale = executeCommand(environmentId);
-        stale.context.specialistId = "registration-1";
-        await expect(runtime.handleCommand(stale, sink)).resolves.toMatchObject({
-          status: "rejected",
-          error: { code: "forbidden" },
-        });
-        return;
-      }
       // The Host's guide, completed with how this computer runs an app's start.
       expect(driver.context?.platformGuide).toBe(
         `${command.context.agentTools.instructions}\n\n${appHostingGuide({
@@ -4075,9 +4015,9 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "integrations",
-            fullName: "opensteer:integrations",
-            path: "/runner/agent-skills/skills/integrations",
+            localName: "plugins",
+            fullName: "opensteer:plugins",
+            path: "/runner/agent-skills/skills/plugins",
           },
           {
             plugin: "opensteer",
@@ -4825,7 +4765,7 @@ describe("RunnerRuntime", () => {
 
     it.each(cases)("fits tool arguments: $name", async (testCase) => {
       const tool = testCase.integration
-        ? { namespace: "opensteer.integrations", name: "integration_call" }
+        ? { namespace: "opensteer.integrations", name: "plugin_call" }
         : { namespace: "test", name: "shell" };
       const started = (args: unknown): HarnessEvent => ({
         data: { arguments: args, callId: "same-call", tool },
@@ -6054,7 +5994,7 @@ function executeCommand(
         instructions: "Host Opensteer instructions",
         skills: [
           "opensteer:skills",
-          "opensteer:integrations",
+          "opensteer:plugins",
           "opensteer:computer-use",
           "opensteer:browser",
           "opensteer:computers",
@@ -6156,7 +6096,7 @@ function triggerCommand(
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },

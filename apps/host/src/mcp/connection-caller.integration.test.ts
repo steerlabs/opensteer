@@ -1,12 +1,7 @@
 import { z } from "zod";
-import { IntegrationToolHandlers } from "./handlers/integrations.js";
-import { gatherComputerAccess } from "../integrations/computer-access.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
-import {
-  IntegrationPlatformStore,
-  type IntegrationRequester,
-  type IntegrationDiscoveryRequester,
-} from "@opensteer/database";
+import { gatherComputerAccess } from "../devices/computer-access.js";
+import { DeviceToolHandlers } from "./handlers/devices.js";
+import { IntegrationPlatformStore, type IntegrationRequester } from "@opensteer/database";
 import { AppStore, TriggerStore } from "@opensteer/database";
 import { TriggerService } from "../triggers/trigger-service.js";
 import { TriggerToolHandlers } from "./handlers/triggers.js";
@@ -23,7 +18,6 @@ import {
   ThreadIdSchema,
   MessageIdSchema,
   type ThreadAccessMode,
-  ThreadAccessModeSchema,
   type UserId,
 } from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
@@ -155,7 +149,6 @@ async function serveMcp(
     },
     isEnvironmentConnected: options.connected ?? (() => true),
     canRunHarness: () => true,
-    harnessAccessModes: () => ThreadAccessModeSchema.options,
   } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
   let service!: OpensteerMcpService;
   const server = createServer((request, response) => {
@@ -193,21 +186,20 @@ async function serveMcp(
   const integrationStore = new IntegrationPlatformStore(store.database);
   const platform = {
     store: integrationStore,
-    listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
-      integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
-    listCallableTools: (input: IntegrationRequester) =>
-      integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
-    computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
-  };
-  const integrations = new IntegrationToolHandlers({
-    definitions: [],
-    platform: {
+    listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
+    computerToolEnabled: () => false,
+    computerUseVersion: async () => undefined,
+    computerAppApprovals: {
+      computerUseInventory: async () => ({ machines: [], phones: [] }),
+      computerAppHolders: () => new Map(),
+    },
+  } as unknown as Parameters<typeof gatherComputerAccess>[0];
+  const devices = new DeviceToolHandlers({
+    devices: {
       ...platform,
-      computerAccess: (
-        input: Parameters<IntegrationPlatformService["computerAccess"]>[0],
-        run?: Parameters<IntegrationPlatformService["computerAccess"]>[1],
-      ) => gatherComputerAccess(platform as unknown as IntegrationPlatformService, input, run),
-    } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["platform"],
+      computerAccess: gatherComputerAccess.bind(undefined, platform),
+    } as unknown as ConstructorParameters<typeof DeviceToolHandlers>[0]["devices"],
+    access: {} as never,
   });
   service = new OpensteerMcpService({
     realtime,
@@ -234,7 +226,7 @@ async function serveMcp(
         },
       ) as never,
       product,
-      integrations,
+      devices,
       triggers: new TriggerToolHandlers(
         new TriggerService({
           store: new TriggerStore(store.database),
@@ -245,9 +237,6 @@ async function serveMcp(
         list: async (actor: { readonly caller: { readonly userId: UserId } }) =>
           new AppStore(store.database).list(actor.caller.userId),
       } as never,
-      pluginInstall: async () => {
-        throw new Error("Unexpected install");
-      },
       teamRequestForRun: async () => null,
       personalContextForRun: async () => true,
     }),
@@ -615,24 +604,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "opensteer_request_list",
       "opensteer_automation_list",
       "app_list",
-      "integration_search",
+      "computer_apps",
     ]) {
-      const result = await agent.client.callTool({
-        name,
-        arguments:
-          name === "opensteer_automation_list"
-            ? {}
-            : name === "integration_search"
-              ? { query: "anything" }
-              : {},
-      });
-      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      const result = await agent.client.callTool({ name, arguments: {} });
+      expect(result.isError, `${name}: ${JSON.stringify(result.content)}`).not.toBe(true);
     }
-    const described = await agent.client.callTool({
-      name: "integration_describe",
-      arguments: { operation: "missing.operation" },
-    });
-    expect(errorText(described)).toBe("Integration operation is no longer available; search again");
     for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }]) {
       const result = await agent.client.callTool({
         name: "opensteer_task_update",

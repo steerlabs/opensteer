@@ -1027,7 +1027,7 @@ function clickingInNotes(runId: string, running: boolean): ToolEntry {
     runId,
     state: running ? "running" : "done",
     streamText: "",
-    tool: { name: "integration_call", namespace: "opensteer.integrations" },
+    tool: { name: "computer.click", namespace: "opensteer.integrations" },
   } as ToolEntry;
 }
 function notesSession(runId: string): ComputerUseSessionSummary {
@@ -1427,6 +1427,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
     loadLatestTranscript: vi.fn(async () => undefined),
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
+    discardAttachment: vi.fn(async () => undefined),
     visitThread: vi.fn(async () => undefined),
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The engine's source this package checks against names Fetch body and header types.
+    "lib": ["ES2024", "DOM"],
+    "noEmit": true
+  },
+  "include": ["src"]
+}

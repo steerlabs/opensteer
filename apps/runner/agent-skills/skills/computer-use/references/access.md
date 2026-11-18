@@ -1,13 +1,13 @@
 # App and phone access
 
-`integration_search` for "Computer use" lists Macs and their apps; search with a Mac's
-`computerId` to list installed apps in `computer.apps`. "Phone display" lists Android Agent Phones and Mac-driven iPhones. `apps()` and `phones()`
+`computer_apps` lists Macs and phones; pass a Mac's
+`computerId` to list installed apps in `computer.apps`. Phones include Android Agent Phones and Mac-driven iPhones. `apps()` and `phones()`
 also list visible targets, including targets that need access. Each app or phone has either
 `access` (`read` or `read-write`) for what this task can do now, or `blocked` with `code`,
 `message` and `next`. A connection alone grants no access. Use the row's recommendation
 to decide your next step; requests name `app_access_request` with the target's arguments.
 
-Prefer data integrations (including Calendar, Contacts and Reminders from the Opensteer iPhone app) over a screen when they can do the job. An iPhone screen has its own approval, separate from its Mac and its data integrations.
+Prefer plugin data tools (including Calendar, Contacts and Reminders from the Opensteer iPhone app) over a screen when they can do the job. An iPhone screen has its own approval, separate from its Mac and its data tools.
 
 Which Mac: an app or phone included with the person's message names its computer; use that one.
 Otherwise use the Mac the person names. With several Macs and none named, ask: the Mac this task

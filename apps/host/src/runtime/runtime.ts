@@ -12,7 +12,21 @@ import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { PersonalRetentionDeadline } from "@opensteer/orchestration";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
-import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
+import type { PluginChange } from "@opensteer/protocol";
+import { resolvePublicAddress } from "@opensteer/access";
+import { PluginPages } from "../plugins/plugin-pages.js";
+import { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
+import { PluginOAuthStore } from "../plugins/plugin-oauth-store.js";
+import { PluginAuthority } from "../plugins/plugin-authority.js";
+import { PluginExecutions } from "../plugins/plugin-executions.js";
+import { PluginAgentStore, requirePersonalOwner } from "@opensteer/database";
+import { PluginToolHandlers } from "../mcp/handlers/plugins.js";
+import { LocalProviders } from "../plugins/local-providers.js";
+import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
+import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
+import { PluginService, PluginServiceError } from "../plugins/plugin-service.js";
+import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
 import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
@@ -74,13 +88,12 @@ import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
-import { createHmac, randomUUID } from "node:crypto";
-import { withFolderPluginPackage } from "../integrations/folder-plugin-package.js";
+import { createHmac } from "node:crypto";
+import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
   AesGcmSecretVault,
   AesGcmCredentialVault,
-  createPublicHttpsFetch,
   StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
 import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
@@ -110,8 +123,8 @@ import {
   databaseShutdownDetails,
   IntegrationAuthAttemptStore,
   IntegrationPlatformStore,
+  listIntegrationConnections,
   PluginSettingsStore,
-  IntegrationStore,
   isTransactionConflict,
   migrateToLatest,
   NotificationPreviewKeyStore,
@@ -125,19 +138,9 @@ import {
 } from "@opensteer/database";
 import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
 import { IdentityService } from "@opensteer/identity";
-import {
-  createGraphqlAdapter,
-  createMcpAdapter,
-  createOpenApiAdapter,
-} from "@opensteer/integration-adapters";
-import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
-import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
-import { listedDefinitionName } from "../integrations/catalog-presentation.js";
-import {
-  resolveIntegrationDeploymentPosture,
-  type ComputerAppPlatform,
-  type IntegrationConnectionId,
-} from "@opensteer/integration-core";
+import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/control-plane-protocol/broker-sealing";
+import { computerAppIntegrations, deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import { type ComputerAppPlatform } from "@opensteer/integration-core/computer-app";
 import {
   CommandService,
   ExecutionCoordinator,
@@ -150,7 +153,6 @@ import {
 import {
   personalWebBuildId,
   type HarnessInstanceCatalog,
-  type PendingAgentEvent,
   type RunnerAuxiliaryModule,
   type ShellSessionId,
 } from "@opensteer/protocol";
@@ -186,7 +188,7 @@ import {
   AttachmentService,
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
-import { RunFileRelay } from "../integrations/run-file-relay.js";
+import { RunFileRelay } from "../agents/run-file-relay.js";
 import { AppStore } from "@opensteer/database";
 import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
@@ -216,18 +218,12 @@ import {
   SignedTokenService,
   signHostDiscovery,
 } from "../identity/host-keys.js";
-import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
-import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
-import { integrationCallSubject } from "../integrations/integration-call-subject.js";
-import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
-import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
-import {
-  IntegrationService,
-  type IntegrationConnectionConnected,
-} from "../integrations/integration-service.js";
-import { PluginPackageService } from "../integrations/plugin-package-service.js";
-import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
-import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
+import { DefaultIntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
+import { AccessRequests } from "../devices/access-requests.js";
+import { DeviceService } from "../devices/device-service.js";
+import { LocalServerService } from "../local-servers/local-server-service.js";
+import { PluginPackageService } from "../local-servers/plugin-package-service.js";
+import { DeviceToolHandlers } from "../mcp/handlers/devices.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
 import {
@@ -275,31 +271,6 @@ const harnessCatalogCaptureTimeoutMs = 30_000;
  * adapter underneath it. Waking after costs a moment of scheduling latency on
  * connect and buys a defined order.
  */
-/**
- * A connection that gained authority settles Requests targeting the hosting
- * computer, and a settled Request wakes the continuation outbox so its agent
- * resumes now rather than on the next timer tick. The connection is durable
- * before this runs, so a failed settlement is reported, never surfaced as a
- * failed connection to the surface that finished the flow.
- */
-export function integrationConnectionReaction(hooks: {
-  readonly notify: () => void;
-  readonly report: (error: unknown, connectionId: string) => void;
-  readonly settle: (input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-  }) => Promise<readonly unknown[]>;
-}): IntegrationConnectionConnected {
-  return async (input) => {
-    try {
-      const fulfilled = await hooks.settle(input);
-      if (fulfilled.length > 0) hooks.notify();
-    } catch (error) {
-      hooks.report(error, input.connectionId);
-    }
-  };
-}
-
 /**
  * Whether this connection may become a registered computer.
  *
@@ -414,6 +385,15 @@ export function runnerRegistrationHook<T>(
 
 export interface PersonalHostRuntime {
   readonly kind: "personal";
+  /** Device data apps on computers, with their approvals. */
+  readonly devices: DeviceService;
+  /** The local servers registered on computers, by name. */
+  readonly localServers: LocalServerRegistry;
+  readonly plugins: PluginService;
+  readonly pluginOAuth: PluginOAuthService;
+  readonly pluginAgentSettings: PluginAgentStore;
+  readonly pluginRequests: PluginExecutions;
+  readonly pluginTools: PluginToolHandlers;
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
   readonly computerApps: ComputerAppHub;
@@ -451,6 +431,11 @@ export interface HostRuntimeOptions {
   readonly onPersonalUpgradeBatch?: NonNullable<
     Parameters<typeof migrateToLatest>[2]
   >["afterBatch"];
+  /** Where the plugin engine fetches packages and its catalog; tests point it at a fixture. */
+  readonly pluginEngine?: Pick<
+    import("../plugins/plugin-service.js").PluginServiceOptions,
+    "npmRegistry" | "catalogUrl" | "selfOrigin" | "limits" | "processEntry" | "bridge"
+  >;
   readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
   /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
   readonly teamDrainDelayMs?: number;
@@ -543,6 +528,10 @@ export async function createHostRuntime(
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
+  let pluginService: PluginService | undefined;
+  let pluginOAuth: PluginOAuthService | undefined;
+  let pluginExecutions: PluginExecutions | undefined;
+  let localProviders: LocalProviders | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     // A team database is served by several Host processes at once; a personal one by exactly one.
@@ -711,9 +700,13 @@ export async function createHostRuntime(
       listHarnessCatalogs: store.listHarnessCatalogs.bind(store),
     };
     const pluginSettings = new PluginSettingsStore(database);
+    const pluginsChanged = (_owner?: UserId, change?: PluginChange) =>
+      announceResources(
+        ...(change?.categories?.map((category) => pluginCategoryResources[category]) ?? ["plugin"]),
+      );
     const notices = createPluginChangeNotices(
       (target) => pluginSettings.affectedViewers(target),
-      (viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
+      () => pluginsChanged(),
     );
     pluginChangeNotices = notices;
     const connections = new ConnectionOAuth({
@@ -900,14 +893,14 @@ export async function createHostRuntime(
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
       onPluginDataRemoved: (runnerId, pluginId) =>
-        integrationPlatform.store.plugins.confirmDataRemoval(runnerId, pluginId),
-      onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
+        integrationPlatformStore.plugins.confirmDataRemoval(runnerId, pluginId),
+      onRunnerAttached: (runnerId) => localServers.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
-        integrationPlatform.resetComputerGeneration(runId, bindingGeneration),
+        devices.resetComputerGeneration(runId, bindingGeneration),
       hub: computerApps,
       loginReceiver: (target) => {
         try {
@@ -1298,39 +1291,67 @@ export async function createHostRuntime(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
     const credentials = new CredentialService({ key: credentialKey, store });
+    const pluginAgentStore = new PluginAgentStore(database);
+    const pluginAuthority = new PluginAuthority({
+      store,
+      settings: pluginAgentStore,
+      owner: async () => (await personalSettings(database)).ownerId,
+      beforeAuthorize: () => pluginExecutions?.settled() ?? Promise.resolve(),
+    });
+    let lastEngineStatus: string | undefined;
+    pluginService = new PluginService({
+      databaseUrl: config.databaseUrl,
+      dataDirectory,
+      owner: "personal",
+      authorize: (input, signal) => pluginAuthority.authorize(input, signal),
+      oauthConfiguration: (linked) =>
+        pluginOAuth ? pluginOAuth.configuration(linked) : Promise.resolve({ clients: [] }),
+      oauthBroker: (operation, input) => {
+        if (!pluginOAuth) throw new Error("Plugin sign-in is unavailable");
+        return pluginOAuth.broker(operation, input);
+      },
+      providers: async (caller) => (await localProviders?.providers(caller, true)) ?? [],
+      providerCall: async (input, signal, elicit) => {
+        if (!localProviders)
+          throw new PluginServiceError("unavailable", "Local tools are starting");
+        return localProviders.call(input, signal, elicit);
+      },
+      onResourcesChanged: (categories) => pluginsChanged(undefined, { categories }),
+      onExecution: (execution) => pluginExecutions?.report(execution),
+      onState: (state) => {
+        const engine = pluginEngineStateView(state);
+        const status = JSON.stringify(engine);
+        if (status !== lastEngineStatus) {
+          lastEngineStatus = status;
+          announceResources("plugin-engine");
+        }
+        if (state.status === "restarting" || state.status === "unavailable")
+          void pluginExecutions
+            ?.recover()
+            .catch((error) => app.log.error({ err: error }, "Plugin recovery failed"));
+      },
+      credentialKey,
+      webhookOrigin: async () => {
+        const status = await personalRemoteAccess?.status();
+        if (status?.mode === "connect") return status.route?.document.route.origin;
+        if (config.exposure === "loopback") return undefined;
+        return resolvePublicAddress(config.canonicalOrigin.hostname).then(
+          () => config.canonicalOrigin.origin,
+          () => undefined,
+        );
+      },
+      origin: config.canonicalOrigin.origin,
+      ...options.pluginEngine,
+    });
     credentialKey.fill(0);
     await credentials.initialize();
     const integrationAuthAttempts = new DefaultIntegrationAuthAttemptLifecycle({
       store: new IntegrationAuthAttemptStore(database),
       vault: integrationVault,
     });
-    const integrationFetchBase = options.integrationFetch ?? createPublicHttpsFetch();
-    const integrationFetch: typeof fetch = (target, init) =>
-      integrationFetchBase(target, { ...init, redirect: "manual" });
-    const integrationAdapters = [
-      createGraphqlAdapter(integrationFetch),
-      createMcpAdapter(integrationFetch),
-      createOpenApiAdapter(integrationFetch),
-    ];
-    const integrationAccountSubject = (ownerUserId: UserId) =>
-      resolveIntegrationAccountBinding({
-        database,
-        ownerUserId,
-      });
-    const integrationDeploymentPosture = async () =>
-      resolveIntegrationDeploymentPosture({
-        personalAccountLinked:
-          (await database
-            .selectFrom("personalRemoteAccountLink")
-            .select("singletonKey")
-            .where("state", "=", "active")
-            .executeTakeFirst()) !== undefined,
-      });
     const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
-          kind: "personal" as const,
-          accountSubject: integrationAccountSubject,
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
             hostCredential: async () => {
@@ -1358,14 +1379,15 @@ export async function createHostRuntime(
         }
       : undefined;
     const integrationPlatformStore = new IntegrationPlatformStore(database);
-    const integrationStore = new IntegrationStore(database);
+    const listConnections = (ownerUserId: UserId) =>
+      listIntegrationConnections(database, ownerUserId);
     let logComputerLifecycle = (event: string, details: Readonly<Record<string, unknown>>) =>
       console.info(event, details);
     computerViews = new ComputerViewService({
       selfDeviceId: (runnerId) => store.requireSelfDeviceId(runnerId),
       onPhoneView: (status) => app.log.info(status, "Phone owner view command"),
       hub: computerApps,
-      connections: (ownerId) => integrationStore.listDeviceConnections(ownerId),
+      connections: listConnections,
       owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       changed: (ownerId, notice) => {
         if (notice.type === "host.computer-view.removed")
@@ -1388,7 +1410,7 @@ export async function createHostRuntime(
     });
     const nativeTabs = new NativeTabTargets({
       views: computerViews,
-      connections: (owner) => integrationStore.listDeviceConnections(owner),
+      connections: listConnections,
       owns: async (owner, computer) =>
         (await store.effectiveDeviceOwners([DeviceIdSchema.parse(computer)])).get(
           DeviceIdSchema.parse(computer),
@@ -1470,36 +1492,7 @@ export async function createHostRuntime(
     // computer and resumes their agents. The reaction is bound once the platform
     // and the continuation outbox exist; both services signal into it from
     // every flow that completes a connection.
-    let integrationConnectionConnected: IntegrationConnectionConnected = async () => {
-      throw new Error("Integration connection reaction is not wired");
-    };
     let notifyIntegrationContinuations = (): void => undefined;
-    const integrations = new IntegrationService({
-      adapters: integrationAdapters,
-      attempts: integrationAuthAttempts,
-      definitions: integrationDefinitions,
-      deploymentPosture: integrationDeploymentPosture,
-      fetch: integrationFetch,
-      ...(hostedOAuthBroker ? { hostedOAuth: hostedOAuthBroker } : {}),
-      installedDefinition: (definitionId, options) =>
-        integrationPlatformStore.installations.findInstalledDefinition(definitionId, options),
-      onConnectionConnected: (input) => integrationConnectionConnected(input),
-      publicUrl: config.canonicalOrigin,
-      onConnectionChanged: (owner) =>
-        realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
-      repository: integrationStore,
-      vault: integrationVault,
-    });
-    const mcpOauth = new McpOAuthService({
-      ...(hostedOAuthBroker ? { hostedOAuth: hostedOAuthBroker } : {}),
-      deploymentPosture: integrationDeploymentPosture,
-      attempts: integrationAuthAttempts,
-      exposure: config.exposure,
-      onConnectionConnected: (input) => integrationConnectionConnected(input),
-      publicUrl: config.canonicalOrigin,
-      store: integrationPlatformStore,
-      vault: integrationVault,
-    });
     const files = new AgentHomeFiles({
       agentHome: async () => (await personalExecution()).options.agentHome,
       helperPath: personalConfig.nativeFsHelperPath,
@@ -1530,16 +1523,6 @@ export async function createHostRuntime(
     };
     let reportDuplicateRunUsage: (runId: RunId) => void = (runId) => {
       console.warn("Run usage was already recorded; the later statement was dropped", runId);
-    };
-    let reportIntegrationCallSubjectError: (event: PendingAgentEvent, error: unknown) => void = (
-      event,
-      error,
-    ) => {
-      console.warn(
-        "An integration call's subject could not be resolved; it was recorded without one",
-        event.runId,
-        error,
-      );
     };
     let reportHarnessCatalogInvalidationError: (
       harnessInstanceId: string,
@@ -1665,7 +1648,7 @@ export async function createHostRuntime(
       browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
       for (const grant of grants)
-        integrationPlatform.endComputerGeneration(grant.runId, grant.bindingGeneration);
+        devices.endComputerGeneration(grant.runId, grant.bindingGeneration);
       void shellHub?.endGrantSessions(grants, "run-ended").catch(reportMutationFailure);
     };
     store.onRunGrantsRevoked(endGrants);
@@ -1711,7 +1694,7 @@ export async function createHostRuntime(
         case "requestChanged":
           taskQuestions?.requestChanged(reaction);
           passwordSignIns.requestChanged(reaction);
-          integrationPlatform.inputRequests.requestChanged(reaction);
+          pluginExecutions?.observe(reaction);
           teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           notices.notify({ requestId: reaction.requestId });
@@ -1724,6 +1707,7 @@ export async function createHostRuntime(
           if (reaction.status !== "pending") notifyIntegrationContinuations();
           break;
         case "runChanged":
+          pluginExecutions?.observe(reaction);
           teamRunEvents?.observe(reaction);
           if (reaction.transition === "restarted") wakeExecutionCoordinator();
           if (reaction.transition === "background") notifyIntegrationContinuations();
@@ -1750,6 +1734,7 @@ export async function createHostRuntime(
           }
           break;
         case "runFinished":
+          pluginExecutions?.observe(reaction);
           if (reaction.bindingGeneration !== null)
             runnerRegistry?.retireRunBinding(reaction.runId, reaction.bindingGeneration);
           wakeExecutionCoordinator();
@@ -1764,7 +1749,7 @@ export async function createHostRuntime(
             .catch((error) => reportComputerUseTeardownError(reaction.runId, error));
           computerUse?.closeForRun(reaction.runId);
           tabs?.changed();
-          void integrationPlatform
+          void devices
             .endComputerRun(reaction.runId)
             .catch((error) => reportComputerUseTeardownError(reaction.runId, error));
           void browser
@@ -1801,16 +1786,40 @@ export async function createHostRuntime(
         )
       );
     };
-    const integrationPlatform = new IntegrationPlatformService({
-      longRequestHold: (run) => longRequestHold(run.runId),
+    const isRunnerConnected = (runnerId: RunnerId) =>
+      requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId);
+    const onConnectionsChanged = () => {
+      void computerViews
+        ?.revalidate()
+        .catch((error: unknown) => reportComputerUseSweepError(error));
+      realtime.broadcast({ type: "host.connections-changed" });
+      announceResources("machine");
+      void channelService?.syncRuntimes();
+    };
+    const onSettingsChanged = async ({
+      installationId,
+      ownerUserId,
+    }: {
+      installationId?: string;
+      ownerUserId?: UserId;
+    }) => {
+      if (ownerUserId) pluginsChanged(ownerUserId);
+      else notices.notify(installationId ? { installationId } : {});
+    };
+    const localServers = new LocalServerService({
+      computerApps,
+      dataDirectory,
+      isRunnerConnected,
+      onConnectionsChanged,
+      onSettingsChanged,
       personal: true,
-      adapters: integrationAdapters,
       secretVault: integrationVault,
-      listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
-      listDeviceConnections: (ownerUserId) => integrationStore.listDeviceConnections(ownerUserId),
+      store: integrationPlatformStore,
+    });
+    const devices = new DeviceService({
+      listConnections,
       onDeviceTargetAcquired: (target) => tabs!.acquired(target),
       onDeviceInputAccessWithdrawn: (id) => displayStreams?.withdrawOwnerInput(id),
-      authorizationSource: integrations,
       computerApps,
       computerUse,
       nativeTabs,
@@ -1839,11 +1848,9 @@ export async function createHostRuntime(
               tabGeneration: row.generation,
             };
       },
-      credentialMaterializer: integrations,
-      dataDirectory,
-      definitions: integrationDefinitions,
-      isRunnerConnected: (runnerId) =>
-        requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
+      definitions: deviceDefinitions,
+      isRunnerConnected,
+      localServers,
       // The engine a Thread runs on and the model it runs decide together
       // whether a tool result's picture is a block they render or a sentence
       // saying the picture is unavailable here. Both are read from the
@@ -1896,47 +1903,54 @@ export async function createHostRuntime(
           modelSelection: thread.modelSelection,
         });
       },
-      mcpOauth,
       onInputAccessWithdrawn: (runnerId) => displayStreams?.withdrawOwnerInput(runnerId),
-      onConnectionsChanged: () => {
-        void computerViews
-          ?.revalidate()
-          .catch((error: unknown) => reportComputerUseSweepError(error));
-        realtime.broadcast({ type: "host.connections-changed" });
-        void channelService?.syncRuntimes();
-      },
-      onSettingsChanged: async ({ installationId, ownerUserId }) => {
-        if (ownerUserId) realtime.sendToUsers([ownerUserId], { type: "host.plugins-changed" });
-        else notices.notify(installationId ? { installationId } : {});
-      },
-
-      ...(options.integrationFetch ? { publicFetch: options.integrationFetch } : {}),
+      onConnectionsChanged,
+      onSettingsChanged,
       store: integrationPlatformStore,
+    });
+    const accessRequests = new AccessRequests({
+      definitions: deviceDefinitions,
+      devices,
+      store: integrationPlatformStore,
+    });
+    const localServerRegistry = new LocalServerRegistry({
+      store: integrationPlatformStore,
+      dataDirectory,
+      devices,
+      localServers,
+      files: async () => files,
+      onConnectionsChanged,
+      onProviderRemoved: (owner, plugin) =>
+        pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
+      onSettingsChanged,
     });
     await browser.initialize();
     await passwordSignIns.sweepAfterRestart();
     await toolActivity.finalize();
     // Before accepting installs: their data folder can precede the plugin transaction.
-    await integrationPlatform.recoverPluginData();
-    await integrationPlatform.inputRequests.recover();
-    await integrationPlatformStore.computerOperations.finalize();
-    const integrationDashboard = new IntegrationDashboardService({
-      definitions: integrationDefinitions,
-      // A person reads the listing's name; the stored definition keeps its own.
-      summarizeDefinition: (definition) => ({
-        ...integrationPlatform.definitionSummary(definition),
-        name: listedDefinitionName(definition),
-      }),
-      providers: integrations,
-      repository: integrationPlatformStore,
+    await localServers.recoverPluginData();
+    localProviders = new LocalProviders({
+      store: integrationPlatformStore,
+      devices,
+      localServers,
+      authority: pluginAuthority,
     });
-    await integrationPlatform.backfillApiKeyDisclosures();
-    await integrationPlatform.bindOpenApiTools();
-    await integrationPlatform.ensureBuiltIns({
+    const providerNames = localProviders;
+    pluginExecutions = new PluginExecutions({
+      localName: (context, plugin) => providerNames.name(context, plugin),
+      service: pluginService,
+      store,
+      records: pluginAgentStore,
+      authority: pluginAuthority,
+      onError: (error) => app.log.error({ err: error }, "Plugin execution failed"),
+    });
+    await pluginExecutions.recover();
+    await integrationPlatformStore.computerOperations.finalize();
+    await devices.ensureBuiltIns({
       actorUserId: null,
       requestId: "startup:ensure-built-in-integrations",
     });
-    await integrationPlatform.requestLocalServerApprovals();
+    await localServers.requestLocalServerApprovals();
     await store.recoverRemovedAskTasks();
     await store.recoverThreadWorkQueues();
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
@@ -2054,23 +2068,12 @@ export async function createHostRuntime(
         },
         authorize: async (identity) => authorizeRunnerRegistration(store, identity),
         onEvent: async (identity, event) => {
-          const integration = await integrationCallSubject(
-            {
-              listCallableTools: (input) => integrationPlatform.listCallableTools(input),
-              getComputerConnectionForCall: (input) =>
-                integrationPlatformStore.getDeviceComputerConnectionForCall(input),
-              onError: (error, failed) => reportIntegrationCallSubjectError(failed, error),
-              runRequester: (input) => store.runRequester(input),
-            },
-            event,
-          );
           if (["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
             await browser.drainRunPlaces(event.runId);
           }
           const committed = await store.commitRunnerEvent({
             environmentId: event.environmentId,
             event,
-            ...(integration ? { integration } : {}),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
@@ -2111,7 +2114,7 @@ export async function createHostRuntime(
             { ...identity.fence, environmentId: report.environmentId },
             report,
           );
-          if (owner) realtime.sendToUsers([owner], { type: "host.plugins-changed" });
+          if (owner) pluginsChanged(owner);
         },
         agentHome: async (identity) => {
           if (!identity.capabilities.includes("agent-home-settings-v1")) return null;
@@ -2262,7 +2265,6 @@ export async function createHostRuntime(
                   await store.discardHarnessCatalog(environmentId, harness.id);
                 }
               }
-              await integrationPlatformStore.specialists.resumeRemovals();
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -2465,10 +2467,12 @@ export async function createHostRuntime(
       egress,
       executionLeaseMs: config.executionLeaseMs,
       skillPolicy: (ownerUserId) => integrationPlatformStore.settings.skillPolicy(ownerUserId),
-      pluginVersions: async (ownerUserId) =>
-        (await integrationPlatformStore.plugins.current(ownerUserId)).map(
+      pluginVersions: async (ownerUserId) => [
+        ...(await integrationPlatformStore.plugins.current(ownerUserId)).map(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
+        ...(await pluginService!.skillCache.versions(await pluginAgentStore.settings(ownerUserId))),
+      ],
       pluginsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
@@ -2513,34 +2517,18 @@ export async function createHostRuntime(
 
       store,
     });
-    integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
-      const active = await database
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select(["runs.assignmentId", "runs.requestedBy"])
-        .where("threads.specialistId", "=", input.specialistId)
-        .where("runs.status", "in", ["queued", "starting", "running", "waiting"])
-        .execute();
-      for (const run of active)
-        if (run.assignmentId)
-          await commands.cancelAssignment({
-            assignmentId: run.assignmentId,
-            requestedBy: run.requestedBy,
-            idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
-          });
-    });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
-        computerAccess: (input, run) => integrationPlatform.computerAccess(input, run),
+        computerAccess: (input, run) => devices.computerAccess(input, run),
         computerUseMachines: (ownerUserId) =>
-          integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
+          devices.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>
-          integrationPlatform.computerAppApprovals.computerUsePhones(ownerUserId),
-        listCallableTools: (input) => integrationPlatform.listCallableTools(input),
-        listDiscoveryInventory: (input) => integrationPlatform.listDiscoveryInventory(input),
+          devices.computerAppApprovals.computerUsePhones(ownerUserId),
+        listCallableTools: (input) => devices.listCallableTools(input),
+        listDiscoveryInventory: (input) => devices.listDiscoveryInventory(input),
       },
       onError: (error) => reportContinuationError(error),
       requests: store.requests,
@@ -2557,16 +2545,6 @@ export async function createHostRuntime(
       store,
       commands,
       onError: (error) => console.error("Moving quiet tasks to Done failed", error),
-    });
-    let reportIntegrationConnectionError: (error: unknown, connectionId: string) => void = () =>
-      undefined;
-    integrationConnectionConnected = integrationConnectionReaction({
-      notify: () => continuations.notify(),
-      report: (error, connectionId) => reportIntegrationConnectionError(error, connectionId),
-      settle: (input) => {
-        realtime.sendToUsers([input.ownerUserId], { type: "host.plugins-changed" });
-        return integrationPlatform.connectionConnected(input);
-      },
     });
     const triggers = new TriggerService({
       runnerStore: store,
@@ -2625,8 +2603,8 @@ export async function createHostRuntime(
     const placeContext = new PlaceContextService({
       browser,
       computerUse,
-      connections: integrationStore,
-      integrations: integrationPlatform,
+      connections: { listConnections },
+      integrations: devices,
       store,
     });
 
@@ -2702,8 +2680,6 @@ export async function createHostRuntime(
       browser,
       canRunHarness: (environmentId, driverKind) =>
         runners.canRunHarness(environmentId, driverKind),
-      harnessAccessModes: (environmentId, driverKind) =>
-        runners.harnessAccessModes(environmentId, driverKind),
       commands,
       isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
 
@@ -2724,11 +2700,7 @@ export async function createHostRuntime(
       tokens: runToolTokens,
     });
     await apps.collectGarbage();
-    const integrationTools = new IntegrationToolHandlers({
-      definitions: integrationDefinitions,
-
-      platform: integrationPlatform,
-    });
+    const deviceTools = new DeviceToolHandlers({ devices, access: accessRequests });
     const plugins = new PluginPackageService({
       computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
       snapshotDirectory: resolve(dataDirectory, "plugins", "data", "packages"),
@@ -2809,14 +2781,79 @@ export async function createHostRuntime(
           channels: { service: channels, relay: messagingRelay },
           realtime,
           reconcileIdleCompaction: () => idleCompactionService?.reconcile() ?? Promise.resolve(),
-          integrations: { platform: integrationPlatform, service: integrations, continuations },
+          integrations: {
+            continuations,
+            devices,
+            localServerRegistry,
+          },
         },
         (id) => administrationCatalogs?.schedule(id),
       ),
-      (ownerId) => integrationStore.listConnections(ownerId),
       execution.canExecute,
     );
+    const pluginPages = new PluginPages({
+      service: pluginService,
+      assertOwner: (userId) => requirePersonalOwner(database, userId),
+      access: async (userId, plugin) =>
+        (await pluginAgentStore.settings(userId)).find((row) => row.pluginId === plugin)?.access ??
+        "all",
+    });
+    const pluginTools = new PluginToolHandlers({
+      service: pluginService,
+      localProviders: providerNames,
+      authority: pluginAuthority,
+      executions: pluginExecutions,
+      store,
+      settings: pluginAgentStore,
+      removed: (plugin) => pluginPages.forget(plugin),
+      changed: pluginsChanged,
+      folder: async (caller, directory) => {
+        requirePluginRun(caller);
+        return withFolderPluginPackage({ directory, files, install: pluginSourceFiles });
+      },
+      exportFiles: async (caller, directory, source, authorize, signal) => {
+        requirePluginRun(caller);
+        await exportPluginSource(
+          (await personalExecution()).options.agentHome.path,
+          directory,
+          source.files,
+          files.options.helperPath!,
+          authorize,
+          signal,
+        );
+      },
+    });
+    const pluginOwnerApi = new PluginOwnerApi({
+      service: pluginService,
+      pages: pluginPages,
+      webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
+      settings: pluginAgentStore,
+      accountLinked: (input) => pluginTools.accountLinked(input),
+      assertOwner: (userId) => requirePersonalOwner(database, userId),
+      localTools: (owner, id) => providerNames.owned(owner, id),
+      cancelPlugin: (owner, plugin) =>
+        pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
+      changed: pluginsChanged,
+    });
+    pluginOAuth = new PluginOAuthService({
+      plugins: pluginService,
+      store: new PluginOAuthStore(database, integrationVault),
+      attempts: integrationAuthAttempts,
+      origin: config.canonicalOrigin.origin,
+      owner: async () => (await personalSettings(database)).ownerId,
+      ...(hostedOAuthBroker
+        ? {
+            broker: {
+              client: hostedOAuthBroker.broker,
+              deploymentAuthorityDigest: hostedOAuthBroker.deploymentAuthorityDigest,
+            },
+          }
+        : {}),
+      accountLinked: (input) => pluginTools.accountLinked(input),
+    });
+    void pluginService.start().catch(() => undefined);
     const agentTools = new OpensteerMcpService({
+      pluginExecutions,
       teamsAvailable: async () =>
         (await database
           .selectFrom("personalTeamLinks")
@@ -2845,10 +2882,12 @@ export async function createHostRuntime(
       store,
       handlers: agentToolHandlers({
         administration,
+        plugins: pluginTools,
+        localServers: localServerRegistry,
         apps,
         tabs: new TabToolHandlers(tabs),
         product: productHandlers,
-        integrations: integrationTools,
+        devices: deviceTools,
         triggers: new TriggerToolHandlers(triggers),
         teamRequestForRun: async (runId, threadId) => {
           const run = await database
@@ -2870,37 +2909,6 @@ export async function createHostRuntime(
           write: async (...args) => (await ensureLinks()).knowledge.write(...args),
         },
         personalContextForRun: (runId) => runAllowsPersonalContext(database, runId),
-        pluginInstall: async (scope, directory) => {
-          const thread = await store.getThreadForOwner(scope.threadId, scope.requestedBy);
-          if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
-          return withFolderPluginPackage({
-            directory,
-            files,
-            install: async (stagedDirectory) => {
-              const result = await integrationPlatform.installAgentPlugin({
-                directory: stagedDirectory,
-                threadId: scope.threadId,
-                actorUserId: scope.requestedBy,
-                runnerId: scope.runnerId,
-                requestId: randomUUID(),
-              });
-              const pluginId = result.installation.pluginId;
-              const registration =
-                result.specialist && pluginId
-                  ? await integrationPlatform.store.specialists.add({
-                      pluginId,
-                      actorUserId: scope.requestedBy,
-                    })
-                  : null;
-              return {
-                pluginId,
-                issues: result.issues,
-                specialist: result.specialist,
-                registration,
-              };
-            },
-          });
-        },
       }),
     });
     const taskAdmission = new TaskAdmissionService({
@@ -3062,13 +3070,18 @@ export async function createHostRuntime(
         execution,
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
+        pluginRequests: pluginExecutions,
+        plugins: pluginOwnerApi,
+        pluginOAuth,
         integrations: {
+          access: accessRequests,
           authAttempts: integrationAuthAttempts,
           continuations,
-          dashboard: integrationDashboard,
-          mcpOauth,
-          platform: integrationPlatform,
-          service: integrations,
+          definitions: deviceDefinitions,
+          devices,
+          listConnections,
+          localServers,
+          localServerRegistry,
           skills: plugins,
         },
         ...(localBootstrap ? { localBootstrap: { service: localBootstrap } } : {}),
@@ -3120,11 +3133,6 @@ export async function createHostRuntime(
       app.log.warn({ err: error, sessionId }, "Machine access audit could not be recorded");
     reportShellControlError = (runnerId, error) =>
       app.log.warn({ err: error, runnerId }, "Machine access control stream failed");
-    reportIntegrationConnectionError = (error, connectionId) =>
-      app.log.error(
-        { connectionId, err: error },
-        "Integration connection could not settle its pending Requests",
-      );
     logMissingBrowserActor = (sessionId, bindingId) => {
       if (bindingId.startsWith("run:"))
         app.log.info({ sessionId, runId: bindingId.slice(4) }, "Browser Run has no actor");
@@ -3142,11 +3150,6 @@ export async function createHostRuntime(
       );
     reportDuplicateRunUsage = (runId) =>
       app.log.warn({ runId }, "Run usage was already recorded; the later statement was dropped");
-    reportIntegrationCallSubjectError = (event, error) =>
-      app.log.warn(
-        { err: error, ordinal: event.ordinal, runId: event.runId },
-        "An integration call's subject could not be resolved; it was recorded without one",
-      );
     reportHarnessCatalogInvalidationError = (harnessInstanceId, error) =>
       app.log.warn(
         { err: error, harnessInstanceId },
@@ -3281,8 +3284,8 @@ export async function createHostRuntime(
         await store.requests.expirePasswordSignIns(now);
         await linkServices?.requests.expireUndecidedAsks();
         await store.expireThreadInputLeases();
-        await integrationPlatform.computerAppApprovals.expireComputerAppSetupRequests();
-        await integrationPlatform.requestLocalServerApprovals();
+        await devices.computerAppApprovals.expireComputerAppSetupRequests();
+        await localServers.requestLocalServerApprovals();
       },
       onError: reportMutationFailure,
     });
@@ -3291,6 +3294,8 @@ export async function createHostRuntime(
 
     return {
       kind: "personal",
+      devices,
+      localServers: localServerRegistry,
       computerApps,
       computerUse,
       computerViews,
@@ -3301,6 +3306,11 @@ export async function createHostRuntime(
       notifications: notificationDispatcher,
       deployment,
       store,
+      plugins: pluginService,
+      pluginAgentSettings: pluginAgentStore,
+      pluginRequests: pluginExecutions,
+      pluginTools,
+      pluginOAuth,
       authorityLost: authorityLease.lost,
       settleExecutionLeases: () => executionLeases.settled(),
       async close() {
@@ -3347,7 +3357,10 @@ export async function createHostRuntime(
           await linkServices?.links.stop();
         });
         await step("administration catalogs", () => administrationCatalogs?.close());
-        await step("integration platform", () => integrationPlatform.close());
+        await step("device services", async () => {
+          await devices.close();
+          await localServers.close();
+        });
         await step("browser", () => browser.close());
         await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
@@ -3370,6 +3383,8 @@ export async function createHostRuntime(
         await step("personal retention", () => retention?.close());
         removeMutationHooks?.();
         await step("plugin change notices", () => notices.close());
+        await step("plugin engine", () => pluginService?.close());
+        await step("plugin executions", () => pluginExecutions?.close());
         await step("authority lease", () => authorityLease?.close());
         await step("database", () => database.destroy());
         closingStep = undefined;
@@ -3383,6 +3398,8 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await pluginService?.close();
+    await pluginExecutions?.close();
     await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
@@ -3475,4 +3492,9 @@ export async function ensureDefaultHarnesses(
 
 export function hostAppRealOrigins(shape: import("@opensteer/core").DeploymentShape): boolean {
   return deploymentPolicy(shape).services.personal;
+}
+
+function requirePluginRun(caller: import("../mcp/agent-caller.js").AgentCaller) {
+  if (caller.kind !== "run")
+    throw new OpensteerError({ code: "forbidden", message: "Plugin source requires a task Run." });
 }

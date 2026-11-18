@@ -154,13 +154,6 @@ export const opensteer_task_delegate = defineAgentTool({
         .max(240)
         .optional()
         .describe("New task: 2–5 words naming the outcome; defaults to the first task line."),
-      specialist: z
-        .string()
-        .trim()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe("Ready specialist registration ID or plugin name."),
       taskId: ThreadIdSchema.optional().describe(
         "Finished task to continue; omit new-task selectors.",
       ),

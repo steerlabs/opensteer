@@ -9,11 +9,9 @@ import "./styles/index.css";
 import type { HostClient, TranscriptEntry } from "@opensteer/client/host";
 import { mockComputerUseSlack, mockComputerUseTurn } from "@opensteer/client/mock";
 import { RunIdSchema, ThreadIdSchema, UserIdSchema } from "@opensteer/core";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import type {
   DesktopComputerAppSetup,
@@ -151,9 +149,6 @@ const connection = (
 ) =>
   ({
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, app, blockedAt, policyRevision: null, runnerId },
     connectionMethod: "computer",
     createdAt: "2026-09-19T00:00:00.000Z",
@@ -161,10 +156,8 @@ const connection = (
     displayName: `${app.displayName} on Alex’s MacBook Pro`,
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id,
     provider: "macos-app",
-    providerApplicationId: null,
     status: blockedAt === null ? "connected" : "paused",
     statusDetail: null,
     updatedAt: "2026-09-19T00:00:00.000Z",

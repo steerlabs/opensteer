@@ -3,6 +3,7 @@ import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { unwrapRpcResult, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import { pluginChangeAffects } from "@opensteer/client/plugins";
 import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
@@ -50,7 +51,9 @@ export function DevicesSettingsController(): ReactNode {
     read: host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
     subscribeInvalidation: (listener) => {
       if (host === null) return () => {};
-      const plugins = host.subscribePluginsChanged(listener);
+      const plugins = host.subscribePluginsChanged((change) => {
+        if (pluginChangeAffects(change)) listener();
+      });
       const machines = onMachinesChanged(host, listener);
       return () => {
         plugins();
@@ -258,9 +261,9 @@ export function DevicesSettingsController(): ReactNode {
                   return;
                 }
                 if (deploymentId === null) return;
-                navigation.navigate("SettingsPluginDetail", {
+                navigation.navigate("SettingsOtherDevice", {
                   deploymentId,
-                  target: { kind: "plugin", pluginId: opens.pluginId },
+                  pluginId: opens.pluginId,
                 });
               },
             })),

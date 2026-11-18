@@ -18,7 +18,18 @@ import {
   BrowserProfileHomesViewSchema,
   BrowserProfilesViewSchema,
 } from "./browser.js";
+import { PluginEngineStateViewSchema, type PluginResourceCategory } from "./plugins.js";
 import { TabBootstrapSchema } from "./tabs.js";
+
+export const pluginCategoryResources = {
+  scheduledRuns: "plugin-scheduled-runs",
+  workflowRuns: "plugin-workflow-runs",
+  webhooks: "plugin-webhooks",
+  webhookSources: "plugin-webhook-sources",
+  schedules: "plugin-schedules",
+} as const satisfies Record<PluginResourceCategory, string>;
+
+export const pluginChangeResources = ["plugin", ...Object.values(pluginCategoryResources)] as const;
 
 export const personalResourceKinds = [
   "settings",
@@ -36,6 +47,8 @@ export const personalResourceKinds = [
   "browser-placement",
   "browser-home",
   "browser-availability",
+  ...pluginChangeResources,
+  "plugin-engine",
 ] as const;
 
 export const PersonalRevisionSchema = z
@@ -113,6 +126,8 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
   z.strictObject({ kind: z.literal("browser-availability"), available: z.boolean() }),
+  z.strictObject({ kind: z.enum(pluginChangeResources) }),
+  z.strictObject({ kind: z.literal("plugin-engine"), engine: PluginEngineStateViewSchema }),
 ]);
 
 export const PersonalResourceDetailSchema = z

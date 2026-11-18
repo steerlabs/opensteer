@@ -1,6 +1,11 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import { MockDesktopUpdates, MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
+import {
+  MockDesktopUpdates,
+  MockHostClient,
+  type MockPluginScenario,
+  type MockSubagentScene,
+} from "@opensteer/client/mock";
 import type { MobileHostPort, MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
 
@@ -19,6 +24,8 @@ export function createMockHostPort(
     readonly hosts?: Map<string, MockHostClient>;
     /** One subagent scene of the design, so each of its states can be looked at. */
     readonly subagents?: MockSubagentScene | null;
+    /** The plugin side's state, as the web's `?mock-plugins=` picks it. */
+    readonly plugins?: MockPluginScenario | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
     readonly onCommand?: (command: Parameters<HostClient["dispatch"]>[0]) => void;
   } = {},
@@ -31,6 +38,7 @@ export function createMockHostPort(
       ...(connectionController ? { connectionController } : {}),
       ...(clientScope ? { clientScope } : {}),
       ...(options.subagents ? { subagents: options.subagents } : {}),
+      ...(options.plugins ? { plugins: options.plugins } : {}),
     };
     const hosts = options.hosts;
     if (hosts === undefined) return new MockHostClient(hostOptions);

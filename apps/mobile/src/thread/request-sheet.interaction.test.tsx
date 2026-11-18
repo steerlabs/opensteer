@@ -9,14 +9,13 @@ import {
   UserIdSchema,
   WaitingRequestSchema,
   RequestSchema,
-  requestAgentProposedDetail,
   type Request,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient, mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
+import { MockHostClient, mockCardUseRequest } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
 
 vi.mock("./agent-mark.js", () => ({
@@ -571,46 +570,6 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     expect(dispatch.mock.calls[0]?.[0].idempotencyKey).toBe(
       dispatch.mock.calls[1]?.[0].idempotencyKey,
     );
-  });
-});
-
-/*
- * How a Request only to install could mislead on a phone:
- * - Install and Not now with nothing on what would be installed;
- * - an agent's proposal not said to be one, without what the agent said it does,
- *   or its research source a full URL;
- * - nothing on where its key would go, or whether it is checked;
- * - promising an account or access, which installing does not give;
- * - Install sending anything but the Request's own choice.
- */
-describe("RequestSheetContent install requests", () => {
-  it("reviews an agent's proposal in the web's words before Install", async () => {
-    const dispatch = vi.fn(async () => ({ type: "request.respond" }));
-    await render(surface(installRequest()), dispatch);
-
-    for (const line of [
-      "TMDB",
-      requestAgentProposedDetail,
-      "Movie and TV show details, search and ratings.",
-      "Researched from developer.themoviedb.org.",
-      "Your key is stored encrypted by your Opensteer and sent to api.themoviedb.org when used.",
-      "Opensteer checks the key with TMDB before saving it.",
-      "Installing adds it to this deployment. Connecting an account and allowing access are each asked for separately.",
-    ]) {
-      expect(text()).toContain(line);
-    }
-    expect(text()).not.toContain("https://");
-
-    const install = [...document.querySelectorAll("button")].find(
-      (candidate) => candidate.getAttribute("aria-label") === "Install",
-    );
-    await act(async () => install?.click());
-    expect(dispatch).toHaveBeenCalledExactlyOnceWith({
-      idempotencyKey: expect.any(String),
-      requestId: installRequest().id,
-      response: { kind: "choice", optionId: "installed" },
-      type: "request.respond",
-    });
   });
 });
 
@@ -1219,28 +1178,6 @@ function deviceAccessRequest(): Request {
   } as Request;
 }
 
-function installRequest(): Request {
-  return {
-    ...requestBase(),
-    kind: "integration.install",
-    payload: {
-      kind: "integration.install",
-      manifest: mockTmdbProposal.manifest,
-      reason: "Look up movies and TV shows on TMDB.",
-    },
-    presentation: {
-      agentProposed: true,
-      kind: "choice",
-      options: [
-        { hint: "reject-once", id: "declined", label: "Not now" },
-        { hint: "confirm", id: "installed", label: "Install" },
-      ],
-      title: "Install TMDB?",
-    },
-    requiredActor: "administrator",
-  } as unknown as Request;
-}
-
 const studioId = "rnr_00000000-0000-4000-8000-000000000002";
 const studio = { id: studioId, name: "Studio" } as MachineSummary;
 
@@ -1352,22 +1289,38 @@ it.each(["live", "durable"] as const)(
       kind: "harness.approval" as const,
       payload: { kind: "harness.approval" as const },
       mode,
-      ...(mode === "durable"
-        ? {
-            kind: "integration.install" as const,
-            payload: {
-              kind: "integration.install" as const,
-              reason: "Keep this source",
-              manifest: mockTmdbProposal.manifest,
-            },
-          }
-        : {}),
       presentation: {
         kind: "choice" as const,
         options: [{ id: "allow", hint: "allow-once" as const, label: "Allow once" }],
         risk: "medium" as const,
         title: "Read memory source?",
       },
+      // The durable choice a hidden worker can still wait on is a plugin's approval.
+      ...(mode === "durable"
+        ? {
+            kind: "plugin.approval" as const,
+            payload: {
+              kind: "plugin.approval" as const,
+              executionId: "exe_memory",
+              interactionId: "int_1",
+            },
+            presentation: {
+              kind: "choice" as const,
+              options: [{ id: "accept", hint: "allow-once" as const, label: "Allow once" }],
+              risk: "medium" as const,
+              title: "Read memory source?",
+              plugin: {
+                plugin: { id: "plg_memory", name: "Memory", author: "catalog" as const },
+                decision: {
+                  kind: "approval" as const,
+                  executionId: "exe_memory",
+                  tool: "read_source",
+                  arguments: {},
+                },
+              },
+            },
+          }
+        : {}),
     };
     const waiting = {
       assignments: [],
@@ -1396,7 +1349,8 @@ it.each(["live", "durable"] as const)(
     expect(question?.surface.request.originatingThreadId).toBe(request.originatingThreadId);
     const dispatch = vi.fn(async () => undefined);
     await render(question!.surface, dispatch);
-    await click("Allow once");
+    // A plugin's approval reads as the system's Allow on a phone.
+    await click(mode === "durable" ? "Allow" : "Allow once");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "request.respond", requestId: request.id }),
     );

@@ -1,4 +1,4 @@
-import { computerConnectionDeviceId } from "./integration-store.js";
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,

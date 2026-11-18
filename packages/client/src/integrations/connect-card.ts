@@ -1,51 +1,39 @@
-import type { IntegrationOAuthApplicationSource } from "@opensteer/integration-core";
 import {
   accessPlan,
   accessServerChoices,
-  accountConnectable,
+  catalogInstallDefinition,
   computerAccessUpgrade,
   grantedIntegrationAccess,
   integrationAccessSummary,
-  integrationInstallReview,
-  installationDefinition,
-  mainAccessDetail,
   matchingInstallationForManifest,
   requestedAccountUnavailableDetail,
   type AccessRequestAccount,
   type LoadedAccessRequest,
 } from "./access-request.js";
-import { integrationAccountDetail } from "./account-identity.js";
-import {
-  connectAvailability,
-  connectSignInOptions,
-  initialConnectSource,
-} from "./connect-selection.js";
 
 export type ConnectCardPhase =
   | "ask"
   | "choose-account"
-  | "connecting"
   | "needs-form"
   | "needs-admin"
   | "unavailable"
   | "failed"
   | "connected"
   | "answered";
-export type ConnectCardForm = "api-key" | "computer" | "repositories" | "server";
+export type ConnectCardForm = "computer" | "server";
 export interface ConnectCardAction {
-  readonly kind:
-    "connect" | "use" | "install" | "upgrade" | "retry" | "settings" | "repositories" | "server";
+  readonly kind: "connect" | "use" | "install" | "upgrade" | "retry" | "server";
   readonly label: string;
 }
 
-/** Presentation only: a browser return or an admitted command is never a connected account. */
+/**
+ * An access Request for a device data app or a local server, as both cards show
+ * it. Presentation only: a committed Host connection is the only connected state.
+ */
 export function connectCard(input: {
   readonly loaded: LoadedAccessRequest;
-  readonly deploymentName: string;
   readonly selectedAccountId?: string | null;
   readonly allowChanges?: boolean;
-  readonly agentProposed?: boolean;
-  readonly connecting?: boolean;
   readonly error?: string | null;
   /** Supplied only after reading the committed Host connection and fulfilling access. */
   readonly connectedAccount?: Pick<
@@ -53,91 +41,59 @@ export function connectCard(input: {
     "accountIdentifier" | "displayName"
   > | null;
   readonly answered?: boolean;
-  readonly repositories?: boolean;
 }) {
-  const { loaded, deploymentName } = input;
+  const { loaded } = input;
   const plan = accessPlan(loaded, input.selectedAccountId ?? null);
-  const review = integrationInstallReview(loaded.request.manifest);
+  const catalog = catalogInstallDefinition(loaded.request.manifest);
   const entry = loaded.platform.installations.find(
     ({ installation }) => installation.id === loaded.request.installationId,
   );
-
-  const name = plan?.integrationName ?? review?.name ?? entry?.installation.title ?? "Integration";
+  const name = plan?.integrationName ?? catalog?.name ?? entry?.installation.title ?? "App";
   const iconId =
-    plan?.definition?.id ??
-    (loaded.request.manifest ? installationDefinition(loaded.request.manifest)?.id : null) ??
-    entry?.installation.id ??
-    name.toLowerCase();
+    plan?.definition?.id ?? catalog?.id ?? entry?.installation.id ?? name.toLowerCase();
   const requestedAccess: "read" | "read-write" =
     loaded.request.access === "read-write" || input.allowChanges ? "read-write" : "read";
   const grantedAccess =
     plan === null
       ? requestedAccess
-      : grantedIntegrationAccess({
-          allowChanges: input.allowChanges ?? false,
-          plan,
-        });
-  const effectiveAccess = grantedAccess;
+      : grantedIntegrationAccess({ allowChanges: input.allowChanges ?? false, plan });
   const accounts = plan?.accounts ?? [];
   const selected = plan?.selectedAccount ?? null;
   const serverChoices = accessServerChoices(loaded);
-  const reconnect = plan?.requestedAccountMissing ? plan.requestedAccountReconnect : null;
-  const upgrade = plan ? computerAccessUpgrade(plan, effectiveAccess) : null;
-  const provider =
-    plan?.requirement.kind === "provider" && plan.requirement.providerApplicationRequired
-      ? plan.requirement.provider
-      : null;
-  const availability = provider ? connectAvailability(loaded.dashboard, provider) : null;
-  // Use the Host's exact selection. A missing saved default must never silently
-  // authorize another app; when there is no default, managed sign-in is offered.
-  const source: IntegrationOAuthApplicationSource | null = provider
-    ? (initialConnectSource(loaded.dashboard, provider) ??
-      (loaded.dashboard.providerAuthorizations[provider]?.code === "READY"
-        ? (connectSignInOptions(loaded.dashboard, provider).find(
-            ({ source }) => source.kind === "hosted-oauth",
-          )?.source ?? null)
-        : null))
-    : null;
+  const upgrade = plan ? computerAccessUpgrade(plan, grantedAccess) : null;
   let phase: ConnectCardPhase = "ask";
   let form: ConnectCardForm | null = null;
   let primary: ConnectCardAction | null = { kind: "connect", label: "Connect" };
   let error = input.error ?? null;
-  const installReview =
-    loaded.request.installationId === null && review?.provenance ? review : null;
-  const autoInstall =
-    loaded.request.installationId === null && review !== null && review.provenance === null;
+  const install = loaded.request.installationId === null;
   const canConnectAnother =
-    plan !== null && plan.requestedConnectionId === null && accountConnectable(plan);
+    plan !== null && plan.requestedConnectionId === null && plan.requirement.kind === "computer";
   const canAllowChanges =
     plan?.requirement.kind === "computer" &&
     plan.requestedAccess === "read" &&
     (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2);
-  const proposed = plan?.proposed === true || input.agentProposed === true;
-  const scope = "All your tasks";
   const details = [
-    ...(plan?.requirement.kind !== "computer" ? [mainAccessDetail(deploymentName, name)] : []),
     ...(plan
       ? [integrationAccessSummary(plan, grantedAccess)]
-      : review?.provenance
-        ? []
-        : (review?.facts ?? [])),
+      : catalog
+        ? [catalog.description]
+        : []),
     ...(plan?.definition?.computerApp
       ? [plan.definition.computerApp.accessSummaries.readWrite]
       : []),
   ];
-  if (loaded.request.installationId === null) {
+  if (install) {
     const installed = matchingInstallationForManifest(loaded.platform, loaded.request.manifest);
-    if (!review) {
+    if (!catalog) {
       phase = "unavailable";
-      error =
-        "Opensteer cannot read what this request would install. Decline it and ask for a fresh proposal.";
+      error = "This device app is no longer offered. Decline this request and ask the agent again.";
       primary = null;
     } else if (!loaded.dashboard.isAdministrator && installed === null) {
       phase = "needs-admin";
       error = `Ask an admin to add ${name}`;
       primary = null;
-    } else if (installReview) {
-      primary = { kind: "install", label: installed ? "Continue" : "Install and continue" };
+    } else {
+      primary = { kind: "install", label: "Continue" };
     }
   } else if (serverChoices.length > 0) {
     phase = "needs-form";
@@ -145,9 +101,9 @@ export function connectCard(input: {
     primary = { kind: "server", label: "Choose server" };
   } else if (plan === null) {
     phase = "unavailable";
-    error = "The requested integration is no longer installed.";
+    error = "What this request asks for is no longer installed.";
     primary = null;
-  } else if (plan.requestedAccountMissing && reconnect === null) {
+  } else if (plan.requestedAccountMissing) {
     phase = "unavailable";
     error = requestedAccountUnavailableDetail;
     primary = null;
@@ -158,40 +114,15 @@ export function connectCard(input: {
   } else if (selected || plan.requirement.kind === "none") {
     phase = selected ? "choose-account" : "ask";
     primary = { kind: "use", label: "Allow" };
-  } else if (plan.apiKeyMethod) {
-    phase = "needs-form";
-    form = "api-key";
-    primary = {
-      kind: "connect",
-      label: reconnect ? `Reconnect ${accountLabel(reconnect.account)}` : "Connect",
-    };
-  } else if (plan.requirement.kind === "computer") {
+  } else {
     phase = "needs-form";
     form = "computer";
     primary = { kind: "connect", label: "Choose a computer" };
-  } else if (provider && (availability?.kind !== "ready" || source === null)) {
-    phase = "unavailable";
-    error =
-      availability && availability.kind !== "ready"
-        ? availability.detail
-        : "Choose a sign-in account in Settings to continue.";
-    primary = { kind: "settings", label: "Open integration settings" };
-  } else if (reconnect) {
-    primary = { kind: "connect", label: `Reconnect ${accountLabel(reconnect.account)}` };
-  }
-  if (input.repositories) {
-    phase = "needs-form";
-    form = "repositories";
-    primary = { kind: "repositories", label: "Recheck repository access" };
   }
   if (input.error) {
     error = input.error;
     phase = "failed";
     primary = { kind: "retry", label: "Try again" };
-  }
-  if (input.connecting) {
-    phase = "connecting";
-    primary = null;
   }
   const success = input.connectedAccount
     ? `${name} connected · ${accountLabel(input.connectedAccount)}`
@@ -207,12 +138,9 @@ export function connectCard(input: {
   const rows = accounts.filter(
     ({ id }) => plan?.requestedConnectionId === null || id === plan?.requestedConnectionId,
   );
-  // "Use" once there is an account to answer with; until then the card asks
-  // for a connection.
   const verb = selected || plan?.requirement.kind === "none" ? "Use" : "Connect";
   return {
     phase,
-    proposed,
     name,
     iconId,
     title: `${verb} ${name}`,
@@ -222,25 +150,18 @@ export function connectCard(input: {
     accounts: rows.map((account) => ({
       ...account,
       label: accountLabel(account),
-      // Told apart from every account of this integration, shown or not: a
-      // Request pinned to one still has to say which of two look-alikes it is.
-      detail: accountRowDetail(account, accounts),
       selected: account.id === selected?.id,
     })),
     selectedAccount: selected,
-    scope,
+    scope: "All your tasks",
     details,
     error,
     form,
-    source,
     plan,
-    installReview,
-    autoInstall,
     canConnectAnother,
     canAllowChanges,
-    effectiveAccess,
+    effectiveAccess: grantedAccess,
     upgrade,
-    reconnect,
     serverChoices,
     success,
   };
@@ -250,32 +171,9 @@ const accountLabel = (account: Pick<AccessRequestAccount, "accountIdentifier" | 
   account.accountIdentifier ?? account.displayName;
 
 /**
- * A row's second line, only where its label alone does not tell it from
- * another row: a name only it has, or else when it was added.
- */
-function accountRowDetail(
-  account: AccessRequestAccount,
-  accounts: readonly AccessRequestAccount[],
-): string | null {
-  const comparable = (value: string) => value.trim().toLocaleLowerCase();
-  const label = comparable(accountLabel(account));
-  const alike = accounts.filter((other) => comparable(accountLabel(other)) === label);
-  if (alike.length < 2) return null;
-  const name = comparable(account.displayName);
-  const nameSetsItApart =
-    name !== label &&
-    alike.every(({ displayName, id }) => id === account.id || comparable(displayName) !== name);
-  if (nameSetsItApart) return account.displayName;
-  // Without identifiers the detail is the date: the identifier is the label already.
-  const dated = (other: AccessRequestAccount) => ({ ...other, accountIdentifier: null });
-  return integrationAccountDetail(dated(account), alike.map(dated));
-}
-
-/**
- * The account rows a card shows before "Show more": the first `limit`, always
- * including the selected one so the account Allow answers with is on screen.
- * A list one longer than the limit is shown whole, since a row that only
- * reveals one more account costs as much space as the account itself.
+ * The rows a card shows before "Show more": the first `limit`, always
+ * including the selected one so the computer Allow answers with is on screen.
+ * A list one longer than the limit is shown whole.
  */
 export function collapsedAccountRows<Row extends { readonly selected: boolean }>(
   rows: readonly Row[],

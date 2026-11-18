@@ -18,8 +18,7 @@ with a `waitingReason` has no model it can use yet and resumes by itself, so tel
 ## Background models
 
 `settings.json` in Agent home says which models do background work: `naming` names new tasks,
-`light` runs the light pass and specialists asking for `{"role": "light"}`, and `deep` runs the
-nightly pass and specialists asking for `{"role": "deep"}`. Change it only when the person asks,
+`light` runs the light pass, and `deep` runs the nightly pass. Change it only when the person asks,
 with ordinary file edits:
 
 ```json
@@ -61,7 +60,7 @@ If they still have not stopped, read the existing `opensteer:automations` remind
 (`references/reminders.md`), then call `opensteer_automation_create` for a one-shot reminder
 named `Reminder: finish deleting memory`,
 on this task, a few minutes later using the person's context time zone and an ISO-8601 instant
-with its date's offset. Declare `toolContractVersion: 4`; its program is:
+with its date's offset. Declare `toolContractVersion: 5`; its program is:
 
 ```ts
 export default async function ({ event, opensteer }) {

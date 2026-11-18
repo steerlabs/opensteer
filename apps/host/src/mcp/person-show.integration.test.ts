@@ -42,7 +42,6 @@ integration("explicit show_to_person", () => {
       deviceAccess: {} as never,
       machineFullDiskAccess: {} as never,
       canRunHarness: () => true,
-      harnessAccessModes: () => ["full-access"],
       isEnvironmentConnected: () => true,
       execution: {} as never,
       tabs: {

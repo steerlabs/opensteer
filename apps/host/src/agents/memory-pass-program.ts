@@ -10,7 +10,7 @@ export function memoryPassProgram(role: TriggerSystemRole): TriggerProgram {
   const reference = role === "memory-light" ? "light-pass" : "nightly";
   return {
     language: "typescript",
-    toolContractVersion: 4,
+    toolContractVersion: 5,
     source: `export default async function ({ event, opensteer }) {
   try {
     await opensteer.callTool("opensteer_task_send", {

@@ -120,8 +120,8 @@ it("backfills visible active and revoked identities exactly, splits targets and 
     [computerConnection, "computer", ids[0]],
     [channelConnection, "channel", fixture.runnerId],
   ] as const)
-    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,integration_definition_id,runner_id)
-      values(${id},${fixture.userId},${kind},'test','computer','connected','Preserved','[]','[]','android-phone',${runnerId})`.execute(
+    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,runner_id)
+      values(${id},${fixture.userId},${kind},'test','computer','connected','Preserved','[]','android-phone',${runnerId})`.execute(
       db,
     );
   const setupRequestId = crypto.randomUUID();
@@ -250,8 +250,8 @@ it("keeps the previous Host's writes readable after expanding the device model",
     definitionDigest: "old-image",
   });
   const connectionId = createIntegrationId("connection");
-  await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,integration_definition_id,runner_id,computer_access,auth_method_id)
-    values(${connectionId},${fixture.userId},'computer','test','computer','connected','Previous Host','[]','[]','android-phone',${fixture.runnerId},'read','computer')`.execute(
+  await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,runner_id,computer_access)
+    values(${connectionId},${fixture.userId},'computer','test','computer','connected','Previous Host','[]','android-phone',${fixture.runnerId},'read')`.execute(
     db,
   );
   expect(
@@ -261,8 +261,8 @@ it("keeps the previous Host's writes readable after expanding the device model",
     }),
   ).toMatchObject({ deviceId, connection: { computer: { deviceId, access: "read" } } });
   await expect(
-    sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,integration_definition_id,device_id,computer_access)
-    values(${createIntegrationId("connection")},${fixture.userId},'computer','test','computer','connected','New Host','[]','[]','android-phone',${deviceId},'read')`.execute(
+    sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,device_id,computer_access)
+    values(${createIntegrationId("connection")},${fixture.userId},'computer','test','computer','connected','New Host','[]','android-phone',${deviceId},'read')`.execute(
       db,
     ),
   ).rejects.toMatchObject({ code: "23505" });

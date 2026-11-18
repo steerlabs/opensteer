@@ -648,7 +648,7 @@ integration("notification decision boundary", () => {
             }
           : kind === "agent"
             ? {
-                displayName: "Specialist",
+                displayName: "Researcher",
                 kind,
                 runId: createId("run"),
                 threadId: createId("thread"),
@@ -1073,7 +1073,7 @@ integration("notification decision boundary", () => {
           idempotencyKey: randomUUID(),
           name: "Automatic work",
           program: {
-            toolContractVersion: 4,
+            toolContractVersion: 5,
             language: "javascript",
             source: "export default async () => null",
           },
@@ -1371,7 +1371,7 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("report", true);
       await markRunning(fixture);
       await store.enqueueThreadInput({
-        content: text("Specialist update: the build is green."),
+        content: text("Worker update: the build is green."),
         idempotencyKey: "report-to-voice",
         policy: "report",
         requestedBy: fixture.ownerId,
@@ -1885,20 +1885,20 @@ integration("notification decision boundary", () => {
       const work = await addThread(voice, {
         suffix: "title-work",
       });
-      const specialist = await addThread(voice, {
+      const research = await addThread(voice, {
         suffix: "title-project",
         title: "Research desk",
       });
       await appendCompletedReply(voice, text("From Voice."));
       await appendCompletedReply(work, text("From a work Thread."));
-      await appendCompletedReply(specialist, text("From a specialist."));
-      for (const fixture of [voice, work, specialist]) await decideCommitted(fixture);
+      await appendCompletedReply(research, text("From research."));
+      for (const fixture of [voice, work, research]) await decideCommitted(fixture);
       const titles = Object.fromEntries(
         (await observedViews()).map((row) => [row.body, row.title]),
       );
       expect(titles).toEqual({
         "From Voice.": "Opensteer",
-        "From a specialist.": "Research desk",
+        "From research.": "Research desk",
         "From a work Thread.": "Thread title-work",
       });
     });

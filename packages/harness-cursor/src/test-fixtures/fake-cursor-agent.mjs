@@ -391,12 +391,12 @@ async function main() {
       });
     }
   } else if (scenario === "streamed-mcp-arguments") {
-    const providerIdentifier = "plugin-opensteer-opensteer_integrations";
+    const providerIdentifier = "plugin-opensteer-opensteer";
     const mcpArgs = (args) => ({
       args,
-      name: "opensteer-integrations-integration_call",
+      name: "opensteer-plugin_call",
       providerIdentifier,
-      toolName: "integration_call",
+      toolName: "plugin_call",
     });
     emit({
       call_id: "tool_gateway",
@@ -430,8 +430,8 @@ async function main() {
   } else if (scenario === "mcp-lifecycle-adversarial") {
     const mcpArgs = (args) => ({
       args,
-      providerIdentifier: "plugin-opensteer-opensteer_integrations",
-      toolName: "integration_call",
+      providerIdentifier: "plugin-opensteer-opensteer",
+      toolName: "plugin_call",
     });
     const emitMcp = (callId, subtype, args) =>
       emit({

@@ -95,9 +95,9 @@ describe("opensteerToolIdentity", () => {
       name: "opensteer_task_read",
       namespace: "opensteer",
     });
-    expect(opensteerToolIdentity("opensteer_integrations", "gateway_call")).toEqual({
-      name: "gateway_call",
-      namespace: "opensteer.integrations",
+    expect(opensteerToolIdentity("opensteer-direct", "plugin_call")).toEqual({
+      name: "plugin_call",
+      namespace: "opensteer",
     });
     expect(opensteerToolIdentity("linear", "create_issue")).toEqual({
       name: "create_issue",

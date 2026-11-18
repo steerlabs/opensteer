@@ -48,41 +48,27 @@ Files grant no access and keep no process alive. Use ordinary access Requests fo
 use `opensteer:automations` for requested recurring work and verify the returned state. Remove
 obsolete instructions when the person's requirements change.
 
-## Package a repeated procedure as a plugin
+## Package service tools as a plugin
 
-When repeated work needs skills, scripts or MCP servers together, package it as an Agent Plugins
-1.0 folder inside Agent home: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
-`mcp.json`. Test the scripts on disposable inputs and run the skill's steps before calling
-`opensteer_plugin_install` with the folder's path relative to Agent home. Symlinks are refused. Its skills
-turn on here; connections still need grants, and local MCP servers need the computer owner's launch
-approval.
+A sandboxed service plugin is TypeScript source with an exact apps dependency, a defineApp export,
+and optional skills under skills/<name>/SKILL.md. Read opensteer:plugins before writing or changing
+one. Deploy a folder in Agent home with opensteer_plugin_install using source:"folder"; include
+pluginId for a new version. The folder is a draft, and the deployed version is the truth.
 
-Name plugins specifically (`tapo-camera`, not `camera`). To change one, edit its folder and call
-`opensteer_plugin_install` on it again, never on a renamed copy.
+Loose procedures and scripts can remain ordinary Agent home skills. A local MCP server, such as
+one for a device, is registered with `local_server_add` and approved by the person on its
+computer (opensteer:devices); the sandboxed plugin installer does not run local servers.
 
-A program server that needs a password, key or token declares it in `plugin.json`, never in
-`mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
-"CAMERA_PASSWORD", "title": "Camera password", "description": "Where to find it"}]}}}`. The computer's
-owner enters each value when approving the server, and the program reads it from that environment
-variable. The owner changes values in Settings, Plugins.
+## Hand repeated work to a delegated task
 
-## Turn repeated work into a specialist
+For repeated, well-understood work, write a skill and test it on representative inputs. Then
+call `opensteer_task_delegate` with a message naming the skill. When the work needs a particular
+model, such as a fast one for simple steps, choose `model` and `aiAccountId` from
+`opensteer_ai_account_list`. Continue the task with `taskId` to keep its context.
 
-For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.
-List models in preference order: an exact `{"engine", "model", "options"?}`, or
-`{"role": "light"}` (fast, cheap) or `{"role": "deep"}` (strongest), which stand for the person's
-background models in Agent home's `settings.json` (opensteer:memory controls). Prefer a role unless the work needs a particular
-model. A list never names an account; it runs on the person's eligible accounts. Use
-`fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist works
-within its caller's access, so it declares no access. Test representative inputs and
-check the outputs before `opensteer_plugin_install`. Then call `opensteer_task_delegate` with
-`specialist` set to its registration id or plugin name. Continue it with `taskId` to retain
-context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
-
-`opensteer_plugin_list` lists plugins and specialists. With full access, `opensteer_plugin_update`
-enables or disables a plugin, `opensteer_plugin_install` updates one from its folder, and
-`opensteer_plugin_remove` removes a plugin or a specialist registration. Enabling grants no
-resource access.
+`opensteer_plugin_list` lists deployed service plugins and local tools. Full-access Runs can install, export,
+activate an earlier code version or remove one. Only the person changes agent access and links
+accounts. Use opensteer:plugins for those tools and their approval behavior.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

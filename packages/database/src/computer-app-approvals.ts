@@ -11,14 +11,18 @@ import {
 } from "@opensteer/core";
 import {
   computerAppIdentitiesEqual,
+  type ComputerAppIdentity,
+} from "@opensteer/integration-core/computer-app";
+import {
   integrationAccessCovers,
   widerIntegrationAccess,
-  type ComputerAppIdentity,
   type IntegrationAccess,
+} from "@opensteer/integration-core/access";
+import {
   type IntegrationConnectionId,
-  type IntegrationGrant,
   type IntegrationInstallationId,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
+import { type IntegrationGrant } from "@opensteer/integration-core/models";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   computerAppScopeOf,
@@ -103,7 +107,7 @@ export interface ComputerAppApprovalTask {
 
 /**
  * The one way anything asks for an app on a Mac: a task through
- * `integration_request`, the picker, and unblocking all come here.
+ * `app_access_request`, the picker, and unblocking all come here.
  *
  * A waiting approval that already covers the ask is joined. Anything else
  * replaces it under a new id — wider access, the app as the Mac now resolves
@@ -371,7 +375,6 @@ async function grantComputerAppInTransaction(
     installationId: input.installationId,
     isDefault: existing?.isDefault ?? false,
     ownerUserId: input.ownerUserId,
-    providerAuthorizations: {},
   });
 }
 

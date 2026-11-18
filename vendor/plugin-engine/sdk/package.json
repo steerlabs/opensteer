@@ -1,0 +1,63 @@
+{
+  "name": "@opensteer/plugin-engine-sdk",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./node/build": "./src/node-build.ts",
+    "./core": "./src/core.ts",
+    "./markdown": "./src/markdown.ts",
+    "./blobs": "./src/blobs.ts",
+    "./ui-build": "./src/ui-build.ts",
+    "./skill-source": "./src/skill-source.ts",
+    "./workerd": "./src/workerd.ts",
+    "./workerd/build": "./src/workerd-build.ts",
+    "./workerd/migration": "./src/workerd-migration.ts",
+    "./scheduling": "./src/scheduling.ts",
+    "./testing": "./src/testing.ts",
+    "./node/workerd": "./src/node-workerd.ts"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+    "@cfworker/json-schema": "4.1.1",
+    "@cloudflare/worker-bundler": "0.2.4",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.13",
+    "@effect/platform-node": "4.1.4",
+    "@opensteer/plugin-engine-app-cache": "workspace:*",
+    "@opensteer/plugin-engine-app-data": "workspace:*",
+    "@opensteer/plugin-engine-reactivity": "workspace:*",
+    "@opensteer/plugin-engine-telemetry": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "@jridgewell/trace-mapping": "0.3.31",
+    "ajv": "8.20.0",
+    "apps": "workspace:*",
+    "capnweb": "0.12.0",
+    "effect": "4.1.4",
+    "esbuild": "0.28.2",
+    "@opensteer/plugin-engine-database": "workspace:*",
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-gfm": "3.0.0",
+    "oauth4webapi": "3.8.8",
+    "parse5": "8.0.0",
+    "tailwindcss": "4.3.3",
+    "tailwindcss-iso": "1.0.7",
+    "ws": "8.21.0",
+    "@effect/sql-pg": "4.1.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@effect/sql-pglite": "4.1.4",
+    "@effect/sql-sqlite-node": "4.1.4",
+    "@opensteer/plugin-engine-app-source": "workspace:*",
+    "@types/ws": "8.18.1",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  }
+}

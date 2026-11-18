@@ -231,7 +231,7 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `schedule-${suffix}`,
         name: `Schedule ${suffix}`,
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default async () => null",
         },
@@ -256,7 +256,7 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `watch-${suffix}`,
         name: `Watch ${suffix}`,
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
         },
@@ -376,7 +376,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       name: "Price monitor",
       ownTask: true,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -449,7 +449,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       name: "Refused monitor",
       ownTask: true,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -478,7 +478,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     const { database, store, triggers, createFixture } = storeFixture;
     const f = await createFixture("family");
     const program = {
-      toolContractVersion: 4,
+      toolContractVersion: 5,
       language: "javascript",
       source: "export default async () => null",
     } as const;
@@ -806,7 +806,7 @@ integration.sequential("Trigger failure auto-pause", () => {
           ownerId: fixture.userId,
           triggerId: created.trigger.id,
           program: {
-            toolContractVersion: 4,
+            toolContractVersion: 5,
             language: "javascript",
             source: "export default async () => new Promise(() => {})",
           },
@@ -879,7 +879,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => 'new'",
       },
@@ -1005,7 +1005,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: renamed.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => 'fixed'",
       },
@@ -1039,7 +1039,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       idempotencyKey: "paused-webhook",
       name: "Paused webhook",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },
@@ -1081,7 +1081,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => 'new'",
       },
@@ -1824,7 +1824,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
       },

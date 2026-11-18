@@ -2,7 +2,6 @@ import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
-import { SpecialistStore } from "@opensteer/database";
 import {
   ModelSelectionSchema,
   OpensteerError,
@@ -52,7 +51,7 @@ import {
   openRequestResponse,
   type RequestResponseVault,
 } from "../identity/request-response-vault.js";
-import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
+import type { PluginPackagesTokenService } from "../local-servers/plugin-package-service.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
@@ -273,19 +272,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           ? { kind: "private" }
           : null;
     this.#onRunAdmitted(context.thread.id);
-    if (context.thread.specialistId) {
-      try {
-        await new SpecialistStore(this.#store.database).assertRunnable(
-          context.thread.specialistId,
-          context.run.requestedBy,
-        );
-      } catch (error) {
-        throw new CommandDispatchError(
-          error instanceof Error ? error.message : "Specialist is unavailable",
-          "failed",
-        );
-      }
-    }
     const assignment = context.run.assignmentId
       ? await this.#store.getAssignment(context.run.assignmentId)
       : null;
@@ -493,11 +479,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
-      ...(context.thread.specialistId
-        ? {
-            specialistId: context.thread.specialistId,
-          }
-        : {}),
       environmentId: context.run.environmentId,
       requestedBy: command.requestedBy,
       runId: context.run.id,
@@ -505,34 +486,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
       threadId: context.thread.id,
     });
-    const specialist = context.thread.specialistId
-      ? await this.#store.database
-          .selectFrom("specialists")
-          .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
-          .innerJoin("plugins", "plugins.id", "specialists.pluginId")
-          .select(["plugins.id as pluginId", "plugins.name", "pluginVersions.digest"])
-          .where("specialists.removedAt", "is", null)
-          .where("specialists.id", "=", context.thread.specialistId)
-          .executeTakeFirst()
-      : null;
-    if (context.thread.specialistId && !specialist)
-      throw new Error("Specialist registration was removed");
     const skillPolicy = await this.#skillPolicy(command.requestedBy);
     if (skillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
       throw new CommandDispatchError("Update this Runner to enforce skill settings.", "failed");
     }
-    const pinnedPlugins = specialist
-      ? [specialist]
-      : await this.#pluginVersions(command.requestedBy);
+    const pinnedPlugins = await this.#pluginVersions(command.requestedBy);
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
-      ...(context.thread.specialistId
-        ? {
-            specialistId: context.thread.specialistId,
-          }
-        : {}),
       environmentId: context.run.environmentId,
       requestedBy: command.requestedBy,
       runId: context.run.id,
@@ -545,11 +507,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: this.#attachmentRunTokens.issue({
             bindingGeneration: binding.bindingGeneration,
             grantId: binding.grantId,
-            ...(context.thread.specialistId
-              ? {
-                  specialistId: context.thread.specialistId,
-                }
-              : {}),
             environmentId: context.run.environmentId,
             requestedBy: command.requestedBy,
             runId: context.run.id,
@@ -631,11 +588,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         browserCdp: {
           url: this.#agentBrowserCdpUrl,
         },
-        ...(context.thread.specialistId
-          ? {
-              specialistId: context.thread.specialistId,
-            }
-          : {}),
         plugins: {
           ...(skillPolicy
             ? {

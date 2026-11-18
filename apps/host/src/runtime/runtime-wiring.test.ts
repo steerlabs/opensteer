@@ -1,11 +1,9 @@
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
 import {
   authorizeRunnerRegistration,
   ensureDefaultHarnesses,
-  integrationConnectionReaction,
   runnerRegistrationHook,
   runnerAttachedReaction,
 } from "./runtime.js";
@@ -95,44 +93,6 @@ describe("Host runtime wiring", () => {
 
     await expect(onRegistered({ runnerId: "runner-1" })).rejects.toThrow(/catalog capture failed/u);
     expect(wake).toHaveBeenCalledOnce();
-  });
-
-  describe("integration connection reaction", () => {
-    const connected = {
-      connectionId: createIntegrationId("connection"),
-      ownerUserId: createId("user"),
-    };
-
-    it("wakes the continuation outbox only when a connection settled a Request", async () => {
-      const notify = vi.fn();
-      const report = vi.fn();
-      const settle = vi.fn(async () => [createId("request")]);
-
-      await integrationConnectionReaction({ notify, report, settle })(connected);
-
-      expect(settle).toHaveBeenCalledWith(connected);
-      expect(notify).toHaveBeenCalledOnce();
-      expect(report).not.toHaveBeenCalled();
-    });
-
-    it("reports a failed settlement instead of failing the connection", async () => {
-      const notify = vi.fn();
-      const report = vi.fn();
-      const failure = new Error("tool discovery failed");
-
-      await expect(
-        integrationConnectionReaction({
-          notify,
-          report,
-          settle: async () => {
-            throw failure;
-          },
-        })(connected),
-      ).resolves.toBeUndefined();
-
-      expect(report).toHaveBeenCalledWith(failure, connected.connectionId);
-      expect(notify).not.toHaveBeenCalled();
-    });
   });
 
   describe("default AI engine seeding", () => {

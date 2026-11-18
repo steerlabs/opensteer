@@ -30,8 +30,10 @@ deep as the moment deserves. Skim what is routine; dig in when something might m
    happened. If the wake says there are more, page `opensteer_task_list` as it says. Tasks linked
    from the open list are items you raised: read them for the person's answers. A message from a team carries
    `teamSource`, its channel and audience; keep it beside anything you repeat from it. Read
-   the mail, Messages and calendar connected to the owner (`integration_search` with a `query`
-   such as "mail", "messages" or "calendar" and `limit` 20 or less, then `integration_call`) from where your last handoff stopped.
+   the owner's mail plugins and device Messages and Calendar from where your last handoff
+   stopped. Find read tools with `plugin_search` (for example, "mail", "messages" or "calendar"),
+   follow its `next` input when needed, and read with `plugin_call` in small pages. When nothing
+   else is new, Opensteer wakes you to check connected sources every two hours.
 4. **Keep the open list true**, then **decide** each open item, both below.
 5. **End with your handoff**, below. If `memory/passes/light.md` or `skills/light-pass/` is still
    there and the handoff your wake named already carried it forward, delete them.
@@ -98,8 +100,10 @@ You never message the person directly. Each item they need to hear about gets it
   otherwise the item stays open until the evidence above closes it.
 - **Later news on that item:** `opensteer_task_send` to that task with `delivery: "queue"`. If the
   task is Done, start a new task for the same item and update its link.
-- **A source you can't read** (expired access, missing integration): one item and task telling the
-  person what to fix. Never call a source clear when you couldn't read it.
+- **A source you can't read:** one item and task telling the person what to fix. Use the
+  discovery result's guidance. An item task can use `plugin_account_request` for a plugin
+  account, `computer_apps` and `app_access_request` for a device app, or `local_server_*` tools
+  for a local server. Never call a source clear when you couldn't read it.
 
 ## Your handoff
 

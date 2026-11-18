@@ -1,0 +1,55 @@
+{
+  "adapted": [
+    {
+      "message": "tools",
+      "protocols": [1, 2, 3],
+      "adapter": "The protocol 1 to 3 adapter turns an inspection's list of tools into a catalog without routers."
+    },
+    {
+      "message": "toolSummaries",
+      "protocols": [1, 2, 3],
+      "adapter": "The protocol 1 to 3 adapter turns an inspection's list of tool summaries into a catalog summary without routers."
+    },
+    {
+      "message": "requirements",
+      "protocols": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "adapter": "Every adapter for protocols 1 to 12 reads a bundle's requirements as user requirements: its accounts become accounts.user, and accounts.app is empty."
+    },
+    {
+      "message": "accounts",
+      "protocols": [6, 7, 8, 9, 10, 11, 12],
+      "adapter": "Every adapter for protocols 1 to 12 sends a bundle its invocation's user accounts as the flat record it reads, in the invocation (whose accounts protocols 1 to 5 carry only there) and in workflow step contexts. Such a bundle declares no app requirements, so it has no app accounts."
+    },
+    {
+      "message": "accounts",
+      "protocols": [13],
+      "adapter": "The protocol 13 adapter, which every earlier one shares, sends each account without its credential hosts that hold an underscore, which those bundles reject. A sealed handle keeps the hosts it was sealed for, and the outbound network checks those, so what the bundle reads changes nothing it does."
+    }
+  ],
+  "additions": [
+    {
+      "message": "request",
+      "path": "operation=call/kind",
+      "since": 4,
+      "gate": "The protocol 1 to 3 adapter drops kind before sending a call and refuses a call whose kind disagrees with the tool's queries. or mutations. prefix."
+    },
+    {
+      "message": "request",
+      "path": "operation=account-check",
+      "since": 5,
+      "gate": "Sent only for a slot whose requirements declare health, which a protocol 1 to 4 build never does."
+    },
+    {
+      "message": "request",
+      "path": "operation=migrate",
+      "since": 10,
+      "gate": "Sent only to a build whose requirements declare sql, which a protocol 1 to 9 build never does; their adapter refuses it."
+    },
+    {
+      "message": "request",
+      "path": "operation=inspect/definitions",
+      "since": 14,
+      "gate": "Sent only to a build whose requirements declare capabilities.sharedDefinitions, which no protocol 1 to 12 build declares, nor a protocol 13 build from a release before the capability."
+    }
+  ]
+}

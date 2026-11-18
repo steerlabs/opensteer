@@ -15,14 +15,14 @@ import {
   type RunId,
   type RunnerId,
 } from "@opensteer/core";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   localMcpLaunchWithSecrets,
-  type ComputerAppIdentity,
-  type IntegrationServerId,
-  type IntegrationToolEffect,
   type LocalMcpLaunch,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { type ComputerAppIdentity } from "@opensteer/integration-core/computer-app";
+import { type IntegrationServerId } from "@opensteer/integration-core/ids";
+import { type IntegrationToolEffect } from "@opensteer/integration-core/effect";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
@@ -157,6 +157,7 @@ export type ComputerAppInvokeOutcome =
     };
 
 export interface ComputerAppInvokeInput {
+  readonly authorize?: () => Promise<void>;
   /** The lesser of the connection's ceiling and the calling grant's access. */
   readonly access: HostIntegrationsInvoke["access"];
   readonly arguments: HostIntegrationsInvoke["arguments"];
@@ -1674,6 +1675,13 @@ export class ComputerAppHub {
     // visible to the next caller, and a result that arrives while the send is
     // still completing has to find its request.
     entry.pending.set(requestId, { effect: input.effect, kind: "invoke", settle: finish });
+    try {
+      await input.authorize?.();
+      input.signal?.throwIfAborted();
+    } catch (error) {
+      entry.pending.delete(requestId);
+      throw error;
+    }
     const submission = await this.#submit(entry, {
       // The fence names the exact stream; the module is restated because
       // only an `integrations` stream ever reaches this hub.
@@ -1981,7 +1989,7 @@ export class ComputerAppHub {
     const known = this.#options.knownDefinitionIds();
     const next = apps.flatMap((app): readonly MachineAppStatus[] => {
       if (!known.has(app.definitionId)) return [];
-      const definition = getIntegrationDefinition(app.definitionId);
+      const definition = getDeviceDefinition(app.definitionId);
       if (!definition || !isComputerAppDefinition(definition)) return [app];
       const platform = entry.stream.identity.modules?.integrations?.platform;
       if (platform && !definition.config.platforms.includes(platform)) return [];

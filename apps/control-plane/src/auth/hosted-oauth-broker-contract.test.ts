@@ -1,9 +1,11 @@
+import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
+  CreatePluginOAuthAttemptRequestSchema,
   ControlPlaneAccountIdSchema,
-  CreateHostedOAuthAttemptRequestSchema,
+  OAuthBrokerPluginAuthorizationContextSchema,
   HostedOAuthAttemptIdSchema,
   OAuthBrokerTokenBundleSchema,
   type OAuthBrokerSealedEnvelope,
@@ -12,15 +14,12 @@ import {
   generateOAuthBrokerEphemeralKeyPair,
   hostedOAuthDeploymentAuthorityDigest,
   openOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
-import { slackIntegration } from "@opensteer/integration-catalog";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import { HostedOAuthBrokerService } from "./hosted-oauth-broker-service.js";
 import type { HostedOAuthAttemptDurableInput } from "./hosted-oauth-broker-store.js";
 
-const method = slackIntegration.authMethods.find((candidate) => candidate.kind === "oauth");
-if (!method || method.kind !== "oauth") throw new Error("Slack OAuth is unavailable");
-const scopes = method.oauth.scopes.join(",");
+const oauth = brokerProviderFixture("slack").oauth;
+const scopes = oauth.scopes.join(",");
 const validResponse = {
   ok: true,
   access_token: "synthetic-access",
@@ -72,9 +71,15 @@ async function scenario(
     return row;
   };
   const fetch = vi.fn(async () => Response.json(response));
-  const broker = new HostedOAuthBrokerService({
+  const brokerOptions = {
     applications: [
-      { clientId: "slack-client", clientSecret: "slack-secret", provider: "slack", revision: 1 },
+      {
+        ...brokerProviderFixture("slack"),
+        clientId: "slack-client",
+        clientSecret: "slack-secret",
+        provider: "slack",
+        revision: 1,
+      },
     ],
     issuer: new URL("https://accounts.example.test"),
     now: () => now,
@@ -152,21 +157,32 @@ async function scenario(
         };
       }),
     } as never,
-  });
-  const request = CreateHostedOAuthAttemptRequestSchema.parse({
-    accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+  };
+  const broker = new HostedOAuthBrokerService(brokerOptions);
+  const reload = (revision: number) =>
+    new HostedOAuthBrokerService({
+      ...brokerOptions,
+      applications: brokerOptions.applications.map((application) => ({ ...application, revision })),
+    });
+  const request = CreatePluginOAuthAttemptRequestSchema.parse({
+    kind: "plugin",
     attemptId,
-    authorizationDigest: authorizationDigest(slackIntegration),
+    expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    provider: "slack",
+    registryRevision: 1,
+    requestedScopes: oauth.scopes,
     clientSurface: surface,
     ...(finish ? { finish } : {}),
     ...(appReturnPort === undefined ? {} : { appReturnPort }),
-    definitionId: slackIntegration.id,
-    deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
-    expiresAt: new Date(now.getTime() + 60_000).toISOString(),
-    hostPublicKey: recipient.publicKey,
-    provider: "slack",
-    providerApplicationRevision: 1,
     returnPath: "/threads/test",
+    binding: {
+      accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+      accountLinkGeneration: "g".repeat(43),
+      deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+      hostPublicKey: recipient.publicKey,
+      requirementDigest: "r".repeat(43),
+      redirectUrl: broker.callbackUrl("slack"),
+    },
   });
   const created = await broker.createAuthorizationAttempt(
     { credentialHash: "unused", deploymentId, hostInstanceId },
@@ -198,10 +214,37 @@ async function scenario(
     state,
     deploymentId,
     broker,
+    reload,
+    callback: {
+      provider: "slack",
+      parameters: new URLSearchParams({ state, code: "synthetic-code" }),
+      cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${new URL(created.launchUrl).searchParams.get("ticket")!}`,
+    },
   };
 }
 
 describe("managed provider authorization contract", () => {
+  it.each(["", `${scopes},admin:unknown`])(
+    "refuses missing or excess scopes in a plugin token result (%s)",
+    async (scope) => {
+      const s = await scenario({ ...validResponse, scope }, "web", undefined, undefined);
+      expect(await s.complete()).toMatchObject({
+        status: "failed",
+        failureCode: "scope-escalation",
+      });
+      expect(s.current().sealedCiphertext).toBeNull();
+    },
+  );
+  it("pins a plugin provider revision across a broker deployment", async () => {
+    const s = await scenario(validResponse, "web", undefined, undefined);
+    const updated = s.reload(2);
+    expect(await updated.completeAuthorization(s.callback)).toMatchObject({
+      status: "failed",
+      failureCode: "stale-provider-application",
+    });
+    expect(s.fetch).not.toHaveBeenCalled();
+  });
+
   it.each(["desktop", "native"] as const)(
     "holds managed %s consent for its app",
     async (surface) => {
@@ -210,7 +253,6 @@ describe("managed provider authorization contract", () => {
       expect(result.status).toBe("held");
       expect(new URL(result.returnUrl!).searchParams.get("return")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
       expect(s.broker.metadata()).toHaveProperty("appFinish", 1);
-      expect(s.broker.metadata(false)).not.toHaveProperty("appFinish");
     },
   );
 
@@ -242,7 +284,6 @@ describe("managed provider authorization contract", () => {
       },
     });
     expect(s.broker.metadata()).toHaveProperty("appReturnPort", 1);
-    expect(s.broker.metadata(false)).not.toHaveProperty("appReturnPort");
   });
 
   it("keeps a held consent without a port on the app link alone", async () => {
@@ -259,48 +300,51 @@ describe("managed provider authorization contract", () => {
     expect(result).not.toHaveProperty("returnHandoff");
   });
 
-  it("refuses a repeated attempt that changes its port", async () => {
+  it.each([
+    { appReturnPort: 48_204 },
+    { finish: undefined, appReturnPort: undefined },
+    { clientSurface: "native", appReturnPort: undefined },
+    { returnPath: "/another-plugin" },
+  ])("refuses a repeated attempt that changes its consent proof or return (%j)", async (change) => {
     const s = await scenario(validResponse, "desktop", "app", 48_203);
     await expect(
-      s.broker.createAuthorizationAttempt(s.authority, { ...s.request, appReturnPort: 48_204 }),
+      s.broker.createAuthorizationAttempt(s.authority, { ...s.request, ...change }),
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("seals an MCP relay's port the same way and returns its own attempt", async () => {
     const s = await scenario(validResponse);
     const uuid = crypto.randomUUID();
-    const mcp = {
-      serverId: `isv_${crypto.randomUUID()}`,
+    const state = "s".repeat(43);
+    const relayBinding = {
+      clientId: "mcp-client",
       issuer: "https://mcp-issuer.example.test/",
       authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
       authorizationResponseIssuerParameterSupported: true,
+      usesPkce: true,
+      scopeSeparator: " ",
     };
-    const state = "s".repeat(43);
-    const authorizationUrl = new URL(mcp.authorizationEndpoint);
+    const authorizationUrl = new URL(relayBinding.authorizationEndpoint);
     authorizationUrl.search = new URLSearchParams({
       state,
-      client_id: "mcp-client",
+      client_id: relayBinding.clientId,
       redirect_uri: s.broker.callbackUrl("mcp"),
       response_type: "code",
       code_challenge: "c".repeat(43),
       code_challenge_method: "S256",
     }).toString();
     const relay = {
-      accountSubject: s.request.accountSubject,
-      appReturnPort: 48_205,
-      attemptId: `hoa_${uuid}`,
-      authorizationDigest: "d".repeat(43),
-      authorizationUrl: authorizationUrl.toString(),
-      clientId: "mcp-client",
-      clientSurface: "desktop",
-      definitionId: mcp.serverId,
-      deploymentAuthorityDigest: s.request.deploymentAuthorityDigest,
-      expiresAt: s.request.expiresAt,
-      finish: "app",
-      hostPublicKey: s.recipient.publicKey,
-      mcp,
+      ...s.request,
+      kind: "plugin-relay",
       provider: "mcp",
-      providerApplicationRevision: 1,
+      requestedScopes: [],
+      binding: { ...s.request.binding, redirectUrl: s.broker.callbackUrl("mcp") },
+      appReturnPort: 48_205,
+      attemptId: HostedOAuthAttemptIdSchema.parse(`hoa_${uuid}`),
+      authorizationUrl: authorizationUrl.toString(),
+      relay: relayBinding,
+      clientSurface: "desktop",
+      finish: "app",
     };
     const created = await s.broker.createCallbackRelay(s.authority, relay);
     await expect(
@@ -310,13 +354,13 @@ describe("managed provider authorization contract", () => {
     await s.broker.launchAuthorization(null, relay.attemptId as never, ticket);
     const result = await s.broker.completeAuthorization({
       cookieHeader: `__Secure-opensteer.oauth.${relay.attemptId}=${ticket}`,
-      parameters: new URLSearchParams({ code: "mcp-code", state, iss: mcp.issuer }),
+      parameters: new URLSearchParams({ code: "mcp-code", state, iss: relayBinding.issuer }),
       provider: "mcp",
     });
     expect(result.status).toBe("held");
     expect(result.returnHandoff).toMatchObject({
       action: "http://127.0.0.1:48205/oauth/integration-callback",
-      fields: { attempt_id: `imo_${uuid}` },
+      fields: { attempt_id: `ioa_${uuid}` },
     });
   });
 
@@ -353,20 +397,23 @@ describe("managed provider authorization contract", () => {
           integrationAttemptId,
         );
       const bundle = OAuthBrokerTokenBundleSchema.parse(
-        openOAuthBrokerPayload(s.current().sealedCiphertext!, s.recipient.privateKey, {
-          accountSubject: s.request.accountSubject,
-          attemptId: s.attemptId,
-          authorizationDigest: s.request.authorizationDigest,
-          definitionId: s.request.definitionId,
-          deploymentAuthorityDigest: s.request.deploymentAuthorityDigest,
-          expiresAt: s.request.expiresAt,
-          providerApplicationRevision: 1,
-          schemaVersion: 1,
-        }),
+        openOAuthBrokerPayload(
+          s.current().sealedCiphertext!,
+          s.recipient.privateKey,
+          OAuthBrokerPluginAuthorizationContextSchema.parse({
+            provider: s.request.provider,
+            registryRevision: s.request.registryRevision,
+            requestedScopes: s.request.requestedScopes,
+            binding: s.request.binding,
+            attemptId: s.attemptId,
+            expiresAt: s.request.expiresAt,
+            schemaVersion: 2,
+          }),
+        ),
       );
       expect(bundle).toEqual({
         accessToken: "synthetic-access",
-        tokenType: "bearer",
+        tokenType: "Bearer",
         grantedScopes: expect.any(Array),
         tokenResponseIdentity: {
           externalIdentityId: "U_BOT",

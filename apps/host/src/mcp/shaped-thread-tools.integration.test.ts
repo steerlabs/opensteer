@@ -1,3 +1,4 @@
+import { ThreadAccessModeSchema } from "@opensteer/core";
 import { onTestFinished } from "vitest";
 import { DeviceIdSchema } from "@opensteer/core";
 import { WindowIdSchema, OpensteerError } from "@opensteer/core";
@@ -23,7 +24,6 @@ import {
   BrowserSurfaceIdSchema,
   type RunId,
   type PlaceIdentity,
-  ThreadAccessModeSchema,
   RequestKindSchema,
   PendingRequestSchema,
   type RequestPayload,
@@ -125,8 +125,8 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     browser,
     runners: {
       canRunHarness: () => true,
-      isAvailable: () => true,
       harnessAccessModes: () => ThreadAccessModeSchema.options,
+      isAvailable: () => true,
       identityForEnvironment: () => undefined,
       attachmentInputFailure: () => null,
     },
@@ -159,7 +159,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     },
     isEnvironmentConnected: () => true,
     canRunHarness: () => true,
-    harnessAccessModes: () => ThreadAccessModeSchema.options,
     browserSources: {} as never,
     savedLogins: {} as never,
     deviceAccess: {} as never,
@@ -544,7 +543,6 @@ describeStore("agents answering task questions", (it) => {
         requestedConnectionId: null,
         requestedServerId: null,
       },
-      "integration.install": { kind: "integration.install", reason, manifest: {} },
       "device.access": {
         kind: "device.access",
         reason,
@@ -567,10 +565,22 @@ describeStore("agents answering task questions", (it) => {
         deviceId: DeviceIdSchema.parse(s.f.runnerId),
         setupRequestId: randomUUID(),
       },
-      "integration.input": {
-        kind: "integration.input",
-        installationId: "installation",
-        serverId: "server",
+      "plugin.account": {
+        kind: "plugin.account",
+        plugin: "fixture",
+        requirement: "service",
+        scope: "user",
+        consent: { digest: "a".repeat(64), sites: [], credential: "value" },
+      },
+      "plugin.approval": {
+        kind: "plugin.approval",
+        executionId: "execution",
+        interactionId: "interaction",
+      },
+      "plugin.input": {
+        kind: "plugin.input",
+        executionId: "execution",
+        interactionId: "interaction",
       },
       "person.question": { kind: "person.question" },
     };

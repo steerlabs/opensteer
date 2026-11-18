@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -22,7 +22,7 @@ async function fixture() {
       get: vi.fn(async () => ({ loginId: "chosen-login", revision: 3 })),
       revoke: vi.fn(async () => {}),
     };
-    const store = new PrivateResourceStore(database, passwords, () => ({}));
+    const store = new PrivateResourceStore(database, passwords);
     const actor = {
       ownerId: personal.userId,
       deploymentId: personal.deploymentId,

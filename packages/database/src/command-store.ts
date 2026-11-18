@@ -928,6 +928,7 @@ export async function enqueueRunnerControlInTransaction(
         reason: "run-ended",
         resolvedAt: new Date(),
         runId: input.runId,
+        cancelHandedOffPlugins: true,
       });
       // With nothing left to answer, the Run is running again until it stops.
       await transaction

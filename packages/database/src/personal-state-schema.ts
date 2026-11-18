@@ -575,7 +575,8 @@ const currentStateIndexes = `
   create index commands_task_adoption on commands(thread_id,id) where type in ('thread.rename','thread.done.set','thread.archive');
   create index requests_current_run on requests(originating_run_id,id) where status = 'pending';
   create index requests_current_run_end on requests(originating_run_id,id)
-    where status = 'pending' and (mode = 'live' or kind = 'integration.input');
+    where status = 'pending' and (mode = 'live' or kind in ('plugin.approval','plugin.input'));
+  create index plugin_executions_request on plugin_executions(request_id) where request_id is not null;
   create index requests_current_thread on requests(originating_thread_id,id) where status = 'pending' and originating_node_id is null;
   create index requests_password_sign_in_deadline on requests((payload->>'expiresAt'),id)
     where kind='browser.password-sign-in' and status='pending';

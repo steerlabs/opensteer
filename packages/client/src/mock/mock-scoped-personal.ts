@@ -478,6 +478,14 @@ export function mockResourceView(
         );
       case "browser-home":
         return (snapshot.browserProfileHomes ?? []).map((id) => ({ id }));
+      case "plugin":
+      case "plugin-scheduled-runs":
+      case "plugin-workflow-runs":
+      case "plugin-webhooks":
+      case "plugin-webhook-sources":
+      case "plugin-schedules":
+      case "plugin-engine":
+        return [];
       case "browser-availability":
         return [{ id: "browser", status: snapshot.browserAvailable ? "available" : "unavailable" }];
       case "owner-profile":
@@ -638,6 +646,15 @@ export function mockScopedResource(
       return { kind, placements: bootstrap.browser.placements };
     case "browser-home":
       return { kind, homes: bootstrap.browser.profileHomes };
+    case "plugin":
+    case "plugin-scheduled-runs":
+    case "plugin-workflow-runs":
+    case "plugin-webhooks":
+    case "plugin-webhook-sources":
+    case "plugin-schedules":
+      return { kind };
+    case "plugin-engine":
+      return { kind, engine: { status: "idle" } };
     case "browser-availability":
       return { kind, available: bootstrap.browser.available };
     case "agent-home-settings":

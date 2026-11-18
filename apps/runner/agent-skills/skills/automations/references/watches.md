@@ -34,4 +34,4 @@ export default async function ({ event, opensteer }) {
 
 Use durable observation identities for logical changes, including across activations when duplicate effects matter. Filesystem events are hints, not a durable queue; reconcile content if missing a change matters.
 
-Watches use the program tool list, including integration tools, within its task's authority. Delegate when agent judgment or a Run-only tool is needed; see the [program contract](program-contract.md).
+Watches use the program tool list, including plugin tools, within its task's authority. Delegate when agent judgment or a Run-only tool is needed; see the [program contract](program-contract.md).

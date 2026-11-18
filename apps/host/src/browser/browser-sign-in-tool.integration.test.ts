@@ -12,7 +12,7 @@ import {
   dispatchCallerRun,
   startPrivateMachineHost,
   waitForValue,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 import { passwordsAnywhereJourneys } from "./passwords-anywhere.test-support.js";

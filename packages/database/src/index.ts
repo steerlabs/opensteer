@@ -12,12 +12,14 @@ export * from "./connection.js";
 export * from "./deployment-authority.js";
 export * from "./integration-auth-attempt-store.js";
 export * from "./integration-platform-store.js";
-export * from "./integration-store.js";
+export { listIntegrationConnections } from "./integration-connections.js";
+export * from "./integration-connections.js";
 export * from "./migrations.js";
 export * from "./notification-state.js";
 export * from "./owner-profile-store.js";
 export * from "./notification-store.js";
 export * from "./request-store.js";
+export * from "./integration-request-store.js";
 export * from "./reference-store.js";
 export * from "./schema.js";
 export * from "./store.js";
@@ -36,7 +38,6 @@ export {
 
 export * from "./resource-access.js";
 
-export * from "./specialist-store.js";
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
 
 export { requestSettlementActor } from "./request-settlement.js";
@@ -124,6 +125,7 @@ export type {
   AppTable,
   AppServerTable,
 } from "./schema.js";
+export * from "./plugin-agent-store.js";
 
 export * from "./device-inventory-store.js";
 export * from "./device-driver-store.js";

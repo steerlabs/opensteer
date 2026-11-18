@@ -2,11 +2,9 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { RunIdSchema } from "@opensteer/core";
 import { groupTranscriptEntries } from "../host/agent-activity-model.js";
 import type { ToolEntry, TranscriptEntry } from "../host/client.js";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { computerAppRows } from "./computer-apps.js";
@@ -237,7 +235,7 @@ describe("a live Computer use line", () => {
       runId: session([notes]).runId,
       state: "running",
       streamText: "",
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
+      tool: { name: "plugin_call", namespace: "opensteer.integrations" },
       ...overrides,
     };
   }

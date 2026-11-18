@@ -1046,7 +1046,6 @@ create table threads (
   "input_queue_paused" boolean not null default false,
   "input_queue_paused_by" text,
   "access_mode" text not null default 'full-access',
-  "specialist_id" text,
   "purpose" text not null,
   "team_id" text,
   "channel_id" text,
@@ -1795,24 +1794,6 @@ create table principals (
   primary key ("id")
 );
 
-create table integration_provider_applications (
-  "id" text not null,
-  "provider" text not null,
-  "display_name" text not null,
-  "client_id" text not null,
-  "encrypted_secrets" bytea not null,
-  "encryption_key_version" integer not null,
-  "installation_url" text,
-  "owner_user_id" text,
-  "revision" integer not null,
-  "status" text not null check (status in ('active', 'disabled')),
-  "created_by" text not null,
-  "updated_by" text not null,
-  "created_at" timestamp with time zone not null default now(),
-  "updated_at" timestamp with time zone not null default now(),
-  primary key ("id")
-);
-
 create table integration_auth_attempts (
   "id" text not null,
   "flow" text not null,
@@ -1825,7 +1806,6 @@ create table integration_auth_attempts (
   "status" text not null check (status in ('pending', 'launched', 'claimed', 'completed', 'failed')),
   "surface" text not null check (surface in ('desktop', 'native', 'web')),
   "failure_reason" text,
-  "result_connection_id" text,
   "expires_at" timestamp with time zone not null default now(),
   "launched_at" timestamp with time zone,
   "claimed_at" timestamp with time zone,
@@ -1849,14 +1829,11 @@ create table integration_authority_pending (
 
 create table integration_connections (
   "account_identifier" text,
-  "application_source" jsonb,
-  "auth_method_id" text,
-  "authorization_digest" text,
   "id" text not null,
   "owner_user_id" text not null,
   "credential_id" text,
   "credential_generation" integer not null default 1 check (credential_generation > 0),
-  "connection_kind" text not null check (connection_kind in ('provider-account', 'channel', 'computer', 'mcp-oauth')),
+  "connection_kind" text not null check (connection_kind in ('channel', 'computer')),
   "computer_access" text,
   "computer_app" jsonb,
   "computer_app_key" text,
@@ -1864,14 +1841,12 @@ create table integration_connections (
   "computer_policy_revision" integer,
   "provider" text not null,
   "integration_server_id" text,
-  "provider_application_id" text,
   "connection_method" text not null,
   "status" text not null check (status in ('pending', 'connected', 'needs-attention', 'paused', 'revoked')),
   "display_name" text not null,
   "external_identity_id" text,
   "external_tenant_id" text,
   "capabilities" jsonb not null,
-  "granted_scopes" jsonb not null,
   "integration_definition_id" text,
   "runner_id" text,
   "source_connection_id" text,
@@ -1883,23 +1858,14 @@ create table integration_connections (
   primary key ("id")
 );
 
-create table integration_application_source_defaults (
-  "provider" text not null,
-  "source_kind" text not null check (source_kind in ('deployment-oauth', 'hosted-oauth')),
-  "updated_at" timestamp with time zone not null default now(),
-  "updated_by" text not null,
-  primary key ("provider")
-);
-
 create table integration_installations (
-  "adapter_snapshot" jsonb,
   "id" text not null,
   "name" text not null,
   "title" text not null,
   "description" text not null,
   "version" text,
   "plugin_id" text,
-  "source_kind" text not null check (source_kind in ('plugin', 'built-in', 'proposed', 'remote-mcp')),
+  "source_kind" text not null check (source_kind in ('plugin', 'built-in')),
   "trust" text not null check (trust in ('built-in', 'verified-publisher', 'administrator-approved')),
   "manifest" jsonb not null,
   "provenance" jsonb not null,
@@ -1991,27 +1957,11 @@ create table runner_plugin_data_removals (
   primary key ("runner_id", "plugin_id")
 );
 
-create table specialists (
-  "removed_at" timestamptz,
-  "id" text not null,
-  "plugin_id" text not null,
-  "plugin_version_id" text not null,
-  "owner_user_id" text not null,
-  "created_by" text not null,
-  "status" text not null check (status in ('pending', 'ready', 'removing', 'removal-failed')),
-  "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now(),
-  primary key ("id")
-);
-
-alter table specialists add constraint specialists_plugin_owner unique (plugin_id, owner_user_id);
-
 create table plugin_versions (
   "id" text not null,
   "plugin_id" text not null,
   "digest" text not null,
   "manifest" jsonb not null,
-  "specialist_manifest" jsonb,
   "created_at" timestamptz not null default now(),
   primary key ("id")
 );
@@ -2030,16 +1980,6 @@ create table integration_grants (
   "revoked_at" timestamp with time zone,
   "status" text not null check (status in ('active', 'revoked')),
   primary key ("id")
-);
-
-create table mcp_oauth_credentials (
-  "connection_id" text not null,
-  "encrypted_state" bytea not null,
-  "encryption_key_version" integer not null,
-  "revision" integer not null,
-  "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now(),
-  primary key ("connection_id")
 );
 
 create table channel_accounts (
@@ -2292,24 +2232,18 @@ alter table harness_instances add constraint harness_instances_environment_id_fk
 alter table host_account_adoption_proofs add constraint host_account_adoption_proofs_authorized_by_session_id_fkey FOREIGN KEY (authorized_by_session_id) REFERENCES auth_sessions(id) ON DELETE CASCADE;
 alter table host_account_adoption_proofs add constraint host_account_adoption_proofs_authorized_by_user_id_fkey FOREIGN KEY (authorized_by_user_id) REFERENCES users(id) ON DELETE CASCADE;
 alter table host_account_adoption_proofs add constraint host_account_adoption_proofs_deployment_id_fkey FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE;
-alter table integration_application_source_defaults add constraint integration_application_source_defaults_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE RESTRICT;
 alter table integration_auth_attempts add constraint integration_auth_attempts_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT;
-alter table integration_auth_attempts add constraint integration_auth_attempts_result_connection_id_fkey FOREIGN KEY (result_connection_id) REFERENCES integration_connections(id) ON DELETE SET NULL;
 alter table integration_authority_generations add constraint integration_authority_generations_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE;
 alter table integration_connections add constraint integration_connections_runner_id_fkey FOREIGN KEY (runner_id) REFERENCES runners(id) ON DELETE RESTRICT;
 alter table integration_connections add constraint integration_connections_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE RESTRICT;
 alter table integration_connections add constraint integration_connections_integration_server_id_fkey FOREIGN KEY (integration_server_id) REFERENCES integration_servers(id) ON DELETE RESTRICT;
 alter table integration_connections add constraint integration_connections_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT;
-alter table integration_connections add constraint integration_connections_provider_application_id_fkey FOREIGN KEY (provider_application_id) REFERENCES integration_provider_applications(id) ON DELETE RESTRICT;
 alter table integration_grants add constraint integration_grants_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES integration_connections(id) ON DELETE RESTRICT;
 alter table integration_grants add constraint integration_grants_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT;
 alter table integration_grants add constraint integration_grants_installation_id_fkey FOREIGN KEY (installation_id) REFERENCES integration_installations(id) ON DELETE RESTRICT;
 alter table integration_grants add constraint integration_grants_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT;
 alter table integration_installations add constraint integration_installations_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT;
 alter table integration_installations add constraint integration_installations_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE RESTRICT;
-alter table integration_provider_applications add constraint integration_provider_applications_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT;
-alter table integration_provider_applications add constraint integration_provider_applications_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE;
-alter table integration_provider_applications add constraint integration_provider_applications_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE RESTRICT;
 alter table integration_servers add constraint integration_servers_installation_id_fkey FOREIGN KEY (installation_id) REFERENCES integration_installations(id) ON DELETE RESTRICT;
 alter table integration_tool_definitions add constraint integration_tool_definitions_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES integration_connections(id) ON DELETE RESTRICT;
 alter table integration_tool_definitions add constraint integration_tool_definitions_server_id_fkey FOREIGN KEY (server_id) REFERENCES integration_servers(id) ON DELETE RESTRICT;
@@ -2424,7 +2358,6 @@ create index host_account_adoption_proofs_pending on host_account_adoption_proof
 create index integration_auth_attempts_expiry on integration_auth_attempts USING btree (expires_at);
 create UNIQUE index integration_auth_attempts_launch_ticket on integration_auth_attempts USING btree (launch_ticket_hash);
 create index integration_auth_attempts_owner_flow_status on integration_auth_attempts USING btree (owner_user_id, flow, status, created_at DESC);
-create UNIQUE index integration_connections_definition_identity_unique on integration_connections USING btree (integration_definition_id, external_tenant_id, external_identity_id) NULLS NOT DISTINCT WHERE ((connection_kind = 'provider-account'::text) AND (external_identity_id IS NOT NULL) AND (status <> 'revoked'::text));
 create UNIQUE index integration_connections_computer_live_unique on integration_connections USING btree (integration_definition_id, runner_id, coalesce(computer_app_key, '')) WHERE ((connection_kind = 'computer'::text) AND (status <> 'revoked'::text));
 create index integration_connections_kind_owner_updated on integration_connections USING btree (connection_kind, owner_user_id, updated_at DESC);
 create index integration_connections_owner_updated on integration_connections USING btree (owner_user_id, updated_at DESC);
@@ -2721,13 +2654,8 @@ create trigger integration_servers_authority_generation after insert or update o
   for each statement execute function opensteer_bump_all_integration_authority();
 create trigger integration_tools_authority_generation after insert or update or delete on integration_tools
   for each statement execute function opensteer_bump_all_integration_authority();
-create trigger integration_provider_applications_authority_generation after insert or update or delete on integration_provider_applications
-  for each statement execute function opensteer_bump_all_integration_authority();
 create trigger integration_connections_authority_generation after insert or update or delete on integration_connections
   for each row execute function opensteer_bump_integration_owner_authority();
 create trigger integration_grants_authority_generation after insert or update or delete on integration_grants
   for each row execute function opensteer_bump_integration_owner_authority();
-create trigger plugin_owner_settings_authority_generation after insert or update or delete on plugin_owner_settings
-  for each row execute function opensteer_bump_integration_owner_authority();
-
 `;

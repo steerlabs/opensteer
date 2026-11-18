@@ -1,19 +1,12 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { randomUUID } from "node:crypto";
 import type { Kysely, Transaction } from "kysely";
-import {
-  SpecialistManifestSchema,
-  type SpecialistManifest,
-  OpensteerError,
-  type UserId,
-  type RunnerId,
-  type ThreadId,
-} from "@opensteer/core";
+import { OpensteerError, type UserId, type RunnerId, type ThreadId } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { nearestListedThread } from "./thread-lineage.js";
@@ -105,7 +98,6 @@ export class PluginStore {
       name: string;
       source: Readonly<Record<string, unknown>>;
       actorUserId: UserId;
-      specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
       setupThreadId?: ThreadId | null;
@@ -142,9 +134,6 @@ export class PluginStore {
           pluginId: input.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
-          specialistManifest: input.specialistManifest
-            ? jsonValue(SpecialistManifestSchema.parse(input.specialistManifest))
-            : null,
           createdAt: now,
         })
         .execute();
@@ -156,13 +145,12 @@ export class PluginStore {
         .where("id", "=", input.id)
         .execute();
     };
-    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
+    return transaction ? persist(transaction) : commitPersonalMutation(this.database, persist);
   }
   async update(
     input: {
       pluginId: string;
       source?: Readonly<Record<string, unknown>>;
-      specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
       setupThreadId?: ThreadId | null;
@@ -189,9 +177,6 @@ export class PluginStore {
           pluginId: plugin.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
-          specialistManifest: input.specialistManifest
-            ? jsonValue(SpecialistManifestSchema.parse(input.specialistManifest))
-            : null,
           createdAt: new Date(),
         })
         .execute();
@@ -214,43 +199,7 @@ export class PluginStore {
         .where("id", "=", plugin.id)
         .execute();
     };
-    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
-  }
-
-  /** Moves the plugin's specialist registrations to its current version; installs call it. */
-  async repinSpecialists(tx: Transaction<DatabaseSchema>, pluginId: string): Promise<void> {
-    const current = await tx
-      .selectFrom("plugins")
-      .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
-      .select(["pluginVersions.id", "pluginVersions.specialistManifest"])
-      .where("plugins.id", "=", pluginId)
-      .executeTakeFirstOrThrow();
-    // Registrations being removed keep the version they were removed from.
-    const registrations = await tx
-      .selectFrom("specialists")
-      .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
-      .select("specialists.id")
-      .where("specialists.pluginId", "=", pluginId)
-      .where("specialists.removedAt", "is", null)
-      .orderBy("specialists.id")
-      .forNoKeyUpdate("specialists")
-      .execute();
-    if (registrations.length === 0) return;
-    const next = current.specialistManifest;
-    if (!next)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Remove this plugin's specialist registrations before installing it without one",
-      });
-    for (const row of registrations)
-      await tx
-        .updateTable("specialists")
-        .set({
-          pluginVersionId: current.id,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", row.id)
-        .execute();
+    return transaction ? persist(transaction) : commitPersonalMutation(this.database, persist);
   }
 
   async pendingDataRemovals(runnerId?: RunnerId) {
@@ -271,18 +220,8 @@ export class PluginStore {
       .execute();
   }
   async remove(pluginId: string, administration?: AdministrationCommandIdentity | undefined) {
-    await withPersonalTransaction(this.database, async (tx) =>
+    await commitPersonalMutation(this.database, async (tx) =>
       administrationCommand(tx, administration, async () => {
-        const registration = await tx
-          .selectFrom("specialists")
-          .select("id")
-          .where("pluginId", "=", pluginId)
-          .executeTakeFirst();
-        if (registration)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Remove plugin specialist registrations before uninstalling",
-          });
         await tx
           .updateTable("plugins")
           .set({

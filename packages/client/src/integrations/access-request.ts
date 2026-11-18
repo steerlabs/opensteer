@@ -4,40 +4,34 @@ import {
   IntegrationDefinitionSummaryViewSchema,
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core/adapter";
+import { IntegrationInstallManifestViewSchema } from "@opensteer/integration-core";
 import type {
   IntegrationAccess,
   IntegrationConnectionRequirement,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";
-import {
-  IntegrationInstallManifestSummaryViewSchema,
-  integrationProposalName,
-  type IntegrationInstallManifestSummaryView,
-} from "@opensteer/integration-core/models";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
-import { apiKeyFacts, connectableApiKeyMethod } from "./api-key.js";
-import { requestAgentProposedDetail, type Request } from "@opensteer/core";
+import type { Request } from "@opensteer/core";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { HostClient } from "../host/index.js";
 
 /**
- * What one integration access Request comes to, shared by the browser card and
- * the phone's card: which installation and server it names, which of this
- * person's accounts can answer it, and how many operations each access class
- * actually reaches. Both surfaces must read the same Request the same way — an
- * approval that means one thing on a laptop and another on a phone is a bug
- * with two homes.
+ * What one access Request for a device data app or a local server comes to,
+ * shared by the browser card and the phone's card: which installation and
+ * server it names, which computers can answer it, and how many operations each
+ * access class reaches.
  */
 export interface LoadedAccessRequest {
   readonly dashboard: IntegrationDashboard;
   readonly platform: IntegrationPlatformDashboardView;
   readonly request: Extract<Request["payload"], { kind: "integration.access" }>;
+  readonly reviewedRevision?: string | undefined;
 }
 
 /**
  * Whether one Request remains in the Host's durable pending set.
  *
- * A computer connection write may fulfill Main access in the same transaction.
+ * A computer connection write may fulfill access in the same transaction.
  * Both native and web surfaces re-read that fact before offering a second
  * response. `thread.requests.list` is a pending-only endpoint in production;
  * pagination keeps absence authoritative even on a busy Thread.
@@ -66,13 +60,15 @@ export async function integrationRequestStillPending(
   return false;
 }
 
-/** A reviewed install manifest, or null when it cannot be read. */
-function installManifest(manifest: unknown): IntegrationInstallManifestSummaryView | null {
-  const view = IntegrationInstallManifestSummaryViewSchema.safeParse(manifest);
-  return view.success ? view.data : null;
+/** The catalog definition an access Request would install, or null. */
+export function catalogInstallDefinition(
+  manifest: unknown,
+): IntegrationDefinitionSummaryView | null {
+  const parsed = IntegrationInstallManifestViewSchema.safeParse(manifest);
+  return parsed.success ? parsed.data.definition : null;
 }
 
-/** The definition an installation was made from; absent for plugins and MCP servers. */
+/** The definition an installation was made from; absent for local servers. */
 export function installationDefinition(
   manifest: Readonly<Record<string, unknown>>,
 ): IntegrationDefinitionSummaryView | null {
@@ -80,99 +76,21 @@ export function installationDefinition(
   return view.success ? view.data : null;
 }
 
-/** Finds only the active installation produced by this exact reviewed manifest. */
+/** Finds only the active installation produced by this exact reviewed catalog manifest. */
 export function matchingInstallationForManifest(
   platform: IntegrationPlatformDashboardView,
   manifest: unknown,
 ) {
-  const parsed = installManifest(manifest);
-  if (parsed === null) return null;
+  const parsed = IntegrationInstallManifestViewSchema.safeParse(manifest);
+  if (!parsed.success) return null;
   return (
-    platform.installations.find(({ installation }) => {
-      if (installation.status !== "active") return false;
-      return parsed.kind === "catalog"
-        ? installation.provenance?.["definitionId"] === parsed.definition.id &&
-            installation.provenance?.["definitionDigest"] === parsed.digest
-        : installation.provenance?.["artifactDigest"] === parsed.proposal.digest;
-    }) ?? null
+    platform.installations.find(
+      ({ installation }) =>
+        installation.status === "active" &&
+        installation.provenance?.["definitionId"] === parsed.data.definition.id &&
+        installation.provenance?.["definitionDigest"] === parsed.data.digest,
+    ) ?? null
   );
-}
-
-/**
- * What a person decides an installation on, read the same way by the browser
- * card and the phone's card: what it will be called and what it does, where it
- * came from when that is not Opensteer's own catalog, and where its key would
- * go. How much it can do is left to the access step, which counts what is
- * actually granted.
- */
-export interface IntegrationInstallReview {
-  readonly name: string;
-  /** Said only of an agent's proposal; a catalog preset is Opensteer's own. */
-  readonly provenance: string | null;
-  /** One sentence each, in reading order. */
-  readonly facts: readonly string[];
-}
-
-export function integrationInstallReview(manifest: unknown): IntegrationInstallReview | null {
-  const parsed = installManifest(manifest);
-  if (parsed === null) return null;
-  if (parsed.kind === "catalog") {
-    const { definition } = parsed;
-    const key = definition.apiKey === null ? null : apiKeyFacts(definition.name, definition.apiKey);
-    return {
-      facts: [definition.description, ...(key === null ? [] : [key.custody, key.check])],
-      name: definition.name,
-      provenance: null,
-    };
-  }
-  const { proposal } = parsed;
-  const name = integrationProposalName(proposal);
-  const key =
-    proposal.apiKey !== undefined && proposal.authMethods.includes("api-key")
-      ? apiKeyFacts(name, proposal.apiKey)
-      : null;
-  return {
-    facts: [
-      ...(proposal.description === undefined ? [] : [proposal.description]),
-      proposal.source.type === "url"
-        ? `Researched from ${new URL(proposal.source.origin).host}.`
-        : "Researched from a document the agent supplied.",
-      ...(key === null ? [] : [key.custody, key.check]),
-    ],
-    name,
-    provenance: requestAgentProposedDetail,
-  };
-}
-
-/**
- * The one note under an install review: what installing leads to, or who has
- * to do it. An access Request goes on, on the same card, to whatever setup the
- * integration needs and then its access; an install Request ends at the install.
- */
-export function integrationInstallNextStep(input: {
-  readonly canInstall: boolean;
-  readonly continuesToAccess: boolean;
-  /** The title of the installation this exact manifest already produced. */
-  readonly installedTitle: string | null;
-}): string {
-  if (!input.continuesToAccess) {
-    return "Installing adds it to this deployment. Connecting an account and allowing access are each asked for separately.";
-  }
-  if (input.installedTitle !== null) {
-    return `${input.installedTitle} is already installed. Continue to finish setting it up and review its access.`;
-  }
-  return input.canInstall
-    ? "After it’s installed, you’ll finish setting it up and review its access here."
-    : "A Host administrator must install it first. Then you can finish setting it up and review its access here.";
-}
-
-/**
- * What answering a Request for Main reaches: a person's own tasks in Main use
- * every account they connect, so the Host answers the Request as soon as a
- * usable account is connected.
- */
-export function mainAccessDetail(deploymentName: string, integrationName: string): string {
-  return `Your tasks in ${deploymentName} can read and make changes with every ${integrationName} account you connect.`;
 }
 
 export async function resolveIntegrationAccess(
@@ -182,6 +100,7 @@ export async function resolveIntegrationAccess(
     readonly accountsCount: number;
     readonly installationTitle: string;
     readonly requestId: string;
+    readonly expectedRevision?: string | undefined;
     readonly selectedAccount: {
       readonly accountIdentifier: string | null;
       readonly displayName: string;
@@ -193,6 +112,7 @@ export async function resolveIntegrationAccess(
   await hostClient.dispatch({
     idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
     requestId,
+    ...(input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision }),
     response: {
       kind: "external",
       value: {
@@ -205,34 +125,6 @@ export async function resolveIntegrationAccess(
     },
     type: "request.respond",
   });
-}
-
-/**
- * Connecting an account is the user's move on any access Request whose
- * integration can take a new connection. Whether an existing account already
- * satisfies the Request is a separate question: a Request that asks for
- * another account, or a different one, is answered by connecting it, so the
- * connect action never hides behind the account the card happens to select.
- */
-export function accountConnectable(
-  plan: Pick<AccessPlan, "apiKeyMethod" | "definition" | "requirement">,
-): boolean {
-  switch (plan.requirement.kind) {
-    case "none":
-      return false;
-    case "mcp-oauth":
-      return true;
-    // An app on a computer is connected by choosing the computer, which is a
-    // picker rather than a sign-in; a surface that cannot show one offers no
-    // connect action at all.
-    case "computer":
-      return true;
-    case "provider":
-      return (
-        plan.apiKeyMethod !== null ||
-        (plan.definition?.authMethods.some((method) => method.kind === "oauth") ?? false)
-      );
-  }
 }
 
 export function computerAccessUpgrade(
@@ -255,8 +147,8 @@ export function computerAccessUpgrade(
 }
 
 /**
- * One account a Request can be answered with. `computer` is the app-on-a-
- * computer placement and its ceiling; every other kind of account has none.
+ * One computer a device app Request can be answered with, carrying that
+ * computer's ceiling: a read-only computer cannot answer a request to send.
  */
 export interface AccessRequestAccount {
   readonly accountIdentifier: string | null;
@@ -272,64 +164,22 @@ export interface AccessRequestAccount {
 
 export function accountsForRequirement(input: {
   readonly dashboard: Pick<IntegrationDashboard, "connections"> | null;
-  /** The installation whose MCP connections count, for `mcp-oauth`. */
-  readonly installationId: string | null;
-  readonly platform: Pick<IntegrationPlatformDashboardView, "connections"> | null;
   readonly requirement: IntegrationConnectionRequirement;
-  /** Narrows `mcp-oauth` to one server; null accepts every server. */
-  readonly serverId?: string | null;
 }): readonly AccessRequestAccount[] {
-  const { installationId, requirement, serverId = null } = input;
-  switch (requirement.kind) {
-    case "none":
-      return [];
-    case "provider":
-      return (input.dashboard?.connections ?? [])
-        .filter(
-          ({ definitionId, status }) =>
-            definitionId === requirement.definitionId && status === "connected",
-        )
-        .map(({ accountIdentifier, createdAt, displayName, id }) => ({
-          accountIdentifier,
-          computer: null,
-          createdAt,
-          displayName,
-          id,
-        }));
-    // An app connection is an account whose name is the computer's, and whose
-    // ceiling travels with it: a surface has to know a read-only computer
-    // cannot answer a request that asks to send.
-    case "computer":
-      return (input.dashboard?.connections ?? [])
-        .filter(
-          ({ computer, definitionId, status }) =>
-            definitionId === requirement.definitionId &&
-            status === "connected" &&
-            computer !== null,
-        )
-        .map(({ accountIdentifier, computer, createdAt, displayName, id }) => ({
-          accountIdentifier,
-          computer,
-          createdAt,
-          displayName,
-          id,
-        }));
-    case "mcp-oauth":
-      return (input.platform?.connections ?? [])
-        .filter(
-          (connection) =>
-            connection.installationId === installationId &&
-            connection.status === "connected" &&
-            (serverId === null || connection.serverId === serverId),
-        )
-        .map(({ accountIdentifier, connectionId: id, createdAt, displayName }) => ({
-          accountIdentifier,
-          computer: null,
-          createdAt,
-          displayName,
-          id,
-        }));
-  }
+  const { requirement } = input;
+  if (requirement.kind !== "computer") return [];
+  return (input.dashboard?.connections ?? [])
+    .filter(
+      ({ computer, definitionId, status }) =>
+        definitionId === requirement.definitionId && status === "connected" && computer !== null,
+    )
+    .map(({ accountIdentifier, computer, createdAt, displayName, id }) => ({
+      accountIdentifier,
+      computer,
+      createdAt,
+      displayName,
+      id,
+    }));
 }
 
 export type AccessPlan = NonNullable<ReturnType<typeof accessPlan>>;
@@ -357,9 +207,8 @@ export function grantedIntegrationAccess(input: {
 }
 
 /**
- * The access a Request's card grants, in one line, and how much of the
- * integration that reaches: "Read only · 135 of 152 operations".
- * The card's title already names the integration and its account row the account.
+ * The access a Request's card grants, in one line, and how much of it that
+ * reaches: "Read only · 135 of 152 operations".
  */
 export function integrationAccessSummary(
   plan: Pick<AccessPlan, "readCount" | "writeCount">,
@@ -377,14 +226,9 @@ export function operationCount(count: number): string {
   return `${count} ${count === 1 ? "operation" : "operations"}`;
 }
 
-/** "1 operation that makes changes", "3 operations that make changes". */
-export function changingOperationCount(count: number): string {
-  return `${operationCount(count)} that ${count === 1 ? "makes" : "make"} changes`;
-}
-
-/** A Request pinned to an account that is gone can only be declined. */
+/** A Request pinned to a computer that is gone can only be declined. */
 export const requestedAccountUnavailableDetail =
-  "This account is no longer available. Decline this request, then ask the agent again when you want to reconnect.";
+  "This computer is no longer available. Decline this request, then ask the agent again.";
 
 export function accessServerChoices(loaded: LoadedAccessRequest) {
   if (loaded.request.installationId === null || loaded.request.requestedServerId !== null)
@@ -393,10 +237,9 @@ export function accessServerChoices(loaded: LoadedAccessRequest) {
     ({ installation }) => installation.id === loaded.request.installationId,
   );
   if (!entry) return [];
-  const available = entry.servers.filter(({ status }) => status !== "disabled");
-  return available.length > 0
-    ? available.map(({ id, name }) => ({ id, name, installationTitle: entry.installation.title }))
-    : [];
+  return entry.servers
+    .filter(({ status }) => status !== "disabled")
+    .map(({ id, name }) => ({ id, name, installationTitle: entry.installation.title }));
 }
 
 export function accessPlan(loaded: LoadedAccessRequest, selectedAccountId: string | null) {
@@ -423,96 +266,32 @@ export function accessPlan(loaded: LoadedAccessRequest, selectedAccountId: strin
   const requirement: IntegrationConnectionRequirement = requestedServer?.connectionRequirement ?? {
     kind: "none",
   };
-  const accounts = accountsForRequirement({
-    dashboard,
-    installationId: request.installationId,
-    platform,
-    requirement,
-    serverId,
-  });
+  const accounts = accountsForRequirement({ dashboard, requirement });
   const requestedConnectionId = request.requestedConnectionId ?? null;
-  const requestedProviderConnection =
-    requestedConnectionId !== null && requirement.kind === "provider"
-      ? (dashboard.connections.find(
-          ({ definitionId, id }) =>
-            definitionId === requirement.definitionId && id === requestedConnectionId,
-        ) ?? null)
-      : null;
   const selectedAccount =
     requestedConnectionId !== null
       ? (accounts.find(({ id }) => id === requestedConnectionId) ?? null)
       : (accounts.find(({ id }) => id === selectedAccountId) ?? accounts[0] ?? null);
   const visibleTools =
-    requirement.kind === "mcp-oauth" || requirement.kind === "computer"
+    requirement.kind === "computer"
       ? entry.tools.filter(
           ({ connectionId, serverId: candidateServerId }) =>
             connectionId === selectedAccount?.id && candidateServerId === serverId,
         )
-      : requirement.kind === "provider"
-        ? entry.tools.filter(
-            ({ connectionId, serverId: candidateServerId }) =>
-              candidateServerId === serverId &&
-              (connectionId === null || connectionId === selectedAccount?.id),
-          )
-        : entry.tools.filter(
-            ({ connectionId, serverId: candidateServerId }) =>
-              connectionId === null && (serverId === null || candidateServerId === serverId),
-          );
-  /**
-   * A definition declares exactly one connection posture, so the requirement
-   * says which credential the Host will accept: a provider requirement that
-   * needs no provider application is an API key the user can type here.
-   */
-  const apiKeyMethod =
-    requirement.kind === "provider" && !requirement.providerApplicationRequired
-      ? definition === null
-        ? null
-        : connectableApiKeyMethod(definition)
-      : null;
-  // A connection is repaired the way it was made: a sign-in through the
-  // provider's account identity, a key by naming the connection it replaces.
-  const reconnectMethod: "api-key" | "sign-in" | null =
-    requestedProviderConnection?.status !== "needs-attention"
-      ? null
-      : requestedProviderConnection.connectionMethod === "api-key"
-        ? apiKeyMethod === null
-          ? null
-          : "api-key"
-        : definition?.authMethods.some(({ kind }) => kind === "oauth")
-          ? "sign-in"
-          : null;
+      : entry.tools.filter(
+          ({ connectionId, serverId: candidateServerId }) =>
+            connectionId === null && (serverId === null || candidateServerId === serverId),
+        );
   return {
     accounts,
-    apiKeyMethod,
     definition,
     integrationName: definition?.name ?? entry.installation.title,
     installationTitle: entry.installation.title,
-    proposed: entry.installation.sourceKind === "proposed",
     readCount: visibleTools.filter(
       ({ annotations }) => integrationToolEffect(annotations) === "read",
     ).length,
     requirement,
     requestedAccountMissing: requestedConnectionId !== null && selectedAccount === null,
-    /**
-     * The account the Request names, when it needs attention and this surface
-     * can repair it, and how. A key reconnect keeps the account's own name
-     * unless the person gives a new one.
-     */
-    requestedAccountReconnect:
-      requestedProviderConnection === null || reconnectMethod === null
-        ? null
-        : {
-            account: {
-              accountIdentifier: requestedProviderConnection.accountIdentifier,
-              computer: null,
-              createdAt: requestedProviderConnection.createdAt,
-              displayName: requestedProviderConnection.displayName,
-              id: requestedProviderConnection.id,
-            } satisfies AccessRequestAccount,
-            method: reconnectMethod,
-            /** Why it needs attention, as the Host recorded it. */
-            statusDetail: requestedProviderConnection.statusDetail,
-          },
     requestedAccess: request.access,
     requestedConnectionId,
     serverId,

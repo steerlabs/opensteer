@@ -4,7 +4,7 @@ import {
   createMachineAccessDatabase,
   dispatchCallerRun,
   startPrivateMachineHost,
-} from "../../apps/host/src/integrations/personal-machine.test-support.js";
+} from "../../apps/host/src/runtime/private-machine-host.test-support.js";
 import { HarnessInstanceIdSchema } from "../../packages/core/src/index.js";
 import { createBrowserSessionId } from "../../packages/protocol/src/index.js";
 

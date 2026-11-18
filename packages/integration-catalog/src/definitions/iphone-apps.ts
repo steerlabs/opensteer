@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 
 const identifier = { type: "string", minLength: 1, maxLength: 256 } as const;
 const cursor = { type: "string", minLength: 1, maxLength: 2048 } as const;

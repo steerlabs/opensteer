@@ -25,7 +25,7 @@ import {
 } from "@opensteer/harness";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
@@ -76,7 +76,7 @@ const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
     "opensteer:memory": "/runner/agent-skills/skills/memory",
-    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:plugins": "/runner/agent-skills/skills/plugins",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
@@ -1328,7 +1328,7 @@ describe("runnerWebSocketUrl", () => {
   });
 
   it("keeps computer-app provider concurrency across a primary reconnect", async () => {
-    const definition = getIntegrationDefinition("apple-messages");
+    const definition = getDeviceDefinition("apple-messages");
     if (!definition || !isComputerAppDefinition(definition)) throw new Error("Messages is missing");
     const operation = definition.config.operations.find(({ name }) => name === "query_messages");
     if (!operation) throw new Error("Messages query_messages is missing");

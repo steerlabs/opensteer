@@ -1092,7 +1092,7 @@ integration.sequential("Run recovery acceptance", () => {
         program: {
           language: "javascript",
           source: program,
-          toolContractVersion: 4,
+          toolContractVersion: 5,
         },
         source: {
           kind: "schedule",
@@ -1207,7 +1207,7 @@ integration.sequential("Run recovery acceptance", () => {
             writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_OCCURRENCE_ID);
             await new Promise(() => { setInterval(() => {}, 1000); });
           }`,
-          toolContractVersion: 4,
+          toolContractVersion: 5,
         },
         source: {
           kind: "schedule",
@@ -1264,7 +1264,7 @@ integration.sequential("Run recovery acceptance", () => {
           language: "javascript",
           source:
             "export default async function () { await new Promise(() => { setInterval(() => {}, 1000); }); }",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
         },
       },
     });

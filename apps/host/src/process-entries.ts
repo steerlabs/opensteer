@@ -1,11 +1,10 @@
 /**
- * The modules one Host process runs, relative to `apps/host`: its main module
- * and each worker thread it starts. A worker loads from beside the running
- * main module, so every build of the Host emits all of them into one
- * directory under these names.
+ * Host entries relative to `apps/host`. Child processes and worker threads load beside
+ * the main module, so every Host build emits them into one directory under these names.
  */
 export const hostProcessEntries = {
   main: "src/main.ts",
+  processes: { "plugin-engine": "src/plugins/plugin-engine.ts" },
   workers: {
     "computer-repl-worker": "src/computer-use/computer-repl/computer-repl-worker.ts",
   },

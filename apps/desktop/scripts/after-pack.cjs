@@ -589,6 +589,15 @@ function verifyPersonalRuntime(resources, operatingSystem) {
       ...Object.values(manifest.entrypoints),
       ...manifest.files
         .filter(
+          ({ path, mode }) =>
+            (mode === "executable" || mode === "code") &&
+            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/(?:workerd(?:\.exe)?|[^/]+\.dll)$/u.test(
+              path,
+            ),
+        )
+        .map(({ path }) => path),
+      ...manifest.files
+        .filter(
           ({ path }) =>
             path.startsWith(sharpPrefix) && /\.(?:node|dll|so(?:\.[0-9.]+)?)$/u.test(path),
         )

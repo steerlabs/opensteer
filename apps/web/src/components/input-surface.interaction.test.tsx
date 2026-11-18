@@ -12,7 +12,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
-import { mockTmdbProposal } from "@opensteer/client/mock";
 import { deriveSurface, TabStore } from "@opensteer/client/host";
 import { InputSurface, RequestStack } from "./input-surface.js";
 import { resetQuestionSessionsForTests } from "./question-session.js";
@@ -621,13 +620,31 @@ it.each(["live", "durable"] as const)(
         title: "Read memory source?",
       }),
       mode,
+      // The durable choice a hidden worker can still wait on is a plugin's approval.
       ...(mode === "durable"
         ? {
-            kind: "integration.install" as const,
+            kind: "plugin.approval" as const,
             payload: {
-              kind: "integration.install" as const,
-              reason: "Keep this source",
-              manifest: mockTmdbProposal.manifest,
+              kind: "plugin.approval" as const,
+              executionId: "exe_memory",
+              interactionId: "int_1",
+            },
+            presentation: {
+              kind: "choice" as const,
+              options: [
+                { id: "accept", hint: "allow-once" as const, label: "Allow once" },
+                { id: "decline", hint: "reject-once" as const, label: "Decline" },
+              ],
+              title: "Read memory source?",
+              plugin: {
+                plugin: { id: "plg_memory", name: "Memory", author: "catalog" as const },
+                decision: {
+                  kind: "approval" as const,
+                  executionId: "exe_memory",
+                  tool: "read_source",
+                  arguments: {},
+                },
+              },
             },
           }
         : {}),

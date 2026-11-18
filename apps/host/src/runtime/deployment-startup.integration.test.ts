@@ -42,15 +42,14 @@ vi.mock("../browser/browser-service.js", async (importOriginal) => {
     },
   };
 });
-vi.mock("../integrations/integration-platform-service.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../integrations/integration-platform-service.js")>();
+vi.mock("../devices/device-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../devices/device-service.js")>();
   return {
     ...actual,
-    IntegrationPlatformService: class extends actual.IntegrationPlatformService {
-      constructor(...args: ConstructorParameters<typeof actual.IntegrationPlatformService>) {
+    DeviceService: class extends actual.DeviceService {
+      constructor(...args: ConstructorParameters<typeof actual.DeviceService>) {
         super(...args);
-        constructions.push("IntegrationPlatformService");
+        constructions.push("DeviceService");
       }
     },
   };
@@ -194,11 +193,7 @@ it.each(["personal", "team"] as const)(
         expect(personal.statusCode).toBe(404);
       } else {
         expect(constructions).toEqual(
-          expect.arrayContaining([
-            "RunnerRegistry",
-            "BrowserService",
-            "IntegrationPlatformService",
-          ]),
+          expect.arrayContaining(["RunnerRegistry", "BrowserService", "DeviceService"]),
         );
         const refused = await runtime.app.inject({
           method: "POST",
