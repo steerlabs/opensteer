@@ -142,7 +142,8 @@ spec:
               mkdirSync("/var/run/opensteer-runtime/secrets", { recursive: true, mode: 0o700 });
               chmodSync("/var/run/opensteer-runtime/secrets", 0o700);
               for (const key of keys) {
-                const value = document[key];
+                // No registry yet means no provider apps: sign-in offers a person's own OAuth app.
+                const value = document[key] ?? (key === "OPENSTEER_HOSTED_OAUTH_PROVIDERS" ? "[]" : undefined);
                 if (typeof value !== "string" || value.length === 0) throw new Error(`Missing ${key}`);
                 writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
               }
