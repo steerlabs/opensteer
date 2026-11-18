@@ -187,7 +187,12 @@ async function render(
     subscribe: () => () => undefined,
   } as never;
   const gate = createThreadMutationGate(null, () => undefined);
-  const shared = { canRespond: !options.offline, canStartResponse: () => true, hostClient, surface };
+  const shared = {
+    canRespond: !options.offline,
+    canStartResponse: () => true,
+    hostClient,
+    surface,
+  };
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

@@ -30,9 +30,7 @@ export function DeviceRemovedScreen({
   const run = (operation: () => void | Promise<void>) => {
     setPending(true);
     setError(null);
-    void act(null, { label: "do this", done: "done" }, async () =>
-      operation(),
-    )
+    void act(null, { label: "do this", done: "done" }, async () => operation())
       .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };

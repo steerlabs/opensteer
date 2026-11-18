@@ -193,8 +193,8 @@ export function DesktopWelcome({
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
     setActionError(null);
-    void act(null, { label: "do this", done: "done" }, operation).catch(
-      (reason: unknown) => setActionError(failureWords(reason)),
+    void act(null, { label: "do this", done: "done" }, operation).catch((reason: unknown) =>
+      setActionError(failureWords(reason)),
     );
   };
   const start = () => onSetUpHere?.(chosenName ?? undefined);

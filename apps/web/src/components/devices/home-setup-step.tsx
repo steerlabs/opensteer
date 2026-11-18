@@ -63,15 +63,12 @@ export function HomeSetupStep({
       }
       const access = home?.access;
       if (switchable && home && access && deviceAccess(access.policy).apps !== apps) {
-        const result = await act(
-          hostClient,
-          { label: "change this", done: "changed" },
-          () =>
-            hostClient.updateMachineAccess({
-              expectedRevision: access.revision,
-              policy: withDeviceSwitch(access.policy, "apps", apps),
-              runnerId: home.id,
-            }),
+        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
+          hostClient.updateMachineAccess({
+            expectedRevision: access.revision,
+            policy: withDeviceSwitch(access.policy, "apps", apps),
+            runnerId: home.id,
+          }),
         );
         if (result.outcome === "conflict") {
           await hostClient.refresh();

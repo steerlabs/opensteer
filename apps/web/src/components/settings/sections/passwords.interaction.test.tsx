@@ -203,7 +203,9 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     );
     const page = await mount({ bridge: fake.bridge });
     await click(button(page, "Set up Passwords"));
-    expect(page.querySelector("[role=alert]")?.textContent).toBe("Couldn't confirm Passwords opened.");
+    expect(page.querySelector("[role=alert]")?.textContent).toBe(
+      "Couldn't confirm Passwords opened.",
+    );
     expect(button(page, "Set up Passwords").disabled).toBe(false);
   });
 });

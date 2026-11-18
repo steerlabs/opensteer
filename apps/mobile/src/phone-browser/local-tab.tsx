@@ -112,12 +112,7 @@ export function LocalPhoneTab(props: {
   if (failed) return status("This tab could not open.");
   if (!held || !ready || !feed.admitted) return status(feed.error ?? "Opening…");
   return (
-    <PhoneBrowserTabHost
-      style={{ flex: 1 }}
-      manager={manager}
-      admission={ready}
-      onError={fail}
-    />
+    <PhoneBrowserTabHost style={{ flex: 1 }} manager={manager} admission={ready} onError={fail} />
   );
 }
 
