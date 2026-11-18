@@ -59,6 +59,17 @@ interface Credit {
   readonly durable: boolean;
 }
 
+export interface LiveDeliveryOptions {
+  readonly immediate?: boolean;
+  readonly replace?: boolean;
+}
+
+interface PendingLive {
+  readonly update: PersonalLiveUpdate;
+  readonly immediate: boolean;
+  readonly replace: boolean;
+}
+
 interface Subscription {
   readonly request: Subscribe;
   readonly controller: AbortController;
@@ -73,7 +84,7 @@ interface Subscription {
   synchronized: boolean;
   needsRepair: boolean;
   pauseCount: number;
-  readonly live: Map<string, PersonalLiveUpdate>;
+  readonly live: Map<string, PendingLive>;
   readonly sentLive: Map<string, number>;
   liveTimer?: ReturnType<typeof setTimeout> | undefined;
   liveReady?: boolean;
@@ -275,7 +286,7 @@ export class PersonalSyncSocket {
     );
   }
 
-  offerLive(scope: DetailScope, update: PersonalLiveUpdate) {
+  offerLive(scope: DetailScope, update: PersonalLiveUpdate, options?: LiveDeliveryOptions) {
     for (const current of this.#subscriptions.values()) {
       const subscribed = current.request.scope;
       if (
@@ -286,7 +297,7 @@ export class PersonalSyncSocket {
         (subscribed.kind === "node" && scope.kind === "node" && subscribed.nodeId !== scope.nodeId)
       )
         continue;
-      this.#queueLive(current, update);
+      this.#queueLive(current, update, options);
     }
   }
 
@@ -300,24 +311,31 @@ export class PersonalSyncSocket {
     )
       return;
     for (const update of this.#port.readLive?.(current.request.scope, request) ?? [])
-      this.#queueLive(current, update, true);
+      this.#queueLive(current, update, { replace: true });
   }
 
-  #queueLive(current: Subscription, update: PersonalLiveUpdate, replace = false) {
+  #queueLive(current: Subscription, update: PersonalLiveUpdate, options?: LiveDeliveryOptions) {
     const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
-    if (replace) current.sentLive.delete(key);
+    const previous = current.live.get(key);
     current.live.delete(key);
-    current.live.set(key, update);
+    const entry = {
+      update,
+      immediate: options?.immediate ?? false,
+      replace: options?.replace === true || previous?.replace === true,
+    };
+    current.live.set(key, entry);
     let bytes = [...current.live.values()].reduce(
-      (total, frame) => total + Buffer.byteLength(JSON.stringify(frame)) + 128,
+      (total, frame) => total + Buffer.byteLength(JSON.stringify(frame.update)) + 128,
       0,
     );
     for (const [id, frame] of current.live) {
       if (bytes <= 64 * 1024) break;
       current.live.delete(id);
-      bytes -= Buffer.byteLength(JSON.stringify(frame)) + 128;
+      bytes -= Buffer.byteLength(JSON.stringify(frame.update)) + 128;
     }
-    if (!current.liveTimer && !current.liveReady) {
+    if (entry.immediate) {
+      this.#schedule(current);
+    } else if (!current.liveTimer && !current.liveReady) {
       current.liveTimer = setTimeout(() => {
         current.liveTimer = undefined;
         current.liveReady = true;
@@ -328,18 +346,22 @@ export class PersonalSyncSocket {
   }
 
   #readyLive(current: Subscription) {
-    if (!current.liveReady) return [];
     const through = BigInt(current.cursor?.afterSequence ?? 0);
-    return [...current.live].filter(([, update]) => BigInt(update.afterSequence) <= through);
+    return [...current.live].filter(
+      ([, { immediate, update }]) =>
+        (immediate || current.liveReady) && BigInt(update.afterSequence) <= through,
+    );
   }
 
   async #sendLive(current: Subscription) {
     if (current.request.subscriptionId === "shell" || current.request.scope.kind === "shell")
       return;
-    for (const [key, update] of this.#readyLive(current)) {
+    for (const [key, entry] of this.#readyLive(current)) {
+      const { update } = entry;
       const last = current.sentLive.get(key);
       const text = update.update;
       const append =
+        !entry.replace &&
         last !== undefined &&
         text.operation === "replace" &&
         text.offset <= last &&
@@ -366,17 +388,17 @@ export class PersonalSyncSocket {
             generation: current.request.generation,
             scope: current.request.scope,
           },
-          () => current.live.get(key) === update,
+          () => current.live.get(key) === entry,
         ))
       )
         return;
-      if (current.live.get(key) === update) current.live.delete(key);
+      if (current.live.get(key) === entry) current.live.delete(key);
       current.sentLive.delete(key);
       if (text.operation !== "close") current.sentLive.set(key, text.totalLength);
       if (current.sentLive.size > 64)
         current.sentLive.delete(current.sentLive.keys().next().value!);
     }
-    if (current.live.size === 0) current.liveReady = false;
+    if (![...current.live.values()].some(({ immediate }) => !immediate)) current.liveReady = false;
   }
 
   #matches(current: Subscription) {

@@ -3232,6 +3232,7 @@ export async function createHostRuntime(
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
         transcriptFileServices.close();
+        liveText.close();
         realtime.closeAll();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());

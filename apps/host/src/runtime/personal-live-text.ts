@@ -1,11 +1,26 @@
 import { randomUUID } from "node:crypto";
-import type { RunAttemptId, RunId, ThreadId } from "@opensteer/core";
+import { surrogateSafeCut, type RunAttemptId, type RunId, type ThreadId } from "@opensteer/core";
 import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import { toolCallId, transcriptIdentity } from "@opensteer/database";
 import type { PersonalLiveUpdate, RealtimeHub } from "@opensteer/orchestration";
 import type { RunnerToHostMessage } from "@opensteer/protocol";
-type RunnerLive = Extract<RunnerToHostMessage, { type: "runner.live" }>;
 import type { PersonalScope, ScopedClientMessage } from "@opensteer/protocol/personal-sync";
+
+import { markdownBoundary, scanMarkdown } from "./markdown-live-boundary.js";
+
+type RunnerLive = Extract<RunnerToHostMessage, { type: "runner.live" }>;
+type Replacement = Extract<PersonalLiveUpdate["update"], { operation: "replace" }>;
+type TextFrame = PersonalLiveUpdate & { update: Replacement };
+type Paragraph = {
+  readonly scan: ReturnType<typeof scanMarkdown>;
+  readonly boundary: number;
+  through: number;
+  lastFlushAt: number;
+  pendingSince: number;
+  maxAt: number;
+  quietAt: number;
+  dueAt: number;
+};
 
 type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
 type Resync = Extract<ScopedClientMessage, { type: "client.live.resync" }>;
@@ -13,6 +28,7 @@ type Stream = {
   readonly scope: DetailScope;
   readonly frame: PersonalLiveUpdate;
   readonly bytes: number;
+  readonly paragraph?: Paragraph;
 };
 type Binding = {
   readonly attemptId: RunAttemptId;
@@ -24,12 +40,40 @@ const maxStreamText = 12 * 1024;
 const maxRunStreams = 16;
 const maxHostBytes = 16 * 1024 * 1024;
 const maxBindings = 4096;
+const paragraphIntervalMs = 400;
+const paragraphQuietMs = 800;
 
 function boundedTail(text: string) {
   const bytes = Buffer.from(text);
   let from = Math.max(0, bytes.length - maxStreamText);
   while ((bytes[from]! & 0xc0) === 0x80) from++;
   return bytes.subarray(from).toString("utf8");
+}
+
+function textThrough(frame: TextFrame, through: number): TextFrame {
+  if (through === frame.update.totalLength) return frame;
+  const text = frame.update.text.slice(0, through - frame.update.offset);
+  return {
+    ...frame,
+    update: {
+      ...frame.update,
+      text,
+      totalLength: through,
+      incomplete: text.length < through,
+    },
+  };
+}
+
+function boundFrame(frame: TextFrame): number {
+  let bytes = Buffer.byteLength(JSON.stringify(frame));
+  while (bytes > 15 * 1024 && frame.update.text) {
+    const { text, totalLength } = frame.update;
+    frame.update.text = text.slice(surrogateSafeCut(text, Math.floor(text.length / 2)));
+    frame.update.offset = totalLength - frame.update.text.length;
+    frame.update.incomplete = true;
+    bytes = Buffer.byteLength(JSON.stringify(frame));
+  }
+  return bytes;
 }
 
 function matches(a: DetailScope, b: DetailScope) {
@@ -44,11 +88,14 @@ export class PersonalLiveText {
   readonly #bindings = new Map<RunId, Binding>();
   readonly #runs = new Map<RunId, Map<string, Stream>>();
   #bytes = 0;
-  readonly #hub: RealtimeHub;
+  readonly #hub: Pick<RealtimeHub, "publishLive">;
+  readonly #pending = new Set<Stream>();
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #timerAt = Infinity;
   readonly #request: (runId: RunId) => void;
   readonly #repairs = new Set<RunId>();
 
-  constructor(hub: RealtimeHub, request: (runId: RunId) => void) {
+  constructor(hub: Pick<RealtimeHub, "publishLive">, request: (runId: RunId) => void) {
     this.#hub = hub;
     this.#request = request;
   }
@@ -105,7 +152,8 @@ export class PersonalLiveText {
       const existing = streams.get(itemId);
       const previous = existing?.frame.update;
       if (previous?.operation === "close") continue;
-      const prefix = item.op === "append" && previous?.totalLength === item.at ? previous.text : "";
+      const continuing = item.op === "append" && (previous?.totalLength ?? 0) === item.at;
+      const prefix = continuing ? (previous?.text ?? "") : "";
       const totalLength = item.op === "append" ? item.at + item.text.length : item.length;
       const text = boundedTail(prefix + item.text);
       const base = {
@@ -140,7 +188,7 @@ export class PersonalLiveText {
           : item.stream === "reasoning"
             ? { ...card, kind: "reasoning", blockId: item.blockId, bindingGeneration }
             : undefined;
-      const frame: PersonalLiveUpdate = {
+      const frame: TextFrame = {
         ...base,
         ...(preview ? { item: preview } : {}),
         update: {
@@ -151,15 +199,24 @@ export class PersonalLiveText {
           incomplete: text.length < totalLength,
         },
       };
+      if (existing) this.#pending.delete(existing);
       this.#bytes -= existing?.bytes ?? 0;
       streams.delete(itemId);
-      const bytes = Buffer.byteLength(JSON.stringify(frame));
+      const bytes = boundFrame(frame);
       if (bytes > 15 * 1024) continue;
-      streams.set(itemId, { scope, frame, bytes });
+      const now = Date.now();
+      const paragraph =
+        item.stream === "assistant" || item.stream === "reasoning"
+          ? this.#paragraph(frame, continuing ? existing?.paragraph : undefined, now)
+          : undefined;
+      const stream: Stream = { scope, frame, bytes, ...(paragraph ? { paragraph } : {}) };
+      streams.set(itemId, stream);
       this.#bytes += bytes;
       if (streams.size > maxRunStreams) {
         const oldest = streams.keys().next().value!;
-        this.#bytes -= streams.get(oldest)!.bytes;
+        const evicted = streams.get(oldest)!;
+        this.#pending.delete(evicted);
+        this.#bytes -= evicted.bytes;
         streams.delete(oldest);
       }
       while (this.#bytes > maxHostBytes) {
@@ -167,9 +224,93 @@ export class PersonalLiveText {
         if (!oldest) break;
         this.#dropRun(oldest);
       }
-      this.#hub.publishLive(scope, frame);
+      if (this.#runs.get(runId) !== streams) continue;
+      if (paragraph) this.#flushParagraph(stream, now, !continuing);
+      else this.#hub.publishLive(scope, frame);
     }
     if (streams.size === 0) this.#runs.delete(runId);
+    if (!this.#pending.size) this.#clearTimer();
+  }
+
+  #paragraph(frame: TextFrame, previous: Paragraph | undefined, now: number): Paragraph {
+    const { text, offset } = frame.update;
+    const scan = scanMarkdown(text, offset, previous?.scan);
+    const pending = previous && Number.isFinite(previous.dueAt);
+    const lastFlushAt = previous?.lastFlushAt ?? -Infinity;
+    const pendingSince = pending ? previous.pendingSince : now;
+    return {
+      scan,
+      boundary: markdownBoundary(scan, text, offset),
+      through: previous?.through ?? 0,
+      lastFlushAt,
+      pendingSince,
+      maxAt: pending ? Math.max(pendingSince, lastFlushAt) + paragraphIntervalMs : Infinity,
+      quietAt: now + paragraphQuietMs,
+      dueAt: Infinity,
+    };
+  }
+
+  #flushParagraph(stream: Stream, now: number, replace = false) {
+    const paragraph = stream.paragraph!;
+    if (stream.frame.update.operation !== "replace") return;
+    const frame = { ...stream.frame, update: stream.frame.update };
+    const { totalLength, offset } = frame.update;
+    const boundary =
+      paragraph.boundary > Math.max(paragraph.through, offset) ? paragraph.boundary : Infinity;
+    const boundaryAt = Number.isFinite(boundary)
+      ? paragraph.lastFlushAt + paragraphIntervalMs
+      : Infinity;
+    const through =
+      replace || now >= Math.min(paragraph.maxAt, paragraph.quietAt)
+        ? totalLength
+        : now >= boundaryAt
+          ? boundary
+          : paragraph.through;
+    let dueAt = Infinity;
+    if (replace || through > paragraph.through) {
+      paragraph.through = through;
+      paragraph.lastFlushAt = now;
+      paragraph.pendingSince = now;
+      paragraph.maxAt = Infinity;
+      this.#hub.publishLive(stream.scope, textThrough(frame, through), {
+        immediate: true,
+        replace,
+      });
+      if (through < totalLength) dueAt = paragraph.quietAt;
+    } else if (through < totalLength) {
+      dueAt = Math.min(boundaryAt, paragraph.maxAt, paragraph.quietAt);
+    }
+    paragraph.dueAt = dueAt;
+    if (Number.isFinite(dueAt)) {
+      this.#pending.add(stream);
+      this.#armTimer(dueAt);
+    } else {
+      this.#pending.delete(stream);
+    }
+  }
+
+  #armTimer(at: number) {
+    if (at >= this.#timerAt) return;
+    this.#clearTimer();
+    this.#timerAt = at;
+    this.#timer = setTimeout(
+      () => {
+        this.#clearTimer();
+        const now = Date.now();
+        for (const stream of this.#pending) {
+          if (stream.paragraph!.dueAt <= now) this.#flushParagraph(stream, now);
+          else this.#armTimer(stream.paragraph!.dueAt);
+        }
+      },
+      Math.max(0, at - Date.now()),
+    );
+    this.#timer.unref();
+  }
+
+  #clearTimer() {
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#timerAt = Infinity;
   }
 
   read(scope: DetailScope, request?: Resync): PersonalLiveUpdate[] {
@@ -177,21 +318,24 @@ export class PersonalLiveText {
     let bytes = 0;
     const runs = request ? [this.#runs.get(request.runId)] : [...this.#runs.values()].reverse();
     for (const streams of runs) {
-      for (const { scope: owner, frame, bytes: size } of streams?.values() ?? []) {
+      for (const { scope: owner, frame, bytes: size, paragraph } of streams?.values() ?? []) {
         if (
           !matches(owner, scope) ||
           frame.update.operation === "close" ||
           (request && !request.streamIds.includes(frame.streamId))
         )
           continue;
+        if (frame.update.operation !== "replace") continue;
+        const through = paragraph?.through ?? frame.update.totalLength;
+        if (through <= frame.update.offset && through !== frame.update.totalLength) continue;
         if (bytes + size > 32 * 1024) return out;
-        out.push(frame);
+        out.push(textThrough({ ...frame, update: frame.update }, through));
         bytes += size;
       }
     }
     if (
       request &&
-      out.length < request.streamIds.length &&
+      request.streamIds.some((id) => !this.#runs.get(request.runId)?.has(id)) &&
       this.#bindings.get(request.runId)?.threadId === scope.threadId &&
       !this.#repairs.has(request.runId)
     ) {
@@ -217,9 +361,11 @@ export class PersonalLiveText {
       update: { operation: "close" },
     };
     const bytes = Buffer.byteLength(JSON.stringify(frame));
-    streams?.set(change.itemId, { ...stream, frame, bytes });
+    this.#pending.delete(stream);
+    if (!this.#pending.size) this.#clearTimer();
+    streams?.set(change.itemId, { scope: stream.scope, frame, bytes });
     this.#bytes += bytes - stream.bytes;
-    this.#hub.publishLive(stream.scope, frame);
+    this.#hub.publishLive(stream.scope, frame, { immediate: stream.paragraph !== undefined });
   }
 
   finish(change: Extract<PersonalCommitReaction, { type: "runFinished" }>, afterSequence: string) {
@@ -237,9 +383,22 @@ export class PersonalLiveText {
     this.#bindings.delete(change.runId);
   }
 
+  close() {
+    this.#clearTimer();
+    this.#pending.clear();
+    this.#runs.clear();
+    this.#bindings.clear();
+    this.#repairs.clear();
+    this.#bytes = 0;
+  }
+
   #dropRun(runId: RunId) {
     this.#repairs.delete(runId);
-    for (const { bytes } of this.#runs.get(runId)?.values() ?? []) this.#bytes -= bytes;
+    for (const stream of this.#runs.get(runId)?.values() ?? []) {
+      this.#pending.delete(stream);
+      this.#bytes -= stream.bytes;
+    }
+    if (!this.#pending.size) this.#clearTimer();
     this.#runs.delete(runId);
   }
 }
