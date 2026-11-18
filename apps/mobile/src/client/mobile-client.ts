@@ -1940,7 +1940,9 @@ export class MobileClient {
             },
             entry.localAttachmentUris ?? [],
           ),
-        drafts: { restore: (scope, entry) => this.drafts.restoreMessage(scope, entry) },
+        drafts: {
+          restore: (scope, entry, isCurrent) => this.drafts.restoreMessage(scope, entry, isCurrent),
+        },
         ...(this.#connection ? { session: { connection: this.#connection } } : {}),
       });
       this.#hostOrigin = attachment.resolved.origin;

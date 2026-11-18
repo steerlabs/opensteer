@@ -9,6 +9,7 @@ import { memo, type ReactNode } from "react";
 const defaultCopy = {
   delete: "Delete",
   edit: "Edit",
+  remove: "Remove local copy",
   retry: "Send again",
   sending: "Sending…",
   restoring: "Returning to draft",
@@ -31,7 +32,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   /** When this message was first shown, in epoch milliseconds: the quiet moment counts from it. */
   readonly since: number;
   readonly attempted: boolean;
-  /** An older release's send whose answer was lost: it can only go again under its key. */
+  /** A send the computer may already have received. */
   readonly unconfirmed?: boolean;
   /** False for every waiting message of a run but the last. */
   readonly showStatus: boolean;
@@ -87,7 +88,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
                   onClick={() => onAction(name)}
                   type="button"
                 >
-                  {name === "edit" ? copy.edit : name === "retry" ? copy.retry : copy.delete}
+                  {name === "dont-send" ? copy.delete : copy[name]}
                 </button>
               ))}
             </span>

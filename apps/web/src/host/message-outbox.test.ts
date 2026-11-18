@@ -26,6 +26,7 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 it("persists and sends messages through IndexedDB without Web Locks", async () => {
@@ -77,22 +78,14 @@ it("fences a paused dispatch in another window after a refusal is edited", async
   const other = createMessageOutboxStorage(browserMessageRecords());
   const held = Promise.withResolvers<void>();
   const resume = Promise.withResolvers<void>();
-  // Each renderer has a different fallback lock. Pause this one after it
-  // finishes the durable sending claim, before it can invoke dispatch.
   const second = {
     ...other,
-    delivery: <T>(
-      _scope: Parameters<typeof other.load>[0],
-      _threadId: string,
-      work: () => Promise<T>,
-    ) => work(),
-    async replace(...args: Parameters<NonNullable<typeof other.replace>>) {
-      const replaced = await other.replace!(...args);
-      if (args[2]?.phase === "sending" && args[1].localId === "take-back") {
+    async claim(...args: Parameters<typeof other.claim>) {
+      if (args[1].localId === "take-back") {
         held.resolve();
         await resume.promise;
       }
-      return replaced;
+      return other.claim(...args);
     },
   };
   const acknowledgement = Promise.withResolvers<never>();
@@ -108,8 +101,6 @@ it("fences a paused dispatch in another window after a refusal is edited", async
       idempotencyKey: "take-back",
     });
     await writer.enqueue(pending);
-    a.change({ phase: "ready", readyRevision: 2 });
-    await vi.waitFor(() => expect(sentA).toHaveBeenCalledOnce(), { timeout: 1000 });
     await reader.enqueue(pending);
     b.change({ phase: "ready", readyRevision: 2 });
     await vi.waitFor(() => expect(reader.getSnapshot().messages).toHaveLength(1), {
@@ -120,6 +111,8 @@ it("fences a paused dispatch in another window after a refusal is edited", async
       paused = true;
     });
     await vi.waitFor(() => expect(paused).toBe(true), { timeout: 1000 });
+    a.change({ phase: "ready", readyRevision: 2 });
+    await vi.waitFor(() => expect(sentA).toHaveBeenCalledOnce(), { timeout: 1000 });
     acknowledgement.reject(
       new HostClientRequestError({
         code: "forbidden",
@@ -133,7 +126,7 @@ it("fences a paused dispatch in another window after a refusal is edited", async
     });
     await expect(writer.restoreDraft("take-back")).resolves.toBe("restored");
     resume.resolve();
-    await reader.enqueue(pending);
+    await expect(reader.enqueue(pending)).rejects.toThrow("removed");
     await reader.enqueue({ ...pending, idempotencyKey: "follows" });
     await vi.waitFor(() => expect(reader.getSnapshot().messages).toEqual([]), { timeout: 1000 });
     expect(sentB.mock.calls).toEqual([[expect.objectContaining({ idempotencyKey: "follows" })]]);
@@ -145,7 +138,7 @@ it("fences a paused dispatch in another window after a refusal is edited", async
   }
 });
 
-it("blocks take-back after one window gets refused while another send is unresolved", async () => {
+it("allows a replay after lease expiry, while a delayed original still fences take-back", async () => {
   vi.stubGlobal("navigator", {});
   vi.stubGlobal("BroadcastChannel", undefined);
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -156,7 +149,6 @@ it("blocks take-back after one window gets refused while another send is unresol
   for (const session of [first, second]) session.change({ scope, phase: "recovering" });
   const firstReply = Promise.withResolvers<{ messageId: string }>();
   const secondReply = Promise.withResolvers<{ messageId: string }>();
-  const secondFinished = Promise.withResolvers<void>();
   const sendA = vi.fn(() => firstReply.promise);
   const sendB = vi.fn(() => secondReply.promise);
   const restore = vi.fn(async () => "restored" as const);
@@ -172,11 +164,7 @@ it("blocks take-back after one window gets refused while another send is unresol
     session: second,
     dispatch: sendB,
     drafts: { restore },
-    storage: {
-      ...otherStorage,
-      // Another renderer has its own fallback lock.
-      delivery: (_scope, _threadId, work) => work().finally(() => secondFinished.resolve()),
-    },
+    storage: otherStorage,
   });
   const message = sendMessageCommand(createId("thread"), {
     body: "Take this back",
@@ -194,12 +182,17 @@ it("blocks take-back after one window gets refused while another send is unresol
     await b.enqueue(message);
     first.change({ phase: "ready", readyRevision: 2 });
     await vi.waitFor(() => expect(sendA).toHaveBeenCalledOnce(), { timeout: 1000 });
+    const lease = (await firstStorage.load(scope))[0]!.lease!;
+    vi.spyOn(Date, "now").mockReturnValue(lease.expiresAt + 1);
     second.change({ phase: "ready", readyRevision: 2 });
     await vi.waitFor(() => expect(sendB).toHaveBeenCalledOnce(), { timeout: 1000 });
     secondReply.reject(refusal);
-    await vi.waitFor(() => expect(secondFinished.promise).resolves.toBeUndefined(), {
-      timeout: 1000,
-    });
+    await vi.waitFor(
+      () => expect(b.getSnapshot().messages[0]?.rejection?.code).toBe("unconfirmed"),
+      {
+        timeout: 1000,
+      },
+    );
     second.change({ phase: "recovering" });
 
     await expect(b.restoreDraft(message.idempotencyKey)).resolves.toBe("sent");
@@ -209,11 +202,8 @@ it("blocks take-back after one window gets refused while another send is unresol
     expect(restore).not.toHaveBeenCalled();
     expect(await firstStorage.load(scope)).toHaveLength(1);
 
-    firstReply.reject(refusal);
-    await vi.waitFor(() => expect(a.getSnapshot().messages[0]?.phase).toBe("rejected"), {
-      timeout: 1000,
-    });
-    await expect(a.restoreDraft(message.idempotencyKey)).resolves.toBe("restored");
+    firstReply.resolve({ messageId: "confirmed-by-the-original" });
+    await vi.waitFor(() => expect(a.getSnapshot().messages).toEqual([]), { timeout: 1000 });
     expect(await firstStorage.load(scope)).toEqual([]);
   } finally {
     firstReply.resolve({ messageId: "finished-a" });
@@ -240,10 +230,7 @@ it("keeps a shared take-back fenced when one window cannot restore its copy", as
       session,
       dispatch,
       drafts: { restore },
-      storage: {
-        ...createMessageOutboxStorage(browserMessageRecords()),
-        delivery: (_scope, _threadId, work) => work(),
-      },
+      storage: createMessageOutboxStorage(browserMessageRecords()),
     });
   const restoreA = vi.fn(() => occupied.promise);
   const restoreB = vi.fn(() => restored.promise);

@@ -1,5 +1,4 @@
 import { createMessageOutboxStorage } from "./message-outbox-storage.js";
-import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
 import { splitLocalMessages, waitingMessageRows } from "./message-delivery-view.js";
 import { visibleTranscript } from "./transcript.js";
@@ -10,7 +9,6 @@ import {
   createMessageOutbox,
   projectMessageOutbox,
   sameTranscript,
-  type MessageOutboxStorage,
   type StoredMessage,
 } from "./message-outbox.js";
 import { controlledClientSession } from "../test-support/client-connection.js";
@@ -29,44 +27,30 @@ const command = (key: string) => ({
   idempotencyKey: key,
 });
 function storage() {
-  const scopes = new Map<string, StoredMessage[]>();
-  const migrated = new Map<string, Set<string>>();
+  const records = new Map<string, string>();
   let refuse = false;
-  const port: MessageOutboxStorage = {
-    async load(scope) {
-      return structuredClone(scopes.get(clientScopeKey(scope)!) ?? []);
+  let refuseRemoval = false;
+  const port = createMessageOutboxStorage({
+    async read(key) {
+      return records.get(key) ?? null;
     },
-    async put(scope, entry, options) {
+    async write(key, value) {
       if (refuse) throw new Error("disk unavailable");
-      const key = clientScopeKey(scope)!;
-      if (options?.migrated) {
-        const ids = migrated.get(key) ?? new Set<string>();
-        if (ids.has(entry.localId)) return;
-        if ((scopes.get(key) ?? []).length >= 48) throw new Error("queue full");
-        ids.add(entry.localId);
-        migrated.set(key, ids);
-      }
-      scopes.set(
-        key,
-        [
-          ...(scopes.get(key) ?? []).filter((row) => row.localId !== entry.localId),
-          structuredClone(entry),
-        ].sort((a, b) => a.order - b.order),
-      );
+      if (refuseRemoval && JSON.parse(value).entries.length === 0) throw new Error("disk full");
+      records.set(key, value);
     },
-    async remove(scope, id) {
+    async remove(key) {
       if (refuse) throw new Error("disk unavailable");
-      const key = clientScopeKey(scope)!;
-      scopes.set(
-        key,
-        (scopes.get(key) ?? []).filter((row) => row.localId !== id),
-      );
+      records.delete(key);
     },
-  };
+  });
   return {
     port,
     refuse(value: boolean) {
       refuse = value;
+    },
+    refuseRemoval(value: boolean) {
+      refuseRemoval = value;
     },
   };
 }
@@ -311,11 +295,12 @@ describe("app lifetime message delivery", () => {
       store = storage();
     let persist!: () => void;
     const put = store.port.put;
-    store.port.put = async (scope, entry) => {
+    store.port.put = async (scope, entry, options) => {
+      const saved = await put(scope, entry, options);
       await new Promise<void>((resolve) => {
         persist = resolve;
       });
-      await put(scope, entry);
+      return saved;
     };
     let sent = 0;
     const outbox = createMessageOutbox({
@@ -473,16 +458,13 @@ describe("app lifetime message delivery", () => {
     vi.useFakeTimers();
     const session = controlledClientSession(),
       store = storage();
-    let release!: () => void,
-      puts = 0,
-      sent = 0;
-    const put = store.port.put;
-    store.port.put = async (scope, entry) => {
-      if (++puts === 2)
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      await put(scope, entry);
+    let sent = 0;
+    const paused = Promise.withResolvers<void>();
+    const claim = store.port.claim;
+    store.port.claim = async (...args) => {
+      const saved = await claim(...args);
+      await paused.promise;
+      return saved;
     };
     const outbox = createMessageOutbox({
       session,
@@ -497,7 +479,7 @@ describe("app lifetime message delivery", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(outbox.getSnapshot().messages[0]?.attempted).toBe(false);
     const cancelled = outbox.discard("cancel-before-dispatch");
-    release();
+    paused.resolve();
     await cancelled;
     await vi.advanceTimersByTimeAsync(0);
     expect(sent).toBe(0);
@@ -508,11 +490,9 @@ describe("app lifetime message delivery", () => {
     vi.useFakeTimers();
     const first = controlledClientSession(),
       second = controlledClientSession(),
-      store = storage(),
-      lock = new MutationQueue();
+      store = storage();
     first.change({ phase: "recovering" });
     second.change({ phase: "recovering" });
-    store.port.delivery = (_scope, _thread, work) => lock.run(work);
     let lose!: () => void;
     const sender = createMessageOutbox({
       session: first,
@@ -771,10 +751,7 @@ describe("durable outbox interleavings", () => {
     const session = controlledClientSession();
     session.change({ phase: "recovering" });
     const store = storage();
-    const remove = store.port.remove;
-    let failCleanup = true;
-    store.port.remove = (scope, id) =>
-      failCleanup ? Promise.reject(new Error("disk full")) : remove(scope, id);
+    store.refuseRemoval(true);
     const restore = vi.fn(async () => "restored" as const);
     const dispatch = vi.fn(async () => ({ messageId: "delivered" }));
     const options = { session, storage: store.port, drafts: { restore }, dispatch };
@@ -789,7 +766,7 @@ describe("durable outbox interleavings", () => {
       await expect(outbox.restoreDraft("edit-before-cleanup")).rejects.toThrow("disk full");
       expect(restore).toHaveBeenCalledOnce();
       outbox.dispose();
-      failCleanup = false;
+      store.refuseRemoval(false);
       outbox = createMessageOutbox(options);
       session.change({ phase: "ready", readyRevision: 2 });
       await vi.advanceTimersByTimeAsync(0);

@@ -4,7 +4,6 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { z } from "zod";
 import { hostApi } from "@opensteer/protocol";
 import { clientScopeKey, type ClientScope } from "../connections/connection-controller.js";
-import type { ClientIssue } from "../feedback/client-issue.js";
 import {
   compareOutboxOrder,
   sameStoredMessage,
@@ -25,6 +24,8 @@ const entrySchema = z
     attempted: z.boolean(),
     attemptId: z.uuid().optional(),
     inFlight: z.array(z.uuid()).optional(),
+    lease: z.object({ id: z.uuid(), expiresAt: z.number().int().safe() }).optional(),
+    uncertain: z.literal(true).optional(),
     migrated: z.literal(true).optional(),
     inTranscript: z.literal(true).optional(),
     phase: z.enum(["waiting", "sending", "rejected", "restoring"]),
@@ -119,17 +120,26 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
     if (record.scope !== clientScopeKey(scope))
       throw new Error("Message storage belongs to another login.");
     return {
-      entries: record.entries.map(({ rejection, ...entry }) => ({
-        ...entry,
-        ...(rejection
-          ? {
-              rejection: {
-                code: rejection.code,
-                ...(rejection.reason ? { reason: rejection.reason } : {}),
-              },
-            }
-          : {}),
-      })),
+      entries: record.entries.map(({ attemptId: _attemptId, inFlight, rejection, ...entry }) => {
+        // Older sending rows have no expiry. They can replay immediately, with
+        // the same uncertainty as a lease whose owner disappeared.
+        if (!entry.lease && (entry.phase === "sending" || inFlight?.length)) {
+          entry.phase = "waiting";
+          entry.uncertain = true;
+        }
+        if (entry.attempted && entry.phase === "waiting") entry.uncertain = true;
+        return {
+          ...entry,
+          ...(rejection
+            ? {
+                rejection: {
+                  code: rejection.code,
+                  ...(rejection.reason ? { reason: rejection.reason } : {}),
+                },
+              }
+            : {}),
+        };
+      }),
       migrated: record.migrated,
       handoffs: record.handoffs,
       takenBack: record.takenBack,
@@ -180,12 +190,11 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       options?.assertCurrent?.();
       if (options?.sourceExists?.() === false) return false;
       if (options?.migrated && record.migrated?.includes(entry.localId)) return false;
-      if (
-        options?.handoff &&
-        checkHandoff(record, entry.localId, options.assertCurrent ? entry.command : undefined)
-      )
+      if (options?.handoff && checkHandoff(record, entry.localId, entry.command)) return false;
+      if (record.takenBack?.includes(messageStorageFingerprint(entry.localId))) {
+        if (options?.append) throw new Error("This message was removed.");
         return false;
-      if (record.takenBack?.includes(messageStorageFingerprint(entry.localId))) return false;
+      }
       const existing = entries.find((row) => row.localId === entry.localId);
       const lane = options?.migrated ? entries.filter((row) => row.migrated) : entries;
       if (
@@ -214,10 +223,10 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
           compareOutboxOrder,
         );
       if (options?.append || options?.migrated) {
-        const partition = record.entries.filter(
-          (row) => Boolean(row.migrated) === Boolean(options.migrated),
-        );
-        if (exceeds(JSON.stringify(partition), maxBytes))
+        const budget = options.migrated
+          ? record.entries.filter((row) => row.migrated)
+          : record.entries;
+        if (exceeds(JSON.stringify(budget), maxBytes))
           throw new Error("Message storage exceeds its bound.");
       }
       if (options?.migrated) (record.migrated ??= []).push(entry.localId);
@@ -257,67 +266,79 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
         record.migrated = pending;
         return true;
       }),
-    async dispatchIfPending(scope, entry, claim, start) {
-      const id = claim.attemptId;
-      if (!id) throw new Error("A dispatch must have an attempt ID.");
-      let claimed = false;
+    async claim(scope, candidate, id, leaseMs, inTranscript, canStart) {
+      let claim: StoredMessage | null = null;
+      let before: StoredMessage | undefined;
       await update(scope, (record) => {
         const index = record.entries.findIndex(
-          (row) => row.command.threadId === entry.command.threadId,
+          (row) => row.command.threadId === candidate.command.threadId,
         );
+        const head = record.entries[index];
+        const now = Date.now();
         if (
-          index === -1 ||
-          !sameStoredMessage(record.entries[index]!, entry) ||
-          record.takenBack?.includes(messageStorageFingerprint(entry.localId))
+          !head ||
+          head.localId !== candidate.localId ||
+          (head.phase !== "waiting" && head.phase !== "sending") ||
+          (head.lease && head.lease.expiresAt > now) ||
+          !canStart()
         )
           return false;
-        // Track each replay alongside earlier requests until their replies settle.
-        record.entries[index] = { ...claim, inFlight: [...(entry.inFlight ?? []), id] };
-        claimed = true;
+        before = head;
+        claim = {
+          ...head,
+          phase: "sending",
+          attempted: true,
+          uncertain: head.lease ? true : head.uncertain,
+          inTranscript: head.attempted ? head.inTranscript : inTranscript,
+          lease: { id, expiresAt: now + leaseMs },
+        };
+        record.entries[index] = claim;
         return true;
       });
-      if (!claimed) return null;
-      const settle = async (rejection?: ClientIssue): Promise<StoredMessage | null> => {
-        let updated: StoredMessage | null = null;
-        await update(scope, (record) => {
-          const index = record.entries.findIndex((row) => row.localId === entry.localId);
-          const held = record.entries[index];
-          if (!held) return false;
-          updated = held;
-          if (!held.inFlight?.includes(id)) return false;
-          const inFlight = held.inFlight.filter((key) => key !== id);
-          updated = {
-            ...held,
-            inFlight: inFlight.length > 0 ? inFlight : undefined,
-            ...(rejection && inFlight.length === 0 ? { phase: "rejected", rejection } : {}),
-          };
-          record.entries[index] = updated;
-          return true;
-        });
-        return updated;
+      if (!claim || !before) return null;
+      const previous = before;
+      return {
+        row: claim,
+        settle: async (outcome) => {
+          await update(scope, (record) => {
+            const index = record.entries.findIndex((row) => row.localId === candidate.localId);
+            const held = record.entries[index];
+            if (held?.lease?.id !== id) return false;
+            const { lease: _lease, ...row } = held;
+            record.entries[index] =
+              outcome === "not-started"
+                ? { ...previous, lease: undefined, phase: "waiting", uncertain: held.uncertain }
+                : outcome === "uncertain"
+                  ? { ...row, phase: "waiting", uncertain: true }
+                  : {
+                      ...row,
+                      phase: "rejected",
+                      rejection: held.uncertain ? { code: "unconfirmed" } : outcome,
+                    };
+            return true;
+          });
+        },
       };
-      let answer: ReturnType<typeof start>;
-      try {
-        answer = start();
-      } catch (error) {
-        answer = Promise.reject(error);
-      }
-      if (answer) {
-        void answer.catch(() => {});
-        return { answer, settle };
-      }
-      await settle();
-      return null;
     },
     async replace(scope, previous, next, takeBack) {
       let replaced = false;
       await update(scope, (record) => {
         const index = record.entries.findIndex((row) => row.localId === previous.localId);
         const held = record.entries[index];
+        if (held && next?.phase === "restoring" && sameStoredMessage(held, next)) {
+          replaced = true;
+          return false;
+        }
         if (
           !held ||
           !sameStoredMessage(held, previous) ||
-          ((takeBack || next?.phase === "restoring") && held.inFlight?.length)
+          (next?.phase === "restoring" &&
+            record.entries.some(
+              (row) =>
+                row.localId !== held.localId &&
+                row.command.threadId === held.command.threadId &&
+                row.phase === "restoring",
+            ))
         )
           return false;
         if (next) record.entries[index] = next;
@@ -337,8 +358,6 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       }),
     ...(records.exclusive
       ? {
-          delivery: <T>(scope: ClientScope, threadId: string, work: () => Promise<T>) =>
-            records.exclusive!(`${key(scope)}:delivery:${threadId}`, work),
           exclusive: <T>(scope: ClientScope, work: () => Promise<T>) =>
             records.exclusive!(key(scope), work),
         }

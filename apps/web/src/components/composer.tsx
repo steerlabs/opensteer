@@ -145,7 +145,7 @@ interface ComposerProps {
   onSend: (
     body: string,
     submission: ComposerSubmission,
-  ) => Promise<void | { readonly draftGeneration: string }>;
+  ) => Promise<void | { readonly draftGeneration: string; readonly preserveDraft?: true }>;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -477,21 +477,36 @@ export function Composer({
           idempotencyKey: submission.idempotencyKey,
           ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
         });
-        if (
-          draftKey &&
-          saved !== undefined &&
-          (latestDraft.current !== text || !composerDrafts.matches(draftKey, saved))
-        ) {
-          if (result) composerDrafts.finishTaskStart(draftKey, result.draftGeneration);
-          return;
+        if (draftKey && result) {
+          const submitted =
+            !result.preserveDraft &&
+            latestDraft.current === text &&
+            saved?.text.trim() === body &&
+            saved.quote?.messageId === carriedQuote?.messageId &&
+            JSON.stringify(saved.files.map((file) => file.part)) === JSON.stringify(parts)
+              ? saved
+              : undefined;
+          const finished = composerDrafts.finishTaskStart(
+            draftKey,
+            result.draftGeneration,
+            submitted,
+          );
+          if (finished === "unavailable") {
+            setDraftUnsaved(true);
+            return;
+          }
+          if (result.preserveDraft) {
+            setError("The previous task started. Start again to send this draft.");
+            return;
+          }
+          if (finished !== "cleared") return;
         }
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));
         if (JSON.stringify(context?.parts() ?? []) === JSON.stringify(places)) context?.reset();
-        if (draftKey && latestDraft.current.trim() === text.trim())
+        if (draftKey && !result && latestDraft.current.trim() === text.trim())
           composerDrafts.update(draftKey, { text: "", places: [], quote: null });
-        if (draftKey && result) composerDrafts.finishTaskStart(draftKey, result.draftGeneration);
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
         const issue = clientIssue(error, { operation: "action", label: "save this message" });
@@ -499,7 +514,7 @@ export function Composer({
           failureWords(error) ??
           (issue && !isNotDone(error) ? presentClientIssue(issue).title : null);
         if (mounted.current) setError(reason);
-        else if (draftKey)
+        else if (draftKey && saved === undefined)
           composerDrafts.handBack(draftKey, {
             edit: (current) => {
               if (!body || current.trim() === body) return current;

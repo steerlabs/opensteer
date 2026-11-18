@@ -2317,7 +2317,9 @@ function OwnMessage({
                 ? (await outbox.retry(sendKey)) === "settled"
                   ? presentMessageTakeBack("sent")
                   : null
-                : (await outbox.discard(sendKey), null);
+                : action === "remove"
+                  ? (await outbox.removeUnconfirmed(sendKey), null)
+                  : (await outbox.discard(sendKey), null);
         } catch (error) {
           words = presentMessageActionFailure(error);
         }

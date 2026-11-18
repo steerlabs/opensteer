@@ -1,4 +1,17 @@
-import { KeyedMutationQueue, MutationQueue } from "@opensteer/shared/mutationQueue";
+/*
+ * One durable FIFO per task and login. Enqueue appends waiting. A dispatcher claims
+ * the head with an expiring lease before sending the frozen command. If it never
+ * calls dispatch, it releases the lease. Transport loss or a reclaimed lease leaves
+ * uncertainty about admission. Reload, reconnect and expiry replay the same key.
+ * An ack or matching Host event removes the row. Only the current lease can record a
+ * refusal, and an earlier uncertain attempt makes that refusal unconfirmed. The person
+ * can retry an unconfirmed refusal with the same key or remove its local copy.
+ * The person can discard a never-attempted or definitely refused row, or fence it
+ * as restoring before writing its draft. Edit retries that transfer after a crash.
+ * Migration copies before retiring the source. Unbound legacy rows wait for a person.
+ * Login changes stop new dispatches and hide old rows. Late results settle their own scope.
+ */
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { messageDraftParts } from "./pending-send.js";
 import type { UserId } from "@opensteer/core";
 import type { HostClient, MessageEntry, TranscriptEntry } from "./client.js";
@@ -25,8 +38,8 @@ export interface StoredMessage {
   readonly phase: "waiting" | "sending" | "rejected" | "restoring";
   readonly migrated?: true | undefined;
   readonly inTranscript?: true | undefined;
-  readonly attemptId?: string | undefined;
-  readonly inFlight?: readonly string[] | undefined;
+  readonly lease?: { readonly id: string; readonly expiresAt: number } | undefined;
+  readonly uncertain?: true | undefined;
   readonly localAttachmentUris?: readonly (string | null)[] | undefined;
   readonly rejection?: ClientIssue | undefined;
 }
@@ -44,21 +57,23 @@ export interface MessageOutboxStorage {
     scope: ClientScope,
     entry: StoredMessage,
     options?: MessageOutboxWrite,
-  ): Promise<StoredMessage | null | void>;
-  replace?(
+  ): Promise<StoredMessage | null>;
+  replace(
     scope: ClientScope,
     previous: StoredMessage,
     next: StoredMessage | null,
     takeBack?: boolean,
   ): Promise<boolean>;
-  dispatchIfPending?<T>(
+  claim(
     scope: ClientScope,
     entry: StoredMessage,
-    claim: StoredMessage,
-    start: () => Promise<T> | null,
+    id: string,
+    leaseMs: number,
+    inTranscript: true | undefined,
+    canStart: () => boolean,
   ): Promise<{
-    readonly answer: Promise<T>;
-    settle(rejection?: ClientIssue): Promise<StoredMessage | null>;
+    readonly row: StoredMessage;
+    settle(outcome: "not-started" | "uncertain" | ClientIssue): Promise<void>;
   } | null>;
   forgetMigrations?(scope: ClientScope, sourceExists: (id: string) => boolean): Promise<void>;
   hasHandoff?(
@@ -69,7 +84,6 @@ export interface MessageOutboxStorage {
   forgetHandoff?(scope: ClientScope, id: string): Promise<void>;
   forgetLegacyHandoffs?(scope: ClientScope, referenced: ReadonlySet<string>): Promise<void>;
   remove(scope: ClientScope, localId: string): Promise<void>;
-  delivery?<T>(scope: ClientScope, threadId: string, work: () => Promise<T>): Promise<T>;
   exclusive?<T>(scope: ClientScope, work: () => Promise<T>): Promise<T>;
   subscribe?(listener: () => void): () => void;
 }
@@ -78,7 +92,11 @@ export interface MessageOutboxStorage {
  * already there. "occupied" means the draft cannot hold both, so nothing changed.
  */
 export interface MessageDraftRecovery {
-  restore(scope: ClientScope, entry: StoredMessage): Promise<"restored" | "occupied">;
+  restore(
+    scope: ClientScope,
+    entry: StoredMessage,
+    isCurrent: () => boolean,
+  ): Promise<"restored" | "occupied">;
 }
 /** What Edit came to: back in the draft, no room in the draft, or already on its way. */
 export type MessageTakeBack = "restored" | "occupied" | "sent";
@@ -110,6 +128,7 @@ export interface MessageOutbox {
   /** Edit: disable delivery durably before handing the message back to the draft. */
   restoreDraft(localId: string): Promise<MessageTakeBack>;
   discard(localId: string): Promise<void>;
+  removeUnconfirmed(localId: string): Promise<void>;
   dispose(): void;
 }
 export interface MessageOutboxOptions {
@@ -139,7 +158,7 @@ export interface MessageOutboxOptions {
 /** A refusal, or a message never tried: nothing of it can be on the computer. */
 function takeable(entry: StoredMessage): boolean {
   return (
-    !entry.inFlight?.length &&
+    !entry.lease &&
     (entry.phase === "restoring" ||
       (entry.phase === "rejected"
         ? entry.rejection?.code !== "unconfirmed"
@@ -156,19 +175,34 @@ export function compareOutboxOrder(a: StoredMessage, b: StoredMessage): number {
 }
 export function sameStoredMessage(a: StoredMessage, b: StoredMessage): boolean {
   return (
+    sameDeliveryView(a, b) &&
+    a.lease?.id === b.lease?.id &&
+    a.lease?.expiresAt === b.lease?.expiresAt &&
+    a.uncertain === b.uncertain &&
+    a.order === b.order &&
+    a.migrated === b.migrated &&
+    JSON.stringify(a.localAttachmentUris) === JSON.stringify(b.localAttachmentUris) &&
+    JSON.stringify(a.command) === JSON.stringify(b.command)
+  );
+}
+
+function sameDeliveryView(a: StoredMessage, b: StoredMessage): boolean {
+  return (
     a.localId === b.localId &&
     a.phase === b.phase &&
     a.attempted === b.attempted &&
-    a.attemptId === b.attemptId &&
-    JSON.stringify(a.inFlight) === JSON.stringify(b.inFlight) &&
     a.createdAt === b.createdAt &&
-    a.order === b.order &&
-    a.migrated === b.migrated &&
     a.inTranscript === b.inTranscript &&
     a.rejection?.code === b.rejection?.code &&
-    a.rejection?.reason === b.rejection?.reason &&
-    JSON.stringify(a.localAttachmentUris) === JSON.stringify(b.localAttachmentUris) &&
-    JSON.stringify(a.command) === JSON.stringify(b.command)
+    a.rejection?.reason === b.rejection?.reason
+  );
+}
+
+function sameMessagePresentation(a: StoredMessage, b: StoredMessage): boolean {
+  return (
+    sameDeliveryView(a, b) &&
+    (a.command.delivery ?? "queue") === (b.command.delivery ?? "queue") &&
+    JSON.stringify(a.command.content) === JSON.stringify(b.command.content)
   );
 }
 function storageFailure(): ClientOperationError {
@@ -179,6 +213,13 @@ function storageFailure(): ClientOperationError {
     retryable: false,
   });
 }
+const dispatchLeaseMs = 90_000;
+type ActiveDelivery = {
+  readonly key: string;
+  readonly id: string;
+  wake?: (() => void) | undefined;
+};
+
 export function createMessageOutbox(options: MessageOutboxOptions): MessageOutbox {
   return new SessionMessageOutbox(options);
 }
@@ -197,15 +238,15 @@ class SessionMessageOutbox implements MessageOutbox {
   #generation = 0;
   #disposed = false;
   readonly #writes = new MutationQueue();
-  readonly #localDelivery = new KeyedMutationQueue();
   #loaded: Promise<void> = Promise.resolve();
-  readonly #sending = new Map<string, string>();
-  readonly #cancelled = new Set<string>();
+  readonly #sending = new Map<string, ActiveDelivery>();
   readonly #confirmed = new Set<string>();
+  readonly #takingBack = new Set<string>();
   readonly #pendingSettlements = new Map<string, () => Promise<unknown>>();
   readonly #attempts = new Map<string, number>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   #storageRetry: ReturnType<typeof setTimeout> | null = null;
+  #leaseWake: ReturnType<typeof setTimeout> | null = null;
   #storageAttempt = 0;
   #legacyPending = false;
   #legacyBlocked = new Map<string, StoredMessage>();
@@ -228,12 +269,6 @@ class SessionMessageOutbox implements MessageOutbox {
   #publish(patch: Partial<MessageOutboxSnapshot>): void {
     this.#state = { ...this.#state, ...patch };
     this.#listeners.forEach((fn) => fn());
-  }
-  #withDelivery<T>(scope: ClientScope, threadId: string, work: () => Promise<T>): Promise<T> {
-    return (
-      this.#options.storage.delivery?.(scope, threadId, work) ??
-      this.#localDelivery.run(JSON.stringify([clientScopeKey(scope), threadId]), work)
-    );
   }
   #current(scope: ClientScope, generation: number): boolean {
     return (
@@ -271,9 +306,9 @@ class SessionMessageOutbox implements MessageOutbox {
       this.#legacyPending = false;
       this.#legacyBlocked.clear();
       this.#confirmed.clear();
+      this.#takingBack.clear();
       this.#pendingSettlements.clear();
-      this.#cancelled.clear();
-      this.#sending.clear();
+      this.#releaseDeliveries();
       this.#publish({
         messages: [],
         acknowledged: new Map(),
@@ -290,25 +325,30 @@ class SessionMessageOutbox implements MessageOutbox {
       return;
     }
     if (!this.#ready()) {
+      this.#clearLeaseWake();
       this.#retries.forEach(clearTimeout);
       this.#retries.clear();
       return;
     }
     this.#drain();
   }
-  async #reload(): Promise<void> {
-    const scope = this.#scope,
-      generation = this.#generation;
-    if (!scope || this.#disposed) return;
+  #reload(): Promise<void> {
+    const scope = this.#scope;
+    const generation = this.#generation;
+    if (!scope || this.#disposed) return Promise.resolve();
+    return this.#writes.run(() => this.#load(scope, generation));
+  }
+
+  async #load(scope: ClientScope, generation: number, migrate = true): Promise<void> {
+    if (!this.#current(scope, generation)) return;
     try {
-      let entries = await this.#options.storage.load(scope);
       const legacy = this.#options.legacy;
       let remaining = this.#legacyPending;
       const legacyBlocked = new Map(this.#legacyBlocked);
-      if (legacy) {
-        const migrate = async () => {
-          const held = await legacy.load(scope).catch(() => null);
-          if (!held || !this.#current(scope, generation)) return;
+      if (legacy && migrate) {
+        const importLegacy = async () => {
+          const held = await legacy.load(scope);
+          if (!this.#current(scope, generation)) return;
           remaining = false;
           legacyBlocked.clear();
           const present = new Set(held.map(({ command }) => command.idempotencyKey));
@@ -357,62 +397,51 @@ class SessionMessageOutbox implements MessageOutbox {
             legacy.has ? legacy.has(scope, id) : present.has(id),
           );
         };
-        await this.#writes.run(
-          () => this.#options.storage.exclusive?.(scope, migrate) ?? migrate(),
-        );
-        entries = await this.#options.storage.load(scope);
+        await (this.#options.storage.exclusive?.(scope, importLegacy) ?? importLegacy());
       }
       if (!this.#current(scope, generation)) return;
       this.#legacyPending = remaining;
       this.#legacyBlocked = legacyBlocked;
-      if (this.#pendingSettlements.size > 0) {
-        for (const [id, settle] of this.#pendingSettlements) {
-          await settle();
-          if (!this.#current(scope, generation)) return;
-          this.#pendingSettlements.delete(id);
-        }
-        entries = await this.#options.storage.load(scope);
+      for (const [id, settle] of this.#pendingSettlements) {
+        await settle();
         if (!this.#current(scope, generation)) return;
+        this.#pendingSettlements.delete(id);
       }
-      const heldRows = new Map(this.#state.messages.map((entry) => [entry.localId, entry]));
-      const messages = entries
-        .map((entry): StoredMessage => {
-          const held = heldRows.get(entry.localId);
-          const row: StoredMessage =
-            entry.phase === "restoring" || entry.phase === "rejected"
-              ? entry
-              : {
-                  ...entry,
-                  phase:
-                    this.#sending.get(entry.command.threadId) === entry.localId
-                      ? "sending"
-                      : "waiting",
-                };
-          return held && sameStoredMessage(held, row) ? held : row;
-        })
-        .sort(compareOutboxOrder);
+      const entries = await this.#options.storage.load(scope);
+      if (!this.#current(scope, generation)) return;
       if (this.#storageRetry) clearTimeout(this.#storageRetry);
       this.#storageRetry = null;
       this.#storageAttempt = 0;
-      this.#publish({ loading: false, messages, issue: null });
+      this.#publishRows(entries, { loading: false, issue: null });
       this.#drain();
     } catch {
       if (this.#current(scope, generation)) {
-        this.#publish({ loading: false, issue: { code: "storage-unavailable" } });
-        this.#retryStorage();
+        this.#storageFailed();
       }
     }
   }
-  enqueue = async (
-    command: PendingSendCommand,
-    options?: {
-      readonly localAttachmentUris?: readonly (string | null)[];
-      readonly handoff?: boolean;
-      readonly assertCurrent?: () => void;
-    },
-  ): Promise<string> => {
-    const scope = this.#scope,
-      generation = this.#generation;
+  #publishRows(entries: readonly StoredMessage[], patch?: Partial<MessageOutboxSnapshot>): void {
+    const previous = new Map(this.#state.messages.map((entry) => [entry.localId, entry]));
+    const messages = entries
+      .map((entry) => {
+        const owned = this.#sending.get(entry.command.threadId)?.id === entry.lease?.id;
+        const row =
+          entry.phase === "sending" && !owned ? { ...entry, phase: "waiting" as const } : entry;
+        const held = previous.get(entry.localId);
+        if (held && sameStoredMessage(held, row)) return held;
+        if (held && sameMessagePresentation(held, row)) {
+          const projected = localRows.get(held);
+          if (projected) localRows.set(row, projected);
+        }
+        return row;
+      })
+      .sort(compareOutboxOrder);
+    this.#publish({ ...patch, messages });
+  }
+
+  enqueue: MessageOutbox["enqueue"] = async (command, options) => {
+    const scope = this.#scope;
+    const generation = this.#generation;
     if (!scope) throw storageFailure();
     const parsed = hostApi["commands.dispatch"].payload.parse(
       this.#options.prepare?.(command) ?? command,
@@ -424,91 +453,40 @@ class SessionMessageOutbox implements MessageOutbox {
       if (this.#state.issue?.code === "storage-unavailable") throw storageFailure();
     }
     return this.#writes.run(async () => {
-      if (!this.#current(scope, generation)) throw storageFailure();
-      const save = async () => {
-        options?.assertCurrent?.();
-        if (
-          options?.handoff &&
-          (await this.hasHandoff(
-            scope,
-            parsed.idempotencyKey,
-            options.assertCurrent ? parsed : undefined,
-          ))
-        ) {
-          options.assertCurrent?.();
-          return null;
-        }
-        const entries = await this.#options.storage.load(scope);
-        const previous = entries.find((entry) => entry.localId === parsed.idempotencyKey);
-        if (previous) {
-          if (JSON.stringify(previous.command) !== JSON.stringify(parsed)) throw storageFailure();
-          if (!options?.handoff) return previous;
-          const saved = await this.#options.storage.put(scope, previous, {
-            handoff: true,
-            ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
-          });
-          return saved === undefined ? previous : saved;
-        }
-        if (
-          entries.filter((entry) => entry.command.threadId === parsed.threadId).length >= 20 ||
-          entries.length >= 48
-        ) {
-          this.#publish({ issue: { code: "queue-full" } });
-          throw new ClientOperationError("Too many messages waiting.", "blocked", {
-            kind: "local",
-            reason: "queue-full",
-            retryable: false,
-          });
-        }
-        const entry: StoredMessage = {
-          localId: parsed.idempotencyKey,
-          command: parsed,
-          createdAt: new Date().toISOString(),
-          order: Math.max(0, ...entries.map((entry) => entry.order)) + 1,
-          attempted: false,
-          phase: "waiting",
-          ...(this.#options.startsRun?.(parsed.threadId) &&
-          !entries.some((row) => row.command.threadId === parsed.threadId)
-            ? { inTranscript: true }
-            : {}),
-          ...(options?.localAttachmentUris
-            ? { localAttachmentUris: options.localAttachmentUris }
-            : {}),
-        };
-        if (
-          new TextEncoder().encode(JSON.stringify([...entries, entry])).byteLength >
-          10 * 1024 * 1024
-        )
-          throw storageFailure();
+      const entry: StoredMessage = {
+        localId: parsed.idempotencyKey,
+        command: parsed,
+        createdAt: new Date().toISOString(),
+        order: 0,
+        attempted: false,
+        phase: "waiting",
+        ...(options?.localAttachmentUris
+          ? { localAttachmentUris: options.localAttachmentUris }
+          : {}),
+      };
+      try {
         const saved = await this.#options.storage.put(scope, entry, {
           append: true,
           ...(options?.handoff ? { handoff: true } : {}),
-          ...(options?.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
+          assertCurrent: () => {
+            if (!this.#current(scope, generation)) throw storageFailure();
+            options?.assertCurrent?.();
+          },
         });
-        return saved === undefined ? entry : saved;
-      };
-      let entry: StoredMessage | null;
-      try {
-        entry = await (this.#options.storage.exclusive?.(scope, save) ?? save());
+        if (saved && this.#current(scope, generation)) {
+          this.#publishRows(
+            [...this.#state.messages.filter((row) => row.localId !== saved.localId), saved],
+            { issue: null },
+          );
+          this.#drain();
+        }
       } catch (error) {
         const { reason } = classifyClientFailure(error);
-        if (this.#current(scope, generation) && reason !== "draft-changed")
-          this.#publish({
-            issue: {
-              code: reason === "queue-full" ? "queue-full" : "storage-unavailable",
-            },
-          });
+        if (this.#current(scope, generation) && reason !== "draft-changed") {
+          if (reason === "queue-full") this.#publish({ issue: { code: "queue-full" } });
+          else this.#storageFailed();
+        }
         throw error;
-      }
-      if (entry && this.#current(scope, generation)) {
-        this.#publish({
-          messages: [
-            ...this.#state.messages.filter((value) => value.localId !== entry.localId),
-            entry,
-          ].sort(compareOutboxOrder),
-          issue: null,
-        });
-        queueMicrotask(() => this.#drain());
       }
       return parsed.idempotencyKey;
     });
@@ -543,348 +521,325 @@ class SessionMessageOutbox implements MessageOutbox {
   forgetHandoff = (scope: ClientScope, id: string): Promise<void> =>
     this.#options.storage.forgetHandoff?.(scope, id) ?? Promise.resolve();
 
-  #replace(
-    scope: ClientScope,
-    previous: StoredMessage,
-    next: StoredMessage | null,
-    takeBack = false,
-  ): Promise<boolean> {
-    return this.#writes.run(async () => {
-      if (this.#options.storage.replace)
-        return this.#options.storage.replace(scope, previous, next, takeBack);
-      const row = (await this.#options.storage.load(scope)).find(
-        (entry) => entry.localId === previous.localId,
-      );
-      if (!row || !sameStoredMessage(row, previous)) return false;
-      if (next) await this.#options.storage.put(scope, next);
-      else await this.#options.storage.remove(scope, previous.localId);
-      return true;
-    });
-  }
   retry = async (localId: string): Promise<"retried" | "settled"> => {
-    const timer = this.#retries.get(localId);
-    if (timer) clearTimeout(timer);
-    this.#retries.delete(localId);
-    this.#attempts.delete(localId);
-    const scope = this.#scope,
-      generation = this.#generation,
-      entry = this.#state.messages.find((value) => value.localId === localId);
+    const scope = this.#scope;
+    const generation = this.#generation;
+    const entry = this.#state.messages.find((value) => value.localId === localId);
     if (!scope || !entry) return "settled";
     if (entry.phase === "rejected" && entry.rejection?.code === "unconfirmed") {
-      const retry = async (): Promise<"retried" | "settled"> => {
-        const current = (await this.#options.storage.load(scope)).find(
-          (value) => value.localId === localId,
-        );
-        if (
-          !this.#current(scope, generation) ||
-          !current ||
-          current.phase !== "rejected" ||
-          current.rejection?.code !== "unconfirmed"
-        )
-          return "settled";
-        const { rejection: _rejection, ...rest } = current;
-        return (await this.#replace(scope, current, { ...rest, phase: "waiting", attempted: true }))
-          ? "retried"
-          : "settled";
-      };
-      const result = await this.#withDelivery(scope, entry.command.threadId, retry);
-      if (this.#current(scope, generation)) await this.#reload();
-      return result;
+      const retried = await this.#writes.run(async () => {
+        if (!this.#current(scope, generation)) return false;
+        const { rejection: _rejection, ...row } = entry;
+        return this.#options.storage.replace(scope, entry, {
+          ...row,
+          phase: "waiting",
+          uncertain: true,
+        });
+      });
+      await this.#reload();
+      return retried ? "retried" : "settled";
     }
-    if (this.#state.issue?.code === "storage-unavailable") await this.#reload();
-    else this.#drain();
+    this.#clearRetry(localId);
+    this.#attempts.delete(localId);
+    await this.#reload();
     return "retried";
   };
+
   restoreDraft = async (localId: string): Promise<MessageTakeBack> => {
-    const scope = this.#scope,
-      generation = this.#generation,
-      entry = this.#state.messages.find((value) => value.localId === localId);
+    const scope = this.#scope;
+    const generation = this.#generation;
+    const entry = this.#state.messages.find((value) => value.localId === localId);
     if (!scope || !entry || !takeable(entry)) return "sent";
-    // Holds the head back from a dispatch claim while the draft is written.
-    this.#cancelled.add(localId);
-    const takeBack = async (): Promise<MessageTakeBack> => {
-      const held = (await this.#options.storage.load(scope)).find(
-        (value) => value.localId === localId,
-      );
-      if (!this.#current(scope, generation)) return "sent";
-      if (!held || !takeable(held)) {
-        await this.#reload();
-        return "sent";
-      }
-      const restoring: StoredMessage = {
-        ...held,
-        phase: "restoring",
-        attemptId: globalThis.crypto.randomUUID(),
-      };
-      if (!(await this.#replace(scope, held, restoring))) {
-        await this.#reload();
-        return "sent";
-      }
-      if (!this.#current(scope, generation)) return "sent";
-      this.#publish({
-        messages: this.#state.messages.map((row) => (row.localId === localId ? restoring : row)),
-      });
-      if ((await this.#options.drafts.restore(scope, restoring)) === "occupied") {
-        if (held.phase !== "restoring") {
-          await this.#replace(scope, restoring, held);
-          await this.#reload();
-        }
-        return "occupied";
-      }
-      if (!(await this.#replace(scope, restoring, null, true))) throw storageFailure();
-      await this.#removed(scope, generation, localId);
-      return "restored";
-    };
+    const storage = this.#options.storage;
+    const restoring: StoredMessage = { ...entry, phase: "restoring" };
+    this.#takingBack.add(localId);
     try {
-      return await this.#withDelivery(scope, entry.command.threadId, takeBack);
-    } finally {
-      this.#cancelled.delete(localId);
-      if (this.#current(scope, generation)) this.#drain();
-    }
-  };
-  discard = async (localId: string): Promise<void> => {
-    const scope = this.#scope,
-      generation = this.#generation,
-      entry = this.#state.messages.find((value) => value.localId === localId);
-    const unconfirmed = () =>
-      new ClientOperationError("Delivery is unconfirmed.", "blocked", {
-        kind: "local",
-        reason: "message-unconfirmed",
-        retryable: false,
+      const claimed = await this.#writes.run(async () => {
+        if (!this.#current(scope, generation)) return false;
+        const claimed = await storage.replace(scope, entry, restoring);
+        if (claimed && this.#current(scope, generation))
+          this.#publishRows(
+            this.#state.messages.map((row) => (row.localId === localId ? restoring : row)),
+          );
+        return claimed;
       });
-    if (!scope || !entry || !takeable(entry) || entry.phase === "restoring") throw unconfirmed();
-    this.#cancelled.add(localId);
-    const remove = async () => {
-      const held = (await this.#options.storage.load(scope)).find(
-        (value) => value.localId === localId,
-      );
-      if (!this.#current(scope, generation)) throw unconfirmed();
+      if (!claimed || !this.#current(scope, generation)) {
+        await this.#reload();
+        return "sent";
+      }
       if (
-        !held ||
-        !takeable(held) ||
-        held.phase === "restoring" ||
-        !(await this.#replace(scope, held, null, true))
-      ) {
-        await this.#reload();
-        throw unconfirmed();
-      }
-      await this.#removed(scope, generation, localId);
-      this.#housekeeping(this.#options.onDiscarded, scope, held);
-    };
-    try {
-      await this.#withDelivery(scope, entry.command.threadId, remove);
+        (await this.#options.drafts.restore(scope, restoring, () =>
+          this.#current(scope, generation),
+        )) === "occupied"
+      )
+        return "occupied";
+      // A concurrent Edit may have already committed the same transfer.
+      await this.#writes.run(() => storage.replace(scope, restoring, null, true));
+      await this.#reload();
+      return "restored";
     } finally {
-      this.#cancelled.delete(localId);
-      if (this.#current(scope, generation)) this.#drain();
+      if (this.#current(scope, generation)) {
+        this.#takingBack.delete(localId);
+        this.#drain();
+      }
     }
   };
-  async #remove(scope: ClientScope, generation: number, localId: string): Promise<void> {
-    await this.#writes.run(() => this.#options.storage.remove(scope, localId));
-    await this.#removed(scope, generation, localId);
-  }
-  async #removed(scope: ClientScope, generation: number, localId: string): Promise<void> {
-    if (this.#current(scope, generation)) {
-      this.#cancelled.delete(localId);
-      this.#publish({
-        messages: this.#state.messages.filter((entry) => entry.localId !== localId),
-      });
-      if (this.#legacyPending) await this.#reload();
-      else this.#drain();
+
+  discard = (localId: string): Promise<void> => this.#discard(localId, false);
+  removeUnconfirmed = (localId: string): Promise<void> => this.#discard(localId, true);
+
+  async #discard(localId: string, unconfirmed: boolean): Promise<void> {
+    const scope = this.#scope;
+    const generation = this.#generation;
+    const entry = this.#state.messages.find((value) => value.localId === localId);
+    this.#takingBack.add(localId);
+    try {
+      const removed =
+        scope &&
+        entry &&
+        (unconfirmed
+          ? entry.phase === "rejected" && entry.rejection?.code === "unconfirmed"
+          : takeable(entry) && entry.phase !== "restoring") &&
+        (await this.#writes.run(
+          async () =>
+            this.#current(scope, generation) &&
+            this.#options.storage.replace(scope, entry, null, true),
+        ));
+      await this.#reload();
+      if (!removed || !scope || !entry)
+        throw new ClientOperationError("Delivery is unconfirmed.", "blocked", {
+          kind: "local",
+          reason: "message-unconfirmed",
+          retryable: false,
+        });
+      this.#housekeeping(this.#options.onDiscarded, scope, entry);
+    } finally {
+      if (scope && this.#current(scope, generation)) {
+        this.#takingBack.delete(localId);
+        this.#drain();
+      }
     }
   }
+
   #drain(): void {
+    this.#clearLeaseWake();
     if (!this.#ready() || !this.#scope) return;
+    const scope = this.#scope;
+    const generation = this.#generation;
     const heads = new Map<string, StoredMessage>();
-    for (const entry of this.#state.messages)
+    for (const entry of this.#state.messages) {
+      if (this.#confirmed.has(entry.localId)) {
+        void this.#settle(
+          scope,
+          generation,
+          entry,
+          () => this.#options.storage.remove(scope, entry.localId),
+          true,
+        );
+      }
       if (!heads.has(entry.command.threadId)) heads.set(entry.command.threadId, entry);
+    }
+    let wakeAt = Infinity;
+    const now = Date.now();
     for (const [threadId, entry] of heads) {
       if (this.#sending.size >= 4) break;
       const predecessor = this.#legacyBlocked.get(threadId);
       if (
-        (predecessor &&
-          compareOutboxOrder(predecessor, entry) <= 0 &&
-          !this.#confirmed.has(entry.localId)) ||
-        this.#cancelled.has(entry.localId) ||
+        (predecessor && compareOutboxOrder(predecessor, entry) <= 0) ||
+        this.#confirmed.has(entry.localId) ||
+        this.#takingBack.has(entry.localId) ||
         entry.phase === "restoring" ||
-        (entry.phase === "rejected" && !this.#confirmed.has(entry.localId)) ||
+        entry.phase === "rejected" ||
         this.#sending.has(threadId) ||
         this.#retries.has(entry.localId)
       )
         continue;
-      this.#sending.set(threadId, entry.localId);
-      const scope = this.#scope,
-        generation = this.#generation;
-      const deliver = async () => {
-        if (!this.#current(scope, generation) || !this.#ready()) return;
-        const head = (await this.#options.storage.load(scope)).find(
-          (row) => row.command.threadId === threadId,
-        );
-        if (!this.#current(scope, generation) || !this.#ready()) return;
-        if (
-          head?.localId !== entry.localId ||
-          head.phase === "restoring" ||
-          (head.phase === "rejected" && !this.#confirmed.has(head.localId))
-        ) {
-          await this.#reload();
-          return;
-        }
-        await this.#deliver(scope, generation, head);
-      };
-      void this.#withDelivery(scope, threadId, deliver)
+      const deadline = entry.lease?.expiresAt;
+      if (deadline !== undefined && deadline > now) {
+        wakeAt = Math.min(wakeAt, deadline);
+        continue;
+      }
+      const delivery = { key: entry.localId, id: globalThis.crypto.randomUUID() };
+      this.#sending.set(threadId, delivery);
+      void this.#deliver(scope, generation, entry, delivery)
         .catch(() => {
-          if (this.#current(scope, generation)) {
-            this.#publish({ issue: { code: "storage-unavailable" } });
-            this.#pause(entry);
-          }
+          if (this.#current(scope, generation)) this.#storageFailed();
         })
         .finally(() => {
-          if (this.#sending.get(threadId) === entry.localId) this.#sending.delete(threadId);
+          if (this.#sending.get(threadId) === delivery) this.#sending.delete(threadId);
           this.#drain();
         });
     }
+    if (Number.isFinite(wakeAt)) {
+      this.#leaseWake = setTimeout(() => this.#drain(), wakeAt - now);
+      unrefTimer(this.#leaseWake);
+    }
   }
-  async #deliver(scope: ClientScope, generation: number, entry: StoredMessage): Promise<void> {
-    if (this.#confirmed.has(entry.localId)) {
-      await this.#remove(scope, generation, entry.localId);
-      this.#confirmed.delete(entry.localId);
-      this.#housekeeping(this.#options.onConfirmed, scope, entry);
-      this.#housekeeping(this.#options.onDiscarded, scope, entry);
+
+  async #deliver(
+    scope: ClientScope,
+    generation: number,
+    entry: StoredMessage,
+    delivery: ActiveDelivery,
+  ): Promise<void> {
+    const canStart = () =>
+      this.#current(scope, generation) &&
+      this.#ready() &&
+      !this.#confirmed.has(entry.localId) &&
+      !this.#takingBack.has(entry.localId);
+    const started = await this.#writes.run(async () => {
+      const claim = await this.#options.storage.claim(
+        scope,
+        entry,
+        delivery.id,
+        dispatchLeaseMs,
+        this.#options.startsRun?.(entry.command.threadId) ? true : undefined,
+        canStart,
+      );
+      if (!claim) return null;
+      const { row, settle } = claim;
+      const deadline = row.lease!.expiresAt;
+      if (canStart() && deadline > Date.now())
+        this.#publishRows(
+          this.#state.messages.map((value) => (value.localId === row.localId ? row : value)),
+        );
+      // A local take-back can beat the network call while the lease commits.
+      if (!canStart() || deadline <= Date.now()) {
+        try {
+          await settle("not-started");
+        } catch (error) {
+          if (this.#current(scope, generation))
+            this.#pendingSettlements.set(delivery.id, () => settle("not-started"));
+          throw error;
+        }
+        return null;
+      }
+      const expired = Promise.withResolvers<void>();
+      const timer = setTimeout(expired.resolve, deadline - Date.now());
+      unrefTimer(timer);
+      delivery.wake = expired.resolve;
+      const answer = this.#send(scope, generation, row, settle);
+      return { finished: Promise.race([answer, expired.promise]), timer };
+    });
+    if (!started) {
+      if (this.#current(scope, generation)) await this.#reload();
       return;
     }
-    if (this.#cancelled.has(entry.localId)) return;
-    // Where the Host will put it is decided now, from what the Host says as it goes.
-    let sending: StoredMessage = {
-      ...entry,
-      phase: "sending",
-      attempted: true,
-      inTranscript: this.#options.startsRun?.(entry.command.threadId) ? true : undefined,
-    };
-    let settleDispatch: ((rejection?: ClientIssue) => Promise<StoredMessage | null>) | undefined;
     try {
-      if (!(await this.#replace(scope, entry, sending))) {
-        await this.#reload();
-        return;
-      }
-      if (!this.#current(scope, generation)) return;
-      if (this.#cancelled.has(entry.localId)) {
-        await this.#replace(scope, sending, entry);
-        return;
-      }
-      if (!this.#state.messages.some((value) => value.localId === entry.localId)) return;
-      this.#publish({
-        messages: this.#state.messages.map((value) =>
-          value.localId === entry.localId ? sending : value,
-        ),
-      });
-      if (!this.#ready()) {
-        this.#publish({
-          messages: this.#state.messages.map((value) =>
-            value.localId === entry.localId ? { ...sending, phase: "waiting" } : value,
-          ),
-        });
-        return;
-      }
-      if (this.#cancelled.has(entry.localId)) {
-        await this.#replace(scope, sending, entry);
-        await this.#reload();
-        return;
-      }
-      const start = () =>
-        this.#current(scope, generation) && this.#ready() && !this.#cancelled.has(entry.localId)
-          ? this.#options.dispatch(entry.command)
-          : null;
-      let answer: Promise<{ readonly messageId: string }> | null;
-      if (this.#options.storage.dispatchIfPending) {
-        const claimed = { ...sending, attemptId: globalThis.crypto.randomUUID() };
-        const dispatch = await this.#options.storage.dispatchIfPending(
-          scope,
-          sending,
-          claimed,
-          start,
-        );
-        sending = claimed;
-        answer = dispatch?.answer ?? null;
-        settleDispatch = dispatch?.settle;
-      } else {
-        const current = (await this.#options.storage.load(scope)).find(
-          (row) => row.localId === entry.localId,
-        );
-        answer = current && sameStoredMessage(current, sending) ? start() : null;
-      }
-      if (!answer) {
-        await this.#reload();
-        return;
-      }
-      const acknowledgement = await answer;
-      if (!this.#current(scope, generation)) {
-        await settleDispatch?.();
-        return;
-      }
+      await started.finished;
+    } finally {
+      clearTimeout(started.timer);
+      delivery.wake = undefined;
+    }
+  }
+
+  async #send(
+    scope: ClientScope,
+    generation: number,
+    entry: StoredMessage,
+    settle: NonNullable<Awaited<ReturnType<MessageOutboxStorage["claim"]>>>["settle"],
+  ): Promise<void> {
+    let acknowledgement: { readonly messageId: string };
+    try {
+      acknowledgement = await this.#options.dispatch(entry.command);
+    } catch (error) {
+      const failure = classifyClientFailure(error);
+      const rejected = failure.kind === "rejection" && !failure.retryable;
+      if (!rejected && this.#current(scope, generation) && !this.#confirmed.has(entry.localId))
+        this.#pause(entry.localId);
+      const rejection: ClientIssue | undefined = rejected
+        ? { code: "rejected", reason: failure.reason }
+        : undefined;
+      await this.#settle(
+        scope,
+        generation,
+        entry,
+        () => settle(rejection ?? "uncertain"),
+        false,
+        rejection,
+      );
+      return;
+    }
+    if (this.#current(scope, generation)) {
       this.#confirmed.add(entry.localId);
       const acknowledged = new Map(this.#state.acknowledged);
       acknowledged.set(acknowledgement.messageId, entry.localId);
       if (acknowledged.size > 256) acknowledged.delete(acknowledged.keys().next().value!);
       this.#publish({ acknowledged });
-      await this.#remove(scope, generation, entry.localId);
-      this.#attempts.delete(entry.localId);
-      this.#confirmed.delete(entry.localId);
+    }
+    await this.#settle(
+      scope,
+      generation,
+      entry,
+      () => this.#options.storage.remove(scope, entry.localId),
+      true,
+    );
+  }
+
+  async #settle(
+    scope: ClientScope,
+    generation: number,
+    entry: StoredMessage,
+    write: () => Promise<void>,
+    confirmed = false,
+    refusal?: ClientIssue,
+  ): Promise<void> {
+    // A late result settles its captured record even after navigation or sign-out.
+    let written = false;
+    const committed = async () => {
+      if (written) return;
+      await write();
+      written = true;
+      if (!confirmed) return;
       this.#housekeeping(this.#options.onConfirmed, scope, entry);
       this.#housekeeping(this.#options.onDiscarded, scope, entry);
-    } catch (error) {
-      const failure = classifyClientFailure(error);
-      const rejection: ClientIssue | undefined =
-        failure.kind === "rejection" && !failure.retryable
-          ? { code: "rejected", reason: failure.reason }
-          : undefined;
-      const rejected: StoredMessage | null = rejection
-        ? { ...sending, phase: "rejected", rejection }
-        : null;
-      const settle = settleDispatch;
-      const write = settle
-        ? () => settle(rejection)
-        : rejected && this.#current(scope, generation)
-          ? async () => ((await this.#replace(scope, sending, rejected)) ? rejected : null)
-          : null;
-      if (write) {
-        try {
-          const updated = await write();
-          if (!this.#current(scope, generation)) return;
-          if (!updated) {
-            await this.#reload();
-            return;
-          }
-          sending = updated;
-        } catch {
-          if (!this.#current(scope, generation)) return;
-          this.#pendingSettlements.set(entry.localId, write);
-          this.#publish({
-            issue: { code: "storage-unavailable" },
-            ...(!settleDispatch && rejected
-              ? {
-                  messages: this.#state.messages.map((value) =>
-                    value.localId === entry.localId ? rejected : value,
-                  ),
-                }
-              : {}),
-          });
-          this.#retryStorage();
-          return;
-        }
+      if (this.#current(scope, generation)) {
+        this.#clearRetry(entry.localId);
+        this.#attempts.delete(entry.localId);
+        this.#confirmed.delete(entry.localId);
+        const active = this.#sending.get(entry.command.threadId);
+        if (active?.key === entry.localId) active.wake?.();
+        this.#publishRows(this.#state.messages.filter((row) => row.localId !== entry.localId));
       }
-      if (!this.#current(scope, generation)) return;
-      const row: StoredMessage =
-        sending.phase === "rejected" ? sending : { ...sending, phase: "waiting" };
-      this.#publish({
-        messages: this.#state.messages.map((value) =>
-          value.localId === entry.localId ? row : value,
-        ),
-        ...(failure.provenance === "local"
-          ? { issue: { code: "storage-unavailable" as const } }
-          : {}),
-      });
-      if (row.phase !== "rejected") this.#pause(entry);
-    }
+    };
+    const settlement = confirmed ? entry.localId : (entry.lease?.id ?? entry.localId);
+    if (this.#current(scope, generation) && this.#pendingSettlements.has(settlement)) return;
+    if (this.#current(scope, generation)) this.#pendingSettlements.set(settlement, committed);
+    await this.#writes.run(async () => {
+      try {
+        if (
+          !this.#current(scope, generation) ||
+          this.#pendingSettlements.get(settlement) === committed
+        )
+          await committed();
+        if (!this.#current(scope, generation)) return;
+        this.#pendingSettlements.delete(settlement);
+        await this.#load(scope, generation, confirmed && this.#legacyPending);
+      } catch {
+        if (!this.#current(scope, generation)) return;
+        if (refusal) {
+          this.#publishRows(
+            this.#state.messages.map((row) =>
+              row.localId === entry.localId && row.lease?.id === entry.lease?.id
+                ? {
+                    ...row,
+                    phase: "rejected",
+                    rejection: entry.uncertain ? { code: "unconfirmed" } : refusal,
+                  }
+                : row,
+            ),
+          );
+        }
+        this.#storageFailed();
+      }
+    });
   }
+
+  #storageFailed(): void {
+    this.#publish({ loading: false, issue: { code: "storage-unavailable" } });
+    this.#retryStorage();
+  }
+
   #housekeeping(
     callback: MessageOutboxOptions["onConfirmed"],
     scope: ClientScope,
@@ -906,19 +861,33 @@ class SessionMessageOutbox implements MessageOutbox {
     );
     unrefTimer(this.#storageRetry);
   }
-  #pause(entry: StoredMessage): void {
-    const attempt = this.#attempts.get(entry.localId) ?? 0;
-    this.#attempts.set(entry.localId, attempt + 1);
-    const timer = setTimeout(
-      () => {
-        this.#retries.delete(entry.localId);
-        if (this.#state.issue?.code === "storage-unavailable") void this.#reload();
-        else this.#drain();
-      },
-      Math.min(12_000, 500 * 2 ** Math.min(attempt, 10)),
-    );
-    this.#retries.set(entry.localId, timer);
+  #clearRetry(id: string): void {
+    const timer = this.#retries.get(id);
+    if (timer) clearTimeout(timer);
+    this.#retries.delete(id);
+  }
+  #pause(id: string): void {
+    const attempt = this.#attempts.get(id) ?? 0;
+    this.#attempts.set(id, attempt + 1);
+    this.#schedule(id, Math.min(12_000, 500 * 2 ** Math.min(attempt, 10)));
+  }
+  #schedule(id: string, delay: number): void {
+    this.#clearRetry(id);
+    const timer = setTimeout(() => {
+      this.#retries.delete(id);
+      this.#drain();
+    }, delay);
+    this.#retries.set(id, timer);
     unrefTimer(timer);
+  }
+  #clearLeaseWake(): void {
+    if (this.#leaseWake) clearTimeout(this.#leaseWake);
+    this.#leaseWake = null;
+  }
+  #releaseDeliveries(): void {
+    this.#clearLeaseWake();
+    for (const delivery of this.#sending.values()) delivery.wake?.();
+    this.#sending.clear();
   }
   dispose = (): void => {
     this.#disposed = true;
@@ -928,6 +897,7 @@ class SessionMessageOutbox implements MessageOutbox {
     if (this.#storageRetry) clearTimeout(this.#storageRetry);
     this.#retries.forEach(clearTimeout);
     this.#retries.clear();
+    this.#releaseDeliveries();
     this.#listeners.clear();
   };
 }

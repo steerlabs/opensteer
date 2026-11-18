@@ -1,6 +1,7 @@
 import {
   createMessageOutbox,
   createMessageOutboxStorage,
+  changedTaskDraft,
   messageStorageFingerprint,
 } from "@opensteer/client/host";
 import { controlledClientSession } from "@opensteer/client/test-support";
@@ -53,6 +54,7 @@ function host() {
   return {
     tasks,
     queued,
+    handoffs: new Map<string, string>(),
     createThread: vi.fn(async ({ idempotencyKey }: { idempotencyKey?: string }) => {
       const id = tasks.get(idempotencyKey!) ?? `thr_${tasks.size + 1}`;
       tasks.set(idempotencyKey!, id);
@@ -97,7 +99,16 @@ async function attempt(
     confirmLegacy: true,
     assertCurrent: () => {},
     createThread: fake.createThread,
-    enqueue: (command) => enqueue(command.threadId, command.idempotencyKey, command.content),
+    enqueue: async (command) => {
+      const text = JSON.stringify(command);
+      const prior = fake.handoffs.get(command.idempotencyKey);
+      if (prior !== undefined) {
+        if (prior !== text) throw changedTaskDraft();
+        return;
+      }
+      await enqueue(command.threadId, command.idempotencyKey, command.content);
+      fake.handoffs.set(command.idempotencyKey, text);
+    },
   });
 }
 
@@ -234,7 +245,7 @@ describe("starting a new task from a draft", () => {
     expect(thread.id).toBe("thr_1");
     expect(fake.queued).toEqual([{ threadId: "thr_1", key: expect.any(String) }]);
     expect([...saved.records.values()].map((value) => JSON.parse(value))).toMatchObject([
-      { completedThreadId: "thr_1" },
+      { start: { threadId: "thr_1" } },
     ]);
   });
 
@@ -258,7 +269,7 @@ describe("starting a new task from a draft", () => {
     expect(fake.queued).toEqual([{ threadId: "thr_1", key: held.start.messageKey }]);
   });
 
-  it("queues the revised first message after a failed save and rejects a different draft after completion", async () => {
+  it("queues the revised first message after a failed save and preserves a different draft after completion", async () => {
     const fake = host();
     const saved = journal();
     const drafts = createComposerDraftStore(() => memory);
@@ -281,7 +292,10 @@ describe("starting a new task from a draft", () => {
     expect(fake.createThread).toHaveBeenCalledOnce();
 
     drafts.update(draftKey, { text: "Version C" });
-    await expect(attempt(drafts, fake, saved, enqueue)).rejects.toThrow();
+    await expect(attempt(drafts, fake, saved, enqueue)).resolves.toEqual({
+      id: "thr_1",
+      preserveDraft: true,
+    });
     expect(drafts.read(draftKey)?.text).toBe("Version C");
     expect(enqueue).toHaveBeenCalledOnce();
   });

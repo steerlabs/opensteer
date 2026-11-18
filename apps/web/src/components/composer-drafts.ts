@@ -50,6 +50,7 @@ const DraftSchema = z.object({
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   startGeneration: z.string().optional(),
   startPending: z.boolean().optional(),
+  startScope: z.string().optional(),
   start: SavedTaskStartSchema.optional().catch(undefined),
   text: z.string(),
   updatedAt: z.number(),
@@ -221,12 +222,15 @@ export function createComposerDraftStore(
     return [...found];
   };
 
-  const remove = (key: string): void => {
-    unsaved.delete(key);
+  const remove = (key: string): boolean => {
     try {
-      storage()?.removeItem(key);
+      const store = storage();
+      if (!store) return false;
+      store.removeItem(key);
+      unsaved.delete(key);
+      return true;
     } catch {
-      // Nothing was saved, or it cannot be reached; an empty draft reads the same.
+      return false;
     }
   };
 
@@ -249,14 +253,16 @@ export function createComposerDraftStore(
     }
   };
 
-  const clear = (key: string, retire = true): void => {
-    if (read(key) === null) return;
+  const clear = (key: string, retire = true): boolean => {
     const recoveredSendKeys = read(key)?.recoveredSendKeys;
-    if (recoveredSendKeys?.length)
-      write(key, { text: "", files: [], quote: null, updatedAt: now(), recoveredSendKeys });
-    else remove(key);
-    publish();
-    if (retire && key.includes(":task:")) onRetire?.(key);
+    const saved = recoveredSendKeys?.length
+      ? write(key, { text: "", files: [], quote: null, updatedAt: now(), recoveredSendKeys }, false)
+      : remove(key);
+    if (saved) {
+      publish();
+      if (retire && key.includes(":task:")) onRetire?.(key);
+    }
+    return saved;
   };
 
   const buildIndex = (scope: ComposerDraftScope): ComposerDraftIndex => {
@@ -284,19 +290,24 @@ export function createComposerDraftStore(
     return tasks.length === 0 && replies.size === 0 ? emptyIndex : { replies, tasks };
   };
 
+  const matches = (held: ComposerDraft, expected: ComposerDraft): boolean => {
+    if (expected.startGeneration && expected.startGeneration !== held.startGeneration) return false;
+    const revision = ({
+      startGeneration: _generation,
+      startPending: _pending,
+      startScope: _scope,
+      ...draft
+    }: ComposerDraft) => draft;
+    return sameDraft(revision(held), revision(expected));
+  };
+
   return {
     clear,
-    matches(key: string, expected: ComposerDraft | null): boolean {
-      const held = read(key);
-      if (!held || !expected) return held === expected;
-      if (expected.startGeneration && expected.startGeneration !== held.startGeneration)
-        return false;
-      return sameDraft(
-        { ...expected, startGeneration: undefined, startPending: undefined },
-        { ...held, startGeneration: undefined, startPending: undefined },
-      );
+    durableTaskStartGeneration(key: string): string | undefined {
+      const store = storage();
+      if (!store) throw new Error("No draft storage.");
+      return parse(store.getItem(key))?.startGeneration;
     },
-
     /** Forgets every draft on this device; signing out leaves nothing behind. */
     clearAll(): void {
       for (const key of keys(prefix)) remove(key);
@@ -329,36 +340,53 @@ export function createComposerDraftStore(
       };
     },
 
-    taskStartGeneration(key: string): string | null {
+    taskStartGeneration(key: string, scope?: string): string | null {
       const current = read(key) ?? blank();
-      if (current.startGeneration && current.startPending && !unsaved.has(key))
+      if (current.startScope !== undefined && current.startScope !== scope) return null;
+      if (
+        current.startGeneration &&
+        current.startPending &&
+        current.startScope === scope &&
+        !unsaved.has(key)
+      )
         return current.startGeneration;
-      // Windows looking at the same saved draft give that draft the same generation.
       const startGeneration =
         current.startGeneration ??
         (current.updatedAt ? `legacy:${current.updatedAt}` : globalThis.crypto.randomUUID());
-      return write(key, { ...current, startGeneration, startPending: true }, false)
-        ? startGeneration
-        : null;
+      if (
+        !write(key, { ...current, startGeneration, startPending: true, startScope: scope }, false)
+      )
+        return null;
+      publish();
+      return startGeneration;
     },
 
-    finishTaskStart(key: string, generation: string): void {
+    finishTaskStart(
+      key: string,
+      generation: string,
+      submitted?: ComposerDraft,
+    ): "cleared" | "kept" | "unavailable" {
       const draft = read(key);
-      if (draft?.startGeneration !== generation) return;
-      if (!holdsContent(draft)) {
-        clear(key);
-        return;
-      }
+      if (draft?.startGeneration !== generation) return "kept";
+      if (!holdsContent(draft) || (submitted && matches(draft, submitted)))
+        return clear(key) ? "cleared" : "unavailable";
       if (
-        write(
+        !write(
           key,
-          { ...draft, start: undefined, startGeneration: undefined, startPending: undefined },
+          {
+            ...draft,
+            start: undefined,
+            startGeneration: undefined,
+            startPending: undefined,
+            startScope: undefined,
+          },
           false,
         )
-      ) {
-        publish();
-        onRetire?.(key);
-      }
+      )
+        return "unavailable";
+      publish();
+      onRetire?.(key);
+      return "kept";
     },
 
     read,
@@ -438,16 +466,24 @@ export function createComposerDraftStore(
             ...draft,
             ...(preserveStart
               ? {}
-              : { startGeneration: undefined, start: undefined, startPending: undefined }),
+              : {
+                  startGeneration: undefined,
+                  start: undefined,
+                  startPending: undefined,
+                  startScope: undefined,
+                }),
             text: "",
             files: [],
             places: [],
             quote: null,
             updatedAt: now(),
           });
-        } else remove(key);
+        } else {
+          saved = remove(key);
+          if (!saved) unsaved.set(key, JSON.stringify(draft));
+        }
         if (!open || refusal !== undefined) publish();
-        if (!preserveStart && key.includes(":task:")) onRetire?.(key);
+        if (saved && !preserveStart && key.includes(":task:")) onRetire?.(key);
         return saved;
       }
       if (current !== null && sameDraft(draft, current) && !unsaved.has(key)) return true;
@@ -470,7 +506,7 @@ export const composerDrafts: ReturnType<typeof createComposerDraftStore> = creat
 
 export function cleanTaskStartJournals(onlyDraft?: string, discardedGeneration?: string) {
   return retireTaskStarts(
-    (key) => composerDrafts.read(key)?.startGeneration,
+    composerDrafts.durableTaskStartGeneration,
     onlyDraft,
     discardedGeneration,
   );

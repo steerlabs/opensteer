@@ -1,7 +1,7 @@
 import { hostApi } from "@opensteer/protocol";
 import type { MessageOutboxOptions } from "@opensteer/client/host";
 import { messageDraftParts, type StoredMessage } from "@opensteer/client/host";
-import type { ClientScope } from "@opensteer/client/connections";
+import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   CompactionSendChoiceSchema,
@@ -138,6 +138,7 @@ const TaskStartRecordSchema = LegacyTaskStartRecordSchema.extend({
   ownerScope: z.string().min(1).max(2048).optional(),
   /** The task the Host confirmed making, so the handoff is retried without making it again. */
   startedThreadId: z.string().min(1).max(200).optional(),
+  replayed: z.literal(true).optional(),
   userId: z.string().min(1).max(200),
 })
   .refine((command) => command.text.trim().length > 0 || (command.attachments?.length ?? 0) > 0)
@@ -255,7 +256,11 @@ function withoutSteeringDecisions(file: z.infer<typeof SteeringDraftFileSchema>)
 
 export interface ThreadDraftStore {
   readonly legacyMessages: NonNullable<MessageOutboxOptions["legacy"]>;
-  restoreMessage(scope: ClientScope, entry: StoredMessage): Promise<"restored" | "occupied">;
+  restoreMessage(
+    scope: ClientScope,
+    entry: StoredMessage,
+    isCurrent?: () => boolean,
+  ): Promise<"restored" | "occupied">;
   /** A stable external-store snapshot for every mounted view of these drafts. */
   getVersion(): number;
   subscribe(listener: () => void): () => void;
@@ -285,6 +290,13 @@ export interface ThreadDraftStore {
     userId: string,
     threadId: string,
     expectedIdempotencyKey?: string,
+  ): Promise<boolean>;
+  replayTaskStart(scope: ClientScope, threadId: string, id: string): Promise<boolean>;
+  restoreRefusedTaskStart(
+    scope: ClientScope,
+    threadId: string,
+    id: string,
+    isCurrent: () => boolean,
   ): Promise<boolean>;
   /** Notes the task the Host made for this start, for the record under that key only. */
   recordTaskStarted(
@@ -535,9 +547,10 @@ export function createThreadDraftStore(options: {
           await store.clearTaskStart(scope.deploymentId, scope.viewerId, entry.threadId, id);
       },
     },
-    async restoreMessage(scope, entry) {
+    async restoreMessage(scope, entry, isCurrent) {
       let outcome: "restored" | "occupied" = "occupied";
       await mutate((nextDrafts) => {
+        if (isCurrent?.() === false) return;
         const entryKey = key(scope.deploymentId, scope.viewerId, entry.command.threadId);
         const held = nextDrafts.get(entryKey);
         if (held?.recoveredSendKeys?.includes(entry.localId)) {
@@ -702,6 +715,54 @@ export function createThreadDraftStore(options: {
         cleared = true;
       });
       return cleared;
+    },
+
+    async replayTaskStart(scope, threadId, id) {
+      const entryKey = key(scope.deploymentId, scope.viewerId, threadId);
+      let found = false;
+      await mutate((_nextDrafts, nextPending) => {
+        const current = nextPending.get(entryKey);
+        if (current?.idempotencyKey !== id || current.ownerScope !== clientScopeKey(scope)) return;
+        nextPending.set(entryKey, { ...current, replayed: true });
+        found = true;
+      });
+      return found;
+    },
+
+    async restoreRefusedTaskStart(scope, threadId, id, isCurrent) {
+      const entryKey = key(scope.deploymentId, scope.viewerId, threadId);
+      let restored = false;
+      await mutate((nextDrafts, nextPending) => {
+        const held = nextPending.get(entryKey);
+        const current = readVisibleDraft(scope.deploymentId, scope.viewerId, threadId);
+        if (
+          !isCurrent() ||
+          held?.idempotencyKey !== id ||
+          held.ownerScope !== clientScopeKey(scope) ||
+          held.startedThreadId ||
+          held.replayed ||
+          (current && draftHasContent(current))
+        )
+          return;
+        putDraft(nextDrafts, entryKey, scope.viewerId, {
+          text: held.text,
+          page: held.browserPage,
+          quote: held.quotedMessageId
+            ? { attribution: "Quoted message", excerpt: "", messageId: held.quotedMessageId }
+            : undefined,
+          attachments: held.attachments?.map((part, index) => ({
+            attachmentId: part.artifactId,
+            localUri: held.localUris?.[index] ?? null,
+            mediaType: part.mediaType,
+            name: part.name,
+            sizeBytes: part.sizeBytes ?? 0,
+            status: "ready",
+          })),
+        });
+        nextPending.delete(entryKey);
+        restored = true;
+      });
+      return restored;
     },
 
     async recordTaskStarted(

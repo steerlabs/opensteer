@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import type { ThreadAccessMode } from "@opensteer/core";
 import {
@@ -10,6 +10,8 @@ import {
   type ExecutionSelection,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
+import { useClientConnection } from "@opensteer/client/react";
+import { clientScopeKey } from "@opensteer/client/connections";
 import { useShell } from "../app-shell.js";
 import { composerDraftKeyFor, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { Composer, type ComposerSubmission } from "../composer.js";
@@ -23,6 +25,8 @@ import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
 import { TasksHome } from "./tasks-home.js";
+import { belongsToPreviousLogin, heldTaskStart } from "./task-start.js";
+import { setAsideStagedFiles } from "../attachments/use-staged-attachments.js";
 
 /** Home: what should your agent do, and the composer that starts it. */
 export function HomeRoute() {
@@ -93,7 +97,45 @@ function NewTaskComposer({
   const { deploymentId } = snapshot;
   const userId = snapshot.user?.id ?? null;
   const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "task", draftId });
-  const legacyStart = draftKey !== null && composerDrafts.read(draftKey)?.start !== undefined;
+  const { scope } = useClientConnection(hostClient.connection);
+  const scopeKey = clientScopeKey(scope);
+  const generation = useSyncExternalStore(composerDrafts.subscribe, () => {
+    const draft = draftKey && composerDrafts.read(draftKey);
+    return draft && draft.startPending ? (draft.startGeneration ?? null) : null;
+  });
+  const draft = draftKey ? composerDrafts.read(draftKey) : null;
+  const legacyStart = draft?.start !== undefined;
+  const [journal, setJournal] = useState<{
+    scope: string;
+    generation: string;
+    previousLogin: boolean;
+    resume: boolean;
+  } | null>(null);
+  const [discardError, setDiscardError] = useState<string | null>(null);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const activeJournal =
+    journal?.scope === scopeKey && journal.generation === generation ? journal : null;
+  const previousLogin =
+    Boolean(scopeKey && draft?.startScope && draft.startScope !== scopeKey) ||
+    activeJournal?.previousLogin === true;
+  const resume = !previousLogin && (legacyStart || activeJournal?.resume === true);
+  const startOwnerBound = draft?.startScope !== undefined;
+  useEffect(() => {
+    if (!scopeKey || !draftKey || !generation) return;
+    let active = true;
+    void Promise.all([
+      heldTaskStart(scopeKey, draftKey, generation),
+      startOwnerBound ? false : belongsToPreviousLogin(scopeKey, draftKey, generation),
+    ]).then(
+      ([resume, previousLogin]) => {
+        if (active) setJournal({ scope: scopeKey, generation, resume, previousLogin });
+      },
+      () => {},
+    );
+    return () => {
+      active = false;
+    };
+  }, [scopeKey, draftKey, generation, startOwnerBound]);
   const context = useComposerContext({ auto: true, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const canCreate = snapshot.can?.createTasks === true;
@@ -119,13 +161,15 @@ function NewTaskComposer({
     () => (selection ? placementForSelection(placements, selection) : null),
     [placements, selection],
   );
-  const canCreateThread = canCreate && selection !== null;
+  const canCreateThread = resume || (canCreate && selection !== null);
   const inputRef = useRef<HTMLElement | null>(null);
   const accessConflict = selectedPlacement
     ? accessModeConflict(accessMode, selectedPlacement)
     : null;
   const sendBlocked = hostMessageOutbox(hostClient)
-    ? accessConflict
+    ? resume
+      ? null
+      : accessConflict
     : presentClientIssue({ code: "storage-unavailable" }).title;
   const attachmentTarget =
     draftKey && deploymentId ? { client: hostClient, scope: draftKey, deploymentId } : null;
@@ -146,8 +190,8 @@ function NewTaskComposer({
       quotedMessageId,
     }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey" | "quotedMessageId">,
   ) => {
-    // Send is off without a model; this keeps the draft if that ever races.
-    if (!selection) throw new ActionNotDone({ kind: "not-sent", issue: null });
+    if (!canCreateThread || previousLogin)
+      throw new ActionNotDone({ kind: "not-sent", issue: null });
     const message = {
       attachments,
       body,
@@ -158,50 +202,83 @@ function NewTaskComposer({
     const thread = await act(
       hostClient,
       { label: "start this task", done: "started", happened: "this task started" },
-      () => createThreadAndSend(message, selection, accessMode, draftKey, legacyStart),
+      () =>
+        createThreadAndSend(
+          message,
+          resume || canCreate ? selection : null,
+          accessMode,
+          draftKey,
+          legacyStart,
+        ),
     );
-    nav.openConversation(nav.threadPath(thread.id));
-    return { draftGeneration: thread.draftGeneration };
+    if (!thread.preserveDraft) nav.openConversation(nav.threadPath(thread.id));
+    return thread;
   };
   return (
     <>
-      <Composer
-        attachments={attachmentTarget}
-        autoFocus
-        dictationScope={`${deploymentId}/${userId}/new-task`}
-        disabled={!canCreateThread}
-        draftKey={draftKey}
-        footerExtras={
-          <ExecutionControls
-            access={{
-              engine: selectedPlacement,
-              mode: accessMode,
-              onApply: (mode) => {
-                setAccessMode(mode);
-                rememberExecution({ accessMode: mode });
-              },
-            }}
-            blocked={blocked}
-            onApply={(next) => {
-              setChosen(next);
-              rememberExecution({ selection: next });
-            }}
-            onAuthenticate={openHarnessAuthentication ?? undefined}
-            onRefresh={refreshHarnessCatalog}
-            placements={placements}
-            preferences={executionPreferences}
-            selection={selection}
-          />
-        }
-        inputRef={inputRef}
-        key={suggestion?.key ?? 0}
-        onSend={startThread}
-        placeContext={placeContext}
-        placeholder={placeholderFor(selection !== null, blockedPlacement, canCreate)}
-        references={(query) => personalReferenceCandidates(hostClient, query)}
-        sendBlocked={sendBlocked}
-        sendLabel={legacyStart ? "Resume task" : "Start task"}
-      />
+      {previousLogin ? (
+        <p role="status">This draft started a task under your previous sign-in.</p>
+      ) : (
+        <Composer
+          attachments={attachmentTarget}
+          autoFocus
+          dictationScope={`${deploymentId}/${userId}/new-task`}
+          disabled={!canCreateThread}
+          draftKey={draftKey}
+          footerExtras={
+            <ExecutionControls
+              access={{
+                engine: selectedPlacement,
+                mode: accessMode,
+                onApply: (mode) => {
+                  setAccessMode(mode);
+                  rememberExecution({ accessMode: mode });
+                },
+              }}
+              blocked={blocked}
+              onApply={(next) => {
+                setChosen(next);
+                rememberExecution({ selection: next });
+              }}
+              onAuthenticate={openHarnessAuthentication ?? undefined}
+              onRefresh={refreshHarnessCatalog}
+              placements={placements}
+              preferences={executionPreferences}
+              selection={selection}
+            />
+          }
+          inputRef={inputRef}
+          key={`${editorVersion}/${suggestion?.key ?? 0}`}
+          onSend={startThread}
+          placeContext={placeContext}
+          placeholder={
+            resume
+              ? "Finish starting this task…"
+              : placeholderFor(selection !== null, blockedPlacement, canCreate)
+          }
+          references={(query) => personalReferenceCandidates(hostClient, query)}
+          sendBlocked={sendBlocked}
+          sendLabel={resume ? "Resume task" : "Start task"}
+        />
+      )}
+      {draftKey && (generation || legacyStart) ? (
+        <button
+          className="btn btn--ghost btn--small"
+          onClick={() => {
+            if (!composerDrafts.clear(draftKey)) {
+              setDiscardError("Couldn't discard this draft. Try again.");
+              return;
+            }
+            setDiscardError(null);
+            setAsideStagedFiles(draftKey).forget();
+            setEditorVersion((version) => version + 1);
+          }}
+          type="button"
+        >
+          Discard draft
+        </button>
+      ) : null}
+      {discardError ? <p role="status">{discardError}</p> : null}
       <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
     </>
   );

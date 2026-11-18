@@ -91,7 +91,7 @@ import {
 } from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
 import { cleanTaskStartJournals, composerDrafts } from "./composer-drafts.js";
-import { draftTaskStart, startTask } from "./home/task-start.js";
+import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
@@ -145,12 +145,16 @@ export interface ShellContext {
    */
   createThreadAndSend: (
     message: PendingSubmission,
-    selection: ExecutionSelection,
+    selection: ExecutionSelection | null,
     accessMode: ThreadAccessMode,
     /** The draft the task starts from, which keeps the start across retries. */
     draftKey: string | null,
     confirmLegacy?: boolean,
-  ) => Promise<{ readonly id: string; readonly draftGeneration: string }>;
+  ) => Promise<{
+    readonly id: string;
+    readonly draftGeneration: string;
+    readonly preserveDraft?: true;
+  }>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
    * The Desktop's deployment-access state, already filtered by one revision
@@ -680,7 +684,7 @@ export function AppShell({
   const createThreadAndSend = useCallback(
     async (
       message: PendingSubmission,
-      selection: ExecutionSelection,
+      selection: ExecutionSelection | null,
       accessMode: ThreadAccessMode,
       draftKey: string | null,
       confirmLegacy?: boolean,
@@ -690,16 +694,29 @@ export function AppShell({
       const outbox = hostMessageOutbox(hostClient);
       const scope = hostClient.connection.getSnapshot().scope;
       if (!outbox || !draftKey || !scope) throw storageUnavailable();
-      const scopeKey = clientScopeKey(scope);
-      const generation = composerDrafts.taskStartGeneration(draftKey);
-      if (!generation) throw storageUnavailable();
-      const assertCurrent = () => {
-        if (
-          clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey ||
-          composerDrafts.read(draftKey)?.startGeneration !== generation
-        )
+      const scopeKey = clientScopeKey(scope)!;
+      const assertLogin = () => {
+        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey)
           throw storageUnavailable();
       };
+      const held = composerDrafts.read(draftKey);
+      if (
+        held?.startGeneration &&
+        held.startPending &&
+        !held.startScope &&
+        (await belongsToPreviousLogin(scopeKey, draftKey, held.startGeneration))
+      )
+        throw storageUnavailable();
+      assertLogin();
+      const generation = composerDrafts.taskStartGeneration(draftKey, scopeKey);
+      if (!generation) throw storageUnavailable();
+      const assertCurrent = () => {
+        assertLogin();
+        if (composerDrafts.durableTaskStartGeneration(draftKey) !== generation)
+          throw storageUnavailable();
+      };
+      // A new generation can reuse the journal slot only after its predecessor's receipt is retired.
+      await cleanTaskStartJournals(draftKey);
       const prepared = sendMessageCommand("", message);
       const thread = await startTask({
         records: draftTaskStart(JSON.stringify([scopeKey, draftKey]), generation),
@@ -711,7 +728,7 @@ export function AppShell({
         assertCurrent,
         legacyStart: composerDrafts.read(draftKey)?.start,
         confirmLegacy: confirmLegacy === true,
-        creation: {
+        creation: selection && {
           accessMode,
           environmentId: selection.environmentId,
           harnessInstanceId: selection.harnessInstanceId,
@@ -725,6 +742,7 @@ export function AppShell({
         enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
         hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });
+      assertLogin();
       return { ...thread, draftGeneration: generation };
     },
     [hostClient],

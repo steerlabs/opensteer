@@ -4,14 +4,13 @@ import type { WaitingInput } from "./waiting-inputs.js";
 /** Where a message a device holds is on its way to the computer, as its transcript draws it. */
 export type MessageDeliveryPhase = "waiting" | "sending" | "rejected" | "restoring" | "delivered";
 
-export type MessageDeliveryAction = "edit" | "delete" | "dont-send" | "retry";
+export type MessageDeliveryAction = "edit" | "delete" | "dont-send" | "retry" | "remove";
 
 /**
  * What a person may do to a message still on their device. A refused message
  * can be edited or deleted. A waiting one can be taken back only if no attempt
- * was ever made: after one, it may already be on the computer, and the same
- * key is replayed until it is settled. One whose answer was lost for good (an
- * older release's unsettled send) can only go again under that key.
+ * was ever made. For an unconfirmed send the person can replay the same key
+ * or remove their device's copy to move the queue on.
  */
 export function messageDeliveryActions(
   phase: MessageDeliveryPhase,
@@ -19,7 +18,7 @@ export function messageDeliveryActions(
   unconfirmed = false,
 ): readonly MessageDeliveryAction[] {
   if (phase === "restoring") return ["edit"];
-  if (phase === "rejected") return unconfirmed ? ["retry"] : ["edit", "delete"];
+  if (phase === "rejected") return unconfirmed ? ["retry", "remove"] : ["edit", "delete"];
   if (phase === "waiting" && !attempted) return ["edit", "dont-send"];
   return [];
 }

@@ -298,7 +298,9 @@ export async function handOverFirstMessage(input: {
   const assertCurrent = () => {
     if (
       claimed.ownerScope !== scopeKey ||
-      clientScopeKey(input.hostClient.connection.getSnapshot().scope) !== scopeKey
+      clientScopeKey(input.hostClient.connection.getSnapshot().scope) !== scopeKey ||
+      drafts.readTaskStart(deploymentId, userId, input.draftKey)?.idempotencyKey !==
+        claimed.idempotencyKey
     )
       throw new Error("This message belongs to another sign-in.");
   };
@@ -326,7 +328,7 @@ export async function handOverFirstMessage(input: {
         ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
         ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
       },
-      { handoff: true, ...(threadUris ? { localAttachmentUris: threadUris } : {}) },
+      { assertCurrent, handoff: true, ...(threadUris ? { localAttachmentUris: threadUris } : {}) },
     );
   }
   assertCurrent();

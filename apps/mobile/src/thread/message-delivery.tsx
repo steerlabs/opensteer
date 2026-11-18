@@ -28,6 +28,7 @@ const defaultCopy = {
   delete: "Delete",
   dontSend: "Don't send",
   edit: "Edit",
+  remove: "Remove local copy",
   retry: "Send again",
   sending: "Sending…",
   restoring: "Returning to draft",
@@ -91,7 +92,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   /** When this message was first shown, in epoch milliseconds: the quiet moment counts from it. */
   readonly since: number;
   readonly attempted: boolean;
-  /** An older release's send whose answer was lost: it can only go again under its key. */
+  /** A send the computer may already have received. */
   readonly unconfirmed?: boolean;
   /** No bubble to hold, as with files alone: a waiting message's actions stand under it. */
   readonly inline?: boolean;
@@ -121,7 +122,16 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
         label: actionLabel(name, copy),
         name,
       })),
-    [props.phase, props.attempted, unconfirmed, copy.edit, copy.delete, copy.dontSend, copy.retry],
+    [
+      props.phase,
+      props.attempted,
+      unconfirmed,
+      copy.edit,
+      copy.delete,
+      copy.dontSend,
+      copy.retry,
+      copy.remove,
+    ],
   );
   const links =
     props.onAction === undefined
@@ -151,7 +161,13 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
           ? undefined
           : (event: AccessibilityActionEvent) => {
               const name = event.nativeEvent.actionName;
-              if (name === "edit" || name === "delete" || name === "dont-send" || name === "retry")
+              if (
+                name === "edit" ||
+                name === "delete" ||
+                name === "dont-send" ||
+                name === "retry" ||
+                name === "remove"
+              )
                 onAction(name);
             }
       }
@@ -213,13 +229,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
 });
 
 function actionLabel(name: MessageDeliveryAction, copy: typeof defaultCopy): string {
-  return name === "edit"
-    ? copy.edit
-    : name === "delete"
-      ? copy.delete
-      : name === "retry"
-        ? copy.retry
-        : copy.dontSend;
+  return name === "dont-send" ? copy.dontSend : copy[name];
 }
 
 const styles = StyleSheet.create({

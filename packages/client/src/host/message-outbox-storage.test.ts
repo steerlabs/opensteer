@@ -28,7 +28,7 @@ it("isolates durable records by login and rejects corrupt or mismatched commands
     },
     createdAt: new Date().toISOString(),
     order: 1,
-    attempted: true,
+    attempted: false,
     phase: "waiting",
   };
   await storage.put(scope, entry);

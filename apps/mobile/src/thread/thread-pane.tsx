@@ -583,6 +583,7 @@ function ThreadPaneForUser(
           void outbox
             .restoreDraft(key)
             .then((outcome) => noteDelivery(key, presentMessageTakeBack(outcome)), failed);
+        else if (action === "remove") void outbox.removeUnconfirmed(key).catch(failed);
         else void outbox.discard(key).catch(failed);
       },
       note: (key: string) => deliveryNotes.get(key) ?? null,

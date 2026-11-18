@@ -48,7 +48,13 @@ export function initializeBrowserMessageOutbox(
 
 function browserLegacyMessages(scope: ClientScope) {
   const prefix = `opensteer:pending-send:v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.viewerId)}:`;
-  return Object.keys(globalThis.localStorage).flatMap((key) => {
+  let keys: string[];
+  try {
+    keys = Object.keys(globalThis.localStorage);
+  } catch {
+    return [];
+  }
+  return keys.flatMap((key) => {
     if (!key.startsWith(prefix)) return [];
     try {
       const raw = globalThis.localStorage.getItem(key);

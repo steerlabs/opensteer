@@ -211,6 +211,11 @@ function NewTask(props: {
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
+      const ownedScope = hostClient.connection.getSnapshot().scope;
+      const ownerScope = clientScopeKey(ownedScope);
+      if (!ownedScope || !ownerScope || (existing && existing.ownerScope !== ownerScope)) return;
+      const isCurrent = () =>
+        clientScopeKey(hostClient.connection.getSnapshot().scope) === ownerScope;
       // Offline a new task isn't started: nothing is written down or sent,
       // and the draft stays where it is.
       const unsent = existing === null ? notSentIssue(hostClient, "started") : null;
@@ -229,20 +234,12 @@ function NewTask(props: {
         words = flushed.text.trim();
       }
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
-      if (!mounted.current || inFlight.current) return;
+      if (!mounted.current || inFlight.current || !isCurrent()) return;
       inFlight.current = true;
-      const connection = hostClient.connection.getSnapshot();
-      const ownedScope = connection.scope;
-      const ownerScope = clientScopeKey(ownedScope);
-      if (!ownedScope || !ownerScope || (existing && existing.ownerScope !== ownerScope)) {
-        inFlight.current = false;
-        return;
-      }
       const assertCurrent = () => {
-        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== ownerScope)
-          throw new NotStarted("This message belongs to another sign-in.");
+        if (!isCurrent()) throw new NotStarted("This message belongs to another sign-in.");
       };
-      const startRevision = connection.readyRevision;
+      const startRevision = hostClient.connection.getSnapshot().readyRevision;
       setSending(true);
       setLine(null);
       let claimed = existing;
@@ -320,7 +317,6 @@ function NewTask(props: {
             });
             throw error;
           });
-          changeText("");
         } else {
           sentAt.current = Date.now();
           keyboardDown.current = dismissKeyboard();
@@ -328,9 +324,15 @@ function NewTask(props: {
         assertCurrent();
         let threadId = claimed.startedThreadId;
         if (threadId === undefined) {
+          if (
+            existing &&
+            !(await drafts.replayTaskStart(ownedScope, draftKey, claimed.idempotencyKey))
+          )
+            return;
+          assertCurrent();
           const start = claimed.start;
           if (start === undefined)
-            throw new Error("This message no longer says which task it starts.");
+            throw new NotStarted("This saved message is missing its task details.");
           const { generateTitle, ...creation } = start;
           const thread = await hostClient.createThread({
             ...creation,
@@ -375,32 +377,10 @@ function NewTask(props: {
           userId,
         });
       } catch (error) {
-        // Only a screen still here can take the message back as a draft; one
-        // that has gone leaves it held, and the next visit shows it.
-        if (
-          claimed !== null &&
-          !created &&
-          isHostRefusal(error) &&
-          mounted.current &&
-          clientScopeKey(hostClient.connection.getSnapshot().scope) === ownerScope
-        ) {
-          // The Host said no, so no task was made: the message goes back to
-          // being a draft, to be changed and sent anew under new keys.
-          const refused = claimed;
-          await drafts.clearTaskStart(deploymentId, userId, draftKey, refused.idempotencyKey).then(
-            (cleared) => {
-              if (!cleared) return;
-              changeText(refused.text);
-              if (refused.browserPage !== undefined) changePage(refused.browserPage);
-              staged.restore(
-                (refused.attachments ?? []).map((part, index) => ({
-                  localUri: refused.localUris?.[index] ?? null,
-                  part,
-                })),
-              );
-            },
-            () => undefined,
-          );
+        if (claimed !== null && !created && isHostRefusal(error) && isCurrent()) {
+          await drafts
+            .restoreRefusedTaskStart(ownedScope, draftKey, claimed.idempotencyKey, isCurrent)
+            .catch(() => undefined);
         }
         // A refusal or a reason of this screen's own is said; an answer that
         // was lost leaves the message held, waiting to go once it can.
@@ -441,7 +421,7 @@ function NewTask(props: {
         const now = hostClient.connection.getSnapshot();
         if (mounted.current && now.phase === "ready" && now.readyRevision !== startRevision) {
           const record = drafts.readTaskStart(deploymentId, userId, draftKey);
-          if (record !== null) queueMicrotask(() => void resume.current(record));
+          if (record?.ownerScope === ownerScope) queueMicrotask(() => void resume.current(record));
         }
       }
     },
@@ -484,6 +464,18 @@ function NewTask(props: {
     };
   }, [handedOff, navigation]);
 
+  const discardHeld = (record: TaskStartRecord) => {
+    if (inFlight.current) return;
+    void drafts.clearTaskStart(deploymentId, userId, draftKey, record.idempotencyKey).then(
+      (cleared) => {
+        if (cleared) {
+          forgetDraftFiles(files, record.localUris ?? []);
+          setLine(null);
+        }
+      },
+      () => setLine(issueLine({ code: "storage-unavailable" }, record.idempotencyKey)),
+    );
+  };
   const otherStart = savedStart !== null && held === null ? savedStart : null;
   const otherStartLine: ActionLineValue | null =
     otherStart && scopeKey
@@ -496,19 +488,7 @@ function NewTask(props: {
           link: otherStart.ownerScope
             ? {
                 label: "Remove",
-                onPress: () => {
-                  void drafts
-                    .clearTaskStart(deploymentId, userId, draftKey, otherStart.idempotencyKey)
-                    .then(
-                      (cleared) => {
-                        if (cleared) forgetDraftFiles(files, otherStart.localUris ?? []);
-                      },
-                      () =>
-                        setLine(
-                          issueLine({ code: "storage-unavailable" }, otherStart.idempotencyKey),
-                        ),
-                    );
-                },
+                onPress: () => discardHeld(otherStart),
               }
             : {
                 label: "Resume",
@@ -586,6 +566,17 @@ function NewTask(props: {
           {line === null || held === null ? null : (
             <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
           )}
+          {held && !sending ? (
+            <ActionLine
+              line={{
+                key: `remove:${held.idempotencyKey}`,
+                text: "This message is held on your phone.",
+                tone: "muted",
+                link: { label: "Remove from Home", onPress: () => discardHeld(held) },
+              }}
+              numberOfLines={2}
+            />
+          ) : null}
         </View>
       ) : (
         <Animated.View exiting={exit} style={styles.invitation}>
