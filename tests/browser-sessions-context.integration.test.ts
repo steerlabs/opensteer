@@ -413,6 +413,10 @@ run("Browser Sessions through a whole deployment", () => {
       client.dispose();
     });
     await client.load();
+    await vi.waitFor(
+      () => expect(client.getSnapshot().tabs.get(adaId)?.title).toBe("Ada Lovelace"),
+      { timeout: 10_000 },
+    );
     for (const thread of threads) {
       const release = client.observeThread(thread);
       addCleanup("observed chip thread", async () => release());
@@ -548,19 +552,24 @@ run("Browser Sessions through a whole deployment", () => {
       }),
     );
     expect(attached.surfaceId).toBe(adaId);
-    await waitFor(
-      async () =>
-        client
-          .getSnapshot()
-          .browserUses?.some((use) => use.runId === runA && use.tabId === adaId) === true &&
-        runtimeRows()
-          .find((tab) => tab.id === adaId)
-          ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) ===
-          true &&
-        pagesFor([runA]).some((page) => page.key === adaId && page.acting),
-      10_000,
-      "Run A must hold and act on the exact Ada tab",
-    );
+    const waitForActingPage = (runId: string, threadId: string, tabId: string) =>
+      vi.waitFor(
+        () =>
+          expect(
+            {
+              used: client
+                .getSnapshot()
+                .browserUses?.some((use) => use.runId === runId && use.tabId === tabId),
+              occupied: runtimeRows()
+                .find((tab) => tab.id === tabId)
+                ?.occupants.some((occupant) => occupant.threadId === threadId && occupant.acting),
+              acting: pagesFor([runId]).some((page) => page.key === tabId && page.acting),
+            },
+            `Run ${runId} must hold and act on tab ${tabId}`,
+          ).toEqual({ used: true, occupied: true, acting: true }),
+        { timeout: 10_000, interval: 50 },
+      );
+    await waitForActingPage(runA, threadA, adaId);
     expect(note("Run A attached Ada")).toMatchObject({
       pagesA: [{ title: "Ada Lovelace", acting: true }],
       pagesB: [],
@@ -644,22 +653,7 @@ run("Browser Sessions through a whole deployment", () => {
         parameters: { targetId: created.targetId, flatten: true },
       }),
     );
-    await vi.waitFor(
-      () =>
-        expect(
-          {
-            used: client
-              .getSnapshot()
-              .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId),
-            occupied: runtimeRows()
-              .find((tab) => tab.id === babbage.surfaceId)
-              ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting),
-            acting: pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
-          },
-          "Run B must hold and act on the exact Babbage tab",
-        ).toEqual({ used: true, occupied: true, acting: true }),
-      { timeout: 10_000, interval: 50 },
-    );
+    await waitForActingPage(runB, threadB, babbage.surfaceId);
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
     expect(concurrent.pagesB).toMatchObject([{ title: "Charles Babbage", acting: true }]);
