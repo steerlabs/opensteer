@@ -5352,6 +5352,52 @@ it("resumes New task creation under the same keys when Ask is opened again after
   );
 });
 
+it("says beside the held message when this phone couldn't queue it, and Retry hands it over under the same key without making the task again", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const { ClientOperationError } = await import("@opensteer/client/connections");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  const createThread = vi.fn(async () => thread);
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  harness.activeHost = host.client;
+  const outbox = hostMessageOutbox(host.client)!;
+  const enqueue = vi.spyOn(outbox, "enqueue").mockRejectedValueOnce(
+    new ClientOperationError("Too many messages waiting.", "blocked", {
+      kind: "local",
+      reason: "queue-full",
+      retryable: false,
+    }),
+  );
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  const onStarted = vi.fn(() => true);
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />,
+    ),
+  );
+  await press(container, "Send message");
+  await settle();
+  const held = drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))!;
+  expect(held.startedThreadId).toBe(workId);
+  expect(text(container)).toContain("Too many messages waiting.");
+  expect(onStarted).not.toHaveBeenCalled();
+
+  await press(container, "Retry");
+  await settle();
+  expect(createThread).toHaveBeenCalledOnce();
+  expect(enqueue).toHaveBeenCalledTimes(2);
+  expect(enqueue.mock.calls[1]![0].idempotencyKey).toBe(held.idempotencyKey);
+  expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
+});
+
 it("doesn't start a new task offline, says so above the composer and keeps the draft", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost({

@@ -135,6 +135,8 @@ const TaskStartRecordSchema = LegacyTaskStartRecordSchema.extend({
   // source, or it is a different message.
   quotedMessageId: z.string().min(1).max(200).optional(),
   start: TaskStartParametersSchema.optional(),
+  /** The task the Host confirmed making, so the handoff is retried without making it again. */
+  startedThreadId: z.string().min(1).max(200).optional(),
   userId: z.string().min(1).max(200),
 })
   .refine((command) => command.text.trim().length > 0 || (command.attachments?.length ?? 0) > 0)
@@ -208,7 +210,10 @@ export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boole
 }
 
 /** What a composer knows; the store stamps the time it was claimed. */
-export type TaskStartInput = Omit<TaskStartRecord, "createdAt" | "delivery" | "userId">;
+export type TaskStartInput = Omit<
+  TaskStartRecord,
+  "createdAt" | "delivery" | "startedThreadId" | "userId"
+>;
 
 /**
  * A schema 3 file without its steering decisions. Typing no longer answers an
@@ -273,6 +278,14 @@ export interface ThreadDraftStore {
     threadId: string,
     expectedIdempotencyKey?: string,
   ): Promise<boolean>;
+  /** Notes the task the Host made for this start, for the record under that key only. */
+  recordTaskStarted(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+    expectedIdempotencyKey: string,
+    startedThreadId: string,
+  ): Promise<void>;
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
@@ -656,6 +669,21 @@ export function createThreadDraftStore(options: {
         cleared = true;
       });
       return cleared;
+    },
+
+    async recordTaskStarted(
+      deploymentId,
+      userId,
+      threadId,
+      expectedIdempotencyKey,
+      startedThreadId,
+    ): Promise<void> {
+      await mutate((_nextDrafts, nextPending) => {
+        const entryKey = key(deploymentId, userId, threadId);
+        const current = nextPending.get(entryKey);
+        if (current?.idempotencyKey !== expectedIdempotencyKey) return;
+        nextPending.set(entryKey, { ...current, startedThreadId });
+      });
     },
 
     async discardDraft(deploymentId, userId, threadId): Promise<void> {
