@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import { selectedDeploymentFrom } from "../../desktop/desktop-deployment-selection.js";
+import { useConnectionPillSlot } from "../connection-shell.js";
 import { useMediaQuery } from "../../ui-utils.js";
 import { ShellContext, useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
@@ -54,6 +55,8 @@ export function SettingsShell() {
   const mobile = useMediaQuery("(max-width: 900px)");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationRef = useRef<HTMLElement>(null);
+  const [main, setMain] = useState<HTMLDivElement | null>(null);
+  useConnectionPillSlot(main);
   const closeRef = useRef<HTMLButtonElement>(null);
   const openNavigation = useCallback(() => setNavigationOpen(true), []);
   const deployment = selectedDeploymentFrom(shell.deploymentAccess, shell.desktopDeployment);
@@ -209,6 +212,7 @@ export function SettingsShell() {
       </aside>
       <div
         className="settings-layout__main"
+        ref={setMain}
         inert={mobile && navigationOpen}
         aria-hidden={mobile && navigationOpen}
       >

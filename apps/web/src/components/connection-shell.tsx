@@ -19,11 +19,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { ConnectionGate, type ConnectionGateButton } from "./connection-gate.js";
 import {
   ConnectionPill,
@@ -222,7 +224,27 @@ export function ShellConnectionPill({
           ];
     }),
   );
-  return <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />;
+  const slot = useContext(PillSlotContext).slot;
+  const pill = (
+    <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />
+  );
+  return slot ? createPortal(pill, slot) : pill;
+}
+
+interface PillSlotValue {
+  readonly slot: HTMLElement | null;
+  readonly place: (element: HTMLElement) => () => void;
+}
+const PillSlotContext = createContext<PillSlotValue>({ slot: null, place: () => () => {} });
+
+/**
+ * Hands the pill to the primary column of a layout with more than one (the
+ * conversation beside a page, a settings page beside its navigation), so it
+ * never straddles two panes. The element must be positioned.
+ */
+export function useConnectionPillSlot(element: HTMLElement | null): void {
+  const place = useContext(PillSlotContext).place;
+  useLayoutEffect(() => (element ? place(element) : undefined), [element, place]);
 }
 
 /** The sidebar footer's dot for its place, and the words a screen reader hears for it. */
@@ -278,7 +300,7 @@ interface GateValue {
 }
 const GateContext = createContext<GateValue>({ gated: false, claim: () => () => {} });
 
-/** Holds whether a route gate is explaining, so the pill steps aside meanwhile. */
+/** Holds whether a route gate is explaining, so the pill steps aside meanwhile, and where it sits. */
 export function ConnectionGateScope({ children }: { readonly children: ReactNode }) {
   const [claims, setClaims] = useState(0);
   const value = useMemo<GateValue>(
@@ -291,7 +313,22 @@ export function ConnectionGateScope({ children }: { readonly children: ReactNode
     }),
     [claims > 0],
   );
-  return <GateContext value={value}>{children}</GateContext>;
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const pillSlot = useMemo<PillSlotValue>(
+    () => ({
+      slot,
+      place: (element) => {
+        setSlot(element);
+        return () => setSlot((current) => (current === element ? null : current));
+      },
+    }),
+    [slot],
+  );
+  return (
+    <GateContext value={value}>
+      <PillSlotContext value={pillSlot}>{children}</PillSlotContext>
+    </GateContext>
+  );
 }
 
 /** While `active`, this route's own screen is the explanation, so the pill steps aside. */
