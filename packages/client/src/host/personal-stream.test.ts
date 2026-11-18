@@ -2,6 +2,7 @@ import { AppIdSchema, createId, SequenceSchema, TabSchema } from "@opensteer/cor
 import { afterEach, expect, test, vi } from "vitest";
 import {
   personalAuthorityChangedReason,
+  personalChangesFrameMaxBytes,
   type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
 import {
@@ -1791,4 +1792,21 @@ test("a named socket close purges its task and resumes the unaffected scope", as
     release();
     client.dispose();
   }
+});
+
+test("rejects a valid changes object padded past its encoded frame cap", () => {
+  const stream = new ScopedPersonalStream();
+  const frame = JSON.stringify({
+    type: "host.changes",
+    scope: threadScope,
+    subscriptionId: "detail:0",
+    generation: 1,
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [],
+  });
+  const padded = frame.padEnd(personalChangesFrameMaxBytes + 1);
+  expect(stream.receive(JSON.parse(frame), frame.length)).toBe(true);
+  expect(stream.receive(JSON.parse(frame), personalChangesFrameMaxBytes)).toBe(true);
+  expect(() => stream.receive(JSON.parse(padded), padded.length)).toThrow(/encoded limit/);
 });

@@ -72,14 +72,6 @@ export async function refreshRequestAttention(
   const pending = source.status === "pending";
   const delta = Number(pending) - Number(previous !== undefined);
   if (delta) {
-    await tx
-      .updateTable("threads")
-      .set({
-        pendingRequestCount: sql<number>`pending_request_count + ${delta}`,
-        revision: mutation.sequence,
-      })
-      .where("id", "=", source.originatingThreadId)
-      .execute();
     mutation.count("pendingRequestCount", delta);
     if (source.kind === "device.access") mutation.count("pendingDeviceAccessRequestCount", delta);
     mutation.count("needsYouCount", delta);

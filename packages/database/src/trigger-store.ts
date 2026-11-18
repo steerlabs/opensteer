@@ -1,5 +1,5 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
@@ -1947,6 +1947,7 @@ async function enqueueOccurrence(
       type: "trigger.execute",
     })
     .execute();
+  await wakeExecutionCommands(transaction);
   const row = await transaction
     .insertInto("triggerOccurrences")
     .values({

@@ -1,3 +1,4 @@
+import type { RequestResponseSendFence } from "@opensteer/database";
 import type { HostAppsSync, RunnerAppsSyncResult, RunnerAppState } from "@opensteer/protocol";
 import type { z } from "zod";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
@@ -56,7 +57,9 @@ import {
 import { CommandDispatchError } from "./execution-coordinator.js";
 export interface RunnerPeer {
   readonly id: string;
+  /** Enqueues synchronously and resolves when the transport finishes writing. */
   send(message: HostToRunnerMessage): Promise<void>;
+  prepareSend?(message: HostToRunnerMessage): () => Promise<void>;
   close(code: number, reason: string): void;
 }
 
@@ -1830,11 +1833,17 @@ export class RunnerRegistry {
        * command is written straight after it with nothing in between.
        */
       readonly beforeSend?: () => Promise<void>;
+      readonly fenceRequestSend?: RequestResponseSendFence;
       readonly connectionGeneration?: number;
     } = {},
   ): Promise<RunnerCommandReceipt> {
-    const { beforeAck, beforeSend, connectionGeneration } = options;
+    const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend } = options;
     RunnerCommandSchema.parse(command);
+    if (
+      command.type === "request.resolve" &&
+      (!fenceRequestSend || connectionGeneration === undefined)
+    )
+      throw new CommandDispatchError("Request response has no dispatch authority", "failed");
     const current = this.#byEnvironment.get(command.environmentId);
     const connection =
       current?.attached &&
@@ -1982,17 +1991,42 @@ export class RunnerRegistry {
       if (runId && this.#canceledRuns.delete(runId)) {
         throw new CommandDispatchError("Run execution authority was revoked", "retry");
       }
-      // The connection may have gone while the caller checked.
-      if (this.#byPeer.get(connection.peer.id) !== connection) {
-        throw new CommandDispatchError("Runner is offline", "retry");
+      const frame = { ...connection.identity.fence, command, type: "host.command" as const };
+      const prepared = fenceRequestSend && connection.peer.prepareSend?.(frame);
+      const enqueue = () => {
+        if (
+          this.#byPeer.get(connection.peer.id) !== connection ||
+          this.#byEnvironment.get(command.environmentId) !== connection
+        ) {
+          throw new CommandDispatchError("Runner is offline", "retry");
+        }
+        throwIfAborted(signal, "Aborted");
+        sent = true;
+        const sending = prepared ? prepared() : connection.peer.send(frame);
+        void sending.catch(() => undefined);
+        return sending;
+      };
+      let sending: Promise<void> | undefined;
+      if (command.type === "request.resolve" && fenceRequestSend) {
+        await fenceRequestSend((binding) => {
+          const owned = connection.ownedRunBindings.get(command.runId);
+          if (
+            binding.runId !== command.runId ||
+            binding.environmentId !== command.environmentId ||
+            !owned ||
+            owned.bindingGeneration !== binding.bindingGeneration ||
+            owned.threadId !== binding.threadId ||
+            owned.environmentId !== binding.environmentId ||
+            connection.revokedRunIds.has(command.runId)
+          ) {
+            throw new CommandDispatchError("Run execution authority was revoked", "retry");
+          }
+          sending = enqueue();
+        });
+      } else {
+        sending = enqueue();
       }
-      throwIfAborted(signal, "Aborted");
-      sent = true;
-      await connection.peer.send({
-        ...connection.identity.fence,
-        command,
-        type: "host.command",
-      });
+      await sending;
       const accepted = await withDeadline(
         ack.promise,
         this.#commandAckTimeoutMs,

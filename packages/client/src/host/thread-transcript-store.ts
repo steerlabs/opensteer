@@ -85,7 +85,8 @@ export function finalizedItemText(item: TranscriptItem | undefined): boolean {
     item?.kind === "message" ||
     item?.kind === "reasoning" ||
     item?.kind === "node-message" ||
-    (item?.kind === "tool" && item.view.status !== "running")
+    (item?.kind === "tool" && item.view.status !== "running") ||
+    (item?.kind === "node" && item.view.status !== "running" && item.view.status !== "stopping")
   );
 }
 

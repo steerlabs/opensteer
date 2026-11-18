@@ -126,7 +126,6 @@ import {
   type RequestCreationResult,
 } from "@opensteer/protocol";
 import type { PasskeyMode } from "@opensteer/protocol/passkeys";
-import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -629,10 +628,7 @@ interface BrowserServiceOptions {
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
-  readonly onSessionsChanged: (
-    sessionIds: readonly BrowserSessionId[],
-    source: BootstrapNoticeSource,
-  ) => void;
+  readonly onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
   /**
    * What a person sees about one browser changed: its page, or whether an
    * agent is acting in it. These change often, so they never reread a list.
@@ -758,10 +754,7 @@ export class BrowserService {
   readonly #passkeyOwnOrigins: () => readonly string[];
   readonly #authConsumers = new Map<AuthSessionId, Set<BrowserConsumerPeer>>();
   readonly #connectTimeoutMs: number;
-  readonly #onSessionsChanged: (
-    sessionIds: readonly BrowserSessionId[],
-    source: BootstrapNoticeSource,
-  ) => void;
+  readonly #onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
   readonly #activityClock: Clock;
@@ -808,7 +801,7 @@ export class BrowserService {
         for (const actor of this.#actors.values())
           if (actor.sessionId === sessionId) this.#clearActor(actor);
       }
-      this.#onSessionsChanged(detached, "browser.detach");
+      this.#onSessionsChanged(detached);
     }
   }
   readonly #repository: BrowserSessionRepository;
@@ -864,10 +857,10 @@ export class BrowserService {
       }
     };
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
-    this.#onSessionsChanged = (sessionIds, source) => {
+    this.#onSessionsChanged = (sessionIds) => {
       for (const id of sessionIds) this.#brokers.get(id)?.refreshSessionState();
       this.#invalidatePageSessions(sessionIds);
-      options.onSessionsChanged(sessionIds, source);
+      options.onSessionsChanged(sessionIds);
     };
     this.#onTabsChanged();
     this.#onProfilesChanged = (ownerId) => {
@@ -2561,7 +2554,7 @@ export class BrowserService {
     const ids = [
       ...new Set(credits.filter((c) => c.joined).flatMap((c) => c.catalogSessionIds ?? [])),
     ];
-    if (ids.length) this.#onSessionsChanged(ids, "browser.usage");
+    if (ids.length) this.#onSessionsChanged(ids);
   }
 
   async listProfiles(ownerId: UserId) {
@@ -3250,10 +3243,7 @@ export class BrowserService {
       const records =
         await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
       const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
-      this.#onSessionsChanged(
-        records.map((record) => record.id),
-        "browser.detach",
-      );
+      this.#onSessionsChanged(records.map((record) => record.id));
       return detached;
     });
   }
@@ -4429,7 +4419,7 @@ export class BrowserService {
         }
       }
       if (input.tabGroupId) this.#onTabsChanged();
-      this.#onSessionsChanged([record.id], "browser.start");
+      this.#onSessionsChanged([record.id]);
       const initialHistoryNavigation =
         profile && initialUrl && personNavigation && target.navigationAttributionVersion
           ? { ...personNavigation, navigationId: randomUUID() }
@@ -4880,7 +4870,7 @@ export class BrowserService {
         tabId: null,
       }),
     ]);
-    if (attached) this.#onSessionsChanged([record.id], "browser.attach");
+    if (attached) this.#onSessionsChanged([record.id]);
     this.announceUsage(credits);
   }
 
@@ -5030,7 +5020,7 @@ export class BrowserService {
     readonly state: HostedBrowserSessionState;
   }): Promise<BrowserSessionRecord> {
     const transitioned = await this.#repository.transitionBrowserSession(input);
-    this.#onSessionsChanged([transitioned.session.id], "browser.transition");
+    this.#onSessionsChanged([transitioned.session.id]);
     return transitioned.session;
   }
 

@@ -3,6 +3,7 @@ import { PersonalResources } from "./server/personal-resources.js";
 import { IntegrationPlatformStore, IntegrationStore, OpensteerStore } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
+import { personalClientFrameMaxBytes } from "@opensteer/protocol/personal-sync";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";
 import type { AuthenticatedHostSession } from "./identity/auth.js";
@@ -548,6 +549,21 @@ export async function createHostServer(
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedHostSession>();
+  const socketServer = app.websocketServer;
+  const upgradeSocket = socketServer.handleUpgrade.bind(socketServer);
+  socketServer.handleUpgrade = (request, socket, head, callback) => {
+    if (!realtimeSocketSessions.has(request)) return upgradeSocket(request, socket, head, callback);
+    // This server has no asynchronous verifyClient hook. ws copies the limit
+    // into the connection's receiver synchronously during handleUpgrade.
+    const limit = socketServer.options.maxPayload;
+    socketServer.options.maxPayload = personalClientFrameMaxBytes;
+    try {
+      upgradeSocket(request, socket, head, callback);
+    } finally {
+      if (limit === undefined) delete socketServer.options.maxPayload;
+      else socketServer.options.maxPayload = limit;
+    }
+  };
   registerAppRoutes(app, dependencies.apps);
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
@@ -3059,7 +3075,7 @@ function attachRunnerSocket(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
 ): void {
-  const peer = jsonPeer<HostToRunnerMessage>(socket, `runner-peer:${randomUUID()}`);
+  const peer = jsonPeer(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
   // delta by delta. The Runner awaits each frame's write, so pausing the socket
   // slows it at the source; the ceiling leaves room for the rest of one read.
@@ -3725,19 +3741,12 @@ export class RunnerChallengeAdmission {
 }
 
 /** The personal version gate has already admitted every `/v1/` caller this serves. */
-function jsonPeer<Message>(
-  socket: WebSocket,
-  id: string,
-): RunnerPeer & {
-  send(message: Message): Promise<void>;
-} {
-  return {
-    close: (code, reason) => socket.close(code, reason.slice(0, 123)),
-    id,
-    send: (message) => {
-      const frame = JSON.stringify(message);
-      const bytes = Buffer.byteLength(frame, "utf8");
-      return new Promise<void>((resolve, reject) => {
+function jsonPeer(socket: WebSocket, id: string): RunnerPeer {
+  const prepareSend = (message: HostToRunnerMessage) => {
+    const frame = JSON.stringify(message);
+    const bytes = Buffer.byteLength(frame, "utf8");
+    return () =>
+      new Promise<void>((resolve, reject) => {
         if (socket.readyState !== socket.OPEN) return reject(new Error("WebSocket is closed"));
         if (socket.bufferedAmount + bytes > maxWebSocketBufferedBytes) {
           socket.close(4009, "slow consumer");
@@ -3745,7 +3754,12 @@ function jsonPeer<Message>(
         }
         socket.send(frame, (error) => (error ? reject(error) : resolve()));
       });
-    },
+  };
+  return {
+    close: (code, reason) => socket.close(code, reason.slice(0, 123)),
+    id,
+    prepareSend,
+    send: (message) => prepareSend(message)(),
   };
 }
 

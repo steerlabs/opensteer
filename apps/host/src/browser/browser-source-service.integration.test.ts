@@ -463,7 +463,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     passwords = new PasswordSignInService({
       authority: passwordAuthority,
       resolveAuthority: resolvePasswordAuthority,
-      onDeadlineChanged: () => passwordDeadlines.changed(),
+      onDeadlineChanged: () => passwordDeadlines.wake(),
       agentWaitMs: 40,
       declineAnswerMs: 400,
       now: () => Date.now() + clockOffsetMs,

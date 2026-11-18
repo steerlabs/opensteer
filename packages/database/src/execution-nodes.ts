@@ -199,6 +199,23 @@ export async function publishExecutionNode(
       ])
       .where("executionNodes.id", "=", id)
       .executeTakeFirstOrThrow();
+    mutation.change(
+      {
+        scopeKey: `node:${id}`,
+        entityKind: "collection",
+        entityId: "node-subject",
+        operation: "invalidate",
+      },
+      () => ({ revision: mutation.sequence }),
+    );
+    mutation.react({
+      type: "nodeProgressPlacement",
+      runId: row.runId,
+      attemptId: row.attemptId,
+      nodeId: row.id,
+      parentNodeId: row.parentNodeId,
+      active: row.status === "running",
+    });
     await writeExecutionItem(tx, mutation, {
       id: `node:${row.id}`,
       kind: "node",

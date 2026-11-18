@@ -1,9 +1,14 @@
 import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
-import type { ThreadId, UserId } from "@opensteer/core";
+import type { Thread, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
+import {
+  threadPendingRequestsSelection,
+  threadsFromRows,
+  threadVisitSelection,
+} from "./thread-row-mappers.js";
 
 export type TaskWindow = "recent" | "active" | "done";
 
@@ -106,6 +111,31 @@ export function readPersonalTaskPage(
       nextBefore: hasMore && last ? { at: last.cursorAt, id: last.id, window: input.window } : null,
     };
   });
+}
+
+export async function readTaskPageThreads(
+  tx: PersonalMutationTransaction,
+  viewerId: UserId,
+  ids: readonly ThreadId[],
+) {
+  if (!ids.length) return new Map<ThreadId, Thread>();
+  const rows = await tx
+    .selectFrom("threads")
+    .selectAll("threads")
+    .select([threadPendingRequestsSelection, threadVisitSelection])
+    .where("threads.createdBy", "=", viewerId)
+    .where("threads.removedAt", "is", null)
+    .where("threads.id", "in", ids)
+    .execute();
+  return new Map(
+    threadsFromRows(
+      rows.map((row) => ({
+        ...row,
+        providerSessionId: null,
+        continuationIdentity: null,
+      })),
+    ).map((thread) => [thread.id, thread]),
+  );
 }
 
 export async function readInitialTaskWindows(

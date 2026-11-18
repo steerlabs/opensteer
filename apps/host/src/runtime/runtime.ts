@@ -7,7 +7,7 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { drainRunFinish } from "@opensteer/database";
+import { drainPersistedRunFinishes } from "@opensteer/database";
 import { PersonalRetentionDeadline } from "@opensteer/orchestration";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
@@ -43,7 +43,7 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import type { DeadlineDrain } from "./deadline-drain.js";
+import { DeadlineDrain } from "./deadline-drain.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -539,6 +539,7 @@ export async function createHostRuntime(
   let retention: PersonalRetentionDeadline | undefined;
   let deadlines: RequestDeadlines | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
+  let finishLoop: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
@@ -630,7 +631,28 @@ export async function createHostRuntime(
         .where("runs.finishIntent", "is", null)
         .limit(1)
         .executeTakeFirst();
-      if (current) liveText.track(runId, { ...current, bindingGeneration });
+      if (!current) return;
+      liveText.track(runId, { ...current, bindingGeneration });
+      const nodes = await database
+        .selectFrom("executionNodes")
+        .select(["id as nodeId", "parentNodeId"])
+        .where("runId", "=", runId)
+        .where("attemptId", "=", current.attemptId)
+        .where("status", "=", "running")
+        .orderBy("id")
+        .limit(256)
+        .execute();
+      for (const node of nodes)
+        liveText.placeNode(
+          {
+            ...node,
+            type: "nodeProgressPlacement",
+            runId,
+            attemptId: current.attemptId,
+            active: true,
+          },
+          syncHead,
+        );
     };
     const links = {
       threadUrl: (threadId: import("@opensteer/core").ThreadId) =>
@@ -1224,7 +1246,7 @@ export async function createHostRuntime(
       }),
       onError: (error) => reportBrowserSignInError(error),
       onContinuationReady: () => notifyIntegrationContinuations(),
-      onDeadlineChanged: () => deadlines?.changed(),
+      onDeadlineChanged: () => deadlines?.wake(),
       onPendingBrowserPins: (key, pins) => browser.setRequestPins(key, pins),
 
       requests: store.requests,
@@ -1650,11 +1672,21 @@ export async function createHostRuntime(
         .catch((error: unknown) => reportAssignmentReturnError(assignmentId, error)),
     );
     store.onPersonMessageReady((message) => notificationDispatcher?.dispatch(message));
-    const drainingFinishes = new Map<RunId, Promise<unknown>>();
+    finishLoop = new DeadlineDrain({
+      onError: reportMutationFailure,
+      ...(options.executionClock ? { clock: options.executionClock } : {}),
+      drain: async () => {
+        await drainPersistedRunFinishes(database, links);
+        return null;
+      },
+    });
     react = (reaction) => {
       switch (reaction.type) {
         case "deadlinesChanged":
-          deadlines?.changed();
+          deadlines?.wake();
+          break;
+        case "executionCommandsChanged":
+          wakeExecutionCoordinator();
           break;
         case "executionDeadlinesChanged":
           executionLeaseLoop?.wake();
@@ -1698,12 +1730,9 @@ export async function createHostRuntime(
             reaction.transition === "restarted"
           )
             executionLeaseLoop?.wake();
-          if (reaction.transition === "finishing" && !drainingFinishes.has(reaction.runId)) {
-            const pending = drainRunFinish(database, links, reaction.runId).finally(() =>
-              drainingFinishes.delete(reaction.runId),
-            );
-            drainingFinishes.set(reaction.runId, pending);
-            void pending.catch(reportMutationFailure);
+          if (reaction.transition === "finishing") {
+            finishLoop?.wake();
+            executionLeaseLoop?.wake();
           }
           if (reaction.transition === "usage-limit" && runnerRegistry) {
             void inspectHarnessCatalogsAfterUsageLimit({
@@ -1718,6 +1747,7 @@ export async function createHostRuntime(
           }
           break;
         case "runFinished":
+          wakeExecutionCoordinator();
           executionLeaseLoop?.wake();
           liveText.finish(reaction, syncHead);
           realtime.wake(syncHead, new Set(["authority"]));
@@ -1742,6 +1772,9 @@ export async function createHostRuntime(
           break;
         case "teamStep":
           teamRunEvents?.observe(reaction);
+          break;
+        case "nodeProgressPlacement":
+          liveText.placeNode(reaction, syncHead);
           break;
         case "liveClosed":
           liveText.closeItem(reaction);
@@ -3244,7 +3277,7 @@ export async function createHostRuntime(
       },
       onError: reportMutationFailure,
     });
-    deadlines.changed();
+    deadlines.start();
     await commitPersonalMutation(database, async () => undefined);
 
     return {
@@ -3323,6 +3356,7 @@ export async function createHostRuntime(
         realtime.closeAll();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
+        await step("Run finishes", () => finishLoop?.close());
         await step("Request deadlines", () => deadlines?.close());
         await step("personal retention", () => retention?.close());
         removeMutationHooks?.();
@@ -3344,6 +3378,7 @@ export async function createHostRuntime(
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
     await executionLeaseLoop?.close();
+    await finishLoop?.close();
     await deadlines?.close();
     retention?.close();
     removeMutationHooks?.();

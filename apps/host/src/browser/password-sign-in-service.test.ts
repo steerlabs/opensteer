@@ -257,7 +257,7 @@ function harness() {
       threadTitle: "Test",
     }),
     onContinuationReady: resolved,
-    onDeadlineChanged: () => deadlines.changed(),
+    onDeadlineChanged: () => deadlines.wake(),
   });
   const deadlines = new RequestDeadlines({
     next: async () => service.nextDeadline(),

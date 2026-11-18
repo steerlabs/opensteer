@@ -33,6 +33,30 @@ import {
 } from "./transcript.js";
 
 export const scopedPersonalApiVersion = 62;
+export const personalClientFrameMaxBytes = 32 * 1024;
+export const personalChangesFrameMaxBytes = 64 * 1024;
+export const personalLiveFrameMaxBytes = 16 * 1024;
+export const personalResourceFrameMaxBytes = 32 * 1024;
+export const personalShellFrameMaxBytes = 96 * 1024;
+export const personalDetailFrameMaxBytes = 128 * 1024;
+export const personalControlFrameMaxBytes = 4 * 1024;
+
+export function personalHostFrameMaxBytes(frame: ScopedHostMessage): number {
+  switch (frame.type) {
+    case "host.snapshot":
+      return frame.scope.kind === "shell"
+        ? personalShellFrameMaxBytes
+        : personalDetailFrameMaxBytes;
+    case "host.changes":
+      return personalChangesFrameMaxBytes;
+    case "host.live":
+      return personalLiveFrameMaxBytes;
+    case "host.resource":
+      return personalResourceFrameMaxBytes;
+    default:
+      return personalControlFrameMaxBytes;
+  }
+}
 export const PersonalScopeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("shell") }),
   z.strictObject({ kind: z.literal("thread"), threadId: ThreadIdSchema }),
@@ -319,7 +343,10 @@ export const ScopedHostMessageSchema = z
       .refine(
         (value) =>
           (value.scope.kind === "shell") === "tasks" in value.snapshot &&
-          utf8ByteLength(JSON.stringify(value)) <= (value.scope.kind === "shell" ? 96 : 128) * 1024,
+          utf8ByteLength(JSON.stringify(value)) <=
+            (value.scope.kind === "shell"
+              ? personalShellFrameMaxBytes
+              : personalDetailFrameMaxBytes),
       ),
     z
       .strictObject({
@@ -339,7 +366,7 @@ export const ScopedHostMessageSchema = z
               row.sequence === frame.throughSequence &&
               (index === 0 || row.ordinal > frame.changes[index - 1]!.ordinal),
           ) &&
-          utf8ByteLength(JSON.stringify(frame)) <= 64 * 1024,
+          utf8ByteLength(JSON.stringify(frame)) <= personalChangesFrameMaxBytes,
       ),
     z.strictObject({
       type: z.literal("host.synchronized"),
@@ -381,10 +408,18 @@ export const ScopedHostMessageSchema = z
           z.strictObject({ operation: z.literal("close") }),
         ]),
       })
-      .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 16 * 1024),
+      .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalLiveFrameMaxBytes),
   ])
   .refine((frame) => {
-    if (frame.type === "host.resource") return utf8ByteLength(JSON.stringify(frame)) <= 32 * 1024;
+    if (frame.type === "host.resource")
+      return utf8ByteLength(JSON.stringify(frame)) <= personalResourceFrameMaxBytes;
+    if (
+      frame.type === "host.synchronized" ||
+      frame.type === "host.snapshot-required" ||
+      frame.type === "host.removed"
+    ) {
+      if (utf8ByteLength(JSON.stringify(frame)) > personalControlFrameMaxBytes) return false;
+    }
     const isShell = frame.scope.kind === "shell";
     if ((frame.subscriptionId === "shell") !== isShell) return false;
     if ("shellProgress" in frame && frame.shellProgress && !isShell) return false;

@@ -311,6 +311,34 @@ const retainedStateDdl = `
   alter table thread_inputs add column approval_sort smallint generated always as
     (case when state = 'awaiting-approval' then 1 else 0 end) stored;
 
+  -- Offline conversion initializes the counts before setting ready.
+  create function opensteer_update_thread_request_count() returns trigger language plpgsql as $$
+  declare
+    task_id text;
+    contribution integer;
+  begin
+    if TG_TABLE_NAME = 'requests' then
+      task_id := coalesce(new.originating_thread_id, old.originating_thread_id);
+      contribution := (case when new.status = 'pending' then 1 else 0 end)
+                    - (case when old.status = 'pending' then 1 else 0 end);
+    else
+      task_id := coalesce(new.thread_id, old.thread_id);
+      contribution := (case when new.state = 'awaiting-approval' then 1 else 0 end)
+                    - (case when old.state = 'awaiting-approval' then 1 else 0 end);
+    end if;
+    if contribution <> 0 and exists (select 1 from client_sync_state where ready) then
+      update threads set pending_request_count = pending_request_count + contribution
+      where id = task_id;
+    end if;
+    return null;
+  end;
+  $$;
+
+  create trigger thread_request_count after insert or update of status or delete on requests
+    for each row execute function opensteer_update_thread_request_count();
+  create trigger thread_input_approval_count after insert or update of state or delete on thread_inputs
+    for each row execute function opensteer_update_thread_request_count();
+
   create table tool_calls (
     id text primary key,
     thread_id text not null references threads(id) on delete cascade,
@@ -555,6 +583,7 @@ const currentStateIndexes = `
     where policy = 'queue' and state in ('pending','awaiting-approval');
   create index runs_current_seed on runs(seed_input_id) where status in ('queued','starting','running','waiting');
   create index runs_seed_source on runs(seed_input_id,run_ordinal desc);
+  create index runs_with_finish_intent on runs(id) where finish_intent is not null;
   create index runs_unsettled_upgrade on runs(id) where status in ('queued','starting','running','waiting');
   create index delegations_current_parent_run on delegations(parent_run_id,id)
     where status = 'open';

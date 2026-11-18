@@ -83,9 +83,14 @@ export class ExecutionCoordinator {
   #activeTriggerPrograms = 0;
   #controller: AbortController | undefined;
   #pollTimer: NodeJS.Timeout | undefined;
+  #readFailed = false;
+  #claimFailed = false;
   readonly #reads = new CoalescedWake({
     run: () => this.#poll(),
     onSettled: () => this.#schedulePoll(),
+    onError: () => {
+      this.#readFailed = true;
+    },
   });
   #stopping: Promise<void> | undefined;
   constructor(options: ExecutionCoordinatorOptions) {
@@ -118,6 +123,8 @@ export class ExecutionCoordinator {
   }
   wake(): void {
     if (!this.#controller || this.#controller.signal.aborted) return;
+    if (this.#pollTimer) clearTimeout(this.#pollTimer);
+    this.#pollTimer = undefined;
     this.#reads.wake();
   }
   async stop(): Promise<void> {
@@ -141,8 +148,10 @@ export class ExecutionCoordinator {
     this.#stopping = undefined;
   }
   async #poll(): Promise<void> {
+    this.#claimFailed = false;
     const recordedBefore = this.#backoffRecords;
     const commands = await this.#store.listPendingCommands(this.#maxQueuedCommands);
+    this.#readFailed = false;
     // Backoff is dispatch pacing for commands that are still pending. A command
     // that has left the listing can never be dispatched again, so its entry is
     // dropped and the map stays bounded by the queue it paces. A command being
@@ -246,7 +255,10 @@ export class ExecutionCoordinator {
           this.#dispatchingIds.delete(entry.command.id);
           this.#pump();
           if (wakeImmediately) this.wake();
-          else this.#schedulePoll();
+          else {
+            this.#claimFailed = true;
+            this.#schedulePoll();
+          }
         })
         .catch(() => undefined);
     }
@@ -276,7 +288,7 @@ export class ExecutionCoordinator {
       // bounded poll retry rather than failing the Run or rejecting detached.
       return false;
     }
-    if (!claimed) return true;
+    if (!claimed) return false;
 
     if (claimed.terminalFailure) {
       await this.#store.failCommand(
@@ -329,7 +341,13 @@ export class ExecutionCoordinator {
   }
   #schedulePoll(): void {
     const signal = this.#controller?.signal;
-    if (!signal || signal.aborted || this.#pollTimer) return;
+    if (
+      !signal ||
+      signal.aborted ||
+      this.#pollTimer ||
+      (!this.#readFailed && !this.#claimFailed && !this.#dispatchBackoff.size)
+    )
+      return;
     this.#pollTimer = setTimeout(() => {
       this.#pollTimer = undefined;
       this.wake();

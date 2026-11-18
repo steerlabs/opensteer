@@ -54,3 +54,54 @@ it("replaces a later alarm when an earlier deadline commits", async () => {
     await scheduler.close();
   }
 });
+
+it.each(["read", "settlement"])("retries a failed deadline %s, then goes idle", async (failure) => {
+  vi.useFakeTimers();
+  let due: Date | null = new Date(Date.now() - 1);
+  const error = new Error("database unavailable");
+  const next = vi.fn(async () => due);
+  const settle = vi.fn(async () => {
+    due = null;
+  });
+  if (failure === "read") next.mockRejectedValueOnce(error);
+  else settle.mockRejectedValueOnce(error);
+  const onError = vi.fn();
+  const scheduler = new RequestDeadlines({ next, settle, onError });
+  try {
+    await scheduler.settle();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(due).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(due).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    await scheduler.close();
+  }
+});
+
+it("observes a deadline committed during an in-flight read", async () => {
+  vi.useFakeTimers();
+  const first = Promise.withResolvers<Date | null>();
+  let nextDeadline: Date | null = null;
+  const next = vi.fn(async () => nextDeadline).mockImplementationOnce(() => first.promise);
+  const settle = vi.fn(async () => {
+    nextDeadline = null;
+  });
+  const scheduler = new RequestDeadlines({ next, settle, onError: vi.fn() });
+  try {
+    const idle = scheduler.settle();
+    nextDeadline = new Date(Date.now() + 100);
+    scheduler.wake();
+    first.resolve(null);
+    await idle;
+    expect(next).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(settle).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    first.resolve(null);
+    await scheduler.close();
+  }
+});

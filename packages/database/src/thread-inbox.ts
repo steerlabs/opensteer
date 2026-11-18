@@ -3,7 +3,7 @@ import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { unreadTaskContribution } from "./personal-attention-store.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { executionDate } from "./personal-transaction.js";
@@ -726,6 +726,7 @@ export async function deliverConversationInputsInTransaction(
         })
         .returning("id")
         .executeTakeFirstOrThrow();
+      await wakeExecutionCommands(transaction);
       return command.id;
     },
     // A picture the engine cannot take mid-turn waits for the next Run's
@@ -1103,6 +1104,7 @@ export async function steerThreadInputInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  await wakeExecutionCommands(transaction);
   if (row.editLeaseId) {
     await refreshInputQueue(transaction, thread.id);
   }
@@ -2956,6 +2958,7 @@ export async function enqueueThreadInputInTransaction(
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    await wakeExecutionCommands(transaction);
   }
   const askGate = request.teamRequest
     ? await transaction

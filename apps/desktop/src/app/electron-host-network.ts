@@ -1,4 +1,3 @@
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { net, session, type Session } from "electron";
 import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import type {
@@ -126,9 +125,6 @@ function requestHeaders(input: HostNetworkRequest): Record<string, string> {
   }
   if (input.request.headers.apiCurrent) {
     headers[hostApiCurrentHeader] = input.request.headers.apiCurrent;
-  }
-  if (input.request.headers.bootstrapDiagnostics) {
-    headers[bootstrapDiagnosticHeader] = input.request.headers.bootstrapDiagnostics;
   }
   return headers;
 }

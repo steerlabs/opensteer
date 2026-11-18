@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { WebSocket } from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import { PersonalSyncSocket, type RealtimeHub } from "@opensteer/orchestration";
-import { ScopedClientMessageSchema } from "@opensteer/protocol/personal-sync";
+import {
+  personalClientFrameMaxBytes,
+  ScopedClientMessageSchema,
+} from "@opensteer/protocol/personal-sync";
 import type { HostToClientMessage } from "@opensteer/protocol";
 import type { AuthenticatedHostSession } from "../identity/auth.js";
 import type { createPersonalReads } from "./personal-reads.js";
@@ -120,7 +123,8 @@ export function attachPersonalSocket(options: {
     try {
       if (binary || Array.isArray(bytes)) throw new Error("Expected a text frame");
       const raw = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-      if (raw.byteLength > 32 * 1024) throw new Error("Maximum client frame exceeded");
+      if (raw.byteLength > personalClientFrameMaxBytes)
+        throw new Error("Maximum client frame exceeded");
       const message = ScopedClientMessageSchema.parse(JSON.parse(raw.toString("utf8")));
       if (message.type === "client.ping") {
         void sink

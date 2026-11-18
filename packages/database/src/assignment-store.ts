@@ -1,5 +1,5 @@
 import { isOfflineSettlement, personalTransactionDatabase } from "./personal-transaction.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { publishThreadCard } from "./message-visibility.js";
 import { transcriptPreview } from "./transcript-store.js";
 import { invalidateThreadCollection } from "./thread-status.js";
@@ -775,6 +775,7 @@ export async function drainAssignmentCancellation(
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      await wakeExecutionCommands(tx);
       const grants = await revokeRunGrants(tx, [run.id], "assignment-cancelled");
       return { command, grants };
     });
