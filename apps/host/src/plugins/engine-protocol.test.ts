@@ -7,6 +7,9 @@ import {
   parseIpcMessage,
 } from "./engine-protocol.js";
 import { catalogPage } from "./catalog-page.js";
+import { PluginExecutions } from "./plugin-executions.js";
+import { PluginService } from "./plugin-service.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 test("parses every envelope at the IPC boundary and refuses malformed requests", () => {
   expect(
@@ -128,7 +131,6 @@ test("source and HTTP payloads keep their own limits instead of the agent result
 test.each(["cancelled", "expired", "interrupted", "failed"] as const)(
   "does not return a pending form as a %s execution result",
   async (state) => {
-    const { PluginExecutions } = await import("./plugin-executions.js");
     const executions = new PluginExecutions(
       {} as ConstructorParameters<typeof PluginExecutions>[0],
     );
@@ -159,8 +161,6 @@ test("catalog cursors retain order and search and refuse changed listings and fo
 });
 
 test("stops restarting after consecutive losses even when failed starts are far apart", async () => {
-  const { PluginService } = await import("./plugin-service.js");
-  const { withTimeout } = await import("@opensteer/shared/withTimeout");
   let now = 0;
   const time = vi.spyOn(Date, "now").mockImplementation(() => now);
   let unavailable!: () => void;
