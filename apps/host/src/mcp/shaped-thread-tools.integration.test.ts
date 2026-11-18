@@ -1462,28 +1462,37 @@ describeStore("shaped agent task tools", (it) => {
       storeFixture,
     }) => {
       const s = await waitingTask(storeFixture, `wait-held-${ending}`);
-      const registered = Promise.withResolvers<void>();
-      s.checkLive.mockImplementationOnce(async () => registered.resolve());
+      const read = Promise.withResolvers<void>();
+      s.checkLive
+        .mockImplementationOnce(async () => {})
+        .mockImplementationOnce(async () => read.resolve());
       const abort = new AbortController();
-      const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
-        s.wait(2_000, s.caller, abort.signal),
-      );
-      const outcome = pending.then(
-        (value) => ({ value }),
-        (error) => ({ error }),
-      );
-      await withTimeout(registered.promise, 1_000, {
-        timeoutError: () => new Error("Task result wait was not registered"),
-      });
-      await s.settle();
-      await storeFixture.store.drainAssignmentReturn(s.assignmentId);
-      const during = await s.returns();
-      if (ending === "abort") abort.abort(new Error("Tool call cut off"));
-      const result = await outcome;
-      if (ending === "abort")
-        expect(result).toMatchObject({ error: new Error("Tool call cut off") });
-      else expect(result).toMatchObject({ value: { status: "timed_out" } });
-      expect(during).toEqual([]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
+          s.wait(2_000, s.caller, abort.signal),
+        );
+        const outcome = pending.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        await withTimeout(read.promise, 1_000, {
+          signal: AbortSignal.timeout(1_000),
+          timeoutError: () => new Error("Task result wait did not read its initial state"),
+        });
+        await s.settle();
+        await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+        expect(await s.returns()).toEqual([]);
+        if (ending === "abort") abort.abort(new Error("Tool call cut off"));
+        else await vi.advanceTimersByTimeAsync(2_000);
+        const result = await outcome;
+        if (ending === "abort")
+          expect(result).toMatchObject({ error: new Error("Tool call cut off") });
+        else expect(result).toMatchObject({ value: { status: "timed_out" } });
+      } finally {
+        abort.abort();
+        vi.useRealTimers();
+      }
       await storeFixture.store.drainPendingAssignmentReturns();
       expect(await s.returns()).toHaveLength(1);
     });
