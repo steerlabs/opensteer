@@ -29,8 +29,6 @@ const noPlaces = vi.hoisted(() => ({
   sessionId: "test-login",
   network: "online",
   threads: [],
-  inputQueues: {},
-  transcripts: {},
 }));
 const shell = vi.hoisted(() => ({
   desktopBridge: null,
@@ -40,6 +38,7 @@ const shell = vi.hoisted(() => ({
     // The composer's place list reads the catalog; this conversation has none.
     getSnapshot: vi.fn(() => noPlaces),
     subscribe: vi.fn(() => () => undefined),
+    getThreadTranscript: () => undefined,
     loadEarlierWorkspaces: vi.fn(async () => undefined),
     rpc: {
       "integration.platform.get": vi.fn(async () => ({

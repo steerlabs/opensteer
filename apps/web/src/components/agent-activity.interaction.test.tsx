@@ -1028,8 +1028,11 @@ it("loads output only on expansion, retries a failure, and reuses it when reopen
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(
       Response.json(
-        { ok: false, error: { code: "internal", message: "offline", retryable: true } },
-        { status: 503 },
+        {
+          ok: false,
+          error: { code: "internal", message: "The item could not be read", retryable: false },
+        },
+        { status: 500 },
       ),
     )
     .mockImplementation(async () =>
