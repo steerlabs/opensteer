@@ -33,6 +33,7 @@ import {
   threadActivity,
   threadComposerPlaceholder,
   threadStartHold,
+  threadStartsRunForMessage,
   threadStopTarget,
   taskWaitingReason,
   usageLimitReached,
@@ -382,7 +383,7 @@ function ThreadView({
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
-  const startsRun = thread.status === "idle" && !thread.inputQueuePaused;
+  const startsRun = threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
   const local = useMemo(
     () => splitLocalMessages(withOutbox, !conversational, hasQueuedInputs, startsRun),
     [conversational, hasQueuedInputs, startsRun, withOutbox],

@@ -32,6 +32,7 @@ import {
   threadComposerPlaceholder,
   threadStartHold,
   threadRequester,
+  threadStartsRunForMessage,
   threadStopTarget,
   transcriptVoice,
   turnFolds,
@@ -536,7 +537,8 @@ function ThreadPaneForUser(
     [conversational, inputQueue, threadId, withOutbox],
   );
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
-  const startsRun = thread?.status === "idle" && !thread.inputQueuePaused;
+  const startsRun =
+    thread !== null && threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
   const local = useMemo(
     () => splitLocalMessages(visible, !conversational, hasQueuedInputs, startsRun),
     [conversational, hasQueuedInputs, startsRun, visible],
