@@ -13,7 +13,7 @@ import {
   displayedItemIds,
   finalizedItemText,
   type ThreadTranscriptStore,
-  type VersionedInputQueue,
+  type TranscriptState,
 } from "./thread-transcript-store.js";
 
 export interface ThreadViewState {
@@ -24,7 +24,6 @@ export interface ThreadViewState {
   readonly synchronized: boolean;
   readonly generation?: number;
   readonly pendingRequestIds?: readonly string[];
-  readonly requestsRefreshing?: boolean;
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
   readonly moreNodes?: boolean;
@@ -194,8 +193,7 @@ export class ScopedThreadReader implements ThreadViewSource {
           : nodeCardProgress(card, progress);
       });
     }
-    const queue =
-      state.synchronized && !state.stale.has("run-queue") ? state.snapshot?.queue : undefined;
+    const queue = state.synchronized ? state.snapshot?.queue : undefined;
     let runQueue = this.#view.runQueue;
     if (queue !== this.#queueRows) {
       this.#queueRows = queue;
@@ -222,29 +220,15 @@ export class ScopedThreadReader implements ThreadViewSource {
     const inputQueue = state.inputQueue;
     const hasMore = state.snapshot?.nextBefore != null;
     const hasNewer = state.snapshot?.nextAfter != null;
-    const moreRequests =
-      state.synchronized &&
-      !state.stale.has("requests") &&
-      state.snapshot?.overlayCursors?.requests != null;
-    const moreTools =
-      state.synchronized &&
-      !state.stale.has("tools") &&
-      state.snapshot?.overlayCursors?.tools != null;
-    const moreNodes =
-      state.synchronized &&
-      !state.stale.has("nodes") &&
-      state.snapshot?.overlayCursors?.nodes != null;
-    const pending = state.stale.has("requests") ? undefined : state.snapshot?.pendingRequests;
+    const moreRequests = state.synchronized && state.snapshot?.overlayCursors?.requests != null;
+    const moreTools = state.synchronized && state.snapshot?.overlayCursors?.tools != null;
+    const moreNodes = state.synchronized && state.snapshot?.overlayCursors?.nodes != null;
+    const pending = state.snapshot?.pendingRequests;
     const inputQueueError =
       this.#queueFailure?.generation === state.generation &&
-      this.#queueFailure.revision === state.inputQueueRevision
+      this.#queueFailure.revision === state.snapshot?.queue?.revision
         ? this.#queueFailure.error
         : undefined;
-    if (state.synchronized) {
-      for (const kind of ["requests", "tools", "nodes"] as const)
-        if (state.stale.has(kind) && !this.#overlayReads.has(kind))
-          void this.#readOverlays(kind, true).catch(() => undefined);
-    }
     const requestChanged =
       pending !== this.#requestCut ||
       (state.synchronized && this.#requestGeneration !== state.generation);
@@ -260,7 +244,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       state.synchronized &&
       this.#detail.scope.kind === "thread" &&
       this.#detail.controller &&
-      !state.inputQueue &&
+      missingQueueEntries(state) &&
       inputQueueError === undefined &&
       this.#queue?.generation !== state.generation
     )
@@ -285,7 +269,6 @@ export class ScopedThreadReader implements ThreadViewSource {
       moreTools !== this.#view.moreTools ||
       moreNodes !== this.#view.moreNodes ||
       requestChanged ||
-      state.stale.has("requests") !== this.#view.requestsRefreshing ||
       state.generation !== this.#view.generation ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
@@ -305,7 +288,6 @@ export class ScopedThreadReader implements ThreadViewSource {
           requestChanged || !state.synchronized
             ? (pending?.map(({ id }) => id) ?? [])
             : (this.#view.pendingRequestIds ?? []),
-        requestsRefreshing: state.stale.has("requests"),
         generation: state.generation,
         inputQueueError,
         synchronized: state.synchronized,
@@ -337,7 +319,6 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (
       signal.aborted ||
       state.generation !== generation ||
-      state.stale.has("requests") ||
       state.snapshot?.pendingRequests !== pending
     )
       return;
@@ -373,8 +354,11 @@ export class ScopedThreadReader implements ThreadViewSource {
     });
   }
 
+  /** The waiting messages; reads the Host once when the snapshot had no room for some. */
   queue() {
     const state = this.#detail.transcript.getSnapshot();
+    if (state.synchronized && state.inputQueue && !missingQueueEntries(state))
+      return Promise.resolve(state.inputQueue);
     const existing = this.#queue;
     if (existing?.generation === state.generation) return existing.promise;
     const signal = this.#detail.controller?.signal;
@@ -390,33 +374,26 @@ export class ScopedThreadReader implements ThreadViewSource {
     return promise;
   }
 
-  async #readQueue(generation: number, signal: AbortSignal): Promise<VersionedInputQueue> {
-    for (;;) {
-      const expectedRevision = this.#detail.transcript.getSnapshot().inputQueueRevision;
-      try {
-        const result = await this.#rpc["thread.inputQueue.get"](
-          { threadId: this.#detail.scope.threadId, expectedRevision },
+  async #readQueue(generation: number, signal: AbortSignal): Promise<PersonalInputQueue> {
+    const revision = this.#detail.transcript.getSnapshot().snapshot?.queue?.revision ?? "0";
+    try {
+      const queue = unwrapRpcResult(
+        await this.#rpc["thread.inputQueue.get"](
+          { threadId: this.#detail.scope.threadId },
           { signal },
-        );
-        const current = this.#detail.transcript.getSnapshot();
-        if (signal.aborted || current.generation !== generation)
-          throw new Error("The conversation changed while reading its queue.");
-        if (current.inputQueueRevision !== expectedRevision) continue;
-        const queue = unwrapRpcResult(result);
-        if (
-          queue.threadId !== this.#detail.scope.threadId ||
-          BigInt(queue.revision) < BigInt(expectedRevision)
-        )
-          throw new Error("The Host returned a stale or misaddressed input queue.");
-        this.#queueFailure = undefined;
-        if (this.#detail.transcript.installQueue(queue, generation)) return queue;
-        if (current.inputQueue) return current.inputQueue;
-        throw new Error("The input queue changed while it was loading.");
-      } catch (error) {
-        if (!signal.aborted && this.#detail.transcript.getSnapshot().generation === generation)
-          this.#queueFailure = { generation, revision: expectedRevision, error };
-        throw error;
-      }
+        ),
+      );
+      if (signal.aborted || this.#detail.transcript.getSnapshot().generation !== generation)
+        throw new Error("The conversation changed while reading its queue.");
+      if (queue.threadId !== this.#detail.scope.threadId)
+        throw new Error("The Host returned a misaddressed input queue.");
+      this.#queueFailure = undefined;
+      this.#detail.transcript.installQueueEntries(queue.items, generation);
+      return this.#detail.transcript.getSnapshot().inputQueue ?? queue;
+    } catch (error) {
+      if (!signal.aborted && this.#detail.transcript.getSnapshot().generation === generation)
+        this.#queueFailure = { generation, revision, error };
+      throw error;
     }
   }
 
@@ -539,7 +516,6 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (
         page.threadId !== scope.threadId ||
         page.nodeId !== nodeId ||
-        BigInt(page.orderRevision) > BigInt(page.revision) ||
         page.items.some((item, i) => {
           const prior = page.items[i - 1];
           return (
@@ -557,7 +533,6 @@ export class ScopedThreadReader implements ThreadViewSource {
             (!item ||
               cursor.threadId !== scope.threadId ||
               cursor.nodeId !== nodeId ||
-              cursor.orderRevision !== page.orderRevision ||
               cursor.beforeId !== item.id ||
               cursor.beforePosition !== item.position ||
               (expected &&
@@ -571,98 +546,49 @@ export class ScopedThreadReader implements ThreadViewSource {
     return page;
   }
 
-  loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
-    return this.#readOverlays(kind, false);
-  }
-
-  async #readOverlays(kind: Overlay, refresh: boolean): Promise<OverlayPage | undefined> {
+  async loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
     const { scope, controller } = this.#detail;
     const state = this.#detail.transcript.getSnapshot();
-    let cursor = refresh ? undefined : state.snapshot?.overlayCursors?.[kind];
-    if (
-      !controller ||
-      !state.synchronized ||
-      (!refresh && (!cursor || state.stale.has(kind))) ||
-      this.#overlayReads.has(kind)
-    )
-      return;
-    const expectedRevision = state.overlayRevisions.get(kind);
+    const cursor = state.snapshot?.overlayCursors?.[kind];
+    if (!controller || !state.synchronized || !cursor || this.#overlayReads.has(kind)) return;
     this.#overlayReads.set(kind, state.generation);
     const nodeId = scope.kind === "node" ? scope.nodeId : null;
-    const entries: OverlayPage["entries"] = [];
-    const desired = refresh
-      ? Math.max(
-          20,
-          kind === "requests"
-            ? (state.snapshot?.pendingRequests.length ?? 0)
-            : [...state.activeIds].filter(
-                (id) => state.items.get(id)?.kind === (kind === "nodes" ? "node" : "tool"),
-              ).length,
-        )
-      : 20;
-    let page: OverlayPage | undefined;
     const token = this.#detail.transcript.beginRead();
     try {
-      do {
-        const result = await this.#rpc["thread.overlays.page"](
-          {
-            threadId: scope.threadId,
-            ...(nodeId ? { nodeId } : {}),
-            kind,
-            ...(cursor ? { cursor } : {}),
-            ...(expectedRevision ? { expectedRevision } : {}),
-          },
-          { signal: controller.signal },
-        );
-        const current = this.#detail.transcript.getSnapshot();
-        if (
-          controller.signal.aborted ||
-          current.generation !== state.generation ||
-          current.overlayRevisions.get(kind) !== expectedRevision
-        )
-          return;
-        const next = unwrapRpcResult(result);
-        if (
-          next.threadId !== scope.threadId ||
-          next.nodeId !== nodeId ||
-          next.kind !== kind ||
-          (page && next.revision !== page.revision) ||
-          (expectedRevision && BigInt(next.revision) < BigInt(expectedRevision)) ||
-          next.entries.some(
-            (entry) =>
-              BigInt(entry.revision) > BigInt(next.revision) ||
-              (kind === "requests"
-                ? "position" in entry ||
-                  entry.threadId !== scope.threadId ||
-                  entry.status !== "pending"
-                : !("position" in entry) ||
-                  entry.nodeId !== nodeId ||
-                  entry.kind !== (kind === "tools" ? "tool" : "node")),
-          ) ||
-          (next.next !== null && (next.next === cursor || next.entries.length === 0))
-        )
-          throw new Error("The Host returned an overlay page for the wrong scope or cut.");
-        entries.push(...next.entries);
-        page = next;
-        cursor = page.next ?? undefined;
-      } while (cursor && entries.length < desired && refresh);
-      const combined = { ...page, entries };
-      return this.#detail.transcript.installOverlays(
-        kind,
-        combined,
-        state.generation,
-        refresh,
-        token,
+      const result = await this.#rpc["thread.overlays.page"](
+        { threadId: scope.threadId, ...(nodeId ? { nodeId } : {}), kind, cursor },
+        { signal: controller.signal },
+      );
+      if (
+        controller.signal.aborted ||
+        this.#detail.transcript.getSnapshot().generation !== state.generation
       )
-        ? combined
+        return;
+      const page = unwrapRpcResult(result);
+      if (
+        page.threadId !== scope.threadId ||
+        page.nodeId !== nodeId ||
+        page.kind !== kind ||
+        page.entries.some(
+          (entry) =>
+            BigInt(entry.revision) > BigInt(page.revision) ||
+            (kind === "requests"
+              ? "position" in entry ||
+                entry.threadId !== scope.threadId ||
+                entry.status !== "pending"
+              : !("position" in entry) ||
+                entry.nodeId !== nodeId ||
+                entry.kind !== (kind === "tools" ? "tool" : "node")),
+        ) ||
+        (page.next !== null && (page.next === cursor || page.entries.length === 0))
+      )
+        throw new Error("The Host returned an overlay page for the wrong scope or cut.");
+      return this.#detail.transcript.installOverlays(kind, page, state.generation, token)
+        ? page
         : undefined;
     } finally {
       this.#detail.transcript.endRead(token);
-      if (this.#overlayReads.get(kind) === state.generation) {
-        this.#overlayReads.delete(kind);
-        const current = this.#detail.transcript.getSnapshot();
-        if (current.overlayRevisions.get(kind) !== expectedRevision) this.#update();
-      }
+      if (this.#overlayReads.get(kind) === state.generation) this.#overlayReads.delete(kind);
     }
   }
 
@@ -709,6 +635,11 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#bodies.put(key, value);
     return value;
   }
+}
+
+function missingQueueEntries(state: TranscriptState) {
+  const inputs = state.snapshot?.queue?.inputs;
+  return !!inputs && inputs.some((id) => !state.queueEntries.has(id));
 }
 
 function matchesBody(item: TranscriptItem, body: NonNullable<TranscriptItemResult["body"]>) {

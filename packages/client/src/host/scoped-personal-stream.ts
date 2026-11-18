@@ -389,16 +389,11 @@ export class ScopedPersonalStream {
     this.#earlyBytes = kept.reduce((total, held) => total + bytes(held), 0);
   }
 
-  repairDetail(scope: DetailScope) {
-    const detail = this.peekDetail(scope);
-    if (detail?.slot && detail.transcript.getSnapshot().synchronized)
-      this.#subscribe(detail, false, true);
-  }
-
-  repairShell(resetHistory = false) {
+  /** Resubscribes the shell; only an explicit refresh or a broken frame order asks for this. */
+  repairShell() {
     if (!this.#send) return;
     const generation = ++this.#generation;
-    this.shell.begin(generation, !resetHistory, resetHistory);
+    this.shell.begin(generation, true);
     this.resources.begin(generation);
     this.#send({
       type: "client.subscribe",
@@ -420,14 +415,15 @@ export class ScopedPersonalStream {
     }
     if (frame.type === "host.live" || frame.type === "host.removed") return;
     if (frame.scope.kind !== "shell") return;
-    const cursorAhead =
+    // A cut behind what this client holds means the Host's history moved back.
+    if (
+      frame.type === "host.snapshot" &&
       previous.through !== null &&
-      (frame.type === "host.snapshot-required" || frame.type === "host.snapshot") &&
-      BigInt(frame.throughSequence) < BigInt(previous.through);
-    if (cursorAhead) {
+      BigInt(frame.throughSequence) < BigInt(previous.through)
+    ) {
       this.#discardViewerCheckpoints();
-      this.repairShell(true);
-      return;
+      this.shell.resetHistory();
+      for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
     }
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
       const { deploymentId, viewerId, epoch, resourceRevisions } = frame.snapshot;
@@ -453,13 +449,8 @@ export class ScopedPersonalStream {
       !this.#shellReady &&
       frame.throughSequence === previous.through;
     if (firstCut) this.#shellReady = true;
-    if (frame.type === "host.snapshot-required" || !this.shell.apply(frame)) {
-      if (frame.type === "host.snapshot-required") this.shell.apply(frame);
-      this.repairShell();
-      return;
-    }
-    if (frame.type === "host.changes" && this.shell.getSnapshot().invalidated.size) {
-      this.#ack(frame);
+    // A frame that does not follow this cut breaks the Host's ordering; start the scope over.
+    if (!this.shell.apply(frame)) {
       this.repairShell();
       return;
     }
@@ -531,11 +522,8 @@ export class ScopedPersonalStream {
         throw new Error("Transcript snapshot omitted its anchor.");
       delete detail.anchor;
     }
-    if (
-      frame.type === "host.snapshot-required" ||
-      !detail.transcript.apply(frame, this.#identity)
-    ) {
-      if (frame.type === "host.snapshot-required") detail.transcript.apply(frame);
+    // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
+    if (!detail.transcript.apply(frame, this.#identity)) {
       this.#subscribe(detail, false, true);
       return;
     }
@@ -551,11 +539,6 @@ export class ScopedPersonalStream {
         if (change.operation === "remove" || finalizedItemText(change.value))
           detail.text.finishItem(change.entityId);
       }
-    const stale = detail.transcript.getSnapshot().stale;
-    if (stale.has("run-queue") || stale.has("node-subject")) {
-      this.#subscribe(detail, false, true);
-      return;
-    }
     if (detail.held) {
       for (const [key, live] of detail.held) {
         if (BigInt(frame.throughSequence) < BigInt(live.afterSequence)) continue;
@@ -767,8 +750,7 @@ export class ScopedPersonalStream {
     const cursor = this.#cursor(scope, state.through);
     const key = this.#key(scope);
     if (!cursor || !key || !state.synchronized) return;
-    if (detail ? !detail.transcript.canCheckpoint() : this.shell.getSnapshot().invalidated.size > 0)
-      return;
+    if (detail && !detail.transcript.canCheckpoint()) return;
     const authority = this.#authority;
     const current = () =>
       authority === this.#authority &&

@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { ItemTextStore } from "./item-text-store.js";
 import { transcriptCard } from "./transcript-item-view.js";
 import { ThreadTranscriptStore } from "./thread-transcript-store.js";
+import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
 const scope = { kind: "thread" as const, threadId: createId("thread") };
 const subscriptionId = "detail:0" as const;
@@ -47,9 +48,7 @@ test("applies a whole commit while retaining structural identities on a content 
       type: "host.snapshot",
       throughSequence: "1",
       snapshot: {
-        thread,
-        orderRevision: "0",
-        inputQueueRevision: "0",
+        thread: detailThread(thread),
         items: [item],
         pendingRequests: [],
         activeItems: [],
@@ -115,9 +114,7 @@ test("keeps sent and blocked Team delivery on the answering Run across status an
       type: "host.snapshot",
       throughSequence: "1",
       snapshot: {
-        thread,
-        orderRevision: "0",
-        inputQueueRevision: "0",
+        thread: detailThread(thread),
         items: [running],
         pendingRequests: [],
         activeItems: [],
@@ -171,7 +168,6 @@ test("keeps sent and blocked Team delivery on the answering Run across status an
         threadId: scope.threadId,
         nodeId: null,
         revision: "4",
-        orderRevision: "0",
         items: [{ ...running, revision: "3" }],
         nextBefore: null,
         nextAfter: null,
@@ -330,7 +326,6 @@ test("sliding a history window retains a cursor immediately beside either evicte
     epoch: crypto.randomUUID(),
     threadId: scope.threadId,
     nodeId: null,
-    orderRevision: "1",
     beforeId: boundary.id,
     beforePosition: boundary.position,
   });
@@ -340,9 +335,7 @@ test("sliding a history window retains a cursor immediately beside either evicte
     type: "host.snapshot",
     throughSequence: "1",
     snapshot: {
-      thread,
-      orderRevision: "1",
-      inputQueueRevision: "1",
+      thread: detailThread(thread),
       items: latest,
       activeItems: [],
       pendingRequests: [],
@@ -355,7 +348,6 @@ test("sliding a history window retains a cursor immediately beside either evicte
     threadId: scope.threadId,
     nodeId: null,
     revision: "1",
-    orderRevision: "1",
     items: all.slice(from, end),
     hasMore: from > 0,
     nextBefore: from ? cursor(all[from]!) : null,
@@ -380,13 +372,12 @@ test("history pages land during a Run and keep an unhide or removal made while t
     return { ...item, id, messageId: id, position: String(position), revision };
   };
   const all = Array.from({ length: 10 }, (_, index) => message((index + 1) * 10));
-  const cursor = (boundary: typeof item, orderRevision = "1") => ({
+  const cursor = (boundary: typeof item) => ({
     deploymentId: createId("deployment"),
     viewerId: createId("user"),
     epoch: crypto.randomUUID(),
     threadId: scope.threadId,
     nodeId: null,
-    orderRevision,
     beforeId: boundary.id,
     beforePosition: boundary.position,
   });
@@ -396,9 +387,7 @@ test("history pages land during a Run and keep an unhide or removal made while t
     type: "host.snapshot",
     throughSequence: "5",
     snapshot: {
-      thread,
-      orderRevision: "1",
-      inputQueueRevision: "1",
+      thread: detailThread(thread),
       items: latest,
       activeItems: [],
       pendingRequests: [],
@@ -439,7 +428,6 @@ test("history pages land during a Run and keep an unhide or removal made while t
         threadId: scope.threadId,
         nodeId: null,
         revision: "5",
-        orderRevision: "1",
         items: all.slice(0, 5),
         hasMore: false,
         nextBefore: null,
@@ -476,7 +464,6 @@ test("history pages land during a Run and keep an unhide or removal made while t
         threadId: scope.threadId,
         nodeId: null,
         revision: "8",
-        orderRevision: "1",
         items: all.slice(0, 3),
         hasMore: false,
         nextBefore: null,

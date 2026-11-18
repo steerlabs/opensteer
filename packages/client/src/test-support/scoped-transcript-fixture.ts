@@ -1,3 +1,4 @@
+import { createId, ThreadViewSchema, type Thread } from "@opensteer/core";
 import type { HostClient, HostSnapshot, TranscriptFixtureSnapshot } from "../host/client.js";
 import { emptyThreadView, type ThreadViewSource } from "../host/scoped-thread-reader.js";
 import { mockInputQueue } from "../mock/mock-scoped-personal.js";
@@ -40,5 +41,41 @@ export function scopedTranscriptFixture(
     },
     observeThread: () => () => {},
     getThreadItemText: () => undefined,
+  };
+}
+
+/** A detail scope's thread value: the task row plus its full Thread view. */
+export function detailThread<Task extends { readonly id: string; readonly title: string }>(
+  task: Task & {
+    readonly status: Thread["status"];
+    readonly purpose: Thread["purpose"];
+    readonly askedAt: string;
+    readonly doneAt: string | null;
+  },
+) {
+  return {
+    ...task,
+    thread: ThreadViewSchema.parse({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      purpose: task.purpose,
+      askedAt: task.askedAt,
+      doneAt: task.doneAt,
+      accessMode: "approval-required",
+      continuationIdentity: null,
+      createdAt: task.askedAt,
+      updatedAt: task.askedAt,
+      createdBy: createId("user"),
+      environmentId: createId("environment"),
+      harnessInstanceId: createId("harnessInstance"),
+      lineageRootThreadId: task.id,
+      inputQueuePaused: false,
+      listed: true,
+      modelSelection: { providerId: "unknown", modelId: "unknown", options: {} },
+      parentThreadId: null,
+      pendingRequests: 0,
+      teamOrigin: null,
+    }),
   };
 }

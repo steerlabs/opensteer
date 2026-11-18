@@ -23,6 +23,7 @@ import {
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
+import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
@@ -79,13 +80,20 @@ const revisions = (revision: string) =>
     Object.fromEntries(personalResourceKinds.map((kind) => [kind, revision])),
   );
 const counts = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
+const shellLists = {
+  activeTaskIds: [],
+  activeHasMore: false,
+  recentTaskIds: [],
+  nextBefore: null,
+  taskCounts: { active: 0, open: 0 },
+  attentionHasMore: false,
+};
 const cursor: TranscriptOrderCursor = {
   deploymentId,
   viewerId,
   epoch,
   threadId,
   nodeId: null,
-  orderRevision: "1",
   beforeId: item.id,
   beforePosition: item.position,
 };
@@ -115,6 +123,7 @@ function fixture(cache?: PersonalStreamCache) {
       visits: [],
       attention: [],
       counts,
+      ...shellLists,
       resourceRevisions: revisions("0"),
     },
   });
@@ -123,11 +132,9 @@ function fixture(cache?: PersonalStreamCache) {
     type: "host.snapshot" as const,
     throughSequence: "1",
     snapshot: {
-      thread: task,
+      thread: detailThread(task),
       items,
       activeItems: [],
-      orderRevision: "1",
-      inputQueueRevision: "1",
       pendingRequests: [],
       nextBefore: cursor,
     },
@@ -188,7 +195,7 @@ test("rejects details ahead of the cut and installs an entire mixed commit befor
   expect(
     f.stream.receive({
       ...ahead,
-      snapshot: { ...ahead.snapshot, thread: { ...task, revision: "2" } },
+      snapshot: { ...ahead.snapshot, thread: { ...detailThread(task), revision: "2" } },
     }),
   ).toBe(false);
   const notices = vi.fn();
@@ -206,15 +213,15 @@ test("rejects details ahead of the cut and installs an entire mixed commit befor
           ordinal: 0,
           sequence: "2",
           operation: "upsert",
-          value: { ...task, title: "Renamed", revision: "2" },
+          value: { ...detailThread(task), title: "Renamed", revision: "2" },
         },
         {
           entityKind: "run-queue",
-          entityId: "run-queue",
+          entityId: threadId,
           ordinal: 1,
           sequence: "2",
           operation: "upsert",
-          value: { revision: "2", paused: true, runs: [] },
+          value: { revision: "2", paused: true, runs: [], steerRunId: null, inputs: [] },
         },
         {
           entityKind: "request",
@@ -266,11 +273,13 @@ test("fences a pending write at generation replacement and checkpoints installed
   f.syncDetail();
   await entered.promise;
   try {
+    // A frame that skips part of the feed makes the client start the scope over.
     f.stream.receive({
       ...f.address,
-      type: "host.snapshot-required",
-      reason: "cursor-unavailable",
-      throughSequence: "2",
+      type: "host.changes",
+      fromSequence: "4",
+      throughSequence: "5",
+      changes: [],
     });
     const next = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
     expect(next.generation).toBeGreaterThan(f.address.generation);
@@ -328,9 +337,10 @@ test("restores matching resource watches on shell repair and ignores stale insta
   expect(f.stream.resources.get("machine")?.view.entries[0]?.id).toBe("a");
   f.stream.receive({
     ...f.shell,
-    type: "host.snapshot-required",
+    type: "host.changes",
+    fromSequence: "2",
     throughSequence: "3",
-    reason: "cursor-unavailable",
+    changes: [],
   });
   expect(f.sent.at(-1)).toMatchObject({
     type: "client.resources.watch",
@@ -380,26 +390,16 @@ test("background cancels detail reads and foreground resumes its still-observed 
   ]);
 });
 
-test("drops an item read overtaken by a durable removal and retries an older queue response once", async () => {
+test("drops an item read overtaken by a durable removal", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
   const point = Promise.withResolvers<unknown>();
-  const queue = Promise.withResolvers<unknown>();
-  const inputQueue = (revision: string) => ({
-    ok: true,
-    data: { threadId, revision, paused: false, steerRunId: null, items: [] },
-  });
   const rpc = {
     "transcript.item.get": vi.fn(() => point.promise),
-    "thread.inputQueue.get": vi
-      .fn()
-      .mockReturnValueOnce(queue.promise)
-      .mockResolvedValueOnce(inputQueue("2")),
   } as unknown as import("@opensteer/protocol").HostApiClient;
   const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
   const read = reader.body(item.id);
-  const readQueue = reader.queue();
   f.stream.receive({
     ...f.address,
     type: "host.changes",
@@ -407,24 +407,13 @@ test("drops an item read overtaken by a durable removal and retries an older que
     throughSequence: "2",
     changes: [
       { entityKind: "item", entityId: item.id, operation: "remove", sequence: "2", ordinal: 0 },
-      {
-        entityKind: "collection",
-        entityId: "input-queue",
-        operation: "invalidate",
-        sequence: "2",
-        ordinal: 1,
-        value: { revision: "2" },
-      },
     ],
   });
   point.resolve({
     ok: true,
     data: { item, body: { kind: "text", text: "gone" }, truncated: false },
   });
-  queue.resolve(inputQueue("1"));
   expect(await read).toBeUndefined();
-  expect(await readQueue).toMatchObject({ revision: "2" });
-  expect(rpc["thread.inputQueue.get"]).toHaveBeenCalledTimes(2);
   reader.dispose();
 });
 
@@ -525,15 +514,14 @@ test("retains the moved item's anchor across a history reset and refuses a respo
     threadId,
     nodeId: null,
     revision: "2",
-    orderRevision: "2",
     hasMore: false,
     nextBefore: null,
   };
   const read = vi
     .fn()
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset", orderRevision: "2" } })
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
     .mockResolvedValueOnce({ ok: true, data: { ...page, items: [] } })
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset", orderRevision: "2" } })
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
     .mockResolvedValueOnce({ ok: true, data: { ...page, items: [moved] } });
   const rpc = {
     "thread.items.page": read,
@@ -617,25 +605,28 @@ test("carries a scoped task update into held rows and drops old task pages after
         if (frame.type !== "client.attach" && frame.type !== "client.subscribe") return;
         if (frame.type === "client.subscribe" && frame.scope.kind !== "shell") return;
         address = { ...address, generation: frame.generation };
-        socket.deliver({
-          ...address,
-          type: "host.snapshot",
-          throughSequence: head,
-          snapshot: {
-            deploymentId,
-            viewerId,
-            epoch,
-            session,
-            tasks: [{ ...task, status, revision: head }],
-            visits: [],
-            attention: [],
-            counts,
-            resourceRevisions: revisions("0"),
-          },
-        });
+        cut();
         socket.deliver({ ...address, type: "host.synchronized", throughSequence: head });
       })),
   });
+  const cut = () =>
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      throughSequence: head,
+      snapshot: {
+        deploymentId,
+        viewerId,
+        epoch,
+        session,
+        tasks: [{ ...task, status, revision: head }],
+        visits: [],
+        attention: [],
+        counts,
+        ...shellLists,
+        resourceRevisions: revisions("0"),
+      },
+    });
   try {
     await client.load();
     await client.loadDoneTasks();
@@ -680,12 +671,8 @@ test("carries a scoped task update into held rows and drops old task pages after
     await vi.waitFor(() => expect(reads, "The old task page never started").toBe(2));
     head = "2";
     status = "idle";
-    socket!.deliver({
-      ...address,
-      type: "host.snapshot-required",
-      reason: "cursor-unavailable",
-      throughSequence: head,
-    });
+    // The Host's history moved back: it repairs the shell inline with an older cut.
+    cut();
     expect(client.getSnapshot().tasks?.entries[0]?.thread.status).toBe("idle");
     late.resolve(Response.json(page));
     await request;
@@ -730,28 +717,14 @@ test("refreshes a loaded Done window after a hidden shell replacement, once on r
     await client.load();
     await client.loadDoneTasks();
     expect(reads).toBe(1);
-    const [socket] = host.sockets;
-    const attach = JSON.parse(socket!.sent[0]!) as Extract<
-      ScopedClientMessage,
-      { type: "client.attach" }
-    >;
     background();
-    socket!.deliver({
-      type: "host.snapshot-required",
-      reason: "scope-invalidated",
-      subscriptionId: "shell",
-      scope: shellScope,
-      generation: attach.generation,
-      throughSequence: String(mock.getSnapshot().revision),
-    });
-    await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"));
+    host.repairShell();
+    expect(client.getSnapshot().connection).toBe("connected");
     expect(reads).toBe(1);
 
     foreground();
     await client.load();
-    await vi.waitFor(() => expect(reads).toBe(2));
-    const [resumed] = host.sockets;
-    expect(JSON.parse(resumed!.sent[0]!).cursor).toBeDefined();
+    await vi.waitFor(() => expect(reads, "the Done window was never refreshed").toBe(2));
 
     background();
     foreground();
@@ -798,10 +771,11 @@ test("attaches without a cursor when a warm-cache preflight is retryable", async
             viewerId,
             epoch,
             session,
-            tasks: [task],
+            tasks: [{ ...task, status: "idle" }],
             visits: [],
             attention: [],
             counts,
+            ...shellLists,
             recentTaskIds: [threadId],
             activeTaskIds: [],
             resourceRevisions: revisions("0"),
@@ -863,6 +837,7 @@ test("uses no timers or network reads when an attached personal client is idle",
           visits: [],
           attention: [],
           counts,
+          ...shellLists,
           resourceRevisions: revisions("0"),
           resources: [
             {
@@ -1064,6 +1039,7 @@ test("retains stale tab inventory until replacement and keeps its independent la
             visits: [],
             attention: [],
             counts,
+            ...shellLists,
             resourceRevisions: revisions("1"),
             resources: [
               { kind: "tab", revision: "1", view },
@@ -1163,7 +1139,6 @@ test.each(["message", "reasoning"] as const)(
           threadId,
           nodeId: null,
           revision: "3",
-          orderRevision: "1",
           items: [final, tool],
           nextBefore: null,
           hasMore: false,
@@ -1293,7 +1268,6 @@ test("keeps the latest publication and distinct place markers across overlapping
       revisited,
     ],
     revision: "1",
-    orderRevision: "1",
     hasMore: false,
     nextBefore: null,
   };
@@ -1384,7 +1358,7 @@ test("evicts inactive scope previews before they exceed the structural budget", 
       scope,
       type: "host.snapshot",
       throughSequence: "1",
-      snapshot: { ...snapshot, thread: { ...task, id: scope.threadId }, nextBefore: null },
+      snapshot: { ...snapshot, thread: detailThread({ ...task, id: scope.threadId }), nextBefore: null },
     });
     const store = f.stream.detail(scope);
     expect(store.transcript.getSnapshot().items.size).toBe(50);
@@ -1413,7 +1387,7 @@ test("reconnects from unaffected complete cuts when an authority close names a r
     ...otherAddress,
     snapshot: {
       ...f.detailSnapshot().snapshot,
-      thread: { ...task, id: other.threadId },
+      thread: detailThread({ ...task, id: other.threadId }),
       nextBefore: null,
     },
   });
@@ -1499,55 +1473,101 @@ test("replays a full saved history window with updated and removed active overla
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.has(other.id)).toBe(false);
 });
 
-test("refreshes a quiet input queue after two in-flight reads are overtaken", async () => {
+test("keeps the waiting-message tray from queue values and reads only entries the cut left out", async () => {
   const f = fixture();
   f.syncShell();
-  f.syncDetail();
-  type QueueRead = Awaited<
-    ReturnType<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>
-  >;
-  const first = Promise.withResolvers<QueueRead>();
-  const second = Promise.withResolvers<QueueRead>();
-  const answer = (revision: string): QueueRead => ({
-    ok: true,
-    data: { threadId, revision, paused: false, steerRunId: null, items: [] },
+  const waiting = (id: string, preview: string) => ({
+    message: {
+      id: id as import("@opensteer/core").MessageId,
+      revision: 0,
+      author: { kind: "human" as const, principalId: viewerId, displayName: "Owner" },
+      createdAt: time,
+      preview,
+      truncated: false,
+    },
+    input: {
+      messageId: id as import("@opensteer/core").MessageId,
+      state: "pending" as const,
+      queueRank: "1",
+    },
+    ask: null,
+    canEdit: true,
+    canCancel: true,
+    canMove: true,
+    canSteer: false,
+    lease: null,
   });
-  const queue = vi
-    .fn<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>()
-    .mockReturnValueOnce(first.promise)
-    .mockReturnValueOnce(second.promise)
-    .mockResolvedValue(answer("3"));
+  const a = createId("message");
+  const b = createId("message");
+  const c = createId("message");
+  const queue = (revision: string, inputs: string[]) => ({
+    revision,
+    runs: [],
+    paused: false,
+    steerRunId: null,
+    inputs: inputs as import("@opensteer/core").MessageId[],
+  });
+  const snapshot = f.detailSnapshot();
+  f.stream.receive({
+    ...snapshot,
+    snapshot: { ...snapshot.snapshot, queue: queue("1", [a, b]), inputQueue: [waiting(a, "A")] },
+  });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const read = vi.fn(async () => ({
+    ok: true as const,
+    data: {
+      threadId,
+      revision: "1",
+      paused: false,
+      steerRunId: null,
+      items: [waiting(a, "stale A"), waiting(b, "B")],
+    },
+  }));
   const reader = new ScopedThreadReader(
     f.detail,
-    { "thread.inputQueue.get": queue } as unknown as import("@opensteer/protocol").HostApiClient,
+    { "thread.inputQueue.get": read } as unknown as import("@opensteer/protocol").HostApiClient,
     new TranscriptBodies(),
   );
-  const invalidate = (fromSequence: string, throughSequence: string) =>
+  try {
+    // The cut had room for A only; one read fills B and never overrides the pushed A.
+    await vi.waitFor(() =>
+      expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview)).toEqual(
+        ["A", "B"],
+      ),
+    );
+    const trays: (readonly string[] | null)[] = [];
+    reader.subscribe(() =>
+      trays.push(
+        reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview) ?? null,
+      ),
+    );
     f.stream.receive({
       ...f.address,
       type: "host.changes",
-      fromSequence,
-      throughSequence,
+      fromSequence: "1",
+      throughSequence: "2",
       changes: [
         {
-          operation: "invalidate",
-          entityKind: "collection",
-          entityId: "input-queue",
-          sequence: throughSequence,
+          entityKind: "queue-entry",
+          entityId: c,
+          operation: "upsert",
+          sequence: "2",
           ordinal: 0,
-          value: { revision: throughSequence },
+          value: waiting(c, "C"),
         },
+        {
+          entityKind: "run-queue",
+          entityId: threadId,
+          operation: "upsert",
+          sequence: "2",
+          ordinal: 1,
+          value: queue("2", [c, a]),
+        },
+        { entityKind: "queue-entry", entityId: b, operation: "remove", sequence: "2", ordinal: 2 },
       ],
     });
-  try {
-    invalidate("1", "2");
-    first.resolve(answer("1"));
-    await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
-    invalidate("2", "3");
-    second.resolve(answer("2"));
-    await vi.waitFor(() =>
-      expect(f.detail.transcript.getSnapshot().inputQueue?.revision).toBe("3"),
-    );
+    expect(trays).toEqual([["C", "A"]]);
+    expect(read).toHaveBeenCalledTimes(1);
   } finally {
     reader.dispose();
   }
@@ -1565,7 +1585,6 @@ test("does not install a history page that contains another node's item", async 
       threadId,
       nodeId: null,
       items: [wrong],
-      orderRevision: "1",
       revision: "2",
       nextBefore: null,
       hasMore: false,
@@ -1632,7 +1651,6 @@ test("pages a node across a missed window and ignores a released holder's earlie
       threadId,
       nodeId,
       revision: "1",
-      orderRevision: "1",
       items: lines.slice(from, end),
       hasMore: from !== 0,
       nextBefore: from === 0 ? null : boundary(lines[from]!),
@@ -1666,93 +1684,6 @@ test("pages a node across a missed window and ignores a released holder's earlie
     previous.dispose();
     current.dispose();
     release();
-  }
-});
-
-test("hides an invalidated Request prefix until its current membership has been read", async () => {
-  const f = fixture();
-  f.syncShell();
-  const frame = f.detailSnapshot();
-  const summary = {
-    id: requestId,
-    status: "pending",
-    kind: "person.question",
-    title: "Review",
-    revision: "1",
-    threadId,
-  };
-  f.stream.receive({
-    ...frame,
-    snapshot: {
-      ...frame.snapshot,
-      pendingRequests: [summary],
-      overlayCursors: { requests: "old" },
-    },
-  });
-  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
-  type Rpc = import("@opensteer/protocol").HostApiClient;
-  const next = Promise.withResolvers<Awaited<ReturnType<Rpc["thread.overlays.page"]>>>();
-  const overlays = vi.fn<Rpc["thread.overlays.page"]>().mockReturnValue(next.promise);
-  const reader = new ScopedThreadReader(
-    f.detail,
-    {
-      "thread.inputQueue.get": async () => ({
-        ok: true,
-        data: {
-          threadId,
-          revision: "1",
-          paused: false,
-          steerRunId: null,
-          items: [],
-        },
-      }),
-      "thread.requests.list": async () => ({
-        ok: true,
-        data: {
-          threadId,
-          requests: [{ id: requestId, originatingThreadId: threadId, status: "pending" }],
-          reviewedRevisions: { [requestId]: "1" },
-        },
-      }),
-      "thread.overlays.page": overlays,
-    } as unknown as Rpc,
-    new TranscriptBodies(),
-  );
-  try {
-    await vi.waitFor(() => expect(reader.getSnapshot().requests).toHaveLength(1));
-    f.stream.receive({
-      ...f.address,
-      type: "host.changes",
-      fromSequence: "1",
-      throughSequence: "2",
-      changes: [
-        {
-          sequence: "2",
-          ordinal: 0,
-          operation: "invalidate",
-          entityKind: "collection",
-          entityId: "requests",
-          value: { revision: "2" },
-        },
-      ],
-    });
-    expect(reader.getSnapshot()).toMatchObject({
-      requests: [],
-      moreRequests: false,
-      requestsRefreshing: true,
-    });
-    expect(overlays).toHaveBeenCalledWith(
-      { threadId, kind: "requests", expectedRevision: "2" },
-      expect.anything(),
-    );
-    next.resolve({
-      ok: true,
-      data: { threadId, nodeId: null, kind: "requests", revision: "2", entries: [], next: null },
-    });
-    await vi.waitFor(() => expect(reader.getSnapshot().requestsRefreshing).toBe(false));
-    expect(reader.getSnapshot().requests).toEqual([]);
-  } finally {
-    reader.dispose();
   }
 });
 
@@ -1796,12 +1727,10 @@ test("a named socket close purges its task and resumes the unaffected scope", as
             ...address,
             type: "host.snapshot",
             snapshot: {
-              thread: { ...task, id: scope.threadId },
+              thread: detailThread({ ...task, id: scope.threadId }),
               items: [item],
               activeItems: [],
               pendingRequests: [],
-              orderRevision: "1",
-              inputQueueRevision: "1",
               nextBefore: null,
             },
           });
@@ -1830,6 +1759,7 @@ test("a named socket close purges its task and resumes the unaffected scope", as
               visits: [],
               attention: [],
               counts,
+              ...shellLists,
               resourceRevisions: revisions("0"),
             },
           });
@@ -1928,6 +1858,7 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
         visits: [],
         attention: [],
         counts,
+        ...shellLists,
         resourceRevisions: revisions("0"),
       },
     });
@@ -1942,12 +1873,10 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
       type: "host.snapshot",
       throughSequence: String(head),
       snapshot: {
-        thread: tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId },
+        thread: detailThread(tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId }),
         items,
         activeItems: [],
         pendingRequests: [],
-        orderRevision: "1",
-        inputQueueRevision: "1",
         nextBefore: null,
       },
     });

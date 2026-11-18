@@ -104,14 +104,24 @@ export class MockPersonalHost {
             socket.deliver(frame.data);
             if (scope.kind === "shell") this.#resources(socket, held, state);
             else this.#live(socket, state, held);
-          } else {
+          } else if (snapshot) {
+            // The Host repairs a scope it cannot describe as changes with an inline snapshot.
+            state.cuts.set(subscriptionId, snapshot);
             socket.deliver({
-              type: "host.snapshot-required",
+              type: "host.snapshot",
               subscriptionId,
               generation,
               scope,
               throughSequence: revision,
-              reason: "scope-invalidated",
+              snapshot,
+            });
+          } else if (scope.kind !== "shell" && subscriptionId !== "shell") {
+            socket.deliver({
+              type: "host.removed",
+              subscriptionId,
+              generation,
+              scope,
+              reason: "unavailable",
             });
           }
         }
@@ -287,18 +297,21 @@ export class MockPersonalHost {
     }
   }
 
-  invalidateShell() {
+  /** Sends every shell subscription the Host's inline repair: a fresh snapshot in place. */
+  repairShell() {
     for (const [socket, state] of this.#states) {
       const shell = state.subscriptions.get("shell");
-      if (shell)
-        socket.deliver({
-          type: "host.snapshot-required",
-          scope: shell.scope,
-          generation: shell.generation,
-          subscriptionId: "shell",
-          throughSequence: this.#through,
-          reason: "scope-invalidated",
-        });
+      const snapshot = shell && this.#readSnapshot(state, shell);
+      if (!shell || !snapshot) continue;
+      state.cuts.set("shell", snapshot);
+      socket.deliver({
+        type: "host.snapshot",
+        scope: shell.scope,
+        generation: shell.generation,
+        subscriptionId: "shell",
+        throughSequence: this.#through,
+        snapshot,
+      });
     }
   }
 
@@ -346,12 +359,7 @@ function diffCuts(previous: Snapshot, next: Snapshot, sequence: string): Change[
       changes.push({ ...address(entityId), entityKind, operation: "remove" });
   };
   if ("tasks" in previous && "tasks" in next) {
-    if (
-      JSON.stringify(previous.activeTaskIds) !== JSON.stringify(next.activeTaskIds) ||
-      JSON.stringify(previous.recentTaskIds) !== JSON.stringify(next.recentTaskIds) ||
-      previous.nextBefore !== next.nextBefore
-    )
-      return undefined;
+    if (previous.nextBefore !== next.nextBefore) return undefined;
     rows(
       previous.tasks,
       next.tasks,
@@ -378,10 +386,20 @@ function diffCuts(previous: Snapshot, next: Snapshot, sequence: string): Change[
   if ("tasks" in previous || "tasks" in next) return undefined;
   if (
     (previous.nextBefore?.beforeId ?? null) !== (next.nextBefore?.beforeId ?? null) ||
-    (previous.nextAfter?.beforeId ?? null) !== (next.nextAfter?.beforeId ?? null) ||
-    previous.nodeSubject?.revision !== next.nodeSubject?.revision
+    (previous.nextAfter?.beforeId ?? null) !== (next.nextAfter?.beforeId ?? null)
   )
     return undefined;
+  const subject = next.nodeSubject;
+  if (
+    subject?.kind === "node" &&
+    !sameRevisioned(previous.nodeSubject ?? { ...subject, revision: "" }, subject)
+  )
+    changes.push({
+      ...address(subject.executionNodeId),
+      entityKind: "node",
+      operation: "upsert",
+      value: subject,
+    });
   if (!sameRevisioned(previous.thread, next.thread))
     changes.push({
       ...address(next.thread.id),
@@ -391,11 +409,25 @@ function diffCuts(previous: Snapshot, next: Snapshot, sequence: string): Change[
     });
   if (next.queue && (!previous.queue || !sameRevisioned(previous.queue, next.queue)))
     changes.push({
-      ...address("run-queue"),
+      ...address(next.thread.id),
       entityKind: "run-queue",
       operation: "upsert",
       value: next.queue,
     });
+  const waiting = (cut: Snapshot) =>
+    "items" in cut ? (cut.inputQueue ?? []).map((entry) => ({ ...entry, revision: "" })) : [];
+  rows(
+    waiting(previous),
+    waiting(next),
+    ({ message }) => message.id,
+    ({ revision: _revision, ...entry }) => ({
+      ...address(entry.message.id),
+      entityKind: "queue-entry",
+      operation: "upsert",
+      value: entry,
+    }),
+    "queue-entry",
+  );
   const before = [
     ...new Map([...previous.items, ...previous.activeItems].map((row) => [row.id, row])).values(),
   ];
@@ -416,13 +448,6 @@ function diffCuts(previous: Snapshot, next: Snapshot, sequence: string): Change[
     (row) => ({ ...address(row.id), entityKind: "request", operation: "upsert", value: row }),
     "request",
   );
-  if (previous.inputQueueRevision !== next.inputQueueRevision)
-    changes.push({
-      ...address("input-queue"),
-      entityKind: "collection",
-      operation: "invalidate",
-      value: { revision: next.inputQueueRevision },
-    });
   return changes;
 }
 
