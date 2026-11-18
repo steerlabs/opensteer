@@ -221,8 +221,10 @@ async function connectedPeople(stack: VerticalStack): Promise<HttpHostClient[]> 
         }) as unknown as WebSocketClient,
     });
     const releaseProfiles = client.watchPersonalResource("browser-profile", () => {});
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
     addCleanup(`profile person client ${index}`, async () => {
       releaseProfiles();
+      releaseTabs();
       client.dispose();
     });
     await client.load();
