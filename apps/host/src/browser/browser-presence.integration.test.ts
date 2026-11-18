@@ -23,7 +23,9 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, {
     headers: host.ownerHeaders,
   });
-  const items: TranscriptItem[] = [];
+  const items = new Map<string, TranscriptItem>();
+  const scope = { kind: "thread", threadId };
+  let generation = 1;
   const synchronized = waitForMessage(
     socket,
     (message) =>
@@ -36,9 +38,27 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
     const decoded = ScopedHostMessageSchema.safeParse(JSON.parse(frame.toString()));
     if (!decoded.success) return;
     const message = decoded.data;
-    if (message.type === "host.changes") {
-      for (const change of message.changes)
-        if (change.entityKind === "item" && change.operation === "upsert") items.push(change.value);
+    if (message.subscriptionId === "detail:0") {
+      if (message.type === "host.snapshot-required") {
+        socket.send(
+          JSON.stringify({
+            type: "client.subscribe",
+            subscriptionId: "detail:0",
+            generation: ++generation,
+            scope,
+          }),
+        );
+        return;
+      }
+      if (message.type === "host.snapshot" && "items" in message.snapshot) {
+        items.clear();
+        for (const item of message.snapshot.items) items.set(item.id, item);
+      }
+      if (message.type === "host.changes") {
+        for (const change of message.changes)
+          if (change.entityKind === "item" && change.operation === "upsert")
+            items.set(change.value.id, change.value);
+      }
     }
     if (message.type === "host.snapshot" || message.type === "host.changes") {
       const { subscriptionId, generation, throughSequence } = message;
@@ -62,7 +82,7 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
         selected: {
           subscriptionId: "detail:0",
           generation: 1,
-          scope: { kind: "thread", threadId },
+          scope,
         },
       }),
     );
@@ -241,7 +261,7 @@ integration("Tab activity attribution", () => {
       await acting;
     };
     const named = (runId: string) =>
-      owner.items.find((item) => item.kind === "place" && item.runId === runId);
+      [...owner.items.values()].find((item) => item.kind === "place" && item.runId === runId);
 
     await actIn(first, "cdp-first");
     expect(await until(() => named(first.runId))).toMatchObject({

@@ -23,6 +23,7 @@ describeStore("Browser shutdown reconciliation", (it) => {
         deploymentId: f.deploymentId,
         hostOrigin: new URL("http://127.0.0.1:4310"),
         onSessionsChanged: () => undefined,
+        personal: true,
 
         repository,
         signer,

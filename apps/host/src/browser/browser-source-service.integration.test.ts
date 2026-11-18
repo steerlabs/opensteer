@@ -534,6 +534,24 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     authorityConnection: null as FakeRuntimeConnection | null,
     supportsImport: true,
   };
+  async function settleDeferredPasswordResponse() {
+    const deadline = await vi.waitFor(
+      () => {
+        const next = passwords.nextDeadline();
+        if (settleFaults !== 0 || !next || next.getTime() - Date.now() > 10_000)
+          throw new Error("The failed settlement did not schedule its retry deadline");
+        return next;
+      },
+      { timeout: 5_000 },
+    );
+    clockOffsetMs = Math.max(0, deadline.getTime() - Date.now());
+    try {
+      await passwordDeadlines.settle();
+    } finally {
+      clockOffsetMs = 0;
+    }
+  }
+
   let clockOffsetMs = 0;
   /** How many Request settlements the store fails before it works again. */
   let settleFaults = 0;
@@ -1381,6 +1399,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       site: "https://close-open.test",
     });
     if (!("requestId" in answer)) throw new Error("Expected created Request");
+    await settleDeferredPasswordResponse();
     await waitFor(
       async () => (await passwordRequest(answer.requestId)).request.status === "fulfilled",
     );
@@ -1957,6 +1976,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const landed = await startedPasswordSignIn("https://store-retry.test");
     settleFaults = 1;
     await approvePasswordRequest(landed.requestId, landed.connection, authorized());
+    await settleDeferredPasswordResponse();
     await waitFor(
       async () => (await passwordRequest(landed.requestId)).request.status === "fulfilled",
     );

@@ -258,15 +258,15 @@ integration("device platform release compatibility", () => {
         {
           type: "tab.organize",
           idempotencyKey: "group-move",
-          tabIds: [visibleTabId],
+          tabIds: [phoneTabId],
           group: { groupId: group.group.groupId },
-          beforeTabId: anchorTabId,
+          beforeTabId: visibleTabId,
         },
         { headers: host.ownerHeaders },
       );
       expect((await tabStore.snapshot(host.ownerId)).layout.items[0]).toMatchObject({
         kind: "group",
-        group: { tabIds: [visibleTabId, phoneTabId] },
+        group: { tabIds: [phoneTabId, visibleTabId] },
       });
       await testRpcData(
         host.origin,

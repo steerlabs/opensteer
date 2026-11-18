@@ -192,6 +192,10 @@ function createHostServer(dependencies: HostServerTestOverrides) {
     },
     complete.store,
   ) as typeof complete.store;
+  const authenticateSession: HostAuthenticator["authenticateSession"] = async (headers, options) =>
+    typeof partialAuthenticator.authenticateSession === "function"
+      ? await partialAuthenticator.authenticateSession(headers, options)
+      : testAuthenticatedSession(await partialAuthenticator.authenticateUser(headers, options));
   return createProductionHostServer({
     ...complete,
     execution: { canExecute: () => true },
@@ -200,14 +204,10 @@ function createHostServer(dependencies: HostServerTestOverrides) {
         ? authenticator
         : ({
             ...partialAuthenticator,
+            authenticateSession,
             authenticateSessionContext: async (headers, options) => ({
               credentialKind: "browser-cookie" as const,
-              session:
-                typeof partialAuthenticator.authenticateSession === "function"
-                  ? await partialAuthenticator.authenticateSession(headers, options)
-                  : testAuthenticatedSession(
-                      await partialAuthenticator.authenticateUser(headers, options),
-                    ),
+              session: await authenticateSession(headers, options),
               surface: "canonical" as const,
             }),
           } as HostAuthenticator),
@@ -226,12 +226,16 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   });
 }
 
+const testSessionIds = new Map<UserId, AuthenticatedSession["id"]>();
 function testAuthenticatedSession(userId: UserId): AuthenticatedSession {
+  const id = testSessionIds.get(userId) ?? createId("authSession");
+  testSessionIds.set(userId, id);
+  const now = Date.now();
   return {
-    absoluteExpiresAt: "2026-09-12T00:00:00.000Z",
-    createdAt: "2026-08-12T00:00:00.000Z",
-    expiresAt: "2026-08-13T00:00:00.000Z",
-    id: createId("authSession"),
+    absoluteExpiresAt: new Date(now + 3_600_000).toISOString(),
+    createdAt: new Date(now - 60_000).toISOString(),
+    expiresAt: new Date(now + 60_000).toISOString(),
+    id,
     user: {
       disabledAt: null,
       displayName: "Owner",
@@ -1996,6 +2000,7 @@ describe("Request routes", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "resolve-secret-request",
+        expectedRevision: "1",
         requestId: request.id,
         response: responseBody.response,
         type: "request.respond",
@@ -2026,7 +2031,7 @@ describe("Request routes", () => {
     }
   });
 
-  it("settles a question an agent asked the person and wakes its task", async () => {
+  it("settles a reviewed question an agent asked the person", async () => {
     const asked = pendingRequestFixture("harness.input");
     const request = {
       ...asked,
@@ -2034,10 +2039,8 @@ describe("Request routes", () => {
       mode: "durable",
       payload: { kind: "person.question" },
     } as const;
-    const answerPersonQuestion = vi.fn(async () => ({ events: [], request }));
-    const notify = vi.fn();
+    const answerPersonQuestion = vi.fn(async () => ({ replayed: false, request }));
     const app = await requestRouteServer({
-      continuations: { notify },
       ownerId: fixtureOwnerId,
       request,
       store: { requests: { answerPersonQuestion } },
@@ -2046,6 +2049,7 @@ describe("Request routes", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "answer-question",
+        expectedRevision: "1",
         requestId: request.id,
         response: answer,
         type: "request.respond",
@@ -2054,11 +2058,11 @@ describe("Request routes", () => {
       expect(answerPersonQuestion).toHaveBeenCalledWith(
         expect.objectContaining({
           requestId: request.id,
+          expectedRevision: "1",
           resolvedBy: fixtureOwnerId,
           response: answer,
         }),
       );
-      expect(notify).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
@@ -2141,14 +2145,19 @@ describe("thread Request history route", () => {
   it("projects settlement provenance in raw request list responses", async () => {
     const request = {
       ...pendingRequestFixture("browser.access"),
+      status: "declined" as const,
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: fixtureOwnerId,
+      response: { kind: "external" as const, value: { decision: "declined" } },
       settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
     };
     const app = await requestRouteServer({ ownerId: request.requestedBy, request });
     try {
       const response = await injectRpcRequest(app, "thread.requests.list", {
         threadId: request.originatingThreadId,
+        requestId: request.id,
       });
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
       expect(response.json().data.requests[0].settlementProvenance).toEqual({
         deviceLabel: "iPhone",
@@ -2340,6 +2349,7 @@ describe("Thread input command boundary", () => {
     const getThreadForOwner = vi.fn(async () => thread);
     const getThreadInputQueue = vi.fn(async (input: { readonly threadId: typeof threadId }) => ({
       items: [],
+      revision: "0",
       paused: false,
       steerRunId: null,
       threadId: input.threadId,
@@ -2358,6 +2368,7 @@ describe("Thread input command boundary", () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(rpcData(response)).toEqual({
         items: [],
+        revision: "0",
         paused: false,
         steerRunId: null,
         threadId,
@@ -2699,9 +2710,9 @@ describe("durable harness catalogs", () => {
     const authenticateSession = vi.fn(
       async () =>
         ({
-          absoluteExpiresAt: "2026-09-12T00:00:00.000Z",
-          createdAt: "2026-08-12T00:00:00.000Z",
-          expiresAt: "2026-08-13T00:00:00.000Z",
+          absoluteExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          createdAt: new Date(Date.now() - 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
           id: "ses_00000000-0000-4000-8000-000000000001",
           user: {
             disabledAt: null,
@@ -3099,25 +3110,29 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("serves bootstrap catalogs from the store without asking a Runner", async () => {
-    const { listHarnessCatalogs, server } = harnessCatalogServer({
-      catalog: readyCatalog,
+  it("serves the committed catalog resource without asking a Runner", async () => {
+    const recorded = await personalFixture.createRunFixture("catalog-resource");
+    const { inspectHarnesses, reconcileHarnesses, server } = harnessCatalogServer({
       connected: false,
       environmentKind: "main",
     });
     const app = await server;
     try {
       expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
-      expect(await injectTestResource(app, "harness-catalog")).toMatchObject({
-        environments: [
-          {
-            connected: false,
-            harnessCatalogs: [{ harnessInstanceId, status: "ready" }],
-            id: environmentId,
-          },
-        ],
-      });
-      expect(listHarnessCatalogs).toHaveBeenCalledWith([environmentId]);
+      expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
+        expect.objectContaining({
+          id: recorded.environmentId,
+          status: "disconnected",
+          harnessCatalogs: expect.arrayContaining([
+            expect.objectContaining({
+              harnessInstanceId: recorded.harnessInstance.id,
+              status: "ready",
+            }),
+          ]),
+        }),
+      );
+      expect(inspectHarnesses).not.toHaveBeenCalled();
+      expect(reconcileHarnesses).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -3561,9 +3576,10 @@ describe("durable harness catalogs", () => {
 
       expect(created.statusCode).toBe(200);
       await vi.waitFor(() => expect(fixture.reconcileHarnesses).toHaveBeenCalledTimes(1));
-      expect(await injectTestResource(app, "harness")).toMatchObject({
-        harnesses: [expect.objectContaining({ id: harnessInstanceId })],
-      });
+      expect(fixture.createHarnessInstance).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ name: "Cold account", environmentId }),
+      );
+      expect(rpcData(created)).toMatchObject({ harness: { id: harnessInstanceId } });
       coldCatalog.resolve([]);
     } finally {
       coldCatalog.resolve([]);
@@ -3832,6 +3848,7 @@ async function requestRouteServer(options: {
 }) {
   const requests = {
     get: vi.fn(async () => options.request),
+    referenceForOwner: vi.fn(async () => options.request),
     originatingPendingPage: vi.fn(async () => ({
       requests: [options.request],
       window: { byteCount: 1, hasMore: false, itemCount: 1, nextBefore: null, totalItems: 1 },
@@ -3849,7 +3866,7 @@ async function requestRouteServer(options: {
 
     agentTools: {} as never,
     authenticator: { authenticateUser: async () => options.ownerId } as never,
-    browser: { latestPlaces: async () => [], ...options.browser } as never,
+    browser: options.browser as never,
     commands: { sendControl: options.sendControl ?? vi.fn() } as never,
     integrations: {
       ...hostServerTestDependencies().integrations,
