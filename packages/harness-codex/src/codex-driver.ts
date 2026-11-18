@@ -4370,11 +4370,20 @@ async function codexSkillsDisabled(
   }));
 }
 
+/**
+ * Tools whose call can stay open while a person answers are called directly, outside Codex's
+ * script wrapper and tool deferral: a held call inside a script would end with the script. The
+ * plugin execution tools hold too, and plugin_execute is itself a program, so wrapping it would
+ * put one program in a string inside another.
+ */
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
   const requestTools = new Set<string>([
     ...requestToolNames,
     "opensteer_task_wait",
     "opensteer_delegation_wait",
+    "plugin_call",
+    "plugin_execute",
+    "plugin_resume",
   ]);
   const directTools = tools.filter((tool) => requestTools.has(tool));
   return new Map([
