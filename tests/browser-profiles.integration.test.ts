@@ -38,6 +38,7 @@ import {
   browserAvailable,
   deployment,
   createProfile,
+  killChromium,
   run,
   startBrowser,
   waitFor,
@@ -587,9 +588,8 @@ run("Browser profiles through a whole deployment", () => {
       { tabId: profiled.report.opened!.tabId, profileId },
       { tabId: guest.report.opened!.tabId, profileId: null },
     ];
-    // Observe both states before asserting identity so the base failure also
-    // leaves verifiable evidence for asleep rows and the no-wake guarantee.
-    await browser.close();
+    // Leave the runtime reachable so the read could wake a browser if it tried.
+    killChromium(process.pid);
     await waitFor(async () => (await browser.health()).sessionCount === 0, 20_000);
     const beforeRead = launches;
     const asleep = await profileTurn(stack, evidence, { tabs: true }, profiled.threadId);
