@@ -1895,6 +1895,12 @@ button.computer-now__where:focus-visible .work__chevron {
   content: "…";
 }
 
+/* Through an outage the work is still said, but no longer moves. */
+.working--still .working__orb,
+.typing--still .typing__dots i {
+  animation: none;
+}
+
 /* Touch has no hover, so the expand affordance stays permanently legible. */
 @media (hover: none) {
   .trace-step__chevron {

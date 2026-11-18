@@ -910,13 +910,13 @@ function KeptComputerStopLine({
  * reads as what was said.
  */
 function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
-  const live = useContext(TranscriptLive);
   const renderTask = useContext(TaskViews);
   const view = useMemo(() => conversationTurn(turn), [turn]);
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
-  const composing = view.composing && live && now === null && kept === null;
-  const startHold = live ? view.startHold : null;
+  // Through an outage these stay, held still: the work is said, no longer seen happening.
+  const composing = view.composing && now === null && kept === null;
+  const startHold = view.startHold;
   const outcome =
     turn.run !== null &&
     (view.unprompted ? turn.run.status === "failed" : showsRunOutcome(turn.run));
@@ -1289,6 +1289,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
   const panelId = useOwnedActivity(turnKey);
   const controlRef = useRef<HTMLButtonElement | null>(null);
   useActivityAnchor(panelId, controlRef);
+  const live = useContext(TranscriptLive);
   const dots = (
     <span aria-hidden className="typing__dots">
       <i />
@@ -1297,7 +1298,11 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
     </span>
   );
   return (
-    <div aria-label="Opensteer is replying" className="typing" role="status">
+    <div
+      aria-label="Opensteer is replying"
+      className={live ? "typing" : "typing typing--still"}
+      role="status"
+    >
       {openActivity && turnKey !== null && activity && activity.steps.length > 0 ? (
         <button
           aria-controls={panelId ?? undefined}
@@ -2856,8 +2861,9 @@ function RunOutcome({
 
 /** A Thread at work before its Run has reported anything. */
 function WorkingIndicator({ label }: { label: string }) {
+  const live = useContext(TranscriptLive);
   return (
-    <div className="working" role="status">
+    <div className={live ? "working" : "working working--still"} role="status">
       <span aria-hidden className="working__orb" />
       <span className="working__label">{label}</span>
     </div>

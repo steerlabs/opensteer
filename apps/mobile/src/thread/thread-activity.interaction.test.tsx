@@ -50,7 +50,7 @@ vi.mock("./app-card.js", () => ({ AppCard: () => null }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  StatusDot: () => null,
+  StatusDot: ({ live }: { live?: boolean }) => <i data-dot={live ? "breathing" : "still"} />,
   TypingDots: () => null,
   monoFontFamily: "monospace",
 }));
@@ -187,6 +187,16 @@ describe("a Thread's activity on the phone", () => {
 
     const streaming = mount(<Message {...props} message={{ ...message, streaming: true }} />);
     expect(streaming.querySelector("[data-report]")).toBeNull();
+  });
+
+  // The row vanished once the pill showed; only its motion should stop.
+  it("keeps the working line through an outage, holding its dot still", () => {
+    const indicator = { kind: "status", label: "Working" } as const;
+    const live = mount(<WorkingIndicator indicator={indicator} />);
+    expect(live.querySelector("[data-dot]")?.getAttribute("data-dot")).toBe("breathing");
+    const out = mount(<WorkingIndicator indicator={indicator} live={false} />);
+    expect(out.querySelector("[data-working]")?.textContent).toBe("Working");
+    expect(out.querySelector("[data-dot]")?.getAttribute("data-dot")).toBe("still");
   });
 
   it.each(threadActivityScenarios(seeded).map((scenario) => [scenario.name, scenario] as const))(

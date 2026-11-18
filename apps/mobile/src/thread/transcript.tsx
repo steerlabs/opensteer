@@ -380,7 +380,7 @@ function ConversationTurn(props: {
   const view = useMemo(() => conversationTurn(turn), [turn]);
   // The line the pane drew this row for: a quiet stretch has nothing else to show.
   const line = useComputerLine(turn, props.live);
-  const composing = view.composing && props.live && line === null;
+  const composing = view.composing && line === null;
   // A reply arrives only if its typing was on screen: one already there when
   // the Thread opened, or that scrolling brought back, just stands there.
   const typed = useRef(false);
@@ -433,6 +433,7 @@ function ConversationTurn(props: {
         <Typing
           // Until it has done anything on the way there is nothing to open.
           onPress={activityKey === null ? undefined : props.onOpenReplyUnderWay}
+          still={!props.live}
         />
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
@@ -588,7 +589,10 @@ function ReplyPartRow(props: {
  * opens that reply's Activity, where the reader is already looking; until the
  * reply has done anything on the way there is nothing to open.
  */
-function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNode {
+function Typing(props: {
+  readonly onPress?: (() => void) | undefined;
+  readonly still?: boolean;
+}): ReactNode {
   return (
     <Animated.View
       accessibilityLabel="Opensteer is replying"
@@ -598,7 +602,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
     >
       {props.onPress === undefined ? (
         <View style={styles.typing}>
-          <TypingShape />
+          <TypingShape still={props.still === true} />
         </View>
       ) : (
         <Pressable
@@ -609,7 +613,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
           onPress={props.onPress}
           style={({ pressed }) => [styles.typing, pressed && styles.typingPressed]}
         >
-          <TypingShape />
+          <TypingShape still={props.still === true} />
         </Pressable>
       )}
     </Animated.View>
@@ -617,10 +621,10 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
 }
 
 /** Its dots, and the two small circles Messages trails from a bubble still being written. */
-function TypingShape(): ReactNode {
+function TypingShape(props: { readonly still: boolean }): ReactNode {
   return (
     <>
-      <TypingDots />
+      <TypingDots still={props.still} />
       <View style={[styles.typingTrail, styles.typingTrailNear]} />
       <View style={[styles.typingTrail, styles.typingTrailFar]} />
     </>
@@ -1876,12 +1880,12 @@ export function WorkingIndicator({
   readonly indicator: ThreadActivityIndicator;
   readonly live?: boolean;
 }): ReactNode {
-  if (!live) return null;
+  // Through an outage the words stay and only the motion stops: it is no longer seen happening.
   // No turn has begun, so there is no Activity to open yet.
-  if (indicator.kind === "typing") return <Typing />;
+  if (indicator.kind === "typing") return <Typing still={!live} />;
   return (
     <Animated.View accessibilityLiveRegion="polite" entering={appear} style={styles.working}>
-      <StatusDot live tone="muted" />
+      <StatusDot live={live} tone="muted" />
       <AppText role="secondaryMedium" tone="soft">
         {indicator.label}
       </AppText>
