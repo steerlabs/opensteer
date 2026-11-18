@@ -3,7 +3,7 @@ import type { EnvironmentId, HarnessInstanceId } from "./ids.js";
 import type { HarnessId, ModelSelection } from "./models.js";
 import type { ModelWant } from "./background-models.js";
 import { canonicalModelReference } from "./model-registry.js";
-import { modelEffortLadder, withModelEffort } from "./model-effort.js";
+import { modelEffortOption, withModelEffort } from "./model-effort.js";
 import {
   matchModelSelection,
   modelOptionUnavailableMessage,
@@ -302,7 +302,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
       if (model && effort !== undefined) {
         const tuned = withModelEffort(selection, model, effort);
         if (!tuned) {
-          const offered = modelEffortLadder(model)?.values.map(({ value }) => value) ?? [];
+          const offered = modelEffortOption(model)?.values.map(({ value }) => value) ?? [];
           skip(
             account,
             want,

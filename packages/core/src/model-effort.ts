@@ -18,9 +18,6 @@ export type ModelEffortTier = (typeof modelEffortTiers)[number];
 export const ModelEffortSchema = z.enum([...modelEffortTiers, "default"]);
 export type ModelEffort = z.infer<typeof ModelEffortSchema>;
 
-type Ladder = Extract<SelectionModelDescriptor["options"][number], { type: "select" }>;
-const automaticValues = new Set(["auto", "default"]);
-
 /** The select that sets how hard the model reasons, as engines name it. */
 export function modelEffortOption<T extends SelectionModelDescriptor>(
   model: T,
@@ -31,38 +28,25 @@ export function modelEffortOption<T extends SelectionModelDescriptor>(
   );
 }
 
-/** That select, when every value on it is a known tier, so tiers map onto it. */
-export function modelEffortLadder(model: SelectionModelDescriptor): Ladder | undefined {
-  const option = modelEffortOption(model);
-  const known = option?.values.every(
-    ({ value }) =>
-      automaticValues.has(value) || value === "off" || modelEffortTiers.some((t) => t === value),
-  );
-  return known ? option : undefined;
-}
-
-function ladderValue(ladder: Ladder, effort: ModelEffortTier): string | undefined {
-  return ladder.values.find(({ value }) => (value === "off" ? "none" : value) === effort)?.value;
-}
-
 /**
- * The selection at that effort on this model, or null when the model's ladder lacks it.
- * A model with no ladder has one effort, so any effort leaves it unchanged.
+ * The selection at that effort on this model, or null when its effort option doesn't list it.
+ * A model with no effort option has one effort, so any effort leaves it unchanged.
  */
 export function withModelEffort(
   selection: ModelSelection,
   model: SelectionModelDescriptor,
   effort: ModelEffort,
 ): ModelSelection | null {
-  const ladder = modelEffortLadder(model);
-  if (!ladder) return selection;
-  const { [ladder.id]: _previous, ...options } = selection.options;
+  const option = modelEffortOption(model);
+  if (!option) return selection;
+  const { [option.id]: _previous, ...options } = selection.options;
   if (effort === "default") return { ...selection, options };
-  const value = ladderValue(ladder, effort);
-  if (value === undefined) return null;
+  const value = option.values.find(({ value }) => (value === "off" ? "none" : value) === effort);
+  if (!value) return null;
   return {
     ...selection,
-    options: value === ladder.defaultValue ? options : { ...options, [ladder.id]: value },
+    options:
+      value.value === option.defaultValue ? options : { ...options, [option.id]: value.value },
   };
 }
 
