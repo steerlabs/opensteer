@@ -1,5 +1,4 @@
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
-import { testResourceData } from "../server/test-host-api-request.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { TabIdSchema } from "@opensteer/core";
@@ -879,10 +878,14 @@ integration("Durable tab icons", () => {
     steps.push({ step: "navigation cleared then settled", revision: await revision() });
 
     const coldTabs = async (currentHost = host) => {
-      const bootstrap = await testResourceData(host.origin, "tab", {
-        headers: host.ownerHeaders,
-      });
-      const group = bootstrap.tabs;
+      const group = await testRpcData(
+        currentHost.origin,
+        "tabs.state",
+        {},
+        {
+          headers: currentHost.ownerHeaders,
+        },
+      );
       const read = await browserRows(currentHost.runtime.browser, currentHost.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");
       expect(JSON.stringify(read)).not.toContain("data:image");
