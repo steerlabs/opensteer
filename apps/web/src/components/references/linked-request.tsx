@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { useSearchParams } from "react-router";
 import { RequestIdSchema, type Request } from "@opensteer/core";
 import { requestReceipt, type HostClient } from "@opensteer/client/host";
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
@@ -43,7 +43,8 @@ export function useLinkedRequest(
     setShown(null);
     if (!target || target.threadId !== threadId) return;
     const parsed = RequestIdSchema.safeParse(target.id);
-    if (!parsed.success) return setShown({ state: "unavailable", id: target.id });
+    const unavailable = (id: string) => setShown({ state: "unavailable", id });
+    if (!parsed.success) return unavailable(target.id);
     const requestId = parsed.data;
     let current = true;
     void hostClient.readRequest(threadId, requestId).then(
@@ -51,15 +52,18 @@ export function useLinkedRequest(
         if (!current) return;
         if (!request) {
           hostClient.references.unavailable(requestId);
-          return setShown({ state: "unavailable", id: requestId });
+          return unavailable(requestId);
         }
         if (request.status === "pending") pending(request.id);
         else setShown(request);
       },
       (error: unknown) => {
         if (!current) return;
-        if (notFound(error)) hostClient.references.unavailable(requestId);
-        setShown({ state: notFound(error) ? "unavailable" : "unloaded", id: requestId });
+        if (notFound(error)) {
+          hostClient.references.unavailable(requestId);
+          return unavailable(requestId);
+        }
+        setShown({ state: "unloaded", id: requestId });
       },
     );
     return () => {
@@ -77,8 +81,7 @@ export function useLinkedRequest(
 
 /** Whether the Host refused a read because the thing is gone or not this reader's. */
 export function notFound(error: unknown): boolean {
-  const { code } = classifyClientFailure(error);
-  return code === "forbidden" || code === "not_found";
+  return isMissingClientResource(classifyClientFailure(error));
 }
 
 /**

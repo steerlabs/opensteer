@@ -1,3 +1,4 @@
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { DeploymentId, TeamInviteSecret } from "@opensteer/core";
 import {
@@ -30,6 +31,8 @@ import {
   type DeploymentConnection,
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
+import { HostTransportError, isGatewayFailure } from "../connections/host-transport-error.js";
+import { HostClientRequestError } from "../host/client.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
@@ -61,6 +64,16 @@ export async function verifyTeamEndpoint(
   return verified;
 }
 
+const invitePreviewMaxBytes = 64 * 1024;
+
+function parsedJson(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** What an invite is for, before anyone joins with it. Consumes nothing. */
 export async function previewTeamInvite(
   origin: string,
@@ -79,16 +92,33 @@ export async function previewTeamInvite(
     method: "POST",
     redirect: "error",
     referrerPolicy: "no-referrer",
+  }).catch((error: unknown) => {
+    throw new HostTransportError("unreachable", { cause: error });
   });
-  const body: unknown = await response.json().catch(() => null);
+  // A body that stops arriving is a lost connection; one that arrives but isn't JSON is an answer.
+  const bytes = await readBoundedResponse(response, {
+    maximumBytes: invitePreviewMaxBytes,
+    sizeError: () => new HostTransportError("response-too-large"),
+  }).catch((error: unknown) => {
+    if (error instanceof HostTransportError) throw error;
+    throw new HostTransportError("unreachable", { cause: error });
+  });
+  const body: unknown = parsedJson(bytes);
   if (response.ok) return TeamInvitePreviewResponseSchema.parse(body);
   const error = z.object({ error: HostApiErrorSchema }).safeParse(body).data?.error;
   const reason = TeamEntryRefusalReasonSchema.safeParse(error?.reason).data;
   if (error && reason) throw new TeamEntryRefusedError(reason, error.message);
-  throw new ClientOperationError(
-    error?.message ?? "The team couldn’t be reached. Try again.",
-    response.status >= 500 ? "transient" : "blocked",
-  );
+  // The team answered, whatever its status; only a gateway's page means it didn't.
+  if (error)
+    throw new HostClientRequestError({
+      code: error.code,
+      message: error.message,
+      ...(error.reason === undefined ? {} : { reason: error.reason }),
+      retryable: error.retryable,
+      status: response.status,
+    });
+  if (isGatewayFailure(response.status)) throw new HostTransportError("unreachable");
+  throw new ClientOperationError("The team’s answer couldn’t be read. Try again.", "blocked");
 }
 
 type TeamEntryOAuth = Pick<

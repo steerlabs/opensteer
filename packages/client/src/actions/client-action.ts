@@ -1,6 +1,6 @@
 import { clientScopeKey, type ClientSession } from "../connections/connection-controller.js";
 import { classifyClientFailure } from "../connections/operation-error.js";
-import { clientIssue, type ClientIssue } from "../feedback/client-issue.js";
+import { clientIssueFromFailure, type ClientIssue } from "../feedback/client-issue.js";
 
 export type ActionOutcome<T> =
   | { readonly kind: "confirmed"; readonly value: T }
@@ -131,7 +131,10 @@ class SessionClientAction<I, O> implements ClientAction<I, O> {
           })
           .catch((error) => {
             const failure = classifyClientFailure(error);
-            const issue = clientIssue(error, { operation: "action", label: this.#spec.label });
+            const issue = clientIssueFromFailure(failure, {
+              operation: "action",
+              label: this.#spec.label,
+            });
             return {
               kind: failure.kind === "rejection" ? ("rejected" as const) : ("unconfirmed" as const),
               issue: issue && {

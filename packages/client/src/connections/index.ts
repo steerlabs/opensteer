@@ -8,6 +8,7 @@ export * from "./deployment-catalog.js";
 export * from "./direct-host-route.js";
 export * from "./host-attachment-fence.js";
 export * from "./host-transport.js";
+export { bufferedHostResponseTimeoutMs } from "./host-response-deadline.js";
 export * from "./host-transport-error.js";
 export * from "./operation-error.js";
 export * from "./private-deployment-connection.js";

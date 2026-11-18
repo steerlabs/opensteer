@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
 import { AppText, SecondaryButton } from "./primitives.js";
@@ -10,14 +11,15 @@ import { Symbol } from "./symbol.js";
  * One wording everywhere, and always a way back.
  */
 export function UnavailableState(props: { readonly onBack: () => void }): ReactNode {
+  const copy = presentClientIssue({ code: "access-lost" });
   return (
     <View accessibilityRole="alert" style={styles.state}>
       <Symbol name="questionmark.circle" size={32} tint={color.muted} />
       <AppText role="title" style={styles.centered}>
-        This isn't available
+        {copy.title}
       </AppText>
       <AppText role="secondary" style={styles.centered} tone="muted">
-        It may have been deleted, or you don't have access.
+        {copy.detail}
       </AppText>
       <View style={styles.actions}>
         <SecondaryButton compact label="Back" onPress={props.onBack} />

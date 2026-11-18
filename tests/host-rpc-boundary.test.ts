@@ -14,12 +14,10 @@ const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const allowed: Readonly<Record<string, string>> = {
   "packages/client/src/host/host-api-client.ts": "the one encoder",
   "apps/desktop/src/connections/host-transport.ts":
-    "inspects requests the typed client already built, as it relays them",
-  "apps/web/src/desktop/desktop-host-transport.ts":
-    "forwards the typed client's requests over the desktop bridge",
+    "inspects requests the typed client already built, as it forwards them",
   "apps/web/src/desktop/desktop-preview-bridge.ts":
     "answers the typed client's requests in the browser preview",
-  "packages/protocol/src/desktop.ts": "restricts which typed requests the bridge may carry",
+  "packages/protocol/src/desktop.ts": "names the typed upload routes the desktop route paces",
   "apps/mobile/modules/phone-connection/android/src/main/java/com/opensteer/phoneconnection/PhoneConnectionRuntime.kt":
     "the native Android enrollment, which has no TypeScript client to call",
 };

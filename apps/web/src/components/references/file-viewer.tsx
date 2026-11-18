@@ -8,8 +8,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { HostClient } from "@opensteer/client/host";
-import type { TranscriptFileState } from "@opensteer/client/host";
+import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { fileIcon, type FileOpenInput } from "@opensteer/client/references";
 import type { ThreadId } from "@opensteer/core";
@@ -79,7 +78,8 @@ export function FileViewer({
     );
     return () => controller.abort();
   }, [client, threadId, sourceKey, attempt]);
-  const shown = state?.status === "offline" ? state.cached : state?.status === "ok" ? state : null;
+  const shown =
+    state?.status === "unreachable" ? state.cached : state?.status === "ok" ? state : null;
   const parts = pathParts(input.source);
   const name = shown?.name ? (shown.name.split(/[\\/]/u).at(-1) ?? shown.name) : parts.name;
   const retry = () => setAttempt((value) => value + 1);
@@ -230,7 +230,7 @@ function FileBody({
           title="Couldn't open this file"
         />
       );
-    case "offline":
+    case "unreachable":
       return state.cached && state.cached.preview.kind === "text" ? (
         <>
           {/* The copy opened before stays; the pill says why it isn't fresher. */}

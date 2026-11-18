@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
+import { HostCapacityError } from "../connections/host-transport-error.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
+import { unwrapRpcResult } from "./host-session-client.js";
 
 describe("HTTP Host rpc response parsing", () => {
   it("strips additive fields from the response envelope and its data", async () => {
@@ -76,15 +78,64 @@ describe("HTTP Host rpc response parsing", () => {
       ok: false,
       error: { code: "not_found", reason: "unknown-method" },
     });
-    for (const status of [502, 503, 504])
-      await expect(answering("<html>", status)["auth.config"]({})).resolves.toMatchObject({
-        ok: false,
-        error: { code: "internal", reason: "proxy-unavailable", retryable: true },
-      });
-    await expect(answering("<html>", 200)["auth.config"]({})).resolves.toMatchObject({
+    await expect(answering("<html>", 500)["auth.config"]({})).resolves.toMatchObject({
       ok: false,
-      error: { reason: "invalid-response", retryable: false },
+      error: { code: "internal", reason: "invalid-response", retryable: false },
     });
+  });
+
+  it("reads a gateway's page for an unreachable Host as the Host being out of reach", async () => {
+    // Connect's tunnel answers 530 while the computer sleeps; a proxy answers 502-504.
+    for (const status of [502, 503, 504, 530]) {
+      const client = createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => new Response("<html>Cloudflare Tunnel error</html>", { status }),
+        onAuthenticationRequired: vi.fn(),
+      });
+      await expect(client["auth.config"]({})).resolves.toMatchObject({
+        ok: false,
+        error: { reason: "transport-unreachable", retryable: true },
+      });
+    }
+  });
+
+  it("tells a connection lost mid-answer apart from a complete answer it can't read", async () => {
+    const answering = (response: () => Response) =>
+      createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => response(),
+        onAuthenticationRequired: vi.fn(),
+      })["auth.config"]({});
+    const cut = () =>
+      new Response(
+        new ReadableStream({
+          start: (controller) => controller.enqueue(new TextEncoder().encode('{"ok":')),
+          pull: (controller) => controller.error(new TypeError("network error")),
+        }),
+      );
+    await expect(answering(cut)).resolves.toMatchObject({
+      ok: false,
+      error: { reason: "transport-unreachable", retryable: true },
+    });
+    const misshapen = () => Response.json({ data: { unexpected: true }, ok: true });
+    const notJson = () => new Response("<html>sign in</html>", { status: 200 });
+    // A refusal envelope but for one invalid UTF-8 byte, which a lenient decode would repair.
+    const notUtf8 = () =>
+      new Response(
+        Uint8Array.from([
+          ...new TextEncoder().encode(
+            '{"ok":false,"error":{"code":"conflict","retryable":false,"message":"no',
+          ),
+          0xff,
+          ...new TextEncoder().encode('"}}'),
+        ]),
+        { status: 409 },
+      );
+    for (const response of [misshapen, notJson, notUtf8])
+      await expect(answering(response)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internal", reason: "invalid-response", retryable: false },
+      });
   });
 });
 
@@ -128,18 +179,37 @@ describe("bounded Host rpc requests", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("returns bridge rejection as a per-call transport error without a status callback", async () => {
+  it("returns a request no answer came back for as a per-call transport error", async () => {
+    for (const rejection of [
+      new TypeError("Failed to fetch"),
+      new Error("IPC schema refused this request"),
+    ]) {
+      const client = createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => {
+          throw rejection;
+        },
+        onAuthenticationRequired: vi.fn(),
+      });
+      const result = await client["auth.config"]({});
+      expect(result).toMatchObject({
+        ok: false,
+        error: { reason: "transport-unreachable", retryable: true },
+      });
+    }
+  });
+
+  it("reads this client's own full request pool as busy, not as an unreachable Host", async () => {
     const client = createHttpHostApiClient({
       baseUrl: new URL("https://opensteer.example"),
       fetch: async () => {
-        throw new Error("IPC schema refused this request");
+        throw new HostCapacityError("The Host request limit is full.");
       },
       onAuthenticationRequired: vi.fn(),
     });
-    const result = await client["auth.config"]({});
-    expect(result).toMatchObject({
+    await expect(client["auth.config"]({})).resolves.toMatchObject({
       ok: false,
-      error: { reason: "transport-unreachable", retryable: true },
+      error: { code: "resource_exhausted", retryable: true },
     });
   });
 
@@ -153,10 +223,13 @@ describe("bounded Host rpc requests", () => {
         ),
       onAuthenticationRequired: vi.fn(),
     });
-    expect(await client["auth.config"]({})).toEqual({
+    const result = await client["auth.config"]({});
+    expect(result).toEqual({
       error: { code: "internal", message: "Failed operation.", retryable: true },
       ok: false,
     });
+    // The Host's own word on retrying reaches the error a surface reads.
+    expect(() => unwrapRpcResult(result)).toThrow(expect.objectContaining({ retryable: true }));
   });
 });
 
@@ -348,7 +421,7 @@ it("cancels a pending body read immediately with the caller's reason", async () 
   }
 });
 
-it("bounds buffered browser-open RPC headers independently of the generic response allowance", async () => {
+it("bounds browser-open RPC headers independently of the generic response allowance", async () => {
   vi.useFakeTimers();
   let signal: AbortSignal | null | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>((_url, init) => {
@@ -358,7 +431,6 @@ it("bounds buffered browser-open RPC headers independently of the generic respon
   const client = createHttpHostApiClient({
     baseUrl: new URL("https://host.test"),
     fetch,
-    bufferedResponses: true,
     onAuthenticationRequired: vi.fn(),
   });
   try {

@@ -14,8 +14,7 @@ disposable GUI VM, through the [mac-gui skill](../../../../../../../.agents/skil
 - R2: Chrome canvas point-click, targeted and untargeted typing, shortcut, scroll and a batch, each
   checked against the person's front app, key window and pointer and real receiver effects.
   Point-click needs exactly one canvas event and no AXPress. The batch expects `Batchj`: the posted
-  Control-Option-J limitation in [Computer use](../../../../../../../docs/computer-use.md#background-input-and-its-limits)
-  types `j`. A future fix changes this assertion.
+  Control-Option-J limitation types `j`. A future fix changes this assertion.
 - R3: overlapping same-process Chrome windows. Trees, crops and actions stay with their bound
   window, including exact text and receiver events.
 - R4: an off-Space New Tab batch while the person's window is full screen. It must be refused

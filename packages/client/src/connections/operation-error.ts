@@ -149,6 +149,25 @@ export function classifyClientFailure(error: unknown): ClientFailure {
     retryable,
   };
 }
+
+/** The Host gave no usable transport answer, including a gateway answering for it. */
+export function hostUnanswered(failure: ClientFailure): boolean {
+  return (
+    failure.kind === "transport" &&
+    ["unreachable", "timed-out", "transport-unreachable", "transport-timed-out"].includes(
+      failure.reason,
+    )
+  );
+}
+
+export function isMissingClientResource(failure: ClientFailure): boolean {
+  return failure.provenance === "host" && ["not_found", "forbidden"].includes(failure.code);
+}
+
+export function clientEndpointUnavailable(failure: ClientFailure): boolean {
+  return failure.kind === "transport" || ["runner_offline", "timeout"].includes(failure.code);
+}
+
 export function failureProvenance(
   reason: string,
   explicit?: string | null,

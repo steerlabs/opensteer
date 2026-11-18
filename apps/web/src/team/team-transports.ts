@@ -23,8 +23,13 @@ import type {
   TeamSessionOptions,
   TeamRuntimeOwner,
 } from "@opensteer/client/team";
-import { teamCacheKey, TeamSavedStateSchema } from "@opensteer/client/team";
+import {
+  teamCacheKey,
+  TeamSavedStateSchema,
+  teamUploadReplyMaxBytes,
+} from "@opensteer/client/team";
 import type { z } from "zod";
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import {
   createDesktopHostFetch,
   createDesktopHostWebSocketFactory,
@@ -64,15 +69,81 @@ export const localTeamPersistence: TeamPersistence = {
 
 const versionHeaders = { [teamApiVersionHeader]: String(teamApiVersion) };
 
-async function readBlob(response: Response, maximum: number, type: string): Promise<Blob> {
-  if (!response.ok) throw new Error("The team file is no longer available.");
-  const blob = await response.blob();
-  if (blob.size > maximum) throw new Error("Team file exceeds its byte bound.");
-  return new Blob([blob], { type });
-}
-
 function fileType(file: TeamFile, part: "preview" | "original"): string {
   return part === "preview" ? file.preview!.mediaType : "application/octet-stream";
+}
+
+function ownedSignal(owner: TeamRuntimeOwner | undefined) {
+  return (signal?: AbortSignal) =>
+    owner ? AbortSignal.any([owner.signal, ...(signal ? [signal] : [])]) : signal;
+}
+
+/** What a refused team file transfer tells the person: too large, too busy, or gone. */
+function teamFileRefusal(response: Response, otherwise: string): Error {
+  if (response.status === 413) return new Error("Files can be up to 100 MB.");
+  if (response.status === 429)
+    return new Error("Too many files are moving at once. Try again in a moment.");
+  return new Error(otherwise);
+}
+
+/** Team file bytes over one fetch: the browser's own, or desktop main's route to the team. */
+function teamFiles(
+  fetch: typeof globalThis.fetch,
+  origin: string,
+  owner?: TeamRuntimeOwner,
+): Pick<TeamSessionOptions, "readFile" | "uploadFile"> {
+  const owned = ownedSignal(owner);
+  return {
+    readFile: async (file, part, signal) => {
+      const metadata = TeamFileSchema.parse(file);
+      owner?.assertCurrent();
+      const read = owned(signal);
+      const response = await fetch(new URL(`/v1/team/files/${metadata.id}/${part}`, origin), {
+        credentials: "include",
+        headers: versionHeaders,
+        ...(read ? { signal: read } : {}),
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw teamFileRefusal(response, "The team file is no longer available.");
+      }
+      const bytes = await readBoundedResponse(response, {
+        maximumBytes: part === "preview" ? teamPreviewMaxBytes : teamUploadMaxBytes,
+        ...(read ? { signal: read } : {}),
+        sizeError: () => new Error("Team file exceeds its byte bound."),
+      });
+      owner?.assertCurrent();
+      return new Blob([bytes], { type: fileType(metadata, part) });
+    },
+    uploadFile: async (upload: TeamFileUpload) => {
+      const metadata = TeamBinaryUploadMetadataSchema.parse(upload.metadata);
+      owner?.assertCurrent();
+      const signal = owned(upload.signal);
+      const response = await fetch(new URL(`/v1/team/files/upload/${upload.channelId}`, origin), {
+        body: new Blob([upload.original, ...(upload.preview ? [upload.preview] : [])]),
+        credentials: "include",
+        headers: {
+          ...versionHeaders,
+          "content-type": "application/octet-stream",
+          "x-opensteer-team-upload": JSON.stringify(metadata),
+        },
+        method: "POST",
+        ...(signal ? { signal } : {}),
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw teamFileRefusal(response, "The team file could not be uploaded.");
+      }
+      const reply = await readBoundedResponse(response, {
+        maximumBytes: teamUploadReplyMaxBytes,
+        ...(signal ? { signal } : {}),
+        sizeError: () => new Error("Team upload response exceeds its byte bound."),
+      });
+      const uploaded = TeamFileSchema.parse(JSON.parse(new TextDecoder().decode(reply)));
+      owner?.assertCurrent();
+      return uploaded;
+    },
+  };
 }
 
 /** The team's own web app: same-origin requests and its session cookie. */
@@ -113,41 +184,14 @@ export function browserTeamSession(input: {
       new WebSocket(
         `${origin.replace(/^http/u, "ws")}/v1/realtime?opensteer_api_version=${teamApiVersion}`,
       ),
-    readFile: async (file, part, signal) => {
-      const metadata = TeamFileSchema.parse(file);
-      return readBlob(
-        await fetch(`/v1/team/files/${metadata.id}/${part}`, {
-          credentials: "include",
-          headers: versionHeaders,
-          ...(signal ? { signal } : {}),
-        }),
-        part === "preview" ? teamPreviewMaxBytes : teamUploadMaxBytes,
-        fileType(metadata, part),
-      );
-    },
-    uploadFile: async (upload: TeamFileUpload) => {
-      const metadata = TeamBinaryUploadMetadataSchema.parse(upload.metadata);
-      const response = await fetch(`/v1/team/files/upload/${upload.channelId}`, {
-        body: new Blob([upload.original, ...(upload.preview ? [upload.preview] : [])]),
-        credentials: "include",
-        headers: {
-          ...versionHeaders,
-          "content-type": "application/octet-stream",
-          "x-opensteer-team-upload": JSON.stringify(metadata),
-        },
-        method: "POST",
-        ...(upload.signal ? { signal: upload.signal } : {}),
-      });
-      if (!response.ok) throw new Error("The team file could not be uploaded.");
-      return TeamFileSchema.parse(await response.json());
-    },
+    ...teamFiles(globalThis.fetch.bind(globalThis), origin),
     ...(input.notify ? { notify: input.notify } : {}),
   };
 }
 
 /**
- * A joined team on the desktop: every request, socket and file crosses the
- * bridge pinned to the team's own Host, which holds its credential.
+ * A joined team on the desktop: every request, socket and file goes through
+ * desktop main, pinned to the team's own Host, and main holds its credential.
  */
 export function desktopTeamSession(input: {
   readonly name?: string;
@@ -160,71 +204,8 @@ export function desktopTeamSession(input: {
   const deploymentId = DeploymentIdSchema.parse(input.scope.teamDeploymentId);
   const owner = input.owner;
   const socket = createDesktopHostWebSocketFactory(input.bridge, input.origin, deploymentId);
-  const transfer = async (
-    path: string,
-    method: "GET" | "POST",
-    headers: { contentType?: "application/octet-stream"; teamUpload?: string },
-    body: Blob | null,
-    signal?: AbortSignal,
-  ): Promise<{ readonly bytes: Uint8Array; readonly contentType: string | null }> => {
-    owner?.assertCurrent();
-    const opened = await input.bridge.hostBinaryOpen({
-      expectedDeploymentId: deploymentId,
-      headers: { apiVersion: String(teamApiVersion), ...headers },
-      method,
-      path,
-      timeoutMs: 120_000,
-    });
-    if (!opened.ok) throw new Error("The team file could not be reached.");
-    const transferId = opened.data.transferId;
-    signal = owner ? AbortSignal.any([owner.signal, ...(signal ? [signal] : [])]) : signal;
-    const abort = () => void input.bridge.hostBinaryClose({ transferId }).catch(() => undefined);
-    signal?.addEventListener("abort", abort, { once: true });
-    try {
-      signal?.throwIfAborted();
-      if (body) {
-        const bytes = new Uint8Array(await body.arrayBuffer());
-        signal?.throwIfAborted();
-        for (let offset = 0; offset < bytes.byteLength; offset += 256 * 1024) {
-          const written = await input.bridge.hostBinaryWrite({
-            bytes: bytes.subarray(offset, offset + 256 * 1024),
-            transferId,
-          });
-          signal?.throwIfAborted();
-          if (!written.ok) throw new Error("The team file could not be uploaded.");
-        }
-        const finished = await input.bridge.hostBinaryFinish({ transferId });
-        signal?.throwIfAborted();
-        if (!finished.ok || finished.data.status >= 400)
-          throw new Error("The team file could not be uploaded.");
-        return {
-          bytes: new TextEncoder().encode(finished.data.body),
-          contentType: finished.data.headers.contentType,
-        };
-      }
-      const parts: Uint8Array[] = [];
-      let contentType: string | null = null;
-      for (;;) {
-        const read = await input.bridge.hostBinaryRead({ transferId });
-        signal?.throwIfAborted();
-        if (!read.ok || read.data.status >= 400)
-          throw new Error("The team file is no longer available.");
-        contentType ??= read.data.contentType;
-        if (read.data.bytes.byteLength > 0) parts.push(read.data.bytes);
-        if (read.data.done) break;
-      }
-      const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let offset = 0;
-      for (const part of parts) {
-        bytes.set(part, offset);
-        offset += part.byteLength;
-      }
-      return { bytes, contentType };
-    } finally {
-      signal?.removeEventListener("abort", abort);
-      await input.bridge.hostBinaryClose({ transferId }).catch(() => undefined);
-    }
-  };
+  const fetch = createDesktopHostFetch(input.bridge, input.origin, deploymentId);
+  const owned = ownedSignal(owner);
   return {
     scope: input.scope,
     ...(input.name ? { name: input.name } : {}),
@@ -233,14 +214,10 @@ export function desktopTeamSession(input: {
     persistence: owner ? ownedLocalTeamPersistence(owner) : localTeamPersistence,
     rpc: createHttpHostApiClient({
       baseUrl: new URL(input.origin),
-      bufferedResponses: true,
       fetch: async (url, init) => {
         owner?.assertCurrent();
-        const response = await createDesktopHostFetch(
-          input.bridge,
-          input.origin,
-          deploymentId,
-        )(url, { ...init, ...(owner ? { signal: owner.signal } : {}) });
+        const signal = owned(init?.signal ?? undefined);
+        const response = await fetch(url, { ...init, ...(signal ? { signal } : {}) });
         owner?.assertCurrent();
         return response;
       },
@@ -249,30 +226,7 @@ export function desktopTeamSession(input: {
       onAuthenticationRequired: () => undefined,
     }),
     connect: (): WebSocketClient => socket(`${input.origin.replace(/^http/u, "ws")}/v1/realtime`),
-    readFile: async (file, part, signal) => {
-      const metadata = TeamFileSchema.parse(file);
-      const { bytes } = await transfer(
-        `/v1/team/files/${metadata.id}/${part}`,
-        "GET",
-        {},
-        null,
-        signal,
-      );
-      if (bytes.byteLength > (part === "preview" ? teamPreviewMaxBytes : teamUploadMaxBytes))
-        throw new Error("Team file exceeds its byte bound.");
-      return new Blob([Uint8Array.from(bytes)], { type: fileType(metadata, part) });
-    },
-    uploadFile: async (upload) => {
-      const metadata = TeamBinaryUploadMetadataSchema.parse(upload.metadata);
-      const { bytes } = await transfer(
-        `/v1/team/files/upload/${upload.channelId}`,
-        "POST",
-        { contentType: "application/octet-stream", teamUpload: JSON.stringify(metadata) },
-        new Blob([upload.original, ...(upload.preview ? [upload.preview] : [])]),
-        upload.signal,
-      );
-      return TeamFileSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
-    },
+    ...teamFiles(fetch, input.origin, owner),
     ...(input.notify ? { notify: input.notify } : {}),
   };
 }

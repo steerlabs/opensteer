@@ -5,8 +5,7 @@ description: Run the self-hosted team server in Docker for local testing, renew 
 
 # Team server
 
-Read [Teams](../../../docs/teams.md) for authority and version boundaries and the
-[deployment recipe](../../../deploy/team/README.md) for production scheduling.
+Read the [deployment recipe](../../../deploy/team/README.md) for production scheduling.
 Use a dedicated disposable checkout and fresh volumes. Never use the live install or
 `~/Opensteer`. No screen driving, real accounts or credentials in test fixtures.
 

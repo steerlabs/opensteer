@@ -1,4 +1,4 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, clientEndpointUnavailable } from "@opensteer/client/connections";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { isIphoneAppId } from "./model.js";
 import {
@@ -1692,13 +1692,14 @@ function mintFailure(error: unknown): IphoneAddFailure {
     return { kind: nativeCode };
   }
   if (nativeCode === "enrollment-refused") return { kind: "failed" };
-  if (classifyClientFailure(error).reason === "personal-remote-access-off") {
+  const failure = classifyClientFailure(error);
+  if (failure.reason === "personal-remote-access-off") {
     return { kind: "remote-access-off" };
   }
   if (isHostRefusal(error)) {
-    return { kind: "host-refused", reason: classifyClientFailure(error).reason };
+    return { kind: "host-refused", reason: failure.reason };
   }
-  return { kind: "host-unreachable" };
+  return { kind: clientEndpointUnavailable(failure) ? "host-unreachable" : "failed" };
 }
 
 function issueFailure(issue: IphoneAppsIssue): IphoneAddFailure {

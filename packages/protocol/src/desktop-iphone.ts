@@ -30,6 +30,7 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "accessibility-unavailable",
   "accessibility-partial",
   "host-offline",
+  "attach-failed",
   "host-version-unsupported",
   "runner-not-enrolled",
   "runner-module-not-allowed",

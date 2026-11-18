@@ -695,10 +695,10 @@ function ThreadView({
     setHistorical(true);
     setFollows(false);
     setRevealMessage({ id: messageId });
-    const unreachable = async (error: unknown) => {
+    const missing = async (unloaded: boolean) => {
       setMissingMessage({
         id: messageId,
-        unloaded: !notFound(error),
+        unloaded,
       });
       await returnToLatest().catch(() => undefined);
       return false;
@@ -706,14 +706,14 @@ function ThreadView({
     try {
       await hostClient.loadTranscriptAround(thread.id, messageId);
     } catch (error) {
-      return unreachable(error);
+      return missing(!notFound(error));
     }
     if (
       !(hostClient.getSnapshot().transcripts[thread.id] ?? []).some(
         (entry) => entry.kind === "message" && entry.id === messageId,
       )
     )
-      return unreachable(null);
+      return missing(false);
     requestAnimationFrame(() => {
       const target = currentScroller()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`,

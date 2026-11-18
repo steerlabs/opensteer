@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("Desktop app protocol", () => {
-  it("registers a standard secure scheme without CSP bypass or network privileges", () => {
+  it("registers a standard secure fetchable scheme without CSP bypass or CORS", () => {
     const registerSchemesAsPrivileged = vi.fn();
     registerDesktopAppScheme({
       handle: vi.fn(),
@@ -43,14 +43,14 @@ describe("Desktop app protocol", () => {
           corsEnabled: false,
           secure: true,
           standard: true,
-          supportFetchAPI: false,
+          supportFetchAPI: true,
         }),
         scheme: "app",
       },
     ]);
   });
 
-  it("serves bounded bundled assets and SPA routes with a network-denying CSP", async () => {
+  it("serves bounded bundled assets and SPA routes with a CSP that reaches only its own origin", async () => {
     const root = await temporaryDirectory("opensteer-app-protocol-");
     await mkdir(path.join(root, "assets"));
     await writeFile(path.join(root, "index.html"), "<!doctype html><div id=root></div>");
@@ -60,7 +60,7 @@ describe("Desktop app protocol", () => {
     const document = await handle(new Request(`${desktopAppEntryUrl}workspaces/one`));
     expect(document.status).toBe(200);
     expect(await document.text()).toContain("id=root");
-    expect(document.headers.get("content-security-policy")).toContain("connect-src 'none'");
+    expect(document.headers.get("content-security-policy")).toContain("connect-src 'self'");
     expect(document.headers.get("content-security-policy")).toContain(
       "frame-src opensteer-app://view",
     );
@@ -131,7 +131,7 @@ it("dispatches media before static lookup and excludes its capability from slow-
   const media = vi.fn(async () => new Response("forwarded"));
   const clock = vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(2000);
   try {
-    const handle = createDesktopAppProtocolHandler(root, slow, media);
+    const handle = createDesktopAppProtocolHandler(root, slow, { media });
     const request = new Request("app://opensteer/media/dep_test/capability/image.png");
     expect(await (await handle(request)).text()).toBe("forwarded");
     expect(media).toHaveBeenCalledWith(request);

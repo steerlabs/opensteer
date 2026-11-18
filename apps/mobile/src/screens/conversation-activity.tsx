@@ -1,4 +1,4 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
@@ -109,7 +109,7 @@ function useRunLoad(
       (error: unknown) =>
         current &&
         setState(
-          ["forbidden", "not_found"].includes(classifyClientFailure(error).code)
+          isMissingClientResource(classifyClientFailure(error))
             ? "unavailable"
             : "failed",
         ),

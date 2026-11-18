@@ -93,6 +93,7 @@ function primaryButton(
     return { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) };
   if (
     (issue.code === "connection" ||
+      issue.code === "open-failed" ||
       issue.code === "update-server" ||
       issue.code === "login-storage-unavailable") &&
     connection !== null

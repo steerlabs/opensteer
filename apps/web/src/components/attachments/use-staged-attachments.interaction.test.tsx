@@ -71,7 +71,15 @@ describe("a saved file checked against the Host", () => {
   it("offers another try when the Host could not be reached, then is ready", async () => {
     const getAttachment = vi
       .fn<HostClient["getAttachment"]>()
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(
+        new HostClientRequestError({
+          code: "internal",
+          message: "The Host could not be reached.",
+          reason: "transport-unreachable",
+          retryable: true,
+          status: 500,
+        }),
+      )
       .mockResolvedValue({
         id: "file-1",
         mediaType: "text/plain",

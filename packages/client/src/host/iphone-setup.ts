@@ -1,4 +1,4 @@
-import { classifyClientFailure } from "../connections/operation-error.js";
+import { classifyClientFailure, clientEndpointUnavailable } from "../connections/operation-error.js";
 import { DesktopIphoneSetupReasonSchema } from "@opensteer/protocol/desktop";
 import {
   IphoneScreenAttachResultSchema,
@@ -35,7 +35,14 @@ export function createIphoneSetupPort(
             ? "host-version-unsupported"
             : classified.reason,
         );
-        return platform.failed({ setupId, reason: reason.success ? reason.data : "host-offline" });
+        return platform.failed({
+          setupId,
+          reason: reason.success
+            ? reason.data
+            : clientEndpointUnavailable(classified)
+              ? "host-offline"
+              : "attach-failed",
+        });
       }
       return platform.complete({ setupId, result });
     })();

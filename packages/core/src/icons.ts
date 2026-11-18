@@ -4,7 +4,7 @@ import { z } from "zod";
  * The icons a task can wear. A name is a stable identifier stored on the
  * task, so a listed name is never renamed or removed; retiring artwork
  * keeps the name and redraws it. Clients parse the list strictly, so an app
- * from before a name cannot read it ("API compatibility" in docs/connections.md).
+ * from before a name cannot read it.
  */
 export const iconNames = [
   "mail",

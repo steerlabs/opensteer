@@ -70,6 +70,10 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
     client.connection.subscribe,
     () => client.connection.getSnapshot().readyRevision,
   );
+  const phase = useSyncExternalStore(
+    client.connection.subscribe,
+    () => client.connection.getSnapshot().phase,
+  );
   useEffect(() => {
     const controller = new AbortController();
     setShown((held) => (shownFile(held) === null ? { status: "loading" } : held));
@@ -162,9 +166,9 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
         <Skeleton />
       ) : shown.status === "unavailable" ? (
         <UnavailableState onBack={() => navigation.goBack()} />
-      ) : shown.status === "offline" && file === null ? (
+      ) : shown.status === "unreachable" && file === null && phase !== "ready" ? (
         <ConnectionRouteGate connection={client.connection} />
-      ) : shown.status === "failed" ? (
+      ) : shown.status === "failed" || (shown.status === "unreachable" && file === null) ? (
         <View style={styles.failed}>
           <ActionLine
             line={{
@@ -214,7 +218,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
 }
 
 function shownFile(shown: Shown) {
-  return shown.status === "ok" ? shown : shown.status === "offline" ? shown.cached : null;
+  return shown.status === "ok" ? shown : shown.status === "unreachable" ? shown.cached : null;
 }
 
 function HeaderAction(props: {

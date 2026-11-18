@@ -17,8 +17,7 @@ import {
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopDeploymentSelectionSchema,
   DesktopDeploymentSummarySchema,
-  DesktopHostHttpRequestSchema,
-  DesktopHostHttpResultSchema,
+  parseDesktopHostRoute,
   DesktopLocalExecutionInputSchema,
   DesktopLocalExecutionStatusSchema,
   DesktopAccountAuthStateSchema,
@@ -101,11 +100,25 @@ let previewSetup: DesktopComputerAppSetup | null = {
  * Account, Host, or provider. A real preload bridge always wins in `main.tsx`,
  * and production builds compile this module out via `import.meta.env.DEV`.
  */
+/** The simulated desktop main: its bridge, and the Host route the bundled UI fetches. */
+export type DesktopPreviewBridge = OpensteerDesktopBridge & {
+  readonly hostRoute: (request: Request) => Promise<Response>;
+};
+
+/** Answers the page's Host route fetches from the simulator, as desktop main's protocol would. */
+export function installDesktopPreviewHostRoute(bridge: DesktopPreviewBridge): void {
+  const fetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (input, init) => {
+    const request = new Request(input, init);
+    return parseDesktopHostRoute(request.url) ? bridge.hostRoute(request) : fetch(request);
+  };
+}
+
 export function desktopPreviewBridge(
   search = typeof window === "undefined" ? "" : window.location.search,
   enabled = import.meta.env.DEV,
   options: DesktopPreviewBridgeOptions = {},
-): OpensteerDesktopBridge | null {
+): DesktopPreviewBridge | null {
   if (!enabled || new URLSearchParams(search).get(previewParameter) !== "first-run") return null;
 
   const transitionDelayMs = Math.max(0, options.transitionDelayMs ?? 280);
@@ -449,6 +462,8 @@ export function desktopPreviewBridge(
       });
     },
 
+    // The simulated route reads the page's own Request, abort signal included.
+    cancelHostRequest: async () => undefined,
     closeHostWebSocket: async (input) => {
       const path = socketPaths.get(input.connectionId);
       if (!path) return;
@@ -479,76 +494,6 @@ export function desktopPreviewBridge(
 
     getDeploymentAccessSnapshot: async () => accessSnapshot(),
     getLocalExecutionStatus: async (input) => localExecutionFor(input),
-
-    hostRequest: async (input) => {
-      const request = DesktopHostHttpRequestSchema.parse(input);
-      // The summaries main lets the chooser read from an Opensteer it hasn't opened.
-      const summaryOf =
-        request.method === "POST" && request.expectedDeploymentId
-          ? selection.deployments.find(({ id }) => id === request.expectedDeploymentId)
-          : undefined;
-      if (summaryOf && accountDeploymentIds.has(summaryOf.id)) {
-        const path = new URL(request.path, previewRequestBase).pathname;
-        if (path === "/v1/rpc/attention.get")
-          return jsonResponse(200, {
-            data: {
-              homeName: previewHomeNames[summaryOf.name] ?? null,
-              needsYou: 0,
-              unread: false,
-            },
-            ok: true,
-          });
-        if (path === "/v1/rpc/teams.links.list")
-          return jsonResponse(200, { data: { links: [] }, ok: true });
-      }
-      const selected = selectedDeployment(selection);
-      if (!selected || hostAuth.deploymentId !== selected.id || hostAuth.status !== "signed-in") {
-        return jsonResponse(401, {
-          error: {
-            code: "unauthorized",
-            message: "The onboarding preview Host is not signed in.",
-            retryable: false,
-          },
-          ok: false,
-        });
-      }
-      if (
-        request.method === bootstrapDeclaration.method &&
-        new URL(request.path, previewRequestBase).pathname === bootstrapPath
-      ) {
-        return jsonResponse(200, {
-          data: bootstrapDeclaration.success.parse(
-            previewBootstrap(selected, {
-              environmentId: previewEnvironmentId,
-              runnerId: previewRunnerId,
-              userId: previewUserId,
-            }),
-          ),
-          ok: true,
-        });
-      }
-      return jsonResponse(501, {
-        error: {
-          code: "not_found",
-          message: "This development simulator covers Desktop onboarding, not Host mutations.",
-          retryable: false,
-        },
-        ok: false,
-      });
-    },
-    hostBinaryOpen: async () => {
-      throw new Error("Attachment transfer is unavailable in onboarding preview.");
-    },
-    hostBinaryWrite: async () => {
-      throw new Error("Attachment transfer is unavailable in onboarding preview.");
-    },
-    hostBinaryFinish: async () => {
-      throw new Error("Attachment transfer is unavailable in onboarding preview.");
-    },
-    hostBinaryRead: async () => {
-      throw new Error("Attachment transfer is unavailable in onboarding preview.");
-    },
-    hostBinaryClose: async () => ({ ok: true, data: null }),
 
     linkPersonal: async () => {
       if (personal.deploymentId === null)
@@ -1018,7 +963,75 @@ export function desktopPreviewBridge(
     emitSelection();
   }
 
-  return bridge;
+  /** What main's Host route would answer, for the onboarding Host this preview simulates. */
+  async function hostRoute(request: Request): Promise<Response> {
+    const route = parseDesktopHostRoute(request.url);
+    if (!route) return new Response(null, { status: 404 });
+    const path = new URL(route.path, previewRequestBase).pathname;
+    // The summaries main lets the chooser read from an Opensteer it hasn't opened.
+    const summaryOf =
+      request.method === "POST"
+        ? selection.deployments.find(({ id }) => id === route.deploymentId)
+        : undefined;
+    if (summaryOf && accountDeploymentIds.has(summaryOf.id)) {
+      if (path === "/v1/rpc/attention.get")
+        return Response.json(
+          {
+            data: {
+              homeName: previewHomeNames[summaryOf.name] ?? null,
+              needsYou: 0,
+              unread: false,
+            },
+            ok: true,
+          },
+          { status: 200 },
+        );
+      if (path === "/v1/rpc/teams.links.list")
+        return Response.json({ data: { links: [] }, ok: true }, { status: 200 });
+    }
+    const selected = selectedDeployment(selection);
+    if (!selected || hostAuth.deploymentId !== selected.id || hostAuth.status !== "signed-in") {
+      return Response.json(
+        {
+          error: {
+            code: "unauthorized",
+            message: "The onboarding preview Host is not signed in.",
+            retryable: false,
+          },
+          ok: false,
+        },
+        { status: 401 },
+      );
+    }
+    if (request.method === bootstrapDeclaration.method && path === bootstrapPath) {
+      return Response.json(
+        {
+          data: bootstrapDeclaration.success.parse(
+            previewBootstrap(selected, {
+              environmentId: previewEnvironmentId,
+              runnerId: previewRunnerId,
+              userId: previewUserId,
+            }),
+          ),
+          ok: true,
+        },
+        { status: 200 },
+      );
+    }
+    return Response.json(
+      {
+        error: {
+          code: "not_found",
+          message: "This development simulator covers Desktop onboarding, not Host mutations.",
+          retryable: false,
+        },
+        ok: false,
+      },
+      { status: 501 },
+    );
+  }
+
+  return Object.assign(bridge, { hostRoute });
 }
 
 function previewPasswordsStatus(search: string): DesktopPasswordsStatus {
@@ -1301,13 +1314,6 @@ function previewAccountIdentity() {
     issuer: "https://accounts.opensteer.invalid",
     subject: "acct_00000000-0000-4000-8000-000000000001",
   };
-}
-
-function jsonResponse(status: number, body: unknown) {
-  return DesktopHostHttpResultSchema.parse({
-    ok: true,
-    data: { body: JSON.stringify(body), headers: { contentType: "application/json" }, status },
-  });
 }
 
 function isSubscribeFrame(value: unknown): value is { readonly type: "client.subscribe" } {

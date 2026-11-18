@@ -14,7 +14,8 @@ const contentSecurityPolicy = [
   "style-src 'self'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
-  "connect-src 'none'",
+  // Host traffic reaches main's /host/ route; the renderer opens no network origin itself.
+  "connect-src 'self'",
   "media-src 'none'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -53,7 +54,7 @@ export function registerDesktopAppScheme(protocol: DesktopProtocolRegistrar): vo
         corsEnabled: false,
         secure: true,
         standard: true,
-        supportFetchAPI: false,
+        supportFetchAPI: true,
       },
       scheme: desktopAppScheme,
     },
@@ -65,13 +66,19 @@ type SlowDesktopAppRequest = (request: {
   readonly elapsedMs: number;
 }) => void;
 
+/** Requests main answers by forwarding them to a Host rather than from the bundle. */
+export interface DesktopAppRoutes {
+  readonly host?: (request: Request) => Promise<Response>;
+  readonly media?: (request: Request) => Promise<Response>;
+}
+
 export function installDesktopAppProtocol(
   protocol: DesktopProtocolRegistrar,
   webRoot: string,
   onSlowRequest?: SlowDesktopAppRequest,
-  media?: (request: Request) => Promise<Response>,
+  routes: DesktopAppRoutes = {},
 ): () => void {
-  const handler = createDesktopAppProtocolHandler(webRoot, onSlowRequest, media);
+  const handler = createDesktopAppProtocolHandler(webRoot, onSlowRequest, routes);
   protocol.handle(desktopAppScheme, handler);
   return () => protocol.unhandle(desktopAppScheme);
 }
@@ -79,14 +86,12 @@ export function installDesktopAppProtocol(
 export function createDesktopAppProtocolHandler(
   webRoot: string,
   onSlowRequest?: SlowDesktopAppRequest,
-  media?: (request: Request) => Promise<Response>,
+  routes: DesktopAppRoutes = {},
 ): (request: Request) => Promise<Response> {
   const root = path.resolve(webRoot);
   const verifiedRoot = realDirectory(root);
   return async (request) => {
     const started = performance.now();
-    if (request.method !== "GET" && request.method !== "HEAD")
-      return response(405, "Method Not Allowed");
     let url: URL;
     try {
       url = new URL(request.url);
@@ -103,7 +108,11 @@ export function createDesktopAppProtocolHandler(
       return response(404, "Not Found");
     }
     if (url.pathname === "/media" || url.pathname.startsWith("/media/"))
-      return media ? media(request) : response(404, "Not Found");
+      return routes.media ? routes.media(request) : response(404, "Not Found");
+    if (url.pathname === "/host" || url.pathname.startsWith("/host/"))
+      return routes.host ? routes.host(request) : response(404, "Not Found");
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return response(405, "Method Not Allowed");
     const requested = safeAssetPath(url.pathname);
     if (requested === null) return response(404, "Not Found");
     try {

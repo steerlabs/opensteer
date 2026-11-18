@@ -33,7 +33,7 @@ import type {
 } from "./browser/presentation.js";
 import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
-import { TabSleeper } from "./browser/tab-sleeper.js";
+import { TabSleeper, type TabSleepPass } from "./browser/tab-sleeper.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
@@ -63,6 +63,7 @@ export interface BrowserRuntimeOptions {
   loginAuthority?: BrowserLoginAuthority;
   ticketVerifier: AttachTicketVerifier;
   onOpenTiming?: (diagnostic: BrowserOpenTiming) => void;
+  onSleepPass?: (pass: TabSleepPass) => void;
   onHostCleanupFailure?: (diagnostic: {
     readonly kind: "fresh" | "local";
     readonly stage: string;
@@ -248,6 +249,8 @@ export class BrowserRuntime implements NativePresentationSource {
     this.sleeper = new TabSleeper({
       memoryBudgetBytes: options.memoryBudgetBytes,
       hostCost: this.launcher.hostCost,
+      rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
+      onPass: options.onSleepPass,
       hosts: () =>
         [...this.hosts.values()].map((host) => ({
           key: host.identity.key,

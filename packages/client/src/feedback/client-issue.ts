@@ -1,4 +1,8 @@
-import { classifyClientFailure } from "../connections/operation-error.js";
+import {
+  classifyClientFailure,
+  isMissingClientResource,
+  type ClientFailure,
+} from "../connections/operation-error.js";
 
 export type ClientIssueCode =
   | "connection"
@@ -7,6 +11,7 @@ export type ClientIssueCode =
   | "update-server"
   | "web-outdated"
   | "access-lost"
+  | "open-failed"
   | "read-failed"
   | "refresh-failed"
   | "not-sent"
@@ -36,14 +41,19 @@ export interface ClientIssuePresentation {
   readonly action: "retry" | "sign-in" | "update" | "reload" | "check" | null;
 }
 
-export function clientIssue(
-  error: unknown,
-  context: {
-    readonly operation: "read" | "refresh" | "action";
-    readonly label: string;
-  },
+interface ClientIssueContext {
+  readonly operation: "read" | "refresh" | "action";
+  readonly label: string;
+}
+
+export function clientIssue(error: unknown, context: ClientIssueContext): ClientIssue | null {
+  return clientIssueFromFailure(classifyClientFailure(error), context);
+}
+
+export function clientIssueFromFailure(
+  failure: ClientFailure,
+  context: ClientIssueContext,
 ): ClientIssue | null {
-  const failure = classifyClientFailure(error);
   if (failure.kind === "cancelled") return null;
   if (failure.reason === "login-storage-unavailable") return { code: "login-storage-unavailable" };
   if (failure.reason === "storage-unavailable") return { code: "storage-unavailable" };
@@ -53,6 +63,8 @@ export function clientIssue(
     return { code: "update-app" };
   if (failure.reason === "host-too-old") return { code: "update-server" };
   if (failure.kind === "session") return { code: "access-lost" };
+  if (context.operation !== "action" && isMissingClientResource(failure))
+    return { code: "access-lost", reason: failure.reason };
   if (context.operation !== "action")
     return {
       code: context.operation === "read" ? "read-failed" : "refresh-failed",
@@ -130,6 +142,12 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
             null,
             "It may have been deleted, or you don't have access.",
           );
+    case "open-failed":
+      return result(
+        `Couldn't open ${issue.resource ?? name}`,
+        "retry",
+        "Try again in a moment.",
+      );
     case "read-failed":
       return result(
         `Couldn't load ${issue.resource ?? "this"}.`,

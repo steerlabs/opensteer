@@ -1,5 +1,4 @@
-import type { ClientIssue } from "../feedback/client-issue.js";
-import { clientIssue } from "../feedback/client-issue.js";
+import { clientIssueFromFailure, type ClientIssue } from "../feedback/client-issue.js";
 import {
   connectionInterruptionHoldMs,
   realtimeIdleProbeMs,
@@ -403,15 +402,17 @@ class SessionConnectionController implements ConnectionController {
     if (!this.#desired) return;
     if (!failure.retryable && failure.kind !== "cancelled") {
       this.#clearHold();
-      const issue = clientIssue(failure, { operation: "action", label: "connect" });
+      const issue = clientIssueFromFailure(failure, { operation: "action", label: "connect" });
       this.#publish({
         phase: "blocked",
         showInterruption: true,
         trying: false,
         issue:
-          (accessLost && failure.code !== "unauthorized") || issue?.code === "unconfirmed"
+          accessLost && failure.code !== "unauthorized"
             ? { code: "access-lost" }
-            : issue,
+            : issue?.code === "unconfirmed" || issue?.code === "rejected"
+              ? { code: "open-failed" }
+              : issue,
         ...(accessLost ? { scope: null } : {}),
       });
       return;
@@ -419,7 +420,7 @@ class SessionConnectionController implements ConnectionController {
     this.#waiting();
     this.#publish({
       phase: "recovering",
-      issue: this.#connectionIssue(true),
+      issue: this.#connectionIssue(failure.kind === "transport"),
       ...(explicit ? { showInterruption: true } : {}),
     });
     this.#explicit = false;

@@ -1,4 +1,4 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import {
   refTarget,
@@ -198,7 +198,7 @@ export function PersonalReferenceProvider(props: {
         if (
           link.kind === "reference" &&
           host !== null &&
-          classifyClientFailure(error).kind === "rejection"
+          isMissingClientResource(classifyClientFailure(error))
         )
           host.references.unavailable(link.reference.id);
         else cannotOpen(error);

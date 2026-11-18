@@ -65,6 +65,10 @@ function developerIdRequirement(teamId, identifier) {
     throw Error("Invalid code requirement identity");
   return `anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "${teamId}" and identifier "${identifier}"`;
 }
+// codesign reads `-R <arg>` as a requirement file path; only `-R=<text>` is the requirement itself.
+function requirementOption(requirement) {
+  return `-R=${requirement}`;
+}
 function generatedSigningConstants(options) {
   const mode =
     options.platform && options.platform !== "darwin"
@@ -94,6 +98,7 @@ module.exports = {
   readSigningMode,
   generatedSigningConstants,
   developerIdRequirement,
+  requirementOption,
 };
 
 function writeSigningConstants(directory, options) {

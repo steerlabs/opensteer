@@ -4,9 +4,8 @@ Tim's release recipe, not a per-change gate. Run it only when he asks and suppli
 `MOBILE_SIGNING_TEAM` privately, on a Mac where Xcode is signed in to that team. Never read, export
 or copy signing material.
 
-The listing is `com.opensteer.opensteer`, bound to that bundle ID for good
-([why](../../../../docs/mobile.md#identity)). Never delete it: Apple then refuses the ID and the
-name. A new version replaces the old one when it is released.
+The listing is `com.opensteer.opensteer`, bound to that bundle ID for good. Never delete it: Apple
+then refuses the ID and the name. A new version replaces the old one when it is released.
 
 Apple-side prerequisites, all Tim's:
 

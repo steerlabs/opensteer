@@ -1,5 +1,5 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
-import { unwrapRpcResult } from "@opensteer/client/host";
+import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -11,7 +11,7 @@ import { useAppLinks } from "../ui/app-links-context.js";
 import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useHostValue, useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
@@ -21,9 +21,11 @@ import {
   teamFailure,
   type TeamLinkIntent,
 } from "./mobile-teams.js";
-import { classifyClientFailure } from "@opensteer/client/connections";
-import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
+import { classifyClientFailure, clientEndpointUnavailable } from "@opensteer/client/connections";
+import { clientIssueActions, clientIssueFromFailure, presentClientIssue, type ClientIssue } from "@opensteer/client/feedback";
 import { ConnectionGate } from "../ui/connection-gate.js";
+import { useShellGate } from "../ui/shell-gate.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
 import { teamFailureWords } from "./team-feedback.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
@@ -225,21 +227,22 @@ function Invite(props: {
 function inviteFailure(error: unknown, host: string, team: TeamTileView): InviteView {
   if (error instanceof HostVersionMismatchError)
     return { kind: error.code === "client-too-old" ? "update-app" : "update-server", team };
-  const reason =
-    typeof error === "object" && error !== null && "reason" in error ? error.reason : null;
+  const failure = classifyClientFailure(error);
+  const { reason } = failure;
   if (
     reason === "invite-invalid" ||
     reason === "invite-expired" ||
     reason === "invite-used-up" ||
-    (classifyClientFailure(error).kind === "rejection" &&
-      ["not_found", "forbidden", "conflict"].includes(classifyClientFailure(error).code))
+    (failure.kind === "rejection" && ["not_found", "forbidden", "conflict"].includes(failure.code))
   )
     return { kind: "no-longer-works", team, inviter: null };
-  if (error instanceof TypeError) return { kind: "unreachable", host };
+  if (clientEndpointUnavailable(failure)) return { kind: "unreachable", host };
   const state = teamFailure(error);
   if (state === "update-app" || state === "update-server") return { kind: state, team };
   return { kind: "failed", detail: teamFailureWords(error, "Joining didn't finish.") };
 }
+
+const selectNetwork = (snapshot: HostSnapshot) => snapshot.network;
 
 /** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
@@ -250,7 +253,9 @@ function OpenPlace(props: {
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
   const { captureNavigationIntent } = useAppLinks();
-  const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
+  const [failure, setFailure] = useState<ClientIssue | null>(null);
+  useShellGate(true);
+  const network = useHostValue(useMobileState().selection.hostClient, selectNetwork, "unknown");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;
@@ -279,16 +284,21 @@ function OpenPlace(props: {
       if (!current()) return;
       enterSide(teamPlaceTarget(teamId, intent));
     };
-    void open().catch(
-      (error: unknown) =>
-        current() &&
+    void open().catch((error: unknown) => {
+      if (!current()) return;
+      const failure = classifyClientFailure(error);
+      const issue = clientIssueFromFailure(failure, { operation: "read", label: "this page" });
+      if (error instanceof TeamAccessError || issue?.code === "access-lost")
+        setFailure({ code: "access-lost" });
+      else if (clientEndpointUnavailable(failure))
+        setFailure({ code: "connection", target: "team", reason: "unreachable" });
+      else
         setFailure(
-          !(error instanceof TeamAccessError) &&
-            (error instanceof TypeError || classifyClientFailure(error).kind === "transport")
-            ? "offline"
-            : "unavailable",
-        ),
-    );
+          issue?.code === "read-failed" || issue === null
+            ? { code: "open-failed", resource: "this page" }
+            : { ...issue, target: "team" },
+        );
+    });
     return () => {
       mounted = false;
     };
@@ -302,44 +312,41 @@ function OpenPlace(props: {
   ) : (
     <OpenPlaceGate
       failure={failure}
-      host={new URL(intent.origin).host}
+      network={network}
       onBack={() => navigation.goBack()}
       onRetry={() => setAttempt((count) => count + 1)}
     />
   );
 }
 
-/** Why a team page didn't open: gone or not the reader's, or the team out of reach. */
 function OpenPlaceGate(props: {
-  readonly failure: "unavailable" | "offline";
-  readonly host: string;
+  readonly failure: ClientIssue;
+  readonly network: HostSnapshot["network"];
   readonly onBack: () => void;
   readonly onRetry: () => void;
 }): ReactNode {
   const back = { label: "Back", onPress: props.onBack };
-  if (props.failure === "unavailable")
-    return (
-      <ConnectionGate
-        detail="It may have been deleted, or you don't have access."
-        primary={back}
-        stateKey="unavailable"
-        symbol={null}
-        title="This isn't available"
-      />
-    );
-  const copy = presentClientIssue({
-    code: "connection",
-    reason: "unreachable",
-    name: props.host,
-    target: "team",
-  });
+  if (props.failure.code === "access-lost") return <UnavailableState onBack={props.onBack} />;
+  const issue =
+    props.failure.code === "connection" && props.network === "offline"
+      ? { ...props.failure, reason: "offline" }
+      : props.failure;
+  const copy = presentClientIssue(issue);
+  const primary =
+    copy.action === "update"
+      ? { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) }
+      : copy.action === "sign-in"
+        ? { label: clientIssueActions.signIn, onPress: props.onRetry }
+        : issue.code === "connection" || copy.action === "retry"
+          ? { label: clientIssueActions.tryAgain, onPress: props.onRetry }
+          : null;
   return (
     <ConnectionGate
-      detail="Your own tasks still work."
-      primary={{ label: clientIssueActions.tryAgain, onPress: props.onRetry }}
-      secondary={back}
-      stateKey="unreachable"
-      symbol="computer"
+      detail={copy.detail ?? ""}
+      primary={primary ?? back}
+      secondary={primary ? back : null}
+      stateKey={`${issue.code}:${issue.reason ?? ""}`}
+      symbol={issue.reason === "offline" ? "offline" : "computer"}
       title={copy.title}
     />
   );

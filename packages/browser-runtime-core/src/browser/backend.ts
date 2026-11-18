@@ -55,6 +55,12 @@ export interface PageCapturePort {
 
 export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
+export class BrowserPaintTimeoutError extends Error {
+  constructor(message = "Browser paint wait timed out.") {
+    super(message);
+  }
+}
+
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
   /** Reads opaque restore state without closing or changing the page. Null refuses this document. */
@@ -66,8 +72,8 @@ export interface BrowserPage {
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
    * Electron cannot identify the metrics revision of those pixels: an already
-   * composed frame of this page can satisfy it, without a duration bound if
-   * rendering stalls. Cancellation never waits for paint; no timeout is readiness.
+   * composed frame of this page can satisfy it. Cancellation and timeout reject
+   * the wait without waiting on the renderer.
    */
   settleRendering?(signal?: AbortSignal): Promise<void>;
   /**
@@ -209,8 +215,17 @@ export interface LocalProfileEngine {
   release(directory: string): Promise<"released" | "retained-until-exit">;
 }
 
+export interface BrowserRendererUsage {
+  readonly processes: number;
+  /** Total resident bytes when every attributed process was measured. */
+  readonly bytes: number | null;
+  readonly unassignedProcesses?: number;
+}
+
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
+  /** Deduplicated renderer census for this runtime, including its subframes. */
+  rendererUsage?(): BrowserRendererUsage;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

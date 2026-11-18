@@ -1,5 +1,5 @@
 import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import {
   browserAccessChoices,
   browserAccessGrantable,
@@ -227,7 +227,7 @@ function ReferencedRequest(props: {
     label: "this request",
     read: () =>
       hostClient.readRequest(threadId, requestId).catch((error: unknown) => {
-        if (classifyClientFailure(error).kind === "rejection") return null;
+        if (isMissingClientResource(classifyClientFailure(error))) return null;
         throw error;
       }),
   });

@@ -4,7 +4,7 @@ import {
   type ClientSession,
 } from "../connections/connection-controller.js";
 import { classifyClientFailure, unrefTimer } from "../connections/operation-error.js";
-import { clientIssue, type ClientIssue } from "../feedback/client-issue.js";
+import { clientIssueFromFailure, type ClientIssue } from "../feedback/client-issue.js";
 
 export type ClientReadState<T> =
   | { readonly status: "waiting" | "loading"; readonly data: null; readonly issue: null }
@@ -362,12 +362,10 @@ class RetainedClientRead<T> implements ClientRead<T> {
             }, delay);
             unrefTimer(this.#retry);
           }
-          const issue = denied
-            ? { code: "access-lost" as const, reason: failure.reason }
-            : clientIssue(error, {
-                operation: this.#accepted ? "refresh" : "read",
-                label: this.#spec.label,
-              });
+          const issue = clientIssueFromFailure(failure, {
+            operation: this.#accepted ? "refresh" : "read",
+            label: this.#spec.label,
+          });
           this.#publish(
             this.#accepted
               ? {

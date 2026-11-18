@@ -27,7 +27,11 @@ import {
   hostResponseHeadersTimeoutMs,
   hostResponseStallTimeoutMs,
 } from "../connections/host-response-deadline.js";
-import { HostTransportError } from "../connections/host-transport-error.js";
+import {
+  HostCapacityError,
+  HostTransportError,
+  isGatewayFailure,
+} from "../connections/host-transport-error.js";
 
 type Fetch = typeof globalThis.fetch;
 type HostApiHandler<Name extends keyof typeof hostApi> = (
@@ -49,8 +53,11 @@ export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly kind?: "personal" | "team";
   readonly fetch: Fetch;
-  /** IPC adapters return buffered bodies together with their headers. */
-  readonly bufferedResponses?: boolean;
+  /**
+   * The fetch queues uploads and bounds each one's wait for headers from when
+   * it is sent, so the client's own header clock doesn't count the queue.
+   */
+  readonly pacedUploads?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
   readonly onAuthenticationRequired: (method: keyof typeof hostApi) => void;
   readonly onVersionMismatch?: () => void;
@@ -231,20 +238,21 @@ async function request<Name extends keyof typeof hostApi>(
     "type" in payload &&
     (payload.type === "tab.open" || payload.type === "tab.activate")
       ? 25_000
-      : options.bufferedResponses
-        ? bufferedHostResponseTimeoutMs(maximumBytes)
-        : "binaryRequest" in declaration
-          ? bufferedHostResponseTimeoutMs(
+      : "binaryRequest" in declaration
+        ? options.pacedUploads
+          ? null
+          : bufferedHostResponseTimeoutMs(
               call?.body instanceof Uint8Array
                 ? call.body.byteLength
                 : (call?.body?.size ?? attachmentMaxBytes),
             )
-          : hostResponseHeadersTimeoutMs;
+        : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
   let authenticationRequired = false;
+  let answered = false;
   try {
     call?.signal?.throwIfAborted();
-    deadline.reset(headersTimeoutMs);
+    if (headersTimeoutMs !== null) deadline.reset(headersTimeoutMs);
     const response = await deadline.wait(
       options.fetch(url, {
         ...(declaration.method === "POST"
@@ -291,6 +299,7 @@ async function request<Name extends keyof typeof hostApi>(
         sizeError: () => new HostTransportError("response-too-large"),
       }),
     );
+    answered = true;
     options.assertResponseCurrent?.(response);
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
@@ -310,16 +319,18 @@ async function request<Name extends keyof typeof hostApi>(
         ok: true,
       } as RpcOutput<(typeof hostApi)[Name]>;
     }
-    const body: unknown = await Promise.resolve()
-      .then(() => JSON.parse(new TextDecoder().decode(bytes)) as unknown)
-      .catch((error: unknown) => {
-        if (error instanceof SyntaxError) return null;
-        throw error;
-      });
-    options.assertResponseCurrent?.(response);
-    call?.signal?.throwIfAborted();
+    let body: unknown = null;
+    try {
+      // Invalid UTF-8 is a broken answer, not text to repair into one.
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch {
+      // Neither decodes to an envelope; the status below says what kind of answer it was.
+    }
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
-    if (parsed.success && (!authenticationRequired || !parsed.data.ok)) {
+    if (
+      parsed.success &&
+      (!authenticationRequired || (!parsed.data.ok && parsed.data.error.code === "unauthorized"))
+    ) {
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")
@@ -328,19 +339,20 @@ async function request<Name extends keyof typeof hostApi>(
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }
     if (authenticationRequired) return authenticationRefusal();
-    // A Host from before this method answers its framework's plain 404; a
-    // server fault may answer without an envelope; anything else is a body
-    // this client cannot read, which no retry will change.
+    if (isGatewayFailure(response.status)) {
+      const failure = new HostTransportError("unreachable");
+      return rpcError("transport-unreachable", failure.message, failure.retryable);
+    }
+    // A Host from before this method answers its framework's plain 404.
     const missing = response.status === 404;
-    const temporary = [502, 503, 504].includes(response.status);
     return {
       error: HostApiErrorSchema.parse({
         code: missing ? "not_found" : "internal",
         message: missing
           ? "This Host doesn’t offer that yet."
           : "The Host returned an incompatible response.",
-        reason: missing ? "unknown-method" : temporary ? "proxy-unavailable" : "invalid-response",
-        retryable: temporary,
+        reason: missing ? "unknown-method" : "invalid-response",
+        retryable: false,
       }),
       ok: false,
     } as RpcOutput<(typeof hostApi)[Name]>;
@@ -362,7 +374,13 @@ async function request<Name extends keyof typeof hostApi>(
           : undefined,
       );
     }
-    if (error instanceof z.ZodError || error instanceof RangeError) {
+    if (error instanceof HostCapacityError)
+      return rpcError("resource-exhausted", error.message, true, "resource_exhausted");
+    if (
+      !(error instanceof HostTransportError) &&
+      !(error instanceof Error && error.name === "TimeoutError") &&
+      (answered || error instanceof z.ZodError || error instanceof RangeError)
+    ) {
       return rpcError("invalid-response", "The Host returned an incompatible response.", false);
     }
     const failure =

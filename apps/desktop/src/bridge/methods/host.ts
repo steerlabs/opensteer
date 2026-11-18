@@ -1,20 +1,7 @@
-import {
-  HostTransportError,
-  ClientOperationError,
-  classifyClientFailure,
-} from "@opensteer/client/connections";
-import type { DesktopHostResult } from "@opensteer/protocol/desktop";
 import type { WebContents } from "electron";
 import {
+  DesktopCancelHostRequestInputSchema,
   DesktopCloseHostWebSocketInputSchema,
-  DesktopHostHttpRequestSchema,
-  DesktopHostHttpResponseSchema,
-  DesktopHostTransportFailureSchema,
-  DesktopHostBinaryOpenInputSchema,
-  DesktopHostBinaryOpenResultSchema,
-  DesktopHostBinaryWriteInputSchema,
-  DesktopHostBinaryTransferInputSchema,
-  DesktopHostBinaryReadResultSchema,
   DesktopHostWebSocketCommandSchema,
   DesktopOpenHostWebSocketInputSchema,
   DesktopOpenHostWebSocketResultSchema,
@@ -26,86 +13,13 @@ import {
   type DesktopBridgeHandler,
 } from "../context.js";
 
-export const handleHostRequest =
+export const handleCancelHostRequest =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
+  (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      return DesktopHostHttpResponseSchema.parse(
-        await context.options.hostTransport.request(
-          DesktopHostHttpRequestSchema.parse(envelope.input),
-        ),
-      );
-    });
-  };
-
-export const handleHostBinaryOpen =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      trackHostSender(context, event.sender);
-      return DesktopHostBinaryOpenResultSchema.parse(
-        await context.options.hostTransport.openBinary(
-          event.sender.id,
-          DesktopHostBinaryOpenInputSchema.parse(envelope.input),
-        ),
-      );
-    });
-  };
-
-export const handleHostBinaryWrite =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      await context.options.hostTransport.writeBinary(
-        event.sender.id,
-        DesktopHostBinaryWriteInputSchema.parse(envelope.input),
-      );
-      return null;
-    });
-  };
-
-export const handleHostBinaryFinish =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      return DesktopHostHttpResponseSchema.parse(
-        await context.options.hostTransport.finishBinary(
-          event.sender.id,
-          DesktopHostBinaryTransferInputSchema.parse(envelope.input),
-        ),
-      );
-    });
-  };
-
-export const handleHostBinaryRead =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      return DesktopHostBinaryReadResultSchema.parse(
-        await context.options.hostTransport.readBinary(
-          event.sender.id,
-          DesktopHostBinaryTransferInputSchema.parse(envelope.input),
-        ),
-      );
-    });
-  };
-
-export const handleHostBinaryClose =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return hostResult(async () => {
-      await context.options.hostTransport.closeBinary(
-        event.sender.id,
-        DesktopHostBinaryTransferInputSchema.parse(envelope.input),
-      );
-      return null;
-    });
+    context.options.hostTransport.cancelRequest(
+      DesktopCancelHostRequestInputSchema.parse(envelope.input),
+    );
   };
 
 export const handleOpenHostWebSocket =
@@ -151,22 +65,5 @@ function trackHostSender(context: DesktopBridgeContext, sender: WebContents): vo
   sender.once("destroyed", () => {
     context.trackedHostSenders.delete(sender.id);
     context.options.hostTransport.closeSocketsForOwner(sender.id);
-    void context.options.hostTransport.closeBinaryForOwner(sender.id);
   });
-}
-
-async function hostResult<Data>(operation: () => Promise<Data>): Promise<DesktopHostResult<Data>> {
-  try {
-    return { ok: true, data: await operation() };
-  } catch (error) {
-    // Electron serializes thrown errors as strings and loses their classification.
-    if (!(error instanceof ClientOperationError)) throw error;
-    return DesktopHostTransportFailureSchema.parse({
-      ok: false,
-      error: {
-        code: error instanceof HostTransportError ? error.code : "unreachable",
-        failure: classifyClientFailure(error),
-      },
-    });
-  }
 }

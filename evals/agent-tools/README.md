@@ -1,7 +1,6 @@
 # Agent tool-use evals
 
-Behavioral evals of how real engines use Opensteer's tools, guide and bundled skills. Read
-[the safety boundaries](../../docs/testing.md#agent-tool-use-evaluations) first: native tools
+Behavioral evals of how real engines use Opensteer's tools, guide and bundled skills. Native tools
 run for real, so cases never point at host files.
 
 ## Running

@@ -383,12 +383,12 @@ class StagedFiles {
         if (controller.signal.aborted) return;
         record.controller = null;
         if (this.#interrupted(localId, record, revision, error)) return;
-        const unreachable = retryable(error) && !isNotFound(error);
+        const again = retryable(error) && !isNotFound(error);
         this.#patch(localId, {
-          error: unreachable
-            ? "This file could not be checked. Check your connection and try again."
+          error: again
+            ? "This file couldn't be checked. Try again."
             : "This file is no longer available. Remove it and attach it again.",
-          retryable: unreachable,
+          retryable: again,
           status: "failed",
         });
       },

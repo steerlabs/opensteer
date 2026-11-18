@@ -2,6 +2,8 @@ import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
   HostVersionMismatchError,
+  classifyClientFailure,
+  clientEndpointUnavailable,
   type DeploymentConnection,
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
@@ -64,6 +66,8 @@ export type TeamState =
   | "loading"
   | "live"
   | "offline"
+  /** A call failed for a reason other than the team being out of reach. */
+  | "failed"
   | "update-app"
   | "update-server"
   | "removed"
@@ -1110,14 +1114,14 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof HostClientRequestError) {
     if (teamEntryRefusalOutcome(error.reason) === "membership")
       return error.reason === "removed" ? "removed" : "join";
-    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "offline";
+    // The team answered: a refusal entry may pass on a fresh try is no outage.
+    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "failed";
     const version = teamVersionRefusal(error.reason);
     if (version) return version;
     if (error.code === "unauthorized") return "signed-out";
-    if (error.code === "forbidden" || error.code === "not_found") return "offline";
   }
   if (error instanceof TeamAccessError) return "removed";
-  return "offline";
+  return clientEndpointUnavailable(classifyClientFailure(error)) ? "offline" : "failed";
 }
 
 /**

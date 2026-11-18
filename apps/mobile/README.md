@@ -1,7 +1,6 @@
 # @opensteer/mobile
 
-The Expo client for iPhone and Android. [Opensteer on a phone](../../docs/mobile.md) holds its
-lifecycle and authority constraints; the [mobile skill](../../.agents/skills/mobile/SKILL.md) holds
+The Expo client for iPhone and Android. The [mobile skill](../../.agents/skills/mobile/SKILL.md) holds
 builds, installs and device tests. Expo Go cannot supply this app's native modules or OAuth scheme,
 so use a custom client.
 

@@ -19,8 +19,9 @@ export interface ComputerFacts {
 }
 
 export async function readComputerFacts(
-  bridge: OpensteerDesktopBridge,
+  bridge: Pick<OpensteerDesktopBridge, "cancelHostRequest">,
   computer: DeploymentAccessDeployment,
+  fetch?: typeof globalThis.fetch,
 ): Promise<ComputerFacts> {
   const rpc = createHttpHostApiClient({
     baseUrl: new URL(computer.canonicalOrigin),
@@ -28,6 +29,7 @@ export async function readComputerFacts(
       bridge,
       computer.canonicalOrigin,
       DeploymentIdSchema.parse(computer.id),
+      fetch,
     ),
     kind: "personal",
     onAuthenticationRequired: () => undefined,
@@ -44,7 +46,12 @@ export async function readComputerFacts(
       .map(async (link) => {
         const team = createHttpHostApiClient({
           baseUrl: new URL(link.origin),
-          fetch: createDesktopHostFetch(bridge, link.origin, DeploymentIdSchema.parse(link.teamId)),
+          fetch: createDesktopHostFetch(
+            bridge,
+            link.origin,
+            DeploymentIdSchema.parse(link.teamId),
+            fetch,
+          ),
           kind: "team",
           onAuthenticationRequired: () => undefined,
         });

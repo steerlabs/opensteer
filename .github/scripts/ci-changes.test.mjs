@@ -389,7 +389,7 @@ test("real Windows and Android selection follow their own sources on PRs", () =>
     assert.equal(windows(file, "pull_request"), false, file);
     assert.equal(windows(file, "push"), true, file);
   }
-  assert.equal(windows("docs/testing.md", "push"), false);
+  assert.equal(windows("docs/releases.md", "push"), false);
   const android = (file, event) => real([file], event).lanes.android;
   for (const file of [
     "apps/agent-phone/app/src/main/Phone.kt",

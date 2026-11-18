@@ -1,11 +1,11 @@
 import {
   ClientOperationError,
   classifyClientFailure,
+  hostUnanswered,
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
 } from "@opensteer/client/connections";
 import {
-  HostClientRequestError,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -89,16 +89,6 @@ export function fileTeamIntentStore(
 }
 
 /**
- * Whether a failed call to the person's own Opensteer means it is out of reach
- * (their agent connects later) rather than that it refused.
- */
-export function personalUnreachable(error: unknown): boolean {
-  if (error instanceof HostClientRequestError)
-    return error.code === "timeout" || error.code === "runner_offline" || error.status >= 500;
-  return classifyClientFailure(error).classification === "transient";
-}
-
-/**
  * The person's own Opensteer that runs their agent: the computer this phone is
  * showing. Any other computer, or this one while it doesn't answer, is offline
  * for now; the coordinator tries again with a fresh code.
@@ -113,7 +103,9 @@ export function mobilePersonalTeamLinks(
       try {
         return { kind: "joined", link: await new PersonalTeamLinks(host.rpc).join(offer) };
       } catch (error) {
-        if (personalUnreachable(error)) return { kind: "offline" };
+        // Out of reach for now, so their agent connects later. A refusal or a fault it
+        // answers, even that it can't reach the team, is reported.
+        if (hostUnanswered(classifyClientFailure(error))) return { kind: "offline" };
         throw error;
       }
     },

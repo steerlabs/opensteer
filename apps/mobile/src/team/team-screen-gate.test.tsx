@@ -94,6 +94,7 @@ const states: readonly TeamState[] = [
   "loading",
   "live",
   "offline",
+  "failed",
   "update-app",
   "update-server",
   "removed",
@@ -102,6 +103,7 @@ const states: readonly TeamState[] = [
 it.each([
   ...states.map((state) => ({ state, loaded: false })),
   { state: "offline" as const, loaded: true },
+  { state: "failed" as const, loaded: true },
 ])("presents the distinct $state recovery branch (loaded: $loaded)", async ({ state, loaded }) => {
   const snapshot = {
     bootstrap: loaded ? { can: {} } : null,
@@ -129,10 +131,11 @@ it.each([
       expect(host.querySelector("[data-connecting]")?.textContent).toContain("Connecting to Acme");
     else {
       expect(host.querySelector("[data-connecting]")).toBeNull();
+      if (state === "failed") expect(host.textContent).toContain("Couldn't open Acme");
       const label =
         state === "signed-out"
           ? "Sign in"
-          : state === "offline" || state === "update-server"
+          : state === "offline" || state === "failed" || state === "update-server"
             ? "Try again"
             : state === "update-app"
               ? "Update"
@@ -143,7 +146,7 @@ it.each([
       expect(action).toBeTruthy();
       await act(async () => action.click());
       expect(
-        state === "signed-out" || state === "offline" || state === "update-server"
+        state === "signed-out" || state === "offline" || state === "failed" || state === "update-server"
           ? h.select
           : state === "update-app"
             ? h.openURL

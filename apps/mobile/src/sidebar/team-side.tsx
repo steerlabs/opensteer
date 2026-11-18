@@ -166,6 +166,10 @@ function noticeFor(team: MobileTeam): {
         detail: "Your own tasks still work.",
         action: "retry",
       };
+    case "failed": {
+      const copy = presentClientIssue({ code: "open-failed", name: team.name, target: "team" });
+      return { title: copy.title, detail: null, action: "retry" };
+    }
     case "signed-out":
       return {
         title: `Sign in to ${team.name}`,

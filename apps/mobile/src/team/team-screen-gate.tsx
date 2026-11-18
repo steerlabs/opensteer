@@ -67,7 +67,10 @@ function AccountTeamScreen({
 }): ReactNode {
   const { team, snapshot } = useTeamSession(teamId);
   const state = team?.state;
-  if ((state === "live" || state === "offline" || state === "loading") && snapshot.bootstrap)
+  if (
+    (state === "live" || state === "offline" || state === "failed" || state === "loading") &&
+    snapshot.bootstrap
+  )
     return team ? (
       <TeamReferenceProvider client={team.session} origin={team.origin} teamId={teamId}>
         {children}
@@ -132,11 +135,13 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
         ? { code: state }
         : state === "signed-out"
           ? { code: "sign-in" }
-          : live?.showInterruption
-            ? live.issue
-            : state === "offline"
-              ? { code: "connection", reason: "unreachable" }
-              : null;
+          : state === "failed"
+            ? { code: "open-failed" }
+            : live?.showInterruption
+              ? live.issue
+              : state === "offline" && connection === null
+                ? { code: "connection", reason: "unreachable" }
+                : null;
   const copy =
     state === "removed"
       ? presentClientIssue({ code: "access-lost", target: "team", ...(name ? { name } : {}) })
@@ -159,12 +164,12 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
         }
       : copy.action === "update"
         ? { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) }
-        : issue.code === "connection" || issue.code === "update-server"
+        : copy.action === "retry" || issue.code === "connection" || issue.code === "update-server"
           ? {
               label: clientIssueActions.tryAgain,
               busy,
               onPress:
-                connection === null
+                connection === null || state === "failed"
                   ? attempt(() => teams.select(teamId))
                   : () => connection.retry(),
             }
@@ -182,7 +187,9 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
           ? issue.reason === "offline"
             ? "offline"
             : "computer"
-          : issue.code === "update-app" || issue.code === "update-server"
+          : issue.code === "open-failed"
+            ? "computer"
+            : issue.code === "update-app" || issue.code === "update-server"
             ? "update"
             : "signed-out"
       }

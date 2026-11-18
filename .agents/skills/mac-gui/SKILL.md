@@ -6,8 +6,6 @@ description: Use when running or diagnosing macOS GUI or Electron journeys in di
 # Mac GUI
 
 Procedures for anything that drives a macOS screen, and for Mac app control.
-[GUI test VMs](../../../docs/testing.md#gui-test-vms) and
-[Computer use](../../../docs/computer-use.md) hold the constraints.
 
 ## Safety rules
 

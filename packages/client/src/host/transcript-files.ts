@@ -1,4 +1,4 @@
-import { OpensteerError, ThreadIdSchema } from "@opensteer/core";
+import { ThreadIdSchema } from "@opensteer/core";
 import {
   FileSourceSchema,
   FileResourceSchema,
@@ -11,17 +11,20 @@ import {
 } from "@opensteer/protocol";
 import type { ReferenceReadPorts } from "../references/contracts.js";
 import type { AssetUrlStore } from "./asset-urls.js";
-import { HostClientRequestError } from "./client.js";
-import { HostTransportError } from "../connections/host-transport-error.js";
+import {
+  classifyClientFailure,
+  clientEndpointUnavailable,
+  isMissingClientResource,
+} from "../connections/operation-error.js";
 
 export type OpenTranscriptFile = Extract<TranscriptFileOpen, { status: "ok" }>;
 export type TranscriptFileState =
   | TranscriptFileOpen
-  | { readonly status: "offline"; readonly cached: OpenTranscriptFile | null }
+  | { readonly status: "unreachable"; readonly cached: OpenTranscriptFile | null }
   | { readonly status: "failed" };
 export type TranscriptFileDownload =
   | ({ readonly status: "ok" } & TranscriptFileContent)
-  | { readonly status: "unavailable" | "offline" | "failed" };
+  | { readonly status: "unavailable" | "unreachable" | "failed" };
 export type TranscriptFileOriginal =
   | {
       readonly status: "ok";
@@ -29,7 +32,7 @@ export type TranscriptFileOriginal =
       readonly mediaType: string;
       readonly bytes: Uint8Array;
     }
-  | { readonly status: "unavailable" | "offline" | "failed" };
+  | { readonly status: "unavailable" | "unreachable" | "failed" };
 interface Operation<T> {
   readonly controller: AbortController;
   readonly promise: Promise<T>;
@@ -40,26 +43,6 @@ function cancelled() {
   const error = new Error("File view ended");
   error.name = "AbortError";
   return error;
-}
-function isOffline(error: unknown): boolean {
-  return (
-    error instanceof TypeError ||
-    (error instanceof HostClientRequestError &&
-      (error.reason === "transport-unreachable" ||
-        error.reason === "transport-timed-out" ||
-        error.code === "runner_offline" ||
-        error.code === "timeout")) ||
-    (error instanceof HostTransportError &&
-      (error.code === "unreachable" || error.code === "timed-out")) ||
-    (error instanceof OpensteerError &&
-      (error.code === "runner_offline" || error.code === "timeout"))
-  );
-}
-function isUnavailable(error: unknown): boolean {
-  return (
-    (error instanceof HostClientRequestError && (error.status === 403 || error.status === 404)) ||
-    (error instanceof OpensteerError && (error.code === "forbidden" || error.code === "not_found"))
-  );
 }
 
 export interface TranscriptFileImages {
@@ -134,22 +117,19 @@ export class TranscriptFileController {
         return value;
       } catch (error) {
         this.#assertCurrent(controller, generation);
-        if (isUnavailable(error)) {
+        const failure = classifyClientFailure(error);
+        if (isMissingClientResource(failure)) {
           this.#forget(key);
           return { status: "unavailable" };
         }
-        if (
-          (error instanceof OpensteerError && error.code === "unauthorized") ||
-          (error instanceof HostClientRequestError && error.status === 401)
-        )
-          throw error;
-        if (isOffline(error)) {
+        if (failure.code === "unauthorized" || failure.kind === "cancelled") throw error;
+        if (clientEndpointUnavailable(failure)) {
           const cached = this.#cache.get(key);
           if (cached) {
             this.#cache.delete(key);
             this.#cache.set(key, cached);
           }
-          return { status: "offline", cached: cached?.value ?? null };
+          return { status: "unreachable", cached: cached?.value ?? null };
         }
         return { status: "failed" };
       }
@@ -174,18 +154,15 @@ export class TranscriptFileController {
         return { status: "ok", ...content };
       } catch (error) {
         this.#assertCurrent(controller, generation);
-        if (
-          (error instanceof OpensteerError && error.code === "unauthorized") ||
-          (error instanceof HostClientRequestError && error.status === 401)
-        )
-          throw error;
-        if (isUnavailable(error)) {
+        const failure = classifyClientFailure(error);
+        if (failure.code === "unauthorized" || failure.kind === "cancelled") throw error;
+        if (isMissingClientResource(failure)) {
           for (const [key, cached] of this.#cache)
             if (JSON.stringify(cached.value.resource) === JSON.stringify(input.resource))
               this.#forget(key);
           return { status: "unavailable" };
         }
-        return { status: isOffline(error) ? "offline" : "failed" };
+        return { status: clientEndpointUnavailable(failure) ? "unreachable" : "failed" };
       }
     });
   }
@@ -196,8 +173,7 @@ export class TranscriptFileController {
     signal?: AbortSignal,
   ): Promise<TranscriptFileOriginal> {
     const opened = await this.open(threadId, source, signal);
-    if (opened.status !== "ok")
-      return { status: opened.status === "unavailable" ? "unavailable" : opened.status };
+    if (opened.status !== "ok") return { status: opened.status };
     const content = await this.download(threadId, opened.resource, signal);
     if (content.status !== "ok") return content;
     return { status: "ok", name: opened.name, mediaType: opened.mediaType, bytes: content.bytes };

@@ -5,8 +5,7 @@ description: Use when diagnosing PostgreSQL integration test failures, containme
 
 # Testing
 
-Test infrastructure procedures. [AGENTS.md](../../../AGENTS.md#verifying) holds the rules and
-[Testing](../../../docs/testing.md) the traps. Report commands run and checks skipped.
+Test infrastructure procedures. Report commands run and checks skipped.
 
 ## Safety rules
 

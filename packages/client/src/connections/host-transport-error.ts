@@ -26,6 +26,19 @@ const details = {
   },
 } as const;
 
+/** A gateway can answer for an unreachable Host, including Connect's tunnel (530). */
+export function isGatewayFailure(status: number): boolean {
+  return status === 502 || status === 503 || status === 504 || status === 530;
+}
+
+/** The request pool is full and the request was never sent. */
+export class HostCapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HostCapacityError";
+  }
+}
+
 /** The legacy code remains available when a peer cannot carry the observed failure. */
 export class HostTransportError extends ClientOperationError {
   readonly code: HostTransportErrorCode;

@@ -18,6 +18,8 @@ const rawPresenters = new Set([
   "clientPublicDetail",
   "operationDetail",
   "safeMessage",
+  "operationFailure",
+  "failureNotice",
 ]);
 
 /** Failure classes a screen would only import to branch on, or print, a raw failure. */
@@ -484,6 +486,7 @@ describe("client feedback boundary", () => {
           "const words = reason instanceof Error && reason.message ? reason.message : `No.`;",
           'import { presentConnectionGate } from "@opensteer/client/feedback";',
           'import { presentConnectionStarting as starting } from "@opensteer/client/feedback";',
+          'import { failureNotice as notice, operationFailure } from "@opensteer/client/host";',
           "try { load(); } catch (error) { if (error instanceof Error) setError(error.message); }",
           "const view = <p>{thrown instanceof Error && <b>{thrown.message}</b>}</p>;",
         ].join("\n"),
@@ -496,6 +499,8 @@ describe("client feedback boundary", () => {
       "raw-presenter safeMessage",
       "connection-notice presentConnectionGate",
       "connection-notice presentConnectionStarting",
+      "raw-presenter failureNotice",
+      "raw-presenter operationFailure",
       "raw-presenter presentActionFailure",
       "message-unwrap result.error.message",
       "message-fallback failure.message",

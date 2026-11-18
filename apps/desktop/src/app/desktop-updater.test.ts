@@ -15,9 +15,14 @@ const mocks = await vi.hoisted(async () => {
       logger: null,
     }),
     native: new EventEmitter(),
+    power: new EventEmitter(),
   };
 });
-vi.mock("electron", () => ({ app: mocks.app, autoUpdater: mocks.native }));
+vi.mock("electron", () => ({
+  app: mocks.app,
+  autoUpdater: mocks.native,
+  powerMonitor: mocks.power,
+}));
 vi.mock("electron-updater", () => ({ autoUpdater: mocks.updater }));
 import { AppUpdater } from "electron-updater/out/AppUpdater.js";
 import {
@@ -41,6 +46,93 @@ afterEach(() => {
   mocks.updater.downloadUpdate.mockReset();
   mocks.updater.removeAllListeners();
   mocks.native.removeAllListeners();
+  mocks.power.removeAllListeners();
+});
+
+it("checks every four hours and only checks on resume when the last attempt is stale", async () => {
+  vi.useFakeTimers();
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  const controller = new AbortController();
+  const interval = 4 * 60 * 60_000;
+  mocks.updater.checkForUpdates.mockResolvedValue(current);
+  updater.start(controller.signal);
+  try {
+    await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(interval - 1);
+    mocks.power.emit("resume");
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    await updater.check();
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(3);
+
+    // Wall time advances while the suspended process's timers do not.
+    vi.setSystemTime(Date.now() + interval - 1);
+    mocks.power.emit("resume");
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(Date.now() + 1);
+    mocks.power.emit("resume");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+    mocks.power.emit("resume");
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  } finally {
+    controller.abort();
+  }
+  expect(mocks.power.listenerCount("resume")).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each([false, true])(
+  "checks after a resume during a failed download unless a queued manual check satisfies it (%s)",
+  async (manualCheck) => {
+    vi.useFakeTimers();
+    const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+    const controller = new AbortController();
+    const transfer = Promise.withResolvers<string[]>();
+    mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.397"));
+    mocks.updater.downloadUpdate.mockReturnValue(transfer.promise);
+    updater.start(controller.signal);
+    try {
+      await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+      const download = updater.download();
+      expect(updater.state().status).toBe("downloading");
+      vi.setSystemTime(Date.now() + 5 * 60 * 60_000);
+      mocks.power.emit("resume");
+      mocks.power.emit("resume");
+      expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+      const manual = manualCheck ? updater.check() : undefined;
+      transfer.reject(new Error("offline"));
+      await download;
+      await manual;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    } finally {
+      controller.abort();
+    }
+  },
+);
+
+it("spaces checks after a large backward clock adjustment", async () => {
+  vi.useFakeTimers();
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  const controller = new AbortController();
+  const schedule = vi.spyOn(globalThis, "setTimeout");
+  const interval = 4 * 60 * 60_000;
+  mocks.updater.checkForUpdates.mockResolvedValue(current);
+  updater.start(controller.signal);
+  try {
+    await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+    vi.setSystemTime(Date.now() - 4_000_000_000);
+    schedule.mockClear();
+    await vi.advanceTimersByTimeAsync(interval);
+    expect(schedule.mock.calls.some(([, delay]) => (delay ?? 0) > interval)).toBe(false);
+    await vi.advanceTimersByTimeAsync(interval);
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  } finally {
+    controller.abort();
+  }
 });
 
 it("sets the channel before refusing downgrades, and leaves downloading to the person", () => {

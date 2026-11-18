@@ -10,7 +10,7 @@ import {
   HostedTeamViewSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opensteer/client/auth";
-import { AccountRequestError } from "@opensteer/client/connections";
+import { AccountRequestError, classifyClientFailure, hostUnanswered } from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
   PersonalTeamLinks,
@@ -110,7 +110,6 @@ export function desktopTeamSessions(
     if (!origin) throw new Error("Open the team on this computer first.");
     const client = createHttpHostApiClient({
       baseUrl: new URL(origin),
-      bufferedResponses: true,
       fetch: (url, init) =>
         createDesktopHostFetch(
           bridge,
@@ -204,11 +203,12 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
   const links = new PersonalTeamLinks(hostClient.rpc);
   return {
     join: async (_personal, offer) => {
-      if (hostClient.getSnapshot().connection !== "connected") return { kind: "offline" };
       try {
         return { kind: "joined", link: await links.join(offer) };
       } catch (error) {
-        if (error instanceof TypeError) return { kind: "offline" };
+        // Only no answer from this Opensteer is it being offline; a refusal it sends, even
+        // that it can't reach the team, is reported.
+        if (hostUnanswered(classifyClientFailure(error))) return { kind: "offline" };
         throw error;
       }
     },

@@ -59,8 +59,7 @@ interface Session {
 }
 
 /**
- * The MCP servers this computer runs for its Deployment
- * (`docs/computers.md`, "MCP servers on a computer").
+ * The MCP servers this computer runs for its Deployment.
  *
  * The Host is each server's MCP client; this carries the JSON-RPC messages of
  * one session to and from the program it started — or the server on its own
