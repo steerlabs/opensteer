@@ -30,6 +30,7 @@ import {
   validClaims,
   withoutTitleSamples,
 } from "../test-support/fakes.js";
+import { BrowserPaintTimeoutError } from "./backend.js";
 import { BrowserController } from "./controller.js";
 import { HostSignIns } from "./host-sign-ins.js";
 import { SessionFiles } from "./session-files.js";
@@ -2268,6 +2269,129 @@ describe("BrowserController", () => {
     await controller.close();
     await ledger.close();
   });
+
+  it("keeps the stream subscribed after a paint timeout and starts on a new capture", async () => {
+    let capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
+    const listeners = new Set<() => void>();
+    const lateFrame = Promise.withResolvers<void>();
+    const settleRendering = vi
+      .fn()
+      .mockRejectedValueOnce(new BrowserPaintTimeoutError())
+      .mockReturnValue(lateFrame.promise);
+    const releaseRendering = vi.fn();
+    Object.assign(page.cdpSession, { retainRendering: () => releaseRendering });
+    Object.assign(page, {
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      settleRendering,
+      applyGeometry: async () => undefined,
+    });
+    const controller = createController();
+    try {
+      await controller.start();
+      await controller.handle({ type: "stream.subscribe", captureRegion: true });
+      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(0);
+      expect(releaseRendering).toHaveBeenCalledOnce();
+      capture = { ...capture, revision: 2 };
+      for (const listener of listeners) listener();
+      lateFrame.resolve();
+      await vi.waitFor(() => expect(commandsNamed("Page.startScreencast", page)).toHaveLength(1), {
+        timeout: 1_000,
+      });
+      page.cdpSession.emit("Page.screencastFrame", {
+        sessionId: 1,
+        data: jpeg(1280, 720).toString("base64"),
+        metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      });
+      await flushMicrotasks();
+      expect(sink.frames).toHaveLength(1);
+      expect(sink.messages.some((message) => message.type === "browser.error")).toBe(false);
+    } finally {
+      lateFrame.resolve();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it.each(["recovers", "unsubscribes"] as const)(
+    "%s during paint retry with the same loaded page and geometry",
+    async (outcome) => {
+      const capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
+      const timeout = new BrowserPaintTimeoutError();
+      const settleRendering = vi
+        .fn()
+        .mockRejectedValueOnce(timeout)
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValue(undefined);
+      let holds = 0;
+      const retainRendering = vi.fn(() => {
+        holds++;
+        return () => holds--;
+      });
+      Object.assign(page.cdpSession, { retainRendering });
+      Object.assign(page, {
+        capture: { read: () => capture, subscribe: () => () => undefined },
+        settleRendering,
+        applyGeometry: async () => undefined,
+      });
+      const controller = createController();
+      await controller.start();
+      const surfaceId = activeSurfaceId();
+      const { geometryRevision, loading } = ledger.binding(surfaceId)!.surface;
+      expect(loading).not.toBe(true);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await controller.handle({ type: "stream.subscribe", captureRegion: true });
+        expect(holds).toBe(0);
+        expect(commandsNamed("Page.startScreencast", page)).toHaveLength(0);
+
+        if (outcome === "unsubscribes") {
+          expect(vi.getTimerCount()).toBe(1);
+          await controller.handle({ type: "stream.unsubscribe" });
+          expect(vi.getTimerCount()).toBe(0);
+          await vi.advanceTimersByTimeAsync(30_000);
+          expect(retainRendering).toHaveBeenCalledOnce();
+          expect(holds).toBe(0);
+          expect(commandsNamed("Page.startScreencast", page)).toHaveLength(0);
+          return;
+        }
+
+        await vi.advanceTimersByTimeAsync(999);
+        expect(settleRendering).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settleRendering).toHaveBeenCalledTimes(2);
+        expect(holds).toBe(0);
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(commandsNamed("Page.startScreencast", page)).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(commandsNamed("Page.startScreencast", page)).toHaveLength(1);
+        expect(ledger.binding(surfaceId)?.surface.geometryRevision).toBe(geometryRevision);
+        expect(ledger.binding(surfaceId)?.surface.loading).toBe(loading);
+        expect(retainRendering).toHaveBeenCalledTimes(3);
+        expect(holds).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+        page.cdpSession.emit("Page.screencastFrame", {
+          sessionId: 1,
+          data: jpeg(1280, 720).toString("base64"),
+          metadata: { deviceWidth: 1280, deviceHeight: 720 },
+        });
+        await flushMicrotasks();
+        expect(sink.frames).toHaveLength(1);
+        await controller.handle({ type: "stream.unsubscribe" });
+        expect(holds).toBe(0);
+      } finally {
+        await controller.close();
+        await ledger.close();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("returns from native startup without a descriptor and restarts when it is published", async () => {
     let capture: { width: number; height: number; rasterScale: number; revision: number } | null =

@@ -1,5 +1,6 @@
 import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
+import type { BrowserRendererUsage } from "./backend.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
 const quietMs = 10_000;
@@ -15,6 +16,22 @@ const budgetReleaseShare = 0.85;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
+const rendererSampleMs = 30_000;
+const pressureScanMs = 1_000;
+const rendererSettleMs = 3_000;
+const ineffectiveReclaimsBeforeBackoff = 3;
+const minimumReclaimBytes = 16 * 1024 ** 2;
+const reportMemoryChangeBytes = 64 * 1024 ** 2;
+
+export interface TabSleepPass {
+  readonly livePages: number;
+  readonly rendererProcesses: number;
+  readonly rendererResidentBytes: number | null;
+  readonly unassignedRendererProcesses: number;
+  readonly underPressure: 0 | 1;
+  readonly attempted: number;
+  readonly slept: number;
+}
 
 export interface SleepHost {
   readonly key: string;
@@ -29,6 +46,8 @@ interface TabSleeperOptions {
   readonly hostCost?: "process" | "partition" | undefined;
   readonly hosts?: () => readonly SleepHost[];
   readonly retireHost?: (key: string) => Promise<void>;
+  readonly rendererUsage?: (() => BrowserRendererUsage) | undefined;
+  readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
 }
 
 interface SleepSession {
@@ -49,6 +68,13 @@ export class TabSleeper {
   private readonly nextProbe = new WeakMap<TabRecord, number>();
   private running = false;
   private closed = false;
+  private rendererUsage: BrowserRendererUsage | null = null;
+  private nextRendererSample = 0;
+  private declined = new WeakSet<TabRecord>();
+  private reclaimFrom: { usage: BrowserRendererUsage; settledAt: number } | null = null;
+  private ineffectiveReclaims = 0;
+  private pressureBackoffUntil = 0;
+  private lastReportedPass: TabSleepPass | null = null;
 
   private releasing = false;
   private readonly options: TabSleeperOptions;
@@ -81,7 +107,8 @@ export class TabSleeper {
     );
   }
   private overBudget(pendingPages = 0): boolean {
-    const estimate = this.estimate() - pendingPages * pageEstimateBytes;
+    const estimate =
+      this.rendererUsage?.bytes ?? this.estimate() - pendingPages * pageEstimateBytes;
     const budget = this.budget();
     if (estimate > budget) this.releasing = true;
     if (estimate <= budget * budgetReleaseShare) this.releasing = false;
@@ -256,13 +283,14 @@ export class TabSleeper {
     if (this.closed || this.running) return;
     this.trimRestore();
     const now = Date.now();
-    const budget = this.overBudget();
+    const budget = !this.options.rendererUsage && this.overBudget();
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
       const cutoff = this.readCutoff(session);
       for (const record of session.ledger.policyRecords()) {
         if (!record.live) continue;
+        if (this.options.rendererUsage) earliest = Math.min(earliest, this.nextRendererSample);
         const reason = this.blocked(id, record, now, links);
         if (reason && reason !== "quiet") continue;
         earliest = Math.min(
@@ -286,35 +314,114 @@ export class TabSleeper {
     );
     this.timer.unref();
   }
+  private sampleRenderers(): void {
+    const measure = this.options.rendererUsage;
+    if (!measure) return;
+    const now = Date.now();
+    this.nextRendererSample = now + rendererSampleMs;
+    const usage = measure();
+    this.rendererUsage = usage;
+    if (!this.overBudget()) {
+      this.reclaimFrom = null;
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = 0;
+      return;
+    }
+    const reclaim = this.reclaimFrom;
+    if (!reclaim || now < reclaim.settledAt) return;
+    this.reclaimFrom = null;
+    if (
+      usage.processes < reclaim.usage.processes ||
+      (usage.bytes !== null &&
+        reclaim.usage.bytes !== null &&
+        reclaim.usage.bytes - usage.bytes >= minimumReclaimBytes)
+    ) {
+      this.ineffectiveReclaims = 0;
+    } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = now + rendererSampleMs;
+    }
+  }
+
+  private reportPass(pass: TabSleepPass): void {
+    const last = this.lastReportedPass;
+    if (
+      last &&
+      !pass.slept &&
+      last.livePages === pass.livePages &&
+      last.underPressure === pass.underPressure &&
+      !this.countChanged(last.rendererProcesses, pass.rendererProcesses) &&
+      !this.countChanged(last.unassignedRendererProcesses, pass.unassignedRendererProcesses) &&
+      (last.rendererResidentBytes === pass.rendererResidentBytes ||
+        (last.rendererResidentBytes !== null &&
+          pass.rendererResidentBytes !== null &&
+          Math.abs(last.rendererResidentBytes - pass.rendererResidentBytes) <
+            Math.max(reportMemoryChangeBytes, last.rendererResidentBytes / 10)))
+    )
+      return;
+    this.lastReportedPass = pass;
+    this.options.onPass?.(pass);
+  }
+
+  private countChanged(previous: number, next: number): boolean {
+    return Math.abs(previous - next) >= Math.max(1, Math.ceil(previous / 10));
+  }
+
   private async pass(): Promise<void> {
     this.running = true;
     let attempted = 0;
+    let slept = 0;
+    let livePages = 0;
     const pending = new Set<Promise<void>>();
     try {
+      this.sampleRenderers();
       const candidates = [...this.sessions].flatMap(([id, session]) =>
         [...session.ledger.policyRecords()]
           .filter((record) => record.live)
           .map((record) => ({ id, session, record })),
       );
+      livePages = candidates.length;
       candidates.sort(
         (a, b) =>
+          Number(this.declined.has(a.record)) - Number(this.declined.has(b.record)) ||
           this.category(a.session, a.record) - this.category(b.session, b.record) ||
           a.record.usedAt - b.record.usedAt,
       );
       for (const { id, session, record } of candidates) {
         if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
+        const deadline = this.deadline(session, record);
+        if (this.rendererUsage && deadline > Date.now()) {
+          if (
+            !this.releasing ||
+            Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
+          )
+            continue;
+          // Only a successful sleep can change the measured pressure.
+          if (pending.size) await Promise.all(pending);
+          if (this.closed) break;
+        }
         if (
           this.sessions.get(id) !== session ||
           (this.nextProbe.get(record) ?? 0) > Date.now() ||
           this.blocked(id, record, Date.now())
         )
           continue;
-        if (this.deadline(session, record) > Date.now() && !this.overBudget(pending.size)) continue;
+        if (
+          deadline > Date.now() &&
+          // A page can share its process, so measure again before asking another
+          // page to sleep under pressure.
+          ((this.rendererUsage && slept > 0) || !this.overBudget(pending.size))
+        )
+          continue;
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
-            if (!committed) this.nextProbe.set(record, Date.now() + quietMs);
+            if (committed) slept++;
+            else {
+              this.declined.add(record);
+              this.nextProbe.set(record, Date.now() + quietMs);
+            }
             this.trimRestore();
           })
           .finally(() => pending.delete(sleeping));
@@ -330,7 +437,29 @@ export class TabSleeper {
       }
     } finally {
       this.running = false;
-      this.poke(attempted >= sleepsPerPass ? 1_000 : 0);
+      if (attempted < sleepsPerPass) this.declined = new WeakSet();
+      if (this.rendererUsage && this.releasing) {
+        const now = Date.now();
+        if (slept > 0) {
+          this.reclaimFrom ??= { usage: this.rendererUsage, settledAt: now + rendererSettleMs };
+          this.reclaimFrom.settledAt = now + rendererSettleMs;
+        }
+        if (attempted >= sleepsPerPass)
+          this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
+        if (this.reclaimFrom)
+          this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
+      }
+      this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
+      if (this.options.onPass)
+        this.reportPass({
+          livePages,
+          rendererProcesses: this.rendererUsage?.processes ?? 0,
+          rendererResidentBytes: this.rendererUsage?.bytes ?? null,
+          unassignedRendererProcesses: this.rendererUsage?.unassignedProcesses ?? 0,
+          underPressure: this.releasing ? 1 : 0,
+          attempted,
+          slept,
+        });
     }
   }
 

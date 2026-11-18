@@ -4,8 +4,9 @@ import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { BaseWindow } from "electron";
+import { app, BaseWindow, session, webContents } from "electron";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -43,15 +44,19 @@ const electron = vi.hoisted(() => ({
   views: [] as Array<{
     options: { webPreferences?: { focusOnNavigation?: boolean } };
     webContents: {
+      backgroundThrottling: boolean;
       close: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
       forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
       loadURL: ReturnType<typeof vi.fn>;
       getURL: ReturnType<typeof vi.fn<() => string>>;
       isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
       beginFrameSubscription: ReturnType<typeof vi.fn>;
+      endFrameSubscription: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
       setWindowOpenHandler: ReturnType<typeof vi.fn>;
       on: ReturnType<typeof vi.fn>;
+      off: ReturnType<typeof vi.fn>;
       once: ReturnType<typeof vi.fn>;
       debugger: {
         attach: ReturnType<typeof vi.fn>;
@@ -71,6 +76,7 @@ const electron = vi.hoisted(() => ({
 vi.mock("electron", () => {
   class MockWebContents {
     readonly id = electron.views.length + 1;
+    backgroundThrottling = true;
     readonly navigationHistory = {
       restore: vi.fn(async () => electron.restore?.()),
       getAllEntries: vi.fn(() => [{ url: "https://restore.test/", title: "Saved" }]),
@@ -119,8 +125,10 @@ vi.mock("electron", () => {
     );
     readonly endFrameSubscription = vi.fn();
     readonly close = vi.fn(() => {
+      this.isDestroyed.mockReturnValue(true);
       for (const [event, listener] of this.once.mock.calls) if (event === "destroyed") listener();
     });
+    readonly destroy = vi.fn();
     readonly stopFindInPage = vi.fn();
     readonly getTitle = vi.fn(() => "");
     readonly getURL = vi.fn(() => "about:blank");
@@ -207,6 +215,7 @@ vi.mock("electron", () => {
   return {
     ipcMain: { on: vi.fn(), off: vi.fn() },
     app: {
+      getAppMetrics: vi.fn(() => []),
       on: vi.fn(),
       whenReady: vi.fn(async () => undefined),
       getPreferredSystemLanguages: () => ["en-US"],
@@ -223,6 +232,7 @@ vi.mock("electron", () => {
       }),
     },
     BaseWindow: MockBaseWindow,
+    webContents: { getAllWebContents: vi.fn(() => []) },
     WebContentsView: MockWebContentsView,
     screen: { getDisplayMatching: vi.fn(() => ({ scaleFactor: 1 })), on: vi.fn(), off: vi.fn() },
     session: {
@@ -251,6 +261,87 @@ const {
   electronPagePresentation,
   nativePlacement,
 } = await import("./electron-browser-launcher.js");
+
+it("attributes renderer memory to its own frame trees and keeps unassigned counts separate", async () => {
+  const launch = () =>
+    new ElectronBrowserLauncher({
+      downloads: { accept: vi.fn() },
+      pagePolicyPreloadPath: path.resolve("browser-preload.cjs"),
+    });
+  const request = (suffix: string) => {
+    const sessionId = BrowserSessionIdSchema.parse(
+      `bsn_00000000-0000-4000-8000-0000000000${suffix}`,
+    );
+    return {
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: `session:${sessionId}` as const,
+      sessionId,
+      storage: { kind: "guest" } as const,
+    };
+  };
+  const frameTree = (pids: number[]) => ({
+    framesInSubtree: pids.map((osProcessId) => ({ osProcessId, isDestroyed: () => false })),
+  });
+  const metric = (
+    pid: number,
+    workingSetSize: number,
+    type: Electron.ProcessMetric["type"] = "Tab",
+  ) => ({
+    pid,
+    type,
+    memory: { workingSetSize, peakWorkingSetSize: workingSetSize },
+    creationTime: 0,
+    cpu: { cumulativeCPUUsage: 0, percentCPUUsage: 0, idleWakeupsPerSecond: 0 },
+  });
+  const a = launch();
+  const b = launch();
+  const first = await a.launch(request("40"));
+  const firstContents = Object.assign(electron.views.at(-1)!.webContents, {
+    mainFrame: frameTree([1, 2, 2]),
+    getOSProcessId: () => 1,
+  });
+  const second = await b.launch(request("41"));
+  const secondContents = Object.assign(electron.views.at(-1)!.webContents, {
+    mainFrame: frameTree([3, 4]),
+    getOSProcessId: () => 3,
+  });
+  const product = {
+    isDestroyed: () => false,
+    mainFrame: frameTree([5, 6]),
+    getOSProcessId: () => 5,
+    session: session.defaultSession,
+  };
+  const metrics = [
+    metric(1, 200),
+    metric(2, 350),
+    metric(2, 350),
+    metric(3, 250),
+    metric(4, 125),
+    metric(5, 400),
+    metric(6, 350),
+    metric(7, 250),
+    metric(8, 500, "GPU"),
+  ];
+  const usage = (launcher: InstanceType<typeof ElectronBrowserLauncher>, sample = metrics) => {
+    vi.mocked(app.getAppMetrics).mockReturnValueOnce(sample);
+    vi.mocked(webContents.getAllWebContents).mockReturnValueOnce([
+      firstContents,
+      secondContents,
+      product,
+    ] as unknown as Electron.WebContents[]);
+    return launcher.rendererUsage();
+  };
+  try {
+    expect(usage(a)).toEqual({ processes: 2, bytes: 550 * 1024, unassignedProcesses: 1 });
+    expect(usage(b)).toEqual({ processes: 2, bytes: 375 * 1024, unassignedProcesses: 1 });
+    expect(usage(a, [metric(1, 200), metric(2, 0)])).toMatchObject({ processes: 2, bytes: null });
+    expect(usage(a, [])).toMatchObject({ bytes: null });
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+    a.close();
+    b.close();
+  }
+});
 
 it("restores a Guest page before announcing without loading a blank", async () => {
   const launcher = new ElectronBrowserLauncher({
@@ -754,6 +845,101 @@ function within(promise: Promise<unknown>): Promise<"fulfilled" | "rejected" | "
 }
 
 describe("Electron debugger teardown", () => {
+  it("waits for the native page to be destroyed even when no CDP input is pending", async () => {
+    const hub = await hubPage("44");
+    hub.contents.close.mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const settled = vi.fn();
+      const closing = hub.page.close();
+      void closing.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).not.toHaveBeenCalled();
+      expect(hub.contents.destroy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hub.contents.destroy).toHaveBeenCalledOnce();
+      expect(settled).not.toHaveBeenCalled();
+      hub.destroy();
+      await closing;
+      expect(hub.page.isClosed()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      hub.destroy();
+      await hub.browser.close();
+    }
+  });
+
+  it("retries timed-out native disposal without retaining its old destruction listener", async () => {
+    const hub = await hubPage("45");
+    const host = electron.hosts.at(-1)!;
+    const events = new EventEmitter();
+    for (const [name, listener] of hub.contents.once.mock.calls)
+      if (name === "destroyed") events.once(name, listener);
+    hub.contents.once.mockImplementation((name, listener) => events.once(name, listener));
+    hub.contents.off.mockImplementation((name, listener) => events.off(name, listener));
+    const initialListeners = events.listenerCount("destroyed");
+    hub.contents.close.mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const closing = hub.page.close();
+      expect(hub.page.close()).toBe(closing);
+      const failed = expect(closing).rejects.toThrow("wasn't destroyed");
+      await vi.advanceTimersByTimeAsync(1_500);
+      await failed;
+      expect(events.listenerCount("destroyed")).toBe(initialListeners);
+      expect(host.destroy).not.toHaveBeenCalled();
+      expect(hub.page.isClosed()).toBe(false);
+      hub.contents.close.mockImplementation(() => {
+        hub.contents.isDestroyed.mockReturnValue(true);
+        events.emit("destroyed");
+      });
+      await expect(hub.page.close()).resolves.toBeUndefined();
+      expect(host.destroy).toHaveBeenCalledOnce();
+      expect(events.listenerCount("destroyed")).toBe(0);
+    } finally {
+      hub.contents.isDestroyed.mockReturnValue(true);
+      vi.useRealTimers();
+      await hub.browser.close();
+    }
+  });
+
+  it("keeps a surviving page owned when browser teardown must be retried", async () => {
+    const hub = await hubPage("47");
+    hub.contents.close.mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const failed = expect(hub.browser.close()).rejects.toThrow("pages failed to close");
+      await vi.advanceTimersByTimeAsync(1_500);
+      await failed;
+      expect(hub.browser.context.pages()).toEqual([hub.page]);
+      hub.contents.destroy.mockImplementation(hub.destroy);
+      const retry = hub.browser.close();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(retry).resolves.toBeUndefined();
+      expect(hub.browser.context.pages()).toHaveLength(0);
+    } finally {
+      hub.destroy();
+      vi.useRealTimers();
+      await hub.browser.close();
+    }
+  });
+
+  it("force-disposes a page when the graceful native close throws", async () => {
+    const hub = await hubPage("46");
+    hub.contents.close.mockImplementation(() => {
+      throw new Error("Native close failed");
+    });
+    hub.contents.destroy.mockImplementation(hub.destroy);
+    try {
+      await expect(hub.page.close()).resolves.toBeUndefined();
+      expect(hub.page.isClosed()).toBe(true);
+      expect(hub.contents.destroy).toHaveBeenCalledOnce();
+    } finally {
+      hub.destroy();
+      await hub.browser.close();
+    }
+  });
+
   it("forces page disposal when closing never destroys a target with outstanding input", async () => {
     const hub = await hubPage("21");
     const host = electron.hosts.at(-1)!;
@@ -770,6 +956,7 @@ describe("Electron debugger teardown", () => {
       { timeout: 1_000 },
     );
     hub.contents.close.mockImplementation(() => {});
+    hub.contents.destroy.mockImplementation(hub.destroy);
     vi.useFakeTimers();
     try {
       const closing = hub.browser.close();
@@ -780,7 +967,7 @@ describe("Electron debugger teardown", () => {
       ).close();
       const settled = vi.fn();
       void closing.then(settled, settled);
-      await vi.advanceTimersByTimeAsync(1_999);
+      await vi.advanceTimersByTimeAsync(999);
       expect(settled, "concurrent close skipped in-flight page disposal").not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(settled, "browser teardown never settled").toHaveBeenCalledOnce();
@@ -790,7 +977,7 @@ describe("Electron debugger teardown", () => {
         hub.contents.forcefullyCrashRenderer,
         "teardown crashed a renderer other pages may share",
       ).not.toHaveBeenCalled();
-      expect(hub.contents.debugger.detach).toHaveBeenCalledOnce();
+      expect(hub.page.isClosed()).toBe(true);
       expect(host.destroy).toHaveBeenCalled();
       expect(hub.browser.context.isConnected?.()).toBe(false);
     } finally {
@@ -943,6 +1130,9 @@ describe("Electron debugger teardown", () => {
     const held = hub.hold("Network.enable");
     void platform.send("Network.enable").catch(() => undefined);
     await vi.waitFor(() => expect(held.replies).toHaveLength(1));
+    hub.contents.close.mockImplementation(() => {
+      setImmediate(hub.destroy);
+    });
     expect(await within(hub.page.close())).toBe("fulfilled");
     expect(hub.contents.debugger.detach).toHaveBeenCalledOnce();
   });
@@ -1127,7 +1317,9 @@ describe("Electron geometry lifecycle", () => {
     const operations: Promise<void>[] = [];
     const releaseInput = vi.fn<() => Promise<void>>(async () => undefined);
     const serialize = (operation: () => Promise<void>) => {
-      const pending = (operations.at(-1) ?? Promise.resolve()).then(operation);
+      const pending = (operations.at(-1)?.catch(() => undefined) ?? Promise.resolve()).then(
+        operation,
+      );
       operations.push(pending);
       return pending;
     };
@@ -1556,6 +1748,105 @@ describe("Electron geometry lifecycle", () => {
     unbind();
     await expect(waiting).rejects.toThrow(/canceled|closed/);
     await browser.close();
+  });
+
+  it("only composites a hidden page while a caller needs a frame", async () => {
+    const { browser, native, view, unbind } = await launch();
+    const contents = view.webContents;
+    const first = new AbortController();
+    const last = new AbortController();
+    try {
+      expect(contents.beginFrameSubscription).not.toHaveBeenCalled();
+      expect(contents.backgroundThrottling).toBe(true);
+      contents.beginFrameSubscription.mockImplementation(() => undefined);
+      const a = expect(native.waitForPaint(first.signal)).rejects.toThrow();
+      const b = expect(native.waitForPaint(last.signal)).rejects.toThrow();
+      expect(contents.beginFrameSubscription).toHaveBeenCalledTimes(1);
+      expect(contents.backgroundThrottling).toBe(false);
+      first.abort();
+      await a;
+      expect(contents.endFrameSubscription).not.toHaveBeenCalled();
+      last.abort();
+      await b;
+      expect(contents.endFrameSubscription).toHaveBeenCalledTimes(1);
+      expect(contents.backgroundThrottling).toBe(true);
+    } finally {
+      first.abort();
+      last.abort();
+      unbind();
+      await browser.close();
+    }
+  });
+
+  it.each(["without a waiter", "after the last waiter aborts"])(
+    "releases stalled hidden geometry %s and allows a new geometry write",
+    async (scenario) => {
+      const { browser, native, view, unbind, drain } = await launch();
+      const contents = view.webContents;
+      const held = Promise.withResolvers<unknown>();
+      const started = vi.fn();
+      const send = contents.debugger.sendCommand.getMockImplementation()!;
+      contents.debugger.sendCommand.mockImplementation((method, parameters) => {
+        if (method !== "Page.getLayoutMetrics") return send(method, parameters);
+        started();
+        return held.promise;
+      });
+      const signal = new AbortController();
+      vi.useFakeTimers();
+      try {
+        for (const [event, listener] of contents.on.mock.calls)
+          if (event === "did-navigate") listener();
+        const placement = drain().catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(started).toHaveBeenCalledOnce();
+        if (scenario === "after the last waiter aborts") {
+          const canceled = expect(native.waitForPaint(signal.signal)).rejects.toThrow("canceled");
+          signal.abort();
+          await canceled;
+        }
+        expect(contents.backgroundThrottling).toBe(false);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(contents.backgroundThrottling).toBe(true);
+        expect(contents.beginFrameSubscription).not.toHaveBeenCalled();
+        expect(await placement).toBeInstanceOf(Error);
+        contents.debugger.sendCommand.mockImplementation(send);
+        await native.invalidateSurface();
+        expect(native.view.getBounds()).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+        held.resolve({});
+      } finally {
+        held.resolve({});
+        unbind();
+        vi.useRealTimers();
+        await browser.close();
+      }
+    },
+  );
+
+  it("ends capture when only different-size frames arrive", async () => {
+    const { browser, native, page, view, serialize, releaseInput } = await launch(false);
+    const contents = view.webContents;
+    contents.beginFrameSubscription.mockImplementation((callback) => {
+      callback({ getSize: () => ({ width: 1, height: 1 }) });
+    });
+    const unbind = page.bindGeometry!(serialize, releaseInput);
+    vi.useFakeTimers();
+    try {
+      await page.applyGeometry!({ person: { width: 800, height: 600 }, agent: null });
+      const waiting = native.waitForPaint();
+      const settled = vi.fn();
+      void waiting.then(settled, settled);
+      const failure = expect(waiting).rejects.toThrow("paint wait timed out");
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await failure;
+      expect(contents.endFrameSubscription).toHaveBeenCalledTimes(1);
+      expect(contents.backgroundThrottling).toBe(true);
+    } finally {
+      unbind();
+      await browser.close();
+      vi.useRealTimers();
+    }
   });
 
   it("starts a live epoch for a new geometry owner after release", async () => {

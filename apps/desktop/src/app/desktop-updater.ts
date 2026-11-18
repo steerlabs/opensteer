@@ -1,4 +1,4 @@
-import { app, autoUpdater as nativeUpdater } from "electron";
+import { app, autoUpdater as nativeUpdater, powerMonitor } from "electron";
 import { autoUpdater } from "electron-updater";
 import {
   DesktopUpdateChannelSchema,
@@ -18,7 +18,7 @@ export interface DesktopUpdateAction {
 }
 
 export const desktopUpdateFirstCheckMs = 15_000;
-export const desktopUpdateCheckIntervalMs = 4 * 60_000;
+export const desktopUpdateCheckIntervalMs = 4 * 60 * 60_000;
 
 const NativeUpdateErrorSchema = z.object({
   domain: z.string().optional(),
@@ -53,6 +53,7 @@ export class DesktopUpdater {
   #state: DesktopUpdateState;
   #operation: Promise<void> | null = null;
   #stopped = false;
+  #lastCheckAt: number | null = null;
   #reservation: { owner: "local" | "remote"; done: Promise<void>; release(): void } | null = null;
   #readiness: Promise<void> | null = null;
   #staged = false;
@@ -131,18 +132,52 @@ export class DesktopUpdater {
   /** Background checks omit `checking`, and a failed one keeps the last state. */
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
-    const tick = () => {
-      if (this.#reservation || this.#operation || !this.#checkable()) return;
-      void this.#check(false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let waiting: Promise<void> | null = null;
+    const untilStale = () => {
+      if (this.#lastCheckAt === null) return 0;
+      const now = Date.now();
+      if (this.#lastCheckAt > now) this.#lastCheckAt = now;
+      return desktopUpdateCheckIntervalMs - (now - this.#lastCheckAt);
     };
-    const first = setTimeout(tick, desktopUpdateFirstCheckMs);
-    const interval = setInterval(tick, desktopUpdateCheckIntervalMs);
+    const schedule = (delay: number) => {
+      clearTimeout(timer);
+      timer = setTimeout(tick, delay);
+    };
+    const tick = () => {
+      if (signal.aborted) return;
+      const remaining = untilStale();
+      if (remaining > 0) {
+        schedule(remaining);
+        return;
+      }
+      const busy = this.#reservation?.done ?? this.#operation;
+      if (busy) {
+        clearTimeout(timer);
+        if (waiting === busy) return;
+        waiting = busy;
+        void busy.then(() => {
+          if (signal.aborted || waiting !== busy) return;
+          waiting = null;
+          // A manual check waiting on the same reservation may satisfy this one.
+          schedule(0);
+        });
+        return;
+      }
+      schedule(desktopUpdateCheckIntervalMs);
+      if (this.#checkable()) void this.#check(false);
+    };
+    schedule(desktopUpdateFirstCheckMs);
+    const resume = () => {
+      if (untilStale() <= 0) tick();
+    };
+    powerMonitor.on("resume", resume);
     signal.addEventListener(
       "abort",
       () => {
         this.#stopped = true;
-        clearTimeout(first);
-        clearInterval(interval);
+        clearTimeout(timer);
+        powerMonitor.off("resume", resume);
       },
       { once: true },
     );
@@ -349,6 +384,7 @@ export class DesktopUpdater {
   }
 
   async #performCheck(manual: boolean): Promise<void> {
+    this.#lastCheckAt = Date.now();
     if (manual)
       this.#set({ status: "checking", availableVersion: null, latestVersion: null, failed: null });
     this.#log("desktop.update.checking", {});

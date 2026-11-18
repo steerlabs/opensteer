@@ -50,6 +50,7 @@ export const darwinOnlyTests = [
   "tests/iphone-apps-wire.test.ts",
   "apps/desktop/src/computer-use/computer-use-service.test.ts",
   "apps/desktop/src/passwords/broker-client.test.ts",
+  "apps/desktop/scripts/codesign-requirement.test.ts",
 ];
 // Opt-in measurements that skip every case unless their benchmark command supplies options, so
 // integration discovery leaves them out: `pnpm bench:mobile-network` and OPENSTEER_TEAM_PERF=1.
