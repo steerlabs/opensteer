@@ -3127,7 +3127,10 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     });
     const app = await server;
+    const settings = personalFixture.store.notificationState;
+    const prior = await settings.quietTaskDaysFor(fixtureOwnerId);
     try {
+      await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: 3 });
       expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
       expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
         expect.objectContaining({
@@ -3145,6 +3148,7 @@ describe("durable harness catalogs", () => {
       expect(reconcileHarnesses).not.toHaveBeenCalled();
     } finally {
       await app.close();
+      await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: prior });
     }
   });
 
