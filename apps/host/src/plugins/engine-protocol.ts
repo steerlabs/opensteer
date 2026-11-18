@@ -1,10 +1,15 @@
 import { plugin_resources, opensteer_plugin_resource_update } from "@opensteer/agent-tools/tools";
 import { PluginAccountConsentSchema } from "@opensteer/core";
-import { PluginOAuthClientChoiceSchema } from "@opensteer/protocol";
+import {
+  PluginAccountReadinessSchema,
+  PluginOAuthClientChoiceSchema,
+  PluginResourceCategorySchema,
+} from "@opensteer/protocol";
 import { z } from "zod";
 import {
   EngineSkillCatalogSchema,
   EngineScheduleSchema,
+  EngineScheduledRunSchema,
   EngineWebhookSchema,
   EngineWorkflowSchema,
 } from "./engine-feature-schemas.js";
@@ -116,6 +121,24 @@ export const PluginSchema = PluginSummarySchema.extend({
     .catchall(JsonSchema),
 }).catchall(JsonSchema);
 export const AccountSchema = z.object({ id, provider: id, label: z.string() }).catchall(JsonSchema);
+export const EngineAccountMetadataSchema = z.object({
+  links: z.array(
+    z.strictObject({
+      requirement: id,
+      scope: z.enum(["app", "user"]),
+      account: id,
+      current: z.boolean(),
+    }),
+  ),
+  readiness: z.record(
+    z.string(),
+    z.strictObject({
+      state: PluginAccountReadinessSchema,
+      consent: ConsentSchema.nullable(),
+    }),
+  ),
+});
+export type EngineAccountMetadata = z.infer<typeof EngineAccountMetadataSchema>;
 export const VersionSchema = z.object({ id }).catchall(JsonSchema);
 const toolIndex = z
   .object({
@@ -222,17 +245,23 @@ export const operations = {
   catalogList: { input: CatalogPageInputSchema, output: CatalogPageSchema },
   catalogDetail: { input: z.strictObject({ id }), output: CatalogEntrySchema },
   list: { input: z.strictObject({}), output: z.array(PluginSummarySchema) },
-  /** The person's installed list: every plugin with its requirements and account links. */
   installed: {
-    input: z.strictObject({}),
+    input: z.strictObject({
+      plugins: z.array(id).min(1).optional(),
+      versions: z.boolean().optional(),
+    }),
     output: z.array(
       z.strictObject({
         plugin: PluginSchema,
-        links: z.array(
-          z.strictObject({ requirement: id, scope: z.enum(["app", "user"]), account: id }),
-        ),
+        ...EngineAccountMetadataSchema.shape,
+        versions: z.array(VersionSchema).optional(),
+        versionCount: z.number().int().optional(),
       }),
     ),
+  },
+  scheduleApprovals: {
+    input: plugin.extend({ cursor: id.optional() }),
+    output: z.strictObject({ runs: z.array(EngineScheduledRunSchema), next: id.nullable() }),
   },
   detail: {
     input: plugin,
@@ -240,7 +269,7 @@ export const operations = {
       plugin: PluginSchema,
       tools: toolIndex.nullable(),
       skills: EngineSkillCatalogSchema.nullable(),
-      links: z.array(object),
+      ...EngineAccountMetadataSchema.shape,
       versions: z.array(VersionSchema),
       schedules: z.array(EngineScheduleSchema),
       webhooks: z.array(EngineWebhookSchema),
@@ -636,7 +665,10 @@ const hostMessage = z.union([
   z.strictObject({ type: z.literal("elicitCancel"), id }),
 ]);
 const engineMessage = z.union([
-  z.strictObject({ type: z.literal("resourcesChanged") }),
+  z.strictObject({
+    type: z.literal("resourcesChanged"),
+    categories: z.array(PluginResourceCategorySchema).min(1).max(5),
+  }),
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
   z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
   z.strictObject({

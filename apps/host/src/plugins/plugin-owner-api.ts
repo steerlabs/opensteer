@@ -21,6 +21,8 @@ import {
   rpcSuccess,
   type HostApiHandlers,
   type HostApiServerContext,
+  type PluginChange,
+  type PluginResourceCategory,
   type PluginCommand,
   type PluginCommandResult,
   type PluginEngineStateView,
@@ -36,6 +38,7 @@ import { requireSession } from "../server/rpc-context.js";
 import {
   PluginServiceError,
   ConsentSchema,
+  type EngineAccountMetadata,
   type PluginCaller,
   type PluginConsent,
   type PluginJson,
@@ -56,6 +59,7 @@ type Service = Pick<
   | "installed"
   | "detail"
   | "detailSection"
+  | "scheduleApprovals"
   | "catalogList"
   | "catalogDetail"
   | "install"
@@ -95,7 +99,7 @@ export interface PluginOwnerApiOptions {
   readonly localTools?: (owner: UserId) => Promise<readonly LocalTool[]>;
   readonly cancelPlugin?: (owner: UserId, plugin: string) => Promise<void>;
   /** Tells the owner's clients to reread what they show. */
-  readonly changed: (owner: UserId) => void;
+  readonly changed: (owner: UserId, change?: PluginChange) => void;
 }
 
 const settingsRow = z.object({
@@ -140,7 +144,6 @@ const requirementSchema = z.object({
   cardinality: z.enum(["one", "many"]),
   definition: z.object({ name: z.string().min(1) }).passthrough(),
 });
-type Requirement = z.infer<typeof requirementSchema>;
 function requirements(plugin: { requirements: { accounts: Record<string, unknown> } }) {
   return Object.entries(plugin.requirements.accounts).flatMap(([name, value]) => {
     return [[name, requirementSchema.parse(value)] as const];
@@ -159,16 +162,19 @@ function summary(
     activeVersion: string | null;
     requirements: { accounts: Record<string, unknown>; icons?: unknown };
   },
-  links: readonly { requirement: string; scope: string }[],
+  { links, readiness }: EngineAccountMetadata,
   row: Settings | undefined,
 ): PluginSummaryView {
   const required = requirements(plugin);
   const linked = required.filter(([name, r]) =>
     links.some((link) => link.requirement === name && link.scope === r.scope),
   );
-  const missing = required.some(
-    ([name, r]) => r.cardinality === "one" && !linked.some(([linkedName]) => linkedName === name),
-  );
+  const states = Object.values(readiness).map(({ state }) => state);
+  const accountReadiness = states.includes("consent-needs-review")
+    ? "consent-needs-review"
+    : states.includes("required-but-missing")
+      ? "required-but-missing"
+      : "usable";
   return {
     id: plugin.id,
     name: plugin.name.slice(0, 240),
@@ -177,7 +183,13 @@ function summary(
     author: authorOf(row, plugin.activeVersion),
     access: row?.access ?? "all",
     activeVersion: plugin.activeVersion,
-    status: plugin.activeVersion === null ? "not-built" : missing ? "needs-account" : "ready",
+    status:
+      plugin.activeVersion === null
+        ? "not-built"
+        : accountReadiness === "usable"
+          ? "ready"
+          : "needs-account",
+    accountReadiness,
     accounts: { required: required.length, linked: linked.length },
   };
 }
@@ -393,11 +405,11 @@ export class PluginOwnerApi {
       (rows ?? []).map(({ plugin }) => ({ pluginId: plugin.id, version: plugin.activeVersion })),
     );
     return (
-      rows?.map(({ plugin, links }) =>
+      rows?.map((installed) =>
         summary(
-          plugin,
-          links,
-          settings.find((row) => row.pluginId === plugin.id),
+          installed.plugin,
+          installed,
+          settings.find((row) => row.pluginId === installed.plugin.id),
         ),
       ) ?? null
     );
@@ -432,56 +444,37 @@ export class PluginOwnerApi {
     ]);
     const row = settings.find((entry) => entry.pluginId === pluginId);
     const plugin = detail.plugin;
-    const links = each(
-      detail.links,
-      z.object({
-        requirement: z.string(),
-        scope: z.string(),
-        account: z.string(),
-        consent: z.object({ digest: z.string() }),
-      }),
-      500,
-    );
-    const requirementViews: PluginRequirementView[] = await Promise.all(
-      requirements(plugin)
-        .slice(0, 50)
-        .map(async ([name, r]: readonly [string, Requirement]) => {
-          const consent = plugin.activeVersion
-            ? await service
-                .reviewAccountLink(
-                  { plugin: pluginId, requirement: name, scope: r.scope },
-                  owner,
-                  signal,
-                )
-                .catch(() => null)
-            : null;
-          return {
-            name,
-            scope: r.scope,
-            provider: r.provider,
-            providerName: r.definition.name.slice(0, 240),
-            cardinality: r.cardinality,
-            consent,
-            links: links
-              .filter((link) => link.requirement === name && link.scope === r.scope)
-              .slice(0, 50)
-              .map((link) => {
-                const account = accounts.find((entry) => entry.id === link.account);
-                return {
-                  account: {
-                    id: link.account,
-                    provider: r.provider,
-                    label: (account?.label || link.account).slice(0, 240),
-                  },
-                  current: consent !== null && consent.digest === link.consent.digest,
-                };
-              }),
-          };
-        }),
-    );
+    const requirementViews: PluginRequirementView[] = requirements(plugin)
+      .slice(0, 50)
+      .map(([name, r]) => {
+        const readiness = detail.readiness[name]!;
+        return {
+          name,
+          scope: r.scope,
+          provider: r.provider,
+          providerName: r.definition.name.slice(0, 240),
+          cardinality: r.cardinality,
+          readiness: readiness.state,
+          consent: readiness.consent,
+          links: detail.links
+            .filter((link) => link.requirement === name && link.scope === r.scope)
+            .slice(0, 50)
+            .map((link) => {
+              const account = accounts.find((entry) => entry.id === link.account);
+              return {
+                account: {
+                  id: link.account,
+                  provider: r.provider,
+                  label: (account?.label || link.account).slice(0, 240),
+                },
+                current: link.current,
+              };
+            }),
+        };
+      });
     const { tools, skills, versions } = sections(detail, row);
     const view: InstalledPluginView = {
-      plugin: summary(plugin, links, row),
+      plugin: summary(plugin, detail, row),
       requirements: requirementViews,
       tools:
         tools && keysetPage(tools, nameKey, { scope: "", max: pluginDetailPreview.tools }).items,
@@ -531,7 +524,7 @@ export class PluginOwnerApi {
           ? "This plugin is off. Its schedules, webhooks and workflows cannot run."
           : row?.access === "read-only"
             ? "This plugin is read-only. Its schedules, webhooks and workflows cannot run."
-            : requirementViews.some((r) => r.links.some((link) => !link.current))
+            : requirementViews.some(({ readiness }) => readiness === "consent-needs-review")
               ? "Review and link the changed account declaration before this plugin can run."
               : null,
       webhookUnavailable: await this.#webhookIssue(
@@ -559,23 +552,27 @@ export class PluginOwnerApi {
   ) {
     const service = this.#options.service;
     const target = { plugin: input.pluginId, requirement: input.requirement, scope: input.scope };
-    const [consent, detail, accounts] = await Promise.all([
-      this.#call(service.reviewAccountLink(target, owner, signal)),
-      this.#call(service.detail({ plugin: input.pluginId }, owner, signal)),
+    const [[detail], accounts] = await Promise.all([
+      this.#call(service.installed({ plugins: [input.pluginId] }, owner, signal)),
       this.#call(service.accounts({}, owner, signal)),
     ]);
-    const settings = await this.#settings(userId, [
-      { pluginId: input.pluginId, version: detail.plugin.activeVersion },
-    ]);
-    const requirement = requirements(detail.plugin).find(
-      ([name, r]) => name === input.requirement && r.scope === input.scope,
-    )?.[1];
-    if (!requirement)
+    const requirement =
+      detail &&
+      requirements(detail.plugin).find(
+        ([name, r]) => name === input.requirement && r.scope === input.scope,
+      )?.[1];
+    if (!detail || !requirement)
       throw new OpensteerError({
         code: "conflict",
         reason: "plugin-consent-changed",
         message: "This plugin no longer asks for that account.",
       });
+    const consent =
+      detail.readiness[input.requirement]?.consent ??
+      (await this.#call(service.reviewAccountLink(target, owner, signal)));
+    const settings = await this.#settings(userId, [
+      { pluginId: input.pluginId, version: detail.plugin.activeVersion },
+    ]);
     const fieldSchema = z.object({
       type: z.enum(["string", "number", "integer", "boolean"]),
       title: z.string().optional(),
@@ -867,50 +864,75 @@ export class PluginOwnerApi {
       },
       "plugins.schedule.runs": async (input, context) => {
         await this.#owner(context);
-        const runs = z
-          .array(EngineScheduledRunSchema)
-          .parse(
-            await this.#call(
-              service.manage(
-                {
-                  operation: "schedules.runs",
-                  input: {
-                    app: input.pluginId,
-                    limit: pluginRunsMax,
-                    ...(input.pending ? { pending: true } : {}),
-                  },
-                },
-                owner,
-              ),
+        const [pending, history] = await Promise.all([
+          this.#call(
+            service.scheduleApprovals(
+              {
+                plugin: input.pluginId,
+                ...(input.cursor ? { cursor: input.cursor } : {}),
+              },
+              owner,
             ),
-          )
-          .slice(0, pluginRunsMax);
-        return rpcSuccess({
-          runs: await Promise.all(
-            runs.map(async (run) => {
-              let approval = null;
-              if (run.status === "awaiting-approval") {
-                const pending = EngineScheduledApprovalSchema.parse(
-                  await this.#call(
-                    service.manage(
-                      { operation: "schedules.approval", input: { run: run.id } },
-                      owner,
-                    ),
-                  ),
-                );
-                approval = { tool: pending.invocation.tool, arguments: pending.invocation.input };
-              }
-              return {
-                id: run.id,
-                schedule: run.name.slice(0, 240) || run.id,
-                status: run.status,
-                scheduledAt: iso(run.scheduledAt),
-                expiresAt: iso(run.expiresAt),
-                failure: run.failure?.slice(0, 1_000) ?? null,
-                approval,
-              };
+          ),
+          input.cursor
+            ? []
+            : this.#call(
+                service.manage(
+                  {
+                    operation: "schedules.runs",
+                    input: {
+                      app: input.pluginId,
+                      limit: pluginRunsMax,
+                      ...(input.pending ? { pending: true } : {}),
+                    },
+                  },
+                  owner,
+                ),
+              ),
+        ]);
+        const recent = z.array(EngineScheduledRunSchema).parse(history).slice(0, pluginRunsMax);
+        const approvals = new Map(
+          [...pending.runs, ...recent]
+            .filter((run) => run.status === "awaiting-approval")
+            .map((run) => [run.id, run]),
+        );
+        const invocations = new Map(
+          await Promise.all(
+            [...approvals.keys()].map(async (id) => {
+              const raw = await this.#call(
+                service
+                  .manage(
+                    {
+                      operation: "schedules.approval",
+                      input: { run: id },
+                    },
+                    owner,
+                  )
+                  .catch((error: unknown) => {
+                    if (error instanceof PluginServiceError && error.tag === "ScheduleNotFound")
+                      return null;
+                    throw error;
+                  }),
+              );
+              if (raw === null) return [id, null] as const;
+              const { invocation } = EngineScheduledApprovalSchema.parse(raw);
+              return [id, { tool: invocation.tool, arguments: invocation.input }] as const;
             }),
           ),
+        );
+        const view = (run: z.infer<typeof EngineScheduledRunSchema>) => ({
+          id: run.id,
+          schedule: run.name.slice(0, 240) || run.id,
+          status: run.status,
+          scheduledAt: iso(run.scheduledAt),
+          expiresAt: iso(run.expiresAt),
+          failure: run.failure?.slice(0, 1_000) ?? null,
+          approval: invocations.get(run.id) ?? null,
+        });
+        return rpcSuccess({
+          cursor: pending.next,
+          pending: pending.runs.filter(({ id }) => invocations.get(id)).map(view),
+          runs: recent.map(view),
         });
       },
       "plugins.workflow.runs": async (input, context) => {
@@ -925,6 +947,7 @@ export class PluginOwnerApi {
                   limit: String(pluginRunsMax),
                   live: true,
                   ...(input.workflow ? { workflow: input.workflow } : {}),
+                  ...(input.runIds ? { runIds: input.runIds } : {}),
                   ...(input.cursor ? { cursor: input.cursor } : {}),
                 },
               },
@@ -998,6 +1021,8 @@ export class PluginOwnerApi {
     const { service, settings } = this.#options;
     const creationKey = JSON.stringify([userId, command.type, command.idempotencyKey]);
     const changed = () => this.#options.changed(userId);
+    const resourceChanged = (pluginId: string, ...categories: PluginResourceCategory[]) =>
+      this.#options.changed(userId, { pluginId, categories });
     const manage = async (operation: keyof typeof ownerManagementResults, input: object) =>
       ownerManagementResults[operation].parse(
         await this.#call(
@@ -1112,11 +1137,11 @@ export class PluginOwnerApi {
           key: creationKey,
           ...(command.approvalMode ? { approvalMode: command.approvalMode } : {}),
         });
-        changed();
+        resourceChanged(command.pluginId, "schedules");
         return { type: command.type };
       case "plugins.schedule.answer":
         await manage("schedules.answer", { run: command.runId, action: command.action });
-        changed();
+        resourceChanged(command.pluginId, "scheduledRuns");
         return { type: command.type };
       case "plugins.workflow.start": {
         const run = EngineWorkflowRunSchema.parse(
@@ -1127,12 +1152,12 @@ export class PluginOwnerApi {
             key: createHash("sha256").update(creationKey).digest("hex"),
           }),
         );
-        changed();
+        resourceChanged(command.pluginId, "workflowRuns");
         return { type: command.type, runId: run.id };
       }
       case "plugins.workflow.stop":
         await manage("workflowRuns.stop", { app: command.pluginId, run: command.runId });
-        changed();
+        resourceChanged(command.pluginId, "workflowRuns");
         return { type: command.type };
       case "plugins.webhook.remove":
       case "plugins.webhook.removal.confirm":
@@ -1140,7 +1165,7 @@ export class PluginOwnerApi {
           command.type === "plugins.webhook.remove" ? "webhooks.remove" : "webhooks.confirmRemoval",
           { app: command.pluginId, subscription: command.webhookId },
         );
-        changed();
+        resourceChanged(command.pluginId, "webhooks");
         return { type: command.type };
       case "plugins.webhook.setup.complete":
         await manage("webhookSetup.complete", {
@@ -1150,7 +1175,7 @@ export class PluginOwnerApi {
           state: command.state,
           ...(command.secret ? { secret: command.secret } : {}),
         });
-        changed();
+        resourceChanged(command.pluginId, "webhooks");
         return { type: command.type };
     }
   }

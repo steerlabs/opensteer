@@ -7,6 +7,7 @@ import { z } from "zod";
 import pg from "pg";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
+import { PluginResourceCategorySchema, type PluginResourceCategory } from "@opensteer/protocol";
 import { pluginOwnerId } from "./engine-protocol.js";
 
 export type EngineDemand = { busy: boolean; dueInMs: number | null };
@@ -100,20 +101,18 @@ export const readEngineLinks = (sql: SqlClient.SqlClient, app: string) =>
 export function backgroundResourceChanges(
   database: { readonly reactivity: ReactiveStore },
   _sql: SqlClient.SqlClient,
-  notify: () => void,
+  notify: (categories: PluginResourceCategory[]) => void,
 ) {
-  const tables = new Set([
-    "scheduledRuns",
-    "workflowRuns",
-    "webhooks",
-    "webhookSources",
-    "schedules",
-  ]);
+  const tables = PluginResourceCategorySchema.options;
   return database.reactivity.changes.pipe(
     Stream.drop(1),
-    Stream.filter((change) => change.tables.some((table) => tables.has(table))),
+    Stream.filter((change) => tables.some((table) => change.tables.includes(table))),
     Stream.groupedWithin(100, "100 millis"),
-    Stream.runForEach(() => Effect.sync(notify)),
+    Stream.runForEach((changes) =>
+      Effect.sync(() =>
+        notify(tables.filter((table) => changes.some((change) => change.tables.includes(table)))),
+      ),
+    ),
   );
 }
 
@@ -123,6 +122,7 @@ const historyPage = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
   live: z.boolean().optional(),
+  runIds: z.array(z.string().min(1)).min(1).max(50).optional(),
 });
 const historyCursor = z.object({ filter: z.string(), at: z.string().min(1), id: z.string() });
 const iso = (column: string) => `to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
@@ -136,9 +136,16 @@ const live = "status not in ('complete', 'errored', 'terminated')";
 export function workflowRunPage(sql: SqlClient.SqlClient, raw: unknown) {
   return Effect.gen(function* () {
     const input = yield* Effect.try(() => historyPage.parse(raw));
-    const filter = digest(["workflows", input.app, input.workflow ?? null]);
-    const cursor = yield* readCursor(input.cursor, filter);
     const workflow = input.workflow ?? null;
+    if (input.runIds) {
+      const rows = yield* sql<WorkflowRunRow>`select ${sql.literal(workflowColumns)}
+        from plugin_engine_workflow_runs where app = ${input.app}
+          and (${workflow}::text is null or name = ${workflow})
+          and id in ${sql.in(input.runIds)} order by created_at desc, id desc`;
+      return { runs: rows.map(workflowRun), next: null };
+    }
+    const filter = digest(["workflows", input.app, workflow]);
+    const cursor = yield* readCursor(input.cursor, filter);
     const lane =
       input.live && !cursor
         ? yield* sql<WorkflowRunRow>`select ${sql.literal(workflowColumns)}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import { canRespondToRequests } from "../host/host-connection.js";
-import { readPluginWorkflowRuns } from "../plugins/index.js";
+import { pluginChangeAffects, readPluginWorkflowRuns } from "../plugins/index.js";
 import { PluginWorkflowRuns } from "../plugins/runs.js";
 
 /**
@@ -18,14 +18,16 @@ export function usePluginWorkflowRuns(
 ) {
   const runs = useMemo(
     () =>
-      new PluginWorkflowRuns((cursor) =>
-        readPluginWorkflowRuns(client, pluginId, cursor ?? undefined),
+      new PluginWorkflowRuns((cursor, ids) =>
+        readPluginWorkflowRuns(client, pluginId, cursor ?? undefined, ids),
       ),
     [client, pluginId],
   );
   useEffect(() => {
     void runs.refresh();
-    const unsubscribePlugins = client.subscribePluginsChanged(() => void runs.refresh());
+    const unsubscribePlugins = client.subscribePluginsChanged((change) => {
+      if (pluginChangeAffects(change, ["workflowRuns"], pluginId)) void runs.refresh();
+    });
     let connected = canRespondToRequests(client.getSnapshot());
     const unsubscribe = client.subscribe(() => {
       const next = canRespondToRequests(client.getSnapshot());
@@ -37,7 +39,7 @@ export function usePluginWorkflowRuns(
       unsubscribe();
       runs.dispose();
     };
-  }, [client, runs]);
+  }, [client, pluginId, runs]);
   const state = useSyncExternalStore(runs.subscribe, runs.getState, runs.getState);
   return { ...state, showMore: () => void runs.showMore(), retry: () => void runs.refresh() };
 }

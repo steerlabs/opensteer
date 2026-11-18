@@ -24,7 +24,6 @@ import {
   pluginToolsReader,
   pluginVersionsReader,
   readPlugin,
-  readPluginScheduleRuns,
   readPluginWebhookSetup,
   removePlugin,
   removePluginWebhook,
@@ -37,7 +36,12 @@ import {
   type InstalledPluginView,
   type PluginRequirementTarget,
 } from "@opensteer/client/plugins";
-import { useAppView, usePluginSection, usePluginWorkflowRuns } from "@opensteer/client/react";
+import {
+  useAppView,
+  usePluginScheduleRuns,
+  usePluginSection,
+  usePluginWorkflowRuns,
+} from "@opensteer/client/react";
 import { AppFrame, AppLoading, AppLoadFailure, useAppTheme } from "../apps/app-frame.js";
 import { useShell } from "../app-shell.js";
 import { CopyBlock } from "../copy-block.js";
@@ -76,10 +80,25 @@ function useAction() {
 
 export function PluginPage({ pluginId }: { readonly pluginId: string }) {
   const { hostClient } = useShell();
-  const detail = useSettingsRead(() => readPlugin(hostClient, pluginId), `plugin:${pluginId}`);
-  // Read beside the detail, not after it: runs outlive the declarations the detail reports.
+  const detail = useSettingsRead(
+    () => readPlugin(hostClient, pluginId),
+    `plugin:${pluginId}`,
+    false,
+    {
+      pluginId,
+      categories: ["schedules", "webhooks", "webhookSources"],
+    },
+  );
+  const scheduled = usePluginScheduleRuns(hostClient, pluginId);
   const runs = usePluginWorkflowRuns(hostClient, pluginId);
   const data = detail.data;
+  const schedules =
+    data?.schedules.length ||
+    scheduled.pending.length ||
+    scheduled.recent.length ||
+    scheduled.error ? (
+      <SchedulesSection pluginId={pluginId} data={data} runs={scheduled} />
+    ) : null;
   const refused = data ? null : pluginEngineRefusal(detail.error);
   const engine = usePluginEngine(refused);
   return (
@@ -91,7 +110,7 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
       <EngineNotice engine={data ? null : engine} />
       <SettingsError message={detail.error && !refused ? actionErrorMessage(detail.error) : null} />
       {data ? (
-        <PluginContent data={data} reload={detail.reload} runs={runs} />
+        <PluginContent data={data} reload={detail.reload} runs={runs} schedules={schedules} />
       ) : detail.error ? (
         <button className="btn" onClick={detail.reload} type="button">
           Try again
@@ -99,6 +118,7 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
       ) : (
         <LoadingRows label="Loading plugin" rows={4} />
       )}
+      {!data && schedules}
     </div>
   );
 }
@@ -109,10 +129,12 @@ function PluginContent({
   data,
   reload,
   runs,
+  schedules,
 }: {
   readonly data: InstalledPluginView;
   readonly reload: () => void;
   readonly runs: WorkflowRuns;
+  readonly schedules: React.ReactNode;
 }) {
   const { plugin } = data;
   const status = pluginStatusView(plugin);
@@ -178,7 +200,7 @@ function PluginContent({
       <AccessSection data={data} />
       <AccountsSection data={data} reload={reload} />
       <ToolsSection data={data} />
-      {data.schedules.length ? <SchedulesSection data={data} /> : null}
+      {schedules}
       {data.workflows?.length || runs.visible.length || runs.error ? (
         <WorkflowsSection data={data} runs={runs} />
       ) : null}
@@ -465,91 +487,94 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
   );
 }
 
-function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
+function SchedulesSection({
+  data,
+  pluginId,
+  runs,
+}: {
+  readonly data: InstalledPluginView | null;
+  readonly pluginId: string;
+  readonly runs: ReturnType<typeof usePluginScheduleRuns>;
+}) {
   const { hostClient } = useShell();
   const action = useAction();
-  const runs = useSettingsRead(
-    () => readPluginScheduleRuns(hostClient, data.plugin.id),
-    `plugin-runs:${data.plugin.id}`,
-  );
-  const waiting = runs.data?.runs.filter((run) => run.status === "awaiting-approval") ?? [];
-  const recent =
-    runs.data?.runs.filter((run) => run.status !== "awaiting-approval").slice(0, 5) ?? [];
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Schedules</h2>
-      <div className="card">
-        {data.schedules.map((schedule) => {
-          const settings = schedule.settings;
-          const enabled = settings?.enabled ?? false;
-          return (
-            <div className="plugin-schedule" key={schedule.name}>
-              <SettingsRow
-                title={schedule.name}
-                detail={[
-                  pluginScheduleText(schedule.timing),
-                  enabled && settings?.nextAt ? `next ${formatWhen(settings.nextAt)}` : null,
-                  settings?.running ? "running now" : null,
-                  pluginScheduleSkipped(schedule, data.requirements),
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-                action={
-                  <SettingsSwitch
-                    checked={enabled}
-                    disabled={action.pending !== null}
-                    label={`Run ${schedule.name}`}
-                    onChange={(checked) =>
-                      action.run(`schedule:${schedule.name}`, () =>
-                        configurePluginSchedule(hostClient, {
-                          pluginId: data.plugin.id,
-                          schedule: schedule.name,
-                          enabled: checked,
-                          ...(settings ? { approvalMode: settings.approvalMode } : {}),
-                        }),
-                      )
-                    }
-                  />
-                }
-              />
-              {enabled ? (
-                <div className="plugin-schedule__mode">
-                  <SettingsSegmented
-                    disabled={action.pending !== null}
-                    label={`When ${schedule.name} runs`}
-                    onChange={(approvalMode) =>
-                      action.run(`mode:${schedule.name}`, () =>
-                        configurePluginSchedule(hostClient, {
-                          pluginId: data.plugin.id,
-                          schedule: schedule.name,
-                          enabled: true,
-                          approvalMode,
-                        }),
-                      )
-                    }
-                    options={[
-                      { value: "automatic", label: "Run on its own" },
-                      { value: "browser", label: "Ask me each time" },
-                    ]}
-                    value={settings?.approvalMode ?? "automatic"}
-                  />
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+      {data?.schedules.length ? (
+        <div className="card">
+          {data.schedules.map((schedule) => {
+            const settings = schedule.settings;
+            const enabled = settings?.enabled ?? false;
+            return (
+              <div className="plugin-schedule" key={schedule.name}>
+                <SettingsRow
+                  title={schedule.name}
+                  detail={[
+                    pluginScheduleText(schedule.timing),
+                    enabled && settings?.nextAt ? `next ${formatWhen(settings.nextAt)}` : null,
+                    settings?.running ? "running now" : null,
+                    pluginScheduleSkipped(schedule, data.requirements),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  action={
+                    <SettingsSwitch
+                      checked={enabled}
+                      disabled={action.pending !== null}
+                      label={`Run ${schedule.name}`}
+                      onChange={(checked) =>
+                        action.run(`schedule:${schedule.name}`, () =>
+                          configurePluginSchedule(hostClient, {
+                            pluginId: pluginId,
+                            schedule: schedule.name,
+                            enabled: checked,
+                            ...(settings ? { approvalMode: settings.approvalMode } : {}),
+                          }),
+                        )
+                      }
+                    />
+                  }
+                />
+                {enabled ? (
+                  <div className="plugin-schedule__mode">
+                    <SettingsSegmented
+                      disabled={action.pending !== null}
+                      label={`When ${schedule.name} runs`}
+                      onChange={(approvalMode) =>
+                        action.run(`mode:${schedule.name}`, () =>
+                          configurePluginSchedule(hostClient, {
+                            pluginId: pluginId,
+                            schedule: schedule.name,
+                            enabled: true,
+                            approvalMode,
+                          }),
+                        )
+                      }
+                      options={[
+                        { value: "automatic", label: "Run on its own" },
+                        { value: "browser", label: "Ask me each time" },
+                      ]}
+                      value={settings?.approvalMode ?? "automatic"}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       <SettingsError message={action.error} />
       {runs.error ? (
         <RunsReadFailure
           error={runs.error}
-          retry={runs.reload}
+          retry={() => void runs.reload()}
           what="this plugin's scheduled runs"
         />
-      ) : !runs.data ? (
+      ) : !runs.loaded ? (
         <LoadingRows label="Loading scheduled runs" rows={1} />
       ) : null}
-      {waiting.map((run) => (
+      {runs.pending.map((run) => (
         <div className="plugin-approval" key={run.id}>
           <p className="plugin-approval__title">
             <Icon name="clock" />
@@ -574,7 +599,7 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
               disabled={action.pending !== null}
               onClick={() =>
                 action.run(`decline:${run.id}`, () =>
-                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "decline").then(
+                  answerPluginScheduledRun(hostClient, pluginId, run.id, "decline").then(
                     runs.reload,
                   ),
                 )
@@ -588,7 +613,7 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
               disabled={action.pending !== null}
               onClick={() =>
                 action.run(`accept:${run.id}`, () =>
-                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "accept").then(
+                  answerPluginScheduledRun(hostClient, pluginId, run.id, "accept").then(
                     runs.reload,
                   ),
                 )
@@ -600,11 +625,21 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
           </div>
         </div>
       ))}
-      {recent.length ? (
+      {runs.more ? (
+        <button
+          className="btn btn--small"
+          disabled={runs.loadingMore}
+          onClick={() => void runs.showMore()}
+          type="button"
+        >
+          Show more approvals
+        </button>
+      ) : null}
+      {runs.recent.length ? (
         <details className="plugin-runs">
           <summary>Recent runs</summary>
           <div className="card">
-            {recent.map((run) => (
+            {runs.recent.map((run) => (
               <SettingsRow
                 key={run.id}
                 title={run.schedule}
@@ -880,10 +915,11 @@ function WebhookSetup({
   readonly webhookId: string;
 }) {
   const { hostClient } = useShell();
-  // Re-read on every plugins change; what the person typed lives here, not in the read.
   const setup = useSettingsRead(
     () => readPluginWebhookSetup(hostClient, pluginId, webhookId),
     `webhook:${pluginId}:${webhookId}`,
+    false,
+    { pluginId, categories: ["webhooks", "webhookSources"] },
   );
   const titleId = useId();
   const action = useAction();

@@ -1,3 +1,5 @@
+import { pluginChangeAffects } from "@opensteer/client/plugins";
+import type { PluginChange } from "@opensteer/protocol";
 import { useEffect, useRef, useState } from "react";
 import { createSettingsRead } from "@opensteer/client/settings";
 import { useShell } from "../app-shell.js";
@@ -10,7 +12,12 @@ const lastReads = new WeakMap<object, Map<string, unknown>>();
  * last showed at once on a return visit while it reads again; only for views
  * nothing acts on, since the remembered value may be out of date.
  */
-export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember = false) {
+export function useSettingsRead<T>(
+  read: () => Promise<T>,
+  key: string,
+  remember = false,
+  interest?: PluginChange,
+) {
   const { hostClient } = useShell();
   // A Host client outlives a sign-in: a read belongs to the person it was made for,
   // so what one person saw is never shown to the next.
@@ -28,6 +35,8 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
   }>(() => ({ owner: hostClient, identity, data: last(), error: null }));
   const readRef = useRef(read);
   readRef.current = read;
+  const interestRef = useRef(interest);
+  interestRef.current = interest;
   const readerRef = useRef<ReturnType<typeof createSettingsRead<T>> | null>(null);
   useEffect(() => {
     const reader = createSettingsRead(
@@ -43,7 +52,12 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
     );
     readerRef.current = reader;
     void reader.refresh();
-    const unsubscribe = hostClient.subscribePluginsChanged(() => void reader.refresh());
+    const unsubscribe = hostClient.subscribePluginsChanged((change) => {
+      if (
+        pluginChangeAffects(change, interestRef.current?.categories, interestRef.current?.pluginId)
+      )
+        void reader.refresh();
+    });
     let connection = hostClient.getSnapshot().connection;
     const unsubscribeConnection = hostClient.subscribe(() => {
       const next = hostClient.getSnapshot().connection;

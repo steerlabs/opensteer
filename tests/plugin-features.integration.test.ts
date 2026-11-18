@@ -164,7 +164,9 @@ async function runs(plugin: string, status: string) {
       const result = await api.reads()["plugins.schedule.runs"]({ pluginId: plugin }, context);
       expect(result.ok, "Schedule runs read failed").toBe(true);
       if (!result.ok) throw new Error("Runs read failed");
-      const run = result.data.runs.find((run) => run.status === status);
+      const run = [...(result.data.pending ?? []), ...result.data.runs].find(
+        (run) => run.status === status,
+      );
       expect(run, `Schedule never reached ${status}`).toBeDefined();
       return run!;
     },
@@ -405,12 +407,14 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
   );
   const scheduledChange = onBackground(
     () => api.reads()["plugins.schedule.runs"]({ pluginId: fixture.plugin }, context),
-    (page) => page.ok && page.data.runs.some((run) => run.status === "awaiting-approval"),
+    (page) =>
+      page.ok && page.data.pending?.some((run) => run.status === "awaiting-approval") === true,
   );
   await due(fixture.plugin, "reviewed");
   const approvalPage = await scheduledChange;
   if (!approvalPage.ok) throw new Error("Schedule read failed");
-  const approved = approvalPage.data.runs.find((run) => run.status === "awaiting-approval")!;
+  const approved = approvalPage.data.pending?.find((run) => run.status === "awaiting-approval");
+  if (!approved) throw new Error("The pending scheduled run was missing");
   expect(approved.approval).toEqual({ tool: "reviewed", arguments: { source: "reviewed" } });
   await api.command(
     {
@@ -452,10 +456,48 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
   expect(history.data.runs).toHaveLength(50);
   expect(history.data.runs.map(({ id }) => id)).toContain(declined.id);
   expect(Math.max(...history.data.runs.map((run) => run.failure?.length ?? 0))).toBe(1000);
-  const pending = await api
-    .reads()
-    ["plugins.schedule.runs"]({ pluginId: fixture.plugin, pending: true }, context);
-  expect(pending.ok && pending.data.runs).toEqual([]);
+  expect(history.data.pending).toEqual([]);
+  await due(fixture.plugin, "reviewed");
+  const pending = await runs(fixture.plugin, "awaiting-approval");
+  await sql`UPDATE plugin_engine.plugin_engine_scheduled_runs
+    SET started_at = started_at - interval '1 day' WHERE id = ${pending.id}`.execute(database);
+  const accountLink = {
+    plugin: fixture.plugin,
+    requirement: "service",
+    scope: "user" as const,
+    account: fixture.account,
+  };
+  const consent = await service.reviewAccountLink(
+    {
+      plugin: accountLink.plugin,
+      requirement: accountLink.requirement,
+      scope: accountLink.scope,
+    },
+    owner,
+  );
+  await service.unlinkAccount(accountLink, owner);
+  expect((await api.detail(personal.userId, fixture.plugin)).schedules).toEqual([]);
+  const buried = await api.reads()["plugins.schedule.runs"]({ pluginId: fixture.plugin }, context);
+  if (!buried.ok) throw new Error("Schedule runs became unavailable with no declarations");
+  expect(buried.data.runs).toHaveLength(50);
+  expect(buried.data.runs.map(({ id }) => id)).not.toContain(pending.id);
+  expect(buried.data.pending).toMatchObject([
+    {
+      id: pending.id,
+      approval: { tool: "reviewed", arguments: { source: "reviewed" } },
+    },
+  ]);
+  await service.linkAccount({ ...accountLink, consent }, owner);
+  await api.command(
+    {
+      type: "plugins.schedule.answer",
+      pluginId: fixture.plugin,
+      runId: pending.id,
+      action: "decline",
+      idempotencyKey: randomUUID(),
+    },
+    context,
+  );
   // An agent pages the whole history on start time, which never changes.
   const agentRuns: string[] = [];
   let scheduleCursor: string | undefined;
@@ -1348,6 +1390,17 @@ test("workflow history pages once on creation order, shows long-lived runs first
     owner,
   );
   expect((await api.detail(personal.userId, fixture.plugin)).workflows).toBeNull();
+  const refreshed = await api.reads()["plugins.workflow.runs"](
+    {
+      pluginId: fixture.plugin,
+      runIds: [historical.runId],
+    },
+    context,
+  );
+  expect(refreshed.ok && refreshed.data).toMatchObject({
+    cursor: null,
+    runs: [{ id: historical.runId, status: "complete" }],
+  });
   const { EngineWorkflowRunPageSchema } =
     await import("../apps/host/src/plugins/engine-feature-schemas.js");
   const walk = async (live: boolean, betweenPages?: () => Promise<void>) => {

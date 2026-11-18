@@ -1,3 +1,8 @@
+import {
+  pluginDetailPreview,
+  pluginScheduleApprovalsPageMax,
+  type PluginResourceCategory,
+} from "@opensteer/protocol";
 import { CurrentPluginRequest } from "./engine-authority.js";
 import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
 import {
@@ -146,7 +151,7 @@ export async function startEngine(
   callback: Callback,
   report: (execution: PluginExecution) => void,
   phase: (name: string) => void = () => {},
-  changed: () => void = () => {},
+  changed: (categories: PluginResourceCategory[]) => void = () => {},
 ) {
   const started = performance.now();
   const scope = Scope.makeUnsafe();
@@ -687,19 +692,47 @@ export async function startEngine(
               .filter((app) => permission.grants?.[app.id] !== "off")
               .map((app) => ({ ...app, slug: pluginNamespace(app.slug) }));
           }
-          case "installed":
-            return yield* Effect.forEach(yield* engine.apps.list({ owner }), (plugin) =>
-              accountAdapter.links(plugin.id).pipe(
-                Effect.map((links) => ({
-                  plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
-                  links: links.map(({ requirement, scope, account }) => ({
-                    requirement,
-                    scope,
-                    account,
-                  })),
-                })),
-              ),
+          case "installed": {
+            const input = operations.installed.input.parse(raw);
+            const plugins = yield* engine.apps.list({ owner });
+            const wanted = input.plugins ? new Set(input.plugins) : null;
+            return yield* Effect.forEach(
+              wanted ? plugins.filter(({ id }) => wanted.has(id)) : plugins,
+              (plugin) =>
+                Effect.gen(function* () {
+                  const metadata = yield* accountAdapter.metadata(plugin);
+                  const versions = input.versions
+                    ? yield* engine.apps.versions({ app: plugin.id, owner })
+                    : undefined;
+                  return {
+                    plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
+                    ...metadata,
+                    ...(versions
+                      ? {
+                          versions: versions
+                            .slice(0, pluginDetailPreview.versions)
+                            .map(({ id, createdAt }) => ({
+                              id,
+                              createdAt: createdAt.toISOString(),
+                            })),
+                          versionCount: versions.length,
+                        }
+                      : {}),
+                  };
+                }),
             );
+          }
+          case "scheduleApprovals": {
+            const input = operations.scheduleApprovals.input.parse(raw);
+            const page = yield* scheduledRunPage(composed.sql, {
+              app: input.plugin,
+              owner,
+              limit: pluginScheduleApprovalsPageMax,
+              pending: true,
+              ...(input.cursor ? { cursor: input.cursor } : {}),
+            });
+            return { ...page, next: page.next ?? null };
+          }
           case "install": {
             const input = operations.install.input.parse(raw);
             const installed = yield* accountAdapter.once(
@@ -794,7 +827,7 @@ export async function startEngine(
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
             return detailPreview({
               plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
-              links: yield* accountAdapter.links(app),
+              ...(yield* accountAdapter.metadata(plugin)),
               versions: yield* engine.apps.versions({ app, owner }),
               schedules: Option.isSome(selected)
                 ? ((yield* read(

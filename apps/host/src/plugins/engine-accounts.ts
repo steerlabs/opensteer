@@ -28,6 +28,7 @@ import {
   PluginServiceError,
   operations,
   type PluginConsent,
+  type EngineAccountMetadata,
 } from "./engine-protocol.js";
 
 const table = ["opensteer_account_links"];
@@ -130,39 +131,76 @@ export function engineAccounts(options: {
       )(new TextDecoder().decode(stored.value));
       return (yield* appProtocol(metadata.protocol)).sealedCredentials;
     });
+  const consentFor = (required: AccountRequirement, sealed: boolean) => {
+    const sites = [...(required.definition.hosts ?? [])].sort();
+    // Review precedes account/method selection: disclose the widest runtime exposure.
+    const exposed = Object.values(required.definition.auth).some((method) => {
+      if ((method.raw?.length ?? 0) > 0 || (method.plain?.length ?? 0) > 0) return true;
+      if (method.type !== "secrets") return false;
+      const fields = method.fields.properties;
+      // The runtime replaces strings only; other credential values remain readable.
+      return (
+        !fields ||
+        typeof fields !== "object" ||
+        Array.isArray(fields) ||
+        Object.values(fields).some(
+          (field) =>
+            !field ||
+            typeof field !== "object" ||
+            Array.isArray(field) ||
+            !("type" in field) ||
+            field.type !== "string",
+        )
+      );
+    });
+    const credential =
+      sealed && required.definition.hosts !== undefined && !exposed
+        ? ("sealed" as const)
+        : ("value" as const);
+    return {
+      sites,
+      credential,
+      digest: createHash("sha256").update(canonical({ required, credential })).digest("hex"),
+    } satisfies PluginConsent;
+  };
   const snapshot = (app: App, required: AccountRequirement) =>
+    disclosure(app).pipe(Effect.map((sealed) => consentFor(required, sealed)));
+  const metadata = (app: App) =>
     Effect.gen(function* () {
-      const sealed = yield* disclosure(app);
-      const sites = [...(required.definition.hosts ?? [])].sort();
-      // Review precedes account/method selection: disclose the widest runtime exposure.
-      const exposed = Object.values(required.definition.auth).some((method) => {
-        if ((method.raw?.length ?? 0) > 0 || (method.plain?.length ?? 0) > 0) return true;
-        if (method.type !== "secrets") return false;
-        const fields = method.fields.properties;
-        // The runtime replaces strings only; other credential values remain readable.
-        return (
-          !fields ||
-          typeof fields !== "object" ||
-          Array.isArray(fields) ||
-          Object.values(fields).some(
-            (field) =>
-              !field ||
-              typeof field !== "object" ||
-              Array.isArray(field) ||
-              !("type" in field) ||
-              field.type !== "string",
-          )
-        );
-      });
-      const credential =
-        sealed && required.definition.hosts !== undefined && !exposed
-          ? ("sealed" as const)
-          : ("value" as const);
+      const required = Object.entries(app.requirements.accounts);
+      const links = yield* read(yield* engine, app.id);
+      const sealed = required.length
+        ? yield* disclosure(app).pipe(Effect.option)
+        : Option.none<boolean>();
+      const readiness: EngineAccountMetadata["readiness"] = Object.fromEntries(
+        required.map(([name, declaration]) => {
+          const consent = Option.isSome(sealed) ? consentFor(declaration, sealed.value) : null;
+          const slot = links.filter(
+            (link) => link.requirement === name && link.scope === declaration.scope,
+          );
+          const state = slot.some((link) => consent === null || canonical(consent) !== link.consent)
+            ? "consent-needs-review"
+            : declaration.cardinality === "one" && slot.length === 0
+              ? "required-but-missing"
+              : "usable";
+          return [name, { state, consent }];
+        }),
+      );
       return {
-        sites,
-        credential,
-        digest: createHash("sha256").update(canonical({ required, credential })).digest("hex"),
-      } satisfies PluginConsent;
+        readiness,
+        links: links.map(({ requirement, scope, account, consent }) => {
+          const expected = readiness[requirement]?.consent;
+          return {
+            requirement,
+            scope,
+            account,
+            current:
+              expected != null &&
+              app.requirements.accounts[requirement]?.scope === scope &&
+              canonical(expected) === consent,
+          };
+        }),
+      };
     });
   const currentLinks = (app: App) =>
     Effect.gen(function* () {
@@ -633,14 +671,6 @@ export function engineAccounts(options: {
     review,
     link,
     unlink,
-    links: (app: AppId) =>
-      Effect.flatMap(engine, (sdk) => read(sdk, app)).pipe(
-        Effect.map((links) =>
-          links.map((link) => ({
-            ...link,
-            consent: ConsentSchema.parse(JSON.parse(link.consent)),
-          })),
-        ),
-      ),
+    metadata,
   };
 }

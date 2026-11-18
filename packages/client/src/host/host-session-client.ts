@@ -1,3 +1,4 @@
+import type { PluginChange } from "@opensteer/protocol";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
@@ -815,7 +816,7 @@ export class HttpHostClient {
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
   readonly #pluginEngineListeners = new Set<(engine: PluginEngineStateView) => void>();
   readonly #pluginsChangedListeners = new Set<
-    (message: { type: "host.plugins-changed" }) => void
+    (message: { type: "host.plugins-changed" } & PluginChange) => void
   >();
   readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #connectionsListeners = new Set<() => void>();
@@ -2277,7 +2278,7 @@ export class HttpHostClient {
   }
 
   subscribePluginsChanged(
-    listener: (message: { type: "host.plugins-changed" }) => void,
+    listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void {
     this.#pluginsChangedListeners.add(listener);
     return () => this.#pluginsChangedListeners.delete(listener);

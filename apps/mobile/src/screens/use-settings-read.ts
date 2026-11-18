@@ -1,3 +1,5 @@
+import { pluginChangeAffects } from "@opensteer/client/plugins";
+import type { PluginChange } from "@opensteer/protocol";
 import { canRespondToRequests, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -31,12 +33,19 @@ export function useSettingsLease(host: HostClient | null) {
     return userId.current !== null && snapshot.user?.id === userId.current;
   }, [host, mobile]);
 }
-export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>, key = "") {
+export function useSettingsRead<T>(
+  host: HostClient,
+  read: () => Promise<T>,
+  key = "",
+  interest?: PluginChange,
+) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isCurrent = useSettingsLease(host);
   const readRef = useRef(read);
   readRef.current = read;
+  const interestRef = useRef(interest);
+  interestRef.current = interest;
   const readerRef = useRef<ReturnType<typeof createSettingsRead<T>> | null>(null);
   const reload = useCallback(
     () => (isCurrent() ? (readerRef.current?.refresh() ?? Promise.resolve()) : Promise.resolve()),
@@ -64,8 +73,11 @@ export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>, key
       if (next && !connected) void reader.reconnect();
       connected = next;
     });
-    const unsubscribePlugins = host.subscribePluginsChanged(() => {
-      void reload();
+    const unsubscribePlugins = host.subscribePluginsChanged((change) => {
+      if (
+        pluginChangeAffects(change, interestRef.current?.categories, interestRef.current?.pluginId)
+      )
+        void reload();
     });
     return () => {
       reader.dispose();

@@ -10,11 +10,21 @@ it("names the missing plugin account without suggesting credentials or another i
     name: "Mail",
     reason: "Account required",
     requirements: { mail: { scope: "user" as const } },
-    links: [],
+    readiness: { mail: { state: "required-but-missing" as const, consent: null } },
   };
   expect(pluginTargetBlocked({ ...input, canRequestAccount: false }).next).toContain(
     "Only a task Run",
   );
+  expect(
+    pluginTargetBlocked({
+      ...input,
+      readiness: { mail: { state: "consent-needs-review", consent: null } },
+    }),
+  ).toMatchObject({
+    code: "sign_in_required",
+    message: "Mail needs its account link reviewed.",
+    next: expect.stringContaining("review the changed account link in Plugins"),
+  });
   const blocked = pluginTargetBlocked(input);
   expect(BlockedSchema.parse(blocked)).toEqual({
     code: "sign_in_required",
@@ -22,7 +32,7 @@ it("names the missing plugin account without suggesting credentials or another i
     next: 'Call plugin_account_request {"pluginId":"plugin-mail","requirement":"mail","scope":"user","reason":"<why you need it>"}.',
   });
   expect(
-    pluginTargetBlocked({ ...input, links: [{ requirement: "mail", scope: "user" }] }),
+    pluginTargetBlocked({ ...input, readiness: { mail: { state: "usable", consent: null } } }),
   ).toMatchObject({
     code: "unavailable",
     message: "Account required",

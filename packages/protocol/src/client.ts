@@ -10,7 +10,7 @@ import { TabBootstrapSchema } from "./tabs.js";
 import { HostTabsSchema } from "./tabs.js";
 import { HostAppsChangedSchema } from "./apps.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
-import { PluginEngineStateViewSchema } from "./plugins.js";
+import { PluginChangeSchema, PluginEngineStateViewSchema } from "./plugins.js";
 
 import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
 
@@ -353,7 +353,11 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   }),
   // A plugin was installed, removed, changed version, access or accounts. It
   // names nothing: a client rereads the plugins it shows.
-  z.object({ ...clientMessageBase, type: z.literal("host.plugins-changed") }),
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.plugins-changed"),
+    ...PluginChangeSchema.shape,
+  }),
   // The plugin engine started, stopped or became unavailable. Sent to the
   // owner; a client shows it without rereading anything.
   z.object({

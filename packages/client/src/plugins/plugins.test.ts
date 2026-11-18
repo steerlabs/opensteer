@@ -371,21 +371,22 @@ describe("workflow runs", () => {
     failure: null,
   });
 
-  it("always shows the Host's live runs, pages the rest by cursor, and rereads loaded pages", async () => {
+  it("always shows the Host's live runs, pages completed history, and refreshes older live runs by id", async () => {
     let finished = false;
     // The Host's order: live first, then newest.
-    const read = vi.fn(async (cursor: string | null) =>
-      cursor === "2"
-        ? { runs: [run("done_2", "complete", 2), run("done_1", "complete", 1)], cursor: null }
-        : {
-            runs: [
-              ...(finished ? [] : [run("live_1", "running", 3)]),
-              run("live_2", "waiting", 4),
-              ...[9, 8, 7, 6, 5, 4, 3].map((day) => run(`done_${day}`, "complete", day)),
-              ...(finished ? [run("live_1", "complete", 3)] : []),
-            ],
-            cursor: "2",
-          },
+    const read = vi.fn(async (cursor: string | null, ids?: readonly string[]) =>
+      ids
+        ? { runs: [run("live_1", "complete", 3)], cursor: null }
+        : cursor === "2"
+          ? { runs: [run("done_2", "complete", 2), run("done_1", "complete", 1)], cursor: null }
+          : {
+              runs: [
+                ...(finished ? [] : [run("live_1", "running", 3)]),
+                run("live_2", "waiting", 4),
+                ...[9, 8, 7, 6, 5, 4, 3].map((day) => run(`done_${day}`, "complete", day)),
+              ],
+              cursor: "2",
+            },
     );
     const runs = new PluginWorkflowRuns(read);
     await runs.refresh();
@@ -411,7 +412,10 @@ describe("workflow runs", () => {
     finished = true;
     read.mockClear();
     await runs.refresh();
-    expect(read.mock.calls).toEqual([[null], ["2"]]);
+    expect(read.mock.calls).toEqual([[null], [null, ["live_1"]]]);
+    expect(runs.getState().visible.map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["done_2", "done_1"]),
+    );
     expect(runs.getState().visible.find(({ id }) => id === "live_1")?.status).toBe("complete");
     expect(runs.getState().visible[0]?.id).toBe("live_2");
   });

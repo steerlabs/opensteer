@@ -7,6 +7,8 @@ import type {
   PluginAccountReviewView,
   PluginAuthor,
   PluginCatalogEntryView,
+  PluginChange,
+  PluginResourceCategory,
   PluginCommand,
   PluginCommandResult,
   PluginConsentView,
@@ -101,13 +103,31 @@ export function pluginVersionsReader(client: PluginsHost, pluginId: string) {
 export function readPluginAccountReview(client: PluginsHost, target: PluginRequirementTarget) {
   return client.rpc["plugins.account.review"](target).then(unwrapRpcResult);
 }
-export function readPluginScheduleRuns(client: PluginsHost, pluginId: string) {
-  return client.rpc["plugins.schedule.runs"]({ pluginId }).then(unwrapRpcResult);
-}
-export function readPluginWorkflowRuns(client: PluginsHost, pluginId: string, cursor?: string) {
-  return client.rpc["plugins.workflow.runs"]({ pluginId, ...(cursor ? { cursor } : {}) }).then(
+export function readPluginScheduleRuns(client: PluginsHost, pluginId: string, cursor?: string) {
+  return client.rpc["plugins.schedule.runs"]({ pluginId, ...(cursor ? { cursor } : {}) }).then(
     unwrapRpcResult,
   );
+}
+export function readPluginWorkflowRuns(
+  client: PluginsHost,
+  pluginId: string,
+  cursor?: string,
+  runIds?: readonly string[],
+) {
+  return client.rpc["plugins.workflow.runs"]({
+    pluginId,
+    ...(cursor ? { cursor } : {}),
+    ...(runIds ? { runIds: [...runIds] } : {}),
+  }).then(unwrapRpcResult);
+}
+
+export function pluginChangeAffects(
+  change: PluginChange,
+  categories: readonly PluginResourceCategory[] = [],
+  pluginId?: string,
+) {
+  if (pluginId && change.pluginId && change.pluginId !== pluginId) return false;
+  return !change.categories || change.categories.some((category) => categories.includes(category));
 }
 export function readPluginWebhookSetup(client: PluginsHost, pluginId: string, webhookId: string) {
   return client.rpc["plugins.webhook.setup.get"]({ pluginId, webhookId }).then(unwrapRpcResult);
@@ -240,6 +260,8 @@ export function pluginStatusView(plugin: PluginSummaryView): {
   readonly tone: PluginTone;
 } {
   if (plugin.status === "not-built") return { label: "Didn't build", tone: "error" };
+  if (plugin.status === "needs-account" && plugin.accountReadiness === "consent-needs-review")
+    return { label: "Review account access", tone: "attention" };
   if (plugin.status === "needs-account") return { label: "Connect an account", tone: "attention" };
   if (plugin.access === "off") return { label: "Off for agents", tone: "muted" };
   if (plugin.access === "read-only") return { label: "Read-only", tone: "ok" };
@@ -593,9 +615,9 @@ export function pluginInstalledGroups(plugins: readonly PluginSummaryView[]) {
 export function pluginRequirementIssue(
   requirement: InstalledPluginView["requirements"][number],
 ): string | null {
-  if (requirement.links.some((link) => !link.current))
+  if (requirement.readiness === "consent-needs-review")
     return "This plugin changed what it asks for. Review the account again.";
-  if (requirement.cardinality === "one" && requirement.links.length === 0)
+  if (requirement.readiness === "required-but-missing")
     return `Connect a ${requirement.providerName} account to use this plugin.`;
   return null;
 }

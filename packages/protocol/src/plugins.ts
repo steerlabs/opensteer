@@ -12,6 +12,20 @@ export const pluginsInstalledPageMax = 50;
 export const pluginCatalogPageMax = 50;
 export const pluginToolsMax = 500;
 export const pluginRunsMax = 50;
+export const pluginScheduleApprovalsPageMax = 10;
+export const PluginResourceCategorySchema = z.enum([
+  "scheduledRuns",
+  "workflowRuns",
+  "webhooks",
+  "webhookSources",
+  "schedules",
+]);
+export type PluginResourceCategory = z.infer<typeof PluginResourceCategorySchema>;
+export const PluginChangeSchema = z.object({
+  categories: z.array(PluginResourceCategorySchema).min(1).max(5).optional(),
+  pluginId: z.string().min(1).optional(),
+});
+export type PluginChange = z.infer<typeof PluginChangeSchema>;
 /** One page of a plugin's tools, skills or versions after the detail's first few. */
 export const pluginDetailPageMax = 50;
 /** How many tools, skills and versions the detail carries; the rest page. */
@@ -57,11 +71,17 @@ export const PluginIconSchema = z
   .regex(/^(?:https:\/\/\S+|data:image\/(?:svg\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2})$/u);
 
 /**
- * `needs-account`: a required account has no link, so its tools cannot run.
+ * `needs-account`: a required link is missing or an existing link needs review.
  * `not-built`: no version is active, usually because its build failed.
  */
 export const PluginStatusSchema = z.enum(["ready", "needs-account", "not-built"]);
 export type PluginStatus = z.infer<typeof PluginStatusSchema>;
+
+export const PluginAccountReadinessSchema = z.enum([
+  "required-but-missing",
+  "consent-needs-review",
+  "usable",
+]);
 
 export const PluginSummaryViewSchema = z.object({
   id: PluginIdSchema,
@@ -72,6 +92,7 @@ export const PluginSummaryViewSchema = z.object({
   access: PluginAccessSchema,
   activeVersion: name.nullable(),
   status: PluginStatusSchema,
+  accountReadiness: PluginAccountReadinessSchema.optional(),
   /** Account requirements, and how many of them have at least one linked account. */
   accounts: z.object({
     required: z.number().int().nonnegative(),
@@ -151,6 +172,7 @@ export const PluginAccountViewSchema = ConnectedAccountViewSchema.extend({
 export type PluginAccountView = z.infer<typeof PluginAccountViewSchema>;
 
 export const PluginRequirementViewSchema = z.object({
+  readiness: PluginAccountReadinessSchema.optional(),
   name,
   scope: PluginScopeSchema,
   provider: name,
@@ -309,7 +331,7 @@ export type PluginAccountFieldView = z.infer<typeof PluginAccountFieldViewSchema
 /** Everything the connect-account screen shows, in one read. */
 export const PluginAccountReviewViewSchema = z.object({
   plugin: z.object({ id: PluginIdSchema, name, author: PluginAuthorSchema }),
-  requirement: PluginRequirementViewSchema.omit({ consent: true, links: true }),
+  requirement: PluginRequirementViewSchema.omit({ consent: true, links: true, readiness: true }),
   consent: PluginConsentViewSchema,
   methods: z
     .array(
@@ -441,13 +463,22 @@ export const pluginReads = {
     output: PluginAccountReviewViewSchema,
   },
   "plugins.schedule.runs": {
-    input: z.strictObject({ pluginId: PluginIdSchema, pending: z.boolean().optional() }),
-    output: z.object({ runs: z.array(PluginScheduledRunViewSchema).max(pluginRunsMax) }),
+    input: z.strictObject({
+      pluginId: PluginIdSchema,
+      pending: z.boolean().optional(),
+      cursor: pageCursor.optional(),
+    }),
+    output: z.object({
+      pending: z.array(PluginScheduledRunViewSchema).max(pluginScheduleApprovalsPageMax).optional(),
+      cursor: pageCursor.nullable().optional(),
+      runs: z.array(PluginScheduledRunViewSchema).max(pluginRunsMax),
+    }),
   },
   "plugins.workflow.runs": {
     input: z.strictObject({
       pluginId: PluginIdSchema,
       workflow: name.optional(),
+      runIds: z.array(name).min(1).max(pluginRunsMax).optional(),
       cursor: z.string().min(1).max(512).optional(),
     }),
     output: z.object({

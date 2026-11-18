@@ -1,3 +1,4 @@
+import type { PluginChange } from "@opensteer/protocol";
 import { createId, type DeploymentId } from "@opensteer/core";
 import {
   DevicesOverviewViewSchema,
@@ -9,7 +10,9 @@ import {
 import { HostClientRequestError } from "../host/client.js";
 
 export class MockSettingsFixtures {
-  readonly listeners = new Set<(message: { type: "host.plugins-changed" }) => void>();
+  readonly listeners = new Set<
+    (message: { type: "host.plugins-changed" } & PluginChange) => void
+  >();
   private readonly fallbackDevices = DevicesOverviewViewSchema.parse({
     devices: [
       {
