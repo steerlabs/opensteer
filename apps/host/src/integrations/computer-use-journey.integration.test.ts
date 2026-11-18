@@ -337,9 +337,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(rows[0]).toMatchObject({
         id: started.toolCallId,
         origin: "host-computer",
-        status: "completed",
-        isError: true,
-        output: { text: "Stopped. This step was cancelled." },
+        status: "interrupted",
+        isError: null,
+        output: null,
         startedAt: expect.any(Date),
         completedAt: expect.any(Date),
       });
@@ -506,10 +506,17 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         .where("id", "=", unfinished.toolCallId)
         .executeTakeFirstOrThrow();
       expect(cancelled).toMatchObject({
-        status: "completed",
-        isError: true,
-        output: { text: "Stopped. This step was cancelled." },
+        status: "interrupted",
+        isError: null,
+        output: null,
       });
+      expect(
+        await database
+          .selectFrom("transcriptItems")
+          .select("view")
+          .where("id", "=", `tool:${unfinished.toolCallId}`)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ view: { status: "stopped" } });
       await new IntegrationPlatformStore(database).computerOperations.finalize();
       expect(
         await database
@@ -1944,9 +1951,24 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ]);
       await database
         .updateTable("threadInputs")
-        .set({ state: "delivered", deliveredAt: new Date(), runId: run.runId })
+        .set({ state: "claimed", runId: run.runId })
         .where("messageId", "=", sent.message.id)
         .execute();
+      await store.commitRunnerEvent({
+        environmentId: run.environmentId,
+        runnerBootId: run.runnerBootId,
+        runnerId: run.agentRunnerId,
+        event: {
+          type: "message.injected",
+          bindingGeneration: run.claims.bindingGeneration,
+          emittedAt: new Date().toISOString(),
+          environmentId: run.environmentId,
+          ordinal: 1,
+          runId: run.runId,
+          threadId: run.threadId,
+          data: { messageId: sent.message.id },
+        },
+      });
       const olderRead = await control.handle("test-token", {
         type: "thread.read",
         requestId: randomUUID(),
@@ -1987,7 +2009,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
             bindingGeneration: run.claims.bindingGeneration,
             emittedAt: new Date().toISOString(),
             environmentId: run.environmentId,
-            ordinal: 1,
+            ordinal: 2,
             runId: run.runId,
             threadId: run.threadId,
 

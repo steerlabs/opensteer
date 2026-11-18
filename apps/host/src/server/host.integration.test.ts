@@ -2346,6 +2346,7 @@ describe("Thread input command boundary", () => {
   });
 
   it("reads the authoritative queue with owner identity", async () => {
+    const session = testAuthenticatedSession(ownerId);
     const getThreadForOwner = vi.fn(async () => thread);
     const getThreadInputQueue = vi.fn(async (input: { readonly threadId: typeof threadId }) => ({
       items: [],
@@ -2356,7 +2357,7 @@ describe("Thread input command boundary", () => {
     }));
     const app = await createHostServer({
       authenticator: {
-        authenticateSession: async () => testAuthenticatedSession(ownerId),
+        authenticateSession: async () => session,
         identity,
       } as never,
       commands: {} as never,
@@ -2374,7 +2375,11 @@ describe("Thread input command boundary", () => {
         threadId,
       });
       expect(getThreadForOwner).toHaveBeenCalledWith(threadId, ownerId);
-      expect(getThreadInputQueue).toHaveBeenCalledWith({ requestedBy: ownerId, threadId });
+      expect(getThreadInputQueue).toHaveBeenCalledWith({
+        requestedBy: ownerId,
+        sessionId: session.id,
+        threadId,
+      });
     } finally {
       await app.close();
     }
@@ -3111,7 +3116,12 @@ describe("durable harness catalogs", () => {
   });
 
   it("serves the committed catalog resource without asking a Runner", async () => {
-    const recorded = await personalFixture.createRunFixture("catalog-resource");
+    const harness = await createCatalogResourceHarness("Committed catalog");
+    await personalFixture.store.recordHarnessCatalogs({
+      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
+      environmentId: harness.environmentId,
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
     const { inspectHarnesses, reconcileHarnesses, server } = harnessCatalogServer({
       connected: false,
       environmentKind: "main",
@@ -3121,11 +3131,11 @@ describe("durable harness catalogs", () => {
       expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
       expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
         expect.objectContaining({
-          id: recorded.environmentId,
+          id: harness.environmentId,
           status: "disconnected",
           harnessCatalogs: expect.arrayContaining([
             expect.objectContaining({
-              harnessInstanceId: recorded.harnessInstance.id,
+              harnessInstanceId: harness.id,
               status: "ready",
             }),
           ]),
@@ -3139,6 +3149,7 @@ describe("durable harness catalogs", () => {
   });
 
   it("marks every engine on a Runner without the tool plan as needing an update", async () => {
+    const harness = await createCatalogResourceHarness("Unavailable engine");
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
@@ -3175,7 +3186,9 @@ describe("durable harness catalogs", () => {
         },
       ]);
       // The shared client's picker says so before anything is sent.
-      const [placement] = threadPlacementOptions(environments, harnesses);
+      const placement = threadPlacementOptions(environments, harnesses).find(
+        ({ harnessInstanceId }) => harnessInstanceId === harness.id,
+      );
       expect(placement).toMatchObject({
         available: false,
         detail: "Update this computer to use Opensteer tools.",
@@ -3184,6 +3197,25 @@ describe("durable harness catalogs", () => {
       await app.close();
     }
   });
+
+  async function createCatalogResourceHarness(name: string) {
+    const { id } = await personalFixture.database
+      .selectFrom("executionEnvironments")
+      .innerJoin(
+        "personalSettings",
+        "personalSettings.agentHomeComputerId",
+        "executionEnvironments.runnerId",
+      )
+      .select("executionEnvironments.id")
+      .executeTakeFirstOrThrow();
+    return personalFixture.store.createHarnessInstance({
+      config: {},
+      driverKind: readyCatalog.driverKind,
+      environmentId: id,
+      name,
+      stateKind: "isolated",
+    });
+  }
 
   it("keeps the hosting computer's status two-valued", async () => {
     // No lifecycle service exists on a self-hosted Host, so an away Runner is
