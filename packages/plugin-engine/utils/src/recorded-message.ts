@@ -9,7 +9,9 @@ import { Predicate } from "effect";
  * `ApiError` and `UserFacingError` declare a fixed message for you; a message derived from fields
  * declares `recorded`.
  */
-export const RecordedMessage: unique symbol = Symbol.for("@opensteer/plugin-engine-utils/RecordedMessage");
+export const RecordedMessage: unique symbol = Symbol.for(
+  "@opensteer/plugin-engine-utils/RecordedMessage",
+);
 
 /** The fixed sentence an error declares for telemetry, if it declares one. */
 export const recordedMessage = (error: unknown): string | undefined => {

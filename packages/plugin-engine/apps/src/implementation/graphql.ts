@@ -324,15 +324,13 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
               Effect.mapError(() => new GraphqlError({ phase, reason: "invalid_response" })),
             );
             if (result.errors?.length)
-              return yield* (
-                graphqlProviderError(result.errors, response.status) ??
-                  new GraphqlError({
-                    phase,
-                    reason: "execution",
-                    status: response.status,
-                    ...statedErrors(result.errors),
-                  })
-              );
+              return yield* graphqlProviderError(result.errors, response.status) ??
+                new GraphqlError({
+                  phase,
+                  reason: "execution",
+                  status: response.status,
+                  ...statedErrors(result.errors),
+                });
             if (result.data == null)
               return yield* new GraphqlError({ phase, reason: "invalid_response" });
             return result.data;

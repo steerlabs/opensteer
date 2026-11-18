@@ -173,8 +173,7 @@ const groupUniques = (
 
 /** A database default, reduced to something a PluginDatabase column can express. */
 type IntrospectedDefault =
-  | { readonly _tag: "Now" }
-  | { readonly _tag: "Value"; readonly value: unknown };
+  { readonly _tag: "Now" } | { readonly _tag: "Value"; readonly value: unknown };
 
 /**
  * Remove the parentheses MSSQL wraps around every default constraint

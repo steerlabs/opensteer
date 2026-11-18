@@ -435,13 +435,11 @@ export function createRequest(config: {
                   upstream: statedUpstream(declared.code, declared.message),
                 });
           const upstream = json === undefined ? undefined : bodyUpstreamError(json);
-          return yield* (
-            declared ??
-              (provider === undefined || upstream === undefined
-                ? provider
-                : providerErrorDetail(provider, { upstream })) ??
-              new OpenapiError({ reason: "request", operation, ...responseShape(response) })
-          );
+          return yield* declared ??
+            (provider === undefined || upstream === undefined
+              ? provider
+              : providerErrorDetail(provider, { upstream })) ??
+            new OpenapiError({ reason: "request", operation, ...responseShape(response) });
         }
         if (response.status === 204 || prepared.method === "HEAD") return null;
         // A success whose body cannot be read within the limits names that response.

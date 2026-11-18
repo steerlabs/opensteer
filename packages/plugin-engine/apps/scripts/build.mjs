@@ -238,12 +238,7 @@ await writeFile(
         "./runtime.json": "./runtime.json",
         "./framework-reference.json": "./framework-reference.json",
       },
-      files: [
-        "js",
-        "types",
-        "runtime.json",
-        "framework-reference.json",
-      ],
+      files: ["js", "types", "runtime.json", "framework-reference.json"],
       dependencies: {
         effect: manifest.dependencies.effect,
         "@cloudflare/workers-types": manifest.devDependencies["@cloudflare/workers-types"],

@@ -644,16 +644,19 @@ const storedOAuthClientsByIssuer = table("plugin_engine_stored_oauth_clients", {
  * are one client per owner and authorization server. Rows written before keep their provider
  * digest and their provider; rows written from 4.0.12 have no provider.
  */
-const storedOAuthClientCredentialsByIssuer = table("plugin_engine_stored_oauth_client_credentials", {
-  id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-  owner: column("owner", OwnerId, { type: "varchar(255)" }),
-  provider: column("provider", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
-  client: column("client", OAuthClientId, { type: "varchar(255)" }),
-  withdrawal: column("withdrawal", Schema.NullOr(CredentialsWithdrawal), {
-    type: "varchar(32)",
-  }).default(null),
-  createdAt: column("created_at", Schema.Date),
-});
+const storedOAuthClientCredentialsByIssuer = table(
+  "plugin_engine_stored_oauth_client_credentials",
+  {
+    id: idColumn("id", Schema.String, { type: "varchar(255)" }),
+    owner: column("owner", OwnerId, { type: "varchar(255)" }),
+    provider: column("provider", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
+    client: column("client", OAuthClientId, { type: "varchar(255)" }),
+    withdrawal: column("withdrawal", Schema.NullOr(CredentialsWithdrawal), {
+      type: "varchar(32)",
+    }).default(null),
+    createdAt: column("created_at", Schema.Date),
+  },
+);
 
 /** Tables of the 4.0.12 layout. */
 export const version4012Tables = {

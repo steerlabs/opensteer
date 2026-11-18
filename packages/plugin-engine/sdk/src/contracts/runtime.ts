@@ -232,8 +232,7 @@ export interface RuntimePublicFile {
 }
 /** A private browser asset returned to an authenticated serving host. */
 export type RuntimeAsset =
-  | { readonly body: Uint8Array; readonly contentType: string }
-  | RuntimePublicFile;
+  { readonly body: Uint8Array; readonly contentType: string } | RuntimePublicFile;
 /** Parsed successful build result. */
 export type BuiltApp = typeof BuiltApp.Type;
 
@@ -398,9 +397,7 @@ export class RuntimeAppsDependencyMissing extends Schema.TaggedError<RuntimeApps
 }
 /** Loading retained code and decoding the framework protocol are host failures. */
 export type RuntimeLoadError =
-  | RuntimeBuildUnavailable
-  | RuntimeProtocolFailed
-  | RuntimeProtocolUnsupported;
+  RuntimeBuildUnavailable | RuntimeProtocolFailed | RuntimeProtocolUnsupported;
 
 /** Framework-facing operations, independent of Node or Cloudflare bindings. */
 

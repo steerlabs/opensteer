@@ -23,9 +23,12 @@ export type Owner = "pluginEngine" | "app" | "upstream" | "person" | "lease" | "
 /** The attribute that shows a boundary's owner in the trace; the telemetry tracer sets it. */
 export const ownerAttribute = "pluginEngine.owner";
 
-const SpanOwner = Context.Reference<Owner | undefined>("@opensteer/plugin-engine-telemetry/SpanOwner", {
-  defaultValue: () => undefined,
-});
+const SpanOwner = Context.Reference<Owner | undefined>(
+  "@opensteer/plugin-engine-telemetry/SpanOwner",
+  {
+    defaultValue: () => undefined,
+  },
+);
 
 /** The owner a span declared when it started, if it is an ownership boundary. */
 export const declaredOwner = (annotations: Context.Context<never>) =>

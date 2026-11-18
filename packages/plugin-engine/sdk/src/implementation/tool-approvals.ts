@@ -112,9 +112,7 @@ export function makeToolApprovals(
         yield* prune(invocation.owner);
         const id = ApprovalRequestId.make(`apr_${yield* next}`);
         yield* Effect.annotateCurrentSpan("pluginEngine.approval.id", id);
-        const expiresAt = new Date(
-          (yield* Clock.currentTimeMillis) + (yield* ToolApprovalTtlMs),
-        );
+        const expiresAt = new Date((yield* Clock.currentTimeMillis) + (yield* ToolApprovalTtlMs));
         const payload = yield* Schema.encodeEffect(ApprovalPayload)({
           invocation,
           originalInput,

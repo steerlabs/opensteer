@@ -17,7 +17,11 @@ import { makeWorkflowRuns } from "./workflows.ts";
 import { Effect } from "effect";
 import type { Digest, SecureRandom } from "effect/crypto";
 import { hostCrypto } from "./host-crypto.ts";
-import type { PluginEngine, PluginEngineOptions, RemotePluginEngineOptions } from "../contracts/pluginEngine.ts";
+import type {
+  PluginEngine,
+  PluginEngineOptions,
+  RemotePluginEngineOptions,
+} from "../contracts/pluginEngine.ts";
 import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
@@ -256,7 +260,11 @@ export const createPluginEngine = (
             Effect.withSpan("sdk.accounts.revocation"),
           ),
       },
-      managedAccounts: { add, replaceCredentials, completeBrokeredOAuth: oauth.completeBrokeredOAuth },
+      managedAccounts: {
+        add,
+        replaceCredentials,
+        completeBrokeredOAuth: oauth.completeBrokeredOAuth,
+      },
       accountConnections: {
         ...connections,
         ...oauth.connections,

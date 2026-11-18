@@ -79,7 +79,8 @@ export const readPluginEngineSkillDocuments = Effect.gen(function* () {
       path.dirname(
         yield* path.fromFileUrl(
           new URL(
-            import.meta.resolve("@opensteer/plugin-engine-app-templates/pluginEngine/skills/pluginEngine/SKILL.md"),
+            import.meta
+              .resolve("@opensteer/plugin-engine-app-templates/pluginEngine/skills/pluginEngine/SKILL.md"),
           ),
         ),
       ),

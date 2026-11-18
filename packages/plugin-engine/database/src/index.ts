@@ -1,6 +1,11 @@
 /** Effect-native schema, query, and migration services. */
 export { pluginDatabase } from "./implementation/database.ts";
-export type { PluginDatabase, PluginDatabaseFactory, InferPluginDatabase, InferOrm } from "./contracts/database.ts";
+export type {
+  PluginDatabase,
+  PluginDatabaseFactory,
+  InferPluginDatabase,
+  InferOrm,
+} from "./contracts/database.ts";
 export type { Adapter, AdapterContext, LibraryConfig } from "./contracts/adapter.ts";
 export {
   MigrationError,

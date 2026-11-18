@@ -1,4 +1,7 @@
-import { UserFacingError, type ErrorPresentation } from "@opensteer/plugin-engine-utils/user-facing-error";
+import {
+  UserFacingError,
+  type ErrorPresentation,
+} from "@opensteer/plugin-engine-utils/user-facing-error";
 import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
 import { withLegacyKeys } from "@opensteer/plugin-engine-utils/legacy-keys";
 import { DeclaredRequirements } from "apps/contracts";

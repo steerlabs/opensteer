@@ -1605,7 +1605,7 @@ export const makeTools = (
         const state = yield* listed(input);
         const listing =
           options?.storedOnly === true
-            ? yield* (yield* listings.kept(state))
+            ? yield* yield* listings.kept(state)
             : yield* listings.read(state, listingOf(state), options);
         if (listing === undefined) return yield* new StorageError();
         // Pages share the listing's item objects, so a caller can recognise a kept listing.
@@ -1863,7 +1863,8 @@ export const makeTools = (
                           Effect.fail(
                             new ToolCallFailed({
                               ...identity,
-                              reason: "PluginEngine failed unexpectedly while handling this tool call.",
+                              reason:
+                                "PluginEngine failed unexpectedly while handling this tool call.",
                               mayHaveWritten: true,
                             }),
                           ),
@@ -1883,7 +1884,10 @@ export const makeTools = (
         .pipe(Effect.withSpan("sdk.tools.pruneApprovals")),
     approval: (input: Parameters<PluginEngine["tools"]["approval"]>[0]) =>
       approvals.get(input.requestId, input.owner).pipe(Effect.withSpan("sdk.tools.approval")),
-    resume: (input: Parameters<PluginEngine["tools"]["resume"]>[0], options?: ToolInvocationOptions) =>
+    resume: (
+      input: Parameters<PluginEngine["tools"]["resume"]>[0],
+      options?: ToolInvocationOptions,
+    ) =>
       Schema.decodeUnknownEffect(ToolInputs.resume)(input, { onExcessProperty: "error" })
         .pipe(
           Effect.mapError(() => new RequestInvalid()),

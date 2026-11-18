@@ -884,7 +884,8 @@ export const makeApps = (
             );
           }
           const version = yield* storedVersion(tx, app, input.version);
-          if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(app.id, "activate");
+          if (lifecycle?.beforeResourceWrite)
+            yield* lifecycle.beforeResourceWrite(app.id, "activate");
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),

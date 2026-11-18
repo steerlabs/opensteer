@@ -13,7 +13,10 @@ import {
   eventAccess,
 } from "@opensteer/plugin-engine-authorization";
 import { AccountId, AppId, ToolName, type LinkedAccounts } from "@opensteer/plugin-engine-sdk/core";
-import { UserFacingError, type ErrorPresentation } from "@opensteer/plugin-engine-utils/user-facing-error";
+import {
+  UserFacingError,
+  type ErrorPresentation,
+} from "@opensteer/plugin-engine-utils/user-facing-error";
 import { Match, Schema } from "effect";
 import {
   ApprovalMode,

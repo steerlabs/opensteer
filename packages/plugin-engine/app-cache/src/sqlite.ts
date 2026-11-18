@@ -38,7 +38,9 @@ const initialize = (storage: CacheSqlStorage) =>
       fresh REAL NOT NULL, stale REAL NOT NULL, lease TEXT, lease_until REAL NOT NULL,
       bytes INTEGER NOT NULL, touched REAL NOT NULL, PRIMARY KEY(namespace, key)
     )`);
-    storage.sql.exec("CREATE INDEX IF NOT EXISTS plugin_engine_cache_expiry ON plugin_engine_cache(stale)");
+    storage.sql.exec(
+      "CREATE INDEX IF NOT EXISTS plugin_engine_cache_expiry ON plugin_engine_cache(stale)",
+    );
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS plugin_engine_cache_usage (
       id INTEGER PRIMARY KEY CHECK (id = 0), bytes INTEGER NOT NULL, count INTEGER NOT NULL
     )`);
@@ -147,7 +149,9 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
           };
           const bound = () => {
             const totals = Schema.decodeUnknownSync(Usage)(
-              storage.sql.exec("SELECT bytes, count FROM plugin_engine_cache_usage WHERE id = 0").one(),
+              storage.sql
+                .exec("SELECT bytes, count FROM plugin_engine_cache_usage WHERE id = 0")
+                .one(),
             );
             if (totals.bytes > cacheLimits.totalBytes)
               throw new CacheError({ reason: "capacity", limit: "totalBytes" });

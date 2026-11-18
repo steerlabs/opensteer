@@ -1,7 +1,15 @@
-import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/pluginEngine.ts";
+import {
+  CurrentActor,
+  type AppAccountUse,
+  type ResourceLifecycle,
+} from "../contracts/pluginEngine.ts";
 import type { BackgroundWork } from "../contracts/declarations.ts";
 /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
-import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@opensteer/plugin-engine-utils/url-policy";
+import {
+  parseDestination,
+  parseEndpoint,
+  httpsOnlyUrlPolicy,
+} from "@opensteer/plugin-engine-utils/url-policy";
 import {
   Array as Arr,
   Clock,
@@ -336,7 +344,10 @@ interface Resolution {
  * or checking an account outside the app's code.
  */
 type CredentialUse =
-  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId } }
+  | {
+      readonly kind: "run";
+      readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId };
+    }
   | { readonly kind: "removal"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
   | { readonly kind: "check" };
 /**
@@ -647,9 +658,8 @@ export const makeOAuth = (
       .pipe(Effect.map(Hex.encode));
   const nextId = crypto.random.uuidV4();
   const protocol = options === undefined ? undefined : makeOAuthProtocol(options);
-  const firstPartyClients = () => new Map(
-    (options?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
-  );
+  const firstPartyClients = () =>
+    new Map((options?.firstPartyClients ?? []).map((client) => [client.id, client] as const));
   /**
    * The scopes a token response for the operator's client reports granting, or undefined when it
    * reports none, which grants what was requested (RFC 6749 §5.1) or, on renewal, what the grant
@@ -848,16 +858,23 @@ export const makeOAuth = (
     Effect.gen(function* () {
       if (isFirstPartyGrant(grant) && grant.broker !== undefined) {
         const broker = grant.broker;
-        if (options?.broker === undefined || !(yield* brokerCurrent(grant.firstParty, broker)) || grant.refreshToken === undefined) return undefined;
+        if (
+          options?.broker === undefined ||
+          !(yield* brokerCurrent(grant.firstParty, broker)) ||
+          grant.refreshToken === undefined
+        )
+          return undefined;
         if (yield* inTransaction) return yield* new StorageError();
         const port = options.broker;
         const resultId = `${broker.attemptId}:${broker.renewalGeneration}`;
         return {
           attributes: { "oauth.client.kind": "first_party" },
-          request: port.refresh({ ...broker, resultId, refreshToken: Redacted.make(grant.refreshToken) }).pipe(
-            Effect.flatMap((result) => brokerTokens(broker, result)),
-            Effect.mapError(brokerProtocolFailure),
-          ),
+          request: port
+            .refresh({ ...broker, resultId, refreshToken: Redacted.make(grant.refreshToken) })
+            .pipe(
+              Effect.flatMap((result) => brokerTokens(broker, result)),
+              Effect.mapError(brokerProtocolFailure),
+            ),
           acknowledge: acknowledgeBroker(broker, "refresh", resultId),
         };
       }
@@ -1932,7 +1949,9 @@ export const makeOAuth = (
       const now = yield* Clock.currentTimeMillis;
       const encrypted = yield* encrypt(id, attempt);
       const pending = yield* openConnection(db, input);
-      const expiresAt = new Date(Math.min(now + 10 * 60_000, pending.expiresAt.getTime(), brokerExpiry ?? Infinity));
+      const expiresAt = new Date(
+        Math.min(now + 10 * 60_000, pending.expiresAt.getTime(), brokerExpiry ?? Infinity),
+      );
       yield* transaction(db, (tx) =>
         Effect.gen(function* () {
           const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
@@ -1984,11 +2003,14 @@ export const makeOAuth = (
         };
         if (binding.requirementDigest !== (yield* requirementDigest(db, input))) {
           const { target } = yield* openConnection(db, input);
-          return yield* new AccountConnectionTargetChanged({ app: target.app, requirement: target.requirement });
+          return yield* new AccountConnectionTargetChanged({
+            app: target.app,
+            requirement: target.requirement,
+          });
         }
-        const started = yield* port.start({ connection: input.connection, owner: input.owner, binding }).pipe(
-          Effect.mapError(() => new OAuthSetupFailed({ reason: "service_unavailable" })),
-        );
+        const started = yield* port
+          .start({ connection: input.connection, owner: input.owner, binding })
+          .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "service_unavailable" })));
         const broker = yield* decode(BrokeredOAuthAttempt, {
           attemptId: started.attemptId,
           binding: { ...binding, accountLinkGeneration: started.accountLinkGeneration },
@@ -1998,13 +2020,20 @@ export const makeOAuth = (
           return yield* new OAuthSetupFailed({ reason: "incompatible_response" });
         const id = OAuthAttemptId.make(`broker_${broker.attemptId}`);
         const attempt = yield* decode(OAuthFirstPartyAttempt, {
-          ...input, broker, firstParty: firstParty.client.id, response,
+          ...input,
+          broker,
+          firstParty: firstParty.client.id,
+          response,
           redirectUri: binding.redirectUri,
-          state: yield* nextId, verifier: yield* nextId,
+          state: yield* nextId,
+          verifier: yield* nextId,
           account: existing?.id ?? AccountId.make(`acc_${yield* nextId}`),
           ...(existing === undefined ? {} : { reconnect: true }),
         });
-        return { ...(yield* saveAttempt(input, id, attempt, started.authorizationUrl, started.expiresAt)), brokerAttemptId: broker.attemptId };
+        return {
+          ...(yield* saveAttempt(input, id, attempt, started.authorizationUrl, started.expiresAt)),
+          brokerAttemptId: broker.attemptId,
+        };
       }
       const operator = yield* operatorClient(firstParty.client.id);
       if (operator === undefined) return yield* new OAuthClientUnavailable(input);
@@ -2133,7 +2162,8 @@ export const makeOAuth = (
       if (row.expiresAt.getTime() <= now) return yield* failed("sign_in_expired");
       const raw = yield* decrypt(id, row.encrypted, JsonObject);
       const attempt = yield* decode(OAuthAttemptRecord, raw);
-      if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) return yield* failed("callback_malformed");
+      if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined)
+        return yield* failed("callback_malformed");
       yield* Effect.annotateCurrentSpan("oauth.provider.id", attempt.provider);
       // A sign-in started before 4.0.10 with a saved client names it as `savedClient`, which this
       // version does not read. That client is now a stored client the product authorizes, so
@@ -2312,151 +2342,166 @@ export const makeOAuth = (
     id: OAuthAttemptId,
     attempt: typeof OAuthAttemptRecord.Type,
     legacySavedClient: boolean,
-    brokeredTokens?: { readonly access_token: string; readonly token_type: "bearer"; readonly scope: string; readonly refresh_token?: string; readonly expires_in?: number; readonly brokerExpiresAt?: number },
+    brokeredTokens?: {
+      readonly access_token: string;
+      readonly token_type: "bearer";
+      readonly scope: string;
+      readonly refresh_token?: string;
+      readonly expires_in?: number;
+      readonly brokerExpiresAt?: number;
+    },
   ) =>
     Effect.gen(function* () {
       if (attempt.reconnect) yield* reconnectTarget(db, attempt);
       const exchange = yield* Effect.gen(function* () {
         if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) {
-          if (brokeredTokens === undefined || !(yield* brokerCurrent(attempt.firstParty, attempt.broker))) return yield* failed("client_unavailable");
+          if (
+            brokeredTokens === undefined ||
+            !(yield* brokerCurrent(attempt.firstParty, attempt.broker))
+          )
+            return yield* failed("client_unavailable");
           return { tokens: brokeredTokens, scope: undefined, named: undefined, holding: undefined };
         }
-      // An attempt with the operator's client signs in with its current configuration only.
-      const operating = isFirstPartyAttempt(attempt)
-        ? yield* operatorClient(attempt.firstParty).pipe(
-            Effect.map((operator) =>
-              operator === undefined ? undefined : { ...attempt, ...operator },
-            ),
+        // An attempt with the operator's client signs in with its current configuration only.
+        const operating = isFirstPartyAttempt(attempt)
+          ? yield* operatorClient(attempt.firstParty).pipe(
+              Effect.map((operator) =>
+                operator === undefined ? undefined : { ...attempt, ...operator },
+              ),
+            )
+          : attempt;
+        if (operating === undefined)
+          return yield* new OAuthCompletionFailed({
+            reason: "invalid_client",
+            cause: { stage: "exchange" },
+          });
+        // A sign-in started before 4.0.10 with a saved client cannot be authorized: it names no
+        // stored client. Sign-ins last ten minutes, so it fails closed and the person starts again.
+        if (legacySavedClient) return yield* failed("client_unavailable");
+        const storedRef = isFirstPartyAttempt(attempt) ? undefined : attempt.storedClient;
+        // The server this sign-in signs in at, whose clients its credentials belong to.
+        const scope: ClientScope | undefined = isFirstPartyAttempt(attempt)
+          ? undefined
+          : { ...attempt, issuer: oauthClientIssuer(attempt.server) };
+        // Who may use a stored client can change while the browser is at the service: the product,
+        // when it decides that, authorizes it again before its code is exchanged.
+        const named =
+          storedRef === undefined || scope === undefined
+            ? undefined
+            : yield* storedRow(storedRef.id, scope);
+        if (named !== undefined && !(yield* clientAuthorized(named)))
+          return yield* failed("client_unavailable");
+        // Otherwise the credentials the attempt holds decide, read where their client recorded them.
+        // An attempt that started with credentials no stored client held, such as a reconnect
+        // reusing its grant's copy, may find them stored since, as when data step
+        // 6_stored_oauth_clients moves a saved client during consent. So may one whose client is
+        // gone and whose credentials were registered again. They are that client now, so the product
+        // authorizes it like any other, and the grant names it.
+        const holder =
+          isFirstPartyAttempt(attempt) || scope === undefined || named !== undefined
+            ? undefined
+            : yield* credentialsHolder(scope, attempt.client);
+        // A client that is gone withdrew its credentials, and the attempt fails closed without the
+        // product being asked or the code exchanged, since there is nothing left to authorize: a
+        // person removed it, or PluginEngine discarded it. Its stored client gone with no record of its
+        // credentials (its owner removed) fails closed too.
+        if (storedRef !== undefined && holder === undefined && named === undefined)
+          return yield* failed("client_unavailable");
+        if (holder?.kind === "withdrawn") {
+          // The service refused this attempt's registered client for another sign-in, so this one
+          // reports that refusal, as its own exchange would have, without asking the service again.
+          if (
+            storedRef?.source === "registered" &&
+            holder.client === storedRef.id &&
+            holder.withdrawal === "rejected"
           )
-        : attempt;
-      if (operating === undefined)
-        return yield* new OAuthCompletionFailed({
-          reason: "invalid_client",
-          cause: { stage: "exchange" },
-        });
-      // A sign-in started before 4.0.10 with a saved client cannot be authorized: it names no
-      // stored client. Sign-ins last ten minutes, so it fails closed and the person starts again.
-      if (legacySavedClient) return yield* failed("client_unavailable");
-      const storedRef = isFirstPartyAttempt(attempt) ? undefined : attempt.storedClient;
-      // The server this sign-in signs in at, whose clients its credentials belong to.
-      const scope: ClientScope | undefined = isFirstPartyAttempt(attempt)
-        ? undefined
-        : { ...attempt, issuer: oauthClientIssuer(attempt.server) };
-      // Who may use a stored client can change while the browser is at the service: the product,
-      // when it decides that, authorizes it again before its code is exchanged.
-      const named =
-        storedRef === undefined || scope === undefined
-          ? undefined
-          : yield* storedRow(storedRef.id, scope);
-      if (named !== undefined && !(yield* clientAuthorized(named)))
-        return yield* failed("client_unavailable");
-      // Otherwise the credentials the attempt holds decide, read where their client recorded them.
-      // An attempt that started with credentials no stored client held, such as a reconnect
-      // reusing its grant's copy, may find them stored since, as when data step
-      // 6_stored_oauth_clients moves a saved client during consent. So may one whose client is
-      // gone and whose credentials were registered again. They are that client now, so the product
-      // authorizes it like any other, and the grant names it.
-      const holder =
-        isFirstPartyAttempt(attempt) || scope === undefined || named !== undefined
-          ? undefined
-          : yield* credentialsHolder(scope, attempt.client);
-      // A client that is gone withdrew its credentials, and the attempt fails closed without the
-      // product being asked or the code exchanged, since there is nothing left to authorize: a
-      // person removed it, or PluginEngine discarded it. Its stored client gone with no record of its
-      // credentials (its owner removed) fails closed too.
-      if (storedRef !== undefined && holder === undefined && named === undefined)
-        return yield* failed("client_unavailable");
-      if (holder?.kind === "withdrawn") {
-        // The service refused this attempt's registered client for another sign-in, so this one
-        // reports that refusal, as its own exchange would have, without asking the service again.
-        if (
-          storedRef?.source === "registered" &&
-          holder.client === storedRef.id &&
-          holder.withdrawal === "rejected"
-        )
-          return yield* failed(
-            storedRef.fresh ? "registered_client_incompatible" : "registered_client_rejected",
-          );
-        return yield* failed("client_unavailable");
-      }
-      const holding = holder?.kind === "held" ? holder.row : undefined;
-      if (holding !== undefined && !(yield* clientAuthorized(holding)))
-        return yield* failed("client_unavailable");
-      const sent = sentResource(
-        operating.resource,
-        isFirstPartyAttempt(attempt) ? "operator" : attempt.resourceSource,
-      );
-      // Whose client this sign-in exchanges its code as: a stored client once one names or holds
-      // its credentials.
-      const clientKind: OAuthClientKind = isFirstPartyAttempt(attempt)
-        ? { kind: "first_party", id: attempt.firstParty }
-        : (named ?? holding) === undefined
-          ? { kind: "entered" }
-          : { kind: "stored" };
-      const parameters = yield* protocol
-        .callback({ ...operating, clientKind }, callback!)
-        .pipe(Effect.mapError((error) => callbackFailed(error, sent)));
-      const tokens = yield* protocol.exchange({ ...operating, clientKind }, parameters).pipe(
-        Effect.mapError((error) => exchangeFailed(error, sent)),
-        Effect.catchIf(
-          (error) => error.reason === "invalid_client" && storedRef?.source === "registered",
-          (error) =>
-            Effect.gen(function* () {
-              const stored = storedRef;
-              if (stored === undefined || scope === undefined || isFirstPartyAttempt(attempt))
-                return yield* error;
-              const version = yield* Effect.fromResult(Base64.decode(stored.version)).pipe(
-                Effect.mapError(() => new StorageError()),
-              );
-              // Only the version this attempt used: a client saved since then stays. Its credentials
-              // are withdrawn as the service's refusal, which other sign-ins pending with it report
-              // without an exchange, unless a person removed it first.
-              // The rejected client's own identity: a client stored before 4.0.12 keeps its
-              // provider's until its server is recorded.
-              const rejectedRow = named ?? holding;
-              const digest =
-                rejectedRow === undefined
-                  ? yield* digestOf(scope, registrationCredentials(attempt.client))
-                  : yield* storedDigestOf(rejectedRow, registrationCredentials(attempt.client));
-              const after = yield* transaction(db, (tx) =>
-                Effect.gen(function* () {
-                  yield* query(() =>
-                    tx.deleteMany("storedOAuthClients", {
-                      where: (b) => b.and(b("id", "=", stored.id), b("encrypted", "=", version)),
-                    }),
-                  );
-                  yield* withdrawCredentials(tx, stored.id, "rejected");
-                  return yield* credentialsOwner(tx, digest);
-                }),
-              );
-              // A person may have removed the client while the code was being exchanged, and a
-              // removal is never recorded over. Then the client is unavailable, as for any sign-in
-              // pending with it; the service's refusal is reported only when it is what was recorded.
-              if (
-                after?.kind !== "withdrawn" ||
-                after.client !== stored.id ||
-                after.withdrawal !== "rejected"
-              )
-                return yield* failed("client_unavailable");
-              return yield* new OAuthCompletionFailed({
-                reason: stored.fresh
-                  ? "registered_client_incompatible"
-                  : "registered_client_rejected",
-                ...(error.cause === undefined ? {} : { cause: error.cause }),
-                ...(error.serviceError === undefined ? {} : { serviceError: error.serviceError }),
-              });
-            }),
-        ),
-      );
+            return yield* failed(
+              storedRef.fresh ? "registered_client_incompatible" : "registered_client_rejected",
+            );
+          return yield* failed("client_unavailable");
+        }
+        const holding = holder?.kind === "held" ? holder.row : undefined;
+        if (holding !== undefined && !(yield* clientAuthorized(holding)))
+          return yield* failed("client_unavailable");
+        const sent = sentResource(
+          operating.resource,
+          isFirstPartyAttempt(attempt) ? "operator" : attempt.resourceSource,
+        );
+        // Whose client this sign-in exchanges its code as: a stored client once one names or holds
+        // its credentials.
+        const clientKind: OAuthClientKind = isFirstPartyAttempt(attempt)
+          ? { kind: "first_party", id: attempt.firstParty }
+          : (named ?? holding) === undefined
+            ? { kind: "entered" }
+            : { kind: "stored" };
+        const parameters = yield* protocol
+          .callback({ ...operating, clientKind }, callback!)
+          .pipe(Effect.mapError((error) => callbackFailed(error, sent)));
+        const tokens = yield* protocol.exchange({ ...operating, clientKind }, parameters).pipe(
+          Effect.mapError((error) => exchangeFailed(error, sent)),
+          Effect.catchIf(
+            (error) => error.reason === "invalid_client" && storedRef?.source === "registered",
+            (error) =>
+              Effect.gen(function* () {
+                const stored = storedRef;
+                if (stored === undefined || scope === undefined || isFirstPartyAttempt(attempt))
+                  return yield* error;
+                const version = yield* Effect.fromResult(Base64.decode(stored.version)).pipe(
+                  Effect.mapError(() => new StorageError()),
+                );
+                // Only the version this attempt used: a client saved since then stays. Its credentials
+                // are withdrawn as the service's refusal, which other sign-ins pending with it report
+                // without an exchange, unless a person removed it first.
+                // The rejected client's own identity: a client stored before 4.0.12 keeps its
+                // provider's until its server is recorded.
+                const rejectedRow = named ?? holding;
+                const digest =
+                  rejectedRow === undefined
+                    ? yield* digestOf(scope, registrationCredentials(attempt.client))
+                    : yield* storedDigestOf(rejectedRow, registrationCredentials(attempt.client));
+                const after = yield* transaction(db, (tx) =>
+                  Effect.gen(function* () {
+                    yield* query(() =>
+                      tx.deleteMany("storedOAuthClients", {
+                        where: (b) => b.and(b("id", "=", stored.id), b("encrypted", "=", version)),
+                      }),
+                    );
+                    yield* withdrawCredentials(tx, stored.id, "rejected");
+                    return yield* credentialsOwner(tx, digest);
+                  }),
+                );
+                // A person may have removed the client while the code was being exchanged, and a
+                // removal is never recorded over. Then the client is unavailable, as for any sign-in
+                // pending with it; the service's refusal is reported only when it is what was recorded.
+                if (
+                  after?.kind !== "withdrawn" ||
+                  after.client !== stored.id ||
+                  after.withdrawal !== "rejected"
+                )
+                  return yield* failed("client_unavailable");
+                return yield* new OAuthCompletionFailed({
+                  reason: stored.fresh
+                    ? "registered_client_incompatible"
+                    : "registered_client_rejected",
+                  ...(error.cause === undefined ? {} : { cause: error.cause }),
+                  ...(error.serviceError === undefined ? {} : { serviceError: error.serviceError }),
+                });
+              }),
+          ),
+        );
         return { tokens, scope, named, holding };
       });
       const { tokens, scope, named, holding } = exchange;
       // The operator's client keeps no grant holding a scope it does not allow.
       if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
-        yield* revokeRefused(attempt.firstParty, {
-          refreshToken: tokens.refresh_token,
-          accessToken: tokens.access_token,
-        }, attempt.broker);
+        yield* revokeRefused(
+          attempt.firstParty,
+          {
+            refreshToken: tokens.refresh_token,
+            accessToken: tokens.access_token,
+          },
+          attempt.broker,
+        );
         return yield* new OAuthCompletionFailed({
           reason: "scope_exceeded",
           cause: { stage: "exchange", field: "scope" },
@@ -2483,7 +2528,9 @@ export const makeOAuth = (
         redirectUri: attempt.redirectUri,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
         ...expiry(completedAt, tokens.expires_in),
-        ...(brokeredTokens?.brokerExpiresAt === undefined ? {} : { expiresAt: brokeredTokens.brokerExpiresAt }),
+        ...(brokeredTokens?.brokerExpiresAt === undefined
+          ? {}
+          : { expiresAt: brokeredTokens.brokerExpiresAt }),
       };
       // An entered client the connection asked to keep becomes a stored client of its owner,
       // unless one holds it already.
@@ -2522,7 +2569,24 @@ export const makeOAuth = (
         decode(
           OAuthGrant,
           isFirstPartyAttempt(attempt)
-            ? { ...issued, grant: "authorization_code", firstParty: attempt.firstParty, ...(attempt.broker === undefined ? {} : { broker: { ...attempt.broker, renewalGeneration: 0, grantedScopes: tokens.scope === undefined ? attempt.broker.binding.scopes : tokens.scope.split(/\s+/u).filter(Boolean) } }), generation }
+            ? {
+                ...issued,
+                grant: "authorization_code",
+                firstParty: attempt.firstParty,
+                ...(attempt.broker === undefined
+                  ? {}
+                  : {
+                      broker: {
+                        ...attempt.broker,
+                        renewalGeneration: 0,
+                        grantedScopes:
+                          tokens.scope === undefined
+                            ? attempt.broker.binding.scopes
+                            : tokens.scope.split(/\s+/u).filter(Boolean),
+                      },
+                    }),
+                generation,
+              }
             : {
                 ...issued,
                 server: attempt.server,
@@ -2546,10 +2610,24 @@ export const makeOAuth = (
           // A newer sign-in started while the token exchange was running.
           if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
           if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) {
-            yield* lockApp(tx, { app: current.target.app, owner: current.target.owner }).pipe(Effect.catchTag("AppNotFound", () => Effect.fail(new AccountConnectionTargetChanged({ app: current.target.app, requirement: current.target.requirement }))));
+            yield* lockApp(tx, { app: current.target.app, owner: current.target.owner }).pipe(
+              Effect.catchTag("AppNotFound", () =>
+                Effect.fail(
+                  new AccountConnectionTargetChanged({
+                    app: current.target.app,
+                    requirement: current.target.requirement,
+                  }),
+                ),
+              ),
+            );
             if ((yield* requirementDigest(tx, input)) !== attempt.broker.binding.requirementDigest)
-              return yield* new AccountConnectionTargetChanged({ app: current.target.app, requirement: current.target.requirement });
-            yield* validateBroker(attempt.firstParty, attempt.broker).pipe(Effect.mapError(() => failed("client_unavailable")));
+              return yield* new AccountConnectionTargetChanged({
+                app: current.target.app,
+                requirement: current.target.requirement,
+              });
+            yield* validateBroker(attempt.firstParty, attempt.broker).pipe(
+              Effect.mapError(() => failed("client_unavailable")),
+            );
           }
           // A person may have removed the stored client while its code was being exchanged. The
           // no-op update locks its row in the order a removal takes it, so a removal either commits
@@ -2709,7 +2787,12 @@ export const makeOAuth = (
         // Renew again from the saved grant, as it would have. See renewalLease.
         const abandoned = claimed;
         const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
-        if (isFirstPartyGrant(grant) && grant.broker !== undefined && !(yield* brokerCurrent(grant.firstParty, grant.broker))) return yield* reconnect("grant_unusable");
+        if (
+          isFirstPartyGrant(grant) &&
+          grant.broker !== undefined &&
+          !(yield* brokerCurrent(grant.firstParty, grant.broker))
+        )
+          return yield* reconnect("grant_unusable");
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         // The service refused exactly the credentials this grant still holds. A grant another
         // call has renewed since then holds different ones, which this call uses instead.
@@ -2868,12 +2951,25 @@ export const makeOAuth = (
             decode(OAuthGrant, {
               ...Struct.omit(base, ["expiresAt"]),
               fields,
-              ...(isFirstPartyGrant(base) && base.broker !== undefined ? { broker: { ...base.broker, renewalGeneration: base.broker.renewalGeneration + 1, grantedScopes: tokens.scope === undefined ? base.broker.grantedScopes : tokens.scope.split(/\s+/u).filter(Boolean) } } : {}),
+              ...(isFirstPartyGrant(base) && base.broker !== undefined
+                ? {
+                    broker: {
+                      ...base.broker,
+                      renewalGeneration: base.broker.renewalGeneration + 1,
+                      grantedScopes:
+                        tokens.scope === undefined
+                          ? base.broker.grantedScopes
+                          : tokens.scope.split(/\s+/u).filter(Boolean),
+                    },
+                  }
+                : {}),
               ...(base.grant === "client_credentials" || refreshToken === undefined
                 ? {}
                 : { refreshToken }),
               ...expiry(updatedAt.getTime(), tokens.expires_in),
-              ...("brokerExpiresAt" in tokens && typeof tokens.brokerExpiresAt === "number" ? { expiresAt: tokens.brokerExpiresAt } : {}),
+              ...("brokerExpiresAt" in tokens && typeof tokens.brokerExpiresAt === "number"
+                ? { expiresAt: tokens.brokerExpiresAt }
+                : {}),
             }).pipe(Effect.flatMap((updated) => encrypt(account.id, updated)));
           const renewed = yield* renewedFrom(grant);
           const encryptedCredentials = yield* encrypt(account.id, fields);
@@ -2885,7 +2981,9 @@ export const makeOAuth = (
               );
               if (saved === null) return false;
               if (isFirstPartyGrant(grant) && grant.broker !== undefined)
-                yield* validateBroker(grant.firstParty, grant.broker).pipe(Effect.mapError(() => new StorageError()));
+                yield* validateBroker(grant.firstParty, grant.broker).pipe(
+                  Effect.mapError(() => new StorageError()),
+                );
               // Only the tokens are this renewal's. The grant is written on the condition that it
               // still holds what was read, and read again otherwise, so a write that kept the
               // claim is carried forward rather than replaced by the grant this renewal started
@@ -3146,7 +3244,12 @@ export const makeOAuth = (
         if (!row.status.startsWith("ready_")) continue;
         const now = yield* Clock.currentTimeMillis;
         const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
-        if (isFirstPartyGrant(grant) && grant.broker !== undefined && !(yield* brokerCurrent(grant.firstParty, grant.broker))) return yield* reconnect("grant_unusable");
+        if (
+          isFirstPartyGrant(grant) &&
+          grant.broker !== undefined &&
+          !(yield* brokerCurrent(grant.firstParty, grant.broker))
+        )
+          return yield* reconnect("grant_unusable");
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         if (
           grant.expiresAt === undefined ||
@@ -3453,8 +3556,12 @@ export const makeOAuth = (
         yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
         const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
         if (isFirstPartyGrant(stored) && stored.broker !== undefined) {
-          if (firstPartyClients().get(stored.firstParty)?.server.revocationUrl === undefined) return "unsupported" as const;
-          yield* revokeBroker(stored.broker, { refreshToken: stored.refreshToken, accessToken: stored.fields["access_token"] });
+          if (firstPartyClients().get(stored.firstParty)?.server.revocationUrl === undefined)
+            return "unsupported" as const;
+          yield* revokeBroker(stored.broker, {
+            refreshToken: stored.refreshToken,
+            accessToken: stored.fields["access_token"],
+          });
           return "revoked" as const;
         }
         // A grant to the operator's client is revoked at the client's configured endpoint.
@@ -3481,13 +3588,17 @@ export const makeOAuth = (
   ) =>
     revokeLater(
       settledRevocation(
-        broker === undefined ? operatorClient(id).pipe(
-          Effect.flatMap((operator) =>
-            operator === undefined
-              ? Effect.succeed("unsupported" as const)
-              : revokeTokens(operator, { kind: "first_party", id }, tokens),
-          ),
-        ) : firstPartyClients().get(id)?.server.revocationUrl === undefined ? Effect.succeed("unsupported") : revokeBroker(broker, tokens).pipe(Effect.as("revoked")),
+        broker === undefined
+          ? operatorClient(id).pipe(
+              Effect.flatMap((operator) =>
+                operator === undefined
+                  ? Effect.succeed("unsupported" as const)
+                  : revokeTokens(operator, { kind: "first_party", id }, tokens),
+              ),
+            )
+          : firstPartyClients().get(id)?.server.revocationUrl === undefined
+            ? Effect.succeed("unsupported")
+            : revokeBroker(broker, tokens).pipe(Effect.as("revoked")),
         "oauth.revokeRefused",
       ),
     );
@@ -3503,7 +3614,12 @@ export const makeOAuth = (
       const stored = yield* decrypt(account, row.encrypted, OAuthGrant);
       if (isFirstPartyGrant(stored) && stored.broker !== undefined) {
         const client = firstPartyClients().get(stored.firstParty);
-        return { revocation: client?.server.revocationUrl !== undefined && options?.broker !== undefined ? "automatic" as const : "manual" as const };
+        return {
+          revocation:
+            client?.server.revocationUrl !== undefined && options?.broker !== undefined
+              ? ("automatic" as const)
+              : ("manual" as const),
+        };
       }
       const grant = yield* operatingGrant(stored);
       if (grant === undefined) return { revocation: "manual" as const };

@@ -9,7 +9,9 @@ import { defineApp, object, query, router } from "apps";
 
 export default defineApp({}, async () => ({
   tools: router({
-    hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
+    hello: query({ description: "Say hello", input: object({}) }, async () => ({
+      message: "Hello",
+    })),
   }),
 }));
 ```

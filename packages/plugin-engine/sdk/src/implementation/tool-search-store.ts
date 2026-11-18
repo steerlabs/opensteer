@@ -205,10 +205,11 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
     listing: Record<string, unknown> & { readonly listing: ToolSearchListing },
   ): Effect.Effect<typeof Kept.Type | undefined, SqlError | Schema.SchemaError> =>
     Effect.gen(function* () {
-      const inserted = yield* sql`insert into plugin_engine_tool_search_listings ${sql.insert(listing)}
+      const inserted =
+        yield* sql`insert into plugin_engine_tool_search_listings ${sql.insert(listing)}
         on conflict (listing) do nothing returning listing`.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Listed))),
-      );
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Listed))),
+        );
       if (inserted.length > 0) return undefined;
       const [kept] = yield* sql`select at::float8 as at, digest, routers,
           superseded::float8 as superseded

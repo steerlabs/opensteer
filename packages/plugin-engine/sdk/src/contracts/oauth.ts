@@ -1,4 +1,7 @@
-import { UserFacingError, type ErrorPresentation } from "@opensteer/plugin-engine-utils/user-facing-error";
+import {
+  UserFacingError,
+  type ErrorPresentation,
+} from "@opensteer/plugin-engine-utils/user-facing-error";
 import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@opensteer/plugin-engine-utils/url-policy";
@@ -668,7 +671,8 @@ export const OAuthSetupFailed = UserFacingError.define({
   recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter }) => {
     // Forms that open client entry already show the callback, so only the fix prompt repeats it.
-    const callback = callbackUrl === undefined ? "" : ` PluginEngine’s callback URL is ${callbackUrl}.`;
+    const callback =
+      callbackUrl === undefined ? "" : ` PluginEngine’s callback URL is ${callbackUrl}.`;
     return withCause(
       (
         {
@@ -766,7 +770,8 @@ export const OAuthSetupFailed = UserFacingError.define({
           },
           registration_rejected: {
             title: "Service rejected PluginEngine’s registration",
-            description: "Without an OAuth client for this service, PluginEngine can’t start sign-in.",
+            description:
+              "Without an OAuth client for this service, PluginEngine can’t start sign-in.",
             recovery: {
               action:
                 "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
@@ -789,7 +794,8 @@ export const OAuthSetupFailed = UserFacingError.define({
           },
           invalid_redirect: {
             title: "Callback URL not valid",
-            description: "PluginEngine’s callback URL is malformed or not allowed on this instance.",
+            description:
+              "PluginEngine’s callback URL is malformed or not allowed on this instance.",
             recovery: {
               action: "Check this PluginEngine instance’s public address.",
               instructions:
@@ -1012,9 +1018,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
           }),
           redirect_mismatch: {
             title: "Sign-in returned to a different address",
-            description: "A proxy or the service may have changed the callback URL PluginEngine sent.",
+            description:
+              "A proxy or the service may have changed the callback URL PluginEngine sent.",
             recovery: {
-              action: "Check PluginEngine’s public address and the service’s allowed redirect URLs.",
+              action:
+                "Check PluginEngine’s public address and the service’s allowed redirect URLs.",
               instructions:
                 "Compare the callback URL PluginEngine registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
             },
@@ -1154,7 +1162,8 @@ export const OAuthCompletionFailed = UserFacingError.define({
           },
           // The sign-in was claimed before the token request, so only a new one can finish.
           rate_limited: rateLimited(retryAfter, {
-            description: "The service asked PluginEngine to wait before sending more sign-in requests.",
+            description:
+              "The service asked PluginEngine to wait before sending more sign-in requests.",
             action: "Start the connection again",
             instructions:
               "The token endpoint refused the code exchange for now, and this sign-in has ended: start a fresh one, and never replay the callback.",
@@ -1209,11 +1218,7 @@ export const OAuthCompletionFailed = UserFacingError.define({
  * - `cancelled`: the user declined; nothing is wrong.
  */
 export type OAuthCompletionRecovery =
-  | "restart"
-  | "client"
-  | "configuration"
-  | "account"
-  | "cancelled";
+  "restart" | "client" | "configuration" | "account" | "cancelled";
 export const oauthCompletionRecovery = {
   callback_malformed: "restart",
   sign_in_not_found: "restart",
@@ -1663,7 +1668,13 @@ export const OAuthGrant = Schema.Union([
   Schema.Struct({
     grant: Schema.Literal("authorization_code"),
     firstParty: FirstPartyOAuthClientId,
-    broker: Schema.optionalKey(Schema.Struct({ ...BrokeredOAuthAttempt.fields, renewalGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), grantedScopes: Schema.Array(ScopeToken) })),
+    broker: Schema.optionalKey(
+      Schema.Struct({
+        ...BrokeredOAuthAttempt.fields,
+        renewalGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        grantedScopes: Schema.Array(ScopeToken),
+      }),
+    ),
     response: JsonObject,
     expiresAt: Schema.optional(Schema.Number),
     fields: JsonObject,

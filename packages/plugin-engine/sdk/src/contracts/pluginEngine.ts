@@ -201,7 +201,10 @@ export interface ResourceLifecycle {
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
   /** Runs in the version commit transaction, including deployments to an existing app. */
-  readonly appDeployed?: (app: App, version: import("./version.ts").VersionMetadata) => Effect.Effect<void, StorageError>;
+  readonly appDeployed?: (
+    app: App,
+    version: import("./version.ts").VersionMetadata,
+  ) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting the app in the same transaction. */
   readonly appRemoving: (app: AppId) => Effect.Effect<void, StorageError>;
   /**
@@ -297,7 +300,10 @@ export interface PluginEngineInputs {
    * Existing subscriptions keep the callback URL they stored.
    */
   readonly webhookOrigin?: string | (() => Effect.Effect<string | undefined, Error>);
-  readonly webhookCallbackPath?: (app: AppId, subscription: import("./shared.ts").WebhookId) => string;
+  readonly webhookCallbackPath?: (
+    app: AppId,
+    subscription: import("./shared.ts").WebhookId,
+  ) => string;
   /** The Git backend behind app source. The pluginEngine derives revision storage from it. */
   readonly git: RepositoryBackend;
   /**
@@ -416,7 +422,10 @@ type FlatPluginEngine = {
 };
 
 /** App-related namespaces remain beneath apps, including workflow execution management. */
-export type PluginEngine = Omit<FlatPluginEngine, "apps" | "appWorkflows" | "appWorkflowRuns" | "tools"> & {
+export type PluginEngine = Omit<
+  FlatPluginEngine,
+  "apps" | "appWorkflows" | "appWorkflowRuns" | "tools"
+> & {
   readonly tools: FlatPluginEngine["tools"] & {
     /**
      * Host-only: read a pending request and its issuer, so the host that issued it can show the

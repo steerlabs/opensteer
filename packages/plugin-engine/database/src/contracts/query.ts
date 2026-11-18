@@ -111,12 +111,9 @@ export type FindManyOptions<
   readonly where?: WhereFn<T> | undefined;
   readonly limit?: number | undefined;
   readonly orderBy?:
-    | OrderBy<keyof T["columns"]>
-    | ReadonlyArray<OrderBy<keyof T["columns"]>>
-    | undefined;
+    OrderBy<keyof T["columns"]> | ReadonlyArray<OrderBy<keyof T["columns"]>> | undefined;
   readonly join?:
-    | ((builder: JoinBuilder<T, {}>) => JoinBuilder<T, JoinOut, PropertyKey>)
-    | undefined;
+    ((builder: JoinBuilder<T, {}>) => JoinBuilder<T, JoinOut, PropertyKey>) | undefined;
 } & (IsRoot extends true ? { readonly offset?: number | undefined } : {});
 
 /** Options of `findFirst`: `findMany` without `limit` (and, inside a join, without `offset` and `orderBy`). */

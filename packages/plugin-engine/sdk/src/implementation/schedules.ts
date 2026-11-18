@@ -2,7 +2,11 @@
 import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import { ScheduleTiming } from "apps/contracts";
-import { CurrentActor, type PluginEngine, type ResourceLifecycle } from "../contracts/pluginEngine.ts";
+import {
+  CurrentActor,
+  type PluginEngine,
+  type ResourceLifecycle,
+} from "../contracts/pluginEngine.ts";
 import { AccountRequired } from "../contracts/apps.ts";
 import {
   CredentialsError,
@@ -442,7 +446,9 @@ export const makeSchedules = (
           }
         }),
       );
-    }).pipe(Effect.withSpan("sdk.schedules.reconcile", { attributes: { "pluginEngine.app.id": app } }));
+    }).pipe(
+      Effect.withSpan("sdk.schedules.reconcile", { attributes: { "pluginEngine.app.id": app } }),
+    );
   const getApproval = (input: typeof ScheduleInputs.approval.Type) =>
     Effect.gen(function* () {
       const run = yield* readRun(input.run, input.owner);
@@ -522,7 +528,8 @@ export const makeSchedules = (
           Effect.gen(function* () {
             yield* lockApp(db, { app: app.id });
             const previous = yield* findOwn(target);
-            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(app.id, "schedule");
+            if (lifecycle?.beforeResourceWrite)
+              yield* lifecycle.beforeResourceWrite(app.id, "schedule");
             if (previous === null) {
               const created = ScheduleSettings.make({
                 id: ScheduleId.make(`sch_${revision}`),
@@ -532,7 +539,10 @@ export const makeSchedules = (
                 actor: target.actor,
                 timing,
                 enabled: parsed.enabled,
-                approvalMode: parsed.approvalMode ?? (yield* (lifecycle?.scheduleApprovalDefault ?? Effect.succeed("automatic" as const))),
+                approvalMode:
+                  parsed.approvalMode ??
+                  (yield* lifecycle?.scheduleApprovalDefault ??
+                    Effect.succeed("automatic" as const)),
                 nextAt,
                 activeRun: null,
                 revision,
@@ -569,7 +579,8 @@ export const makeSchedules = (
           Effect.gen(function* () {
             yield* lockApp(db, { app: saved.app });
             const current = yield* readCopy(parsed);
-            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(saved.app, "schedule");
+            if (lifecycle?.beforeResourceWrite)
+              yield* lifecycle.beforeResourceWrite(saved.app, "schedule");
             return yield* save(current, { ...parsed, timing, nextAt, revision });
           }),
         );
@@ -586,7 +597,8 @@ export const makeSchedules = (
         const revision = yield* uuid;
         return yield* transaction(db, () =>
           Effect.gen(function* () {
-            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(settings.app, "schedule");
+            if (lifecycle?.beforeResourceWrite)
+              yield* lifecycle.beforeResourceWrite(settings.app, "schedule");
             yield* query(() =>
               db.updateMany("schedules", {
                 where: (b) =>
@@ -820,7 +832,12 @@ export const makeSchedules = (
         yield* Effect.annotateCurrentSpan({
           "pluginEngine.schedule.due": due.length,
           ...(oldest instanceof Date
-            ? { "pluginEngine.schedule.oldest_due_ms": Math.max(0, time.getTime() - oldest.getTime()) }
+            ? {
+                "pluginEngine.schedule.oldest_due_ms": Math.max(
+                  0,
+                  time.getTime() - oldest.getTime(),
+                ),
+              }
             : {}),
         });
         yield* Effect.forEach(
@@ -862,15 +879,17 @@ export const makeSchedules = (
                         attributes: {
                           "pluginEngine.schedule.id": setting.id,
                           "pluginEngine.app.id": setting.app,
-                          ...(waiting === undefined ? { "pluginEngine.outcome": "access_revoked" } : "reconnectAccount" in waiting
-                            ? {
-                                "pluginEngine.account.id": waiting.reconnectAccount,
-                                "pluginEngine.outcome": "waiting_for_reconnect",
-                              }
-                            : {
-                                "pluginEngine.account.requirement": waiting.accountRequired,
-                                "pluginEngine.outcome": "waiting_for_account",
-                              }),
+                          ...(waiting === undefined
+                            ? { "pluginEngine.outcome": "access_revoked" }
+                            : "reconnectAccount" in waiting
+                              ? {
+                                  "pluginEngine.account.id": waiting.reconnectAccount,
+                                  "pluginEngine.outcome": "waiting_for_reconnect",
+                                }
+                              : {
+                                  "pluginEngine.account.requirement": waiting.accountRequired,
+                                  "pluginEngine.outcome": "waiting_for_account",
+                                }),
                         },
                       }),
                     );
@@ -881,7 +900,11 @@ export const makeSchedules = (
                 const claim = yield* transaction(db, () =>
                   Effect.gen(function* () {
                     yield* lockApp(db, { app: setting.app });
-                    if (Result.isFailure(yield* Effect.result(authorize({ ...setting, phase: "start" }))))
+                    if (
+                      Result.isFailure(
+                        yield* Effect.result(authorize({ ...setting, phase: "start" })),
+                      )
+                    )
                       return null;
                     yield* query(() =>
                       db.updateMany("schedules", {

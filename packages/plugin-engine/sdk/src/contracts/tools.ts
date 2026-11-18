@@ -14,7 +14,10 @@ import {
   UpstreamError,
 } from "apps/contracts";
 import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
-import { type ErrorPresentation, UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-error";
+import {
+  type ErrorPresentation,
+  UserFacingError,
+} from "@opensteer/plugin-engine-utils/user-facing-error";
 import { callPresentation, type CausePresentation, MayHaveWritten } from "./call-presentation.ts";
 /** Tool discovery and calls, using the accounts each operation names. */
 import { Context, type Effect, Match, Option, type Result, Schema } from "effect";
@@ -76,7 +79,9 @@ export const ToolApprovalLimits = Schema.Struct({
 export type ToolApprovalLimits = typeof ToolApprovalLimits.Type;
 /** Current consume-once approval lifetime; this does not extend a live tool invocation. */
 export const defaultToolApprovalLimits = ToolApprovalLimits.make({ ttlMs: 15 * 60 * 1000 });
-export const ToolApprovalTtlMs = Context.Reference<number>("pluginEngine/ToolApprovalTtlMs", { defaultValue: () => defaultToolApprovalLimits.ttlMs });
+export const ToolApprovalTtlMs = Context.Reference<number>("pluginEngine/ToolApprovalTtlMs", {
+  defaultValue: () => defaultToolApprovalLimits.ttlMs,
+});
 
 /**
  * Names where a host issued a call, such as one person's run from its dashboard. A pending approval

@@ -73,4 +73,6 @@ export interface BlobStorage {
 export const removeAllKeys = 1000;
 
 /** Provided by createPluginEngine; runtimes resolve this service when an operation runs. */
-export class BlobStore extends Context.Service<BlobStore, BlobStorage>()("pluginEngine/BlobStore") {}
+export class BlobStore extends Context.Service<BlobStore, BlobStorage>()(
+  "pluginEngine/BlobStore",
+) {}

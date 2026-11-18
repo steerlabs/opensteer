@@ -1,7 +1,10 @@
 /** Native Effect database operations; SQL failures are projected to safe domain errors. */
 import { Effect, Result } from "effect";
 import { SqlError } from "effect/sql";
-import { failureAttributes, withFailureAttributes } from "@opensteer/plugin-engine-telemetry/failed-span";
+import {
+  failureAttributes,
+  withFailureAttributes,
+} from "@opensteer/plugin-engine-telemetry/failed-span";
 import { StorageError } from "../contracts/shared.ts";
 import type { PluginEngineDatabase } from "./storage.ts";
 

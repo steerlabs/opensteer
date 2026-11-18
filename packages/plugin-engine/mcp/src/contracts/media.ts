@@ -6,9 +6,7 @@ type BlobResource = typeof McpSchema.EmbeddedResource.Encoded & {
   readonly resource: typeof McpSchema.BlobResourceContents.Encoded;
 };
 type MediaBlock =
-  | typeof McpSchema.ImageContent.Encoded
-  | typeof McpSchema.AudioContent.Encoded
-  | BlobResource;
+  typeof McpSchema.ImageContent.Encoded | typeof McpSchema.AudioContent.Encoded | BlobResource;
 
 const isImage = Schema.decodeUnknownOption(McpSchema.ImageContent);
 const isAudio = Schema.decodeUnknownOption(McpSchema.AudioContent);

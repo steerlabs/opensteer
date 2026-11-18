@@ -755,7 +755,10 @@ export const makeListings = (options: {
                   ),
             ),
             Effect.tap((listing) =>
-              Effect.annotateCurrentSpan("pluginEngine.declarations.recalled", listing !== undefined),
+              Effect.annotateCurrentSpan(
+                "pluginEngine.declarations.recalled",
+                listing !== undefined,
+              ),
             ),
             Effect.withSpan("sdk.tools.listing.recall", {
               attributes: { "pluginEngine.app.id": state.app.id },

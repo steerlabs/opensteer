@@ -223,7 +223,10 @@ export const makeToolSearch = (options: {
         );
       }).pipe(
         Effect.withSpan("sdk.tools.search.write", {
-          attributes: { "pluginEngine.app.id": state.app.id, "pluginEngine.tools": listing.items.length },
+          attributes: {
+            "pluginEngine.app.id": state.app.id,
+            "pluginEngine.tools": listing.items.length,
+          },
         }),
       ),
     /**

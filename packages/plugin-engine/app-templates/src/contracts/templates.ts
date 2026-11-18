@@ -89,8 +89,7 @@ export interface GeneratedToolRules {
    * including the ones they leave to the app's default.
    */
   readonly otherwise?:
-    | { readonly rule: "always" | "omitted"; readonly known: readonly string[] }
-    | undefined;
+    { readonly rule: "always" | "omitted"; readonly known: readonly string[] } | undefined;
 }
 
 /**

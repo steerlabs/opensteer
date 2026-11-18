@@ -1,1 +1,1 @@
-export { recordRequestRejection } from './request-rejection.ts';
+export { recordRequestRejection } from "./request-rejection.ts";

@@ -190,8 +190,10 @@ export interface ManagedAccounts {
     readonly connection: import("./shared.ts").AccountConnectionId;
     readonly owner?: OwnerId;
     readonly attemptId: string;
-  }) => Effect.Effect<Account,
-    | StorageError | CredentialsError
+  }) => Effect.Effect<
+    Account,
+    | StorageError
+    | CredentialsError
     | import("./account-connection.ts").AccountConnectionNotFound
     | import("./account-connection.ts").AccountConnectionClosed
     | import("./account-connection.ts").AccountConnectionTargetChanged

@@ -22,7 +22,9 @@ export const AppReturnPath = Schema.String.check(
       const url = new URL(value, "https://app.invalid");
       return (
         url.origin === "https://app.invalid" &&
-        !new RegExp("^/(?:" + __published.internalSegment + "|dashboard|auth|v1|mcp)(?:/|$)").test(decodeURIComponent(url.pathname))
+        !new RegExp("^/(?:" + __published.internalSegment + "|dashboard|auth|v1|mcp)(?:/|$)").test(
+          decodeURIComponent(url.pathname),
+        )
       );
     } catch {
       return false;

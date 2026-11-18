@@ -44,7 +44,13 @@ export type PluginDatabaseCliServices = FileSystem.FileSystem | Path.Path | Term
  */
 export interface PluginDatabaseCli<R> {
   /** The root command, with `migrate:up`, `migrate:down`, `migrate:to` and `generate` below it. */
-  readonly command: Command.Command<string, {}, {}, PluginDatabaseCliError, R | PluginDatabaseCliServices>;
+  readonly command: Command.Command<
+    string,
+    {},
+    {},
+    PluginDatabaseCliError,
+    R | PluginDatabaseCliServices
+  >;
   /**
    * Run the command tree. With no arguments the arguments come from the
    * `Stdio` service; pass an array to run an explicit argument list (tests, or
@@ -110,7 +116,11 @@ export interface MakeCliOptions<Schemas extends ReadonlyArray<AnySchema>, R> {
 export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
   options: MakeCliOptions<Schemas, R>,
 ): PluginDatabaseCli<R> => {
-  const { db, description = "PluginDatabase CLI for migrations and schema generation", version } = options;
+  const {
+    db,
+    description = "PluginDatabase CLI for migrations and schema generation",
+    version,
+  } = options;
 
   /** Ask which schema version to migrate to, hinting the current and latest ones. */
   const selectVersion = Effect.fnUntraced(function* (migrator: Migrator<R>) {

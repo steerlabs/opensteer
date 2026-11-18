@@ -366,7 +366,9 @@ export const makeExecutions = (
             requestId: ElicitationRequestId.make(`elc_${crypto.randomUUID()}`),
             tool,
             elicitation: form.request,
-            expiresAt: (yield* Clock.currentTimeMillis) + (limits.interactionTtlMs ?? defaultElicitationLimits.timeoutMs),
+            expiresAt:
+              (yield* Clock.currentTimeMillis) +
+              (limits.interactionTtlMs ?? defaultElicitationLimits.timeoutMs),
           };
           const pending: Pending = {
             kind: "input",

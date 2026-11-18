@@ -2,7 +2,11 @@
 import { pluginDatabase } from "@opensteer/plugin-engine-database";
 import { Effect, Schema } from "effect";
 import { generateMigrationFromSchema } from "@opensteer/plugin-engine-database/migration";
-import { schema, type AnySchema, type CustomMigrationFn } from "@opensteer/plugin-engine-database/schema";
+import {
+  schema,
+  type AnySchema,
+  type CustomMigrationFn,
+} from "@opensteer/plugin-engine-database/schema";
 import {
   boundedReadIndexes,
   eventIndexes,

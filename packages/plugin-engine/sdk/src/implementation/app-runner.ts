@@ -273,9 +273,15 @@ const causeShape = (cause: unknown, rejected: RejectedCall) => {
             ? typeof cause
             : "other",
     ...(cause instanceof Error
-      ? { "pluginEngine.runtime.cause.name": standardErrorNames.has(cause.name) ? cause.name : "other" }
+      ? {
+          "pluginEngine.runtime.cause.name": standardErrorNames.has(cause.name)
+            ? cause.name
+            : "other",
+        }
       : {}),
-    ...(message === undefined ? {} : { "pluginEngine.runtime.cause.message_length": message.length }),
+    ...(message === undefined
+      ? {}
+      : { "pluginEngine.runtime.cause.message_length": message.length }),
   };
 };
 /**

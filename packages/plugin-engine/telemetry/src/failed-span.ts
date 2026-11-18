@@ -4,7 +4,9 @@ import { Cause, Effect, Predicate } from "effect";
 /** Attributes a failure carries for the span that records it. */
 type FailureAttributes = Readonly<Record<string, string>>;
 
-const attributesKey: unique symbol = Symbol.for("@opensteer/plugin-engine-telemetry/FailureAttributes");
+const attributesKey: unique symbol = Symbol.for(
+  "@opensteer/plugin-engine-telemetry/FailureAttributes",
+);
 
 /** The attributes `error` carries for the span that records it; none when it carries none. */
 export const failureAttributes = (error: unknown): FailureAttributes =>

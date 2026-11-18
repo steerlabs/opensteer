@@ -102,8 +102,7 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
   // Settled through a native promise, so on Workers each waiting request resumes in its own I/O
   // context (see the SDK's Handoff). An interrupted read settles with nothing, and its waiters read.
   let reading:
-    | Promise<Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined>
-    | undefined;
+    Promise<Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined> | undefined;
   const list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable> = Effect.suspend(() => {
     const shared = reading;
     if (shared !== undefined)

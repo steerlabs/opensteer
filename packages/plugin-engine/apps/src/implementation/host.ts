@@ -14,7 +14,11 @@ import {
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
-import { captureTelemetry, owned, type InvocationTelemetry } from "@opensteer/plugin-engine-telemetry";
+import {
+  captureTelemetry,
+  owned,
+  type InvocationTelemetry,
+} from "@opensteer/plugin-engine-telemetry";
 import { appInvocationFetch } from "./network.ts";
 import { dedent, dedentFieldHelp } from "./help-text.ts";
 import { withoutHelp } from "../contracts/help-text.ts";
@@ -1140,7 +1144,9 @@ export const createAppHandler =
           error.errorName !== undefined
             ? Effect.annotateCurrentSpan({
                 "error.type": error.errorName,
-                ...(error.source === undefined ? {} : { "pluginEngine.failure.source": error.source }),
+                ...(error.source === undefined
+                  ? {}
+                  : { "pluginEngine.failure.source": error.source }),
                 ...(error.code === undefined ? {} : { "pluginEngine.failure.code": error.code }),
               })
             : Effect.void,

@@ -98,8 +98,7 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
         ) => {
           // SAFETY: operation references bind the registered input/output types. Clone so author code cannot alter the base.
           return structuredClone(next.get(keyOf(reference.name, json(input)))) as
-            | Output
-            | undefined;
+            Output | undefined;
         },
         getAllQueries: <Input, Output>(reference: OperationReference<Input, Output, "query">) =>
           [...entries]

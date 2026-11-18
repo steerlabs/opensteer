@@ -1,5 +1,10 @@
 /** Product permission policies, independent of credentials, OAuth and approval delivery. */
-import { AccountId, AppId, ToolName, type ToolSearchScope } from "@opensteer/plugin-engine-sdk/core";
+import {
+  AccountId,
+  AppId,
+  ToolName,
+  type ToolSearchScope,
+} from "@opensteer/plugin-engine-sdk/core";
 import { Match, Schema } from "effect";
 
 /** Product operations; roles still bound the authority granted by any of these actions. */

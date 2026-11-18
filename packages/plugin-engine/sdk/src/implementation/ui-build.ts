@@ -73,7 +73,10 @@ export const prepareUiBuild = (
           const assets = new Map<string, UiBuildFile>();
           for (const file of compiled) {
             yield* Schema.decodeUnknownEffect(SourceFilePath)(file.path);
-            if (file.path === "index.html" || file.path.startsWith(__published.reservedPublicPrefix))
+            if (
+              file.path === "index.html" ||
+              file.path.startsWith(__published.reservedPublicPrefix)
+            )
               return yield* failed();
             const previous = assets.get(file.path);
             if (

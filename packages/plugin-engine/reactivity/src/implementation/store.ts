@@ -6,9 +6,12 @@ import type { QuerySnapshot, ReactiveStore, StoreChange } from "../contracts/sto
 const Reads = Context.Reference<ReadonlyMap<symbol, Set<string>>>("pluginEngine/reactivity/Reads", {
   defaultValue: () => new Map(),
 });
-const Writes = Context.Reference<ReadonlyMap<symbol, Set<string>>>("pluginEngine/reactivity/Writes", {
-  defaultValue: () => new Map(),
-});
+const Writes = Context.Reference<ReadonlyMap<symbol, Set<string>>>(
+  "pluginEngine/reactivity/Writes",
+  {
+    defaultValue: () => new Map(),
+  },
+);
 
 /**
  * Make one local subscription coordinator. It owns no database or transport.

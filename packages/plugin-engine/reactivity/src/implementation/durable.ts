@@ -59,11 +59,12 @@ export const makeDurableCoordinator = (options: {
       Effect.try({ try: run, catch: () => new CoordinatorError({ operation: "socket" }) });
     const close = (socket: HibernatingSocket, code: number, reason: string) =>
       socketEffect(() => socket.close(code, reason)).pipe(Effect.catch(() => Effect.void));
-    const readRevision = sql`SELECT revision FROM plugin_engine_live_revision WHERE singleton = 1`.pipe(
-      Effect.flatMap((rows) => Schema.decodeUnknownEffect(Revision)(rows[0])),
-      Effect.map((row) => row.revision),
-      Effect.mapError(() => new CoordinatorError({ operation: "read" })),
-    );
+    const readRevision =
+      sql`SELECT revision FROM plugin_engine_live_revision WHERE singleton = 1`.pipe(
+        Effect.flatMap((rows) => Schema.decodeUnknownEffect(Revision)(rows[0])),
+        Effect.map((row) => row.revision),
+        Effect.mapError(() => new CoordinatorError({ operation: "read" })),
+      );
 
     const drainLocked = Effect.gen(function* () {
       // This retry remains durable until every connected socket has caught up.

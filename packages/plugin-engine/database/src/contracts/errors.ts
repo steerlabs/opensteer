@@ -29,31 +29,33 @@ export class SchemaDefinitionError extends Error {
  * - `UnexpectedResult`: the driver returned a shape the adapter cannot decode.
  * - `Decode`: a stored value could not be turned into its column type (for example malformed JSON text).
  */
-export class QueryError extends Schema.TaggedError<QueryError>("pluginDatabase/QueryError")("QueryError", {
-  reason: Schema.Literals([
-    "UnknownTable",
-    "UnknownColumn",
-    "InvalidInput",
-    "MissingIdValue",
-    "NoMatchingRow",
-    "UnexpectedResult",
-    "Decode",
-  ]),
-  message: Schema.String,
-  table: Schema.optionalKey(Schema.String),
-  column: Schema.optionalKey(Schema.String),
-}) {}
+export class QueryError extends Schema.TaggedError<QueryError>("pluginDatabase/QueryError")(
+  "QueryError",
+  {
+    reason: Schema.Literals([
+      "UnknownTable",
+      "UnknownColumn",
+      "InvalidInput",
+      "MissingIdValue",
+      "NoMatchingRow",
+      "UnexpectedResult",
+      "Decode",
+    ]),
+    message: Schema.String,
+    table: Schema.optionalKey(Schema.String),
+    column: Schema.optionalKey(Schema.String),
+  },
+) {}
 
 /**
  * The database has no PluginDatabase settings for this namespace, so no schema version
  * has been applied yet. Run the migrator first.
  */
-export class NotInitialized extends Schema.TaggedError<NotInitialized>("pluginDatabase/NotInitialized")(
-  "NotInitialized",
-  {
-    namespace: Schema.String,
-  },
-) {
+export class NotInitialized extends Schema.TaggedError<NotInitialized>(
+  "pluginDatabase/NotInitialized",
+)("NotInitialized", {
+  namespace: Schema.String,
+}) {
   override get message(): string {
     return `PluginDatabase "${this.namespace}" is not initialized.`;
   }
@@ -69,22 +71,21 @@ export class NotInitialized extends Schema.TaggedError<NotInitialized>("pluginDa
  * - `Introspection`: the database could not be read into a schema.
  * - `Execution`: a statement failed while applying the migration. `cause` holds the driver error and `statement` the SQL text.
  */
-export class MigrationError extends Schema.TaggedError<MigrationError>("pluginDatabase/MigrationError")(
-  "MigrationError",
-  {
-    reason: Schema.Literals([
-      "AlreadyUpToDate",
-      "NoPrevious",
-      "UnknownVersion",
-      "Unsupported",
-      "Introspection",
-      "Execution",
-    ]),
-    message: Schema.String,
-    statement: Schema.optionalKey(Schema.String),
-    cause: Schema.optionalKey(Schema.Defect()),
-  },
-) {}
+export class MigrationError extends Schema.TaggedError<MigrationError>(
+  "pluginDatabase/MigrationError",
+)("MigrationError", {
+  reason: Schema.Literals([
+    "AlreadyUpToDate",
+    "NoPrevious",
+    "UnknownVersion",
+    "Unsupported",
+    "Introspection",
+    "Execution",
+  ]),
+  message: Schema.String,
+  statement: Schema.optionalKey(Schema.String),
+  cause: Schema.optionalKey(Schema.Defect()),
+}) {}
 
 const creationSteps = {
   clear: "remove the unfinished copy left beside",

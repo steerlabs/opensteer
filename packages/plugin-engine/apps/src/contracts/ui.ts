@@ -24,10 +24,7 @@ export type UiAccountProblem =
       readonly provider: string;
       readonly account: string;
       readonly reason:
-        | "credentials_rejected"
-        | "forbidden"
-        | "upstream_unavailable"
-        | "check_failed";
+        "credentials_rejected" | "forbidden" | "upstream_unavailable" | "check_failed";
     };
 /** Account problems found when the page opened, with dashboard links that resolve them. */
 export interface UiAccountNotice {

@@ -16,7 +16,9 @@ import { GitObjectId, SourceFilePath } from "./source.ts";
 export const PublicFilePath = SourceFilePath.pipe(
   Schema.check(
     Schema.makeFilter((path: string) =>
-      path === "index.html" || path === __published.internalSegment || path.startsWith(__published.reservedPublicPrefix)
+      path === "index.html" ||
+      path === __published.internalSegment ||
+      path.startsWith(__published.reservedPublicPrefix)
         ? "expected a path other than index.html and _pluginEngine/"
         : true,
     ),

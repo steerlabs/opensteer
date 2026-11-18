@@ -9,7 +9,9 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
   Layer.mergeAll(
     HttpApiBuilder.group(PluginEngineApi, "skills", (handlers) =>
       handlers
-        .handle("bundle", ({ params, query }) => pluginEngine.skills.bundle({ ...params, ...query }))
+        .handle("bundle", ({ params, query }) =>
+          pluginEngine.skills.bundle({ ...params, ...query }),
+        )
         .handle("list", ({ params, query }) => pluginEngine.skills.list({ ...params, ...query }))
         .handle("read", ({ params, query }) => pluginEngine.skills.read({ ...params, ...query })),
     ),
@@ -29,7 +31,9 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("runNow", ({ params, payload }) =>
           pluginEngine.schedules.runNow({ ...params, ...payload }),
         )
-        .handle("remove", ({ params, query }) => pluginEngine.schedules.remove({ ...params, ...query }))
+        .handle("remove", ({ params, query }) =>
+          pluginEngine.schedules.remove({ ...params, ...query }),
+        )
         .handle("runs", ({ query }) => pluginEngine.schedules.runs(query))
         .handle("approval", ({ params, query }) =>
           pluginEngine.schedules.approval({ ...params, ...query }),
@@ -46,11 +50,17 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("provider", ({ params, query }) =>
           pluginEngine.accounts.provider({ ...params, ...query }),
         )
-        .handle("remove", ({ params, query }) => pluginEngine.accounts.remove({ ...params, ...query }))
-        .handle("signIn", ({ params, query }) => pluginEngine.accounts.signIn({ ...params, ...query }))
+        .handle("remove", ({ params, query }) =>
+          pluginEngine.accounts.remove({ ...params, ...query }),
+        )
+        .handle("signIn", ({ params, query }) =>
+          pluginEngine.accounts.signIn({ ...params, ...query }),
+        )
         .handle("providers", ({ query }) => pluginEngine.accounts.providers(query))
         .handle("get", ({ params, query }) => pluginEngine.accounts.get({ ...params, ...query }))
-        .handle("health", ({ params, query }) => pluginEngine.accounts.health({ ...params, ...query }))
+        .handle("health", ({ params, query }) =>
+          pluginEngine.accounts.health({ ...params, ...query }),
+        )
         .handle("revocation", ({ params, query }) =>
           pluginEngine.accounts.revocation({ ...params, ...query }),
         )
@@ -82,7 +92,9 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("register", ({ payload }) => pluginEngine.oauthClients.register(payload))
         .handle("list", ({ query }) => pluginEngine.oauthClients.list(query))
         .handle("issuers", ({ query }) => pluginEngine.oauthClients.issuers(query))
-        .handle("get", ({ params, query }) => pluginEngine.oauthClients.get({ ...params, ...query }))
+        .handle("get", ({ params, query }) =>
+          pluginEngine.oauthClients.get({ ...params, ...query }),
+        )
         .handle("update", ({ params, payload }) =>
           pluginEngine.oauthClients.update({ ...params, ...payload }),
         )
@@ -96,7 +108,9 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("workspace", ({ params, query }) =>
           pluginEngine.apps.workspace({ ...params, ...query }),
         )
-        .handle("commit", ({ params, payload }) => pluginEngine.apps.commit({ ...params, ...payload }))
+        .handle("commit", ({ params, payload }) =>
+          pluginEngine.apps.commit({ ...params, ...payload }),
+        )
         .handle("copy", ({ payload }) => pluginEngine.apps.copy(payload))
         .handle("deploy", ({ payload }) => pluginEngine.apps.deploy(payload))
         .handle("get", ({ params, query }) => pluginEngine.apps.get({ ...params, ...query }))
@@ -111,15 +125,25 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("activate", ({ params, query, payload }) =>
           pluginEngine.apps.activate({ ...params, ...query, ...payload }),
         )
-        .handle("versions", ({ params, query }) => pluginEngine.apps.versions({ ...params, ...query }))
-        .handle("version", ({ params, query }) => pluginEngine.apps.version({ ...params, ...query }))
+        .handle("versions", ({ params, query }) =>
+          pluginEngine.apps.versions({ ...params, ...query }),
+        )
+        .handle("version", ({ params, query }) =>
+          pluginEngine.apps.version({ ...params, ...query }),
+        )
         .handle("deployments", ({ params, query }) =>
           pluginEngine.apps.versions({ ...params, ...query }),
         )
-        .handle("deployment", ({ params, query }) => pluginEngine.apps.version({ ...params, ...query }))
+        .handle("deployment", ({ params, query }) =>
+          pluginEngine.apps.version({ ...params, ...query }),
+        )
         .handle("source", ({ params, query }) => pluginEngine.apps.source({ ...params, ...query }))
-        .handle("history", ({ params, query }) => pluginEngine.apps.history({ ...params, ...query }))
-        .handle("revision", ({ params, query }) => pluginEngine.apps.revision({ ...params, ...query })),
+        .handle("history", ({ params, query }) =>
+          pluginEngine.apps.history({ ...params, ...query }),
+        )
+        .handle("revision", ({ params, query }) =>
+          pluginEngine.apps.revision({ ...params, ...query }),
+        ),
     ),
     HttpApiBuilder.group(PluginEngineApi, "registry", (handlers) =>
       handlers
@@ -165,7 +189,9 @@ export const pluginEngineHandlers = (pluginEngine: PluginEngine) =>
         .handle("reconcile", ({ params }) => pluginEngine.webhooks.reconcile(params))
         .handle("remove", ({ params }) => pluginEngine.webhooks.remove(params))
         .handle("sources", ({ params }) => pluginEngine.webhooks.sources(params))
-        .handle("link", ({ params, payload }) => pluginEngine.webhooks.link({ ...params, ...payload }))
+        .handle("link", ({ params, payload }) =>
+          pluginEngine.webhooks.link({ ...params, ...payload }),
+        )
         .handle("configureSource", ({ params, payload }) =>
           pluginEngine.webhooks.configureSource({ ...params, ...payload }),
         )

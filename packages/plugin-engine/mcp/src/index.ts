@@ -9,7 +9,12 @@ export { mcp, makeMcp } from "./implementation/server.ts";
 export { skills } from "./implementation/skills.ts";
 export { makeExecutions, runningPrograms } from "./implementation/executions.ts";
 export { refusedMcpRequest } from "./implementation/diagnostics.ts";
-export { executeProgram, callTools, searchCatalog, describeCatalog } from "./implementation/execute.ts";
+export {
+  executeProgram,
+  callTools,
+  searchCatalog,
+  describeCatalog,
+} from "./implementation/execute.ts";
 
 export * from "./contracts/browser.ts";
 export * from "./contracts/browser-tools.ts";

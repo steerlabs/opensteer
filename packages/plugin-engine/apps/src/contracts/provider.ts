@@ -209,8 +209,7 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
 
 /** Supported declarations; these acquire credentials rather than normalize them. */
 export type AuthMethod =
-  | SecretsMethod<Schema.Decoder<unknown>>
-  | OAuth2Method<Schema.Decoder<unknown>>;
+  SecretsMethod<Schema.Decoder<unknown>> | OAuth2Method<Schema.Decoder<unknown>>;
 
 /** Auth method names are chosen by the provider author. */
 export type AuthMethods = Readonly<Record<string, AuthMethod>>;

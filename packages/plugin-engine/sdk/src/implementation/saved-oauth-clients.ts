@@ -61,7 +61,9 @@ const StoredClientSecret = Schema.Struct({
 });
 
 /** Read beside the registration from a saved record, once sources were recorded. */
-const SavedClientSource = Schema.Struct({ plugin_engine_source: Schema.optionalKey(OAuthClientSource) });
+const SavedClientSource = Schema.Struct({
+  plugin_engine_source: Schema.optionalKey(OAuthClientSource),
+});
 
 interface Holder {
   readonly account: AccountId;

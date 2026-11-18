@@ -591,7 +591,10 @@ export const createSoftForeignKey = <R>(
     findMany: adapter.findMany,
     transaction: adapter.transaction,
 
-    create: Effect.fn("PluginDatabase.SoftForeignKey.create")(function* (table: AnyTable, values: Row) {
+    create: Effect.fn("PluginDatabase.SoftForeignKey.create")(function* (
+      table: AnyTable,
+      values: Row,
+    ) {
       if (table.foreignKeys.length === 0) return yield* adapter.create(table, values);
       const withDefaults = yield* generateDefaults(table, values);
       for (const key of table.foreignKeys) yield* checkForeignKeyOnInsert(key, [withDefaults]);

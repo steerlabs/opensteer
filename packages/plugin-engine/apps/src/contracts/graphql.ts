@@ -111,14 +111,7 @@ const Kind = Schema.Literals([
 /** The introspection subset used by tools; unknown upstream fields are omitted. */
 export interface GraphqlTypeRef {
   readonly kind:
-    | "SCALAR"
-    | "OBJECT"
-    | "INTERFACE"
-    | "UNION"
-    | "ENUM"
-    | "INPUT_OBJECT"
-    | "LIST"
-    | "NON_NULL";
+    "SCALAR" | "OBJECT" | "INTERFACE" | "UNION" | "ENUM" | "INPUT_OBJECT" | "LIST" | "NON_NULL";
   readonly name: string | null;
   readonly ofType?: GraphqlTypeRef | null | undefined;
 }

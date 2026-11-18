@@ -104,19 +104,24 @@ export const promisePluginEngine = (pluginEngine: PluginEngine): PromisePluginEn
       check: (input) => run(AccountInputs.check, input, pluginEngine.accounts.check),
     },
     accountConnections: {
-      oauthSetup: (input) => run(CheckOAuthSetup, input, pluginEngine.accountConnections.oauthSetup),
-      create: (input) => run(CreateAccountConnection, input, pluginEngine.accountConnections.create),
+      oauthSetup: (input) =>
+        run(CheckOAuthSetup, input, pluginEngine.accountConnections.oauthSetup),
+      create: (input) =>
+        run(CreateAccountConnection, input, pluginEngine.accountConnections.create),
       get: (input) => run(GetAccountConnection, input, pluginEngine.accountConnections.get),
       cancel: (input) => run(GetAccountConnection, input, pluginEngine.accountConnections.cancel),
-      submit: (input) => run(SubmitAccountConnection, input, pluginEngine.accountConnections.submit),
+      submit: (input) =>
+        run(SubmitAccountConnection, input, pluginEngine.accountConnections.submit),
       startOAuth: (input) =>
         run(StartConnectionOAuth, input, pluginEngine.accountConnections.startOAuth),
-      findOAuth: (input) => run(FindConnectionOAuth, input, pluginEngine.accountConnections.findOAuth),
+      findOAuth: (input) =>
+        run(FindConnectionOAuth, input, pluginEngine.accountConnections.findOAuth),
       completeOAuth: (input) =>
         run(CompleteConnectionOAuth, input, pluginEngine.accountConnections.completeOAuth),
     },
     oauthClients: {
-      register: (input) => run(OAuthClientInputs.register, input, pluginEngine.oauthClients.register),
+      register: (input) =>
+        run(OAuthClientInputs.register, input, pluginEngine.oauthClients.register),
       list: (input) => run(OAuthClientInputs.list, input, pluginEngine.oauthClients.list),
       issuers: (input) => run(OAuthClientInputs.issuers, input, pluginEngine.oauthClients.issuers),
       get: (input) => run(OAuthClientInputs.get, input, pluginEngine.oauthClients.get),
@@ -172,7 +177,8 @@ export const promisePluginEngine = (pluginEngine: PluginEngine): PromisePluginEn
     webhooks: {
       get: (input) => run(WebhookTarget, input, pluginEngine.webhooks.get),
       confirmRemoval: (input) => run(WebhookTarget, input, pluginEngine.webhooks.confirmRemoval),
-      definitions: (input) => run(WebhookDefinitionsInput, input, pluginEngine.webhooks.definitions),
+      definitions: (input) =>
+        run(WebhookDefinitionsInput, input, pluginEngine.webhooks.definitions),
       list: (input) => run(WebhookApp, input, pluginEngine.webhooks.list),
       create: (input) => run(CreateWebhook, input, pluginEngine.webhooks.create),
       reconcile: (input) => run(WebhookTarget, input, pluginEngine.webhooks.reconcile),

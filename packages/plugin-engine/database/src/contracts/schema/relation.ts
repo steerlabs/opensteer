@@ -67,8 +67,7 @@ export interface ExplicitRelation<
 
 /** Either side of a relation. */
 export type Relation<Type extends RelationType = RelationType, T extends AnyTable = AnyTable> =
-  | ImplicitRelation<Type, T>
-  | ExplicitRelation<Type, T>;
+  ImplicitRelation<Type, T> | ExplicitRelation<Type, T>;
 
 /** Any relation, regardless of its type parameters. */
 export type AnyRelation = Relation;

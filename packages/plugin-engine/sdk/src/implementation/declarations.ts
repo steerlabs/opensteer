@@ -186,7 +186,11 @@ export const makeDeclarations = (options: {
           lifecycle === undefined
             ? Effect.void
             : lifecycle
-                .appResolving({ ...state.app, version: state.version.id }, checks.linked, checks.appUses)
+                .appResolving(
+                  { ...state.app, version: state.version.id },
+                  checks.linked,
+                  checks.appUses,
+                )
                 .pipe(
                   Effect.flatMap((allowed) =>
                     checks.permitted(allowed) ? Effect.void : Effect.fail(new StorageError()),

@@ -42,7 +42,10 @@ export const declarationConfig: Config.Config<{
     "PLUGIN_ENGINE_TOOL_LISTING_LOAD_SECONDS",
     defaultToolListingPolicy.loadMillis / 1_000,
   ),
-  memory: nonNegative("PLUGIN_ENGINE_EVALUATION_MEMORY_MB", processDeclarationLimits.bytes / 2 ** 20),
+  memory: nonNegative(
+    "PLUGIN_ENGINE_EVALUATION_MEMORY_MB",
+    processDeclarationLimits.bytes / 2 ** 20,
+  ),
 }).pipe(
   Config.map(({ fresh, renew, maxAge, load, memory }) => {
     const bytes = Math.round(memory * 2 ** 20);

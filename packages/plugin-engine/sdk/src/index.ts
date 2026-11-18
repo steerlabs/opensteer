@@ -35,7 +35,9 @@ export const createPluginEngine = (options: PluginEngineOptions): Promise<Plugin
   );
 
 /** Create a remote PluginEngine client. Currently rejects with NotImplemented until the transport is implemented. */
-export const createRemotePluginEngine = (options: RemotePluginEngineOptions): Promise<PluginEngine> =>
+export const createRemotePluginEngine = (
+  options: RemotePluginEngineOptions,
+): Promise<PluginEngine> =>
   Effect.runPromise(createRemotePluginEngineEffect(options).pipe(Effect.map(promisePluginEngine)));
 
 export * from "./contracts/workflows.ts";

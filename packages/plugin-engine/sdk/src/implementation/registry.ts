@@ -35,7 +35,9 @@ const publicationSource = (files: SourceFiles) =>
       return yield* invalid("limit");
     if (
       files.some((file) =>
-        /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.pluginEngine)(?:\/|$)/.test(file.path),
+        /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.pluginEngine)(?:\/|$)/.test(
+          file.path,
+        ),
       )
     )
       return yield* invalid("invalid-source");
@@ -106,7 +108,9 @@ export const resolvePublication = (
     };
   });
 
-export const makeRegistry = (reads: Registry): {
+export const makeRegistry = (
+  reads: Registry,
+): {
   readonly reads: Registry;
   readonly registry: PluginEngine["registry"];
 } => ({

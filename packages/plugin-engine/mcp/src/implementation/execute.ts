@@ -1829,7 +1829,10 @@ function runProgram(
         "pluginEngine.codemode.signatures_rendered",
         runtime.signaturesRendered() + searchSignatures,
       );
-      yield* Effect.annotateCurrentSpan("pluginEngine.outcome", execution.ok ? "completed" : "failed");
+      yield* Effect.annotateCurrentSpan(
+        "pluginEngine.outcome",
+        execution.ok ? "completed" : "failed",
+      );
       return { execution, unavailableApps: prepared.unavailableApps() };
     }).pipe(
       Effect.catch((error) =>

@@ -174,14 +174,7 @@ const isList = (value: Json): value is ReadonlyArray<Json> => Array.isArray(valu
  * as written.
  */
 type Position =
-  | "data"
-  | "schema"
-  | "schemas"
-  | "schemaMap"
-  | "items"
-  | "names"
-  | "dependencies"
-  | "namesMap";
+  "data" | "schema" | "schemas" | "schemaMap" | "items" | "names" | "dependencies" | "namesMap";
 /**
  * Every JSON Schema keyword whose value holds a schema or a list of property names, from Draft 7
  * to 2020-12. Other keywords hold data, such as `enum`, `const` and `default`.
@@ -371,7 +364,8 @@ export const makeWebhooks = (
   declarations: Declarations,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
-  callbackPath: (app: AppId, subscription: WebhookId) => string = (app, id) => `/api/webhooks/${app}/${id}`,
+  callbackPath: (app: AppId, subscription: WebhookId) => string = (app, id) =>
+    `/api/webhooks/${app}/${id}`,
 ) => {
   const db = database(storage);
   const next = crypto.random.uuidV4();
@@ -1048,7 +1042,10 @@ export const makeWebhooks = (
         const stopped = yield* query(() =>
           db.findMany("webhooks", {
             where: (b) => b.and(b("app", "=", input.app), b("status", "=", "stopped")),
-            orderBy: [["createdAt", "desc"], ["id", "desc"]],
+            orderBy: [
+              ["createdAt", "desc"],
+              ["id", "desc"],
+            ],
             limit: stoppedWebhookLimit,
           }),
         );
@@ -1061,9 +1058,7 @@ export const makeWebhooks = (
         return yield* Schema.decodeUnknownEffect(Schema.Array(WebhookSubscription))([
           ...current,
           ...stopped,
-        ]).pipe(
-          Effect.mapError(() => new StorageError()),
-        );
+        ]).pipe(Effect.mapError(() => new StorageError()));
       }),
     create: (input: typeof CreateWebhook.Type) => create(input),
     reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
@@ -1252,7 +1247,10 @@ export const makeWebhooks = (
                     stateSchema: saved.setup.stateSchema,
                     signingSecret:
                       saved.setup.signingSecret === __published.signingSecretSource
-                        ? { source: __published.signingSecretSource, value: Redacted.make(saved.secret) }
+                        ? {
+                            source: __published.signingSecretSource,
+                            value: Redacted.make(saved.secret),
+                          }
                         : { source: "provider" },
                   }
                 : row.status === "disabled"
@@ -1274,7 +1272,10 @@ export const makeWebhooks = (
             return yield* new WebhookConflict();
           if (saved.setup.signingSecret === "provider" && parsed.secret === undefined)
             return yield* new WebhookFailed({ reason: "input" });
-          if (saved.setup.signingSecret === __published.signingSecretSource && parsed.secret !== undefined)
+          if (
+            saved.setup.signingSecret === __published.signingSecretSource &&
+            parsed.secret !== undefined
+          )
             return yield* new WebhookFailed({ reason: "input" });
           const secret = parsed.secret === undefined ? saved.secret : Redacted.value(parsed.secret);
           const state = yield* invoke(row, {

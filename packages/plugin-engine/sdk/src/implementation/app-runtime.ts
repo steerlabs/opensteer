@@ -4,7 +4,11 @@
  * and decodes the reply. Hosts differ only in where the runner lives and how builds are stored.
  */
 import { Clock, Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
-import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@opensteer/plugin-engine-telemetry";
+import {
+  makeTelemetryForwarder,
+  TelemetryBatch,
+  traceHeaders,
+} from "@opensteer/plugin-engine-telemetry";
 import { recordAs } from "@opensteer/plugin-engine-utils/recorded-message";
 import {
   AccountCheckResult,
@@ -461,7 +465,9 @@ export const appRuntime = (host: AppRuntimeHost) =>
           traced("workflow", {
             ...app(input),
             "pluginEngine.build.id": input.build,
-            ...(input.workflow === undefined ? {} : { "pluginEngine.run.id": input.workflow.runId }),
+            ...(input.workflow === undefined
+              ? {}
+              : { "pluginEngine.run.id": input.workflow.runId }),
           }),
         ),
     } satisfies Runtime<BlobStore>;
