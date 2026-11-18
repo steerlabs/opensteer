@@ -127,6 +127,9 @@ function createHostServer(dependencies: HostServerTestOverrides) {
     {
       countLiveThreadsByEnvironment: async () => new Map(),
       database: personalFixture.database,
+      personalMessageSendKeys: personalFixture.store.personalMessageSendKeys.bind(
+        personalFixture.store,
+      ),
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
       listActiveShellSessions: async () => [],
@@ -2511,7 +2514,10 @@ describe("Thread input command boundary", () => {
     };
   }
 
-  async function boundaryServer(commands: Record<string, unknown>) {
+  async function boundaryServer(
+    commands: Record<string, unknown>,
+    store?: Pick<OpensteerStore, "personalMessageSendKeys">,
+  ) {
     return createHostServer({
       authenticator: {
         authenticateSession: async () => testAuthenticatedSession(ownerId),
@@ -2519,6 +2525,7 @@ describe("Thread input command boundary", () => {
       } as never,
       commands: commands as never,
       discovery: testDiscovery,
+      ...(store ? { store: store as OpensteerStore } : {}),
     });
   }
 
@@ -2552,6 +2559,37 @@ describe("Thread input command boundary", () => {
         2,
         expect.objectContaining({ policy: "steer", requestedBy: ownerId }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("acknowledges the accepted message when its send key cannot be read", async () => {
+    const accepted = messageResult("queue");
+    const app = await boundaryServer(
+      { enqueueThreadInput: async () => accepted },
+      {
+        personalMessageSendKeys: async () => {
+          throw new Error("Send-key lookup unavailable");
+        },
+      },
+    );
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        content: accepted.message.content,
+        idempotencyKey: "send-key-lookup-unavailable",
+        threadId,
+        type: "thread.sendMessage",
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(rpcData(response)).toEqual({
+        input: accepted.input,
+        message: accepted.message,
+        run: null,
+        type: "thread.sendMessage",
+        wasDuplicate: false,
+      });
     } finally {
       await app.close();
     }
