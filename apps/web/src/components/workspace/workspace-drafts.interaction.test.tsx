@@ -71,18 +71,17 @@ describe("the draft's places", () => {
       const form = placeList(source.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
       return `/${tabSearch(form)}`;
     }, sentOnly);
-    await settle(100);
     const form = placeList(client.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
+    await vi.waitFor(
+      () => expect(document.querySelector(".context-chip__title")?.textContent).toBe(form.title),
+      { timeout: 1_000 },
+    );
     const sessionId = pageSession(form.key);
-    expect(element(".context-chip__title").textContent).toBe(form.title);
     const dispatch = vi.spyOn(client, "dispatch");
     await write(element<HTMLElement>("[data-composer-input]"), "Help with this form");
     await click(element(".composer__send"));
-    await settle(100);
-    const sends = dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage");
-    expect(sends).toHaveLength(1);
-    const command = sends[0]![0];
-    if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+    await vi.waitFor(() => expect(sends(dispatch)).toHaveLength(1), { timeout: 1_000 });
+    const command = sends(dispatch)[0]!;
     const page = {
       type: "browser-page",
       auto: true,
@@ -92,11 +91,9 @@ describe("the draft's places", () => {
       title: form.title,
     };
     expect(command.content).toContainEqual(expect.objectContaining(page));
-    await expect(
-      dispatch.mock.results.find(
-        (_, index) => dispatch.mock.calls[index]?.[0].type === "thread.sendMessage",
-      )!.value,
-    ).resolves.toMatchObject({ type: "thread.sendMessage" });
+    await act(async () => {
+      await expect(sendResult(dispatch)).resolves.toMatchObject({ type: "thread.sendMessage" });
+    });
     expect(
       Object.values(client.getSnapshot().transcripts)
         .flat()
@@ -112,7 +109,10 @@ describe("the draft's places", () => {
         ),
     ).toBe(true);
     expect(document.querySelector(".composer__error")).toBeNull();
-    expect(composerText(element("[data-composer-input]"))).toBe("");
+    await vi.waitFor(() => expect(composerText(element("[data-composer-input]"))).toBe(""), {
+      timeout: 1_000,
+    });
+    expect(sends(dispatch)).toHaveLength(1);
   });
 
   it("follows the page while untouched, freezes on typing, and a removal sticks", async () => {
