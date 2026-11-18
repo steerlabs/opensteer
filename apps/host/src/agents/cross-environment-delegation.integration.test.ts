@@ -1165,7 +1165,7 @@ integration("personal task delegation lifecycle", () => {
     const terminal = await end(worker, "completed");
     const replayed = await store.commitRunnerEvent(terminal.commit);
     expect(replayed).toMatchObject({
-      wasDuplicate: true,
+      replayed: true,
     });
     expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: worker.runId,

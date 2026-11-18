@@ -170,7 +170,7 @@ integration("Host, Runner, and Codex harness integration", () => {
       .orderBy("ordinal", "asc")
       .execute();
     expect(persistedRunnerEvents.map((event) => event.ordinal)).toEqual(
-      persistedRunnerEvents.map((_event, index) => index),
+      persistedRunnerEvents.map((_event, index) => String(index)),
     );
     await expect(
       host.store.database
