@@ -11,6 +11,7 @@ import {
   windowsTestInclude,
 } from "./ci-test-files.mjs";
 import { importClosure, importEdges, importers, reverseEdges } from "./ci-imports.mjs";
+import { applyReuse, findReuse } from "./ci-reuse.mjs";
 import { unknownDuration } from "./ci-sharding.mjs";
 import { matchesGlob, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -737,7 +738,19 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     });
     if (last && last === git(process.cwd(), ["rev-parse", "HEAD"]).trim()) unchangedSince = last;
   }
-  const plan = detect({ unchangedSince });
+  let plan = detect({ unchangedSince });
+  // A main push reuses the green pull request run that tested its exact tree; any doubt runs.
+  if (process.env.EVENT_NAME === "push" && !plan.full && !plan.detectionError) {
+    const reused = await findReuse({
+      sha: process.env.GITHUB_SHA,
+      repository: process.env.GITHUB_REPOSITORY,
+      token: process.env.GITHUB_TOKEN,
+    }).catch((error) => {
+      console.warn(`Running every selected lane: ${error.message}`);
+      return undefined;
+    });
+    if (reused) plan = applyReuse(plan, reused);
+  }
   writeFileSync(process.env.CI_PLAN_PATH ?? "ci-plan.json", JSON.stringify(plan, null, 2) + "\n");
   const filters = (scope, suffix = "") =>
     scope === "all" ? "all" : scope.map((name) => `--filter=${name}${suffix}`).join(" ");

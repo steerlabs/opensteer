@@ -11,6 +11,10 @@ pnpm exec tsx scripts/ci-native-inputs.ts
 - `--dry-run` prints the selection without running it.
 - Main pushes use per-SHA concurrency groups; only PRs cancel older runs. Keep scheduled and
   manual groups separate so a full run cannot displace release preflight's exact-SHA push Check.
+- A main push whose tree and first parent equal the merge its PR's green run tested skips
+  build-types, tests, integration and browser-journeys; `reused` in the plan names that run, and
+  Check re-verifies it ([ci-reuse.mjs](../../../../.github/scripts/ci-reuse.mjs)). The scheduled
+  full run backs it up.
 - Lint still runs on an unchanged scheduled main to enforce quarantine expiry and the published
   Stable team API floor. The latter reads `desktop-v*` tags; fetch tags before running
   `node .github/scripts/ci-stable-api.mjs` locally.
