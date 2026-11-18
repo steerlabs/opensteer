@@ -504,7 +504,11 @@ run("Browser Sessions through a whole deployment", () => {
           headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
         }) as unknown as WebSocketClient,
     });
-    addCleanup("Host client", async () => client.dispose());
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
+    addCleanup("Host client", async () => {
+      releaseTabs();
+      client.dispose();
+    });
     await client.load();
     const targets = catalog.tabs.map((tab) => tab.id);
     for (const tabId of targets.slice(0, 8))
@@ -518,6 +522,7 @@ run("Browser Sessions through a whole deployment", () => {
           .slice(0, 8)
           .every((id) => client.browserWatchState(sessionId, id).status === "live"),
       25_000,
+      "The first eight browser watches did not become live",
     );
     const owner = await stack.host.store.firstUser();
     if (!owner) throw new Error("Missing browser owner");
@@ -561,6 +566,7 @@ run("Browser Sessions through a whole deployment", () => {
           .every((id) => client.browserWatchState(sessionId, id).status === "live") &&
         client.browserWatchState(sessionId, targets[8]!).error !== null,
       25_000,
+      "The ninth browser watch did not report capture saturation",
     );
     const saturated = targets.map((id) => ({
       id,
@@ -575,6 +581,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(
       async () => client.browserWatchState(sessionId, targets[8]!).status === "live",
       20_000,
+      "The ninth browser watch did not recover after a capture slot was released",
     );
     expect(
       targets.slice(1).every((id) => client.browserWatchState(sessionId, id).status === "live"),

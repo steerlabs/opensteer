@@ -407,7 +407,11 @@ run("Browser Sessions through a whole deployment", () => {
           },
         }) as unknown as WebSocketClient,
     });
-    addCleanup("chip Host client", async () => client.dispose());
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
+    addCleanup("chip Host client", async () => {
+      releaseTabs();
+      client.dispose();
+    });
     await client.load();
     for (const thread of threads) {
       const release = client.observeThread(thread);
