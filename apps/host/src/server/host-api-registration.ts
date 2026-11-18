@@ -473,7 +473,12 @@ export function installPersonalVersionGate(app: FastifyInstance): void {
   app.addHook("onRequest", async (request) => {
     carryWebSocketVersion(request, "personal");
     if (!request.url.startsWith("/v1/") || request.url.startsWith("/v1/rpc/")) return;
-    if (request.routeOptions.config.apiVersion === unversionedRoute.apiVersion) return;
+    const exemption = request.routeOptions.config.apiVersion;
+    if (
+      exemption === unversionedRoute.apiVersion ||
+      (typeof exemption === "function" && exemption(request))
+    )
+      return;
     requireNegotiatedVersion(request);
   });
 }

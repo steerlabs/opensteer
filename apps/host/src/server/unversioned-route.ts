@@ -1,6 +1,6 @@
 declare module "fastify" {
   interface FastifyContextConfig {
-    readonly apiVersion?: "exempt";
+    readonly apiVersion?: "exempt" | ((request: FastifyRequest) => boolean);
   }
 }
 

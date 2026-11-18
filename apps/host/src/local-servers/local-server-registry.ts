@@ -210,9 +210,11 @@ export class LocalServerRegistry {
       await Promise.all(installations.map(({ id }) => this.#installationDevices(id)))
     ).flat();
     const removed = await this.#options.devices.withDeviceAdmissions(devices, async () => {
-      const mutate = async (scoped: IntegrationPlatformStore) => {
+      const { result, applied } = await store.administer(administration, async (scoped) => {
         await scoped.plugins.assertCanRemove(pluginId, actor);
         await authorize?.();
+        // Plugin writes precede installation locks, as they do on install and update.
+        await scoped.plugins.remove(pluginId);
         const changes = [];
         for (const installation of installations)
           changes.push(
@@ -222,12 +224,8 @@ export class LocalServerRegistry {
               requestId,
             }),
           );
-        await scoped.plugins.remove(pluginId);
         return { pluginId, changes };
-      };
-      const { result, applied } = administration
-        ? await store.administer(administration, mutate)
-        : { result: await mutate(store), applied: true };
+      });
       if (!applied) return;
       for (const change of result.changes)
         await this.#options.devices.endSessionsForRemovedApps(change.removedApps);

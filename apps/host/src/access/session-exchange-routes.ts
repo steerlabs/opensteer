@@ -118,7 +118,14 @@ export function registerSessionExchangeRoute(
   if (arms.size === 0) return;
   app.post(
     sessionExchangePath,
-    { bodyLimit: maximumSessionExchangeBodyBytes },
+    {
+      bodyLimit: maximumSessionExchangeBodyBytes,
+      config: {
+        // The Account portal submits a browser form, which cannot carry version headers.
+        apiVersion: (request) =>
+          mediaType(request.headers["content-type"]) === "application/x-www-form-urlencoded",
+      },
+    },
     async (request, reply) => {
       const media = mediaType(request.headers["content-type"]);
       const requestOrigin =

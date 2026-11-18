@@ -73,8 +73,13 @@ export const databaseLockOrder = [
   "advisory:browser-profile-session",
   "advisory:channel-link-code",
   "advisory:account-host-session",
+  // The OAuth broker reserves its attempt/refresh identity before its Account and Deployment quotas.
+  "advisory:hosted-oauth-attempt-id",
+  "advisory:hosted-oauth-attempt-account",
+  "advisory:hosted-oauth-attempt-deployment",
   "advisory:hosted-oauth-refresh-id",
   "advisory:hosted-oauth-refresh-account",
+  "advisory:hosted-oauth-refresh-deployment",
   "advisory:account-adoption-proof",
   "advisory:managed-owner-bootstrap",
   "advisory:native-oauth-client",
@@ -326,8 +331,12 @@ export function advisoryLockResource(key: string, seed: number): string {
     "integration-catalog-definition",
     "channel-link-code",
     "account-host-session",
+    "hosted-oauth-attempt-id",
+    "hosted-oauth-attempt-account",
+    "hosted-oauth-attempt-deployment",
     "hosted-oauth-refresh-id",
     "hosted-oauth-refresh-account",
+    "hosted-oauth-refresh-deployment",
     "account-adoption-proof",
   ] as const;
   for (const prefix of prefixes) if (key.startsWith(prefix + ":")) return `advisory:${prefix}`;

@@ -99,7 +99,7 @@ export class IntegrationPlatformStore {
   }
 
   administer<Result>(
-    identity: AdministrationCommandIdentity,
+    identity: AdministrationCommandIdentity | undefined,
     mutate: (store: IntegrationPlatformStore) => Promise<Result>,
   ) {
     return withPersonalTransaction(this.#database, async (transaction) => {
