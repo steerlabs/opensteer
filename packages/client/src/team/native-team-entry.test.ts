@@ -1,5 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { createId, type DeploymentId } from "@opensteer/core";
+import { createId, TeamInviteSecretSchema, type DeploymentId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +15,8 @@ import {
   signTestDiscoveryEnvelope,
   testHostAuthorityKeys,
 } from "../test-support/index.js";
-import { NativeTeamEntry } from "./native-team-entry.js";
+import { operationFailure } from "../host/operation-failure.js";
+import { NativeTeamEntry, previewTeamInvite } from "./native-team-entry.js";
 import { TeamRuntimeOwner } from "./team-runtime-owner.js";
 
 let latestVerified: VerifiedHostEndpoint;
@@ -666,4 +667,42 @@ describe("NativeTeamEntry", () => {
     await expect(failing).rejects.toThrow(/sign-in/iu);
     expect(await ids()).toEqual([older.discovery.deploymentId]);
   });
+});
+
+it("tells an invite preview the team refused from one that never reached it", async () => {
+  const invite = TeamInviteSecretSchema.parse({
+    selector: "s".repeat(32),
+    verifier: "v".repeat(43),
+  });
+  const preview = (answer: () => Promise<Response>) =>
+    previewTeamInvite("https://acme.teams.opensteer.example", invite, answer).catch(
+      (error: unknown) => error,
+    );
+  // A team that answers with its own error is reached, whatever the status.
+  const refused = await preview(async () =>
+    Response.json(
+      { ok: false, error: { code: "internal", message: "Invites are paused.", retryable: true } },
+      { status: 500 },
+    ),
+  );
+  expect(refused).toMatchObject({ message: "Invites are paused.", status: 500 });
+  expect(operationFailure(refused)).toBe("failed");
+  // Connect's tunnel page while the team's machine sleeps, and a request that got no answer.
+  const gateway = await preview(async () => new Response("<html>", { status: 530 }));
+  const lost = await preview(async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  // Headers arrived, then the connection dropped before the body did.
+  const cut = await preview(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start: (controller) => controller.enqueue(new TextEncoder().encode('{"ok":')),
+          pull: (controller) => controller.error(new TypeError("network error")),
+        }),
+        { status: 500 },
+      ),
+  );
+  for (const unreachable of [gateway, lost, cut])
+    expect(operationFailure(unreachable)).toBe("unavailable");
 });

@@ -124,7 +124,7 @@ function QuietlyMoved(props: {
       }
       Alert.alert(
         failed === 1 ? "One task wasn’t moved back" : `${failed} tasks weren’t moved back`,
-        "They’re still in Done. Check your connection and try again.",
+        "They’re still in Done. Try again in a moment.",
       );
     });
   };

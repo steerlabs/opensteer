@@ -60,7 +60,10 @@ function AccountTeamScreen({
   const { team, snapshot, failure } = useTeamSession(teamId);
   const [busy, setBusy] = useState(false);
   const state = team?.state;
-  if ((state === "live" || state === "offline" || state === "loading") && snapshot.bootstrap)
+  if (
+    (state === "live" || state === "offline" || state === "failed" || state === "loading") &&
+    snapshot.bootstrap
+  )
     return team ? (
       <TeamReferenceProvider client={team.session} origin={team.origin} teamId={teamId}>
         {children}
@@ -81,7 +84,9 @@ function AccountTeamScreen({
             ? "Team server needs an update"
             : signIn
               ? `Sign in to ${name}`
-              : `${name} didn't answer`;
+              : state === "failed"
+                ? `Couldn't open ${name}`
+                : `${name} didn't answer`;
   const detail =
     failure ??
     (state === "removed" || state === "join"
@@ -90,7 +95,9 @@ function AccountTeamScreen({
         ? "Install the latest Opensteer app to open this team."
         : state === "update-server"
           ? "Ask the team administrator to update the server."
-          : "Try again when you're connected.");
+          : state === "failed"
+            ? "Try again in a moment."
+            : "Try again when you're connected.");
   const attempt = () => {
     setBusy(true);
     void (signIn ? teams.addToPhone(teamId).then(() => teams.select(teamId)) : teams.select(teamId))
@@ -107,7 +114,7 @@ function AccountTeamScreen({
         ) : (
           <>
             <Notice title={title} detail={detail} tone="neutral" />
-            {signIn || state === "offline" || !state ? (
+            {signIn || state === "offline" || state === "failed" || !state ? (
               <PrimaryButton busy={busy} label={signIn ? "Sign in" : "Retry"} onPress={attempt} />
             ) : null}
             <PrimaryButton

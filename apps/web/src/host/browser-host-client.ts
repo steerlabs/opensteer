@@ -17,7 +17,7 @@ export interface BrowserHostClientOptions {
    * origin that served this bundle. */
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
-  readonly bufferedResponses?: boolean;
+  readonly pacedUploads?: HttpHostClientOptions["pacedUploads"];
   /** The Desktop renderer states how long its hidden sockets last; a browser tab cannot. */
   readonly lifecycle?: ClientLifecycle;
   readonly webSocketFactory?: (url: string) => WebSocketClient;
@@ -39,9 +39,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,
     ...(options.fetch ? { fetch: options.fetch } : {}),
-    ...(options.bufferedResponses === undefined
-      ? {}
-      : { bufferedResponses: options.bufferedResponses }),
+    ...(options.pacedUploads ? { pacedUploads: true } : {}),
     lifecycle: options.lifecycle ?? browserClientLifecycle(),
     browserPreferencesStorage,
     reportRealtimeFrame: (record) =>

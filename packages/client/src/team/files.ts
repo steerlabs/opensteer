@@ -4,6 +4,7 @@ import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-auth
 import {
   TeamUploadMetadataSchema,
   TeamFileSchema,
+  fileTransferHeadersTimeoutMs,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
@@ -12,6 +13,8 @@ import type { HostTransport } from "../connections/host-transport.js";
 import { teamCacheKey, type TeamCacheScope } from "./persistence.js";
 
 type TeamFile = z.infer<typeof TeamFileSchema>;
+/** A team upload's answer is one file record; anything longer is not one. */
+export const teamUploadReplyMaxBytes = 128 * 1024;
 export interface TeamFileUpload {
   readonly channelId: TeamFile["channelId"];
   readonly original: Blob;
@@ -43,6 +46,7 @@ export function teamFileTransport(
           path: `/v1/team/files/${metadata.id}/${part}`,
           method: "GET",
           headers: { additional: version },
+          timeoutMs: fileTransferHeadersTimeoutMs,
           ...(signal ? { signal } : {}),
         },
         async (response, progress) => {
@@ -84,12 +88,13 @@ export function teamFileTransport(
             contentType: "application/octet-stream",
             additional: { ...version, "x-opensteer-team-upload": JSON.stringify(metadata) },
           },
+          timeoutMs: fileTransferHeadersTimeoutMs,
           ...(input.signal ? { signal: input.signal } : {}),
         },
         async (response, progress) => {
           if (!response.ok) throw new Error("The team file could not be uploaded.");
           const bytes = await readBoundedResponse(response, {
-            maximumBytes: 128 * 1024,
+            maximumBytes: teamUploadReplyMaxBytes,
             signal: progress.signal,
             onProgress: progress.onProgress,
             sizeError: () => new Error("Team upload response exceeds its byte bound."),

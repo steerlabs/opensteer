@@ -3,6 +3,7 @@ import {
   HostClientRequestError,
   isHostRefusal,
   mutationIdempotencyKey,
+  operationFailure,
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
@@ -1676,7 +1677,7 @@ function mintFailure(error: unknown): IphoneAddFailure {
   if (isHostRefusal(error) && error instanceof Error && error.message.trim() !== "") {
     return { kind: "host-said", message: error.message };
   }
-  return { kind: isHostRefusal(error) ? "failed" : "host-unreachable" };
+  return { kind: operationFailure(error) === "unavailable" ? "host-unreachable" : "failed" };
 }
 
 function issueFailure(issue: IphoneAppsIssue, message: string | null): IphoneAddFailure {

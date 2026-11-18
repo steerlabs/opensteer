@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { createId, DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserEditingStore,
   type BrowserCommand,
@@ -60,12 +61,13 @@ let client: HostClient;
 if (mode === "host") {
   const baseUrl = query.get("host") ?? location.origin;
   const bridge = query.has("baseline") ? desktopBridge() : null;
+  const deploymentId = DeploymentIdSchema.parse(query.get("deployment") ?? createId("deployment"));
   const openSocket: (url: string) => WebSocketClient = bridge
-    ? createDesktopHostWebSocketFactory(bridge, baseUrl)
+    ? createDesktopHostWebSocketFactory(bridge, baseUrl, deploymentId)
     : (url: string) => new WebSocket(url);
   const host = createBrowserHostClient({
     baseUrl,
-    ...(bridge ? { fetch: createDesktopHostFetch(bridge, baseUrl) } : {}),
+    ...(bridge ? { fetch: createDesktopHostFetch(bridge, baseUrl, deploymentId) } : {}),
     capabilities: query.has("baseline")
       ? []
       : async () =>

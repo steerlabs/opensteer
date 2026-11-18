@@ -92,7 +92,10 @@ it("keeps notice-mode native input with that person instead of offering another 
   try {
     const { connectionId } = await transport.openWebSocket(
       7,
-      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=notice` },
+      {
+        expectedDeploymentId: "dep_11111111-1111-4111-8111-111111111111",
+        path: `/v1/browser-sessions/${sessionId}/connect?passkeys=notice`,
+      },
       () => {},
     );
     events!.message(

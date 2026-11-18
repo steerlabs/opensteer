@@ -26,6 +26,22 @@ const details = {
   },
 } as const;
 
+/**
+ * A gateway answering for a Host behind it that doesn't: Connect's tunnel while
+ * the computer sleeps (530), or a proxy in front of a stopped Host (502-504).
+ */
+export function isGatewayFailure(status: number): boolean {
+  return status === 502 || status === 503 || status === 504 || status === 530;
+}
+
+/** This client already has as many Host requests open as it allows, so it sent nothing. */
+export class HostCapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HostCapacityError";
+  }
+}
+
 /** The observing boundary classifies a failure; IPC carries only its code. */
 export class HostTransportError extends ClientOperationError {
   readonly code: HostTransportErrorCode;

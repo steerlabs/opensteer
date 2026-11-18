@@ -72,7 +72,7 @@ import {
   type ScrollViewProps,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
+import { canRespondToRequests, failureNotice, showsHostLive } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
@@ -248,6 +248,13 @@ export interface PageCompanion {
    * tab: the conversation stays where it is, and following picks up there.
    */
   readonly showTab: ((tab: BrowserTabDestination) => void) | null;
+}
+
+/** Blames the connection only when the connection itself is down. */
+function lookupFailure(snapshot: Pick<HostSnapshot, "connection" | "network">): string {
+  if (snapshot.connection === "connected") return "Try again in a moment.";
+  const notice = failureNotice("unavailable", snapshot.network);
+  return `${notice.title}. ${notice.body}`;
 }
 
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
@@ -1193,7 +1200,7 @@ function ThreadPaneForUser(
         ) : snapshot.lookup === "failed" ? (
           <Notice
             title="This thread could not be loaded"
-            detail="Check your connection and try again."
+            detail={lookupFailure(snapshot)}
             action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
           />
         ) : snapshot.lookup === "missing" ? (
@@ -1433,7 +1440,7 @@ function ThreadPaneForUser(
       ) : snapshot.lookup === "failed" ? (
         <Notice
           action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-          detail="Check your connection and try again."
+          detail={lookupFailure(snapshot)}
           title="Messages could not be loaded"
         />
       ) : null}
