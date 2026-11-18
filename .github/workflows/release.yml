@@ -1,27 +1,11 @@
 name: Desktop release
 on:
-  push:
+  # A main push releases when its CI succeeds, so a CI rerun to green releases it as well.
+  # release-plan.mjs skips commits that change only documentation and CI.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "README.md"
-      - "AGENTS.md"
-      - "CHANGELOG*.md"
-      - "CONTRIBUTING.md"
-      - "SECURITY.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/agent-context-budget.yml"
-      - ".github/actions/ci-browser/**"
-      - ".github/actions/ci-changes/**"
-      - ".github/actions/ci-setup/**"
-      - ".github/scripts/ci-*.mjs"
-      - ".github/scripts/ci-*.json"
-      - ".github/scripts/fork-safety.mjs"
-      - ".github/scripts/fork-safety.test.mjs"
-      - ".github/scripts/local-check.mjs"
-      - ".github/scripts/local-check.test.mjs"
   workflow_dispatch:
     inputs:
       channel:
@@ -39,15 +23,21 @@ on:
         default: false
 permissions:
   contents: read
+# Dispatches queue per channel as before. Automatic releases are ordered by job groups below:
+# a newer one cancels an older one only before anything is deployed, drafted or published.
 concurrency:
-  group: release-desktop-${{ inputs.channel || 'insider' }}
+  group: release-desktop-${{ github.event_name == 'workflow_dispatch' && inputs.channel || github.run_id }}
   cancel-in-progress: false
 defaults:
   run:
     shell: bash
 jobs:
   preflight:
-    if: github.repository == 'steerlabs/opensteer'
+    if: >-
+      github.repository == 'steerlabs/opensteer' && (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 70
     permissions:
@@ -75,6 +65,7 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           INSIDER_TAG: ${{ inputs.insider_tag }}
           EVENT: ${{ github.event_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: node .github/scripts/release-plan.mjs preflight
       # An insider published before team images existed promotes without them.
       - id: team
@@ -114,6 +105,10 @@ jobs:
   build:
     needs: [preflight, discover]
     if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false'
+    # Only builds and uploads a run artifact, so a newer automatic release may cancel it.
+    concurrency:
+      group: release-desktop-build-${{ needs.preflight.outputs.channel }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
     runs-on: macos-26
     environment: release
     timeout-minutes: 90
@@ -328,6 +323,10 @@ jobs:
     # The hosted Account service ships before the Beta that may depend on it.
     needs: preflight
     if: needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.channel == 'beta'
+    # Rollouts never overlap and are never cancelled once started.
+    concurrency:
+      group: release-desktop-account
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: account
     timeout-minutes: 45
@@ -376,6 +375,10 @@ jobs:
     # Insiders publish the team images; Stable reuses that version's images unchanged.
     needs: preflight
     if: needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.team_images == 'true'
+    # Pushes only untagged digests; team-images tags them, so a newer automatic release may cancel this.
+    concurrency:
+      group: release-desktop-team-image-${{ needs.preflight.outputs.channel }}-${{ matrix.platform }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
     strategy:
       matrix:
         include:
@@ -473,7 +476,12 @@ jobs:
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
     needs: [preflight, discover, draft, account, team-images]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'workflow_run' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    # Automatic and dispatched insiders publish one at a time, and the publisher refuses an
+    # insider older than a published one.
+    concurrency:
+      group: release-desktop-publish-beta
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write

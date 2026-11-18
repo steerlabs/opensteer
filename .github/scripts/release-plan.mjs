@@ -9,6 +9,28 @@ const { deriveReleaseVersion } = createRequire(import.meta.url)(
   "../../scripts/release-version.cjs",
 );
 const repo = "steerlabs/opensteer";
+/** Changes that never reach a desktop, APK, Account or team image: documentation and CI only. */
+export const unreleasedPaths = [
+  "docs/**",
+  "README.md",
+  "AGENTS.md",
+  "CHANGELOG*.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".github/dependabot.yml",
+  ".github/workflows/ci.yml",
+  ".github/workflows/agent-context-budget.yml",
+  ".github/actions/ci-browser/**",
+  ".github/actions/ci-changes/**",
+  ".github/actions/ci-setup/**",
+  ".github/scripts/ci-*.mjs",
+  ".github/scripts/ci-*.json",
+  ".github/scripts/fork-safety.mjs",
+  ".github/scripts/fork-safety.test.mjs",
+  ".github/scripts/local-check.mjs",
+  ".github/scripts/local-check.test.mjs",
+];
 const insiderPattern = /^v(\d+\.\d+\.\d+)-insider$/u;
 const stablePattern = /^desktop-v(\d+\.\d+\.\d+)$/u;
 const exactSha = /^[a-f0-9]{40}$/u;
@@ -88,7 +110,7 @@ function sameManifest(manifest, source) {
     throw Error("Release manifest disagrees with selected source/version/channel/tag");
 }
 export function preflight(
-  { root = process.cwd(), channel, event, insiderTag = "" },
+  { root = process.cwd(), channel, event, insiderTag = "", sourceSha = "" },
   run = execute,
 ) {
   const github = client(root, run);
@@ -96,7 +118,13 @@ export function preflight(
   git("fetch", "origin", "main", "--tags");
   let sha;
   let version;
-  if (event === "push" || channel === "insider") {
+  if (event === "workflow_run") {
+    // The main push whose CI just succeeded, not whatever main is now.
+    channel = "beta";
+    sha = sourceSha;
+    if (!exactSha.test(sha)) throw Error("Expected the exact SHA of the CI run that succeeded");
+    version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
+  } else if (channel === "insider") {
     channel = "beta";
     sha = git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}");
     version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
@@ -132,7 +160,53 @@ export function preflight(
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
   const source = { sha, version, channel, tag };
-  return requireSourceChecks(source, github) ?? source;
+  return qualify(source, github, event);
+}
+function qualify(source, github, event) {
+  return (
+    requireSourceChecks(source, github) ??
+    (event === "workflow_run" ? coveredElsewhere(source, github) : undefined) ??
+    source
+  );
+}
+/**
+ * CI completions on main can arrive close together and out of order. Only the newest green
+ * commit releases, and a commit whose releasable files a published insider already holds does
+ * not release again. A skipped source is reported as superseded, so nothing downstream runs.
+ */
+function coveredElsewhere(source, { git, newest, publishedVersions }) {
+  git("fetch", "origin", "main", "--no-tags");
+  const main = git("rev-list", "--first-parent", "refs/remotes/origin/main").split("\n");
+  const index = main.indexOf(source.sha);
+  if (index < 0) throw Error("Release source must be on first-parent main");
+  const newer = newest(
+    "actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100",
+    "workflow_runs",
+  ).find(
+    (item) =>
+      item.head_branch === "main" &&
+      item.event === "push" &&
+      item.conclusion === "success" &&
+      exactSha.test(item.head_sha) &&
+      main.indexOf(item.head_sha) >= 0 &&
+      main.indexOf(item.head_sha) < index,
+  );
+  // That commit's own CI completion started its release, which holds this source.
+  if (newer) return { ...source, superseded: true, supersededBy: newer.head_sha };
+  const latest = publishedVersions(insiderPattern, "refs/tags/v*-insider").reduce(
+    (best, version) => (best === undefined || isNewer(version, best) ? version : best),
+    undefined,
+  );
+  if (latest === undefined) return undefined;
+  const tag = `v${latest}-insider`;
+  const released = git("rev-parse", "--verify", `refs/tags/${tag}^{commit}`);
+  const changed = git("diff", "--name-only", released, source.sha).split("\n").filter(Boolean);
+  if (
+    git("merge-base", released, source.sha) === source.sha ||
+    changed.every((file) => unreleasedPaths.some((pattern) => path.matchesGlob(file, pattern)))
+  )
+    return { ...source, superseded: true, supersededBy: tag };
+  return undefined;
 }
 
 class SourceChecksPending extends Error {
@@ -220,7 +294,7 @@ function requireFullChecks(source, { git, pages, newest }) {
   )
     refuse();
 }
-/** Push starts alongside main CI. Keep the selected SHA fixed while it qualifies. */
+/** A dispatch may start alongside main CI. Keep the selected SHA fixed while it qualifies. */
 export async function qualifiedPreflight(
   options,
   run = execute,
@@ -238,7 +312,7 @@ export async function qualifiedPreflight(
   while (now() < deadline) {
     await sleep(Math.min(15_000, deadline - now()));
     try {
-      return requireSourceChecks(source, github) ?? source;
+      return qualify(source, github, options.event);
     } catch (error) {
       if (!(error instanceof SourceChecksPending)) throw error;
     }
@@ -286,6 +360,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
             channel: process.env.CHANNEL,
             event: process.env.EVENT,
             insiderTag: process.env.INSIDER_TAG,
+            sourceSha: process.env.SOURCE_SHA,
           })
         : process.argv[2] === "discover"
           ? discover({

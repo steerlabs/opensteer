@@ -53,14 +53,19 @@ together.
 
 ## Public desktop releases
 
-Main pushes outside the workflow's path exclusions build an insider: a signed, notarized Beta
-prerelease, never Latest. Shipped notices and agent skills are build inputs, so never exclude all
-Markdown. Tags made with `GITHUB_TOKEN` do not retrigger. Preflight waits for the exact SHA's
-newest main push CI and `Check`; if a newer main push superseded a cancelled run, the release
-skips, and any other failure blocks. A push publishes its insider; a dispatch stops at the draft
-unless `publish=true`. Concurrency never cancels a build mid-notarization, so a coalesced stable
-dispatch may need redispatch. Never publish an older insider after a newer one: the updater takes
-the first eligible feed entry.
+When a main push's CI succeeds, that exact commit builds an insider: a signed, notarized Beta
+prerelease, never Latest. A red CI releases nothing, and rerunning it to green releases then.
+Preflight still requires that commit's newest main push CI and `Check` to be green. It skips when
+a newer main commit's CI already succeeded (that commit releases instead) or when everything since
+the newest published insider is documentation or CI (`unreleasedPaths` in
+[release-plan.mjs](../.github/scripts/release-plan.mjs)). Shipped notices and agent skills are
+build inputs, so never exclude all Markdown. A newer automatic release cancels an older one's
+macOS and team image builds, which publish nothing; Account rollouts and insider publication run
+one at a time and are never cancelled. An automatic release publishes its insider; a dispatch waits
+for its commit's CI, queues per channel and stops at the draft unless `publish=true`. A dispatched
+insider's build waits behind an automatic one, which can replace it. Never publish an older
+insider after a newer one: the updater takes the first eligible feed entry, and the publisher
+refuses one.
 
 Key files and the ephemeral keychain are private and always deleted; release caches never hold
 signing material, and CI needs no private checkout or signing JSON. A [launch
@@ -174,8 +179,8 @@ packages public once, after their first push.
 
 ## Account service
 
-The `account` job ships the Account service on every eligible main push, before that insider
-publishes; a failed rollout blocks the insider, and
+The `account` job ships the Account service on every automatic insider release, before that
+insider publishes; a failed rollout blocks the insider, and
 [deploy-account.sh](../.github/scripts/deploy-account.sh) never rolls live source back. Nobody
 deploys it by hand. A Host refuses, with an update instruction, an Account lacking a capability
 it needs, never falling back to a weaker path. A reasonless refusal stays retryable: an HTTP

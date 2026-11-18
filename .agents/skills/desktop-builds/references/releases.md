@@ -3,6 +3,10 @@
 Release builders consume a green main SHA; there is no local release requalification. Real desktop
 journeys run in a VM after merge or on maintainer request.
 
+Main's green CI starts each insider release itself. After a red main CI, rerun that CI rather than
+dispatching a release. A newer merge's release cancels an older one's builds on its own; never
+cancel a release run by hand once it deploys, drafts or publishes.
+
 ## Practice insider
 
 GitHub requires the workflow on the default branch:
