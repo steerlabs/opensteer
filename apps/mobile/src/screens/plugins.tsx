@@ -32,6 +32,7 @@ import { Alert } from "react-native";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { ActionLineValue } from "../ui/action-line.js";
+import { confirm } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type {
@@ -392,27 +393,22 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
   const list = usePagedList(pluginCatalogReader(host, search), `catalog:${search}`, host);
   const action = usePluginAction(host, "catalog", "install this plugin", "installed");
   const install = (entry: PluginCatalogEntryView) =>
-    Alert.alert(
-      `Install ${entry.name}?`,
-      `It runs sandboxed with no access to your accounts until you connect one.${
+    confirm({
+      title: `Install ${entry.name}?`,
+      message: `It runs sandboxed with no access to your accounts until you connect one.${
         entry.auth.length
           ? ` It connects with ${entry.auth.map(({ label }) => label.toLocaleLowerCase()).join(" or ")}.`
           : ""
       }`,
-      [
-        { style: "cancel", text: "Cancel" },
-        {
-          text: "Install",
-          onPress: () =>
-            action.run(`install:${entry.id}`, async () => {
-              const result = await installPlugin(host, { kind: "catalog", catalogId: entry.id });
-              if (result.status === "installed")
-                navigation.navigate("PluginDetail", { deploymentId, pluginId: result.pluginId });
-              else action.setError(result.message);
-            }),
-        },
-      ],
-    );
+      confirm: "Install",
+      onConfirm: () =>
+        action.run(`install:${entry.id}`, async () => {
+          const result = await installPlugin(host, { kind: "catalog", catalogId: entry.id });
+          if (result.status === "installed")
+            navigation.navigate("PluginDetail", { deploymentId, pluginId: result.pluginId });
+          else action.setError(result.message);
+        }),
+    });
   const sections: NativeSettingsSection[] = [];
   const notice = list.loading ? engineSection(engine) : null;
   if (notice) sections.push(notice);
