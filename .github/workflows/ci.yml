@@ -617,7 +617,16 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: ${{ runner.temp }}/evidence
-      - run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence"
+      # A Stable promotion reads this step, so a red job for a platform no release publishes
+      # does not hold it (ci-release-gate.mjs). The next step still fails Check for any job.
+      - name: Verify release-gating jobs
+        run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence" --release-gating
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+          CI_EVENT: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - if: always()
+        run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence"
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_EVENT: ${{ github.event_name }}
