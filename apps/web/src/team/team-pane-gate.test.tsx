@@ -182,7 +182,13 @@ it("claims the shell's gate while it explains, so another connection's pill step
         <TeamsProvider
           surface={{
             kind: "team-web",
-            attachment: { teamId: host.teamId, name: "Team", origin: host.origin, client: null },
+            attachment: {
+              teamId: host.teamId,
+              name: "Team",
+              origin: host.origin,
+              client: null,
+              link: null,
+            },
           }}
         >
           {inside ? <TeamPaneGate teamId={host.teamId}>{null}</TeamPaneGate> : null}

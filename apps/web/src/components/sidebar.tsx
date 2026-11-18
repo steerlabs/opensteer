@@ -109,7 +109,8 @@ import {
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { revealInList, useScrollEdges } from "./workspace/scroll-edges.js";
-import { useTabCloser } from "./workspace/tab-closer.js";
+import { useTabCloseLine, useTabCloser } from "./workspace/tab-closer.js";
+import { RowSubtitle } from "./action-line.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { TabMenu } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
@@ -1519,6 +1520,7 @@ const TabRow = memo(function TabRow({
         size={16}
       />
       <CloseTabButton fallback={fallbackRef} place={place} />
+      <TabCloseOutcome tabId={place.key} />
       {menuAt && mainRef.current ? (
         <TabMenu
           anchor={mainRef.current}
@@ -1593,6 +1595,16 @@ function neighbourRow(index: number): HTMLElement | null {
   return (
     next?.querySelector<HTMLElement>(".side-tab__main") ??
     document.querySelector<HTMLElement>(".side-new__main")
+  );
+}
+
+/** Why this tab is still here after a close, whichever control asked; nothing otherwise. */
+function TabCloseOutcome({ tabId }: { readonly tabId: PlaceItem["key"] }) {
+  const line = useTabCloseLine(tabId);
+  return (
+    <span className="side-tab__outcome">
+      <RowSubtitle line={line} subtitle={null} />
+    </span>
   );
 }
 

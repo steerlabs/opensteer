@@ -50,14 +50,7 @@ import {
 } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useComputerUseStop } from "@opensteer/client/react";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { act, failureWords, runRead } from "../use-action.js";
 
@@ -118,11 +111,7 @@ export function ComputerUseBlock({
     setBusy(key);
     setFailure(null);
     try {
-      await act(
-        hostClient,
-        { label: "change this", done: "changed" },
-        operation,
-      );
+      await act(hostClient, { label: "change this", done: "changed" }, operation);
       // A failed reload after a successful mutation does not undo the change.
       await onChanged().catch(() => undefined);
     } catch (reason) {
