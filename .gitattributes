@@ -1,4 +1,4 @@
 # Imported source and patch context retain upstream whitespace.
-vendor/plugin-engine/** -whitespace
+packages/plugin-engine/** -whitespace
 patches/plugin-engine-*.patch -whitespace
 scripts/plugin-engine/patches/*.patch -whitespace

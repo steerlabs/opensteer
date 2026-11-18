@@ -11,7 +11,7 @@ export function localPlan(files, graph, present, baseGraph = graph, platform = p
   const code = present.filter(
     (p) =>
       /\.[cm]?[jt]sx?$/.test(p) &&
-      !p.startsWith("vendor/plugin-engine/") &&
+      !p.startsWith("packages/plugin-engine/") &&
       !p.startsWith("scripts/plugin-engine/overlay/"),
   );
   const tests = present.filter(

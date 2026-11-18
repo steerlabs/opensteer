@@ -47,6 +47,6 @@ packages/protocol/src/personal-wire.baseline.json
 packages/protocol/src/device-wire-v60.fixture.json
 
 # Repeatable third-party source import.
-vendor/plugin-engine
+packages/plugin-engine
 scripts/plugin-engine/overlay
 patches/plugin-engine-*.patch

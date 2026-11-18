@@ -62,7 +62,7 @@
     }
   ],
   "ignorePatterns": [
-    "vendor/plugin-engine/**",
+    "packages/plugin-engine/**",
     "scripts/plugin-engine/overlay/**",
     "apps/mobile/android/**",
     "apps/mobile/ios/**",

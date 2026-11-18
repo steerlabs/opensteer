@@ -111,13 +111,13 @@ test("typechecks what CI would, including a test-only owner and a root config", 
 });
 
 test("imported packages keep compiler checks while skipping local style rewrites", () => {
-  const file = "vendor/plugin-engine/sdk/src/index.ts";
+  const file = "packages/plugin-engine/sdk/src/index.ts";
   const plan = localPlan(
     [file],
     [
       {
         name: "@opensteer/plugin-engine-sdk",
-        dir: "vendor/plugin-engine/sdk",
+        dir: "packages/plugin-engine/sdk",
         deps: [],
         coverage: [],
       },

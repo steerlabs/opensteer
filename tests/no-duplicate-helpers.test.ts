@@ -14,7 +14,7 @@ const sourceFiles = execFileSync(
   .filter(
     (file) =>
       Boolean(file) &&
-      !file.startsWith("vendor/plugin-engine/") &&
+      !file.startsWith("packages/plugin-engine/") &&
       !file.startsWith("scripts/plugin-engine/overlay/"),
   )
   // The index still names files deleted in the working tree, and a file that is
