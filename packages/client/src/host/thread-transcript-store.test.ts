@@ -477,3 +477,62 @@ test("history pages land during a Run and keep an unhide or removal made while t
   store.endRead(jump);
   expect(store.getSnapshot().historyIds).toEqual(all.slice(0, 3).map(({ id }) => id));
 });
+
+test("an inline repair replaces the scope in place and keeps earlier pages that still meet it", () => {
+  const store = new ThreadTranscriptStore();
+  store.begin(1, false);
+  const address = { subscriptionId, generation: 1, scope };
+  const all = Array.from({ length: 80 }, (_, index) => {
+    const id = createId("message");
+    return { ...item, id, messageId: id, position: String(index + 1) };
+  });
+  const cursor = (boundary: typeof item) => ({
+    deploymentId: createId("deployment"),
+    viewerId: createId("user"),
+    epoch: crypto.randomUUID(),
+    threadId: scope.threadId,
+    nodeId: null,
+    beforeId: boundary.id,
+    beforePosition: boundary.position,
+  });
+  const cut = (items: typeof all, throughSequence: string) =>
+    store.apply({
+      ...address,
+      type: "host.snapshot",
+      throughSequence,
+      snapshot: {
+        thread: detailThread(thread),
+        items,
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: cursor(items[0]!),
+      },
+    });
+  cut(all.slice(30, 80), "1");
+  store.apply({ ...address, type: "host.synchronized", throughSequence: "1" });
+  store.installPage(
+    {
+      kind: "page",
+      threadId: scope.threadId,
+      nodeId: null,
+      revision: "1",
+      items: all.slice(0, 30),
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: cursor(all[29]!),
+    },
+    1,
+    "earlier",
+  );
+  const edited = { ...all[79]!, revision: "9", view: { preview: "Edited while away" } };
+  // The Host could not replay the gap and sends the latest window on the same subscription.
+  expect(cut([...all.slice(31, 79), edited], "9")).toBe(true);
+  const state = store.getSnapshot();
+  expect(state.synchronized).toBe(true);
+  expect(state.through).toBe("9");
+  expect(state.historyIds).toEqual(
+    [...all.slice(0, 31), ...all.slice(31, 79), edited].map(({ id }) => id),
+  );
+  expect(state.items.get(edited.id)).toBe(edited);
+  expect(state.snapshot?.nextBefore).toBeNull();
+});
