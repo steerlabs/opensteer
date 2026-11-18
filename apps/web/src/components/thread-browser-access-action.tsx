@@ -18,6 +18,7 @@ import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { useHereId } from "./computers/here.js";
 import { ProfileHomeControl } from "./profile-home-control.js";
+import { act, failureWords, requestAnswer } from "./use-action.js";
 
 /**
  * Approval card for a durable browser access request. The agent's suggestion is
@@ -75,15 +76,17 @@ export function ThreadBrowserRequestAction({
     setPending(true);
     setError(null);
     try {
-      await resolveBrowserAccess(hostClient, {
-        home,
-        name,
-        requestId: request.id,
-        ...requestDecisionRevision(request),
-        selection: choice,
-      });
+      await act(hostClient, requestAnswer, () =>
+        resolveBrowserAccess(hostClient, {
+          home,
+          name,
+          requestId: request.id,
+          ...requestDecisionRevision(request),
+          selection: choice,
+        }),
+      );
     } catch (reason) {
-      setError(errorMessage(reason));
+      setError(failureWords(reason));
       setPending(false);
     }
   };
@@ -259,8 +262,4 @@ export function BrowserAccessBody({
       </div>
     </>
   );
-}
-
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "The Browser Request could not be resolved.";
 }

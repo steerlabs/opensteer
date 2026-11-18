@@ -1,7 +1,8 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   followWaitingDraft,
   hydrateWaitingDraft,
-  HostClientRequestError,
   openWaitingDraft,
   reloadWaitingDraft,
   removeWaitingDraftPart,
@@ -17,7 +18,13 @@ import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
-import { operationDetail } from "../client/mobile-client.js";
+import { failureWords } from "../ui/client-feedback.js";
+
+const editWords = {
+  label: "save your edit",
+  done: "saved",
+  happened: "your edit was saved",
+} as const;
 
 /** One waiting message open in place on this phone. */
 export interface WaitingEdit {
@@ -39,6 +46,7 @@ export interface WaitingEdit {
   readonly phase: "opening" | "open" | "saving" | "away" | "refused";
   /** Why it could not be held or saved, under the words until the next try. */
   readonly failure: string | null;
+  readonly replyFull?: boolean;
   /** It left the line, taken by a Run or settled elsewhere; only its words are left. */
   readonly gone: boolean;
 }
@@ -60,8 +68,13 @@ export interface WaitingEditController {
    * waiting, the one an answer names, or null when nothing was saved.
    */
   save(): Promise<number | null>;
-  /** Closes the editor and hands its words and kept parts back for a new message. */
-  takeBack(): { readonly text: string; readonly parts: readonly ContentPart[] } | null;
+  /** Closes only after the reply draft has taken the words and files. */
+  moveToDraft(
+    keep: (words: {
+      readonly text: string;
+      readonly parts: readonly ContentPart[];
+    }) => Promise<boolean>,
+  ): Promise<void>;
 }
 
 /** One hold on the message: from its take until saved, cancelled or let go. */
@@ -90,6 +103,7 @@ export function useWaitingEdit(
 ): WaitingEditController {
   const [kept, setKept] = useState<WaitingEdit | null>(null);
   const lease = useRef<Lease | null>(null);
+  const moving = useRef(false);
   const field = useRef<ComposerEditorHandle>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -103,7 +117,10 @@ export function useWaitingEdit(
       current === undefined || kept.phase === "saving"
         ? kept.draft
         : followWaitingDraft(kept.draft, {
-            content: [{ type: "text", text: current.entry.body }],
+            content: [
+              { type: "text", text: current.entry.body },
+              ...(current.entry.attachments ?? []),
+            ],
             revision: current.revision,
           });
     const gone = current === undefined;
@@ -155,7 +172,8 @@ export function useWaitingEdit(
             shown?.messageId === messageId
               ? {
                   ...shown,
-                  failure: operationDetail(error, "This message can’t be edited right now."),
+                  failure:
+                    failureWords(error, editWords, "This message can’t be edited right now.") ?? "",
                   phase: "refused",
                 }
               : shown,
@@ -186,7 +204,7 @@ export function useWaitingEdit(
     const shown = editRef.current;
     if (shown === null) return;
     if (!active) {
-      if (shown.phase === "away" || lease.current?.saving === true) return;
+      if (shown.phase === "away" || lease.current?.saving === true || moving.current) return;
       letGo();
       setKept((current) => (current === null ? current : { ...current, phase: "away" }));
     } else if (shown.phase === "away") {
@@ -199,12 +217,17 @@ export function useWaitingEdit(
 
   const open = useCallback(
     (item: WaitingInput): void => {
-      if (editRef.current?.messageId === item.messageId || lease.current?.saving === true) return;
+      if (
+        editRef.current?.messageId === item.messageId ||
+        lease.current?.saving === true ||
+        moving.current
+      )
+        return;
       close();
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
         draft: openWaitingDraft({
-          content: [{ type: "text", text: item.entry.body }],
+          content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
           revision: item.revision,
         }),
         failure: null,
@@ -313,17 +336,16 @@ export function useWaitingEdit(
       }
       const away = !activeRef.current;
       if (away) letGo();
-      const settled =
-        error instanceof HostClientRequestError &&
-        (error.code === "conflict" || error.code === "not_found");
+      const { code, kind } = classifyClientFailure(error);
+      const settled = kind === "rejection" && (code === "conflict" || code === "not_found");
       setKept((current) =>
         current?.messageId !== shown.messageId
           ? current
           : {
               ...current,
               failure: settled
-                ? operationDetail(error, "This message changed before your edit was saved.")
-                : operationDetail(error, "Your edit wasn’t saved. Try again."),
+                ? failureWords(error, editWords, "This message changed before your edit was saved.")
+                : failureWords(error, editWords, "Your edit wasn’t saved. Try again."),
               phase: away ? "away" : "open",
             },
       );
@@ -331,15 +353,56 @@ export function useWaitingEdit(
     }
   }, [close, letGo]);
 
-  const takeBack = useCallback((): ReturnType<WaitingEditController["takeBack"]> => {
-    const shown = editRef.current;
-    if (shown === null || lease.current?.saving === true) return null;
-    close();
-    return { parts: shown.draft.parts, text: shown.draft.text.trim() };
-  }, [close]);
+  const moveToDraft = useCallback<WaitingEditController["moveToDraft"]>(
+    async (keep) => {
+      const opened = editRef.current;
+      if (opened === null || lease.current?.saving === true || moving.current) return;
+      moving.current = true;
+      try {
+        const input = field.current;
+        const flushed = await input
+          ?.flushPendingInput(input.readSnapshot().generation)
+          .catch(() => null);
+        const shown = editRef.current;
+        if (flushed?.composing || shown?.messageId !== opened.messageId) return;
+        const draft = flushed ? setWaitingDraftText(shown.draft, flushed.text) : shown.draft;
+        setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
+        let issue = null;
+        try {
+          if (await keep({ parts: draft.parts, text: draft.text.trim() })) {
+            if (editRef.current?.messageId === shown.messageId) close();
+            return;
+          }
+        } catch (error) {
+          issue = clientIssue(error, { operation: "action", label: "save this draft" });
+        }
+        const limit = issue?.code === "draft-limit" ? issue : null;
+        const failure = presentClientIssue(limit ?? { code: "draft-unsaved" }).title;
+        setKept((current) =>
+          current?.messageId === shown.messageId
+            ? { ...current, failure, phase: shown.phase, replyFull: limit !== null }
+            : current,
+        );
+      } finally {
+        moving.current = false;
+      }
+    },
+    [close],
+  );
 
   return useMemo(
-    () => ({ cancel: close, change, edit, field, open, reload, removePart, retry, save, takeBack }),
-    [change, close, edit, open, reload, removePart, retry, save, takeBack],
+    () => ({
+      cancel: close,
+      change,
+      edit,
+      field,
+      open,
+      reload,
+      removePart,
+      retry,
+      save,
+      moveToDraft,
+    }),
+    [change, close, edit, open, reload, removePart, retry, save, moveToDraft],
   );
 }

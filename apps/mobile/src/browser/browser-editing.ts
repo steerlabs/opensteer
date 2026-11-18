@@ -63,9 +63,9 @@ export function createMobileBrowserEditing(
           else if (!["empty", "pasted"].includes(result.outcome))
             error(`Clipboard ${result.outcome}.`);
         })
-        .catch((reason: unknown) => {
-          if (active && current === epoch)
-            error(reason instanceof Error ? reason.message : "Editing unavailable.");
+        // A page that refused the edit already said it is reconnecting.
+        .catch(() => {
+          if (active && current === epoch && admitted) error("Editing unavailable.");
         });
       return admitted;
     },

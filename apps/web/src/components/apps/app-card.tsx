@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { TranscriptHostClientContext } from "../attachments/message-attachments.js";
 import { Icon } from "../icon.js";
 import { useToast } from "../toast.js";
@@ -103,9 +103,11 @@ function AppTabRow({
         aria-label={`Close the ${title} tab`}
         className="icon-btn"
         onClick={() => {
-          void client
-            .closeTabs([tabId])
-            .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+          void act(
+            client,
+            { label: "close this tab", done: "closed", happened: "this tab closed" },
+            () => client.closeTabs([tabId]),
+          ).catch((error: unknown) => toastFailure(toast)(error));
           onClosed();
         }}
         title="Close tab"
@@ -156,13 +158,16 @@ function LiveApp({
             className="btn btn--ghost btn--small"
             onClick={() => {
               const show = workspace.nav.beginPlaceOperation();
-              void client
-                .openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) })
+              void act(
+                client,
+                { label: "open this app", done: "opened", happened: "this app opened" },
+                () => client.openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) }),
+              )
                 .then((tab) => {
                   show({ kind: "tab", tabId: tab.tabId });
                   onOpened();
                 })
-                .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+                .catch((error: unknown) => toastFailure(toast)(error));
             }}
           >
             Open

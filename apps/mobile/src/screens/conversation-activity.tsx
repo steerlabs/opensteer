@@ -1,15 +1,14 @@
 import { useThreadTranscript } from "@opensteer/client/react";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   conversationActivityTurn,
   formatClockTime,
   groupTranscriptEntries,
-  operationFailure,
-  showsHostLive,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
-  type OperationFailure,
   type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
@@ -38,6 +37,9 @@ import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
 import { UnavailableState } from "../ui/unavailable-state.js";
+import { ActionLine } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { useShowsLive } from "../ui/connection-live.js";
 
 export type ConversationActivityScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -76,7 +78,7 @@ export function ConversationActivityScreen(props: ConversationActivityScreenProp
   );
 }
 
-type RunLoad = "loading" | "loaded" | OperationFailure;
+type RunLoad = "loading" | "loaded" | "unavailable" | "failed";
 
 /**
  * A Run a link named may be from long ago: the conversation is held while
@@ -101,7 +103,10 @@ function useRunLoad(
     setState("loading");
     hostClient.loadTranscriptAround(threadId, anchor).then(
       () => current && setState("loaded"),
-      (error: unknown) => current && setState(operationFailure(error)),
+      // Gone or not the reader's is a fact about the run; anything else may pass.
+      (error: unknown) =>
+        current &&
+        setState(isMissingClientResource(classifyClientFailure(error)) ? "unavailable" : "failed"),
     );
     return () => {
       current = false;
@@ -152,7 +157,7 @@ function ReplyActivity(props: {
   const load = useRunLoad(hostClient, threadId, run, activity !== null, synchronized);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
   const engine = threadEngine(snapshot, threadId);
-  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const live = useShowsLive(hostClient.connection) && environment?.status === "connected";
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
     [deploymentId, navigation, threadId],
@@ -196,18 +201,22 @@ function ReplyActivity(props: {
   if (activity === null && run !== null) {
     return load.state === "loading" ? (
       <Frame status={null}>
-        <AppText role="secondary" tone="muted">
-          Loading…
-        </AppText>
+        <PlaceholderRows count={2} />
+      </Frame>
+    ) : load.state === "failed" ? (
+      <Frame status={null}>
+        <ActionLine
+          line={{
+            key: "run-failed",
+            text: presentClientIssue({ code: "read-failed", resource: "these run details" }).title,
+            tone: "muted",
+            link: { label: "Try again", onPress: load.retry },
+          }}
+        />
       </Frame>
     ) : (
       <View style={styles.sheet}>
-        <UnavailableState
-          failure={load.state === "loaded" ? "gone" : load.state}
-          network={snapshot.network}
-          onBack={() => navigation.goBack()}
-          onRetry={load.retry}
-        />
+        <UnavailableState onBack={() => navigation.goBack()} />
       </View>
     );
   }

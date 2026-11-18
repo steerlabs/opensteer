@@ -30,6 +30,8 @@ import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { LastPictureChip } from "../ui/last-picture-chip.js";
+import { dim, exit } from "../ui/motion.js";
 import { MacAppIcon } from "./app-mark.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
 import { PlaceVoiceDock, usePlaceStatus } from "../browser/place-foot.js";
@@ -211,6 +213,9 @@ export function ComputerDisplay({
   );
   const scope = useHostSelector(hostClient, selectScope);
   const preserve = preserveLastFrame && !interactive;
+  // A view the person drives keeps its last picture through a dropped stream,
+  // marked stale with input off, until the stream is admitted again.
+  const holdsPicture = preserve || interactive;
   const selectAuthority = useCallback(
     (snapshot: HostSnapshot) => computerDisplayAuthorityKey(snapshot, source, machineId),
     [source, machineId],
@@ -334,7 +339,7 @@ export function ComputerDisplay({
       if (
         snapshot.connection === "closed" ||
         snapshot.closeCode === displayViewerCloseCodes.loginEnded ||
-        (!preserve && snapshot.connection === "connecting") ||
+        (!holdsPicture && snapshot.connection === "connecting") ||
         (snapshot.display && !["starting", "live"].includes(snapshot.display.state))
       )
         clear();
@@ -410,7 +415,7 @@ export function ComputerDisplay({
           lease.requestKeyframe();
           return;
         }
-        clear(preserve);
+        clear(holdsPicture);
         connection = frame.connection;
         generation = frame.header.generation;
       }
@@ -481,8 +486,14 @@ export function ComputerDisplay({
     machineId,
     sourceKey,
   ]);
+  const stale = interactive && shown && displayState?.connection === "connecting";
   const navigable =
-    interactive && phone && inputLease !== null && shown && displayState?.input === "available";
+    interactive &&
+    phone &&
+    inputLease !== null &&
+    shown &&
+    !stale &&
+    displayState?.input === "available";
   const go = (to: PhoneNavigationTo) => {
     if (picture !== null) inputLease?.input(picture.generation, [{ kind: "nav", to }]);
   };
@@ -538,8 +549,13 @@ export function ComputerDisplay({
             {...(bar === undefined ? {} : { onTyping: bar.onTyping })}
             picture={picture}
             phone={phone}
-            visible={active && foreground && shown && !words}
+            visible={active && foreground && shown && !words && !stale}
           />
+        ) : null}
+        {stale ? (
+          <Animated.View entering={dim} exiting={exit} pointerEvents="none" style={styles.stale}>
+            <LastPictureChip pulse={0} />
+          </Animated.View>
         ) : null}
         {interactive && phone && active && foreground && displayState?.input !== "available" ? (
           <GlassSurface shape="capsule" style={styles.badge}>
@@ -868,6 +884,8 @@ export function ComputerOwnerView(props: {
 }
 
 const styles = StyleSheet.create({
+  // Enough to read as "not now" over the picture, never enough to hide it.
+  stale: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(8, 8, 8, 0.3)" },
   badge: {
     alignItems: "center",
     flexDirection: "row",

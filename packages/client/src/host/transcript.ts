@@ -223,6 +223,10 @@ export function toMessageEntry(
   );
   return {
     ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
+    ...(input?.state === "pending" && input.policy === "queue" && message.runId === null
+      ? { queuePending: true as const }
+      : {}),
+    ...(message.clientSendKey ? { clientSendKey: message.clientSendKey } : {}),
     author: message.author,
     ...(message.addressedToUserId ? { addressedToUserId: message.addressedToUserId } : {}),
     sequence: message.sequence,
@@ -252,6 +256,7 @@ export function hydrateTranscriptMessage(
     ...full,
     runId: card.runId ?? full.runId,
     published: card.published ?? full.published ?? true,
+    ...(card.clientSendKey ? { clientSendKey: card.clientSendKey } : {}),
     ...(card.itemId ? { itemId: card.itemId } : {}),
     ...(card.itemRevision ? { itemRevision: card.itemRevision } : {}),
     ...(card.teamSource ? { teamSource: card.teamSource } : {}),

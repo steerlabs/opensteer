@@ -108,6 +108,7 @@ export function waitingInputs(
     const entry: MessageEntry = {
       author: message.author,
       body: message.preview,
+      ...(message.clientSendKey ? { clientSendKey: message.clientSendKey } : {}),
       ...(message.attachments?.length ? { attachments: message.attachments } : {}),
       createdAt: message.createdAt,
       id: message.id,

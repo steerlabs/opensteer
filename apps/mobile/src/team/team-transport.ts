@@ -10,6 +10,7 @@ import {
   seedBusyTeam,
   busyTeamIds,
   pinnedTeamTransport,
+  teamFileTransferFailure,
   type TeamCacheScope,
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
@@ -104,7 +105,7 @@ export function networkTeamTransport(options: {
             ...(signal === undefined ? {} : { signal }),
           },
           async (response) => {
-            if (!response.ok) throw new Error("The team file is no longer available.");
+            if (!response.ok) throw teamFileTransferFailure(response.status);
             const declared = Number(response.headers.get("content-length") ?? expected);
             if (declared > (preview ? teamPreviewMaxBytes : teamUploadMaxBytes))
               throw new Error("Team file exceeds its byte bound.");

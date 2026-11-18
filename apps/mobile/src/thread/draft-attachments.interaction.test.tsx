@@ -1,13 +1,23 @@
 // @vitest-environment happy-dom
-import type { HostClient } from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
+import { stageAttachment, type HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { attachmentMessageMaxCount } from "@opensteer/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import type { DraftPaste } from "../../modules/composer-editor/paste-events.js";
 import { createThreadDraftStore } from "../client/thread-drafts.js";
-import { discardPastedImage, importPastedImage } from "../platform/attachment-draft-files.js";
-import { useDraftAttachments, type DraftAttachments } from "./draft-attachments.js";
+import {
+  discardPastedImage,
+  importPastedImage,
+  removeChatDraftFile,
+} from "../platform/attachment-draft-files.js";
+import {
+  receiveNativeDraftPastes,
+  useDraftAttachments,
+  type DraftAttachments,
+} from "./draft-attachments.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("../client/mobile-client.js", () => ({
@@ -41,6 +51,11 @@ vi.mock("../platform/attachment-draft-files.js", () => ({
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const userId = "usr_0192f4a1-aaaa-4000-8000-00000000000a";
 const threadId = "thr_0192f4a1-2222-4000-8000-000000000002";
+const readyConnection = {
+  getSnapshot: () => ({ phase: "ready", readyRevision: 1 }),
+  subscribe: () => () => undefined,
+  retry: () => undefined,
+};
 
 it("pasted images join the strip like picked photos, up to the message's file limit", async () => {
   const drafts = createThreadDraftStore({
@@ -49,7 +64,7 @@ it("pasted images join the strip like picked photos, up to the message's file li
     privateFiles: new MemoryPrivateFilesystem(),
   });
   await drafts.load();
-  const client = {} as HostClient;
+  const client = { connection: readyConnection } as unknown as HostClient;
   let staged: DraftAttachments | null = null;
   function Harness() {
     staged = useDraftAttachments({
@@ -85,4 +100,160 @@ it("pasted images join the strip like picked photos, up to the message's file li
     pasted.slice(attachmentMessageMaxCount + 1).map(({ uri }) => uri),
   );
   await act(async () => root.unmount());
+});
+
+function fakeConnection() {
+  let state = { phase: "ready", readyRevision: 1 };
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    retry: () => undefined,
+    set(next: Partial<typeof state>) {
+      state = { ...state, ...next };
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+async function mountStrip(connection: ReturnType<typeof fakeConnection>) {
+  const drafts = createThreadDraftStore({
+    filePath: "/private/drafts.json",
+    now: () => new Date("2026-11-14T12:00:00.000Z"),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  await drafts.load();
+  const client = { connection } as unknown as HostClient;
+  const strip: { current: DraftAttachments | null } = { current: null };
+  function Harness() {
+    strip.current = useDraftAttachments({
+      client,
+      draftKey: threadId,
+      drafts,
+      files: { deploymentId, threadId, userId },
+    });
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<Harness />));
+  return { root, strip };
+}
+
+function controlledUploads() {
+  const uploads: { reject(error: unknown): void; resolve(value: unknown): void }[] = [];
+  vi.mocked(stageAttachment).mockImplementation(
+    () =>
+      new Promise((resolve, reject) => {
+        uploads.push({ reject, resolve: resolve as (value: unknown) => void });
+      }) as ReturnType<typeof stageAttachment>,
+  );
+  return uploads;
+}
+
+const uploaded = {
+  id: "att_0192f4a1-3333-4000-8000-000000000003",
+  mediaType: "image/png",
+  name: "photo.png",
+  sizeBytes: 1_024,
+};
+const photo = {
+  images: [
+    { uri: "file:///tmp/pasted-images/photo.png", mediaType: "image/png", name: "photo.png" },
+  ],
+  failed: 0,
+  tooLarge: 0,
+};
+
+it("an upload the outage interrupted starts again by itself once the connection is back", async () => {
+  const uploads = controlledUploads();
+  const connection = fakeConnection();
+  const { root, strip } = await mountStrip(connection);
+  await act(async () => strip.current!.paste(photo));
+  expect(uploads).toHaveLength(1);
+
+  await act(async () => {
+    connection.set({ phase: "recovering" });
+    uploads[0]!.reject(new HostTransportError("unreachable"));
+  });
+  expect(strip.current!.items[0]).toMatchObject({ error: null, status: "staged" });
+
+  await act(async () => connection.set({ phase: "ready", readyRevision: 2 }));
+  expect(uploads).toHaveLength(2);
+  await act(async () => uploads[1]!.resolve(uploaded));
+  expect(strip.current!.items[0]).toMatchObject({ status: "ready" });
+  await act(async () => root.unmount());
+});
+
+it("an upload that fails just before the outage is published goes again on recovery", async () => {
+  const uploads = controlledUploads();
+  const connection = fakeConnection();
+  const { root, strip } = await mountStrip(connection);
+  await act(async () => strip.current!.paste(photo));
+
+  await act(async () => uploads[0]!.reject(new HostTransportError("unreachable")));
+  expect(strip.current!.items[0]).toMatchObject({ status: "error", retryable: true });
+
+  await act(async () => connection.set({ phase: "recovering" }));
+  await act(async () => connection.set({ phase: "ready", readyRevision: 2 }));
+  expect(uploads).toHaveLength(2);
+  await act(async () => uploads[1]!.resolve(uploaded));
+  expect(strip.current!.items[0]).toMatchObject({ error: null, status: "ready" });
+  await act(async () => root.unmount());
+});
+
+it("restarts an upload that fails after its replacement connection is ready", async () => {
+  const uploads = controlledUploads();
+  const connection = fakeConnection();
+  const { root, strip } = await mountStrip(connection);
+  try {
+    await act(async () => strip.current!.paste(photo));
+    await act(async () => connection.set({ phase: "recovering" }));
+    await act(async () => connection.set({ phase: "ready", readyRevision: 2 }));
+    expect(uploads).toHaveLength(1);
+    await act(async () => uploads[0]!.reject(new HostTransportError("unreachable")));
+    expect(uploads).toHaveLength(2);
+    await act(async () => uploads[1]!.resolve(uploaded));
+    expect(strip.current!.items[0]).toMatchObject({ status: "ready" });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("saves a native paste after its editor has gone and drops one for a retired draft", async () => {
+  const drafts = createThreadDraftStore({
+    filePath: "/private/drafts.json",
+    now: () => new Date("2026-11-14T12:00:00.000Z"),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  const args = [deploymentId, userId, threadId] as const;
+  let receive!: (event: DraftPaste) => void;
+  const unsubscribe = receiveNativeDraftPastes(drafts, (listener) => {
+    receive = listener;
+    return () => {};
+  });
+  const target = JSON.stringify(drafts.captureEdit(...args));
+  try {
+    receive({ target, pasted: photo });
+    await vi.waitFor(() =>
+      expect(drafts.readDraft(...args)?.attachments?.[0]?.name).toBe("photo.png"),
+    );
+
+    await drafts.discardDraft(...args);
+    await drafts.writeDraft(...args, "A replacement draft");
+    const image = { ...photo.images[0]!, uri: "file:///tmp/pasted-images/retired.png" };
+    receive({ target, pasted: { images: [image], failed: 0, tooLarge: 0 } });
+    await vi.waitFor(() =>
+      expect(removeChatDraftFile).toHaveBeenCalledWith(
+        { deploymentId, userId, threadId },
+        `${image.uri}.draft`,
+      ),
+    );
+    expect(drafts.readDraft(...args)?.text).toBe("A replacement draft");
+    expect(drafts.readDraft(...args)?.attachments).toBeUndefined();
+  } finally {
+    unsubscribe();
+  }
 });

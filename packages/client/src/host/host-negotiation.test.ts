@@ -50,7 +50,11 @@ describe("rpc version negotiation", () => {
 
     expect(classifyClientFailure(refused)).toEqual({
       classification: "blocked",
+      code: "bad_request",
+      kind: "session",
+      provenance: "host",
       reason: "unsupported-version",
+      retryable: false,
     });
   });
 

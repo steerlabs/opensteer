@@ -2,6 +2,8 @@ import type { HostClient } from "@opensteer/client/host";
 import { AnswerPill } from "./answer-pill.js";
 import { useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
+import { presentMessageDelivery } from "@opensteer/client/feedback";
+import { useClientConnectionName } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
@@ -29,6 +31,7 @@ import {
   type ActivityTone,
   type AgentCard,
   type AgentGroup,
+  type MessageDeliveryAction,
   type MessageEntry,
   type ReasoningEntry,
   type RunEntry,
@@ -51,6 +54,9 @@ import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
 import { ReferenceVisibility } from "../markdown/reference-context.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
+import { useScreenAction } from "../ui/client-feedback.js";
+import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
@@ -82,6 +88,12 @@ import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
 import { risesOnce } from "./owed-message-model.js";
+import {
+  deliveryMenu,
+  MessageDelivery,
+  MessageDeliveryContext,
+  rejectedBubble,
+} from "./message-delivery.js";
 import { MessagePages, MessagePlaces, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
@@ -371,7 +383,7 @@ function ConversationTurn(props: {
   const view = useMemo(() => conversationTurn(turn), [turn]);
   // The line the pane drew this row for: a quiet stretch has nothing else to show.
   const line = useComputerLine(turn, props.live);
-  const composing = view.composing && props.live && line === null;
+  const composing = view.composing && line === null;
   // A reply arrives only if its typing was on screen: one already there when
   // the Thread opened, or that scrolling brought back, just stands there.
   const typed = useRef(false);
@@ -424,6 +436,7 @@ function ConversationTurn(props: {
         <Typing
           // Until it has done anything on the way there is nothing to open.
           onPress={activityKey === null ? undefined : props.onOpenReplyUnderWay}
+          still={!props.live}
         />
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
@@ -594,7 +607,10 @@ function ReplyPartRow(props: {
  * opens that reply's Activity, where the reader is already looking; until the
  * reply has done anything on the way there is nothing to open.
  */
-function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNode {
+function Typing(props: {
+  readonly onPress?: (() => void) | undefined;
+  readonly still?: boolean;
+}): ReactNode {
   return (
     <Animated.View
       accessibilityLabel="Opensteer is replying"
@@ -604,7 +620,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
     >
       {props.onPress === undefined ? (
         <View style={styles.typing}>
-          <TypingShape />
+          <TypingShape still={props.still === true} />
         </View>
       ) : (
         <Pressable
@@ -615,7 +631,7 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
           onPress={props.onPress}
           style={({ pressed }) => [styles.typing, pressed && styles.typingPressed]}
         >
-          <TypingShape />
+          <TypingShape still={props.still === true} />
         </Pressable>
       )}
     </Animated.View>
@@ -623,10 +639,10 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
 }
 
 /** Its dots, and the two small circles Messages trails from a bubble still being written. */
-function TypingShape(): ReactNode {
+function TypingShape(props: { readonly still: boolean }): ReactNode {
   return (
     <>
-      <TypingDots />
+      <TypingDots still={props.still} />
       <View style={[styles.typingTrail, styles.typingTrailNear]} />
       <View style={[styles.typingTrail, styles.typingTrailFar]} />
     </>
@@ -1423,7 +1439,9 @@ export function Message(props: {
   const body = preview.truncated && !open ? preview.text : message.body;
   // What the reader sends rises once, as it is written down here; the Host's
   // copy that later takes its place is already where the eye left it.
-  const [arrived] = useState(() => props.queued !== true && risesOnce(message.id));
+  const [arrived] = useState(
+    () => props.queued !== true && risesOnce(message.id, message.localDelivery !== undefined),
+  );
   if (message.messageKind === "assistant") {
     return props.conversation ? (
       <ReplyBubble
@@ -1445,6 +1463,7 @@ export function Message(props: {
   }
   const mine = author.kind === "human" && author.userId === props.viewerUserId;
   const update = props.conversation && !mine;
+  const delivery = message.localDelivery ?? null;
 
   const fold = (
     <MessageFold
@@ -1468,6 +1487,20 @@ export function Message(props: {
       )}
     </MessageFold>
   );
+
+  // A refused message is drawn on the plate, in the reading ink.
+  const refusedFold =
+    delivery?.phase === "rejected" ? (
+      <MessageFold
+        lines={messageFoldLines(message, props.viewerUserId)}
+        mine={false}
+        more={preview.truncated}
+        onToggle={props.onToggle}
+        open={open}
+      >
+        <Markdown look="reading" profile="person" text={message.body} />
+      </MessageFold>
+    ) : null;
 
   return (
     <Animated.View
@@ -1503,40 +1536,46 @@ export function Message(props: {
             : {})}
         />
       )}
-      <MessagePages pages={message.pages ?? []} />
-      <MessagePlaces places={message.places ?? []} />
-      <MessageAttachments attachments={message.attachments ?? []} />
-      {!message.body ? (
-        props.message.previewTruncated && !open ? (
-          <Pressable accessibilityRole="button" onPress={props.onToggle} style={styles.foldToggle}>
-            <AppText role="secondaryMedium" tone="ember">
-              Show message
-            </AppText>
-          </Pressable>
-        ) : null
-      ) : mine && !props.queued ? (
-        <MessageHold
-          previewBottomEndRadius={props.conversation ? undefined : radius.xs}
-          previewRadius={bubble.radius}
-          text={message.body}
-        >
-          <Bubble
-            fill={color.bubble}
-            // Lists, headings and code take the bubble's whole measure, as a reply's do.
-            fit={
-              notOnlyParagraphs.test(message.body) || /^ {0,3}(?:`{3}|~{3})/mu.test(message.body)
-                ? null
-                : message.body
-            }
-            side="mine"
-            // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
-            style={props.conversation ? undefined : styles.bubbleCorner}
-            tail={props.conversation && props.continued !== true}
-          >
-            {fold}
-          </Bubble>
-        </MessageHold>
-      ) : props.hold === undefined ? (
+      {mine ? (
+        // One tree from Waiting to delivered: what it is a change of state in, never a remount.
+        <OwnMessage
+          conversation={props.conversation}
+          entry={message}
+          waiting={props.hold}
+          bubble={
+            message.body ? (
+              <Bubble
+                fill={
+                  props.queued
+                    ? "transparent"
+                    : delivery?.phase === "rejected"
+                      ? rejectedBubble.fill
+                      : color.bubble
+                }
+                // Lists, headings and code take the bubble's whole measure, as a reply's do.
+                fit={bubbleFit(message.body)}
+                side="mine"
+                // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
+                style={[
+                  props.conversation ? undefined : styles.bubbleCorner,
+                  delivery?.phase === "rejected" ? rejectedBubble.style : undefined,
+                  props.queued ? [styles.bubbleQueued, styles.bubbleQueuedMine] : undefined,
+                ]}
+                tail={props.conversation && props.continued !== true}
+              >
+                {delivery?.phase === "rejected" ? refusedFold : fold}
+              </Bubble>
+            ) : null
+          }
+        />
+      ) : (
+        <>
+          <MessagePages pages={message.pages ?? []} />
+          <MessagePlaces places={message.places ?? []} />
+          <MessageAttachments attachments={message.attachments ?? []} />
+        </>
+      )}
+      {mine || !message.body ? null : props.hold === undefined ? (
         <View
           style={
             update
@@ -1544,10 +1583,7 @@ export function Message(props: {
               : [
                   styles.bubble,
                   props.queued
-                    ? [
-                        styles.bubbleQueued,
-                        mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
-                      ]
+                    ? [styles.bubbleQueued, styles.bubbleQueuedOther]
                     : styles.bubbleInput,
                 ]
           }
@@ -1563,15 +1599,7 @@ export function Message(props: {
           previewRadius={radius.xl}
           style={styles.held}
         >
-          <View
-            style={[
-              styles.bubble,
-              styles.bubbleQueued,
-              mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
-            ]}
-          >
-            {fold}
-          </View>
+          <View style={[styles.bubble, styles.bubbleQueued, styles.bubbleQueuedOther]}>{fold}</View>
         </WaitingHold>
       )}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
@@ -1586,6 +1614,100 @@ export function Message(props: {
     </Animated.View>
   );
 }
+
+/** A bubble fits its words unless they hold lists, headings or code, which take its whole measure. */
+function bubbleFit(body: string): string | null {
+  return notOnlyParagraphs.test(body) || /^ {0,3}(?:`{3}|~{3})/mu.test(body) ? null : body;
+}
+
+/**
+ * The reader's own message, still on this phone or delivered, in one tree, so
+ * delivery is a change of state in place. Its status stands under it, and
+ * Edit, Delete, Don't send or Send again where it may be taken back: on a long
+ * press of its words and, for a refusal or files alone, under it.
+ */
+function OwnMessage(props: {
+  readonly bubble: ReactNode;
+  readonly conversation: boolean;
+  readonly entry: MessageEntry;
+  readonly waiting?: React.ComponentProps<typeof Message>["hold"];
+}) {
+  const controls = useContext(MessageDeliveryContext);
+  const computer = useClientConnectionName(useSelectedHostClient()?.connection ?? null);
+  const { entry } = props;
+  const delivery = entry.localDelivery;
+  const key = entry.clientSendKey ?? entry.id;
+  const since = useMemo(() => Date.parse(entry.createdAt), [entry.createdAt]);
+  const unconfirmed = delivery?.issue?.code === "unconfirmed";
+  const menu = useMemo(
+    () =>
+      delivery === undefined || controls === null
+        ? []
+        : deliveryMenu(delivery.phase, delivery.attempted, unconfirmed),
+    [controls, delivery, unconfirmed],
+  );
+  const hold = useMemo(
+    () =>
+      menu.length === 0 || controls === null
+        ? null
+        : {
+            actions: menu,
+            onAction: (id: string) => {
+              const action = menu.find((item) => item.id === id)?.id;
+              if (action !== undefined) controls.act(key, action);
+            },
+          },
+    [controls, key, menu],
+  );
+  return (
+    <MessageDelivery
+      attempted={delivery?.attempted ?? true}
+      inline={props.bubble === null}
+      note={controls?.note(key) ?? null}
+      onAction={
+        controls === null || delivery === undefined
+          ? undefined
+          : (action: MessageDeliveryAction) => controls.act(key, action)
+      }
+      phase={delivery?.phase ?? "delivered"}
+      rejection={
+        delivery?.phase === "rejected"
+          ? presentMessageDelivery("rejected", delivery.issue, computer)
+          : null
+      }
+      showStatus={controls?.statusShown(key) ?? true}
+      since={Number.isNaN(since) ? Date.now() : since}
+      style={styles.ownStack}
+      unconfirmed={unconfirmed}
+    >
+      <MessagePages pages={entry.pages ?? []} />
+      <MessagePlaces places={entry.places ?? []} />
+      <MessageAttachments attachments={entry.attachments ?? []} />
+      {props.bubble === null ? null : props.waiting ? (
+        <WaitingHold
+          actions={delivery ? (hold?.actions ?? []) : props.waiting.actions}
+          onAction={delivery ? (hold?.onAction ?? ignoreDeliveryAction) : props.waiting.onAction}
+          onPress={props.waiting.onPress}
+          previewBottomEndRadius={radius.xs}
+          previewRadius={bubble.radius}
+        >
+          {props.bubble}
+        </WaitingHold>
+      ) : (
+        <MessageHold
+          delivery={hold}
+          previewBottomEndRadius={props.conversation ? undefined : radius.xs}
+          previewRadius={bubble.radius}
+          text={entry.body}
+        >
+          {props.bubble}
+        </MessageHold>
+      )}
+    </MessageDelivery>
+  );
+}
+
+const ignoreDeliveryAction = () => {};
 
 /**
  * A sent message's words, folded to `lines` of body text until the reader
@@ -1849,12 +1971,12 @@ export function WorkingIndicator({
   readonly indicator: ThreadActivityIndicator;
   readonly live?: boolean;
 }): ReactNode {
-  if (!live) return null;
+  // Through an outage the words stay and only the motion stops: it is no longer seen happening.
   // No turn has begun, so there is no Activity to open yet.
-  if (indicator.kind === "typing") return <Typing />;
+  if (indicator.kind === "typing") return <Typing still={!live} />;
   return (
     <Animated.View accessibilityLiveRegion="polite" entering={appear} style={styles.working}>
-      <StatusDot live tone="muted" />
+      <StatusDot live={live} tone="muted" />
       <AppText role="secondaryMedium" tone="soft">
         {indicator.label}
       </AppText>
@@ -1979,6 +2101,7 @@ const styles = StyleSheet.create({
     gap: space[4],
     maxWidth: bubble.maxWidth,
   },
+  ownStack: { alignItems: "flex-end", gap: space[4] },
   updateColumn: {
     alignItems: "flex-start",
     alignSelf: "stretch",
@@ -2050,8 +2173,12 @@ function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode
 function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
   const scope = useContext(TaskScopeContext);
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const stop = useScreenAction(scope?.hostClient ?? null, `stop-summary:${run.id}`, {
+    label: "stop summarizing",
+    done: "stopped",
+    happened: "summarizing stopped",
+    execute: () => (scope ? scope.hostClient.stopRun(scope.threadId) : Promise.resolve()),
+  });
   if (!run.compaction) return null;
   return (
     <View
@@ -2081,22 +2208,16 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Stop summarizing conversation"
-          disabled={busy}
-          onPress={() => {
-            setBusy(true);
-            void scope.hostClient
-              .stopRun(scope.threadId)
-              .catch((e: unknown) =>
-                setError(e instanceof Error ? e.message : "Could not stop summary."),
-              )
-              .finally(() => setBusy(false));
-          }}
+          disabled={stop.running}
+          onPress={() => void stop.run(undefined)}
           style={{ minHeight: touchTarget, justifyContent: "center" }}
         >
           <AppText role="caption">Stop</AppText>
         </Pressable>
       ) : null}
-      {error ? <AppText role="caption">{error}</AppText> : null}
+      {stop.line === null || run.compaction.status !== "running" ? null : (
+        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+      )}
     </View>
   );
 }

@@ -10,6 +10,7 @@ import { observeResize } from "@opensteer/shared/resizeObserver";
 import { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useMediaQuery } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
+import { LastPictureChip } from "../last-picture-chip.js";
 import {
   PlaceGlyph,
   PlacePicture,
@@ -187,6 +188,7 @@ export const RunPage = memo(function RunPage({
             />
           </span>
           {usable && painted ? null : <PlaceGlyph kind={place.kind} />}
+          {stale && asPage ? <LastPictureChip /> : null}
         </span>
         {asPage ? null : (
           <>

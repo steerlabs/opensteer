@@ -814,6 +814,7 @@ export const DesktopAccessSchema = z.enum(["owner", "native", "connect", "privat
 export type DesktopAccess = z.infer<typeof DesktopAccessSchema>;
 
 export const DesktopDeploymentSummarySchema = z.strictObject({
+  authorityKey: z.string().min(1).max(512).optional(),
   access: DesktopAccessSchema.nullable(),
   activeOrigin: DesktopAccessOriginSchema,
   canonicalOrigin: CanonicalOriginSchema,

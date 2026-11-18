@@ -191,7 +191,11 @@ export class ThreadService {
       wasDuplicate: created.wasDuplicate,
     };
   }
-  async sendMessage(actor: ThreadActor, command: Command<"thread.sendMessage">) {
+  async sendMessage(
+    actor: ThreadActor,
+    command: Command<"thread.sendMessage">,
+    clientSessionId?: string,
+  ) {
     return this.options.commands.withInputAdmission(
       actor.userId,
       command.idempotencyKey,
@@ -228,6 +232,7 @@ export class ThreadService {
             actor.kind === "person"
               ? {
                   kind: "human",
+                  ...(clientSessionId ? { clientSessionId } : {}),
                   ...(command.origin ? { origin: command.origin } : {}),
                 }
               : messageSource(actor, command.idempotencyKey),

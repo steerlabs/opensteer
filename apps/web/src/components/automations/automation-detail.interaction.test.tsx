@@ -1,3 +1,4 @@
+import { HostTransportError } from "@opensteer/client/connections";
 // @vitest-environment happy-dom
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -85,6 +86,47 @@ it("refuses the direct managed editor route", async () => {
   const { node } = await mount("active", true);
   expect(node.querySelector("form")).toBeNull();
 });
+it("opens the code editor once the connection returns, after a read the outage interrupted", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const read = client.rpc["triggers.get"];
+  let reachable = false;
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async (input: { triggerId: string }) => {
+          if (!reachable) throw new HostTransportError("unreachable");
+          return read(input);
+        };
+      },
+    }),
+  });
+  client.connection.stop();
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}/edit`]}>
+        <Routes>
+          <Route path="/automations/:triggerId/edit" element={<AutomationEditorPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await act(async () => undefined);
+  expect(node.querySelector("form")).toBeNull();
+  expect(node.querySelector('[role="alert"]')).toBeNull();
+  reachable = true;
+  await act(async () => client.connection.start());
+  await vi.waitFor(() => expect(node.querySelector("form")).not.toBeNull(), { timeout: 2000 });
+});
+
 it("keeps ordinary automation controls", async () => {
   const { node } = await mount();
   for (const label of ["Delete", "Run now", "Edit code"]) expect(node.textContent).toContain(label);

@@ -64,6 +64,8 @@ export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
   clearPersonalStreamCache?(deploymentId: DeploymentId): Promise<void>;
   attach(input: {
+    readonly connectionController?: import("@opensteer/client/connections").ConnectionController;
+    readonly clientScope?: () => import("@opensteer/client/connections").ClientScope | null;
     readonly assetRoute?: import("@opensteer/client/host").AssetRoute;
     readonly authorization: HostAuthorization;
     readonly capabilities: readonly HostCapability[] | null | HostCapabilityReader;
@@ -140,7 +142,15 @@ export function createNetworkHostPort(options: {
       });
     },
 
-    attach({ authorization, capabilities, connection, origin, assetRoute }): HostClient {
+    attach({
+      authorization,
+      capabilities,
+      connection,
+      origin,
+      assetRoute,
+      connectionController,
+      clientScope,
+    }): HostClient {
       const network = createHostNetwork({
         authorization,
         fetch: options.fetch,
@@ -154,7 +164,8 @@ export function createNetworkHostPort(options: {
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
         ...(cache ? { streamCache: cache, cacheDeploymentId } : {}),
-
+        ...(connectionController ? { connectionController } : {}),
+        ...(clientScope ? { clientScope } : {}),
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }

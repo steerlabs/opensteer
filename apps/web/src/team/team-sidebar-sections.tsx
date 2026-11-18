@@ -1,3 +1,4 @@
+import { toastError } from "../components/use-action.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
@@ -19,7 +20,6 @@ import {
   type SwitchTeam,
 } from "../components/team/team-sidebar.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { useTeamSessionValue, useTeams, type TeamAttachment } from "./team-attachments.js";
 import { useStableActions } from "../components/use-stable-actions.js";
 import { teamTile } from "./team-people.js";
@@ -172,7 +172,7 @@ export function LeaveTeamDialog({
               onClose();
               void leave(team.teamId)
                 .then(onLeft)
-                .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+                .catch((error: unknown) => toastError(toast)(error));
             }}
             type="button"
           >
@@ -245,13 +245,13 @@ export function TeamSideFor({
         }
       : undefined,
     onRemoveFromSidebar: () =>
-      void forget(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
+      void forget(teamId).catch((error: unknown) => toastError(toast)(error)),
     onRetry: () =>
       ended
         ? surface === "team-web"
           ? window.location.reload()
           : enter && (ended === "sign-in" || ended === "viewer-changed")
-            ? void enter(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error)))
+            ? void enter(teamId).catch((error: unknown) => toastError(toast)(error))
             : go("/teams")
         : client?.connect(),
   });
@@ -286,7 +286,7 @@ export function TeamSideFor({
             onClick={() => {
               setEntering(true);
               void enter(team.teamId)
-                .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+                .catch((error: unknown) => toastError(toast)(error))
                 .finally(() => setEntering(false));
             }}
             type="button"
@@ -321,7 +321,7 @@ export function TeamSideFor({
         setLoadingMore(true);
         void client
           .loadMoreSidebar()
-          .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+          .catch((error: unknown) => toastError(toast)(error))
           .finally(() => setLoadingMore(false));
       }}
       hrefFor={hrefFor}

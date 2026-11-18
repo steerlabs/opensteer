@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import {
@@ -11,10 +12,9 @@ import {
   taskList,
   taskTime,
   type HostClient,
-  type HostSnapshot,
   type TaskRow,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
+import { useClientConnection, useHostSnapshot } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   ActivityIndicator,
@@ -24,9 +24,10 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
-import { AppText, Notice, SecondaryButton, SectionLabel, StatusDot } from "../ui/primitives.js";
+import { refreshNow } from "../ui/connection-live.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, SectionLabel } from "../ui/primitives.js";
 import { useListContentInsets } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { setTaskDone, TaskRowView, taskTextInset, type TaskShelf } from "./task-row.js";
@@ -46,7 +47,6 @@ type TasksRow =
       readonly key: string;
       readonly kind: "nothing";
       readonly detail: string;
-      readonly signIn: boolean;
       readonly title: string;
     }
   | { readonly key: string; readonly kind: "section"; readonly title: string }
@@ -66,36 +66,30 @@ export function TasksPane(props: {
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
   readonly onOpenTask: (threadId: string) => void;
-  /** Runs this deployment's sign-in door when the Host has refused this phone. */
-  readonly onSignIn: () => Promise<void>;
   /** What the screen's search bar holds; the pane shows matches while it is not empty. */
   readonly query: string;
 }): ReactNode {
   const { hostClient, query } = props;
   const doneOnly = props.done === true;
   const insets = useListContentInsets(space[32]);
-  const { loadError, snapshot } = useHostSnapshot(hostClient, samePaneSource);
+  const { snapshot } = useHostSnapshot(hostClient, sameTaskListSource);
+  const { readyRevision } = useClientConnection(hostClient.connection);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // Show more answers beside itself when the earlier page didn't come.
+  const [earlierFailed, setEarlierFailed] = useState(false);
   const loadingEarlierRef = useRef(false);
 
-  const refused = snapshot.session === "authentication-required";
-  const authenticated = snapshot.session === "authenticated";
   // A Host that keeps Done newest Done first lists it apart; an older one
   // leaves it in the asked-ordered list.
   const keepsDone = snapshot.quietTasksAvailable === true && doneOnly;
+  const doneLoaded = keepsDone && doneTaskList(snapshot) !== null;
 
+  // Asked again each time the connection is ready, until the list has come.
   useEffect(() => {
-    if (!keepsDone || !authenticated) return;
-    let live = true;
-    void hostClient.loadDoneTasks().catch((error: unknown) => {
-      if (live) setFailure(operationDetail(error, "Done tasks could not be loaded."));
-    });
-    return () => {
-      live = false;
-    };
-  }, [authenticated, hostClient, keepsDone]);
+    if (!keepsDone || doneLoaded || readyRevision === 0) return;
+    void hostClient.loadDoneTasks().catch(() => undefined);
+  }, [doneLoaded, hostClient, keepsDone, readyRevision]);
 
   const now = Date.now();
   const read = snapshot.tasks;
@@ -156,20 +150,10 @@ export function TasksPane(props: {
 
   const rows: TasksRow[] = [];
   if (groups.every((group) => group.rows.length === 0)) {
-    // A Host that refused this phone told it nothing, and one that has not
-    // sent its task list has said nothing either, so "none" is not yet a claim
-    // this screen is entitled to make.
-    if (refused) {
-      rows.push({
-        detail: "Sign in to see what is running here.",
-        key: "nothing",
-        kind: "nothing",
-        signIn: true,
-        title: "Needs sign-in",
-      });
-    } else if (!loaded) {
-      // A read that failed says so above the list instead.
-      if (failure === null) rows.push({ key: "loading", kind: "loading" });
+    // A Host that has not sent its task list has said nothing, so "none" is
+    // not yet a claim this screen is entitled to make.
+    if (!loaded) {
+      rows.push({ key: "loading", kind: "loading" });
     } else if (doneOnly) {
       rows.push({ key: "empty", kind: "empty", text: "Nothing in Done yet." });
     } else if (searching) {
@@ -185,7 +169,6 @@ export function TasksPane(props: {
         detail: "Ask your agent for something and it runs here as a task.",
         key: "nothing",
         kind: "nothing",
-        signIn: false,
         title: "No tasks yet",
       });
     }
@@ -208,26 +191,17 @@ export function TasksPane(props: {
     if (loadingEarlierRef.current) return;
     loadingEarlierRef.current = true;
     setLoadingEarlier(true);
-    setFailure(null);
+    setEarlierFailed(false);
     void Promise.all([
       ...(moreAsked ? [hostClient.loadEarlierTasks()] : []),
       ...(moreDone ? [hostClient.loadEarlierDoneTasks()] : []),
     ])
-      .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Earlier tasks could not be loaded."));
-      })
+      .catch(() => setEarlierFailed(true))
       .finally(() => {
         loadingEarlierRef.current = false;
         setLoadingEarlier(false);
       });
   };
-
-  const signIn = useCallback((): void => {
-    setFailure(null);
-    void props.onSignIn().catch((error: unknown) => {
-      setFailure(operationDetail(error, "Sign-in did not finish. Try again."));
-    });
-  }, [props.onSignIn]);
 
   const moveTask = useCallback(
     (row: TaskRow, toDone: boolean) => setTaskDone(hostClient, row.threadId, toDone),
@@ -248,7 +222,7 @@ export function TasksPane(props: {
         case "loading":
           return (
             <View style={styles.loading}>
-              <ActivityIndicator color={color.muted} />
+              <PlaceholderRows />
             </View>
           );
         case "nothing":
@@ -259,7 +233,6 @@ export function TasksPane(props: {
               <AppText role="secondary" style={styles.centred} tone="muted">
                 {item.detail}
               </AppText>
-              {item.signIn ? <SecondaryButton compact label="Sign in" onPress={signIn} /> : null}
             </View>
           );
         case "section":
@@ -281,7 +254,7 @@ export function TasksPane(props: {
           );
       }
     },
-    [moveTask, onOpenTask, signIn],
+    [moveTask, onOpenTask],
   );
 
   return (
@@ -303,65 +276,37 @@ export function TasksPane(props: {
       keyboardShouldPersistTaps="handled"
       keyExtractor={keyOfRow}
       ListFooterComponent={
-        (moreAsked || moreDone) && !refused ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ busy: loadingEarlier }}
-            disabled={loadingEarlier}
-            onPress={loadEarlier}
-            style={({ pressed }) => [styles.more, pressed && styles.pressed]}
-          >
-            {loadingEarlier ? (
-              <ActivityIndicator color={color.muted} size="small" />
-            ) : (
-              <AppText role="secondaryMedium" tone="muted">
-                Show more
+        moreAsked || moreDone ? (
+          <View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ busy: loadingEarlier }}
+              disabled={loadingEarlier}
+              onPress={loadEarlier}
+              style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+            >
+              {loadingEarlier ? (
+                <ActivityIndicator color={color.muted} size="small" />
+              ) : (
+                <AppText role="secondaryMedium" tone="muted">
+                  Show more
+                </AppText>
+              )}
+            </Pressable>
+            {earlierFailed ? (
+              <AppText role="caption" style={styles.earlier} tone="muted">
+                {presentClientIssue({ code: "read-failed", resource: "earlier tasks" }).title}
               </AppText>
-            )}
-          </Pressable>
+            ) : null}
+          </View>
         ) : undefined
       }
-      ListHeaderComponent={
-        <View style={styles.header}>
-          {props.header}
-          {refused ? (
-            <View style={styles.connection}>
-              <StatusDot tone="amber" />
-              <AppText numberOfLines={1} role="secondary" style={styles.grow} tone="soft">
-                Signed out
-              </AppText>
-              <Pressable
-                accessibilityRole="button"
-                hitSlop={space[8]}
-                onPress={signIn}
-                style={styles.inlineAction}
-              >
-                <AppText role="secondaryMedium" tone="ember">
-                  Sign in
-                </AppText>
-              </Pressable>
-            </View>
-          ) : null}
-          {loadError === null && failure === null ? null : (
-            <Notice
-              detail={failure ?? loadError ?? ""}
-              title="Something did not work"
-              tone="neutral"
-            />
-          )}
-        </View>
-      }
+      ListHeaderComponent={<View style={styles.header}>{props.header}</View>}
       refreshControl={
         <RefreshControl
           onRefresh={() => {
             setRefreshing(true);
-            setFailure(null);
-            void hostClient
-              .refresh()
-              .catch((error: unknown) => {
-                setFailure(operationDetail(error, "This deployment could not be refreshed."));
-              })
-              .finally(() => setRefreshing(false));
+            void refreshNow(hostClient).finally(() => setRefreshing(false));
           }}
           refreshing={refreshing}
           tintColor={color.muted}
@@ -372,40 +317,17 @@ export function TasksPane(props: {
   );
 }
 
-/** What the pane reads: the task list's own sources and what the connection line says. */
-function samePaneSource(previous: HostSnapshot, next: HostSnapshot): boolean {
-  return (
-    sameTaskListSource(previous, next) &&
-    previous.session === next.session &&
-    previous.network === next.network
-  );
-}
-
 function keyOfRow(row: TasksRow): string {
   return row.key;
 }
 
 const styles = StyleSheet.create({
   centred: { textAlign: "center" },
-  // What is wrong with the connection, in one inset row: it is a state of the
-  // list rather than a failure of anything the person just did, so it sits on
-  // the quiet surface instead of inside a notice.
-  connection: {
-    alignItems: "center",
-    backgroundColor: color.surface,
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[8],
-    minHeight: touchTarget,
-    paddingHorizontal: space[12],
-    paddingVertical: space[6],
-  },
   content: { paddingTop: space[4] },
+  earlier: { paddingLeft: taskTextInset },
   empty: { paddingHorizontal: taskTextInset, paddingVertical: space[12] },
-  grow: { flex: 1 },
   header: { gap: space[10], paddingBottom: space[4], paddingHorizontal: space[12] },
-  inlineAction: { justifyContent: "center", minHeight: touchTarget },
-  loading: { alignItems: "center", paddingVertical: space[48] },
+  loading: { paddingHorizontal: space[12], paddingTop: space[20] },
   more: {
     alignItems: "flex-start",
     borderRadius: radius.md,

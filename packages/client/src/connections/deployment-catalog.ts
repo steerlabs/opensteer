@@ -242,6 +242,7 @@ export class HostVersionMismatchError extends ClientOperationError {
         ? "This deployment speaks an older Opensteer protocol than this app."
         : "This deployment speaks a newer Opensteer protocol than this app.",
       "blocked",
+      { code, reason: code, retryable: false, provenance: "protocol", kind: "session" },
     );
     this.name = "HostVersionMismatchError";
     this.code = code;
@@ -298,15 +299,26 @@ export async function verifyAccessEndpoint(
       redirect: "error",
       referrerPolicy: "no-referrer",
       signal: controller.signal,
-    }).catch((error: unknown) => {
-      throw new HostTransportError("unreachable", { cause: error });
+    }).catch((cause: unknown) => {
+      controller.signal.throwIfAborted();
+      throw new HostTransportError("unreachable", { cause });
     });
     if (response.redirected || (response.url !== "" && response.url !== discoveryUrl)) {
       throw new Error("Host discovery must not redirect.");
     }
     if (isGatewayFailure(response.status)) throw new HostTransportError("unreachable");
     if (!response.ok) {
-      throw new Error(`Host discovery returned HTTP ${response.status}.`);
+      throw new ClientOperationError(
+        "Connection verification did not complete.",
+        response.status >= 500 ? "transient" : "blocked",
+        {
+          code: String(response.status),
+          reason: "discovery-unavailable",
+          kind: response.status >= 500 ? "service" : "protocol",
+          provenance: response.status >= 500 ? "proxy" : "protocol",
+          retryable: response.status >= 500,
+        },
+      );
     }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
     if (contentType !== "application/json") {
@@ -420,6 +432,14 @@ export async function verifyPersonalAccessEndpoint(options: {
       redirect: "error",
       referrerPolicy: "no-referrer",
       signal: controller.signal,
+    }).catch((cause: unknown) => {
+      throw new ClientOperationError("Connection verification did not complete.", "transient", {
+        cause,
+        reason: "transport-unreachable",
+        provenance: "transport",
+        kind: "transport",
+        retryable: true,
+      });
     });
     if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
       throw new Error("Personal access-route verification must not redirect.");

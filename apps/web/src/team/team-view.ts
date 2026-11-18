@@ -6,6 +6,7 @@ import { useTeamAttachment, useTeamSession, type TeamAttachment } from "./team-a
 import { useTeamMembers, type PeopleState } from "./team-people.js";
 import type { TeamWords } from "./team-view-models.js";
 import { useOptionalShell } from "../components/app-shell.js";
+import { runRead } from "../components/use-action.js";
 
 /** One team, as a screen in it needs it: the session, its members and this viewer's words. */
 export interface TeamView {
@@ -118,17 +119,15 @@ export function useTeamRead<Value>(
   useEffect(() => {
     if (!read) return;
     let live = true;
-    void read()
-      .then((value) => live && setState({ key, value, error: null }))
-      .catch(
-        (error: unknown) =>
-          live &&
-          setState({
-            key,
-            value: null,
-            error: error instanceof Error ? error.message : "Can’t load.",
-          }),
-      );
+    void runRead(null, { resource: "this", read }).then(
+      (result) =>
+        live &&
+        setState({
+          key,
+          value: result.ok ? result.value : null,
+          error: result.ok ? null : (result.words ?? "Couldn't load this."),
+        }),
+    );
     return () => {
       live = false;
     };

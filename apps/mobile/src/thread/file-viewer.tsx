@@ -1,19 +1,11 @@
-import { failureNotice, type HostClient, type TranscriptFileState } from "@opensteer/client/host";
-import { TranscriptImageContext, useAssetImage, useHostSelector } from "@opensteer/client/react";
+import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
+import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import type { FileSource } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { Image } from "expo-image";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  Alert,
-  FlatList,
-  PixelRatio,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { clientIssueActions } from "@opensteer/client/feedback";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { FlatList, PixelRatio, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   ImageHold,
   openImageSource,
@@ -27,6 +19,9 @@ import { color, radius, space, type } from "../theme.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, monoFontFamily, SecondaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine, unreadyIssue } from "../ui/client-feedback.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { UnavailableState } from "../ui/unavailable-state.js";
 
 export type FileViewerParams = {
@@ -67,10 +62,21 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
   const [attempt, setAttempt] = useState(0);
   const [shown, setShown] = useState<Shown>({ status: "loading" });
   const [saving, setSaving] = useState(false);
+  // How the last Share went, under the header.
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const source = params.source;
+  // Reopened when the computer is reached again; a file already shown stays meanwhile.
+  const readyRevision = useSyncExternalStore(
+    client.connection.subscribe,
+    () => client.connection.getSnapshot().readyRevision,
+  );
+  const phase = useSyncExternalStore(
+    client.connection.subscribe,
+    () => client.connection.getSnapshot().phase,
+  );
   useEffect(() => {
     const controller = new AbortController();
-    setShown({ status: "loading" });
+    setShown((held) => (shownFile(held) === null ? { status: "loading" } : held));
     client.transcriptFiles.open(params.threadId, source, controller.signal).then(
       (state) => {
         if (!controller.signal.aborted) setShown(state);
@@ -80,9 +86,8 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
       },
     );
     return () => controller.abort();
-  }, [attempt, client, params.threadId, source]);
-  const network = useHostSelector(client, (snapshot) => snapshot.network);
-  const file = shown.status === "ok" ? shown : shown.status === "unreachable" ? shown.cached : null;
+  }, [attempt, client, params.threadId, readyRevision, source]);
+  const file = shownFile(shown);
   const path = source.kind === "path" ? source.path : null;
   const name = file?.name ?? baseName(path) ?? "Attachment";
   const imageSource =
@@ -98,6 +103,12 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
       : file.preview.kind === "image"
         ? () => imageActions.act("share")
         : () => {
+            const key = `share:${Date.now()}`;
+            const unready = unreadyIssue(client, "shared");
+            if (unready !== null) return setLine(issueLine(unready, key));
+            const failed = () =>
+              setLine(issueLine({ code: "read-failed", resource: "this file" }, key));
+            setLine(null);
             setSaving(true);
             void client.transcriptFiles
               .download(params.threadId, file.resource)
@@ -105,9 +116,9 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
                 if (result.status === "ok")
                   await shareFileBytes(result.bytes, file.name, result.metadata.contentType);
                 else if (result.status === "unavailable") setShown({ status: "unavailable" });
-                else Alert.alert("Couldn't download this", "Try again.");
+                else failed();
               })
-              .catch(() => Alert.alert("Couldn't download this", "Try again."))
+              .catch(failed)
               .finally(() => setSaving(false));
           };
   return (
@@ -146,25 +157,32 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
         ) : null}
         <HeaderAction icon="xmark" label="Close" onPress={() => navigation.goBack()} />
       </View>
+      {line === null ? null : (
+        <View style={styles.line}>
+          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+        </View>
+      )}
       {shown.status === "loading" ? (
         <Skeleton />
       ) : shown.status === "unavailable" ? (
         <UnavailableState onBack={() => navigation.goBack()} />
+      ) : shown.status === "unreachable" && file === null && phase !== "ready" ? (
+        <ConnectionRouteGate connection={client.connection} />
       ) : shown.status === "failed" || (shown.status === "unreachable" && file === null) ? (
-        <UnavailableState
-          failure={shown.status === "failed" ? "failed" : "unavailable"}
-          network={network}
-          onBack={() => navigation.goBack()}
-          onRetry={retry}
-        />
+        <View style={styles.failed}>
+          <ActionLine
+            line={{
+              ...issueLine({ code: "read-failed", resource: "this file" }, `open:${attempt}`, {
+                label: clientIssueActions.tryAgain,
+                onPress: retry,
+              }),
+              haptic: null,
+            }}
+            numberOfLines={2}
+          />
+        </View>
       ) : file === null ? null : file.preview.kind === "text" ? (
         <>
-          {shown.status === "unreachable" ? (
-            <Banner
-              action={{ label: "Retry", onPress: retry }}
-              text={`${failureNotice("unavailable", network).title}. This is the copy you opened before.`}
-            />
-          ) : null}
           {file.preview.truncated ? (
             <Banner text="Only the start of this file is shown. Share it to see all of it." />
           ) : null}
@@ -199,6 +217,10 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
   );
 }
 
+function shownFile(shown: Shown) {
+  return shown.status === "ok" ? shown : shown.status === "unreachable" ? shown.cached : null;
+}
+
 function HeaderAction(props: {
   readonly disabled?: boolean;
   readonly icon: "square.and.arrow.up" | "xmark" | "square.on.square";
@@ -220,22 +242,12 @@ function HeaderAction(props: {
   );
 }
 
-function Banner(props: {
-  readonly action?: { readonly label: string; readonly onPress: () => void };
-  readonly text: string;
-}): ReactNode {
+function Banner(props: { readonly text: string }): ReactNode {
   return (
     <View style={styles.banner}>
       <AppText role="caption" style={styles.bannerText} tone="soft">
         {props.text}
       </AppText>
-      {props.action ? (
-        <Pressable accessibilityRole="button" onPress={props.action.onPress}>
-          <AppText role="caption" tone="ember">
-            {props.action.label}
-          </AppText>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
@@ -413,6 +425,8 @@ const styles = StyleSheet.create({
     paddingVertical: space[8],
   },
   bannerText: { flex: 1 },
+  failed: { flex: 1, justifyContent: "center", padding: space[24] },
+  line: { paddingHorizontal: space[16], paddingVertical: space[4] },
   code: {
     color: color.text,
     fontFamily: monoFontFamily,

@@ -73,6 +73,9 @@ vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => null,
   useAttachedHost: () => ({}),
 }));
+vi.mock("../ui/connection-gate.js", () => ({
+  Gated: (props: { children?: ReactNode; gate: ReactNode }) => props.gate ?? props.children,
+}));
 
 import { TaskSearchScreen } from "./task-search.js";
 

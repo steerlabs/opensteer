@@ -5,6 +5,7 @@ import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
 import { useMemo, useSyncExternalStore } from "react";
 import type { QuestionDrafts } from "@opensteer/client/host";
+import type { ActionLineValue } from "../ui/action-line.js";
 import type { RequestFormDraft, RequestSubmission } from "./request-form-model.js";
 
 /**
@@ -23,7 +24,8 @@ export interface RequestSession {
   chosenSourceId: string | null;
   /** An Allow the Host kept pending: Chrome is offline and it finishes by itself. */
   allowed: BrowserSignInOutcome | null;
-  failure: string | null;
+  /** What the last answer came to, beside the answers; null once it went through. */
+  failure: ActionLineValue | null;
   held: RequestSubmission | null;
   heldPasswordKey: string | null;
   heldSignIn: { readonly key: string; readonly signature: string } | null;

@@ -196,7 +196,8 @@ describe("a team's own web app", () => {
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
     const node = await render();
     await act(async () => button(node, "Allow")?.click());
-    expect(node.textContent).toContain("Consent has expired.");
+    expect(node.textContent).toContain("Couldn't finish signing in.");
+    expect(node.textContent).not.toContain("Consent has expired.");
     expect(node.textContent).toContain("start sign-in again in the Opensteer app");
     expect(assign).not.toHaveBeenCalled();
     expect(button(node, "Deny")?.hasAttribute("disabled")).toBe(false);

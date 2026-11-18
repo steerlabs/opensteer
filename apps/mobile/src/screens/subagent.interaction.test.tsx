@@ -11,6 +11,7 @@ import { harnessCatalogEntry } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testHostConnection } from "@opensteer/client/test-support";
 
 /*
  * An opened subagent on a phone, pushed over its conversation. What can go
@@ -85,8 +86,8 @@ vi.mock("../ui/pane.js", () => ({
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ drafts: {} }),
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { readonly line: { readonly text: string } }) => <p>{line.text}</p>,
 }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,
@@ -176,6 +177,7 @@ async function scene(name: MockSubagentScene) {
     observeThread: (threadId: string) => client.observeThread(threadId),
     subscribe: () => () => undefined,
   } as unknown as HostClient;
+  Object.assign(harness.hostClient, { connection: testHostConnection(harness.hostClient) });
   const node = (title: string) =>
     (current.transcripts[thread.id] ?? []).find(
       (entry): entry is NodeEntry => entry.kind === "node" && entry.title === title,

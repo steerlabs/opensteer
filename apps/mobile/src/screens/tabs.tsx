@@ -28,10 +28,16 @@ import {
 import { Pressable, StyleSheet, View } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
 import { TabList } from "../tabs/tab-list.js";
-import { useOperation } from "../tabs/use-tabs.js";
 import { color, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { Gated } from "../ui/connection-gate.js";
+import { useConnectionReady } from "../ui/connection-live.js";
+import { useScreenAction } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { tabActionKey, tabActionSpecs } from "../tabs/tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -48,8 +54,13 @@ export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string 
 export function TabsScreen(props: TabsScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
-  if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
-  return <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} />;
+  return (
+    <Gated gate={hostClient === null ? <DeploymentGate deploymentId={deploymentId} /> : null}>
+      {hostClient === null ? null : (
+        <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} />
+      )}
+    </Gated>
+  );
 }
 
 const selectReader = (snapshot: HostSnapshot) =>
@@ -62,22 +73,24 @@ function AttachedTabs(props: {
   const { hostClient } = props;
   // Only who is reading: a streamed token re-renders nothing here.
   const reader = useHostSelector(hostClient, selectReader);
+  // Tabs never listed and no connection to list them: the gate is the one explanation.
+  const syncing = useTabsSyncing(hostClient);
+  const ready = useConnectionReady(hostClient.connection);
   useEffect(() => {
     void hostClient.load().catch(() => undefined);
   }, [hostClient]);
-  if (reader === null) {
-    return (
-      <Screen>
-        <Notice
-          title="Connecting…"
-          detail="Your tabs appear once you are signed in."
-          tone="neutral"
-        />
-      </Screen>
-    );
-  }
-  // Nothing one person was shown is ever shown to another.
-  return <TabsForReader deploymentId={props.deploymentId} hostClient={hostClient} key={reader} />;
+  const gate =
+    reader === null || (syncing && !ready) ? (
+      <ConnectionRouteGate connection={hostClient.connection} />
+    ) : null;
+  return (
+    <Gated gate={gate}>
+      {/* Nothing one person was shown is ever shown to another. */}
+      {reader === null ? null : (
+        <TabsForReader deploymentId={props.deploymentId} hostClient={hostClient} key={reader} />
+      )}
+    </Gated>
+  );
 }
 
 /** The list's narrowing: every tab or only those agents use, on every computer or one. */
@@ -99,7 +112,11 @@ function TabsForReader(props: {
   const insets = useListContentInsets(space[32]);
   const syncing = useTabsSyncing(hostClient);
   const [filter, setFilter] = useState<TabFilter>(allTabs);
-  const reopen = useOperation();
+  const reopen = useScreenAction(
+    hostClient,
+    tabActionKey("reopenLast", "list"),
+    tabActionSpecs.reopenLast,
+  );
   // The shared filter: it reads only what it matches on, so a title arriving recomputes nothing.
   const shared = useMemo<SharedTabFilter>(
     () => ({ agents: filter.agents, device: filter.computerId, profile: null }),
@@ -117,9 +134,10 @@ function TabsForReader(props: {
     () => navigation.dispatch(StackActions.push("OpenApp", { deploymentId })),
     [deploymentId, navigation],
   );
+  const { run: runReopen } = reopen;
   const reopenClosed = useCallback(
-    () => void reopen.run(() => hostClient.reopenTab(), "There is no closed tab to reopen."),
-    [hostClient, reopen],
+    () => void runReopen(() => hostClient.reopenTab()),
+    [hostClient, runReopen],
   );
   useTabsBar({
     computers,
@@ -135,44 +153,39 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const filtering = filter.agents || filter.computerId !== null;
+  // Reopen is a bar action, so its answer stands at the head of the list.
   const notices =
-    reopen.failure === null ? null : (
-      <Notice
-        action={{ label: "Dismiss", onPress: reopen.dismiss }}
-        detail={reopen.failure}
-        title="Couldn’t reopen a tab"
-      />
-    );
+    reopen.line === null ? null : <ActionLine line={reopen.line} onDismiss={reopen.dismiss} />;
   return (
     <Screen edgeToEdge>
       <TabList
         contentStyle={[styles.content, column, insets]}
         empty={
-          <View style={styles.empty}>
-            <AppText role="bodyMedium" tone={syncing ? "muted" : "default"}>
-              {syncing ? "Finding tabs…" : filtering ? "No tabs match" : "No tabs yet"}
-            </AppText>
-            {syncing ? null : (
+          syncing ? (
+            <PlaceholderRows />
+          ) : (
+            <View style={styles.empty}>
+              <AppText role="bodyMedium">{filtering ? "No tabs match" : "No tabs yet"}</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
                 {filtering
                   ? "Tabs appear here while a task works in them."
                   : "Tabs you and your agents open appear here."}
               </AppText>
-            )}
-            {syncing ? null : filtering ? (
-              <SecondaryButton compact label="Show all tabs" onPress={() => setFilter(allTabs)} />
-            ) : (
-              <View style={styles.emptyActions}>
-                {canOpen ? <SecondaryButton compact label="Open" onPress={openApp} /> : null}
-                <SecondaryButton
-                  busy={reopen.busy}
-                  compact
-                  label="Reopen closed tab"
-                  onPress={reopenClosed}
-                />
-              </View>
-            )}
-          </View>
+              {filtering ? (
+                <SecondaryButton compact label="Show all tabs" onPress={() => setFilter(allTabs)} />
+              ) : (
+                <View style={styles.emptyActions}>
+                  {canOpen ? <SecondaryButton compact label="Open" onPress={openApp} /> : null}
+                  <SecondaryButton
+                    busy={reopen.running}
+                    compact
+                    label="Reopen closed tab"
+                    onPress={reopenClosed}
+                  />
+                </View>
+              )}
+            </View>
+          )
         }
         header={notices}
         hostClient={hostClient}

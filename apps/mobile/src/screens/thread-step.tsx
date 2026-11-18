@@ -19,6 +19,8 @@ import { useNodeWatch } from "../thread/node-watch.js";
 import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
+import { ActionLine } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets } from "../ui/pane.js";
@@ -133,13 +135,15 @@ function ToolDetail(props: {
         <Verbatim collapsed={body.collapsed} label="Input" text={body.argumentsText} />
       ) : null}
       {detail.loading ? (
-        <ActivityIndicator accessibilityLabel="Loading output" color={color.muted} />
+        <PlaceholderRows count={1} />
       ) : detail.error ? (
-        <Notice
-          action={{ label: "Try again", onPress: detail.reload }}
-          detail="The rest of this step is still here."
-          title="Couldn't load this output"
-          tone="neutral"
+        <ActionLine
+          line={{
+            key: "output-failed",
+            text: "Couldn't load this output.",
+            tone: "muted",
+            link: { label: "Try again", onPress: detail.reload },
+          }}
         />
       ) : body.output ? (
         <Verbatim collapsed={body.collapsed} label={body.outputLabel} text={body.output} />

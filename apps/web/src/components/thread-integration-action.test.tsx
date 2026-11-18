@@ -367,7 +367,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     };
     const container = await mountThreadAction(
       requestRecord(loaded, "Gmail access"),
-      "The Host could not be reached.",
+      "Couldn't load this account.",
     );
     expect(container.textContent).toContain("Gmail access");
     expect(container.textContent).toContain(loaded.request.reason);
@@ -1509,7 +1509,7 @@ describe("ThreadIntegrationAction installing an agent's proposal", () => {
 
     await vi.waitFor(() =>
       expect(container.querySelector(".form-actions__error")?.textContent).toBe(
-        "TMDB rejected this key.",
+        "Not connected. The service turned this key away.",
       ),
     );
     expect(reportActionError).not.toHaveBeenCalled();

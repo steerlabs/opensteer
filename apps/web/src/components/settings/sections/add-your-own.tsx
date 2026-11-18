@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { remoteMcpSlug } from "@opensteer/client/settings";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { act, failureWords } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
@@ -45,7 +45,7 @@ export function AddYourOwn({
     if (!ready || pending || !connected) return;
     setPending(true);
     setError(null);
-    void (
+    void act(hostClient, { label: "add this", done: "added", happened: "this was added" }, () =>
       kind === "folder"
         ? hostClient
             .dispatch({
@@ -65,7 +65,7 @@ export function AddYourOwn({
               input: { description: "", name: remoteMcpSlug(title), title: title.trim(), url },
               type: "integration.remoteMcp.install",
             })
-            .then(() => [])
+            .then(() => []),
     )
       .then((issues) => {
         onAdded();
@@ -73,7 +73,7 @@ export function AddYourOwn({
         if (issues.length) setSkipped(issues);
         else onClose();
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
   return (
@@ -138,12 +138,19 @@ export function AddYourOwn({
                     className="btn"
                     disabled={pending}
                     onClick={() =>
-                      void picker
-                        .pickFolder()
+                      void act(
+                        null,
+                        {
+                          label: "choose a folder",
+                          done: "chosen",
+                          happened: "a folder was chosen",
+                        },
+                        () => picker.pickFolder(),
+                      )
                         .then((picked) => {
                           if (picked) setDirectory(picked.path);
                         })
-                        .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+                        .catch((reason: unknown) => setError(failureWords(reason)))
                     }
                     type="button"
                   >

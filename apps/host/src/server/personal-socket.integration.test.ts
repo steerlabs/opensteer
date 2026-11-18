@@ -1,4 +1,8 @@
-import { HostToRunnerMessageSchema, PendingAgentEventV2Schema } from "@opensteer/protocol";
+import {
+  expectedMutationSessionHeader,
+  HostToRunnerMessageSchema,
+  PendingAgentEventV2Schema,
+} from "@opensteer/protocol";
 import { sql, type KyselyPlugin } from "kysely";
 import { createId, threadInputEditLeaseMs } from "@opensteer/core";
 import { OpensteerStore } from "@opensteer/database";
@@ -87,6 +91,129 @@ async function connect(origin: URL, cookie: string) {
       ),
   };
 }
+
+it("delivers a bound send key only to the sending login in live and retained views", async () => {
+  const database = await cloneTestDatabase("host");
+  const sockets: WebSocket[] = [];
+  let runtime: PrivateMachineHost | undefined;
+  let caller: Awaited<ReturnType<typeof connectCallerMachine>> | undefined;
+  try {
+    const host = (runtime = await startPrivateMachineHost(database.url));
+    caller = await connectCallerMachine(host, {
+      name: "Sender",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    const opened = await host.api["commands.dispatch"]({
+      type: "thread.create",
+      environmentId: caller.environmentId,
+      harnessInstanceId: caller.harnessInstanceId,
+      idempotencyKey: "sender-private-task",
+      modelSelection: { modelId: "gpt-5.6-sol", providerId: "openai", options: { effort: "low" } },
+      title: "Sender scope",
+    });
+    if (!opened.ok || opened.data.type !== "thread.create") throw new Error("Task creation failed");
+    const threadId = opened.data.thread.id;
+    const recipient = await claimPrivateMachineOwner(host.runtime, host.config);
+    const scope = { kind: "thread", threadId };
+    const attach = async (cookie: string) => {
+      const peer = await connect(host.origin, cookie);
+      sockets.push(peer.socket);
+      peer.send({
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests: [],
+        installed: {},
+        selected: { subscriptionId: "detail:0", generation: 1, scope },
+      });
+      await peer.read(
+        (frame) => frame.type === "host.synchronized" && frame.scope.kind === "thread",
+        "The sender test detail did not synchronize",
+      );
+      return peer;
+    };
+    const sender = await attach(host.ownerHeaders.cookie!);
+    const viewer = await attach(recipient.cookie);
+    const shell = await host.api["personal.shell.get"]({});
+    if (!shell.ok || !shell.data.session) throw new Error("The sender session was absent");
+    const login = shell.data.session.sessionId;
+    const key = "private-client-send-key";
+    const payload = {
+      type: "thread.sendMessage",
+      threadId,
+      content: [{ type: "text", text: "Keep this message" }],
+      idempotencyKey: key,
+    };
+    const stale = await host.runtime.app.inject({
+      method: "POST",
+      url: "/v1/rpc/commands.dispatch",
+      headers: { ...recipient, [expectedMutationSessionHeader]: login },
+      payload,
+    });
+    expect(stale.statusCode).toBe(403);
+    expect(stale.json()).toMatchObject({ error: { reason: "session-changed" } });
+    const sent = await host.runtime.app.inject({
+      method: "POST",
+      url: "/v1/rpc/commands.dispatch",
+      headers: { ...host.ownerHeaders, [expectedMutationSessionHeader]: login },
+      payload,
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const id = sent.json<{ data: { message: { id: string } } }>().data.message.id;
+    const live = async (peer: Awaited<ReturnType<typeof attach>>) =>
+      peer.read(
+        (frame) =>
+          frame.type === "host.changes" &&
+          frame.scope.kind === "thread" &&
+          frame.changes.some((change) => change.entityKind === "item" && change.entityId === id),
+        "The committed message was absent from the viewer's live changes",
+      );
+    const [sentFrame, viewerFrame] = await Promise.all([live(sender), live(viewer)]);
+    expect(sentFrame).toMatchObject({
+      changes: expect.arrayContaining([
+        expect.objectContaining({
+          entityId: id,
+          value: expect.objectContaining({ clientSendKey: key }),
+        }),
+      ]),
+    });
+    expect(JSON.stringify(viewerFrame)).not.toContain(key);
+    const items = await host.store.database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("entityId", "=", id)
+      .execute();
+    expect(items.length).toBeGreaterThan(0);
+    expect(JSON.stringify(items)).not.toContain(key);
+    const page = (headers: Readonly<Record<string, string>>) =>
+      host.runtime.app.inject({
+        method: "POST",
+        url: "/v1/rpc/thread.items.page",
+        headers,
+        payload: { threadId },
+      });
+    const [senderPage, viewerPage] = await Promise.all([page(host.ownerHeaders), page(recipient)]);
+    expect(senderPage.statusCode, senderPage.body).toBe(200);
+    expect(senderPage.json()).toMatchObject({
+      data: {
+        items: expect.arrayContaining([expect.objectContaining({ id, clientSendKey: key })]),
+      },
+    });
+    expect(viewerPage.statusCode, viewerPage.body).toBe(200);
+    expect(viewerPage.json()).toMatchObject({
+      data: { items: expect.arrayContaining([expect.objectContaining({ id })]) },
+    });
+    expect(viewerPage.body).not.toContain(key);
+  } finally {
+    for (const socket of sockets) socket.terminate();
+    try {
+      await caller?.close();
+      await runtime?.close();
+    } finally {
+      await database.drop();
+    }
+  }
+});
 
 it("delivers an overlapping commit and replaces a held detail generation on a real Host socket", async () => {
   const database = await cloneTestDatabase("host");

@@ -1,3 +1,4 @@
+import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
@@ -265,10 +266,17 @@ class Mutation {
           : scope.startsWith("thread:")
             ? scope
             : null);
-    const bytes = Buffer.byteLength(JSON.stringify(change)) + 1;
+    const humanMessage =
+      change.operation === "upsert" &&
+      change.entityKind === "item" &&
+      change.value.kind === "message" &&
+      change.value.author?.kind === "human";
+    const bytes =
+      Buffer.byteLength(JSON.stringify(change)) + 1 + (humanMessage ? clientSendKeyWireReserve : 0);
     if (
       (viewId !== null && viewId !== identity.entityId) ||
       scopeMismatch ||
+      "clientSendKey" in payload ||
       Buffer.byteLength(JSON.stringify(payload)) + postgresJsonOverhead(payload) > maxChangeBytes
     ) {
       this.#invalidate(scope);

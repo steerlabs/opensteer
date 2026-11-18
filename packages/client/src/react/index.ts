@@ -49,3 +49,8 @@ export * from "./use-reference.js";
 
 export * from "./use-transcript-message.js";
 export * from "./use-personal-resources.js";
+export * from "./use-client-connection.js";
+export * from "./use-client-read.js";
+export * from "./use-client-action.js";
+export * from "./use-message-outbox.js";
+export * from "./use-quiet-moment.js";

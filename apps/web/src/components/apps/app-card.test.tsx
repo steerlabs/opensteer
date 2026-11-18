@@ -202,6 +202,7 @@ it("opens as a tab at once, runs no second copy there, and comes back live when 
 });
 it("says why an open failed and leaves the running card usable", async () => {
   const client = new MockHostClient();
+  await client.load();
   const { frame } = inWorkspace(client);
   const open = vi
     .spyOn(client, "openTab")
@@ -210,7 +211,10 @@ it("says why an open failed and leaves the running card usable", async () => {
   const running = container.querySelector("iframe");
   const button = container.querySelector<HTMLButtonElement>(".app-card__header button")!;
   await act(async () => button.click());
-  expect(document.querySelector(".toast")?.textContent).toContain("does not know app tabs");
+  // A lost or unexplained answer is said honestly, never as the exception's text.
+  expect(document.querySelector(".toast")?.textContent).toContain(
+    "Couldn't confirm this app opened.",
+  );
   expect(container.querySelector("iframe")).toBe(running);
   expect(button.disabled).toBe(false);
   await act(async () => button.click());

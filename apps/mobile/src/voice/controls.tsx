@@ -45,6 +45,10 @@ import { floatLift, floatRest } from "./float-lift.js";
 import { useKeyboardHeight } from "./keyboard-height.js";
 import { usePillFit } from "./pill-fit.js";
 import { useVoiceAvailable, useVoiceValue } from "./use-voice-value.js";
+import type { ActionLineValue } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
+import { notSentIssue } from "../ui/connection-live.js";
+import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 
 const selectShowing = ({ notice, phase }: VoiceSnapshot) => phase !== "idle" || notice !== null;
 const selectPhase = ({ phase }: VoiceSnapshot) => phase;
@@ -66,8 +70,11 @@ const selectTone = (snapshot: VoiceSnapshot) => voiceBar(snapshot).tone;
 export function VoiceMic(props: {
   readonly disabled: boolean;
   readonly face?: "disc" | "glyph";
+  /** Where a call that can't start now says so: offline, it isn't started. */
+  readonly onLine?: ((line: ActionLineValue | null) => void) | undefined;
 }): ReactNode {
   const controller = useContext(VoiceContext);
+  const hostClient = useSelectedHostClient();
   const offered = useVoiceAvailable();
   const phase = useVoiceValue(selectPhase);
   if (!controller || !offered) return null;
@@ -78,7 +85,13 @@ export function VoiceMic(props: {
       accessibilityRole="button"
       accessibilityState={{ disabled: props.disabled, selected: on }}
       disabled={props.disabled && !on}
-      onPress={() => (on ? void controller.stop() : void controller.start())}
+      onPress={() => {
+        if (on) return void controller.stop();
+        // A call needs the computer: offline it isn't started, and says so beside the bar.
+        const unsent = hostClient === null ? null : notSentIssue(hostClient, "started");
+        props.onLine?.(unsent === null ? null : issueLine(unsent, `voice:${Date.now()}`));
+        if (unsent === null) void controller.start();
+      }}
       style={props.disabled && !on ? styles.quiet : null}
     >
       {({ pressed }) =>

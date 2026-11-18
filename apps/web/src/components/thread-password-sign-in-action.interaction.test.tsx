@@ -1,3 +1,4 @@
+import { localSession } from "./use-action.js";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -29,7 +30,11 @@ async function mount(
   const dispatch = vi
     .fn<MockHostClient["dispatch"]>()
     .mockResolvedValue({ type: "browser.password-sign-in.respond", status: "fulfilled" });
-  const client = { rpc: { ...base.rpc, "browser.password-sign-in.get": read }, dispatch };
+  const client = {
+    connection: localSession.connection,
+    rpc: { ...base.rpc, "browser.password-sign-in.get": read },
+    dispatch,
+  };
   const page = document.createElement("div");
   document.body.append(page);
   const root = createRoot(page);

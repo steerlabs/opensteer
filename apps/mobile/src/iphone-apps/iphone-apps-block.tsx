@@ -1,5 +1,4 @@
 import { ActivityIndicator, View } from "react-native";
-import Animated from "react-native-reanimated";
 import { FailureText } from "../computers/block-actions.js";
 import {
   AppText,
@@ -29,7 +28,8 @@ import type { IphoneAppId } from "../platform/iphone-apps.js";
 import { useBlockActions } from "../computers/block-actions.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { color, space } from "../theme.js";
-import { appear, exit } from "../ui/motion.js";
+import { ActionLine } from "../ui/action-line.js";
+import { clientIssueActions } from "@opensteer/client/feedback";
 
 import { useIphoneAppsState } from "./context.js";
 import { iphonePermissionOf, iphoneTurningOn, type IphoneAppsController } from "./controller.js";
@@ -382,13 +382,22 @@ function Unverified(props: {
   const change = props.view.change;
   if (change?.phase !== "unknown") return null;
   return (
-    <Animated.View entering={appear} exiting={exit} style={styles.remedy}>
-      <Notice
-        action={{ label: "Check status", onPress: props.onCheck }}
-        detail={iphoneUnknownChange(props.view.name, props.view.changeLabel ?? "")}
-        title="Approval not verified"
+    <View style={styles.remedy}>
+      <ActionLine
+        line={{
+          key: `unknown:${props.view.app}`,
+          text: iphoneUnknownChange(props.view.name),
+          tone: "muted",
+          link: {
+            label: clientIssueActions.check,
+            onPress: () => {
+              if (!props.busy && !props.disabled) props.onCheck();
+            },
+          },
+        }}
+        numberOfLines={2}
       />
-    </Animated.View>
+    </View>
   );
 }
 

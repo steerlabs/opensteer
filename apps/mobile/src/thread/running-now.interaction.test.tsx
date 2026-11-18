@@ -6,6 +6,7 @@ import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testHostConnection } from "@opensteer/client/test-support";
 
 /*
  * Running now on a phone: a capsule over the composer while anything works
@@ -85,8 +86,8 @@ vi.mock("../ui/glass.js", () => ({
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
 vi.mock("../ui/composer-editor.js", () => ({ dismissKeyboard: vi.fn() }));
 vi.mock("../ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { readonly line: { readonly text: string } }) => <p>{line.text}</p>,
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ selection: { deploymentId, hostClient: harness.hostClient } }),
@@ -138,6 +139,7 @@ async function scene(name: MockSubagentScene) {
     getSnapshot: () => current,
     subscribe,
   } as unknown as HostClient;
+  Object.assign(hostClient, { connection: testHostConnection(hostClient) });
   harness.hostClient = hostClient;
   const move = (next: TranscriptFixtureSnapshot) => {
     current = next;

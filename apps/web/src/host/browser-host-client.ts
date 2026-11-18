@@ -1,3 +1,4 @@
+import { initializeBrowserMessageOutbox } from "./message-outbox.js";
 import type { ClientLifecycle, HttpHostClientOptions } from "@opensteer/client/host";
 import {
   HttpHostClient,
@@ -10,6 +11,8 @@ import { browserClientLifecycle } from "./browser-lifecycle.js";
 
 export interface BrowserHostClientOptions {
   readonly desktopMedia?: boolean;
+  readonly authorityKey?: string;
+  readonly presentation?: import("@opensteer/client/connections").ConnectionPresentation;
   readonly assetRoute?: HttpHostClientOptions["assetRoute"];
   readonly passkeys?: HttpHostClientOptions["passkeys"];
   readonly iphoneSetup?: HttpHostClientOptions["iphoneSetup"];
@@ -33,7 +36,7 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   const baseUrl = options.baseUrl ?? window.location.origin;
-  const key = `opensteer.personal-stream.v62:${new URL(baseUrl).origin}`;
+  const key = `opensteer.personal-stream.v63:${new URL(baseUrl).origin}`;
   const streamCache = createPersonalStreamCache({
     exists: async () => window.sessionStorage.getItem(key) !== null,
     read: async () => window.sessionStorage.getItem(key),
@@ -44,10 +47,21 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
       window.sessionStorage.removeItem(key);
     },
   });
-  return new HttpHostClient({
+  const client = new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
     ...(options.desktopMedia ? { desktopMedia: true } : {}),
-
+    ...(options.presentation ? { presentation: options.presentation } : {}),
+    clientScope: () => {
+      const snapshot = client.getSnapshot();
+      return snapshot.deploymentId && snapshot.user && snapshot.sessionId
+        ? {
+            authorityKey: options.authorityKey ?? options.baseUrl ?? window.location.origin,
+            deploymentId: snapshot.deploymentId,
+            viewerId: snapshot.user.id,
+            loginId: snapshot.sessionId,
+          }
+        : null;
+    },
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
@@ -66,6 +80,9 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     origin: { app: desktopBridge() ? "desktop" : "web", device: browserDevice() },
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
+  initializeBrowserMessageOutbox(client);
+  void client.load().catch(() => undefined);
+  return client;
 }
 
 /** iPadOS reports itself as a Mac, so touch tells the two apart. */

@@ -7,6 +7,8 @@ import org.json.JSONObject
 class ComposerEditorModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("OpensteerComposerEditor")
+    Constant("draftPasteVersion") { 1 }
+    Events("onDraftPaste")
     View(ComposerEditorView::class) {
       Prop("documentJson") { view: ComposerEditorView, json: String -> view.setDocumentJson(json) }
       Prop("themeJson") { view: ComposerEditorView, json: String -> view.setThemeJson(json) }
@@ -23,6 +25,11 @@ class ComposerEditorModule : Module() {
       Prop("editable") { view: ComposerEditorView, editable: Boolean -> view.setEditable(editable) }
       Prop("autoFocus") { view: ComposerEditorView, autoFocus: Boolean -> view.setAutoFocus(autoFocus) }
       Prop("maxBytes") { view: ComposerEditorView, maxBytes: Long -> view.maxBytes = maxBytes }
+      Prop("pasteTarget") { view: ComposerEditorView, target: String? ->
+        view.deliverDraftPaste = target?.let { identity ->
+          { pasted: Map<String, Any> -> sendEvent("onDraftPaste", mapOf("target" to identity, "pasted" to pasted)) }
+        }
+      }
       Events(
         "onComposerChange",
         "onComposerSelectionChange",

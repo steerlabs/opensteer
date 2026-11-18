@@ -15,7 +15,6 @@ export * from "./execution-menu.js";
 export * from "./execution-preferences.js";
 export * from "./host-api-client.js";
 export * from "./host-connection.js";
-export * from "./operation-failure.js";
 export * from "./host-session-client.js";
 export * from "./host-snapshot-selectors.js";
 export * from "./host-snapshot-store.js";
@@ -119,3 +118,6 @@ export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device
 export * from "./iphone-setup.js";
 
 export { createPersonalStreamCache, type PersonalStreamCache } from "./personal-stream-cache.js";
+export * from "./message-outbox.js";
+export * from "./message-outbox-storage.js";
+export * from "./message-delivery-view.js";

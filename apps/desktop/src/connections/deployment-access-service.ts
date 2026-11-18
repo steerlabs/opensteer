@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   deploymentStatusFromPersonalStack,
   deploymentStatusSelectable,
@@ -18,11 +19,11 @@ import {
   type DesktopPersonalDeploymentStatus,
 } from "@opensteer/protocol/desktop";
 import {
-  ConnectionSupervisor,
-  detachedStatus,
-  type ConnectionSupervisorSnapshot,
-} from "./connection-supervisor.js";
-import { classifyClientFailure, clientPublicDetail } from "@opensteer/client/connections";
+  ConnectionAttachment,
+  detachedAttachmentStatus,
+  type ConnectionAttachmentSnapshot,
+} from "./connection-attachment.js";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import type { CatalogProjection, DeploymentAccessCatalogDeployment } from "./access-projection.js";
 import type { HostSessionObservation } from "@opensteer/client/auth";
 
@@ -147,7 +148,6 @@ type ForegroundOperationKind =
 export class DeploymentAccessService {
   readonly #listeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
   readonly #ports: DeploymentAccessPorts;
-  readonly #schedule: (callback: () => void, delayMilliseconds: number) => unknown;
   readonly #unsubscribers: Array<() => void> = [];
   #account = accountState({
     account: { available: false, detail: null, identity: null, status: "signed-out" },
@@ -184,20 +184,18 @@ export class DeploymentAccessService {
     { readonly abort: AbortController; readonly done: Promise<void> }
   >();
   #revision = 0;
-  #supervisor: ConnectionSupervisor | null = null;
-  #supervisorUnsubscribe: (() => void) | null = null;
+  #attachment: ConnectionAttachment | null = null;
+  #attachmentUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
 
   constructor(
     ports: DeploymentAccessPorts,
     options: {
       readonly now?: () => number;
-      readonly schedule?: (callback: () => void, delayMilliseconds: number) => unknown;
     } = {},
   ) {
     this.#ports = ports;
     this.#now = options.now ?? (() => Date.now());
-    this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
     this.#unsubscribers.push(
       ports.account.subscribe((state) => {
         const previous = this.#account;
@@ -218,7 +216,7 @@ export class DeploymentAccessService {
       }),
       ports.catalog.subscribe(() => void this.#reloadCatalog(true)),
       ports.hostSession.subscribe((observation) => {
-        this.#supervisor?.observe(observation);
+        this.#attachment?.observe(observation);
       }),
       ports.personal.subscribe((status) => {
         this.#personal = status;
@@ -248,7 +246,7 @@ export class DeploymentAccessService {
       this.#ports.account.currentState().catch((error: unknown): DesktopAccountAuthState => ({
         account: {
           available: this.#ports.account.available,
-          detail: clientPublicDetail(error, "Desktop Account credentials could not be loaded."),
+          detail: presentActionFailure(error, "Desktop Account credentials could not be loaded."),
           identity: null,
           status: "error",
         },
@@ -274,7 +272,7 @@ export class DeploymentAccessService {
     this.#personal = this.#ports.personal.status;
     this.#personalLink = personalLink;
     this.#initialized = true;
-    this.#reconcileSupervisor();
+    this.#reconcileAttachment();
     this.#publish();
     if (this.#account.status === "signed-in") await this.#refreshDirectory("required", "startup");
     this.#attachSelectedReturningDeployment();
@@ -333,20 +331,20 @@ export class DeploymentAccessService {
       await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
       return;
     }
-    const supervisor = this.#selectedSupervisor();
-    if (!this.#operation && !(supervisor?.canCancel() ?? false)) {
+    const attachment = this.#selectedAttachment();
+    if (!this.#operation && !(attachment?.canCancel() ?? false)) {
       throw operationUnavailable("cancel");
     }
-    const abandoning = supervisor?.canCancel() ?? false;
+    const abandoning = attachment?.canCancel() ?? false;
     this.#pendingAttachmentDeploymentId = null;
     this.#operationId += 1;
     this.#operation = null;
     // Cancelling abandons the attempt and its in-flight establishment, and
     // returns the row to plain "not attached" — never to a failure a person
     // then has to clear before they can try again.
-    supervisor?.cancel();
-    if (supervisor && abandoning) {
-      this.#ports.hostSession.abandonAuthorization(supervisor.deploymentId);
+    attachment?.cancel();
+    if (attachment && abandoning) {
+      this.#ports.hostSession.abandonAuthorization(attachment.deploymentId);
     }
     this.#publish();
   }
@@ -494,14 +492,14 @@ export class DeploymentAccessService {
    */
   async retry(): Promise<void> {
     this.#assertActive();
-    const supervisor = this.#selectedSupervisor();
+    const attachment = this.#selectedAttachment();
     const selected = this.#selectedDeployment();
     const localRestart = Boolean(
       selected?.onThisComputer &&
       this.#personal?.deploymentId === selected.id &&
       this.#personal.canStart,
     );
-    if (!supervisor || (!supervisor.canRetry() && !localRestart)) {
+    if (!attachment || (!attachment.canRetry() && !localRestart)) {
       throw operationUnavailable("retry");
     }
     if (localRestart) {
@@ -512,8 +510,8 @@ export class DeploymentAccessService {
     } else if (!this.#selectedAttachmentIsReady()) {
       throw operationUnavailable("retry");
     }
-    if (supervisor.canCancel()) {
-      this.#ports.hostSession.abandonAuthorization(supervisor.deploymentId);
+    if (attachment.canCancel()) {
+      this.#ports.hostSession.abandonAuthorization(attachment.deploymentId);
     }
     this.#requestSelectedAttachment();
   }
@@ -559,12 +557,10 @@ export class DeploymentAccessService {
 
   networkChanged(): void {
     if (this.#account.status === "signed-in") void this.#refreshDirectory("ambient", "network");
-    if (this.#selectedAttachmentIsReady()) this.#selectedSupervisor()?.resume();
   }
 
   wake(): void {
     if (this.#account.status === "signed-in") void this.#refreshDirectory("ambient", "wake");
-    if (this.#selectedAttachmentIsReady()) this.#selectedSupervisor()?.resume();
   }
 
   dispose(): void {
@@ -574,7 +570,7 @@ export class DeploymentAccessService {
     for (const unsubscribe of this.#unsubscribers.splice(0)) unsubscribe();
     for (const { abort } of this.#probing.values()) abort.abort();
     this.#probing.clear();
-    this.#disposeSupervisor();
+    this.#disposeAttachment();
     this.#listeners.clear();
   }
 
@@ -593,7 +589,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("select");
     }
     this.#pendingAttachmentDeploymentId = null;
-    this.#selectedSupervisor()?.deactivate();
+    this.#selectedAttachment()?.deactivate();
     await this.#ports.hostSession.closeCurrent();
     await this.#catalogMutation("open-deployment", () => this.#ports.catalog.select(deploymentId));
   }
@@ -607,7 +603,7 @@ export class DeploymentAccessService {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
       this.#catalog = catalog;
-      this.#reconcileSupervisor();
+      this.#reconcileAttachment();
       this.#operation = null;
       this.#publish();
       this.#requestSelectedAttachment();
@@ -716,9 +712,9 @@ export class DeploymentAccessService {
       this.#publish();
       return;
     }
-    this.#reconcileSupervisor();
+    this.#reconcileAttachment();
     this.#publish();
-    // A rotated route re-attaches inside the supervisor that owns it. Only a
+    // A rotated route re-attaches through the selected attachment. Only a
     // selection somebody else moved is reopened here, and only under the same
     // rule that reopens one at startup: it has to be a place already used.
     if (externalSelection && this.#catalog.selectedDeploymentId !== selectedBefore) {
@@ -727,26 +723,26 @@ export class DeploymentAccessService {
   }
 
   /**
-   * One supervisor, for the attached Deployment. A row nobody selected has no
+   * One attachment observer, for the selected Deployment. A row nobody selected has no
    * attempt to own, so replacing the per-row map with a pure function is what
    * keeps an unselected row from chasing its own route changes.
    */
-  #reconcileSupervisor(): void {
+  #reconcileAttachment(): void {
     const selected = this.#selectedDeployment();
     if (!selected) {
       this.#pendingAttachmentDeploymentId = null;
-      this.#disposeSupervisor();
+      this.#disposeAttachment();
       return;
     }
     if (this.#pendingAttachmentDeploymentId !== selected.id) {
       this.#pendingAttachmentDeploymentId = null;
     }
-    if (this.#supervisor && this.#supervisor.deploymentId === selected.id) {
-      this.#supervisor.reconfigure({ attachmentKey: selected.key });
+    if (this.#attachment && this.#attachment.deploymentId === selected.id) {
+      this.#attachment.reconfigure({ attachmentKey: selected.key });
       return;
     }
-    this.#disposeSupervisor();
-    const supervisor = new ConnectionSupervisor({
+    this.#disposeAttachment();
+    const attachment = new ConnectionAttachment({
       attachmentKey: selected.key,
       close: () => this.#ports.hostSession.closeCurrent(),
       deploymentId: selected.id,
@@ -755,24 +751,23 @@ export class DeploymentAccessService {
         this.#interactiveAttachment = false;
         return this.#ports.hostSession.establish(deploymentId, interactive);
       },
-      schedule: this.#schedule,
     });
-    this.#supervisor = supervisor;
-    this.#supervisorUnsubscribe = supervisor.subscribe(() => this.#publish());
+    this.#attachment = attachment;
+    this.#attachmentUnsubscribe = attachment.subscribe(() => this.#publish());
   }
 
-  #disposeSupervisor(): void {
-    this.#supervisorUnsubscribe?.();
-    this.#supervisorUnsubscribe = null;
-    this.#supervisor?.dispose();
-    this.#supervisor = null;
+  #disposeAttachment(): void {
+    this.#attachmentUnsubscribe?.();
+    this.#attachmentUnsubscribe = null;
+    this.#attachment?.dispose();
+    this.#attachment = null;
   }
 
-  #connectionSnapshot(deployment: DeploymentAccessCatalogDeployment): ConnectionSupervisorSnapshot {
-    if (this.#supervisor && deployment.id === this.#catalog.selectedDeploymentId) {
-      return this.#supervisor.snapshot();
+  #connectionSnapshot(deployment: DeploymentAccessCatalogDeployment): ConnectionAttachmentSnapshot {
+    if (this.#attachment && deployment.id === this.#catalog.selectedDeploymentId) {
+      return this.#attachment.snapshot();
     }
-    return { failure: null, status: detachedStatus(deployment.key) };
+    return { failure: null, status: detachedAttachmentStatus(deployment.key) };
   }
 
   #selectedDeployment(): DeploymentAccessCatalogDeployment | null {
@@ -787,7 +782,7 @@ export class DeploymentAccessService {
     // An Account place needs the Account to open; until sign-in it stays on
     // screen asking for it, rather than failing an attempt nobody asked for.
     if (selected.source === "account" && this.#account.status !== "signed-in") return;
-    const status = this.#supervisor?.snapshot().status;
+    const status = this.#attachment?.snapshot().status;
     if (status === "connected" || status === "connecting" || status === "authorizing") return;
     this.#requestSelectedAttachment(false);
   }
@@ -801,7 +796,7 @@ export class DeploymentAccessService {
   #requestSelectedAttachment(interactive = true): void {
     this.#interactiveAttachment = interactive;
     const selected = this.#selectedDeployment();
-    if (!selected || !this.#supervisor) return;
+    if (!selected || !this.#attachment) return;
     // An Account place opens through the Account; its sign-in reopens it.
     if (selected.source === "account" && this.#account.status !== "signed-in") return;
     if (!this.#selectedAttachmentIsReady()) {
@@ -810,7 +805,7 @@ export class DeploymentAccessService {
       return;
     }
     this.#pendingAttachmentDeploymentId = null;
-    this.#supervisor.attach();
+    this.#attachment.attach();
   }
 
   #resumePendingAttachment(): void {
@@ -827,8 +822,8 @@ export class DeploymentAccessService {
     return this.#personal?.deploymentId === selected.id && this.#personal.state === "ready";
   }
 
-  #selectedSupervisor(): ConnectionSupervisor | null {
-    return this.#supervisor;
+  #selectedAttachment(): ConnectionAttachment | null {
+    return this.#attachment;
   }
 
   /**
@@ -849,12 +844,12 @@ export class DeploymentAccessService {
       this.#personal.canStart;
     if (localRestart) return ["retry"];
     if (this.#pendingAttachmentDeploymentId === deploymentId) return [];
-    const status = this.#supervisor?.snapshot().status;
+    const status = this.#attachment?.snapshot().status;
     if (status === "connecting") return ["cancel"];
     // Waiting on a browser is the one state where both moves are real: stop
     // waiting, or ask for a fresh authorization because the tab never came back.
     if (status === "authorizing") return ["retry", "cancel"];
-    return this.#supervisor?.canRetry() ? ["retry"] : [];
+    return this.#attachment?.canRetry() ? ["retry"] : [];
   }
 
   /**
@@ -935,8 +930,8 @@ export class DeploymentAccessService {
     }
     if (
       deployment.id === this.#catalog.selectedDeploymentId &&
-      this.#supervisor?.deploymentId === deployment.id &&
-      this.#supervisor.snapshot().status === "connected"
+      this.#attachment?.deploymentId === deployment.id &&
+      this.#attachment.snapshot().status === "connected"
     ) {
       return placeStatus.ready();
     }
@@ -1106,7 +1101,7 @@ export function classifyPortFailure(
   return {
     classification: failure.classification,
     code: `${port}-${machineCode(failure.reason)}`,
-    detail: clientPublicDetail(error, `${port} operation failed.`),
+    detail: presentActionFailure(error, `${port} operation failed.`),
   };
 }
 

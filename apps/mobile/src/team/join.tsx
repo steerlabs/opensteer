@@ -37,7 +37,6 @@ export type InviteView =
   | { readonly kind: "already-member"; readonly team: TeamTileView }
   | { readonly kind: "update-app"; readonly team: TeamTileView }
   | { readonly kind: "update-server"; readonly team: TeamTileView }
-  | { readonly kind: "unreachable"; readonly host: string }
   | { readonly kind: "failed"; readonly detail: string };
 
 /**
@@ -173,16 +172,6 @@ export function JoinSheetBody(props: {
     case "update-server":
       return (
         <VersionMismatchBody kind="update-server" onAction={props.onRetry} team={invite.team} />
-      );
-    case "unreachable":
-      return (
-        <Outcome
-          action={{ label: "Try again", onPress: props.onRetry, primary: true }}
-          detail={`${invite.host} didn't answer. Check you're online, or on the network the team uses, then try again.`}
-          icon="exclamationmark.circle"
-          team={null}
-          title="Can't reach the team"
-        />
       );
     case "failed":
       return (

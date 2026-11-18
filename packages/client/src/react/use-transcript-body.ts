@@ -35,6 +35,7 @@ export function useTranscriptBody(input: {
   const load = useHostRead(
     enabled && !!client && !!threadId && !!itemId ? read : null,
     JSON.stringify([threadId, nodeId, itemId, revision, generation]),
+    client ?? null,
   );
   return { ...load, data: data ?? load.data };
 }

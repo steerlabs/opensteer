@@ -1,3 +1,4 @@
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -25,8 +26,8 @@ import {
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
   MemoryPrivateFilesystem,
-  scopedTranscriptFixture,
   tabFixture,
+  testHostConnection,
 } from "@opensteer/client/test-support";
 import type { TabRoute } from "../browser/surface-route.js";
 import type { TabViewer } from "@opensteer/protocol";
@@ -464,6 +465,25 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null }));
 vi.mock("../voice/use-voice-value.js", () => ({ useVoiceValue: () => false }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => state.hereId }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/connection-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).connectionGate,
+);
+vi.mock(
+  "../ui/route-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).routeGate,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).placeholder,
+);
+vi.mock("./deployment-gate.js", () => ({
+  DeploymentGate: () => <p data-gate="deployment">Deployment gate</p>,
+}));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../team/team-marks.js", async (load) => ({
   ...(await load<typeof import("../team/team-marks.js")>()),
@@ -942,6 +962,22 @@ async function setup(
     state.hostClient,
     scopedTranscriptFixture(() => currentSnapshot()!, subscribe),
   );
+  state.hostClient.connection ??= testHostConnection({
+    getSnapshot: () =>
+      ({
+        ...(currentSnapshot() ?? {
+          session: "checking",
+          user: null,
+          connection: "connecting",
+          network: "unknown",
+        }),
+        deploymentId: state.deploymentId,
+      }) as HostSnapshot,
+    subscribe: (listener: () => void) => {
+      clientListeners.add(listener);
+      return () => clientListeners.delete(listener);
+    },
+  });
   state.hostClient.activateTab ??= vi.fn(activate);
   state.hostClient.browserViewerSurface ??= viewerSurface;
   state.hostClient.placeActivity ??= placeActivity;
@@ -1213,7 +1249,7 @@ describe("mobile pages", () => {
     });
   });
 
-  it("says a page refused an action until its feed is admitted again, then gives the page's reason", async () => {
+  it("says nothing of the connection when a page refuses a control, then says the page refused it", async () => {
     const sendBrowserCommand = vi.fn(() => {
       throw new Error("The targeted browser control is not synchronized.");
     });
@@ -1228,11 +1264,15 @@ describe("mobile pages", () => {
     state.snapshot = snapshot([chosen]);
     await render();
     expect(() => press(container, "Reload")).not.toThrow();
-    expect(container.textContent).toContain("The page is reconnecting");
-    feed = { ...liveFeed, admissionId: "admission-2", inputError: "A dialog is open on the page." };
+    expect(container.textContent).not.toContain("reconnecting");
+    expect(container.textContent).not.toContain("Page unavailable");
+    feed = {
+      ...liveFeed,
+      admissionId: "admission-2",
+      inputError: { code: "rejected", action: "send that to the page", done: "sent" },
+    };
     await render();
-    expect(container.textContent).not.toContain("The page is reconnecting");
-    expect(container.textContent).toContain("A dialog is open on the page.");
+    expect(container.textContent).toContain("Couldn't send that to the page.");
   });
 
   it("closes the page keyboard when the page refuses what was typed, and types afresh after", async () => {
@@ -1386,7 +1426,9 @@ describe("mobile pages", () => {
     state.hostClient = { closeTabs };
     const { container } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
     await pressAsync(menu(), "Close tab");
-    expect(container.textContent).toContain("Try again.");
+    // The Host's own sentence is never shown; the refusal is said in the app's words.
+    expect(container.textContent).toContain("Couldn't close this tab.");
+    expect(container.textContent).not.toContain("Try again.");
     expect(state.setParams).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
   });
@@ -1542,7 +1584,7 @@ describe("mobile pages", () => {
 
   it("refreshes coming back into view, not out from under a sheet, and keeps the exact view while other browsers arrive", async () => {
     const { container, render } = await setup({ sessionId: "chosen" });
-    expect(state.refresh).toHaveBeenCalledTimes(1);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
     state.snapshot = snapshot([session("chosen"), session("new")]);
     await render();
     expect(container.textContent).toContain("Viewing chosen");
@@ -1551,27 +1593,27 @@ describe("mobile pages", () => {
     await render();
     state.focused = true;
     await render();
-    expect(state.refresh).toHaveBeenCalledTimes(1);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
     state.focused = false;
     state.drawn = false;
     await render();
     state.focused = true;
     state.drawn = true;
     await render();
-    expect(state.refresh).toHaveBeenCalledTimes(2);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
   });
 
-  it("refuses another deployment and a signed-out viewer", async () => {
+  it("gates another deployment and a signed-out viewer, showing neither the page", async () => {
     const { container, render } = await setup({ sessionId: "chosen" });
     state.snapshot = snapshot([session("chosen")]);
     state.deploymentId = "deployment-b";
     await render();
-    expect(container.textContent).toContain("This deployment is no longer open");
+    expect(container.querySelector('[data-gate="deployment"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Viewing chosen");
     state.deploymentId = "deployment-a";
     state.snapshot = { ...state.snapshot, session: "authentication-required", user: null };
     await render();
-    expect(container.textContent).toContain("Sign in to view this page");
+    expect(container.querySelector('[data-gate="connection"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Viewing chosen");
   });
 });
@@ -1868,7 +1910,7 @@ describe("an app open as a tab", () => {
     const { container, closeTabs } = await openApp();
     closeTabs.mockRejectedValueOnce(new Error("The Host refused."));
     await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("This tab could not be closed.");
+    expect(container.textContent).toContain("Couldn't confirm this tab closed.");
     expect(webView()).not.toBeNull();
     await pressAsync(container, "Try again");
     expect(closeTabs).toHaveBeenCalledTimes(2);

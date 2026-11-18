@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import "fake-indexeddb/auto";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -174,26 +175,27 @@ it("Escape stops and retains finalized text", async () => {
   expect(t.field.value).toBe("a good day");
   expect(t.send).not.toHaveBeenCalled();
 });
-it.each(["Enter", "Send message"])(
-  "%s finishes and sends the exact committed text once",
-  async (action) => {
-    const t = await setup();
-    await t.start();
-    await t.text();
-    if (action === "Enter") {
-      await t.key(action);
-      await t.key(action);
-    } else {
-      await t.click(action);
-      await t.click(action);
-    }
-    expect(t.send).not.toHaveBeenCalled();
-    await t.emit({ type: "text", finalized: ["great"], volatile: [] });
-    await t.end();
-    expect(t.send).toHaveBeenCalledOnce();
-    expect(t.send.mock.calls[0]?.[0]).toBe("a great day");
-  },
-);
+it.each([
+  ["Enter", null],
+  ["Send message", "dictated-send"],
+] as const)("%s finishes and sends the exact committed text once", async (action, draftKey) => {
+  const t = await setup(ready, draftKey);
+  await t.start();
+  await t.text();
+  if (action === "Enter") {
+    await t.key(action);
+    await t.key(action);
+  } else {
+    await t.click(action);
+    await t.click(action);
+  }
+  expect(t.send).not.toHaveBeenCalled();
+  await t.emit({ type: "text", finalized: ["great"], volatile: [] });
+  await t.end();
+  await vi.waitFor(() => expect(t.send).toHaveBeenCalledOnce());
+  expect(t.send.mock.calls[0]?.[0]).toBe("a great day");
+  if (draftKey) await vi.waitFor(() => expect(composerDrafts.read(draftKey)).toBeNull());
+});
 it.each(["completed", "failed", "cancelled"] as const)(
   "handles empty/failed/aborted finish: %s",
   async (reason) => {
@@ -224,13 +226,15 @@ it("leaves on unmount and never sends afterwards", async () => {
 it("keeps words recognised after leaving in the draft they were spoken into", async () => {
   const draft = "dictated-draft";
   const t = await setup(ready, draft);
+  await vi.waitFor(() => expect(composerDrafts.read(draft)?.text).toBe("a bad day"));
   await t.start();
   await t.text();
   act(() => root!.unmount());
   root = undefined;
   await t.end();
-  expect(composerDrafts.read(draft)?.text).toBe("a good day");
-  composerDrafts.clear(draft);
+  expect(t.port.stop).toHaveBeenCalled();
+  await vi.waitFor(() => expect(composerDrafts.read(draft)?.text).toBe("a good day"));
+  await composerDrafts.clear(draft);
 });
 it("opens microphone settings from the owner notice", async () => {
   const t = await setup({ ...ready, microphone: "denied" } as DictationAvailability);

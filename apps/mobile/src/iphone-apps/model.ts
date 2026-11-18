@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   computerAppAccessLabel,
   type IntegrationAccess,
@@ -202,7 +203,12 @@ export function addIphoneFailureText(
     case "remote-access-off":
       return `Turn on remote access on ${opensteer} first, then try again.`;
     case "host-unreachable":
-      return `This ${noun} can't reach ${opensteer}. Check your connection and try again.`;
+      return presentClientIssue({
+        code: "not-sent",
+        done: "added",
+        name: opensteer,
+        reason: "unreachable",
+      }).title;
     case "host-mismatch":
       return `That address now belongs to a different Opensteer, so this ${noun} didn't connect. Try again later.`;
     case "too-long":
@@ -215,8 +221,13 @@ export function addIphoneFailureText(
       return addIphoneNeedsUpdate(opensteer, noun);
     case "enrolled-elsewhere":
       return `This ${noun} is already added to another Opensteer. Remove it there first.`;
-    case "host-said":
-      return failure.message;
+    case "host-refused":
+      return presentClientIssue({
+        code: "rejected",
+        action: `add this ${noun}`,
+        done: "added",
+        reason: failure.reason,
+      }).title;
     case "failed":
       return `This ${noun} wasn't added. Try again.`;
   }
@@ -662,8 +673,9 @@ export const iphoneTaskScope =
   "Allowing lasts until you change it, not only for this task. Your other tasks can use it too.";
 
 /** An unknown change, in its sheet and under its row. */
-export function iphoneUnknownChange(name: string, label: string): string {
-  return `Opensteer may or may not have ${label} for ${name}. Checking reads it again; nothing is asked twice.`;
+export function iphoneUnknownChange(name: string): string {
+  return presentClientIssue({ code: "unconfirmed", happened: `access for ${name} was changed` })
+    .title;
 }
 
 export function iphoneDisclosure(opensteer: string): string {

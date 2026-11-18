@@ -10,6 +10,7 @@ import {
   Section,
   ToggleRow,
   ValueRow,
+  Footer,
 } from "./settings-form-primitives.android.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
 import {
@@ -107,7 +108,13 @@ export function GeneralSettingsForm(
             title={quietTasksTitle}
             value={String(quietTasks.days)}
           />
-          <ErrorText detail={quietTasks.error} />
+          {quietTasks.line === null ? null : (
+            <Footer
+              link={quietTasks.line.link ?? null}
+              text={quietTasks.line.text}
+              tone={quietTasks.line.tone}
+            />
+          )}
         </Section>
       )}
       <Section title="About">

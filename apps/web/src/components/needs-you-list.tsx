@@ -4,6 +4,7 @@ import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { Dialog } from "./dialog.js";
 import { NeedsYouRow } from "./needs-you-row.js";
+import { act, failureWords, presentFailure } from "./use-action.js";
 
 export function NeedsYouList({
   client,
@@ -19,12 +20,7 @@ export function NeedsYouList({
   const count = useHostSelector(client, (snapshot) => snapshot.needsYouCount);
   const ready = useHostSelector(client, (snapshot) => snapshot.connection === "connected");
   useEffect(() => {
-    if (ready && count && page === null)
-      void client
-        .loadEarlierNeedsYou()
-        .catch((error: unknown) =>
-          setFailure(error instanceof Error ? error.message : "Could not load requests."),
-        );
+    if (ready && count && page == null) void client.loadEarlierNeedsYou().catch(() => undefined);
   }, [client, count, page, ready, summaries]);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -34,13 +30,18 @@ export function NeedsYouList({
     setDismissing(needsYouEntryKey(entry));
     setFailure(null);
     try {
-      await client.decideTeamAsk({
-        decision: "decline",
-        requestId: entry.requestId,
-        teamId: entry.teamId,
-      });
+      await act(
+        client,
+        { label: "dismiss this", done: "dismissed", happened: "this was dismissed" },
+        () =>
+          client.decideTeamAsk({
+            decision: "decline",
+            requestId: entry.requestId,
+            teamId: entry.teamId,
+          }),
+      );
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : "Could not dismiss it.");
+      setFailure(failureWords(error) ?? "Could not dismiss it.");
     } finally {
       setDismissing(null);
     }
@@ -51,7 +52,7 @@ export function NeedsYouList({
     try {
       await client.loadEarlierNeedsYou();
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : "Could not load earlier requests.");
+      setFailure(presentFailure(error, "load earlier requests"));
     } finally {
       setLoading(false);
     }

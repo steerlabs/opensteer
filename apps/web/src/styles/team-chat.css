@@ -3538,42 +3538,6 @@ a.kb-note__crumb:hover {
   height: 12px;
 }
 
-/* ---- Connection: one line, never a modal ---- */
-
-.connection-line {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-10);
-  min-height: 36px;
-  padding: var(--space-4) var(--space-8) var(--space-4) var(--space-16);
-  border-bottom: 1px solid var(--line);
-  background: var(--fill-match);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-}
-
-.connection-line > svg {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.connection-line__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.connection-line--amber {
-  background: var(--amber-wash);
-  color: var(--amber-text);
-}
-
-.connection-line--amber > svg {
-  color: var(--amber);
-}
-
 .team-input-source,
 .team-run-delivery {
   color: var(--muted);

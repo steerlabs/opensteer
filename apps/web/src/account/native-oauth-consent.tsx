@@ -3,7 +3,7 @@ import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { consumeNativeOAuthQuery, withoutNativeOAuthQuery } from "./native-oauth-query.js";
 import { ErrorNotice, OnboardingCard } from "../components/onboarding-card.js";
 import { Icon } from "../components/icon.js";
-import { actionErrorMessage } from "../ui-utils.js";
+import { act, failureWords } from "../components/use-action.js";
 
 export function useNativeOAuthQuery(): string | null {
   const [query] = useState(() =>
@@ -30,12 +30,14 @@ export function NativeOAuthConsent({
     setError(null);
     setPending(true);
     try {
-      const { url } = unwrapRpcResult(await rpc["auth.native.complete"]({ accept, oauthQuery }));
+      const { url } = await act(null, { label: "finish signing in" }, async () =>
+        unwrapRpcResult(await rpc["auth.native.complete"]({ accept, oauthQuery })),
+      );
       window.history.replaceState(withoutNativeOAuthQuery(window.history.state), "");
       window.location.assign(url);
     } catch (failure) {
       setError(
-        `${actionErrorMessage(failure)} Close this browser and start sign-in again in the Opensteer app.`,
+        `${failureWords(failure) ?? ""} Close this browser and start sign-in again in the Opensteer app.`.trim(),
       );
       setPending(false);
     }

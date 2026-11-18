@@ -1,25 +1,13 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useSearchParams } from "react-router";
 import { RequestIdSchema, type Request } from "@opensteer/core";
-import {
-  operationFailure,
-  requestReceipt,
-  type ClientNetworkState,
-  type HostClient,
-  type OperationFailure,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { requestReceipt, type HostClient } from "@opensteer/client/host";
+import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
 
-type Shown =
-  | Request
-  | {
-      readonly state: "unavailable";
-      readonly failure: OperationFailure;
-      readonly id: string;
-    };
+type Shown = Request | { readonly state: "unavailable" | "unloaded"; readonly id: string };
 
 /**
  * The Request a link named with `?requestId=`. The address is released at
@@ -38,8 +26,6 @@ export function useLinkedRequest(
     null,
   );
   const [shown, setShown] = useState<Shown | null>(null);
-  // Whether the device is offline now, not when the read failed: reconnecting changes the words.
-  const network = useHostSelector(hostClient, (snapshot) => snapshot.network);
   const pending = useEffectEvent(onPending);
   useEffect(() => {
     if (!named) return;
@@ -57,8 +43,7 @@ export function useLinkedRequest(
     setShown(null);
     if (!target || target.threadId !== threadId) return;
     const parsed = RequestIdSchema.safeParse(target.id);
-    const unavailable = (id: string, failure: OperationFailure = "gone") =>
-      setShown({ state: "unavailable", failure, id });
+    const unavailable = (id: string) => setShown({ state: "unavailable", id });
     if (!parsed.success) return unavailable(target.id);
     const requestId = parsed.data;
     let current = true;
@@ -74,9 +59,11 @@ export function useLinkedRequest(
       },
       (error: unknown) => {
         if (!current) return;
-        const failure = operationFailure(error);
-        if (failure === "gone") hostClient.references.unavailable(requestId);
-        unavailable(requestId, failure);
+        if (notFound(error)) {
+          hostClient.references.unavailable(requestId);
+          return unavailable(requestId);
+        }
+        setShown({ state: "unloaded", id: requestId });
       },
     );
     return () => {
@@ -85,7 +72,6 @@ export function useLinkedRequest(
   }, [hostClient, target, threadId]);
   return shown ? (
     <LinkedRequest
-      network={network}
       onClose={() => setShown(null)}
       onRetry={(id) => setTarget({ id, threadId })}
       request={shown}
@@ -93,17 +79,20 @@ export function useLinkedRequest(
   ) : null;
 }
 
+/** Whether the Host refused a read because the thing is gone or not this reader's. */
+export function notFound(error: unknown): boolean {
+  return isMissingClientResource(classifyClientFailure(error));
+}
+
 /**
  * A Request a link named, read-only: what it asked and how it ended. It is
  * never offered to be answered again; one still waiting opens in the dock instead.
  */
 function LinkedRequest({
-  network,
   onClose,
   onRetry,
   request,
 }: {
-  readonly network: ClientNetworkState;
   readonly onClose: () => void;
   readonly onRetry: (id: string) => void;
   readonly request: Shown;
@@ -113,8 +102,7 @@ function LinkedRequest({
       <Dialog onClose={onClose} title="Request">
         <Unavailable
           backLabel="Close"
-          failure={request.failure}
-          network={network}
+          unloaded={request.state === "unloaded" ? "this request" : null}
           onBack={onClose}
           onRetry={() => onRetry(request.id)}
         />

@@ -22,6 +22,7 @@ export function transcriptCard(
       const message: MessageEntry = {
         ...base,
         id: item.messageId,
+        ...(item.clientSendKey ? { clientSendKey: item.clientSendKey } : {}),
         itemId: id,
         itemRevision: item.revision,
         previewTruncated: view.truncated === true,

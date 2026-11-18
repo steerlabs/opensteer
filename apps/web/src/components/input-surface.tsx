@@ -1,4 +1,7 @@
 import { requestDecisionRevision } from "@opensteer/client/host";
+import { clientScopeKey } from "@opensteer/client/connections";
+import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
@@ -10,7 +13,7 @@ import { EngineDotMark } from "./subagent-rows.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
-import { composerDraftKeyFor } from "./composer-drafts.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { personalReferenceCandidates } from "./composer-reference-picker.js";
 import {
   Composer,
@@ -26,7 +29,9 @@ import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
-import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
+import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
+import { ActionLine } from "./action-line.js";
+import { requestAnswer, useAction } from "./use-action.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
@@ -117,17 +122,25 @@ export function InputSurface({
   /** Chat's composer, which offers the voice button beside Send. */
   voice?: boolean;
 }) {
-  const { hostClient, snapshot, reportActionError } = useShell();
+  const { hostClient, snapshot } = useShell();
   const { deploymentId } = snapshot;
+  const reopen = useAction(
+    hostClient,
+    {
+      label: "reopen this task",
+      done: "reopened",
+      happened: "this task reopened",
+      execute: () => hostClient.setTaskDone(threadId, false),
+    },
+    `reopen:${threadId}`,
+  );
   const userId = snapshot.user?.id ?? null;
   const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "thread", threadId });
   const context = useComposerContext({ auto: autoContext, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   // The signed-in deployment and user the Host confirmed are what every kept
   // message and staged file belongs to; until both are known nothing is sent.
-  const durable = usePendingSends(
-    deploymentId && userId ? { deploymentId, threadId, userId } : null,
-  );
+  const outbox = hostMessageOutbox(hostClient);
   const attachmentTarget =
     deploymentId && draftKey ? { client: hostClient, scope: draftKey, deploymentId } : null;
 
@@ -140,25 +153,40 @@ export function InputSurface({
     body: string,
     {
       attachments,
-      content,
       places,
       idempotencyKey,
       quotedMessageId,
       compaction,
+      draftRevision,
+      scope,
     }: ComposerSubmission,
-  ): Promise<void> => {
-    if (!body.trim() && attachments.length === 0 && places.length === 0 && !content?.length) return;
-    await hostClient.dispatch(
+  ) => {
+    if (!body.trim() && attachments.length === 0 && places.length === 0) return;
+    if (!outbox) throw storageUnavailable();
+    if (!scope || !draftKey || !draftRevision) throw storageUnavailable();
+    const login = clientScopeKey(scope)!;
+    const assertCurrent = () => {
+      assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+      composerDrafts.bindReply(draftKey, login, draftRevision);
+    };
+    const id = await enqueueDraftReply(
+      outbox,
+      scope,
       sendMessageCommand(threadId, {
         attachments,
         ...(compaction ? { compaction } : {}),
         body,
         ...(places.length > 0 ? { places } : {}),
-        ...(content ? { content } : {}),
         idempotencyKey,
         ...(quotedMessageId ? { quotedMessageId } : {}),
       }),
+      { revision: draftRevision, assertCurrent, draftKey },
     );
+    const cleared = await composerDrafts.consumeReply(draftKey, draftRevision, () => {
+      assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+    });
+    if (cleared) void outbox.forgetHandoff(scope, id).catch(() => {});
+    return { replyCleared: cleared };
   };
 
   const dock = useRequestDock(threadId, requests ?? noRequests);
@@ -177,12 +205,13 @@ export function InputSurface({
           <button
             className="btn btn--ghost"
             type="button"
-            disabled={disabled}
-            onClick={() => void hostClient.setTaskDone(threadId, false).catch(reportActionError)}
+            disabled={reopen.running}
+            onClick={() => void reopen.run()}
           >
             <strong>Reopen</strong>
           </button>
         </p>
+        {reopen.line ? <ActionLine line={reopen.line} /> : null}
       </div>
     );
   }
@@ -221,13 +250,14 @@ export function InputSurface({
       <div hidden={messageHidden}>
         <Composer
           compactionOffer={compactionOffer}
+          connection={hostClient.connection}
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
           draftKey={draftKey}
           hidden={messageHidden}
           variant={variant}
           placeContext={placeContext}
           attachments={attachmentTarget}
-          disabled={disabled}
+          disabled={false}
           readOnly={readOnly}
           footerExtras={footerExtras}
           inputRef={inputRef}
@@ -238,7 +268,6 @@ export function InputSurface({
           // Beside anything but a question, what is typed is an ordinary message.
           onSend={sendMessage}
           onStop={onStop}
-          pendingSends={"sends" in durable ? durable.sends : null}
           placeholder={placeholder}
           recipient={recipient}
           references={(query) => personalReferenceCandidates(hostClient, query)}
@@ -246,7 +275,7 @@ export function InputSurface({
           running={running}
           stopping={stopping}
           {...(stopLabel === undefined ? {} : { stopLabel })}
-          sendBlocked={"unavailable" in durable ? durable.unavailable : null}
+          sendBlocked={outbox ? null : presentClientIssue({ code: "storage-unavailable" }).title}
           voice={voice ? <VoiceButton /> : undefined}
         />
       </div>
@@ -668,9 +697,25 @@ function ActionBody({
   surface: SurfaceModel;
   threadId: string;
 }) {
-  const { hostClient, reportActionError } = useShell();
+  const { hostClient } = useShell();
   const [pendingId, setPendingId] = useState<string | null>(null);
   const { request } = surface;
+  // Approve and deny stay enabled offline; the answer says it wasn't sent, under the buttons.
+  const answer = useAction(
+    hostClient,
+    {
+      ...requestAnswer,
+      execute: (response: RequestResponse) =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          requestId: request.id,
+          ...requestDecisionRevision(request),
+          response,
+          type: "request.respond",
+        }),
+    },
+    `request:${request.id}`,
+  );
 
   if (surface.denied) {
     return <DeniedRequestBody denied={surface.denied} request={request} />;
@@ -700,17 +745,9 @@ function ActionBody({
   const respond = (response: RequestResponse, busyId: string) => {
     if (pendingId || disabled) return;
     setPendingId(busyId);
-    void hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-        ...requestDecisionRevision(request),
-        requestId: request.id,
-        response,
-        type: "request.respond",
-      })
-      .catch(reportActionError)
-      .finally(() => setPendingId(null));
+    void answer.run(response).finally(() => setPendingId(null));
   };
+  const line = answer.line ? <ActionLine line={answer.line} wrap /> : null;
 
   if (request.presentation.kind === "choice") {
     return (
@@ -733,6 +770,7 @@ function ActionBody({
           options={request.presentation.options}
           pendingId={pendingId}
         />
+        {line}
       </>
     );
   }
@@ -746,6 +784,7 @@ function ActionBody({
         onRespond={(response) => respond(response, "form")}
         pending={disabled || pendingId !== null}
       />
+      {line}
     </>
   );
 }

@@ -1,3 +1,4 @@
+import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import {
   forEachBoundedResponseChunk,
@@ -27,6 +28,7 @@ import type {
 } from "@opensteer/client/auth";
 import {
   bufferedHostResponseTimeoutMs,
+  classifyClientFailure,
   HostCapacityError,
   HostTransport,
   HostTransportError,
@@ -366,6 +368,7 @@ export class DesktopHostTransport extends HostTransport {
       if (value !== null) headers[field] = value;
     }
     const teamUpload = request.headers.get("x-opensteer-team-upload");
+    const expectedSession = request.headers.get(expectedMutationSessionHeader);
     const summary =
       request.method === "POST" &&
       (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
@@ -413,7 +416,12 @@ export class DesktopHostTransport extends HostTransport {
       admitted,
       headers: {
         ...headers,
-        ...(teamUpload ? { additional: { "x-opensteer-team-upload": teamUpload } } : {}),
+        additional: {
+          ...(teamUpload ? { "x-opensteer-team-upload": teamUpload } : {}),
+          ...(expectedSession && pathname === "/v1/rpc/commands.dispatch"
+            ? { [expectedMutationSessionHeader]: expectedSession }
+            : {}),
+        },
       },
       method: request.method,
       path,
@@ -1147,6 +1155,23 @@ function responseHeaders(source: Headers): Headers {
 function transportFailure(error: unknown): Response {
   if (error instanceof HostCapacityError)
     return hostRefusal(429, "resource_exhausted", error.message, true);
+  const failure = classifyClientFailure(error);
+  if (failure.code === "unauthorized")
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: failure.code,
+          reason: failure.reason,
+          message: "Sign in to continue.",
+          retryable: false,
+          provenance: failure.provenance,
+        },
+      },
+      { status: 401 },
+    );
+  if (!(error instanceof HostTransportError || error instanceof HostRouteUnavailableError))
+    return hostRefusal(500, "internal", "The desktop could not complete this request.", false);
   return new Response(null, {
     status: 502,
     headers: {

@@ -80,7 +80,7 @@ function Panel({ action }: { action: ReviewedAction }) {
         confirmLabel="Confirm"
         cancelLabel="Cancel"
         onClose={dismiss}
-        onError={errors}
+        onConfirm={(held) => void held.confirm().catch(errors)}
       />
     </>
   );

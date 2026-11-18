@@ -62,6 +62,7 @@
     "@opensteer/browser-extension": "workspace:*",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "fake-indexeddb": "6.2.5",
     "happy-dom": "^21.0.4",
     "playwright-core": "1.62.1",
     "tsx": "catalog:",

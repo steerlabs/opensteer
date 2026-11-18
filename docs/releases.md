@@ -15,7 +15,7 @@ Self-hosted team servers update through the [deploy/team recipe](../deploy/team/
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
 and each tag's version names the images it runs. The Personal Host, apps and agent-enabled
-Runners update together at personal API version 62. Team keeps its own API compatibility window.
+Runners update together at personal API version 63. Team keeps its own API compatibility window.
 Hosted teams use the hosted release policy instead.
 
 ## Build inputs and local proof

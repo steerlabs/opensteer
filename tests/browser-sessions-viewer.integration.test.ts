@@ -575,7 +575,7 @@ run("Browser Sessions through a whole deployment", () => {
     }));
     expect(client.browserWatchState(sessionId, targets[8]!)).toMatchObject({
       status: "unavailable",
-      error: "Too many browser capture targets.",
+      error: { code: "rejected", reason: "browser-capture-limit" },
     });
     release[0]!();
     await waitFor(

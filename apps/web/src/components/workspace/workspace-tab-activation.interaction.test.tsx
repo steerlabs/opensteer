@@ -24,14 +24,16 @@ it("activates a selected tab once across republished rows, then again on Try aga
   });
   // Selecting a tab is the person's Open: only it, Try again and choosing it again may wake a phone.
   expect(activate).toHaveBeenCalledExactlyOnceWith(tabId, { wake: true });
-  expect(element(".place-state").textContent).toContain("The browser could not start.");
+  // The tab's own fact, never the exception's text.
+  expect(element(".place-state").textContent).toContain("This tab could not open.");
+  expect(element(".place-state").textContent).not.toContain("The browser could not start.");
   for (let revision = 0; revision < 10; revision++)
     await act(async () => client.setBrowserLoading(tabId, revision % 2 === 0));
   expect(activate).toHaveBeenCalledTimes(1);
 
   await click(element(".place-state .btn"));
   expect(activate).toHaveBeenCalledTimes(2);
-  expect(element(".place-state").textContent).toContain("Still unavailable.");
+  expect(element(".place-state").textContent).toContain("This tab could not open.");
 
   const other = placeList(client.getSnapshot()).find(
     (place) => place.key !== tabId && place.kind === "window",

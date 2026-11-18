@@ -572,7 +572,7 @@ async function desktopApp(
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    openHostWebSocket: (input: { readonly path: string }) =>
+    openHostWebSocket: (input: { readonly path: string; readonly expectedDeploymentId: string }) =>
       invoke(() => transport.openWebSocket(ownerId, input, toRenderer)),
     sendHostWebSocket: (input: unknown) => invoke(() => transport.sendWebSocket(ownerId, input)),
   } as unknown as OpensteerDesktopBridge;
@@ -590,6 +590,7 @@ async function desktopApp(
           realtimeLiveness: liveness,
         }
       : {}),
+    pacedUploads: true,
     reconnectBaseDelayMs: 20,
     reconnectMaxDelayMs: 200,
     webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin, deploymentId),

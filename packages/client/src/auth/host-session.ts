@@ -1,3 +1,4 @@
+import { presentActionFailure } from "../feedback/client-issue.js";
 import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -12,7 +13,7 @@ import {
   describeConnectionAccess,
   type ResolvedConnection,
 } from "../connections/connection-resolver.js";
-import { ClientOperationError, clientPublicDetail } from "../connections/operation-error.js";
+import { ClientOperationError } from "../connections/operation-error.js";
 import {
   credentialKindFor,
   HostSessionExchangeError,
@@ -563,12 +564,12 @@ export class HostSession implements HostSessionRecovery {
       return observation(
         resolved,
         "blocked",
-        clientPublicDetail(error, "This connection was refused."),
+        presentActionFailure(error, "This connection was refused."),
       );
     }
     throw new HostSessionError(
       "unavailable",
-      clientPublicDetail(error, "This deployment is temporarily unavailable."),
+      presentActionFailure(error, "This deployment is temporarily unavailable."),
       { cause: error },
     );
   }

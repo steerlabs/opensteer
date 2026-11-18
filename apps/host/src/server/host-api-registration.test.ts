@@ -1,7 +1,11 @@
 import Fastify from "fastify";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
-import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
+import {
+  expectedMutationSessionHeader,
+  rpcSuccess,
+  type HostApiHandlers,
+} from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerHostApi } from "./host-api-registration.js";
@@ -105,6 +109,41 @@ describe("credential-aware command origin protection", () => {
       await app.close();
     }
   });
+});
+
+it("checks the expected mutation session against the session authenticated by the current cookie", async () => {
+  const dispatch = vi.fn(async () => rpcSuccess({}));
+  const old = { ...session, id: createId("authSession") };
+  const authenticator = new HostAuthenticator({
+    identity: {
+      requireSession: async () => session,
+      userSessionProfile: async () => session.user,
+    } as never,
+    publicUrl: new URL(canonical),
+  });
+  const app = Fastify();
+  registerHostApi(app, authenticator, {
+    "commands.dispatch": dispatch,
+  } as unknown as HostApiHandlers);
+  try {
+    const payload = { ...commands[0], idempotencyKey: "session-bound-test" };
+    const headers = { cookie: "canonical=x", origin: canonical };
+    const refused = await injectRpcRequest(app, "commands.dispatch", payload, {
+      ...headers,
+      [expectedMutationSessionHeader]: old.id,
+    });
+    expect(refused.statusCode, refused.body).toBe(403);
+    expect(refused.json()).toMatchObject({ ok: false, error: { reason: "session-changed" } });
+    expect(dispatch).not.toHaveBeenCalled();
+    const accepted = await injectRpcRequest(app, "commands.dispatch", payload, {
+      ...headers,
+      [expectedMutationSessionHeader]: session.id,
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect(dispatch).toHaveBeenCalledOnce();
+  } finally {
+    await app.close();
+  }
 });
 
 it("registers no personal file, media or reference routes on a team Host", async () => {

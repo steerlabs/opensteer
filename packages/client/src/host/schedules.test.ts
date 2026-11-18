@@ -1,3 +1,4 @@
+import { testHostConnection } from "../test-support/host-connection.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { createId, defaultTaskSymbol, type AgentEventView } from "@opensteer/core";
@@ -33,6 +34,7 @@ function fixture() {
     rpc: { "triggers.list": list, "triggers.get": get },
     dispatch,
   } as unknown as HostClient;
+  Object.assign(client, { connection: testHostConnection(client) });
   return {
     mock,
     client,
@@ -136,8 +138,8 @@ describe("schedules", () => {
         ok: true,
         data: { ...detail, trigger: { ...detail.trigger, name: "Current reader's schedule" } },
       });
-      // React reads the snapshot during render, before it installs the subscription.
-      expect(resource.getSnapshot()).toMatchObject({ status: "loading", data: null });
+      // A read remains waiting until observed, and never exposes the previous viewer.
+      expect(resource.getSnapshot()).toMatchObject({ status: "waiting", data: null });
       const seen: unknown[] = [];
       const again = resource.subscribe(() => seen.push(resource.getSnapshot().data));
       expect(resource.getSnapshot()).toMatchObject({ status: "loading", data: null });
@@ -192,7 +194,7 @@ describe("schedules", () => {
     );
     const stop = store.list.subscribe(() => {});
     f.emit({ connection: "offline" });
-    expect(store.list.getSnapshot().status).toBe("offline");
+    expect(store.list.getSnapshot().status).toBe("waiting");
     f.list.mockResolvedValue({ ok: true, data: { triggers: [] } });
     f.emit({ connection: "connected" });
     await ready(store.list.getSnapshot);
@@ -217,16 +219,22 @@ describe("schedules", () => {
     const store = schedulesClient(f.client);
     const stop = store.list.subscribe(() => {});
     await vi.waitFor(
-      () => expect(store.list.getSnapshot().status, "old Host refusal missing").toBe("unavailable"),
+      () => expect(store.list.getSnapshot().status, "old Host refusal missing").toBe("failed"),
       { timeout: 1000 },
     );
     expect(store.list.getSnapshot().data).toBeNull();
     f.list.mockRejectedValue(new Error("Unable to reach Host"));
-    await expect(store.list.refresh()).rejects.toThrow("Unable to reach Host");
-    expect(store.list.getSnapshot().status).toBe("error");
+    await store.list.refresh();
+    expect(store.list.getSnapshot().status).toBe("failed");
     f.list.mockResolvedValue({ ok: true, data: { triggers: [] } });
     await store.list.refresh();
-    expect(store.list.getSnapshot()).toEqual({ status: "ready", data: [], error: null });
+    expect(store.list.getSnapshot()).toMatchObject({
+      status: "ready",
+      data: [],
+      error: null,
+      stale: false,
+      refreshing: false,
+    });
     stop();
   });
   it("reads definition, failures and downstream replies, and confirms actions through Host state", async () => {
@@ -245,53 +253,17 @@ describe("schedules", () => {
     const store = schedulesClient(f.client);
     const first = store.act(summary.id, "pause");
     expect(store.act(summary.id, "pause")).toBe(first);
-    expect((await first).item.status).toBe("paused");
-    expect((await store.act(summary.id, "resume")).item.status).toBe("active");
-    await store.act(summary.id, "run");
-    expect(f.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "trigger.run", idempotencyKey: expect.any(String) }),
-    );
-    f.emit({ network: "offline" });
-    await expect(store.act(summary.id, "pause")).rejects.toThrow("Connect to the Host");
+    expect(await first).toMatchObject({ kind: "confirmed" });
+    f.get.mockRejectedValue(new Error("Read unavailable after acknowledgement"));
+    expect(await store.act(summary.id, "resume")).toMatchObject({ kind: "confirmed" });
+    f.dispatch.mockRejectedValueOnce(new Error("Lost acknowledgement"));
+    expect(await store.act(summary.id, "run")).toMatchObject({ kind: "unconfirmed" });
     expect(f.dispatch).toHaveBeenCalledTimes(3);
+    f.emit({ network: "offline" });
+    const notSent = store.act(summary.id, "pause");
+    expect(f.dispatch).toHaveBeenCalledTimes(3);
+    expect(await notSent).toMatchObject({ kind: "not-sent" });
   });
-  it("reuses the command key after an unknown outcome", async () => {
-    const f = fixture();
-    const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
-    f.dispatch.mockRejectedValueOnce(new Error("Lost answer"));
-    const store = schedulesClient(f.client);
-    await expect(store.act(summary.id, "pause")).rejects.toThrow("Lost answer");
-    const command = f.dispatch.mock.calls[0]![0];
-    if (!("idempotencyKey" in command)) throw new Error("Command identity missing");
-    const key = command.idempotencyKey;
-    await store.act(summary.id, "pause");
-    expect(f.dispatch.mock.calls[1]![0]).toMatchObject({ idempotencyKey: key });
-  });
-  it.each(["dispatch", "confirmation"])(
-    "reports an unknown run after a lost %s without resending",
-    async (failure) => {
-      const f = fixture();
-      const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
-      const store = schedulesClient(f.client);
-      if (failure === "dispatch") {
-        f.dispatch.mockImplementationOnce(async (command) => {
-          await f.mock.dispatch(command);
-          throw new Error("Lost answer");
-        });
-      } else f.get.mockRejectedValueOnce(new Error("Lost confirmation"));
-      await expect(store.act(summary.id, "run")).rejects.toThrow(
-        "Couldn't confirm the run started — check Recent runs",
-      );
-      expect(f.dispatch).toHaveBeenCalledTimes(1);
-      expect(store.detail(summary.id).getSnapshot().status).toBe("ready");
-      const first = f.dispatch.mock.calls[0]![0];
-      await store.act(summary.id, "run");
-      expect(f.dispatch).toHaveBeenCalledTimes(2);
-      expect(f.dispatch.mock.calls[1]![0]).not.toMatchObject({
-        idempotencyKey: "idempotencyKey" in first ? first.idempotencyKey : null,
-      });
-    },
-  );
   it.each(["completed", "failed"] as const)(
     "discovers delayed non-anchor work and follows it to %s without refreshing the list",
     async (status) => {
@@ -510,8 +482,8 @@ it.each(["initial", "offline", "error"])(
       );
     const seen: unknown[] = [];
     const stop = resource.subscribe(() => {
-      if (resource.getSnapshot().status === "ready")
-        seen.push(resource.getSnapshot().data?.definition.anchorThread);
+      const state = resource.getSnapshot();
+      if (state.status === "ready" && !state.stale) seen.push(state.data.definition.anchorThread);
     });
     try {
       if (recovery !== "initial") {
@@ -521,7 +493,7 @@ it.each(["initial", "offline", "error"])(
           seen.length = 0;
         }
         if (recovery === "error")
-          await vi.waitFor(() => expect(resource.getSnapshot().status).toBe("error"), {
+          await vi.waitFor(() => expect(resource.getSnapshot().status).toBe("failed"), {
             timeout: 1000,
           });
         f.get.mockImplementationOnce(

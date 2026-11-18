@@ -1,4 +1,5 @@
 import { requestDecisionRevision } from "@opensteer/client/host";
+import { outcomeWords, requestAnswer, runAction } from "./use-action.js";
 import {
   mutationIdempotencyKey,
   questionStep,
@@ -66,7 +67,7 @@ export function resetQuestionSessionsForTests(): void {
 }
 
 async function respond(
-  hostClient: Pick<HostClient, "dispatch">,
+  hostClient: Pick<HostClient, "connection" | "dispatch">,
   request: Pick<Request, "id">,
   response: RequestResponse,
 ): Promise<void> {
@@ -83,27 +84,27 @@ async function respond(
     held: { key, response: signature },
     sending: true,
   });
-  try {
-    await hostClient.dispatch({
-      idempotencyKey: key,
-      requestId: request.id,
-      ...reviewed,
-      response,
-      type: "request.respond",
-    });
+  const outcome = await runAction(hostClient, {
+    ...requestAnswer,
+    execute: () =>
+      hostClient.dispatch({
+        idempotencyKey: key,
+        requestId: request.id,
+        response,
+        type: "request.respond",
+      }),
+  });
+  if (outcome.kind === "confirmed") {
     sessions.delete(request.id);
     for (const listener of listeners) listener();
-  } catch (error) {
-    updateQuestionSession(request.id, {
-      failure: error instanceof Error ? error.message : "The answer wasn't sent. Try again.",
-      sending: false,
-    });
+    return;
   }
+  updateQuestionSession(request.id, { failure: outcomeWords(outcome), sending: false });
 }
 
 /** Sends every question's answer, the one form the Host takes. */
 export function sendQuestionAnswers(
-  hostClient: Pick<HostClient, "dispatch">,
+  hostClient: Pick<HostClient, "connection" | "dispatch">,
   request: Pick<Request, "id">,
   answers: RequestFormAnswers,
 ): Promise<void> {
@@ -112,7 +113,7 @@ export function sendQuestionAnswers(
 
 /** Dismissing an agent's question tells it no. Only `ask_person` questions can be dismissed. */
 export function dismissQuestion(
-  hostClient: Pick<HostClient, "dispatch">,
+  hostClient: Pick<HostClient, "connection" | "dispatch">,
   request: Pick<Request, "id">,
 ): Promise<void> {
   return respond(hostClient, request, { kind: "external", value: { decision: "declined" } });
@@ -123,7 +124,7 @@ export function dismissQuestion(
  * the whole form is sent once each has its answer.
  */
 export function advanceQuestion(
-  hostClient: Pick<HostClient, "dispatch">,
+  hostClient: Pick<HostClient, "connection" | "dispatch">,
   request: Request,
   drafts: QuestionDrafts,
   index: number,

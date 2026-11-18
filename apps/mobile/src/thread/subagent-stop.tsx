@@ -1,19 +1,32 @@
 import { MenuView } from "@expo/ui/community/menu";
-import { useActionReview } from "@opensteer/client/react";
 import { noteSubagentStop, type AgentCard, type HostClient } from "@opensteer/client/host";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import type { ReactNode } from "react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import { Symbol } from "../ui/symbol.js";
 import { color, material, radius, touchTarget } from "../theme.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { AnswerPill } from "./answer-pill.js";
+import type { ActionLineValue } from "../ui/action-line.js";
+import { subagentStopTarget, useReviewedStop, useStopLine } from "./reviewed-stop.js";
+
+/** What this subagent's last Stop came to, for its row or its screen to say. */
+export function useSubagentStopLine(
+  hostClient: HostClient | null | undefined,
+  card: AgentCard,
+): ActionLineValue | null {
+  return useStopLine(
+    hostClient ?? null,
+    card.stop ? subagentStopTarget(card) : null,
+    card.stopping || !card.stop,
+  );
+}
 
 /**
  * Stopping one subagent, after asking: a long press on its row (`children`),
  * the round button of Running now (`look: "icon"`), or the labelled one in
  * its opened view (`look: "button"`). While the Host stops it, the button
- * says so instead; nothing is offered where its engine can't stop it.
+ * says so instead; nothing is offered where its engine can't stop it. How
+ * the Stop went is said where the subagent is shown: `useSubagentStopLine`.
  */
 export function SubagentStop(props: {
   readonly card: AgentCard;
@@ -22,11 +35,15 @@ export function SubagentStop(props: {
   readonly look?: "icon" | "button";
 }) {
   const { card, hostClient, children } = props;
-  const { review, ask, dismiss } = useActionReview(hostClient);
   const noun = card.kind === "workflow" ? "workflow" : "subagent";
-  const request = () => {
-    if (card.stop) ask({ kind: "stop-node", ...card.stop });
-  };
+  const { review, request, dismiss, confirm } = useReviewedStop(
+    hostClient,
+    subagentStopTarget(card),
+    card.stop ? { kind: "stop-node", ...card.stop } : null,
+    () => {
+      if (card.nodeId !== null) noteSubagentStop(card.nodeId);
+    },
+  );
   if (children === undefined && card.stopping)
     return props.look === "button" ? (
       <AnswerPill busy label="Stopping…" onPress={() => undefined} tone="secondary" />
@@ -90,12 +107,7 @@ export function SubagentStop(props: {
         confirmLabel={`Stop ${noun}`}
         cancelLabel="Keep working"
         onClose={dismiss}
-        onConfirmed={() => {
-          if (card.nodeId !== null) noteSubagentStop(card.nodeId);
-        }}
-        onError={(error) =>
-          Alert.alert(`${card.title} was not stopped`, operationDetail(error, "Try again."))
-        }
+        onConfirm={confirm}
       />
     </>
   );

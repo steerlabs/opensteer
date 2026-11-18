@@ -100,19 +100,20 @@ vi.mock("../ui/action-review.js", () => ({
   ActionReviewSheet: (props: {
     readonly review: ActionReview | null;
     readonly confirmLabel: string;
+    readonly onConfirm: (review: ActionReview) => void;
   }) =>
     props.review === null ? null : (
-      <button data-confirm onClick={() => void props.review?.confirm()}>
+      <button data-confirm onClick={() => props.onConfirm(props.review!)}>
         {props.confirmLabel}
       </button>
     ),
 }));
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { readonly line: { readonly text: string } }) => <p>{line.text}</p>,
+}));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string } }) => <i data-task-icon={mark.icon} />,
-}));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 
 const { TaskCards, TaskScopeContext } = await import("./task-line.js");
@@ -293,6 +294,27 @@ describe("a task's row on a phone", () => {
     expect(cancel).not.toHaveBeenCalled();
     await act(async () => node.querySelector<HTMLButtonElement>("[data-confirm]")!.click());
     expect(cancel).toHaveBeenCalledExactlyOnceWith(tasks[0]!.id);
+  });
+
+  it("answers Stop out of reach under the task, without asking or sending", async () => {
+    const { client, node } = await linesFor((seeded) => [
+      variant(seeded, 0, { currentRunStatus: "running" }),
+    ]);
+    const cancel = vi.spyOn(client, "cancelAssignment");
+    const reachable = client.connection.getSnapshot();
+    vi.spyOn(client.connection, "getSnapshot").mockReturnValue({
+      ...reachable,
+      network: "offline",
+    });
+    await act(async () =>
+      node.querySelector<HTMLButtonElement>('[data-menu-action="stop"]')!.click(),
+    );
+    expect(
+      node.querySelector("[data-confirm]"),
+      "asked to confirm a Stop that can't go",
+    ).toBeNull();
+    expect(node.textContent).toContain("Not stopped. You're offline.");
+    expect(cancel).not.toHaveBeenCalled();
   });
 });
 

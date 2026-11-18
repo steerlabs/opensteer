@@ -7,7 +7,7 @@ import {
   runnerImageReference,
 } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import { AddPhoneDialog } from "../computers/add-phone-dialog.js";
 import { Dialog } from "../dialog.js";
@@ -262,19 +262,27 @@ function AddServer() {
     setPending(true);
     setError(null);
     try {
-      const target = unwrapRpcResult(await hostClient.rpc["agentPhone.target.get"]({}));
-      const result = await hostClient.dispatch({
-        allowedModules: [...localEnrollmentModules],
-        idempotencyKey: mutationIdempotencyKey("server-add"),
-        name: name.trim(),
-        type: "runner.enrollment.createLocal",
-      });
-      if (result.type !== "runner.enrollment.createLocal")
-        throw new Error("The command couldn’t be created.");
+      const { target, result } = await act(
+        hostClient,
+        { label: "create this command", done: "created", happened: "this command was created" },
+        async () => ({
+          target: unwrapRpcResult(await hostClient.rpc["agentPhone.target.get"]({})),
+          result: await hostClient.dispatch({
+            allowedModules: [...localEnrollmentModules],
+            idempotencyKey: mutationIdempotencyKey("server-add"),
+            name: name.trim(),
+            type: "runner.enrollment.createLocal",
+          }),
+        }),
+      );
+      if (result.type !== "runner.enrollment.createLocal") {
+        setError("The command couldn’t be created.");
+        return;
+      }
       setIssued({ ...result, hostOrigin: target.hostUrl });
       setCancelled(false);
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setPending(false);
     }
@@ -284,7 +292,11 @@ function AddServer() {
     setPending(true);
     setError(null);
     try {
-      const outcome = await cancelDeviceSetup(hostClient, issued.enrollmentId);
+      const outcome = await act(
+        hostClient,
+        { label: "cancel this setup", done: "cancelled", happened: "this setup was cancelled" },
+        () => cancelDeviceSetup(hostClient, issued.enrollmentId),
+      );
       if (outcome === "joined")
         setError(`${name.trim()} already joined. Remove it from Devices instead.`);
       else {
@@ -292,7 +304,7 @@ function AddServer() {
         setCancelled(true);
       }
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setPending(false);
     }

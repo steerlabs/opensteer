@@ -1537,12 +1537,14 @@ export class IntegrationService {
       placements: method.placements,
     });
     if (!health.healthy) {
+      const rejected = health.status === 401 || health.status === 403;
       throw new OpensteerError({
         code: "conflict",
-        message:
-          health.status === 401 || health.status === 403
-            ? `${definition.name} rejected this key.`
-            : `Opensteer couldn’t check the key with ${definition.name}${health.status ? ` (HTTP ${health.status})` : ""}. Check the key and permissions, then try again.`,
+        // Clients word the refusal from the reason; the message stays for logs and older apps.
+        reason: rejected ? "integration-key-rejected" : "integration-key-unchecked",
+        message: rejected
+          ? `${definition.name} rejected this key.`
+          : `Opensteer couldn’t check the key with ${definition.name}${health.status ? ` (HTTP ${health.status})` : ""}. Check the key and permissions, then try again.`,
       });
     }
     const identity = health.identity;

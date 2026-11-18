@@ -18,7 +18,7 @@ import type {
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { useState, type ReactNode } from "react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act as owned, failureWords } from "../use-action.js";
 import { Icon } from "../icon.js";
 
 /**
@@ -73,10 +73,14 @@ export function PhoneSection({
     setBusy(kind);
     setError(null);
     try {
-      await action();
+      await owned(
+        hostClient,
+        { label: "change this phone", done: "changed", happened: "this phone changed" },
+        action,
+      );
       await onChanged();
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setBusy(null);
     }

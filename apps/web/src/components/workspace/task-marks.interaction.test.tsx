@@ -182,7 +182,8 @@ describe("task marks", () => {
     vi.spyOn(client, "dispatch").mockRejectedValueOnce(new Error("Icon refused"));
     await picker();
     await click(element('[aria-label="Hotel"]'));
-    expect(document.body.textContent).toContain("Icon refused");
+    expect(document.body.textContent).toContain("Couldn't confirm this icon changed.");
+    expect(document.body.textContent).not.toContain("Icon refused");
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("plane");
   });
   it("hides task mark edits on a Host without task marks", async () => {

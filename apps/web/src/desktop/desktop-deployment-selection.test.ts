@@ -5,10 +5,9 @@ import {
   type DeploymentAccessSnapshot,
   type DesktopDeploymentSummary,
 } from "@opensteer/protocol/desktop";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   acceptDesktopDeploymentSelection,
-  chooseDeployment,
   deploymentPanelEntries,
 } from "./desktop-deployment-selection.js";
 
@@ -87,16 +86,5 @@ describe("Desktop deployment snapshot presentation", () => {
         statusInfo: { reason: null, status: "starting" },
       },
     ]);
-  });
-
-  it("returns the refusal instead of swallowing it into a silent no-op", async () => {
-    const select = vi.fn(async () => {
-      throw new Error("Deployment access intent is not valid now: select-deployment");
-    });
-
-    await expect(chooseDeployment({ select }, createId("deployment"))).resolves.toEqual({
-      ok: false,
-      reason: "Deployment access intent is not valid now: select-deployment",
-    });
   });
 });

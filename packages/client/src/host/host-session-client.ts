@@ -1,3 +1,17 @@
+import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import {
+  createConnectionController,
+  type ClientScope,
+  type ClientConnectionState,
+  type ConnectionAttempt,
+  type ConnectionController,
+  type ConnectionLease,
+  type ConnectionPresentation,
+} from "../connections/connection-controller.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
+import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
+import { nameConnectionFromHost } from "./host-connection.js";
 import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
@@ -127,7 +141,6 @@ import { RunPlaceStore } from "./run-place.js";
 import { heldThread } from "./task-list.js";
 import {
   type ClientLifecycle,
-  type ClientNetworkPath,
   type ClientNetworkState,
   type ClientVisibility,
 } from "./lifecycle.js";
@@ -189,6 +202,9 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly presentation?: ConnectionPresentation;
+  readonly connectionController?: ConnectionController;
+  readonly clientScope?: () => ClientScope | null;
   readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
@@ -267,19 +283,20 @@ export class HttpHostClient {
   readonly #stream: ScopedPersonalStream;
   readonly #prepareSocket: HttpHostClientOptions["prepareSocket"];
   #socketGeneration = 0;
-  #probe: { nonce: string; timer: Timer } | undefined;
+  #probe: { nonce: string; finish(): void; abort(): void } | undefined;
+  #checkingHandshake = false;
   readonly #realtimeLiveness: HttpHostClientOptions["realtimeLiveness"];
   #lastRealtimeFrameAt = 0;
-  #idleProbeTimer: Timer | undefined;
   #attachDeadline: Timer | undefined;
-  #warmRead: AbortController | undefined;
   readonly #cacheDeploymentId: string | undefined;
   readonly #reportRealtimeFrame: HttpHostClientOptions["reportRealtimeFrame"];
   #socket: WebSocketClient | null = null;
-  #reconnect: Timer | undefined;
-  #attempt = 0;
-  #started = false;
-  #refused = false;
+  readonly connection: ConnectionController;
+  readonly #ownsConnection: boolean;
+  readonly #clientScope: (() => ClientScope | null) | undefined;
+  #connectionFailed: ((error: unknown) => void) | null = null;
+  #connectionAdmit: (() => void) | null = null;
+  #socketCloseReason: string | undefined;
   #load: Promise<void> | undefined;
   #resolveLoad: (() => void) | undefined;
   readonly #resourceReads = new Map<
@@ -752,6 +769,20 @@ export class HttpHostClient {
       options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
     );
     this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
+    this.#ownsConnection = !options.connectionController;
+    this.#clientScope = options.clientScope;
+    this.connection =
+      options.connectionController ??
+      createConnectionController({
+        driver: { connect: (attempt) => this.openConnection(attempt) },
+        ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
+        ...(options.presentation ? { presentation: options.presentation } : {}),
+        ...(options.realtimeLiveness ? { liveness: options.realtimeLiveness } : {}),
+        idleProbes: options.realtimeLiveness !== undefined,
+        resumeByReconnecting: true,
+        random: this.#random,
+        backoff: { baseMs: this.#reconnectBaseDelayMs, maximumMs: this.#reconnectMaxDelayMs },
+      });
     const lifecycle = options.lifecycle?.getSnapshot();
     this.#network = lifecycle?.network ?? "unknown";
     this.#snapshot = {
@@ -784,7 +815,15 @@ export class HttpHostClient {
     this.#stream.shell.subscribe(() => this.#publishShell());
     this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
-    if (options.lifecycle) this.#observeLifecycle(options.lifecycle);
+    let observed = this.connection.getSnapshot();
+    this.#lifecycleDisposers.push(
+      this.connection.subscribe(() => {
+        const state = this.connection.getSnapshot();
+        const old = observed;
+        observed = state;
+        this.#connectionChanged(state, old);
+      }),
+    );
     const views = computerViewMethods(
       this.rpc,
       (view) =>
@@ -860,9 +899,14 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
-  async dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput> {
+  async dispatch(
+    command: ClientCommandInput,
+    options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
+  ): Promise<HostApiCommandOutput> {
     const parsedCommand = clientCommandSchema.parse(
-      this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
+      options?.preserveOrigin
+        ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
+        : this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
     if (
       (parsedCommand.type === "request.respond" ||
@@ -889,7 +933,27 @@ export class HttpHostClient {
         throw new Error("This Host does not support task marks.");
       return this.#setThreadIcon(parsedCommand);
     }
-    return this.#dispatchCommand(parsedCommand);
+    const login = options?.expectedLogin;
+    if (!login) {
+      const sessionId =
+        parsedCommand.type === "thread.create" || parsedCommand.type === "thread.sendMessage"
+          ? (this.#snapshot.sessionId ?? undefined)
+          : undefined;
+      return this.#dispatchCommand(parsedCommand, sessionId);
+    }
+    assertMessageLogin(login, this.connection.getSnapshot().scope);
+    try {
+      return await this.#dispatchCommand(parsedCommand, login.loginId);
+    } catch (error) {
+      if (
+        classifyClientFailure(error).reason === "session-changed" &&
+        this.#snapshot.sessionId === login.loginId
+      ) {
+        this.#expireSession();
+        if (this.#ownsConnection) void this.reauthenticate().catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   /** The zone is read at send time: a phone that crossed zones says so on its next message. */
@@ -905,9 +969,12 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(command: HostApiCommand): Promise<HostApiCommandOutput> {
+  async #dispatchCommand(
+    command: HostApiCommand,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
     const viewer = this.#viewerGeneration;
-    const result = await this.#dispatch(command);
+    const result = await this.#dispatch(command, expectedSessionId);
     if (viewer !== this.#viewerGeneration || this.#disposed) return result;
     if ("thread" in result && "asOfSequence" in result) {
       const thread = this.#threadState.reconcile(
@@ -1691,9 +1758,8 @@ export class HttpHostClient {
       );
     }
     if (state.synchronized && !old?.synchronized) {
-      this.#attempt = 0;
+      this.#connectionAdmit?.();
       this.#finishLoad();
-      this.#watchRealtime();
       this.references.reconnect();
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
@@ -2489,31 +2555,15 @@ export class HttpHostClient {
 
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
-    if (
-      this.#snapshot.session === "authentication-required" ||
-      this.#stream.shell.getSnapshot().synchronized
-    )
-      return;
-    if (this.#load) return this.#load;
-    if (this.#reconnectSuspended()) return;
-    this.#started = true;
-    const ready = new Promise<void>((resolve) => {
-      this.#resolveLoad = resolve;
-    });
-    this.#load = ready;
-    const generation = this.#socketGeneration;
-    void this.#open().catch(() => {
-      if (generation === this.#socketGeneration) this.#socketFailed();
-    });
-    return ready;
+    if (this.#ownsConnection) this.connection.start();
+    await this.#load;
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
     if (this.#disposed) return;
     if (options?.retryConnection || !this.#socket) {
-      this.#refused = false;
-      this.#closeSocket();
-      await this.load();
+      this.connection.retry();
+      await this.#load;
     } else {
       this.#stream.repairShell();
     }
@@ -2521,10 +2571,9 @@ export class HttpHostClient {
 
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    this.#refused = false;
     this.#update({ ...this.#snapshot, session: "checking" });
-    this.#closeSocket();
-    await this.load();
+    this.connection.retry();
+    await this.#load;
   }
 
   async searchThreadMessages(input: { threadId: string; query: string; before?: string }) {
@@ -2673,18 +2722,24 @@ export class HttpHostClient {
     throw new Error("The browser view is not synchronized.");
   }
 
-  async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const result = await this.dispatch({
-      type: "thread.create",
-      accessMode: input.accessMode,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
-      modelSelection: input.modelSelection,
-      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.generateTitle ? { generateTitle: true } : {}),
-      title: input.title?.trim() || "New task",
-    });
+  async createThread(
+    input: CreateThreadInput,
+    expectedLogin?: ClientScope,
+  ): Promise<ThreadSummary> {
+    const result = await this.dispatch(
+      {
+        type: "thread.create",
+        accessMode: input.accessMode,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
+        modelSelection: input.modelSelection,
+        ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
+        ...(input.generateTitle ? { generateTitle: true } : {}),
+        title: input.title?.trim() || "New task",
+      },
+      expectedLogin ? { expectedLogin } : undefined,
+    );
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
     // Not waited for: the new Thread is what the person is waiting to see.
     void this.#rememberQuietly({
@@ -3134,13 +3189,23 @@ export class HttpHostClient {
       void this.loadThreadInputQueue(threadId).catch(() => undefined);
   }
 
-  async #dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    return unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+  async #dispatch(
+    command: HostApiCommandInput,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
+    return unwrapRpcResult(
+      await this.rpc["commands.dispatch"](
+        command,
+        expectedSessionId ? { expectedSessionId } : undefined,
+      ),
+    );
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    disposeMessageOutbox(this);
+    if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();
     this.#stream.clear(false);
     this.#bodies.clear();
@@ -3492,176 +3557,200 @@ export class HttpHostClient {
     }
   }
 
-  #observeLifecycle(lifecycle: ClientLifecycle): void {
-    this.#lifecycleDisposers.push(
-      lifecycle.onBackground(() => this.#enterBackground()),
-      lifecycle.onForeground(() => this.#enterForeground()),
-      lifecycle.onNetworkChange((state, path) => this.#networkChanged(state, path)),
-    );
-  }
-
-  #enterBackground() {
-    if (this.#disposed || this.#visibility === "background") return;
-    this.#visibility = "background";
-    this.#warmRead?.abort();
-    this.#finishLoad();
-    this.#stream.setBackground(true);
-    this.#invalidateAttention();
-    this.#clearRealtimeWatch();
-    this.#clearProbe();
-    for (const { controller } of this.#resourceReads.values()) controller.abort();
-    this.#resourceReads.clear();
-    this.#targetedControl.suspend(true, this.#network !== "offline");
-    this.#targetedWatch.suspend(true);
-    if (this.#reconnect) clearTimeout(this.#reconnect);
-    this.#reconnect = undefined;
-    for (const listener of this.#lifecycleListeners) listener("background");
-  }
-
-  #enterForeground() {
-    if (this.#disposed || this.#visibility === "foreground") return;
-    this.#visibility = "foreground";
-    this.#targetedControl.suspend(this.#network === "offline");
-    this.#targetedWatch.suspend(this.#network === "offline");
-    this.#closeSocket();
-    this.#stream.setBackground(false);
-    void this.load();
-    for (const listener of this.#lifecycleListeners) listener("foreground");
-  }
-
-  #networkChanged(state: ClientNetworkState, path: ClientNetworkPath) {
-    if (this.#disposed) return;
-    if (state === this.#network && path === "same") {
-      this.#probeSocket();
-      return;
+  #connectionChanged(state: ClientConnectionState, old: ClientConnectionState) {
+    this.#network = state.network;
+    this.#visibility = state.visibility;
+    if (state.visibility !== old.visibility) {
+      this.#stream.setBackground(state.visibility === "background");
+      this.#invalidateAttention();
+      if (state.visibility === "background") {
+        for (const { controller } of this.#resourceReads.values()) controller.abort();
+        this.#resourceReads.clear();
+      } else if (state.phase === "ready") {
+        const { interests } = this.#stream.resources.getInterests();
+        for (const kind of interests) this.#readResource(kind);
+      }
     }
-    this.#network = state;
-    this.#closeSocket();
-    this.#targetedControl.suspend(this.#reconnectSuspended(), state !== "offline");
+    this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
-    this.#targetedControl.reconnect();
-    this.#targetedWatch.reconnect();
-    this.#update({ ...this.#snapshot, connection: state === "offline" ? "offline" : "connecting" });
-    if (this.#started) void this.load();
-    for (const listener of this.#lifecycleListeners) listener("network");
+    if (state.pathRevision !== old.pathRevision) {
+      this.#targetedControl.reconnect();
+      this.#targetedWatch.reconnect();
+    }
+    const connection =
+      state.phase === "ready"
+        ? "connected"
+        : state.phase === "blocked" && state.issue?.code === "sign-in"
+          ? "connected"
+          : state.network === "offline" || state.phase === "recovering"
+            ? "offline"
+            : "connecting";
+    if (
+      connection !== this.#snapshot.connection ||
+      state.showInterruption !== this.#snapshot.connectionInterrupted ||
+      state.network !== this.#snapshot.network
+    ) {
+      this.#update({
+        ...this.#snapshot,
+        connection,
+        connectionInterrupted: state.showInterruption,
+      });
+    }
+    if (state.visibility !== old.visibility)
+      for (const listener of this.#lifecycleListeners) listener(state.visibility);
+    if (state.network !== old.network || state.pathRevision !== old.pathRevision)
+      for (const listener of this.#lifecycleListeners) listener("network");
   }
 
   #reconnectSuspended() {
     return this.#visibility === "background" || this.#network === "offline";
   }
 
-  #watchRealtime() {
-    const socket = this.#socket;
-    const liveness = this.#realtimeLiveness;
-    if (
-      !liveness ||
-      this.#idleProbeTimer ||
-      this.#probe ||
-      this.#reconnectSuspended() ||
-      socket?.readyState !== 1 ||
-      this.#attachDeadline !== undefined
-    )
-      return;
-    const remaining = liveness.idleMs - (Date.now() - this.#lastRealtimeFrameAt);
-    if (remaining <= 0) {
-      this.#probeSocket(liveness.deadlineMs);
-      return;
-    }
-    this.#idleProbeTimer = setTimeout(() => {
-      this.#idleProbeTimer = undefined;
-      if (this.#socket === socket) this.#watchRealtime();
-    }, remaining);
-  }
-
-  #clearRealtimeWatch() {
-    if (this.#idleProbeTimer) clearTimeout(this.#idleProbeTimer);
-    this.#idleProbeTimer = undefined;
-  }
-
-  #probeSocket(deadlineMs = 3_000) {
-    const socket = this.#socket;
-    if (this.#probe || this.#reconnectSuspended() || socket?.readyState !== 1) return;
-    const nonce = crypto.randomUUID();
-    this.#probe = {
-      nonce,
-      timer: setTimeout(() => {
-        this.#probe = undefined;
-        if (this.#socket === socket) this.#socketFailed("Liveness probe unanswered");
-      }, deadlineMs),
+  openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    const ready = Promise.withResolvers<ConnectionLease>();
+    const closed = Promise.withResolvers<ReturnType<typeof classifyClientFailure>>();
+    const loaded = Promise.withResolvers<void>();
+    this.#load = loaded.promise;
+    this.#resolveLoad = loaded.resolve;
+    const close = () => {
+      if (this.#connectionFailed !== fail) return;
+      this.#connectionFailed = null;
+      this.#connectionAdmit = null;
+      attempt.signal.removeEventListener("abort", abort);
+      this.#closeSocket(this.#socketCloseReason);
     };
+    const fail = (error: unknown) => {
+      if (this.#connectionFailed !== fail) return;
+      close();
+      const failure = classifyClientFailure(error);
+      attempt.fail?.(failure);
+      closed.resolve(failure);
+      ready.reject(error);
+    };
+    const abort = () => fail(attempt.signal.reason);
+    const lease: ConnectionLease = {
+      closed: closed.promise,
+      close,
+      lastProgressAt: () => this.#lastRealtimeFrameAt,
+      probe: (signal) => this.#probeSocket(signal),
+    };
+    this.#connectionFailed = fail;
+    this.#connectionAdmit = () => {
+      const scope = this.#clientScope ? this.#clientScope() : this.#localScope();
+      if (scope) attempt.acceptScope(scope);
+      if (attempt.signal.aborted) return;
+      attempt.admit?.(lease);
+      ready.resolve(lease);
+    };
+    attempt.signal.addEventListener("abort", abort, { once: true });
+    void this.#open(attempt).catch(fail);
+    return ready.promise;
+  }
+
+  #localScope(): ClientScope | null {
+    const { deploymentId, user, sessionId } = this.#snapshot;
+    return deploymentId && user && sessionId
+      ? { authorityKey: this.#baseUrl.origin, deploymentId, viewerId: user.id, loginId: sessionId }
+      : null;
+  }
+
+  #probeSocket(signal: AbortSignal): Promise<void> {
+    const socket = this.#socket;
+    if (!socket || socket.readyState !== 1)
+      return Promise.reject(new HostTransportError("unreachable"));
+    const nonce = crypto.randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        if (this.#probe?.nonce === nonce) this.#probe = undefined;
+        if (signal.reason instanceof HostTransportError && signal.reason.code === "timed-out")
+          this.#socketCloseReason = "Liveness probe unanswered";
+        reject(signal.reason);
+      };
+      const finish = () => {
+        signal.removeEventListener("abort", abort);
+        this.#probe = undefined;
+        resolve();
+      };
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      this.#probe = { nonce, finish, abort };
+      try {
+        socket.send(JSON.stringify({ type: "client.ping", nonce }));
+      } catch (error) {
+        signal.removeEventListener("abort", abort);
+        this.#probe = undefined;
+        reject(error);
+      }
+    });
+  }
+
+  async #diagnoseHandshake(signal: AbortSignal) {
+    if (this.#checkingHandshake || signal.aborted) return;
+    this.#checkingHandshake = true;
     try {
-      socket.send(JSON.stringify({ type: "client.ping", nonce }));
-    } catch {
-      this.#socketFailed("Liveness probe unsendable");
-    }
-  }
-
-  #clearProbe() {
-    if (this.#probe) clearTimeout(this.#probe.timer);
-    this.#probe = undefined;
-  }
-
-  async #open() {
-    if (this.#disposed || this.#socket || this.#refused || this.#reconnectSuspended()) {
-      this.#finishLoad();
-      return;
-    }
-    const generation = this.#viewerGeneration;
-    const socketGeneration = this.#socketGeneration;
-    await this.#prepareSocket?.();
-    if (socketGeneration !== this.#socketGeneration) return;
-    const cache = this.#stream.cache;
-    const cacheCandidate = await cache
-      ?.hasCheckpoints?.(this.#cacheDeploymentId)
-      .catch(() => false);
-    if (socketGeneration !== this.#socketGeneration) return;
-    if (cacheCandidate && this.#snapshot.session === "checking") {
-      const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
-      const controller = new AbortController();
-      this.#warmRead = controller;
-      const result = await this.rpc["personal.shell.get"](
-        selected.success ? { selectedThreadId: selected.data } : {},
-        { signal: controller.signal },
-      )
-        .catch((error: unknown) => {
-          if (!controller.signal.aborted) throw error;
-          return undefined;
-        })
-        .finally(() => {
-          if (this.#warmRead === controller) this.#warmRead = undefined;
-        });
-      if (!result) return;
-      if (socketGeneration !== this.#socketGeneration) return;
-      if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
+      const result = await this.rpc["personal.shell.get"]({}, { signal });
+      signal.throwIfAborted();
+      if (!result.ok && result.error.code === "unauthorized") this.#expireSession();
       else if (
         !result.ok &&
         ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
           result.error.reason ?? "",
         )
-      ) {
-        this.#refused = true;
-        this.#finishLoad();
-        return;
+      )
+        this.#socketFailed(updateRequired());
+      else this.#socketFailed(new HostTransportError("unreachable"));
+    } catch (error) {
+      if (!signal.aborted) this.#socketFailed(error);
+    } finally {
+      this.#checkingHandshake = false;
+    }
+  }
+
+  async #open(attempt: ConnectionAttempt) {
+    attempt.signal.throwIfAborted();
+    await this.#prepareSocket?.();
+    attempt.signal.throwIfAborted();
+    const cache = this.#stream.cache;
+    const cacheCandidate = await cache
+      ?.hasCheckpoints?.(this.#cacheDeploymentId)
+      .catch(() => false);
+    attempt.signal.throwIfAborted();
+    if (cacheCandidate && this.#snapshot.session === "checking") {
+      const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
+      const result = await this.rpc["personal.shell.get"](
+        selected.success ? { selectedThreadId: selected.data } : {},
+        { signal: attempt.signal },
+      );
+      attempt.signal.throwIfAborted();
+      if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
+      else if (!result.ok) {
+        if (
+          ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
+            result.error.reason ?? "",
+          )
+        )
+          throw updateRequired();
+        if (!result.error.retryable) unwrapRpcResult(result);
       }
     }
-    if (socketGeneration !== this.#socketGeneration) return;
-    if (generation !== this.#viewerGeneration || this.#disposed || this.#reconnectSuspended()) {
-      this.#finishLoad();
-      return;
-    }
+    attempt.signal.throwIfAborted();
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
     } catch {
-      this.#socketFailed();
-      return;
+      throw new HostTransportError("unreachable");
+    }
+    if (attempt.signal.aborted) {
+      socket.close();
+      attempt.signal.throwIfAborted();
     }
     this.#socket = socket;
     this.#lastRealtimeFrameAt = Date.now();
     const liveness = this.#realtimeLiveness;
     this.#attachDeadline = setTimeout(
       () => {
-        if (this.#socket === socket) this.#socketFailed("Realtime channel silent");
+        if (this.#socket === socket)
+          this.#socketFailed(new HostTransportError("timed-out"), "Realtime channel silent");
       },
       liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
     );
@@ -3679,7 +3768,14 @@ export class HttpHostClient {
       const wireBytes = utf8ByteLength(data);
       if (wireBytes > personalDetailFrameMaxBytes) {
         this.#frameRejected("frame", wireBytes);
-        this.#socketFailed("Invalid Host protocol frame");
+        this.#socketFailed(
+          new HostTransportError("unreachable", {
+            reason: "unreadable-frame",
+            kind: "protocol",
+            provenance: "protocol",
+          }),
+          "Invalid Host protocol frame",
+        );
         return;
       }
       let parsed = false;
@@ -3712,7 +3808,14 @@ export class HttpHostClient {
         if (notice.success) this.#applyNotice(notice.data);
       } catch {
         this.#frameRejected(parsed ? "schema" : "json", wireBytes);
-        this.#socketFailed("Invalid Host protocol frame");
+        this.#socketFailed(
+          new HostTransportError("unreachable", {
+            reason: "unreadable-frame",
+            kind: "protocol",
+            provenance: "protocol",
+          }),
+          "Invalid Host protocol frame",
+        );
       }
     });
     socket.addEventListener("close", (event) => {
@@ -3745,11 +3848,16 @@ export class HttpHostClient {
           this.#bodies.clear();
           this.#clearAttachmentReads();
         }
-        this.#socketFailed();
+        if (event.code === unsupportedVersionCloseCode) this.#socketFailed(updateRequired());
+        else if (!this.#stream.shell.getSnapshot().synchronized)
+          void this.#diagnoseHandshake(attempt.signal);
+        else this.#socketFailed();
       }
     });
     socket.addEventListener("error", () => {
-      if (this.#socket === socket) this.#socketFailed();
+      if (this.#socket !== socket) return;
+      if (this.#stream.shell.getSnapshot().synchronized) this.#socketFailed();
+      else void this.#diagnoseHandshake(attempt.signal);
     });
   }
 
@@ -3764,38 +3872,19 @@ export class HttpHostClient {
     });
   }
 
-  #socketFailed(reason?: string) {
-    this.#closeSocket(reason);
-    this.#update({
-      ...this.#snapshot,
-      connection: "offline",
-      connectionInterrupted: this.#visibility === "foreground",
-    });
-    if (this.#disposed || this.#refused || this.#reconnectSuspended()) return;
-    const ceiling = Math.min(
-      this.#reconnectMaxDelayMs,
-      this.#reconnectBaseDelayMs * 2 ** Math.min(this.#attempt++, 10),
-    );
-    this.#reconnect = setTimeout(
-      () => {
-        this.#reconnect = undefined;
-        void this.load();
-      },
-      ceiling * (0.5 + this.#random() / 2),
-    );
+  #socketFailed(error: unknown = new HostTransportError("unreachable"), reason?: string) {
+    this.#socketCloseReason = reason;
+    this.#connectionFailed?.(error);
   }
 
   #closeSocket(reason = "Client closed") {
     this.#socketGeneration++;
-    this.#warmRead?.abort();
-    this.#clearRealtimeWatch();
-    this.#clearProbe();
+    this.#socketCloseReason = undefined;
+    this.#probe?.abort();
     const socket = this.#socket;
     this.#socket = null;
     this.#stream.disconnect();
     this.#invalidateAttention();
-    if (this.#reconnect) clearTimeout(this.#reconnect);
-    this.#reconnect = undefined;
     for (const { controller } of this.#resourceReads.values()) controller.abort();
     this.#resourceReads.clear();
     this.#finishLoad();
@@ -3814,16 +3903,19 @@ export class HttpHostClient {
     const deploymentId = this.#snapshot.deploymentId;
     switch (message.type) {
       case "host.pong":
-        if (message.nonce === this.#probe?.nonce) {
-          this.#clearProbe();
-          this.#watchRealtime();
-        }
+        if (message.nonce === this.#probe?.nonce) this.#probe.finish();
         break;
       case "host.error":
         if (!message.error.retryable && message.error.code === "forbidden") this.#expireSession();
         else {
-          this.#refused = !message.error.retryable;
-          this.#socketFailed();
+          const { reason, ...error } = message.error;
+          this.#socketFailed(
+            new HostClientRequestError({
+              ...error,
+              ...(reason === undefined ? {} : { reason }),
+              status: rpcErrorStatus(error.code),
+            }),
+          );
         }
         break;
       case "host.show":
@@ -3898,6 +3990,7 @@ export class HttpHostClient {
   #expireSession() {
     if (this.#disposed || this.#snapshot.session === "authentication-required") return;
     this.#viewerGeneration++;
+    this.connection.invalidateScope();
     this.#closeSocket();
     this.#stream.clear(true);
     this.#bodies.clear();
@@ -4180,6 +4273,7 @@ export class HttpHostClient {
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
+    if (this.connection) nameConnectionFromHost(this.connection, this.#snapshot);
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }
@@ -4448,3 +4542,13 @@ export function mutationIdempotencyKey(prefix: string): string {
 export { HostClientRequestError as HostHttpError } from "./client.js";
 
 export type { HostToClientMessage };
+
+function updateRequired(): HostClientRequestError {
+  return new HostClientRequestError({
+    code: "bad_request",
+    message: "Update Opensteer to connect to this Host.",
+    reason: "unsupported-version",
+    retryable: false,
+    status: 426,
+  });
+}

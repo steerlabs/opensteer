@@ -5,7 +5,7 @@ import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-s
 test("accepts exact personal version and requires a generation on scoped frames", () => {
   const attach = {
     type: "client.attach",
-    apiVersion: 62,
+    apiVersion: 63,
     generation: 1,
     interests: ["settings"],
     installed: { settings: "2" },

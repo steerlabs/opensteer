@@ -71,11 +71,16 @@ const card = {
   createdAt: z.iso.datetime(),
   view: TranscriptItemPreviewSchema,
 };
+const clientSendKey = z.string().min(1).max(255);
+// Covers JSON escaping and the field name when a sender reads their item.
+export const clientSendKeyWireReserve = 6 * 255 + 20;
+
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     ...card,
     kind: z.literal("message"),
     messageId: MessageIdSchema,
+    clientSendKey: clientSendKey.optional(),
     messageKind: z.enum(["assistant", "input", "continuation"]).optional(),
     author: MessageAuthorSchema.optional(),
     edit: MessageEditSchema.optional(),

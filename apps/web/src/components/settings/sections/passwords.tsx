@@ -27,7 +27,7 @@ import {
 } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { Icon, type IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
@@ -115,13 +115,16 @@ function PasswordsOnThisMac({
     if (busy !== null) return;
     setBusy(kind);
     setError(null);
-    action()
-      .catch((reason: unknown) => {
-        if (live.current) setError(actionErrorMessage(reason));
-      })
-      .finally(() => {
-        if (live.current) setBusy(null);
-      });
+    void runAction(null, {
+      label: "open Passwords",
+      done: "opened",
+      happened: "Passwords opened",
+      execute: action,
+    }).then((outcome) => {
+      if (!live.current) return;
+      setError(outcomeWords(outcome));
+      setBusy(null);
+    });
   }
   const openPasswords = () => run("open", () => bridge.passwordsOpen());
   const declineAll = () =>

@@ -1,4 +1,8 @@
 import { mockInputQueue } from "@opensteer/client/mock";
+import { MockHostClient } from "@opensteer/client/mock";
+import { controlledClientSession } from "@opensteer/client/test-support";
+import { initializeMessageOutbox, createMessageOutboxStorage } from "@opensteer/client/host";
+import { createId } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -10,13 +14,13 @@ import {
   HttpHostClient,
   waitingInputs,
   type HostClient,
+  type MessageEntry,
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import type { ContentPart, ThreadInputQueue } from "@opensteer/core";
 import { TranscriptHostClientContext } from "./attachments/message-attachments.js";
 import { TranscriptMessage } from "./agent-activity.js";
-import type { PendingSends, PendingSubmission } from "./composer.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { rewrite, textareaView } from "./composer-editor.test-support.js";
 
@@ -101,14 +105,17 @@ function ask(id: string, text: string, flags: Partial<Item> = {}): Item {
   } as unknown as Item;
 }
 
-function inputsOf(items: Item[], options: { paused?: boolean } = {}): WaitingInput[] {
+function inputsOf(
+  items: Item[],
+  options: { paused?: boolean; threadId?: string } = {},
+): WaitingInput[] {
   return waitingInputs(
     mockInputQueue(
       {
         items,
         paused: options.paused ?? false,
         steerRunId: null,
-        threadId: "thread",
+        threadId: options.threadId ?? "thread",
       } as unknown as ThreadInputQueue,
       "0",
       () => false,
@@ -140,26 +147,6 @@ function edited(at: Item, text: string, revision: number): Item {
   } as Item;
 }
 
-/** The browser's kept-send record for this Thread, in memory. */
-function memorySends(): PendingSends & { readonly kept: () => PendingSubmission | null } {
-  let kept: PendingSubmission | null = null;
-  return {
-    claim: (submission) => {
-      if (kept && kept.idempotencyKey !== submission.idempotencyKey)
-        throw new Error("This thread already has a message awaiting acknowledgement.");
-      kept = submission;
-    },
-    clear: (key) => {
-      if (kept?.idempotencyKey === key) kept = null;
-    },
-    discard: () => {
-      kept = null;
-    },
-    kept: () => kept,
-    read: () => kept,
-  };
-}
-
 function render(
   client: HostClient,
   inputs: WaitingInput[],
@@ -167,20 +154,23 @@ function render(
     disabled?: boolean;
     paused?: boolean;
     onError?: (error: unknown) => void;
-    sends?: PendingSends;
+    local?: readonly MessageEntry[];
   } = {},
 ) {
+  const host = client.connection
+    ? client
+    : { ...client, connection: controlledClientSession().connection };
   return (
     <MemoryRouter>
       <WaitingInputs
-        client={client}
+        client={host}
         disabled={options.disabled ?? false}
         inputs={inputs}
+        {...(options.local ? { local: options.local } : {})}
         onError={options.onError ?? vi.fn()}
         paused={options.paused ?? false}
-        pendingSends={{ sends: options.sends ?? memorySends() }}
         resumable
-        threadId="thread"
+        threadId={inputs[0]?.threadId ?? "thread"}
         viewerUserId="me"
       />
     </MemoryRouter>
@@ -230,6 +220,56 @@ async function press(target: Pick<Element, "dispatchEvent">, key: string) {
     target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
   });
 }
+
+it("keeps the queued row and its bubble mounted as the Host takes over a local send", async () => {
+  const [older, confirmed, later] = inputsOf([
+    item("older", "Older held"),
+    item("confirmed", "First local"),
+    item("later", "Second local"),
+  ]);
+  if (!older || !confirmed || !later) throw new Error("Expected three message rows.");
+  const local = (entry: MessageEntry, key: string): MessageEntry => ({
+    ...entry,
+    id: key,
+    clientSendKey: key,
+    localDelivery: { phase: "waiting", attempted: false },
+  });
+  const first = local(confirmed.entry, "first-send");
+  const second = local(later.entry, "second-send");
+  const host = {} as HostClient;
+  const container = mount(render(host, [older], { local: [first, second] }));
+  const bubble = container.querySelector('[data-message-id="first-send"] .message-fold');
+  expect(bubble).not.toBeNull();
+  await act(async () =>
+    root?.render(
+      render(
+        host,
+        [older, { ...confirmed, entry: { ...confirmed.entry, clientSendKey: "first-send" } }],
+        { local: [first, second] },
+      ),
+    ),
+  );
+  expect(container.querySelector('[data-message-id="confirmed"] .message-fold')).toBe(bubble);
+  expect(
+    [...container.querySelectorAll(".queued__item .message-fold")].map((node) => node.textContent),
+  ).toEqual(["Older held", "First local", "Second local"]);
+});
+
+it("draws older Host-held inputs before refused and waiting offline sends", () => {
+  const [older, refused, waiting] = inputsOf([
+    ask("ask-older", "Older Host input"),
+    item("refused", "First offline send"),
+    item("waiting", "Second offline send"),
+  ]);
+  const locals: MessageEntry[] = [
+    { ...refused!.entry, localDelivery: { phase: "rejected", attempted: true } },
+    { ...waiting!.entry, localDelivery: { phase: "waiting", attempted: false } },
+  ];
+  const container = mount(render({} as HostClient, [older!], { local: locals }));
+  expect(
+    [...container.querySelectorAll(".queued__item .message-fold")].map((node) => node.textContent),
+  ).toEqual(["Older Host input", "First offline send", "Second offline send"]);
+});
 
 describe("WaitingInputs", () => {
   it("keeps one image read when a queued message is taken before download finishes", async () => {
@@ -457,7 +497,7 @@ describe("WaitingInputs", () => {
     expect(editor.save).not.toHaveBeenCalled();
   });
 
-  it("keeps the words when the save is refused or the message is taken, and can send them as new", async () => {
+  it("keeps the words when the save is refused or the message is taken", async () => {
     const editor = fakeEditor({
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
@@ -482,17 +522,6 @@ describe("WaitingInputs", () => {
     act(() => root?.render(render(client, [])));
     expect(field(container)?.value).toBe("Open a draft PR");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("took this message");
-
-    await act(async () => button(container, "Send as new message").click());
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: [{ text: "Open a draft PR", type: "text" }],
-        delivery: "queue",
-        threadId: "thread",
-        type: "thread.sendMessage",
-      }),
-    );
-    expect(field(container)).toBeNull();
   });
 
   it("another device's edit holds the message here: no editing, Answer waits, Release frees it", async () => {
@@ -614,37 +643,50 @@ describe("WaitingInputs", () => {
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 2 }));
   });
 
-  it("sends kept words as a new message once: an unconfirmed send is retried under its key", async () => {
+  it("hands an edit to the app outbox before closing its editor", async () => {
     const editor = fakeEditor({
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "taken", status: 409 });
       }),
     });
+    const client = new MockHostClient({ latencyMs: 0 });
     const dispatch = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError("The connection was lost."))
-      .mockResolvedValue({});
-    const client = {
-      dispatch,
-      editWaitingMessage: vi.fn(async () => editor),
-    } as unknown as HostClient;
-    const sends = memorySends();
-    const container = mount(
-      render(client, inputsOf([item("mine", "Old", { canEdit: true })]), { sends }),
-    );
-    await clickWords(container, "mine");
-    await write(field(container)!, "Keep my edit");
-    await press(field(container)!, "Enter");
-    await act(async () => button(container, "Send as new message").click());
-
-    // Kept before it left, and still kept: the Host may have it.
-    expect(sends.kept()?.idempotencyKey).toBe(dispatch.mock.calls[0]![0].idempotencyKey);
-    expect(field(container)?.value).toBe("Keep my edit");
-    await act(async () => button(container, "Send again").click());
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(dispatch.mock.calls[1]![0]).toEqual(dispatch.mock.calls[0]![0]);
-    expect(sends.kept()).toBeNull();
-    expect(field(container)).toBeNull();
+      .spyOn(client, "dispatch")
+      .mockRejectedValue(new TypeError("The connection was lost."));
+    client.editWaitingMessage = async () => editor;
+    const records = new Map<string, string>();
+    const outbox = initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: async () => "restored" },
+    });
+    try {
+      const container = mount(
+        render(
+          client,
+          inputsOf([item("mine", "Old", { canEdit: true })], { threadId: createId("thread") }),
+        ),
+      );
+      await clickWords(container, "mine");
+      await write(field(container)!, "Keep my edit");
+      await press(field(container)!, "Enter");
+      await act(async () => button(container, "Send as new message").click());
+      expect(field(container)).toBeNull();
+      expect(records.size).toBe(1);
+      expect(outbox.getSnapshot().messages).toMatchObject([
+        { command: { content: [{ type: "text", text: "Keep my edit" }] } },
+      ]);
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally {
+      client.dispose();
+    }
   });
 
   it("a save under way holds its editor: Escape waits, and only that save closes it", async () => {

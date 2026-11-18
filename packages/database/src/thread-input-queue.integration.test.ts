@@ -159,7 +159,11 @@ integration.sequential("thread input queue promotion", () => {
         userId,
       };
     }
-    async function queued(f: Awaited<ReturnType<typeof fixture>>, suffix: string) {
+    async function queued(
+      f: Awaited<ReturnType<typeof fixture>>,
+      suffix: string,
+      clientSessionId?: string,
+    ) {
       return store.enqueueThreadInput({
         content: [
           {
@@ -172,6 +176,7 @@ integration.sequential("thread input queue promotion", () => {
         requestedBy: f.userId,
         source: {
           kind: "human",
+          ...(clientSessionId ? { clientSessionId } : {}),
         },
         threadId: f.thread.id,
       });
@@ -408,6 +413,29 @@ integration.sequential("thread input queue promotion", () => {
       .select("sequence")
       .executeTakeFirstOrThrow();
     expect(queue.revision).toBe(head.sequence);
+  });
+
+  it("exposes stored personal send keys only to the person who sent them", async ({
+    storeFixture: { fixture, queued, store, database },
+  }) => {
+    const first = await fixture("send-key-owner");
+    const otherUserId = createId("user");
+    const login = createId("authSession");
+    const sent = await queued(first, "visible-key", login);
+    const ids = [sent.message.id];
+    expect(await store.personalMessageSendKeys(first.userId, login, ids)).toEqual(
+      new Map([[sent.message.id, "send-visible-key"]]),
+    );
+    expect(await store.personalMessageSendKeys(otherUserId, login, ids)).toEqual(new Map());
+    expect(await store.personalMessageSendKeys(first.userId, createId("authSession"), ids)).toEqual(
+      new Map(),
+    );
+    await database
+      .updateTable("messages")
+      .set({ author: jsonValue({ ...sent.message.author, userId: otherUserId }) })
+      .where("id", "=", sent.message.id)
+      .execute();
+    expect(await store.personalMessageSendKeys(first.userId, login, ids)).toEqual(new Map());
   });
 
   /** A call that has reached its Runner, so it can take input. */

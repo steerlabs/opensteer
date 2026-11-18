@@ -1,5 +1,4 @@
 import {
-  clientPublicDetail,
   DeviceLimitReachedError,
   PushNotConfiguredError,
   type PrivateFilesystem,
@@ -259,11 +258,8 @@ export class PushRegistration {
         await this.#options.permissions.request();
         await this.#sync();
       })
-      .catch(async (error: unknown) => {
-        this.#publishFailure(
-          await this.#load(),
-          clientPublicDetail(error, "This phone could not turn on notifications."),
-        );
+      .catch(async () => {
+        this.#publishFailure(await this.#load(), "This phone could not turn on notifications.");
       });
   }
 
@@ -341,13 +337,10 @@ export class PushRegistration {
           ? { ...fields, platform: "ios", apsEnvironment }
           : { ...fields, platform: "android" },
       );
-    } catch (error) {
+    } catch {
       this.#publishFailure(
         file,
-        clientPublicDetail(
-          error,
-          "This phone could not get a push token from the operating system.",
-        ),
+        "This phone could not get a push token from the operating system.",
       );
       return;
     }
@@ -363,10 +356,7 @@ export class PushRegistration {
         );
         return;
       }
-      this.#publishFailure(
-        file,
-        clientPublicDetail(error, "This phone could not register for notifications."),
-      );
+      this.#publishFailure(file, "This phone could not register for notifications.");
       return;
     }
     const stored = await this.#write({ ...file, registered: desired });

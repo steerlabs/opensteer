@@ -56,25 +56,112 @@ import {
   firstTaskId,
   setRoot,
 } from "./workspace.interaction.test-support.js";
+import { composerDraftKey, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";
+// These tests check what a Send carries, never the agent's reply to it.
+const sentOnly = { mock: { replies: "brief" } } as const;
+
+it("fences a started task's earlier revision and resumes with the saved revision and files", async () => {
+  await mount(() => "/", sentOnly);
+  const { deploymentId, user } = client.getSnapshot();
+  const key = composerDraftKey(
+    { deploymentId: deploymentId!, userId: user!.id },
+    { kind: "task", draftId: homeDraftId },
+  );
+  const answer = deferred<void>();
+  const actualCreate = client.createThread.bind(client);
+  const create = vi.spyOn(client, "createThread").mockImplementationOnce(async (input) => {
+    await answer.promise;
+    return actualCreate(input);
+  });
+  const dispatch = vi.spyOn(client, "dispatch");
+  try {
+    await write(element("[data-composer-input]"), "Earlier first message");
+    await click(element(".composer__send"));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce(), { timeout: 1000 });
+    const startedGeneration = composerDrafts.read(key)?.startGeneration;
+    expect(startedGeneration).toBeDefined();
+    const reserved = await client.createAttachment({
+      mediaType: "text/plain",
+      name: "revision.txt",
+      sizeBytes: 12,
+      idempotencyKey: "revision-file",
+    });
+    await client.uploadAttachment({
+      attachmentId: reserved.id,
+      source: new Blob(["saved draft!"]),
+    });
+    const file = {
+      mediaType: "text/plain",
+      name: "revision.txt",
+      sizeBytes: 12,
+      part: {
+        type: "artifact" as const,
+        artifactId: reserved.id,
+        mediaType: "text/plain",
+        name: "revision.txt",
+        sizeBytes: 12,
+      },
+    };
+    await act(async () => {
+      await composerDrafts.update(key, { text: "Revised in another window", files: [file] });
+      answer.resolve();
+    });
+    const reload = await vi.waitFor(
+      () => {
+        const button = [...document.querySelectorAll("button")].find(
+          (el) => el.textContent?.trim() === "Reload draft",
+        );
+        expect(button).toBeDefined();
+        return button!;
+      },
+      { timeout: 1000 },
+    );
+    expect(sends(dispatch)).toEqual([]);
+    expect(composerDrafts.read(key)).toMatchObject({
+      text: "Revised in another window",
+      files: [file],
+      startGeneration: startedGeneration,
+    });
+    await click(reload);
+    await vi.waitFor(() => expect(sendEnabled()).toBe(true), { timeout: 1000 });
+    await click(element(".composer__send"));
+    await vi.waitFor(
+      () =>
+        expect(
+          sends(dispatch),
+          document.querySelector(".composer__error")?.textContent ??
+            JSON.stringify(composerDrafts.read(key)),
+        ).toHaveLength(1),
+      { timeout: 1000 },
+    );
+    expect(create).toHaveBeenCalledOnce();
+    expect(sends(dispatch)[0]?.content).toEqual([
+      { type: "text", text: "Revised in another window" },
+      file.part,
+    ]);
+  } finally {
+    answer.resolve();
+  }
+});
+
 describe("the draft's places", () => {
   it("follows the sign-in form page and sends its automatic reference on the first press", async () => {
     await mount((source) => {
       const form = placeList(source.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
       return `/${tabSearch(form)}`;
-    });
-    await settle(100);
+    }, sentOnly);
     const form = placeList(client.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
+    await vi.waitFor(
+      () => expect(document.querySelector(".context-chip__title")?.textContent).toBe(form.title),
+      { timeout: 1_000 },
+    );
     const sessionId = pageSession(form.key);
-    expect(element(".context-chip__title").textContent).toBe(form.title);
     const dispatch = vi.spyOn(client, "dispatch");
     await write(element<HTMLElement>("[data-composer-input]"), "Help with this form");
     await click(element(".composer__send"));
-    await settle(100);
-    const sends = dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage");
-    expect(sends).toHaveLength(1);
-    const command = sends[0]![0];
-    if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+    await vi.waitFor(() => expect(sends(dispatch)).toHaveLength(1), { timeout: 1_000 });
+    const command = sends(dispatch)[0]!;
     const page = {
       type: "browser-page",
       auto: true,
@@ -84,11 +171,9 @@ describe("the draft's places", () => {
       title: form.title,
     };
     expect(command.content).toContainEqual(expect.objectContaining(page));
-    await expect(
-      dispatch.mock.results.find(
-        (_, index) => dispatch.mock.calls[index]?.[0].type === "thread.sendMessage",
-      )!.value,
-    ).resolves.toMatchObject({ type: "thread.sendMessage" });
+    await act(async () => {
+      await expect(sendResult(dispatch)).resolves.toMatchObject({ type: "thread.sendMessage" });
+    });
     expect(
       Object.values(client.getSnapshot().transcripts)
         .flat()
@@ -104,11 +189,14 @@ describe("the draft's places", () => {
         ),
     ).toBe(true);
     expect(document.querySelector(".composer__error")).toBeNull();
-    expect(composerText(element("[data-composer-input]"))).toBe("");
+    await vi.waitFor(() => expect(composerText(element("[data-composer-input]"))).toBe(""), {
+      timeout: 1_000,
+    });
+    expect(sends(dispatch)).toHaveLength(1);
   });
 
   it("follows the page while untouched, freezes on typing, and a removal sticks", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     const place = pageTab();
     await settle(100);
     expect(element(".context-chip__title").textContent).toBe(place.title);
@@ -140,7 +228,7 @@ describe("the draft's places", () => {
       await mount((source) => {
         vi.spyOn(source, "readBrowserContextCandidate").mockImplementationOnce(() => late.promise);
         return `/${tabSearch(pageTab(source))}`;
-      });
+      }, sentOnly);
       await settle(100);
       const place = pageTab();
       const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
@@ -158,15 +246,21 @@ describe("the draft's places", () => {
         await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
         expected = other.title;
       } else {
-        // Sending starts the next draft at the press; it reads the same page for itself.
+        // A durable send closes this draft even while the Host's answer is outstanding.
         const real = client.dispatch.bind(client);
-        vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
-          await sent.promise;
+        vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+          if (args[0].type === "thread.sendMessage") await sent.promise;
           return real(...args);
         });
         await write(field, "What is this?");
         await click(element(".composer__send"));
-        expected = place.title;
+        await vi.waitFor(
+          async () => {
+            await act(async () => {});
+            expect(history.at(-1)?.path).toMatch(/^\/tasks\//);
+          },
+          { timeout: 1000 },
+        );
       }
       await settle(100);
       expect(chipTitle()).toBe(expected);
@@ -180,7 +274,7 @@ describe("the draft's places", () => {
   );
 
   it("never picks up a page on a task's reply", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     await settle(150);
@@ -188,7 +282,7 @@ describe("the draft's places", () => {
   });
 
   it("explicit + attaches a tab through the candidate read", async () => {
-    await mount("/");
+    await mount("/", sentOnly);
     const read = vi.spyOn(client, "readBrowserContextCandidate");
     const place = pageTab();
     await click(element('.composer__attach[aria-label="Attach"]'));
@@ -204,7 +298,7 @@ describe("the draft's places", () => {
   it.each(["navigate", "reload"] as const)(
     "sends a frozen page on the first press after its tab %ss",
     async (change) => {
-      await mount((source) => `/${tabSearch(pageTab(source))}`);
+      await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
       await settle(100);
       const place = pageTab();
       const tabId = place.key;
@@ -339,8 +433,8 @@ describe("the draft's places", () => {
     },
   );
 
-  it("hands a forbidden message back ahead of the newer draft without duplicate places or refusal UI", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+  it("merges a refused message into a newer draft without losing either's places", async () => {
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const place = pageTab();
     const other = placeList(client.getSnapshot()).find(
@@ -348,17 +442,20 @@ describe("the draft's places", () => {
     )!;
     const refusal = deferred<void>();
     const message = `This message includes the browser page "${place.title}", which you can no longer see. Remove the page and send the message again.`;
-    vi.spyOn(client, "dispatch").mockImplementationOnce(async () => {
-      await refusal.promise;
-      throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+      if (args[0].type === "thread.sendMessage") {
+        await refusal.promise;
+        throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
+      }
+      return real(...args);
     });
-    const field = element<HTMLElement>("[data-composer-input]");
-    await write(field, "First message");
+    await write(element("[data-composer-input]"), "First message");
     await click(element(".composer__send"));
     await settle(100);
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "Newer draft");
-    // Put the duplicate after a newer pick so the returned message must reorder it.
-    await click(element(".context-chip__remove"));
+    // The newer draft deliberately picks two pages, including one on the original message.
     for (const pick of [other, place]) {
       await click(element('.composer__attach[aria-label="Attach"]'));
       await click(
@@ -373,15 +470,21 @@ describe("the draft's places", () => {
     ).toEqual([other.title, place.title]);
     await act(async () => refusal.resolve());
     await settle(100);
-    expect(composerText(field)).toBe("First message\nNewer draft");
+    const rejected = element(".delivery [role=status]").closest(".delivery")!;
+    expect(rejected.textContent).toContain("First message");
+    expect(rejected.textContent).toContain(place.title);
+    expect(rejected.textContent).toContain("Not sent. You don't have access.");
+    await click(element("button", element("[role=status]", rejected)));
+    expect(composerText(field)).toBe("First message\n\nNewer draft");
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
     ).toEqual([place.title, other.title]);
-    expect(document.body.textContent).toContain(message);
+    expect(rejected.isConnected).toBe(false);
+    expect(document.body.textContent).not.toContain(message);
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
-    // The page came back automatic, but the newer draft picked it: closing it keeps that pick.
+    // Closing a page explicitly picked by the newer draft keeps that pick.
     await act(async () => client.closeTabs([place.key]));
     await settle(100);
     expect(
@@ -390,7 +493,7 @@ describe("the draft's places", () => {
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const place = pageTab();
     expect(element(".context-chip__title").textContent).toBe(place.title);
@@ -481,10 +584,7 @@ describe("the draft's places", () => {
     const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
-      await mount((source) => {
-        source.scriptPlaces();
-        return "/?panel=browser";
-      });
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
@@ -519,7 +619,7 @@ describe("the draft's places", () => {
     });
 
     it("carries the phone display in front", async () => {
-      await mount("/");
+      await mount("/", sentOnly);
       const phone = placeList(client.getSnapshot()).find(
         (item) => item.kind === "phone" && item.availability === "ready",
       );
@@ -536,7 +636,7 @@ describe("the draft's places", () => {
     });
 
     it("freezes on typing, keeps its app when another place is shown, and a removal sticks", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "About this");
@@ -548,7 +648,7 @@ describe("the draft's places", () => {
     });
 
     it("lets its automatic app go when its tab closes", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "About this");
@@ -565,7 +665,7 @@ describe("the draft's places", () => {
     });
 
     it("sends the place as it is now when it is renamed in the same place", async () => {
-      await mount("/");
+      await mount("/", sentOnly);
       const phone = placeList(client.getSnapshot()).find(
         (item) => item.kind === "phone" && item.availability === "ready",
       );
@@ -596,7 +696,7 @@ describe("the draft's places", () => {
     });
 
     it("takes no app from a Mac that is not ready, and follows it again once it is", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
@@ -609,7 +709,7 @@ describe("the draft's places", () => {
     });
 
     it("an automatic app alone does not enable Send; an explicit pick alone does", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
@@ -630,7 +730,7 @@ describe("the draft's places", () => {
     });
 
     it("never picks up an app on a task's reply", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       expect(chip()).not.toBeNull();
       await click(element(`.side-task[data-thread-id="${firstTaskId()}"] .side-task__main`));
@@ -640,7 +740,7 @@ describe("the draft's places", () => {
 
     it("retries the app it carried with identical content and key, again after a reload", async () => {
       const dispatch = loseFirstSend();
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "Can you see my screen?");
@@ -654,7 +754,9 @@ describe("the draft's places", () => {
         { type: "text", text: "Can you see my screen?" },
         reference(keynote),
       ]);
-      expect(element(".held-message").textContent).toContain(keynote.title);
+      expect(element(".delivery [role=status]").closest(".delivery")!.textContent).toContain(
+        keynote.title,
+      );
       act(() => root?.unmount());
       setRoot(null);
       document.body.replaceChildren();
@@ -674,7 +776,7 @@ describe("the draft's places", () => {
 describe("unconfirmed sends keep every place exactly", () => {
   it("retries with identical content and key, again after a reload, pages and apps alike", async () => {
     const dispatch = loseFirstSend();
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const app = placeList(client.getSnapshot()).find(
       (place) => place.kind === "window" && place.availability === "ready",
@@ -702,7 +804,9 @@ describe("unconfirmed sends keep every place exactly", () => {
       "computer-app",
     ]);
     expect(first.content[1]?.auto).toBe(true);
-    expect(element(".held-message").textContent).toContain(app.title);
+    expect(element(".delivery [role=status]").closest(".delivery")!.textContent).toContain(
+      app.title,
+    );
     // The page reloads: the kept message is sent again as exactly what was sent.
     act(() => root?.unmount());
     setRoot(null);

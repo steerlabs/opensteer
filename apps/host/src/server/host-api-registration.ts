@@ -4,6 +4,7 @@ import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
+  expectedMutationSessionHeader,
   hostApi,
   type HostApiHandlers,
   type HostApiScope,
@@ -252,6 +253,18 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       const scope =
         name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
       const authenticated = await authenticateScope(authenticator, scope, request);
+      const expected = request.headers[expectedMutationSessionHeader];
+      if (
+        name === "commands.dispatch" &&
+        expected !== undefined &&
+        expected !== authenticated?.session.id
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: "session-changed",
+          message: "This request belongs to another sign-in.",
+        });
+      }
       if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
         throw new OpensteerError({
           code: "bad_request",

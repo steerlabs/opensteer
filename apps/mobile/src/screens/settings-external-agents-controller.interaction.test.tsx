@@ -13,8 +13,14 @@ const state = vi.hoisted(() => ({
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
 vi.mock("@opensteer/client/react", () => ({
-  useConnectedAgents: () => ({ connections: [], error: null, pending: null }),
   usePersonalRemoteAccess: () => ({ status: null, error: "The computer did not answer." }),
+}));
+vi.mock("../ui/client-feedback.js", () => ({
+  notDone: vi.fn(),
+  readLine: () => null,
+  settingsFooter: () => undefined,
+  useScreenAction: () => ({ line: null, running: false, run: vi.fn(), dismiss: vi.fn() }),
+  useScreenRead: () => ({ status: "ready", data: [], issue: null, refresh: vi.fn() }),
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ selection: { deploymentId: "deployment-a", hostClient: {} } }),

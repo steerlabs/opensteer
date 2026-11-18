@@ -116,7 +116,7 @@ async function chatWith(
       <ToastProvider>
         <MemoryRouter initialEntries={[`/tasks/${home}`]}>
           <Routes>
-            <Route element={<AppShell hostClient={client} loadError={null} />}>
+            <Route element={<AppShell hostClient={client} />}>
               <Route index element={<HomeRoute />} />
               <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>

@@ -1,3 +1,4 @@
+import { clientIssue } from "@opensteer/client/feedback";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
 import type { VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { useCallback, useState, type ReactNode } from "react";
@@ -7,18 +8,11 @@ import {
   defaultDeploymentName,
   verifyServerDeployment,
 } from "../client/add-deployment.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { resetToDeployment } from "../navigation-ref.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import {
-  AppText,
-  Field,
-  Notice,
-  PrimaryButton,
-  RowGroup,
-  SecondaryButton,
-} from "../ui/primitives.js";
+import { AppText, Field, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 
@@ -45,7 +39,8 @@ export function AddServerScreen(): ReactNode {
     void verifyServerDeployment({ fetch: globalThis.fetch, origin: origin.trim() })
       .then(setVerified)
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Nothing at that address answered as a deployment."));
+        if (clientIssue(error, { operation: "action", label: "check" }) !== null)
+          setFailure("Nothing at that address answered as Opensteer.");
       })
       .finally(() => setBusy(false));
   }, [origin]);
@@ -64,7 +59,8 @@ export function AddServerScreen(): ReactNode {
       .then(() => client.openDeployment(deploymentId))
       .then(() => resetToDeployment(deploymentId))
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "That deployment could not be added."));
+        if (clientIssue(error, { operation: "action", label: "add" }) !== null)
+          setFailure("Couldn't add this server.");
       })
       .finally(() => setBusy(false));
   }, [client, verified]);
@@ -84,10 +80,15 @@ export function AddServerScreen(): ReactNode {
           </AppText>
         </View>
         {failure === null ? null : (
-          <Notice
-            action={{ label: "Try again", onPress: verify }}
-            detail={failure}
-            title="That address did not work"
+          <ActionLine
+            line={{
+              key: failure,
+              text: failure,
+              tone: "muted",
+              haptic: "warning",
+              link: verified === null ? { label: "Try again", onPress: verify } : null,
+            }}
+            numberOfLines={2}
           />
         )}
         {verified === null ? (

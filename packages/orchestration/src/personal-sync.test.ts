@@ -184,7 +184,7 @@ test("holds selected detail until the initial shell is dispatched", async () => 
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 62,
+      apiVersion: 63,
       generation: 1,
       interests: [],
       installed: {},
@@ -319,7 +319,7 @@ test("shell repair keeps resource interests for the replacement generation", asy
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 62,
+      apiVersion: 63,
       generation: 1,
       interests: ["settings"],
       installed: {},
@@ -404,7 +404,7 @@ test("a synchronized socket does no state or resource work during five idle minu
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 62,
+      apiVersion: 63,
       generation: 1,
       interests: ["settings"],
       installed: {},

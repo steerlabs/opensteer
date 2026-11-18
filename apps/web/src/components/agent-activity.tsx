@@ -1,5 +1,21 @@
 import { RetainedToolImage } from "./asset-image.js";
-import { TranscriptImageContext } from "@opensteer/client/react";
+import {
+  hostMessageOutbox,
+  messageDeliveryActions,
+  messageDeliveryStatusShown,
+  type MessageDeliveryAction,
+} from "@opensteer/client/host";
+import {
+  presentClientIssue,
+  presentDeliveryActions,
+  presentMessageActionFailure,
+  presentMessageDelivery,
+  presentMessageTakeBack,
+} from "@opensteer/client/feedback";
+import { ActionLine } from "./action-line.js";
+import { MessageDelivery } from "./message-delivery.js";
+import { Refusal, useAction } from "./use-action.js";
+import { TranscriptImageContext, useClientConnectionName } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
@@ -13,6 +29,7 @@ import { taskMark, threadMark } from "@opensteer/client/host";
 import {
   createContext,
   useContext,
+  useCallback,
   Fragment,
   Suspense,
   lazy,
@@ -132,6 +149,7 @@ import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
 import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
+import { act, failureWords } from "./use-action.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
@@ -288,6 +306,7 @@ export function AgentTranscript({
   teamChannelName = null,
   inputQueuePaused = false,
   queued = null,
+  afterQueue = noLocalMessages,
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
@@ -339,6 +358,8 @@ export function AgentTranscript({
    * after its live status, inside the transcript so it reads like messages.
    */
   queued?: ReactNode;
+  /** Local sends drawn by the queue, with status grouped with the transcript. */
+  afterQueue?: readonly MessageEntry[];
   /** Draws an offer of Opensteer Passwords; a screen that has none shows no offer. */
   renderPasswordsSuggestion?: (offer: PasswordsSetupOffer) => ReactNode;
   /**
@@ -352,6 +373,29 @@ export function AgentTranscript({
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
     [entries, inputQueuePaused, startHold, assignments],
+  );
+  const deliveryStatus = useMemo(() => {
+    const own = [...entries, ...afterQueue].filter(
+      (entry): entry is MessageEntry => entry.kind === "message" && !!entry.localDelivery,
+    );
+    const shown = messageDeliveryStatusShown(own.map((entry) => entry.localDelivery!.phase));
+    return new Set(
+      own.flatMap((entry, index) => (shown[index] ? [entry.clientSendKey ?? entry.id] : [])),
+    );
+  }, [afterQueue, entries]);
+  const [deliveryNotes, setDeliveryNotes] = useState<ReadonlyMap<string, string>>(new Map());
+  const noteDelivery = useCallback((key: string, words: string | null) => {
+    setDeliveryNotes((current) => {
+      if ((current.get(key) ?? null) === words) return current;
+      const next = new Map(current);
+      if (words === null) next.delete(key);
+      else next.set(key, words);
+      return next;
+    });
+  }, []);
+  const deliveryFeedback = useMemo(
+    () => ({ shown: deliveryStatus, notes: deliveryNotes, note: noteDelivery }),
+    [deliveryStatus, deliveryNotes, noteDelivery],
   );
   const activities = useMemo(() => {
     const byTurn = new Map<string, ReplyActivity>();
@@ -417,102 +461,105 @@ export function AgentTranscript({
   );
 
   return (
-    <TranscriptLive value={live}>
-      <AgentsLive value={live}>
-        <AgentReader value={agents}>
-          <AgentFolds>
-            <RequestShown value={requestShown}>
-              <ConversationMode value={conversation}>
-                <ReplyWith value={onReply}>
-                  <OpenActivity value={onOpenActivity}>
-                    <ActivityOfTurn value={activities}>
-                      <ActivityOpenedFrom value={activityOwner}>
-                        <ActivityAnchor value={onActivityAnchor}>
-                          <TaskViews value={renderTask}>
-                            <TranscriptHostClientContext value={attachmentReader}>
-                              <ReaderComputers value={computers}>
-                                <TranscriptBrowserUses value={browserUses}>
-                                  <TranscriptBrowsers value={browserSessions}>
-                                    <Speakers value={speakers}>
-                                      <TranscriptImageContext
-                                        value={
-                                          attachmentReader && threadId
-                                            ? { client: attachmentReader, threadId }
-                                            : null
-                                        }
-                                      >
-                                        {rows.map(({ group, key }, index) => (
-                                          <Fragment key={key}>
-                                            {places?.[index]?.time ? (
-                                              <p className="transcript__time">
-                                                {places[index].time}
-                                              </p>
-                                            ) : null}
-                                            <div
-                                              className="transcript__row"
-                                              data-continued={
-                                                places?.[index]?.continued || undefined
-                                              }
-                                              data-joined={places?.[index]?.joined || undefined}
-                                              data-transcript-row={key}
-                                            >
-                                              {group.kind === "app" ? (
-                                                <AppCard entry={group.entry} />
-                                              ) : group.kind === "turn" ? (
-                                                <TurnView
-                                                  turn={group.turn}
-                                                  turnKey={group.key}
-                                                  reveal={revealMessage}
-                                                />
-                                              ) : group.kind === "delegation" ? (
-                                                <DelegationNotice delegation={group.entry} />
-                                              ) : group.kind === "assignment" ? (
-                                                renderTask?.([group.entry])
-                                              ) : (
-                                                <TranscriptMessage
-                                                  joinedRun={group.joinedRun === true}
-                                                  reveal={
-                                                    revealMessage?.id === group.entry.id
-                                                      ? revealMessage
-                                                      : null
-                                                  }
-                                                  message={group.entry}
-                                                  viewerUserId={viewerUserId}
-                                                />
-                                              )}
+    <DeliveryFeedback value={deliveryFeedback}>
+      <TranscriptLive value={live}>
+        <AgentsLive value={live}>
+          <AgentReader value={agents}>
+            <AgentFolds>
+              <RequestShown value={requestShown}>
+                <ConversationMode value={conversation}>
+                  <ReplyWith value={onReply}>
+                    <OpenActivity value={onOpenActivity}>
+                      <ActivityOfTurn value={activities}>
+                        <ActivityOpenedFrom value={activityOwner}>
+                          <ActivityAnchor value={onActivityAnchor}>
+                            <TaskViews value={renderTask}>
+                              <TranscriptHostClientContext value={attachmentReader}>
+                                <ReaderComputers value={computers}>
+                                  <TranscriptBrowserUses value={browserUses}>
+                                    <TranscriptBrowsers value={browserSessions}>
+                                      <Speakers value={speakers}>
+                                        <TranscriptImageContext
+                                          value={
+                                            attachmentReader && threadId
+                                              ? { client: attachmentReader, threadId }
+                                              : null
+                                          }
+                                        >
+                                          {rows.map(({ group, key }, index) => (
+                                            <Fragment key={key}>
+                                              {places?.[index]?.time ? (
+                                                <p className="transcript__time">
+                                                  {places[index].time}
+                                                </p>
+                                              ) : null}
+                                              <div
+                                                className="transcript__row"
+                                                data-continued={
+                                                  places?.[index]?.continued || undefined
+                                                }
+                                                data-joined={places?.[index]?.joined || undefined}
+                                                data-transcript-row={key}
+                                              >
+                                                {group.kind === "app" ? (
+                                                  <AppCard entry={group.entry} />
+                                                ) : group.kind === "turn" ? (
+                                                  <TurnView
+                                                    turn={group.turn}
+                                                    turnKey={group.key}
+                                                    reveal={revealMessage}
+                                                  />
+                                                ) : group.kind === "delegation" ? (
+                                                  <DelegationNotice delegation={group.entry} />
+                                                ) : group.kind === "assignment" ? (
+                                                  renderTask?.([group.entry])
+                                                ) : (
+                                                  <TranscriptMessage
+                                                    joinedRun={group.joinedRun === true}
+                                                    reveal={
+                                                      revealMessage?.id === group.entry.id
+                                                        ? revealMessage
+                                                        : null
+                                                    }
+                                                    message={group.entry}
+                                                    viewerUserId={viewerUserId}
+                                                  />
+                                                )}
+                                              </div>
+                                            </Fragment>
+                                          ))}
+                                          {indicator === null ? null : indicator.kind ===
+                                            "typing" ? (
+                                            // No turn has begun, so there is no Activity to open yet.
+                                            <div className="turn turn--conversation">
+                                              <Typing />
                                             </div>
-                                          </Fragment>
-                                        ))}
-                                        {indicator === null ? null : indicator.kind === "typing" ? (
-                                          // No turn has begun, so there is no Activity to open yet.
-                                          <div className="turn turn--conversation">
-                                            <Typing />
-                                          </div>
-                                        ) : (
-                                          <WorkingIndicator label={indicator.label} />
-                                        )}
-                                        {passwordsOffer === null
-                                          ? null
-                                          : renderPasswordsSuggestion?.(passwordsOffer)}
-                                        {queued}
-                                      </TranscriptImageContext>
-                                    </Speakers>
-                                  </TranscriptBrowsers>
-                                </TranscriptBrowserUses>
-                              </ReaderComputers>
-                            </TranscriptHostClientContext>
-                          </TaskViews>
-                        </ActivityAnchor>
-                      </ActivityOpenedFrom>
-                    </ActivityOfTurn>
-                  </OpenActivity>
-                </ReplyWith>
-              </ConversationMode>
-            </RequestShown>
-          </AgentFolds>
-        </AgentReader>
-      </AgentsLive>
-    </TranscriptLive>
+                                          ) : (
+                                            <WorkingIndicator label={indicator.label} />
+                                          )}
+                                          {passwordsOffer === null
+                                            ? null
+                                            : renderPasswordsSuggestion?.(passwordsOffer)}
+                                          {queued}
+                                        </TranscriptImageContext>
+                                      </Speakers>
+                                    </TranscriptBrowsers>
+                                  </TranscriptBrowserUses>
+                                </ReaderComputers>
+                              </TranscriptHostClientContext>
+                            </TaskViews>
+                          </ActivityAnchor>
+                        </ActivityOpenedFrom>
+                      </ActivityOfTurn>
+                    </OpenActivity>
+                  </ReplyWith>
+                </ConversationMode>
+              </RequestShown>
+            </AgentFolds>
+          </AgentReader>
+        </AgentsLive>
+      </TranscriptLive>
+    </DeliveryFeedback>
   );
 }
 
@@ -865,13 +912,13 @@ function KeptComputerStopLine({
  * reads as what was said.
  */
 function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
-  const live = useContext(TranscriptLive);
   const renderTask = useContext(TaskViews);
   const view = useMemo(() => conversationTurn(turn), [turn]);
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
-  const composing = view.composing && live && now === null && kept === null;
-  const startHold = live ? view.startHold : null;
+  // Through an outage these stay, held still: the work is said, no longer seen happening.
+  const composing = view.composing && now === null && kept === null;
+  const startHold = view.startHold;
   const outcome =
     turn.run !== null &&
     (view.unprompted ? turn.run.status === "failed" : showsRunOutcome(turn.run));
@@ -1255,6 +1302,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
   const panelId = useOwnedActivity(turnKey);
   const controlRef = useRef<HTMLButtonElement | null>(null);
   useActivityAnchor(panelId, controlRef);
+  const live = useContext(TranscriptLive);
   const dots = (
     <span aria-hidden className="typing__dots">
       <i />
@@ -1263,7 +1311,11 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
     </span>
   );
   return (
-    <div aria-label="Opensteer is replying" className="typing" role="status">
+    <div
+      aria-label="Opensteer is replying"
+      className={live ? "typing" : "typing typing--still"}
+      role="status"
+    >
       {openActivity && turnKey !== null && activity && activity.steps.length > 0 ? (
         <button
           aria-controls={panelId ?? undefined}
@@ -2239,6 +2291,17 @@ export function TranscriptMessage({
   );
 }
 
+/**
+ * The send keys of this device's own undelivered messages that carry their
+ * status line: a run of waiting messages says it once, under the last.
+ */
+const noLocalMessages: readonly MessageEntry[] = [];
+const DeliveryFeedback = createContext<{
+  readonly shown: ReadonlySet<string>;
+  readonly notes: ReadonlyMap<string, string>;
+  readonly note: (key: string, words: string | null) => void;
+} | null>(null);
+
 /** Above a message that joined the turn under way rather than waiting for the next. */
 function SteerMark() {
   return (
@@ -2295,57 +2358,145 @@ function OwnMessage({
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
+  const outbox = client ? hostMessageOutbox(client) : null;
+  const computer = useClientConnectionName(client?.connection ?? null);
+  const local = message.localDelivery;
+  const sendKey = message.clientSendKey ?? message.id;
+  const deliveryFeedback = useContext(DeliveryFeedback);
+  const statusShown = deliveryFeedback?.shown.has(sendKey) ?? false;
+  const note = deliveryFeedback?.notes.get(sendKey);
+  // The quiet first second of a send counts from when this bubble appeared.
+  const [since] = useState(() => Date.now());
+  const labels = presentDeliveryActions();
+  const unconfirmed = local?.issue?.code === "unconfirmed";
+  const toast = useToast();
+  // Taking a message back touches only what this device keeps. Edit moves the
+  // whole message into the draft, above any words there, before the bubble goes.
+  const takeBack = useAction(
+    null,
+    {
+      label: "change this message",
+      done: "changed",
+      happened: "this message changed",
+      execute: async (action: MessageDeliveryAction) => {
+        if (!outbox) return;
+        deliveryFeedback?.note(sendKey, null);
+        let words: string | null;
+        try {
+          if (action === "remove") {
+            await outbox.removeLocalCopy(sendKey);
+            if (unconfirmed)
+              toast.success(
+                presentClientIssue({
+                  code: "message-removed-locally",
+                  ...(computer ? { name: computer } : {}),
+                }).title,
+              );
+            return;
+          }
+          words =
+            action === "edit"
+              ? presentMessageTakeBack(await outbox.restoreDraft(sendKey))
+              : action === "retry"
+                ? (await outbox.retry(sendKey)) === "settled"
+                  ? presentMessageTakeBack("sent")
+                  : null
+                : (await outbox.discard(sendKey), null);
+        } catch (error) {
+          words = presentMessageActionFailure(error);
+        }
+        if (deliveryFeedback) deliveryFeedback.note(sendKey, words);
+        else if (words) throw new Refusal(words);
+      },
+    },
+    `delivery:${sendKey}`,
+  );
+  const menu =
+    local && outbox ? messageDeliveryActions(local.phase, local.attempted, unconfirmed) : [];
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
-  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const [arrived] = useState(() => !queued && justSent(message.createdAt, Date.now()));
+  // A waiting message is taken back from these, whether it has words or files alone.
+  const waitingMarks =
+    local?.phase === "waiting" && !queued
+      ? menu.map((action) => (
+          <button
+            className="mark mark--words"
+            key={action}
+            onClick={() => void takeBack.run(action)}
+            type="button"
+          >
+            {action === "edit" ? labels.edit : labels.discard}
+          </button>
+        ))
+      : [];
   return (
-    <div
-      className={queued ? "msg--user-row msg--queued" : "msg--user-row"}
-      data-message-id={message.id}
+    <MessageDelivery
+      attempted={local?.attempted ?? true}
+      unconfirmed={unconfirmed}
+      onAction={(action) => void takeBack.run(action)}
+      phase={local?.phase ?? "delivered"}
+      rejection={
+        local?.phase === "rejected"
+          ? presentMessageDelivery("rejected", local.issue, computer)
+          : null
+      }
+      showStatus={statusShown}
+      since={since}
     >
-      {steered ? <SteerMark /> : null}
-      <MessagePages pages={message.pages ?? []} />
-      <MessagePlaces places={message.places ?? []} />
-      <MessageAttachments attachments={message.attachments ?? []} />
-      {message.body ? (
-        <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
-          {queued ? null : (
-            <div className="reply__marks">
-              {message.edit ? (
-                <TranscriptEditMark
-                  label="Edited"
-                  message={{ ...message, edit: message.edit }}
-                  viewerUserId={viewerUserId}
-                />
-              ) : null}
-              <CopyMark label="Copy message" text={message.body} />
+      <div
+        className={queued ? "msg--user-row msg--queued" : "msg--user-row"}
+        data-message-id={message.id}
+      >
+        {steered ? <SteerMark /> : null}
+        <MessagePages pages={message.pages ?? []} />
+        <MessagePlaces places={message.places ?? []} />
+        <MessageAttachments attachments={message.attachments ?? []} />
+        {!message.body && waitingMarks.length > 0 ? (
+          <div className="reply__marks">{waitingMarks}</div>
+        ) : null}
+        {message.body ? (
+          <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
+            {queued ? null : (
+              <div className="reply__marks">
+                {waitingMarks}
+                {message.edit ? (
+                  <TranscriptEditMark
+                    label="Edited"
+                    message={{ ...message, edit: message.edit }}
+                    viewerUserId={viewerUserId}
+                  />
+                ) : null}
+                <CopyMark label="Copy message" text={message.body} />
+              </div>
+            )}
+            <div className="msg--user">
+              <MessageFold
+                lines={messageFoldLines(message, viewerUserId)}
+                more={previewMessage.previewTruncated === true}
+                onOpenChange={setOpen}
+                open={open}
+              >
+                <PersonWords text={message.body} />
+              </MessageFold>
             </div>
-          )}
-          <div className="msg--user">
-            <MessageFold
-              lines={messageFoldLines(message, viewerUserId)}
-              more={previewMessage.previewTruncated === true}
-              onOpenChange={setOpen}
-              open={open}
-            >
-              <PersonWords text={message.body} />
-            </MessageFold>
           </div>
-        </div>
-      ) : previewMessage.previewTruncated && !open ? (
-        <button className="btn" onClick={() => setOpen(true)} type="button">
-          Show message
-        </button>
-      ) : null}
-      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
-      {message.delivery ? (
-        <p className="form-actions__error" role="alert">
-          {message.delivery.reason}
-        </p>
-      ) : null}
-    </div>
+        ) : null}
+        {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
+        {note ? (
+          <ActionLine line={{ key: sendKey, tone: "danger", text: note }} />
+        ) : takeBack.line ? (
+          <ActionLine line={takeBack.line} />
+        ) : null}
+        {message.delivery ? (
+          <p className="form-actions__error" role="alert">
+            {message.delivery.reason}
+          </p>
+        ) : null}
+      </div>
+    </MessageDelivery>
   );
 }
 
@@ -2809,8 +2960,9 @@ function RunOutcome({
 
 /** A Thread at work before its Run has reported anything. */
 function WorkingIndicator({ label }: { label: string }) {
+  const live = useContext(TranscriptLive);
   return (
-    <div className="working" role="status">
+    <div className={live ? "working" : "working working--still"} role="status">
       <span aria-hidden className="working__orb" />
       <span className="working__label">{label}</span>
     </div>
@@ -2843,11 +2995,12 @@ function CompactionDivider({ run }: { run: RunEntry }) {
           type="button"
           onClick={() => {
             setBusy(true);
-            void client
-              .stopRun(threadId)
-              .catch((e: unknown) =>
-                setError(e instanceof Error ? e.message : "Could not stop summary."),
-              )
+            void act(
+              client,
+              { label: "stop this summary", done: "stopped", happened: "this summary stopped" },
+              () => client.stopRun(threadId),
+            )
+              .catch((e: unknown) => setError(failureWords(e) ?? "Could not stop summary."))
               .finally(() => setBusy(false));
           }}
         >

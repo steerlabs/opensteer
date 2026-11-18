@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { RunnerIdSchema } from "@opensteer/core";
 import { tabStoreFixture } from "@opensteer/client/test-support";
@@ -21,7 +22,8 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({ navigate: state.navigate }),
 }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (load) => ({
+  ...(await load<typeof import("@opensteer/client/react")>()),
   useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
     select(client.getSnapshot()),
 }));
@@ -60,10 +62,14 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../theme.js", () => ({
   color: {},
   controlFontScaleLimit: 1.5,
@@ -194,6 +200,7 @@ function text(): string {
 function host(manage = true, empty = false) {
   const snapshot = {
     connection: "connected",
+    deploymentId: "deployment-a",
     network: "online",
     session: "authenticated",
     user: { id: "user-a" },
@@ -221,7 +228,9 @@ function host(manage = true, empty = false) {
     tabs: tabStoreFixture([]),
   };
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
-  state.hostClient = { dispatch, getSnapshot: () => snapshot };
+  const client = { dispatch, getSnapshot: () => snapshot, subscribe: () => () => undefined };
+  Object.assign(client, { connection: testHostConnection(client as never) });
+  state.hostClient = client;
   return { dispatch, snapshot };
 }
 
@@ -316,7 +325,8 @@ describe("mobile browser profiles", () => {
     await typeName("Travel");
     dispatch.mockRejectedValueOnce(new Error("Try again later"));
     await press("Create profile");
-    expect(text()).toContain("Try again later");
+    expect(text()).toContain("Couldn't confirm the profile was created.");
+    expect(text()).not.toContain("Try again later");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "browser.profile.create",

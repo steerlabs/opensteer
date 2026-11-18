@@ -219,7 +219,7 @@ export class ScopedThreadReader implements ThreadViewSource {
           ];
         }) ?? [];
     }
-    const inputQueue = state.synchronized ? state.inputQueue : null;
+    const inputQueue = state.inputQueue;
     const hasMore = state.snapshot?.nextBefore != null;
     const hasNewer = state.snapshot?.nextAfter != null;
     const moreRequests =

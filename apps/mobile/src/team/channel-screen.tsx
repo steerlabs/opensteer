@@ -11,22 +11,16 @@ import {
   touchTarget,
 } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
-import { ConnectionBanner } from "./connection-banner.js";
 import { MessageRow, wordsInset } from "./message-row.js";
 import { ChannelGlyph, FaceStack, PeopleOnlyBadge } from "./team-marks.js";
 import { TeamComposer, type TeamComposerProps } from "./team-composer.js";
-import type {
-  ChannelHeaderView,
-  ConnectionBannerView,
-  JumpView,
-  MessageView,
-  TimelineItem,
-} from "./team-models.js";
+import type { ChannelHeaderView, JumpView, MessageView, TimelineItem } from "./team-models.js";
 import { ChannelIntro, Timeline, type TimelineActions } from "./timeline.js";
 
 interface PlaceBodyProps {
   readonly actions: TimelineActions;
-  readonly banner: ConnectionBannerView | null;
+  /** A fact about this channel's sharing, such as a partner disconnecting; null when none. */
+  readonly channelFact: string | null;
   readonly composer: TeamComposerProps;
   /** Why the reader can't post here, shown in the composer's place; null when they can. */
   readonly closed: string | null;
@@ -106,7 +100,18 @@ export function ThreadScreenBody(
 function PlaceLayout(props: PlaceBodyProps & { readonly children: ReactNode }): ReactNode {
   return (
     <View style={styles.fill}>
-      {props.banner === null ? null : <ConnectionBanner banner={props.banner} />}
+      {props.channelFact === null ? null : (
+        <View style={styles.fact}>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={2}
+            role="caption"
+            tone="muted"
+          >
+            {props.channelFact}
+          </AppText>
+        </View>
+      )}
       <ComposerDockLayout
         avoidKeyboard
         dock={
@@ -242,6 +247,12 @@ export function ThreadTitle(props: { readonly place: string }): ReactNode {
 }
 
 const styles = StyleSheet.create({
+  fact: {
+    borderBottomColor: color.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: space[16],
+    paddingVertical: space[6],
+  },
   closed: {
     ...material.plate,
     alignItems: "center",

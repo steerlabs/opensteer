@@ -1,7 +1,7 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { resumeDeviceSignIn } from "./device-setup.js";
 
@@ -30,9 +30,8 @@ export function DeviceRemovedScreen({
   const run = (operation: () => void | Promise<void>) => {
     setPending(true);
     setError(null);
-    void Promise.resolve()
-      .then(operation)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+    void act(null, { label: "do this", done: "done" }, async () => operation())
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
   return (
@@ -54,7 +53,11 @@ export function DeviceRemovedScreen({
           disabled={pending}
           onClick={() =>
             run(async () => {
-              await resumeDeviceSignIn(bridge, deploymentId);
+              await act(
+                null,
+                { label: "sign in", done: "signed in", happened: "you were signed in" },
+                () => resumeDeviceSignIn(bridge, deploymentId),
+              );
               await onConnectAgain();
             })
           }
@@ -119,9 +122,12 @@ export function DeviceSignInScreen({
             onClick={() => {
               setRetrying(true);
               setError(null);
-              void bridge
-                .retryDeviceConnection({ deploymentId: id })
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              void act(
+                null,
+                { label: "connect again", done: "connected", happened: "this connected again" },
+                () => bridge.retryDeviceConnection({ deploymentId: id }),
+              )
+                .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setRetrying(false));
             }}
           >
@@ -134,9 +140,16 @@ export function DeviceSignInScreen({
             onClick={() => {
               setPending(true);
               setError(null);
-              void bridge
-                .leaveDeployment({ deploymentId: id })
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              void act(
+                null,
+                {
+                  label: "leave this Opensteer",
+                  done: "left",
+                  happened: "you left this Opensteer",
+                },
+                () => bridge.leaveDeployment({ deploymentId: id }),
+              )
+                .catch((reason: unknown) => setError(failureWords(reason)))
                 .finally(() => setPending(false));
             }}
           >
@@ -153,7 +166,7 @@ export function DeviceSignInScreen({
             setPending(true);
             setError(null);
             void resumeDeviceSignIn(bridge, deploymentId)
-              .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              .catch((reason: unknown) => setError(failureWords(reason)))
               .finally(() => setPending(false));
           }}
         >

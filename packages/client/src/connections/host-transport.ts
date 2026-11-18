@@ -323,28 +323,40 @@ export class HostTransport {
         controller.abort(new HostTransportError("deployment-changed"));
       }
       deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
+      let unauthorizedObserved = false;
       try {
         let response = await deadline.wait(this.#send(resolved, request, controller.signal));
         const onProgress = () => {
           if (!appStream) deadline.reset(hostResponseStallTimeoutMs);
         };
         deadline.pause();
+        unauthorizedObserved = response.status === 401 && request.credentials !== "omit";
+        if (unauthorizedObserved) this.#sessions?.sessionEnded?.(selected);
         onProgress();
-        if (
-          response.status === 401 &&
-          this.#sessions &&
-          request.credentials !== "omit" &&
-          !(request.body instanceof ReadableStream)
-        ) {
+        if (unauthorizedObserved && this.#sessions && !(request.body instanceof ReadableStream)) {
+          // Release the refusal's socket before recovery needs a connection of its own.
+          const body = await readBoundedResponse(response, {
+            maximumBytes: maximumUnauthorizedBodyBytes,
+            onProgress: () => deadline.reset(hostResponseStallTimeoutMs),
+            signal: controller.signal,
+            sizeError: () => new HostTransportError("response-too-large"),
+          });
+          const refusal = new Response(Uint8Array.from(body), {
+            headers: response.headers,
+            status: response.status,
+          });
+          // From here a failed recovery carries its own outcome.
+          unauthorizedObserved = false;
           response = await this.#retryAfterSessionRecovery(
             this.#sessions,
             selected,
             request,
             controller.signal,
-            response,
+            refusal,
             deadline,
           );
         }
+        unauthorizedObserved = response.status === 401 && request.credentials !== "omit";
         assertCurrent();
         const result = await deadline.wait(
           read(response, { signal: controller.signal, onProgress }),
@@ -355,6 +367,15 @@ export class HostTransport {
         if (owner?.signal.aborted)
           throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
+        if (error instanceof HostTransportError && error.code === "deployment-changed") throw error;
+        if (unauthorizedObserved)
+          throw new HostTransportError("unreachable", {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            retryable: false,
+            provenance: "host",
+            kind: "session",
+          });
         if (controller.signal.aborted) {
           throw controller.signal.reason instanceof Error
             ? controller.signal.reason
@@ -531,30 +552,15 @@ export class HostTransport {
    * silent grant redemption is attempted per unauthorized response, and only a
    * recovered session replays the request, so the caller never observes the
    * 401 and a refused Account can never drive a retry loop.
-   *
-   * The refusal is read whole and its connection released before recovery
-   * starts: recovery needs a connection of its own, and Electron keeps an
-   * unread response's socket, so concurrent refusals would otherwise hold the
-   * pool their own recoveries wait for.
    */
   async #retryAfterSessionRecovery(
     sessions: HostSessionRecovery,
     selected: SelectedAttachment,
     request: HostTransportRequest,
     signal: AbortSignal,
-    unauthorized: Response,
+    refusal: Response,
     deadline: HostResponseDeadline,
   ): Promise<Response> {
-    const body = await readBoundedResponse(unauthorized, {
-      maximumBytes: maximumUnauthorizedBodyBytes,
-      onProgress: () => deadline.reset(hostResponseStallTimeoutMs),
-      signal,
-      sizeError: () => new HostTransportError("response-too-large"),
-    });
-    const refusal = new Response(Uint8Array.from(body), {
-      headers: unauthorized.headers,
-      status: unauthorized.status,
-    });
     // Recovery carries its own deadlines (token refresh, session exchange); the
     // refusal's body-stall clock must not cut it short.
     deadline.pause();

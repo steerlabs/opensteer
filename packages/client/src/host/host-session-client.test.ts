@@ -1,3 +1,7 @@
+import { createClientAction } from "../actions/client-action.js";
+import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import type { ClientLifecycle, ClientNetworkState } from "./lifecycle.js";
+import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host.js";
 import { describe, expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { HttpHostClient } from "./host-session-client.js";
@@ -133,6 +137,112 @@ describe("attachment reads", () => {
       expect(rpc).toHaveBeenCalledTimes(2);
     } finally {
       client.dispose();
+    }
+  });
+});
+
+describe("personal connection admission", () => {
+  it("admits a scoped connection before a ready-gated action and names the Host", async () => {
+    const host = new MockPersonalHost();
+    const client = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      fetch: host.fetch,
+      webSocketFactory: host.connect,
+    });
+    const releaseIdentity = client.watchPersonalResource("identity", () => {});
+    const execute = vi.fn(async () => "confirmed");
+    const action = createClientAction(client, { label: "open this", done: "opened", execute });
+    try {
+      await client.load();
+      const connected = client.getSnapshot();
+      expect(client.connection.getSnapshot()).toMatchObject({
+        phase: "ready",
+        readyRevision: 1,
+        scope: {
+          loginId: connected.sessionId,
+          deploymentId: connected.deploymentId,
+          viewerId: connected.user?.id,
+        },
+      });
+      await vi.waitFor(() =>
+        expect(client.connection.getSnapshot().name).toBe(
+          host.client.getSnapshot().identityConfig?.deployment.name,
+        ),
+      );
+      await expect(action.run(undefined)).resolves.toMatchObject({
+        kind: "confirmed",
+        value: "confirmed",
+      });
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      releaseIdentity();
+      action.dispose();
+      client.dispose();
+      host.dispose();
+    }
+  });
+
+  it("reports an exact Personal version refusal immediately", async () => {
+    const client = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      webSocketFactory: () => {
+        const socket = new MockPersonalSocket(() => undefined);
+        socket.addEventListener("open", () =>
+          socket.emit("close", { code: unsupportedVersionCloseCode, reason: "Update Opensteer" }),
+        );
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      expect(client.connection.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        showInterruption: true,
+        issue: { code: "update-app" },
+      });
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("defers personal attach while offline and aborts the old path before opening a socket", async () => {
+    let change: (network: ClientNetworkState, path: "same" | "changed") => void = () => {};
+    const lifecycle: ClientLifecycle = {
+      getSnapshot: () => ({ network: "offline", visibility: "foreground" }),
+      onNetworkChange: (listener) => {
+        change = listener;
+        return () => {};
+      },
+      onBackground: () => () => {},
+      onForeground: () => () => {},
+    };
+    const host = new MockPersonalHost();
+    const first = Promise.withResolvers<void>();
+    const prepareSocket = vi.fn(async () => undefined).mockReturnValueOnce(first.promise);
+    const open = vi.fn(host.connect);
+    const client = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      fetch: host.fetch,
+      lifecycle,
+      prepareSocket,
+      webSocketFactory: open,
+    });
+    try {
+      await client.load();
+      expect(prepareSocket).not.toHaveBeenCalled();
+      change("online", "changed");
+      expect(prepareSocket).toHaveBeenCalledOnce();
+      change("online", "changed");
+      await client.load();
+      expect(prepareSocket).toHaveBeenCalledTimes(2);
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+      first.resolve();
+      await first.promise;
+      expect(open).toHaveBeenCalledOnce();
+    } finally {
+      first.resolve();
+      client.dispose();
+      host.dispose();
     }
   });
 });

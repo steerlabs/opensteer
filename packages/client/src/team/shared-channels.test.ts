@@ -54,9 +54,14 @@ describe("shared channel presentation", () => {
   it("keeps uncommitted sends pending and names an unreachable partner", () => {
     expect(pendingSendView({ failure: null }, true, null)).toEqual({ kind: "sending" });
     expect(pendingSendView({ failure: null }, false, null)).toEqual({ kind: "queued" });
-    expect(pendingSendView({ failure: "Access changed" }, true, null)).toEqual({
+    // A refusal is kept as its reason code and worded where it is drawn.
+    expect(pendingSendView({ failure: "forbidden" }, true, null, "Acme")).toEqual({
       kind: "failed",
-      reason: "Access changed",
+      reason: "You don't have access.",
+    });
+    expect(pendingSendView({ failure: "Words an older app stored" }, true, null, "Acme")).toEqual({
+      kind: "failed",
+      reason: "Acme didn't accept it.",
     });
     const error = new OpensteerError({
       code: "conflict",

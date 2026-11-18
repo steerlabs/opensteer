@@ -1,3 +1,4 @@
+import { presentFailure } from "../use-action.js";
 import {
   useCallback,
   useEffect,
@@ -123,10 +124,15 @@ export function RemoteEditingProxy({
       if (alive.current) setError(message);
     }, native);
   }
-  const failure = useCallback((reason: unknown) => {
-    if (alive.current)
-      setError(reason instanceof Error ? reason.message : "Remote editing failed.");
+  // A refusal this page explains itself, in its own words.
+  const refuse = useCallback((words: string) => {
+    if (alive.current) setError(words);
   }, []);
+  // Anything else is said by the shared presenter, never as the exception's text.
+  const failure = useCallback(
+    (reason: unknown) => refuse(presentFailure(reason, "edit remotely")),
+    [refuse],
+  );
   const perform = useCallback(
     (operation: EditingOperation) => {
       if (
@@ -144,7 +150,7 @@ export function RemoteEditingProxy({
           (result) => {
             if (!arm) {
               if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
-                failure(new Error(`The remote clipboard operation was ${result.outcome}.`));
+                refuse(`The remote clipboard operation was ${result.outcome}.`);
               return;
             }
             if (
@@ -156,7 +162,7 @@ export function RemoteEditingProxy({
             else {
               arm.reject();
               if (result && result.outcome !== "empty")
-                failure(new Error(`The remote clipboard operation was ${result.outcome}.`));
+                refuse(`The remote clipboard operation was ${result.outcome}.`);
             }
           },
           (reason) => {
@@ -263,10 +269,8 @@ export function RemoteEditingProxy({
           return;
         }
         if (!navigator.clipboard?.read) {
-          failure(
-            new Error(
-              "This browser cannot read the clipboard from a menu. Use the paste keyboard shortcut.",
-            ),
+          refuse(
+            "This browser cannot read the clipboard from a menu. Use the paste keyboard shortcut.",
           );
           return;
         }
@@ -281,14 +285,16 @@ export function RemoteEditingProxy({
                 const blob = await item.getType(type);
                 payload.push({ type, bytes: new Uint8Array(await blob.arrayBuffer()) });
               }
-            if (current.current.context?.contextId !== scope || !current.current.enabled)
-              throw new Error("The remote field changed before paste completed.");
+            if (current.current.context?.contextId !== scope || !current.current.enabled) {
+              refuse("The remote field changed before paste completed.");
+              return;
+            }
             feed({ type: "paste", items: payload });
           })
           .catch(failure);
       },
     }),
-    [failure, feed, focus, perform],
+    [failure, feed, focus, perform, refuse],
   );
   useLayoutEffect(() => {
     const composing =
@@ -468,7 +474,7 @@ export function RemoteEditingProxy({
           if (!current.current.enabled) return;
           const paste = event as ClipboardEvent;
           if (!paste.isTrusted) {
-            failure(new Error("Paste requires a trusted local clipboard event."));
+            refuse("Paste requires a trusted local clipboard event.");
             return;
           }
           paste.preventDefault();
@@ -496,8 +502,10 @@ export function RemoteEditingProxy({
                 !alive.current ||
                 !current.current.enabled ||
                 current.current.context?.contextId !== scope
-              )
-                throw new Error("The remote field changed before paste completed.");
+              ) {
+                refuse("The remote field changed before paste completed.");
+                return;
+              }
               feed({ type: "paste", items: [...items, ...files] });
             })
             .catch(failure);

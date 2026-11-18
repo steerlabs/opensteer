@@ -30,10 +30,9 @@ export interface MobileLifecycle extends ClientLifecycle {
 /**
  * What the phone knows about this app that the Host client cannot see.
  *
- * Two facts, from two places. Foreground comes from `AppState`, where only
- * `active` is the foreground: `inactive` is the app under the multitasking
- * switcher or a system prompt, and treating it as backgrounded would drop
- * sockets every time a notification slides down.
+ * Two facts, from two places. Only actual background evidence suspends
+ * connections. iOS `inactive` preserves the prior visibility through a system
+ * prompt or multitasking switcher.
  *
  * Network comes from `expo-network`'s listener, which stops being told anything
  * while the process is suspended — the radio can change, or the phone can move
@@ -54,7 +53,7 @@ export function createMobileLifecycle(options: {
 
   let snapshot: ClientLifecycleSnapshot = {
     network: "unknown",
-    visibility: appState.currentState === "active" ? "foreground" : "background",
+    visibility: appState.currentState === "background" ? "background" : "foreground",
   };
 
   // Every notification is forwarded, repeats included, because a move between
@@ -95,6 +94,7 @@ export function createMobileLifecycle(options: {
   });
 
   const appStateSubscription = appState.addEventListener("change", (state) => {
+    if (state !== "active" && state !== "background") return;
     const visibility = state === "active" ? "foreground" : "background";
     if (visibility === snapshot.visibility) return;
     snapshot = { ...snapshot, visibility };

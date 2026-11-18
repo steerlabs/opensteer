@@ -1,4 +1,5 @@
 import { usePersonalResources } from "@opensteer/client/react";
+import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -6,6 +7,9 @@ import { VoiceAsk } from "./voice-ask.js";
 import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useVoiceCursor } from "./voice-cursor.js";
 import {
+  hostMessageOutbox,
+  assertMessageLogin,
+  changedTaskDraft,
   startAccountSignIn,
   type AccountSignInFlow,
   handlePersonShow,
@@ -47,7 +51,12 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { type ExecutionPreferences, type ThreadAccessMode } from "@opensteer/core";
-import { actionErrorMessage, conversationPath, fromLivePage, useMediaQuery } from "../ui-utils.js";
+import { conversationPath, fromLivePage, useMediaQuery } from "../ui-utils.js";
+import {
+  ConnectionGateScope,
+  ShellConnectionPill,
+  type ShellConnectionSource,
+} from "./connection-shell.js";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { observeLocalExecutionStatus } from "../desktop/local-execution-status.js";
 import { onNotificationActivated, showNotification } from "../desktop/notifications.js";
@@ -67,10 +76,10 @@ import {
   type HostSnapshot,
   type LocalRunnerIdentity,
   type ThreadPlacementOption,
-  type ThreadSummary,
   taskAttention,
   heldThread,
   listedRowThreadId,
+  mutationIdempotencyKey,
   taskAfter,
   taskDoneConfirmation,
   taskList,
@@ -78,14 +87,18 @@ import {
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
 import { useActionReview, useHostSelector } from "@opensteer/client/react";
-import type { PendingSubmission } from "./composer.js";
 import {
-  claimFirstMessage,
-  pendingScopeUnavailable,
-  pendingStorageAvailable,
-  pendingStorageUnavailable,
-} from "./pending-sends.js";
+  sendMessageCommand,
+  storageUnavailable,
+  type PendingSubmission,
+} from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
+import {
+  cleanTaskStartJournals,
+  composerDrafts,
+  reserveComposerTaskStart,
+} from "./composer-drafts.js";
+import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
@@ -122,7 +135,6 @@ import { DeviceRemovedScreen } from "./devices/device-removed.js";
 import { deviceNotificationsOn } from "./devices/device-preferences.js";
 import { FinishSetupBar, SetUpThisMac } from "./devices/set-up-this-mac.js";
 import { ThisDeviceProvider, useThisDeviceLifecycle } from "./devices/this-device.js";
-import { Icon } from "./icon.js";
 import {
   PaneResizeHandle,
   usePersistedPaneSize,
@@ -130,20 +142,31 @@ import {
 } from "./pane-resize-handle.js";
 import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
+import { useTeams } from "../team/team-attachments.js";
+import { presentFailure } from "./use-action.js";
+
+interface TaskStartDraft {
+  readonly draftKey: string | null;
+  readonly draftRevision: string | undefined;
+  readonly confirmLegacy: boolean;
+  readonly scope: ClientScope | null;
+}
 
 export interface ShellContext {
-  actionError: string | null;
-  clearActionError: () => void;
   /**
-   * Starts a task and keeps its first message, words and files,
-   * for that task's composer to send when it opens. A refusal throws the
-   * Host's reason, for the composer that asked to show.
+   * Starts a task and keeps its first message, words and files, in the
+   * outbox that delivers it. Failures are thrown for the caller's action.
    */
   createThreadAndSend: (
     message: PendingSubmission,
-    selection: ExecutionSelection,
+    selection: ExecutionSelection | null,
     accessMode: ThreadAccessMode,
-  ) => Promise<ThreadSummary>;
+    draft: TaskStartDraft,
+  ) => Promise<{
+    readonly id: string;
+    readonly draftGeneration: string;
+    readonly preserveDraft?: true;
+  }>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
    * The Desktop's deployment-access state, already filtered by one revision
@@ -273,7 +296,6 @@ export function AppShell({
   desktopBridge: suppliedDesktopBridge = null,
   desktopDeployment = null,
   hostClient,
-  loadError,
   onNotificationTargetOpened,
   notificationTarget = null,
 }: {
@@ -281,7 +303,6 @@ export function AppShell({
   desktopBridge?: OpensteerDesktopBridge | null;
   desktopDeployment?: DesktopDeploymentSummary | null;
   hostClient: HostClient;
-  loadError: string | null;
   onNotificationTargetOpened?: (() => void) | undefined;
   /** A clicked Desktop notification, for this Deployment, waiting to be opened. */
   notificationTarget?: DesktopNotificationTarget | null;
@@ -364,7 +385,6 @@ export function AppShell({
     deploymentId: string;
     id: string;
   } | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [accountSignIn, setAccountSignIn] = useState<{
     readonly added: boolean;
     readonly continued: boolean;
@@ -482,8 +502,9 @@ export function AppShell({
           openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
       },
       (error, actions) => {
-        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
-        else toast.error(actionErrorMessage(error));
+        const message = failureWords(error, "open this link");
+        if (actions) setWebLinkFailure({ message, actions });
+        else toast.error(message);
       },
     );
   }, [
@@ -532,9 +553,14 @@ export function AppShell({
     [localRunner, snapshot.environments, snapshot.harnesses],
   );
 
-  const reportActionError = useCallback((error: unknown) => {
-    setActionError(actionErrorMessage(error));
-  }, []);
+  // Only for an action whose own control is gone by the time it answers.
+  const reportActionError = useCallback(
+    (error: unknown) => {
+      const words = failureWords(error);
+      if (words) toast.error(words);
+    },
+    [toast],
+  );
   const doneReview = useActionReview(hostClient);
   const { address: currentAddress, openConversation, threadPath } = nav;
   // Done on the task in view moves on to the next one, as the list stood when
@@ -569,7 +595,6 @@ export function AppShell({
     (choice: ExecutionChoice) => void hostClient.rememberExecution(choice).catch(reportActionError),
     [hostClient, reportActionError],
   );
-  const clearActionError = useCallback(() => setActionError(null), []);
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
   const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
   // Who may sign in is the Host's call for each work location. Reading the
@@ -603,7 +628,7 @@ export function AppShell({
         continued: false,
         flow: startAccountSignIn({
           client: hostClient,
-          errorMessage: actionErrorMessage,
+          errorMessage: signInFailureWords,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -642,7 +667,7 @@ export function AppShell({
         continued,
         flow: startAccountSignIn({
           client: hostClient,
-          errorMessage: actionErrorMessage,
+          errorMessage: signInFailureWords,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -700,34 +725,76 @@ export function AppShell({
   const createThreadAndSend = useCallback(
     async (
       message: PendingSubmission,
-      selection: ExecutionSelection,
+      selection: ExecutionSelection | null,
       accessMode: ThreadAccessMode,
-    ): Promise<ThreadSummary> => {
-      // The first message is kept before anything sends it, under the
-      // deployment and user the Host confirmed; without either, no Thread is
-      // started for a message that could not be kept.
-      const { deploymentId, user } = hostClient.getSnapshot();
-      if (!deploymentId || !user) throw new Error(pendingScopeUnavailable);
-      if (!pendingStorageAvailable()) throw new Error(pendingStorageUnavailable);
-      try {
-        const thread = await hostClient.createThread({
+      { draftKey, confirmLegacy, draftRevision, scope }: TaskStartDraft,
+    ) => {
+      // The first message is kept, under the login the Host confirmed, before
+      // anything sends it; the new task's composer is no part of its delivery.
+      const outbox = hostMessageOutbox(hostClient);
+      if (!outbox || !draftKey || !scope) throw storageUnavailable();
+      if (!draftRevision) throw changedTaskDraft();
+      const scopeKey = clientScopeKey(scope)!;
+      const assertLogin = () =>
+        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+      assertLogin();
+      const held = composerDrafts.read(draftKey);
+      if (
+        held?.startGeneration &&
+        held.startPending !== false &&
+        !held.startScope &&
+        (await belongsToPreviousLogin(scopeKey, draftKey, held.startGeneration))
+      )
+        throw storageUnavailable();
+      const { generation, assertCurrent, beginCreation } = await reserveComposerTaskStart(
+        composerDrafts,
+        draftKey,
+        scopeKey,
+        draftRevision,
+        assertLogin,
+      );
+      // A new generation can reuse the journal slot only after its predecessor's receipt is retired.
+      await cleanTaskStartJournals(draftKey);
+      const prepared = sendMessageCommand("", message);
+      const thread = await startTask({
+        records: draftTaskStart(JSON.stringify([scopeKey, draftKey]), generation),
+        message: {
+          content: prepared.content,
+          ...(prepared.compaction ? { compaction: prepared.compaction } : {}),
+          ...(prepared.quotedMessageId ? { quotedMessageId: prepared.quotedMessageId } : {}),
+        },
+        assertCurrent,
+        legacyStart: composerDrafts.read(draftKey)?.start,
+        confirmLegacy,
+        creation: selection && {
           accessMode,
           environmentId: selection.environmentId,
           harnessInstanceId: selection.harnessInstanceId,
           modelSelection: selection.modelSelection,
           generateTitle: true,
           title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
-        });
-        // The new Thread's own composer sends it, exactly as kept, when it
-        // opens: one path for the first try, a lost answer and a refusal.
-        claimFirstMessage({ deploymentId, threadId: thread.id, userId: user.id }, message);
-        return thread;
-      } catch (error) {
-        throw new Error(actionErrorMessage(error));
-      }
+        },
+        creationKey: () => mutationIdempotencyKey("thread"),
+        messageKey: message.idempotencyKey,
+        createThread: (creation) => beginCreation(() => hostClient.createThread(creation, scope)),
+        enqueue: (command) =>
+          outbox.enqueue(command, {
+            handoff: true,
+            expectedLogin: scope,
+            assertCurrent,
+            consumedDraft: { key: draftKey, revision: draftRevision },
+          }),
+        hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
+      });
+      assertLogin();
+      return { ...thread, draftGeneration: generation };
     },
     [hostClient],
   );
+
+  useEffect(() => {
+    void cleanTaskStartJournals().catch(() => {});
+  }, []);
 
   /* ---- Notifications ---- */
 
@@ -854,8 +921,6 @@ export function AppShell({
   // The one shell for everything AppShell draws, routed or not.
   const shell = useMemo<ShellContext>(
     () => ({
-      actionError,
-      clearActionError,
       createThreadAndSend,
       defaultPlacement,
       deploymentAccess,
@@ -877,8 +942,6 @@ export function AppShell({
       snapshot,
     }),
     [
-      actionError,
-      clearActionError,
       createThreadAndSend,
       defaultPlacement,
       deploymentAccess,
@@ -1051,21 +1114,11 @@ export function AppShell({
                   />
                 ) : null}
                 <main className="app-shell__main" aria-hidden={overlayOpen} inert={overlayOpen}>
-                  {loadError || actionError ? (
-                    <div className="notice notice--error shell-error" role="alert">
-                      <span className="shell-error__message">{loadError ?? actionError}</span>
-                      {!loadError ? (
-                        <button
-                          aria-label="Dismiss error"
-                          className="icon-btn"
-                          onClick={() => setActionError(null)}
-                          type="button"
-                        >
-                          <Icon name="close" />
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
+                  <ShellPill
+                    desktopBridge={localBridge}
+                    hostClient={hostClient}
+                    onThisComputer={desktopDeployment?.onThisComputer ?? false}
+                  />
                   {/* The one foreground operation, above whichever page is routed below
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
@@ -1143,7 +1196,69 @@ export function AppShell({
       </VoiceContext>
     </ThisDeviceProvider>
   );
-  return <ShellContext value={shell}>{workspace}</ShellContext>;
+  return (
+    <ShellContext value={shell}>
+      <ConnectionGateScope>{workspace}</ConnectionGateScope>
+    </ShellContext>
+  );
+}
+
+/**
+ * The one pill, for the connection the screen in view is about: a team's own
+ * on that team's pages, the person's computer everywhere else. Other
+ * connections with trouble are listed in its details.
+ */
+function ShellPill({
+  desktopBridge,
+  hostClient,
+  onThisComputer,
+}: {
+  readonly desktopBridge: OpensteerDesktopBridge | null;
+  readonly hostClient: HostClient;
+  readonly onThisComputer: boolean;
+}) {
+  const { pathname } = useLocation();
+  const { teams } = useTeams();
+  const personal = useMemo<ShellConnectionSource>(
+    () => ({
+      key: "personal",
+      connection: hostClient.connection,
+      mark: onThisComputer ? "desktop" : "server",
+      // Asking again lands on this Opensteer's own sign-in when its session ended.
+      onSignIn: () => void hostClient.refresh().catch(() => undefined),
+      onUpdate: desktopBridge?.updates
+        ? () => void desktopBridge.updates?.download().catch(() => undefined)
+        : () => window.location.reload(),
+    }),
+    [desktopBridge, hostClient, onThisComputer],
+  );
+  const teamSources = useMemo(
+    () =>
+      teams.flatMap((team): ShellConnectionSource[] =>
+        team.client
+          ? [{ key: `team:${team.teamId}`, connection: team.client.connection, mark: "users" }]
+          : [],
+      ),
+    [teams],
+  );
+  // A team route is about that team even before its connection exists; its gate explains then.
+  const teamId = /^\/teams\/([^/]+)/.exec(pathname)?.[1];
+  const current = teamId
+    ? (teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`) ?? null)
+    : personal;
+  const others = useMemo(
+    () => [personal, ...teamSources].filter((source) => source !== current),
+    [current, personal, teamSources],
+  );
+  return current ? <ShellConnectionPill current={current} others={others} /> : null;
+}
+
+function failureWords(error: unknown, label = "complete this action"): string {
+  return presentFailure(error, label);
+}
+
+function signInFailureWords(error: unknown): string {
+  return presentFailure(error, "sign in");
 }
 
 /**

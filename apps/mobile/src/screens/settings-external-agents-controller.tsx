@@ -6,10 +6,18 @@ import {
   guideAddress,
   type ExternalAgentGuide,
 } from "@opensteer/client/host";
-import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
+import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
+import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
-import { useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
+import {
+  notDone,
+  readLine,
+  settingsFooter,
+  useScreenAction,
+  useScreenRead,
+} from "../ui/client-feedback.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { ExternalAgentSetupSheet } from "./external-agent-setup-sheet.js";
 import { externalAgentsFootnote, externalAgentsNeedsRemote } from "./external-agents-model.js";
@@ -26,15 +34,39 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const snapshot = useSettingsHost(host);
   const personal = snapshot !== null;
   // Both read only while this page is open, never on attach.
-  const agents = useConnectedAgents(host);
+  const agents = useScreenRead(host, {
+    key: "connected-agents",
+    label: "your agents",
+    read: host
+      ? async (signal) =>
+          unwrapRpcResult(await host.rpc["connections.list"]({}, { signal })).connections
+      : null,
+    subscribeInvalidation: (listener) => host?.subscribeConnectionsChanged(listener) ?? (() => {}),
+  });
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const revoke = useScreenAction(host, "connection-revoke", {
+    label: "remove this agent",
+    done: "removed",
+    happened: "this agent was removed",
+    execute: async (connectionId: string) => {
+      await host!.dispatch({
+        type: "connection.revoke",
+        connectionId,
+        idempotencyKey: mutationIdempotencyKey("connection-revoke"),
+      });
+    },
+    reconcile: async (connectionId) => {
+      const { connections } = unwrapRpcResult(await host!.rpc["connections.list"]({}));
+      return connections.some((row) => row.id === connectionId)
+        ? notDone("removed")
+        : { kind: "confirmed", value: undefined };
+    },
+  });
   const remote = usePersonalRemoteAccess(personal ? host : null);
   const reach = externalAgentsReach({ identity: snapshot?.identityConfig ?? null, remote });
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
   const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
-  const connections = agents.connections;
-  // A confirmation answered later reads the pending revoke as it is then.
-  const pending = useRef(agents.pending);
-  pending.current = agents.pending;
+  const connections = agents.data;
   const arrived = guide === null ? null : arrivedConnection(connections, baseline);
   const openRemoteAccess = () => {
     setGuide(null);
@@ -43,7 +75,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
   };
   const remove = (connectionId: string) => {
     const connection = connections?.find((row) => row.id === connectionId);
-    if (!connection || pending.current !== null) return;
+    if (!connection || revoke.running) return;
     Alert.alert(
       `Remove ${connection.label}?`,
       "It loses access to Opensteer right away, even in a conversation it has open.",
@@ -53,35 +85,25 @@ export function ExternalAgentsSettingsController(): ReactNode {
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            // The client takes one revoke at a time; never let a confirmation pass silently.
-            if (pending.current !== null)
-              Alert.alert(
-                `${connection.label} wasn’t removed`,
-                "Another removal was still finishing. Remove it again.",
-              );
-            else void agents.revoke?.(connectionId);
+            setRemovingId(connectionId);
+            void revoke.run(connectionId).then((outcome) => {
+              if (outcome.kind === "confirmed") agents.refresh();
+            });
           },
         },
       ],
     );
   };
-  const loadError = connections === null ? agents.error : null;
   const notice: ExternalAgentsFormProps["notice"] =
-    loadError !== null
+    reach.kind === "needs-remote"
       ? {
-          title: "Your agents couldn’t be loaded",
-          detail: loadError,
-          action: { label: "Try again", onPress: () => void agents.refresh?.() },
+          title: "Use from anywhere is off",
+          detail: externalAgentsNeedsRemote,
+          action: { label: "Open Account", onPress: openRemoteAccess },
         }
-      : reach.kind === "needs-remote"
-        ? {
-            title: "Use from anywhere is off",
-            detail: externalAgentsNeedsRemote,
-            action: { label: "Open Account", onPress: openRemoteAccess },
-          }
-        : reach.kind === "unavailable"
-          ? { title: "Couldn’t check Use from anywhere", detail: reach.detail, action: null }
-          : null;
+      : reach.kind === "unavailable"
+        ? { title: "Couldn’t check Use from anywhere", detail: reach.detail, action: null }
+        : null;
   return (
     <>
       <SettingsPageLayout>
@@ -90,10 +112,11 @@ export function ExternalAgentsSettingsController(): ReactNode {
             id: connection.id,
             title: connection.label,
             detail: connectionDetail(connection),
-            removing: agents.pending === connection.id,
+            removing: revoke.running && removingId === connection.id,
           }))}
+          loading={connections === null}
           addDisabled={connections === null || reach.kind !== "ready"}
-          error={loadError === null ? agents.error : null}
+          line={settingsFooter(readLine(agents, agents.refresh) ?? revoke.line) ?? null}
           footnote={personal ? externalAgentsFootnote : null}
           guides={externalAgentGuides}
           notice={notice}
@@ -103,7 +126,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
             setBaseline(new Set(connections.map((connection) => connection.id)));
             setGuide(next);
           }}
-          removeDisabled={agents.pending !== null}
+          removeDisabled={revoke.running}
           onRemove={remove}
         />
       </SettingsPageLayout>

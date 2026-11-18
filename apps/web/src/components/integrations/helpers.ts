@@ -18,6 +18,8 @@ import {
   integrationStatusLabel,
   type IntegrationAccountRepair,
 } from "@opensteer/client/integrations";
+import { presentFailure } from "../use-action.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 
 export { connectionNeedsReconnect };
 
@@ -275,6 +277,17 @@ export function statusChipClass(status: string): string {
         : "";
 }
 
+/** A failure in the app's words, never the exception's own text. */
 export function message(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "Something went wrong";
+  return presentFailure(reason, "connect this");
+}
+
+/** A read of the accounts that failed, said as a read: "Couldn't load your accounts." */
+export function readMessage(reason: unknown): string {
+  return presentReadFailure(reason, "your accounts");
+}
+
+/** GitHub's repository check that didn't answer: "Couldn't load repository access." */
+export function repositoryMessage(reason: unknown): string {
+  return presentReadFailure(reason, "repository access");
 }

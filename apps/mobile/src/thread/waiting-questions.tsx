@@ -108,9 +108,7 @@ export function QuestionCard(props: {
   });
   const shared = {
     canRespond: props.canRespond,
-    canStartResponse: () =>
-      props.canRespond &&
-      props.drafts.readPending(props.deploymentId, props.userId, threadId) === null,
+    canStartResponse: () => props.canRespond,
     deploymentId: props.deploymentId,
     disabledReason: null,
     highlighted: false,

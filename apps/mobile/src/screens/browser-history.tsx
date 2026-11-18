@@ -1,12 +1,16 @@
-import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import type { ClientConnectionState } from "@opensteer/client/connections";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Alert, FlatList, Image, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, space } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
+import { ActionLine } from "../ui/action-line.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -28,11 +32,13 @@ export function BrowserHistoryScreen({
   if (!hostClient)
     return (
       <Screen>
-        <Notice
-          title="Not connected"
-          detail="Open this deployment to view its browsing history."
-          tone="neutral"
-        />
+        {row === undefined || selection.deploymentId === deploymentId ? (
+          <PlaceholderRows />
+        ) : (
+          <AppText role="secondary" tone="muted">
+            {`Open ${row.name} to view its browsing history.`}
+          </AppText>
+        )}
       </Screen>
     );
   return <OwnedHistory key={deploymentId} hostClient={hostClient} profileId={profileId} />;
@@ -67,7 +73,6 @@ function OwnedHistory({
       hostClient={hostClient}
       profileId={profileId}
       name={profile.name}
-      online={canRespondToRequests(snapshot)}
     />
   );
 }
@@ -76,12 +81,10 @@ function HistoryList({
   hostClient,
   profileId,
   name,
-  online,
 }: {
   readonly hostClient: HostClient;
   readonly profileId: string;
   readonly name: string;
-  readonly online: boolean;
 }): ReactNode {
   const history = hostClient.browserHistory;
   const revision = useSyncExternalStore(
@@ -90,13 +93,16 @@ function HistoryList({
     history.getRevision,
   );
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const connected = useSyncExternalStore(
+    hostClient.connection.subscribe,
+    () => isUsable(hostClient.connection.getSnapshot()),
+    () => isUsable(hostClient.connection.getSnapshot()),
+  );
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [attempt, setAttempt] = useState(0);
+  // The history owner rereads by itself when the connection comes back.
   useEffect(() => {
-    if (!online) return;
     let active = true;
     setLoading(true);
     void history.load(profileId).finally(() => {
@@ -105,28 +111,28 @@ function HistoryList({
     return () => {
       active = false;
     };
-  }, [attempt, history, profileId, online]);
-  const mutate = (operation: () => Promise<void>) => {
-    const current = hostClient.getSnapshot();
-    if (
-      !online ||
-      busy ||
-      !canRespondToRequests(current) ||
-      current.session !== "authenticated" ||
-      !current.browserProfiles.some((profile) => profile.id === profileId)
-    )
-      return;
-    setBusy(true);
-    setFailure(null);
-    void operation()
-      .catch((error: unknown) =>
-        setFailure(operationDetail(error, "Browsing history could not be changed.")),
-      )
-      .finally(() => setBusy(false));
+  }, [attempt, history, profileId]);
+  const change = useScreenAction<HistoryChange, void>(hostClient, `browser-history:${profileId}`, {
+    label: "change browsing history",
+    execute: (input) => input.work(),
+    reconcile: async (input) => {
+      await history.load(profileId);
+      if (history.failed(profileId)) return null;
+      return input.settled(history.entries(profileId))
+        ? { kind: "confirmed", value: undefined }
+        : notDone();
+    },
+  });
+  const busy = change.running;
+  const mutate = (input: HistoryChange) => {
+    if (busy) return;
+    void change.run(input);
   };
   const entries = history.entries(profileId);
-  // Shown over rows too: a refresh that failed leaves what was last read on screen.
-  const readFailed = online && !loading && history.failed(profileId);
+  const loaded = history.loaded(profileId);
+  // Only when nothing was ever read and the connection is fine: a failed reread keeps what was
+  // last read, and an outage is the pill's to explain.
+  const readFailed = !loading && !loaded && connected && history.failed(profileId);
   return (
     <Screen edgeToEdge>
       <FlatList
@@ -139,27 +145,10 @@ function HistoryList({
         ListHeaderComponent={
           <View style={styles.header}>
             <AppText role="bodyMedium">{name}</AppText>
-            {online ? null : (
-              <Notice
-                title="Not connected"
-                detail="Reconnect to view and manage browsing history."
-                tone="neutral"
-              />
-            )}
-            {failure === null ? null : (
-              <Notice title="History could not be changed" detail={failure} />
-            )}
-            {readFailed ? (
-              <Notice
-                action={{ label: "Try again", onPress: () => setAttempt((count) => count + 1) }}
-                detail="Check the connection to this computer, then try again."
-                title="Browsing history couldn’t be loaded"
-              />
-            ) : null}
             <SecondaryButton
               label="Clear browsing history"
               tone="danger"
-              disabled={!online || busy || entries.length === 0}
+              disabled={busy || entries.length === 0}
               onPress={() =>
                 Alert.alert(
                   "Clear browsing history?",
@@ -169,22 +158,37 @@ function HistoryList({
                     {
                       text: "Clear browsing history",
                       style: "destructive",
-                      onPress: () => mutate(() => history.clear(profileId)),
+                      onPress: () =>
+                        mutate({
+                          work: () => history.clear(profileId),
+                          settled: (now) => now.length === 0,
+                        }),
                     },
                   ],
                 )
               }
             />
+            {change.line === null ? null : (
+              <ActionLine line={change.line} numberOfLines={2} onDismiss={change.dismiss} />
+            )}
           </View>
         }
         ListEmptyComponent={
-          readFailed ? undefined : (
+          readFailed ? (
+            <ActionLine
+              line={{
+                key: "history-failed",
+                text: presentClientIssue({ code: "read-failed", resource: "browsing history" })
+                  .title,
+                tone: "muted",
+                link: { label: "Try again", onPress: () => setAttempt((count) => count + 1) },
+              }}
+            />
+          ) : loading || !loaded ? (
+            <PlaceholderRows />
+          ) : (
             <AppText role="secondary" tone="muted">
-              {!online
-                ? "Browsing history is unavailable while disconnected."
-                : loading
-                  ? "Loading browsing history…"
-                  : "No browsing history yet."}
+              No browsing history yet.
             </AppText>
           )
         }
@@ -193,8 +197,13 @@ function HistoryList({
             entry={item}
             hostClient={hostClient}
             profileId={profileId}
-            disabled={!online || busy}
-            onRemove={() => mutate(() => history.remove(profileId, item.url))}
+            disabled={busy}
+            onRemove={() =>
+              mutate({
+                work: () => history.remove(profileId, item.url),
+                settled: (now) => !now.some((entry) => entry.url === item.url),
+              })
+            }
           />
         )}
       />
@@ -221,7 +230,7 @@ function HistoryRow({
   const address = `${host}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`;
   const title = entry.title.trim() || host;
   const history = hostClient.browserHistory;
-  const icon = disabled ? null : history.icon(profileId, history.iconRef(profileId, entry.url));
+  const icon = history.icon(profileId, history.iconRef(profileId, entry.url));
   return (
     <View style={styles.row}>
       {icon ? (
@@ -245,6 +254,12 @@ function HistoryRow({
     </View>
   );
 }
+interface HistoryChange {
+  readonly work: () => Promise<void>;
+  /** Whether history as read again shows the change, for a check after a lost answer. */
+  readonly settled: (entries: readonly BrowserHistoryEntry[]) => boolean;
+}
+
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;
 const styles = StyleSheet.create({
   content: { gap: space[12], paddingTop: space[12] },
@@ -253,3 +268,7 @@ const styles = StyleSheet.create({
   text: { flex: 1, gap: space[2] },
   icon: { width: 20, height: 20 },
 });
+
+function isUsable(state: ClientConnectionState): boolean {
+  return state.phase === "ready" && state.network !== "offline";
+}

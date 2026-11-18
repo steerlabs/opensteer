@@ -1,3 +1,4 @@
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useChannelDirectory, useMountedRef } from "@opensteer/client/react";
 import {
@@ -28,7 +29,6 @@ import {
 } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Pressable,
   ScrollView,
@@ -54,7 +54,11 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
-import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
+
 import { Screen } from "../ui/screen.js";
 import { SheetBar } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
@@ -93,10 +97,6 @@ function useSheetAnswer(teamId: string): {
   return { shown, openChannel };
 }
 
-function failureText(error: unknown): string {
-  return error instanceof Error ? error.message : "Try again in a moment.";
-}
-
 /* ---- Browse channels ---- */
 
 /**
@@ -106,9 +106,14 @@ function failureText(error: unknown): string {
 export function TeamChannelsScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const { session, snapshot, failure } = useTeamSession(teamId);
+  const { session, snapshot } = useTeamSession(teamId);
   const [query, setQuery] = useState("");
   const [joining, setJoining] = useState<string | null>(null);
+  // A failed join is said on its row, in the place of its state.
+  const [joinLine, setJoinLine] = useState<{
+    readonly channelId: string;
+    readonly line: ActionLineValue;
+  } | null>(null);
   const searchBar = useRef<SearchBarCommands>(null);
   const canCreate = snapshot.bootstrap?.can.createChannel === true;
   const directory = useChannelDirectory(
@@ -130,9 +135,17 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
       if (channel.can.read) return go();
       if (!channel.can.join || session === null) return;
       setJoining(channel.id);
-      void session.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id })
-        .then(unwrapRpcResult)
-        .then(go, (error: unknown) => Alert.alert("Couldn't join", failureText(error)))
+      setJoinLine(null);
+      void actOnce(session, { label: "join this channel", done: "joined" }, () =>
+        session.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id }).then(
+          unwrapRpcResult,
+        ),
+      )
+        .then((outcome) => {
+          const line = outcomeLine(outcome);
+          if (line === null) go();
+          else setJoinLine({ channelId: channel.id, line });
+        })
         .finally(() => setJoining(null));
     },
     [navigation, session, teamId],
@@ -170,19 +183,19 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
     });
   }, [canCreate, navigation, newChannel]);
   const empty =
-    directory.loading || (!directory.complete && directory.error === null) ? (
+    directory.error !== null ? (
       <View style={styles.state}>
-        <ActivityIndicator color={color.muted} />
-      </View>
-    ) : directory.error !== null ? (
-      <View style={styles.state}>
-        <Notice
-          detail={failureText(directory.error) || (failure ?? "")}
-          title="Channels didn't load"
-          tone="neutral"
+        <ActionLine
+          line={{
+            key: "channels-failed",
+            text: presentClientIssue(directory.error).title,
+            tone: "muted",
+            link: { label: clientIssueActions.tryAgain, onPress: directory.retry },
+          }}
         />
-        <SecondaryButton label="Try again" onPress={directory.retry} />
       </View>
+    ) : directory.loading || !directory.complete ? (
+      <PlaceholderRows count={6} />
     ) : (
       <View style={styles.state}>
         <AppText role="secondary" style={styles.centered} tone="muted">
@@ -214,10 +227,14 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
         ListFooterComponent={
           directory.error !== null && channels.length > 0 ? (
             <View style={styles.state}>
-              <AppText role="caption" style={styles.centered} tone="muted">
-                Some channels didn't load.
-              </AppText>
-              <SecondaryButton label="Try again" onPress={directory.retry} />
+              <ActionLine
+                line={{
+                  key: "channels-more-failed",
+                  text: "Some channels didn't load.",
+                  tone: "muted",
+                  link: { label: clientIssueActions.tryAgain, onPress: directory.retry },
+                }}
+              />
             </View>
           ) : !directory.complete && channels.length > 0 ? (
             <ActivityIndicator color={color.muted} style={styles.more} />
@@ -232,7 +249,12 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
           ) : undefined
         }
         renderItem={({ item }) => (
-          <ChannelChoice channel={item} joining={joining === item.id} onOpen={open} />
+          <ChannelChoice
+            channel={item}
+            joining={joining === item.id}
+            line={joinLine?.channelId === item.id ? joinLine.line : null}
+            onOpen={open}
+          />
         )}
         windowSize={9}
       />
@@ -243,6 +265,7 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
 const ChannelChoice = memo(function ChannelChoice(props: {
   readonly channel: TeamChannelSummary;
   readonly joining: boolean;
+  readonly line: ActionLineValue | null;
   readonly onOpen: (channel: TeamChannelSummary) => void;
 }): ReactNode {
   const { channel } = props;
@@ -277,7 +300,9 @@ const ChannelChoice = memo(function ChannelChoice(props: {
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="body">
           {channel.name}
         </AppText>
-        {channel.peopleOnly ? (
+        {props.line !== null ? (
+          <ActionLine line={props.line} />
+        ) : channel.peopleOnly ? (
           <View style={styles.peopleOnly}>
             <Symbol name="person" size={11} tint={color.blue} weight="semibold" />
             <AppText
@@ -344,38 +369,40 @@ export function TeamNewChannelScreen(
   const [chosen, setChosen] = useState<readonly UserId[]>([]);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ name: string; message: string } | null>(null);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const teamName = snapshot.bootstrap?.teamName ?? "the team";
-  const offline = snapshot.unreachable;
   const words = channelNameFromInput(name);
   const joined = channelNamed(snapshot.sidebar?.channels.map((row) => row.channel) ?? [], name);
   const refused = refusal?.name === words ? refusal.message : null;
-  const ready =
-    words !== "" && joined === null && refused === null && !offline && !busy && session !== null;
+  const ready = words !== "" && joined === null && refused === null && !busy && session !== null;
   const create = (): void => {
     if (!ready || session === null) return;
     setBusy(true);
-    void session.rpc["commands.dispatch"](
-      newChannelCommand({ id, name, isPrivate, peopleOnly, people: chosen }),
-    )
-      .then(unwrapRpcResult)
-      .then(
-        () => openChannel(id),
-        (error: unknown) => {
-          if (!shown.current) return;
-          setBusy(false);
-          if (isChannelNameTaken(error)) setRefusal({ name: words, message: failureText(error) });
-          else Alert.alert("The channel wasn't made", failureText(error));
-        },
-      );
+    setLine(null);
+    let taken = false;
+    void actOnce(session, { label: "make this channel", done: "made" }, () =>
+      session.rpc["commands.dispatch"](
+        newChannelCommand({ id, name, isPrivate, peopleOnly, people: chosen }),
+      )
+        .then(unwrapRpcResult)
+        .catch((error: unknown) => {
+          taken = isChannelNameTaken(error);
+          throw error;
+        }),
+    ).then((outcome) => {
+      if (outcome.kind === "confirmed") return openChannel(id);
+      if (!shown.current) return;
+      setBusy(false);
+      if (taken) setRefusal({ name: words, message: "A channel already has this name." });
+      else setLine(outcomeLine(outcome));
+    });
   };
   const one = chosen[0] === undefined ? null : personView(chosen[0], people.directory).name;
-  const note = offline
-    ? `Can't reach ${teamName} right now.`
-    : !isPrivate
-      ? `Anyone in ${teamName} can find and join it.`
-      : one === null
-        ? "Just you for now. You can add people later."
-        : `You and ${chosen.length === 1 ? (one.split(/\s+/u)[0] ?? one) : `${chosen.length} people`}. You'll manage it.`;
+  const note = !isPrivate
+    ? `Anyone in ${teamName} can find and join it.`
+    : one === null
+      ? "Just you for now. You can add people later."
+      : `You and ${chosen.length === 1 ? (one.split(/\s+/u)[0] ?? one) : `${chosen.length} people`}. You'll manage it.`;
   return (
     <ScrollView
       automaticallyAdjustKeyboardInsets
@@ -481,9 +508,13 @@ export function TeamNewChannelScreen(
             />
           </View>
         ) : null}
-        <AppText role="caption" style={styles.note} tone="muted">
-          {note}
-        </AppText>
+        {line === null ? (
+          <AppText role="caption" style={styles.note} tone="muted">
+            {note}
+          </AppText>
+        ) : (
+          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+        )}
       </View>
     </ScrollView>
   );
@@ -501,24 +532,29 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
   const people = useTeamMembers(teamId);
   const [chosen, setChosen] = useState<readonly UserId[]>([]);
   const [busy, setBusy] = useState(false);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const teamName = snapshot.bootstrap?.teamName ?? "the team";
-  const offline = snapshot.unreachable;
-  const ready = chosen.length > 0 && !offline && !busy && session !== null;
+  const ready = chosen.length > 0 && !busy && session !== null;
   const open = (): void => {
     if (!ready || session === null) return;
     setBusy(true);
-    void session.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [...chosen] })
-      .then(unwrapRpcResult)
-      .then(
-        (result) => {
-          if (result.type === "team.dm.open") openChannel(result.channel.id);
-        },
-        (error: unknown) => {
-          if (!shown.current) return;
-          setBusy(false);
-          Alert.alert("That message couldn't start", failureText(error));
-        },
-      );
+    setLine(null);
+    void actOnce(
+      session,
+      { label: "start this message", done: "started", happened: "this message was started" },
+      () =>
+        session.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [...chosen] }).then(
+          unwrapRpcResult,
+        ),
+    ).then((outcome) => {
+      if (outcome.kind === "confirmed") {
+        if (outcome.value.type === "team.dm.open") openChannel(outcome.value.channel.id);
+        return;
+      }
+      if (!shown.current) return;
+      setBusy(false);
+      setLine(outcomeLine(outcome));
+    });
   };
   return (
     <View style={styles.sheet}>
@@ -536,13 +572,8 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
         fill
         label="To"
         max={teamDmMaxParticipants}
-        note={
-          offline
-            ? `Can't reach ${teamName} right now.`
-            : chosen.length > 1
-              ? `A group message. Up to ${teamDmMaxParticipants} people.`
-              : null
-        }
+        line={line}
+        note={chosen.length > 1 ? `A group message. Up to ${teamDmMaxParticipants} people.` : null}
         onChange={setChosen}
         onSubmit={open}
         paddingBottom={insets.bottom + space[24]}
@@ -572,6 +603,8 @@ function PeoplePicker(props: {
   readonly label?: string;
   readonly max?: number;
   readonly note?: string | null;
+  /** The last tap's outcome, in the note's place. */
+  readonly line?: ActionLineValue | null;
   readonly onChange: (chosen: readonly UserId[]) => void;
   readonly onSubmit?: () => void;
   readonly paddingBottom?: number;
@@ -609,21 +642,21 @@ function PeoplePicker(props: {
     return (
       <View style={[styles.state, props.fill === true && styles.fill]}>
         {people.status === "reading" ? (
-          <ActivityIndicator color={color.muted} />
+          <PlaceholderRows count={4} />
+        ) : people.status === "failed" ? (
+          people.line === null ? null : (
+            <ActionLine line={people.line} />
+          )
         ) : (
           <>
             <View style={styles.emptyMark}>
               <Symbol name="person.2" size={20} tint={color.textSoft} />
             </View>
             <AppText role="bodyMedium" style={styles.centered}>
-              {people.status === "failed"
-                ? "Can't load people right now"
-                : "No one else is here yet"}
+              No one else is here yet
             </AppText>
             <AppText role="secondary" style={styles.centered} tone="muted">
-              {people.status === "failed"
-                ? "Try again in a moment."
-                : `Invite people to ${props.teamName}, then you can pick them here.`}
+              {`Invite people to ${props.teamName}, then you can pick them here.`}
             </AppText>
           </>
         )}
@@ -671,7 +704,9 @@ function PeoplePicker(props: {
           value={query}
         />
       </Pressable>
-      {props.note ? (
+      {props.line ? (
+        <ActionLine line={props.line} numberOfLines={2} />
+      ) : props.note ? (
         <AppText role="caption" tone="muted">
           {props.note}
         </AppText>

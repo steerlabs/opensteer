@@ -43,8 +43,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
  * speak the lower of their two current versions.
  */
-export const hostApiVersion = 62;
-export const minimumHostApiVersion = 62;
+export const hostApiVersion = 63;
+export const minimumHostApiVersion = 63;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
@@ -156,7 +156,6 @@ export const HostCapabilitySchema = z.enum([
   "tab-reopen-v1",
   "iphone-apps-v1",
   "ownerViewWindows",
-  "task-attachments",
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
   "browser-backend-v1",

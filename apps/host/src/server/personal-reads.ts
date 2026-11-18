@@ -1,3 +1,5 @@
+import type { TranscriptItem } from "@opensteer/protocol/transcript";
+import type { MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
   executionNodeFromRow,
@@ -81,9 +83,19 @@ function taskBoundary(before: string | undefined, window: "recent" | "active" | 
 export function createPersonalReads(
   dependencies: HostServerDependencies,
   resources: PersonalResources,
+  readSendKeys = (session: Session) => (ids: readonly MessageId[]) =>
+    dependencies.store.personalMessageSendKeys(session.user.id, session.id, ids),
 ) {
   const { store } = dependencies;
   const database = store.database;
+  const decorateItems = async (session: Session, items: readonly TranscriptItem[]) => {
+    const keys = await readSendKeys(session)(
+      items.flatMap((item) =>
+        item.kind === "message" && item.author?.kind === "human" ? [item.messageId] : [],
+      ),
+    );
+    return items.map((item) => decorateItem(item, keys));
+  };
   const shell = async (
     session: Session,
     surface: AuthenticatedHostSession["surface"],
@@ -208,20 +220,56 @@ export function createPersonalReads(
         frames.push({ type: "host.snapshot-required", scope, throughSequence, reason: cut.reason });
         break;
       case "snapshot":
-        frames.push({ type: "host.snapshot", scope, throughSequence, snapshot: cut.snapshot });
+        if ("items" in cut.snapshot) {
+          const items = await decorateItems(session, [
+            ...cut.snapshot.items,
+            ...cut.snapshot.activeItems,
+          ]);
+          frames.push({
+            type: "host.snapshot",
+            scope,
+            throughSequence,
+            snapshot: {
+              ...cut.snapshot,
+              items: items.slice(0, cut.snapshot.items.length),
+              activeItems: items.slice(cut.snapshot.items.length),
+            },
+          });
+        } else
+          frames.push({ type: "host.snapshot", scope, throughSequence, snapshot: cut.snapshot });
         break;
-      case "replay":
-        for (const commit of cut.commits)
+      case "replay": {
+        const framesByCommit = cut.commits.map((commit) =>
+          commit.changes.map((change) => PersonalChangeSchema.parse(change)),
+        );
+        const keys = await readSendKeys(session)(
+          framesByCommit.flatMap((changes) =>
+            changes.flatMap((row) =>
+              row.operation === "upsert" &&
+              row.entityKind === "item" &&
+              row.value.kind === "message" &&
+              row.value.author?.kind === "human"
+                ? [row.value.messageId]
+                : [],
+            ),
+          ),
+        );
+        for (const [index, commit] of cut.commits.entries())
           frames.push({
             type: "host.changes",
             scope,
             ...commit,
-            changes: commit.changes.map((change) => PersonalChangeSchema.parse(change)),
+            changes: framesByCommit[index]!.map((row) =>
+              row.operation === "upsert" && row.entityKind === "item"
+                ? { ...row, value: decorateItem(row.value, keys) }
+                : row,
+            ),
             ...(shellProgress && commit.throughSequence === throughSequence
               ? { shellProgress }
               : {}),
           });
         break;
+      }
     }
     return {
       throughSequence,
@@ -253,6 +301,7 @@ export function createPersonalReads(
     return rpcSuccess(
       hostApi["thread.items.page"].success.parse({
         ...page,
+        items: await decorateItems(requireSession(context), page.items),
         threadId: input.threadId,
         nodeId: input.nodeId ?? null,
       }),
@@ -350,7 +399,16 @@ export function createPersonalReads(
     },
     "thread.snapshot.get": async (input, context) => {
       const cut = await detail(requireSession(context), detailScope(input));
-      return rpcSuccess(cut.kind === "snapshot" ? cut.snapshot : unavailable());
+      if (cut.kind !== "snapshot") return unavailable();
+      const items = await decorateItems(requireSession(context), [
+        ...cut.snapshot.items,
+        ...cut.snapshot.activeItems,
+      ]);
+      return rpcSuccess({
+        ...cut.snapshot,
+        items: items.slice(0, cut.snapshot.items.length),
+        activeItems: items.slice(cut.snapshot.items.length),
+      });
     },
     "thread.items.page": itemPage,
     "node.items.page": itemPage,
@@ -389,7 +447,7 @@ export function createPersonalReads(
       if (result.kind === "revision-conflict") return changed();
       return rpcSuccess(
         hostApi["transcript.item.get"].success.parse({
-          item: result.item,
+          item: (await decorateItems(requireSession(context), [result.item]))[0]!,
           body: result.body,
           truncated: result.truncated,
           threadId: input.threadId,
@@ -416,4 +474,11 @@ export function createPersonalReads(
   >;
 
   return { handlers, readCut };
+}
+
+function decorateItem(item: TranscriptItem, keys: ReadonlyMap<string, string>): TranscriptItem {
+  if (item.kind !== "message") return item;
+  const { clientSendKey: _discard, ...view } = item;
+  const key = keys.get(item.messageId);
+  return key ? { ...view, clientSendKey: key } : view;
 }

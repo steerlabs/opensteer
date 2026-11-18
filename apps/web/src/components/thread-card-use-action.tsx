@@ -14,7 +14,7 @@ import {
   useHostSignIn,
   type PasswordSignInRequestClient,
 } from "./thread-password-sign-in-action.js";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 
 export function CardUseRequestBody({
   client,
@@ -63,33 +63,41 @@ export function CardUseRequestBody({
     setBusy(true);
     setError(null);
     declineKey.current ??= mutationIdempotencyKey(`card-use:${request.id}`);
-    try {
-      const result = await client.dispatch({
-        type: "browser.password-sign-in.respond",
-        ...requestDecisionRevision(request),
-        requestId: request.id,
-        idempotencyKey: allow
-          ? mutationIdempotencyKey(`card-use:${request.id}`)
-          : declineKey.current,
-        decision:
-          allow && chosen
-            ? {
-                kind: "approve-card",
-                cardId: chosen.id,
-                revision: chosen.revision,
-                permissionVersion: 7,
-              }
-            : { kind: "decline" },
-      });
-      if (result.type === "browser.password-sign-in.respond") {
-        if (result.card) chooser.apply(result.card);
-        if (result.message) setError(result.message);
-        if (result.status === "pending" && allow) setBusy(false);
-      }
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
+    const idempotencyKey = allow
+      ? mutationIdempotencyKey(`card-use:${request.id}`)
+      : declineKey.current;
+    const outcome = await runAction(client, {
+      label: "send your answer",
+      done: "sent",
+      happened: "your answer was sent",
+      execute: () =>
+        client.dispatch({
+          type: "browser.password-sign-in.respond",
+          requestId: request.id,
+          ...requestDecisionRevision(request),
+          idempotencyKey,
+          decision:
+            allow && chosen
+              ? {
+                  kind: "approve-card",
+                  cardId: chosen.id,
+                  revision: chosen.revision,
+                  permissionVersion: 7,
+                }
+              : { kind: "decline" },
+        }),
+    });
+    if (outcome.kind !== "confirmed") {
+      setError(outcomeWords(outcome));
       chooser.retry();
       setBusy(false);
+      return;
+    }
+    const result = outcome.value;
+    if (result.type === "browser.password-sign-in.respond") {
+      if (result.card) chooser.apply(result.card);
+      if (result.message) setError(result.message);
+      if (result.status === "pending" && allow) setBusy(false);
     }
   }
   function keyDown(event: KeyboardEvent<HTMLDivElement>) {

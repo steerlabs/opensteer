@@ -341,6 +341,7 @@ export {
 } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
+  provenance: z.enum(["transport", "host", "proxy", "protocol", "local"]).optional(),
   machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: OpensteerErrorCodeSchema,

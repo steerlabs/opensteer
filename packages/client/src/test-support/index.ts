@@ -9,3 +9,6 @@ export * from "./mcp-presentation-scenarios.js";
 export * from "./tab-fixtures.js";
 
 export * from "./previous-release-catalog.js";
+
+export * from "./host-connection.js";
+export * from "./client-connection.js";

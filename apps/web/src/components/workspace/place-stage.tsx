@@ -208,13 +208,10 @@ function SelectedPlace({
       () => {
         if (!cancelled) setActivation(null);
       },
-      (error: unknown) => {
+      () => {
+        // The tab's own fact; why the browser didn't start is never shown as raw text.
         if (!cancelled)
-          setActivation({
-            tabId: placeKey,
-            state: "failed",
-            message: error instanceof Error ? error.message : "This tab could not open.",
-          });
+          setActivation({ tabId: placeKey, state: "failed", message: "This tab could not open." });
       },
     );
     return () => {

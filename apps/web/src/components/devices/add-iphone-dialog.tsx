@@ -14,7 +14,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { useComputerAppData } from "../computer-apps/computer-apps-section.js";
 import { SetupStage, type SetupStageProps } from "../computers/setup-stage.js";
 import { Dialog } from "../dialog.js";
@@ -723,10 +723,12 @@ function AgentAccessChoice({
     setPending(choice);
     setError(null);
     try {
-      await setIphoneAgentAccess(client, machine, view?.connectionId ?? null, choice);
+      await act(client, { label: "change this", done: "changed" }, () =>
+        setIphoneAgentAccess(client, machine, view?.connectionId ?? null, choice),
+      );
       await apps.reload();
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setPending(null);
     }

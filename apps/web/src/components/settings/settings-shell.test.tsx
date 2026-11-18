@@ -15,12 +15,7 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { ShellContext, useShell } from "../app-shell.js";
 import { defaultSettingsSection, settingsSectionForPath } from "./copy.js";
-import {
-  SettingsNotFound,
-  SettingsSectionRoute,
-  SettingsShell,
-  settingsStatus,
-} from "./settings-shell.js";
+import { SettingsNotFound, SettingsSectionRoute, SettingsShell } from "./settings-shell.js";
 
 const noOp = () => undefined;
 
@@ -146,20 +141,6 @@ describe("Settings identity honesty", () => {
   });
 });
 
-describe("Settings status", () => {
-  it("reads the supervisor status on Desktop and the socket status in a browser", () => {
-    expect(
-      settingsStatus({
-        connection: "offline",
-        desktopStatus: { reason: null, status: "ready" },
-      }).status,
-    ).toBe("ready");
-    expect(settingsStatus({ connection: "connected" }).status).toBe("ready");
-    expect(settingsStatus({ connection: "connecting" }).status).toBe("starting");
-    expect(settingsStatus({ connection: "offline" }).status).toBe("offline");
-  });
-});
-
 /* ------------------------------------------------------------------------- *
  * Harness
  * ------------------------------------------------------------------------- */
@@ -180,8 +161,6 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     user: base.user ? { ...base.user, email: placeholderEmail } : null,
   };
   const context: ShellContext = {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,

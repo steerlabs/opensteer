@@ -185,6 +185,7 @@ export type ThreadInputSource =
     }
   | {
       readonly kind: "human";
+      readonly clientSessionId?: string;
       /** Facts for the agent only: never part of the request's idempotency fingerprint. */
       readonly origin?: import("@opensteer/core").MessageOrigin;
     }

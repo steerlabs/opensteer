@@ -91,8 +91,6 @@ const noOp = () => undefined;
 function useShellContext(): ShellContext {
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot);
   return {
-    actionError: null,
-    clearActionError: noOp,
     createThreadAndSend: async () => {
       throw new Error("Tasks don’t start in this preview.");
     },

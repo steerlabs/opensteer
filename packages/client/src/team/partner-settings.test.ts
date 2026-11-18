@@ -11,7 +11,7 @@ const clients: TeamSessionClient[] = [];
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
 });
-function fixture() {
+async function fixture() {
   const host = new MockTeamHost();
   const client = new TeamSessionClient({
     scope: { teamDeploymentId: host.teamId, userId: host.userId },
@@ -20,6 +20,8 @@ function fixture() {
     connect: host.connect,
   });
   clients.push(client);
+  await client.load();
+  await vi.waitFor(() => expect(client.connection.getSnapshot().phase).toBe("ready"));
   return { host, client, model: teamPartnerSettings(client) };
 }
 async function offer(host: MockTeamHost) {
@@ -31,8 +33,8 @@ async function offer(host: MockTeamHost) {
 }
 
 it("loads only when opened and keeps cached state when a refresh fails", async () => {
-  const { host, client, model } = fixture();
-  expect(host.calls).toEqual([]);
+  const { host, client, model } = await fixture();
+  expect(host.calls.filter((name) => name.startsWith("team.partner"))).toEqual([]);
   await model.refresh();
   const policy = model.getSnapshot().policy;
   expect(policy).toMatchObject({ canSet: true, canPropose: true, policy: "admins" });
@@ -45,7 +47,7 @@ it("loads only when opened and keeps cached state when a refresh fails", async (
 });
 
 it("requires a reviewed invite, drops a preview after editing, and redeems the exact reviewed link", async () => {
-  const { host, model } = fixture();
+  const { host, model } = await fixture();
   const first = await offer(host);
   const second = await offer(host);
   await model.redeemInvite();
@@ -88,7 +90,7 @@ it("requires a reviewed invite, drops a preview after editing, and redeems the e
 });
 
 it("keeps independent actions available, deduplicates taps and clears invite secrets on session retirement", async () => {
-  const { host, client, model } = fixture();
+  const { host, client, model } = await fixture();
   const read = host.read.bind(host);
   let finish!: () => void;
   const held = new Promise<void>((resolve) => {
@@ -123,7 +125,7 @@ it("keeps independent actions available, deduplicates taps and clears invite sec
 });
 
 it("reads current Host permissions after policy changes and retains disconnected teams", async () => {
-  const { host, model } = fixture();
+  const { host, model } = await fixture();
   const linkOffer = await offer(host);
   host.bootstrap.member.role = "member";
   await model.refresh();
@@ -145,7 +147,7 @@ it("reads current Host permissions after policy changes and retains disconnected
 });
 
 it("never confirms an expired invite or publishes a preview after the viewer changes", async () => {
-  const { host, client, model } = fixture();
+  const { host, client, model } = await fixture();
   const valid = await offer(host);
   const expired = serializeTeamPartnerOffer({
     ...parseTeamPartnerOffer(valid),
@@ -173,7 +175,7 @@ it("never confirms an expired invite or publishes a preview after the viewer cha
 });
 
 it("ignores a failed preview for a link that was replaced while checking", async () => {
-  const { host, model } = fixture();
+  const { host, model } = await fixture();
   const link = await offer(host);
   const read = host.read.bind(host);
   let finish!: () => void;
@@ -200,7 +202,7 @@ it("ignores a failed preview for a link that was replaced while checking", async
 });
 
 it("does not hide another page of partner invites and only returns the viewer’s revocable invites", async () => {
-  const { host, model } = fixture();
+  const { host, model } = await fixture();
   const made = parseTeamPartnerOffer(await offer(host));
   const row = host.partnerInvites.get(made.selector)!;
   for (let i = 1; i <= 51; i++)

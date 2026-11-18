@@ -14,9 +14,15 @@ import {
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
-import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import {
+  minimumHostApiVersion,
+  teamApiVersion,
+  teamApiVersionHeader,
+} from "@opensteer/deployment-authority";
+import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
+import { HttpHostClient } from "@opensteer/client/host";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -27,6 +33,7 @@ import {
   type HostNetworkSocketEvents,
 } from "@opensteer/client/connections";
 import {
+  controlledClientSession,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testDiscoveryEnvelope,
@@ -44,6 +51,265 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each([
+    ["web", 60],
+    ["web", 61],
+    ["web", 62],
+    ["web", 63],
+    ["desktop", 60],
+    ["desktop", 61],
+    ["desktop", 62],
+    ["desktop", 63],
+  ] as const)(
+    "%s checks the Personal API %i before admitting sends and task creation",
+    async (surface, version) => {
+      const row = deployment("Home", "https://home.connect.opensteer.test", "personal");
+      const deploymentId = row.authority.document.deploymentId;
+      const userId = createId("user");
+      const loginId = createId("authSession");
+      const threadId = createId("thread");
+      const environmentId = createId("environment");
+      const harnessInstanceId = createId("harnessInstance");
+      const modelSelection = { modelId: "claude", providerId: "anthropic", options: {} };
+      const at = "2026-09-01T00:00:00Z";
+      const messageId = createId("message");
+      const scope = {
+        authorityKey: row.authority.document.canonicalOrigin,
+        deploymentId,
+        viewerId: userId,
+        loginId,
+      };
+      const view = controlledClientSession();
+      view.change({ scope });
+      const admitted: { type: string; session: string | null }[] = [];
+      const answer = (headers: Headers, path: string, body: string | null) => {
+        expect(path.endsWith("/commands.dispatch")).toBe(true);
+        expect(headers.get(hostApiVersionHeader)).toBe(String(minimumHostApiVersion));
+        if (version < scopedPersonalApiVersion)
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "bad_request",
+                reason: "unsupported-version",
+                message: "Update Opensteer.",
+                retryable: false,
+              },
+            },
+            { status: 426 },
+          );
+        const command = JSON.parse(body!) as { type: string };
+        const session = headers.get(expectedMutationSessionHeader);
+        admitted.push({ type: command.type, session });
+        return Response.json({
+          ok: true,
+          data:
+            command.type === "thread.create"
+              ? {
+                  type: command.type,
+                  asOfSequence: "0",
+                  wasDuplicate: false,
+                  thread: {
+                    accessMode: "auto",
+                    continuationIdentity: null,
+                    createdAt: at,
+                    updatedAt: at,
+                    createdBy: userId,
+                    environmentId,
+                    harnessInstanceId,
+                    id: threadId,
+                    lineageRootThreadId: threadId,
+                    inputQueuePaused: false,
+                    listed: true,
+                    modelSelection,
+                    parentThreadId: null,
+                    pendingRequests: 0,
+                    status: "idle",
+                    title: "Task",
+                    purpose: "task",
+                    teamOrigin: null,
+                  },
+                }
+              : {
+                  type: command.type,
+                  run: null,
+                  wasDuplicate: false,
+                  input: {
+                    assignmentId: null,
+                    cancelReason: null,
+                    causalChainId: createId("causalChain"),
+                    createdAt: at,
+                    deliveredAt: null,
+                    messageId,
+                    policy: "queue",
+                    replyTarget: null,
+                    runId: null,
+                    state: "pending",
+                    teamRequestId: null,
+                    teamSource: null,
+                    threadId,
+                    updatedAt: at,
+                  },
+                  message: {
+                    author: { kind: "human", displayName: "Person", principalId: "person", userId },
+                    content: [{ type: "text", text: "Hello" }],
+                    createdAt: at,
+                    id: messageId,
+                    kind: "input",
+                    runId: null,
+                    sequence: "1",
+                    threadId,
+                  },
+                },
+        });
+      };
+      const transport =
+        surface === "desktop"
+          ? desktopHostTransport({
+              catalog: catalogStore([row], deploymentId),
+              network: {
+                openWebSocket: () => socket(),
+                request: async ({ request }) =>
+                  answer(
+                    new Headers(request.headers.additional),
+                    request.path,
+                    request.body instanceof Uint8Array
+                      ? new TextDecoder().decode(request.body)
+                      : null,
+                  ),
+              },
+            })
+          : null;
+      const host = new HttpHostClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: transport
+          ? hostFetch(transport, deploymentId)
+          : async (input, init) =>
+              answer(
+                new Headers(init?.headers),
+                String(input),
+                typeof init?.body === "string" ? init.body : null,
+              ),
+      });
+      vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
+      try {
+        const create = host.dispatch(
+          {
+            type: "thread.create",
+            accessMode: "auto",
+            environmentId,
+            harnessInstanceId,
+            modelSelection,
+            idempotencyKey: "task",
+            title: "Task",
+          },
+          { expectedLogin: scope },
+        );
+        const send = host.dispatch(
+          {
+            type: "thread.sendMessage",
+            content: [{ type: "text", text: "Hello" }],
+            threadId,
+            idempotencyKey: "reply",
+          },
+          { expectedLogin: scope },
+        );
+        if (version < scopedPersonalApiVersion) {
+          await Promise.all([
+            expect(create).rejects.toMatchObject({ reason: "unsupported-version" }),
+            expect(send).rejects.toMatchObject({ reason: "unsupported-version" }),
+          ]);
+          expect(admitted).toEqual([]);
+          return;
+        }
+        await expect(create).resolves.toMatchObject({ thread: { id: threadId } });
+        await expect(send).resolves.toMatchObject({ message: { id: messageId } });
+        expect(admitted).toEqual(
+          ["thread.create", "thread.sendMessage"].map((type) => ({
+            type,
+            session: loginId,
+          })),
+        );
+      } finally {
+        host.dispose();
+        transport?.dispose();
+      }
+    },
+  );
+
+  it("preserves the renderer's expected session through the Host mutation route", async () => {
+    const deploymentRow = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = deploymentRow.authority.document.deploymentId;
+    const request = vi.fn(async (_input: HostNetworkRequest) => Response.json({ ok: true }));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([deploymentRow], id),
+      network: { openWebSocket: () => socket(), request },
+    });
+    try {
+      const rpc = createHttpHostApiClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: hostFetch(transport, id),
+        onAuthenticationRequired: () => {},
+      });
+      const expectedSessionId = "session-that-owned-the-draft";
+      await rpc["commands.dispatch"](
+        {
+          type: "thread.sendMessage",
+          threadId: createId("thread"),
+          content: [{ type: "text", text: "A persisted message" }],
+          idempotencyKey: "bound-message",
+        },
+        { expectedSessionId },
+      );
+      expect(request.mock.lastCall?.[0].request.headers.additional).toMatchObject({
+        [expectedMutationSessionHeader]: expectedSessionId,
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
+      });
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("preserves a 401 through the renderer route when its body stalls", async () => {
+    vi.useFakeTimers();
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = selected.authority.document.deploymentId;
+    const sessionEnded = vi.fn();
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], id),
+      sessions: { sessionEnded, recoverUnauthorized: async () => "blocked" },
+      network: {
+        openWebSocket: () => socket(),
+        request: async () => new Response(new ReadableStream({ start() {} }), { status: 401 }),
+      },
+    });
+    try {
+      const onAuthenticationRequired = vi.fn();
+      const rpc = createHttpHostApiClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: hostFetch(transport, id),
+        onAuthenticationRequired,
+      });
+      const answer = rpc["auth.config"]({});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sessionEnded).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await answer).toMatchObject({
+        ok: false,
+        error: {
+          code: "unauthorized",
+          reason: "sign-in-required",
+          provenance: "host",
+          retryable: false,
+        },
+      });
+      expect(onAuthenticationRequired).toHaveBeenCalledWith("auth.config");
+    } finally {
+      transport.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("ends a team response mid-body when its Account owner retires", async () => {
     const team = deployment("Team", "https://team.example");
     const id = team.authority.document.deploymentId;

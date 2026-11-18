@@ -3,8 +3,8 @@ import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import type { NotificationPreferences } from "../notifications/push-registration.js";
+import { notDone, settingsFooter, useScreenAction, failureWords } from "../ui/client-feedback.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { GeneralSettingsForm } from "./settings-general-form.js";
@@ -33,25 +33,29 @@ export function GeneralSettingsController(): ReactNode {
     selectedRow?.name ?? "",
   );
   const [quietDays, setQuietDays] = useState<QuietTaskDays | null>(null);
-  const [quietError, setQuietError] = useState<string | null>(null);
+  const hostClient = selection.hostClient;
+  const quietChange = useScreenAction(hostClient, "quiet-task-days", {
+    label: "change this setting",
+    done: "changed",
+    happened: "this setting changed",
+    execute: (days: QuietTaskDays) => hostClient!.setQuietTaskDays(days),
+    reconcile: async (days) =>
+      hostClient?.getSnapshot().quietTaskDays === days
+        ? { kind: "confirmed", value: undefined }
+        : notDone("changed"),
+  });
   const hostQuietDays = snapshot?.quietTaskDays ?? null;
   const quietTasks: QuietTasksSetting | null =
     hostQuietDays === null
       ? null
       : {
           days: quietDays ?? hostQuietDays,
-          error: quietError,
+          line: settingsFooter(quietChange.line) ?? null,
           onChange: (days) => {
-            const hostClient = selection.hostClient;
-            if (hostClient === null || days === (quietDays ?? hostQuietDays)) return;
+            if (days === (quietDays ?? hostQuietDays)) return;
+            // The choice shows while it's sent, then springs back to what the computer holds.
             setQuietDays(days);
-            setQuietError(null);
-            void hostClient
-              .setQuietTaskDays(days)
-              .catch((error: unknown) =>
-                setQuietError(operationDetail(error, "That setting could not be saved.")),
-              )
-              .finally(() => setQuietDays(null));
+            void quietChange.run(days).finally(() => setQuietDays(null));
           },
         };
 
@@ -63,7 +67,9 @@ export function GeneralSettingsController(): ReactNode {
     setNotificationError(null);
     setNotificationWorking(true);
     void operation()
-      .catch((error: unknown) => setNotificationError(operationDetail(error, fallback)))
+      .catch((error: unknown) =>
+        setNotificationError(failureWords(error, { label: "finish that" }, fallback)),
+      )
       .finally(() => {
         notificationInFlight.current = false;
         setNotificationWorking(false);
@@ -134,6 +140,6 @@ function notificationFailure(action: NotificationSettingsActionModel): string {
     case "request-permission":
       return "This phone did not finish the notification permission request. Try again.";
     case "retry-notifications":
-      return "This phone could not register for notifications. Check your connection and try again.";
+      return "This phone could not register for notifications. Try again.";
   }
 }

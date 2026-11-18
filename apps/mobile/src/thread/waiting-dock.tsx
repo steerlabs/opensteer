@@ -7,13 +7,13 @@ import {
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { controlBorderWidth, controlFontScaleLimit, material, radius, space } from "../theme.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { AppText } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
 import { ComposerBar, composerLaneHeight } from "./composer-bar.js";
 import type { WaitingEditController } from "./waiting-edit.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * A docked decision that has just arrived ignores taps for this long, as a
@@ -63,12 +63,16 @@ export function useAskDecisions(hostClient: HostClient): AskDecisions {
         );
       } catch (error) {
         if (!mounted.current) return;
-        const detail = operationDetail(
-          error,
-          decision === "approve"
-            ? "Your answer didn’t reach the team."
-            : "This ask wasn’t declined.",
-        );
+        const detail =
+          failureWords(
+            error,
+            decision === "approve"
+              ? { label: "send your answer", done: "sent", happened: "your answer was sent" }
+              : { label: "decline this ask", done: "declined", happened: "this ask was declined" },
+            decision === "approve"
+              ? "Your answer didn’t reach the team."
+              : "This ask wasn’t declined.",
+          ) ?? "";
         setFailure({ detail, messageId: ask.messageId });
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         void AccessibilityInfo.announceForAccessibility(detail);
@@ -156,7 +160,7 @@ export function WaitingEditBar(props: {
   /** The item open, or null once it has left the list. */
   readonly item: WaitingInput | null;
   /** The words, and what was attached, on their way into a new message. */
-  readonly onSendAsNew: (words: ReturnType<WaitingEditController["takeBack"]>) => void;
+  readonly onSendAsNew: Parameters<WaitingEditController["moveToDraft"]>[0];
 }): ReactNode {
   const { decisions, editing, item } = props;
   const edit = editing.edit;
@@ -195,8 +199,10 @@ export function WaitingEditBar(props: {
       // A teammate's words aren't the person's to send as their own.
       edit.kind === "ask" || !draft.dirty ? null : (
         <AnswerPill
+          busy={saving}
+          disabled={saving}
           label="Send as new message…"
-          onPress={() => props.onSendAsNew(editing.takeBack())}
+          onPress={() => void editing.moveToDraft(props.onSendAsNew)}
           tone="primary"
         />
       )

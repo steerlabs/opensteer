@@ -101,7 +101,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
           },
           verifyEpoch: async () => pending ?? agreement,
           desktopUpdates: () => new MockDesktopUpdates(),
-          attach: ({ authorization, capabilities }) => {
+          attach: ({ authorization, capabilities, connectionController, clientScope }) => {
             read = capabilities;
             network = createHostNetwork({
               authorization,
@@ -114,6 +114,8 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
               baseUrl: origin,
               capabilities,
               prepareSocket: () => authorization.current(),
+              ...(connectionController ? { connectionController } : {}),
+              ...(clientScope ? { clientScope } : {}),
               ...network,
             });
             const dispose = host.dispose.bind(host);
@@ -157,7 +159,10 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         const initialRead = read!;
         await initialRead();
         agreement = "unreachable";
-        await expect(initialRead({ revalidate: true })).rejects.toThrow("unreachable");
+        await expect(initialRead({ revalidate: true })).rejects.toMatchObject({
+          reason: "unreachable",
+          failure: { kind: "transport", retryable: true },
+        });
         expect(disposed).toBe(0);
         expect(client.getSnapshot().selection.hostClient).toBe(retained);
         expect(client.getSnapshot().selection.row?.verification).toBeNull();
@@ -235,7 +240,10 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         mock.dispose();
         for (const socket of sockets.clients) socket.terminate();
         await new Promise<void>((resolve) => sockets.close(() => resolve()));
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        });
       }
     },
   );

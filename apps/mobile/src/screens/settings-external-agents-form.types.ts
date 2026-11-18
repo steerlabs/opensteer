@@ -1,4 +1,5 @@
 import type { ExternalAgentGuide } from "@opensteer/client/host";
+import type { NativeSettingsFooter } from "./native-settings-page.types.js";
 
 export interface ExternalAgentsFormProps {
   readonly connections: readonly {
@@ -7,7 +8,10 @@ export interface ExternalAgentsFormProps {
     readonly detail: string;
     readonly removing: boolean;
   }[];
-  readonly error: string | null;
+  /** The list never arrived: its rows are drawn as placeholders. */
+  readonly loading: boolean;
+  /** Why the list is missing, or how the last removal went. */
+  readonly line: NativeSettingsFooter | null;
   readonly guides: readonly ExternalAgentGuide[];
   /** Setup needs the loaded list as its baseline and a reachable address. */
   readonly addDisabled: boolean;

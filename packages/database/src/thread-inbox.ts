@@ -3379,6 +3379,7 @@ async function resolveThreadInputFacts(
           : {
               kind: "user-session",
               userId: input.requestedBy,
+              ...(source.clientSessionId ? { clientSessionId: source.clientSessionId } : {}),
             },
       causalChainId: null,
       kind: "input",

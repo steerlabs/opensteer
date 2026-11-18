@@ -4,7 +4,7 @@ import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
 import type { DesktopTailscaleShareResult } from "@opensteer/protocol/desktop";
 import { requestPersonalRemoteAccess, type HostClient } from "@opensteer/client/host";
 import type { usePersonalRemoteAccess } from "@opensteer/client/react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 
 /** How a phone reaches this computer, as the person chooses it. */
 export type PhoneConnectionMode = "address" | "connect" | "tailscale";
@@ -104,16 +104,21 @@ export function usePrivatePhoneSetup(input: {
       }
       setPhase({ kind: "turning-on", operationId: null, origin: wanted });
       try {
-        const operation = await requestPersonalRemoteAccess(hostClient, {
-          action: "configure",
-          mode: "private",
-          privateOrigin: wanted,
-        });
+        const operation = await act(
+          hostClient,
+          { label: "turn this on", done: "turned on", happened: "this turned on" },
+          () =>
+            requestPersonalRemoteAccess(hostClient, {
+              action: "configure",
+              mode: "private",
+              privateOrigin: wanted,
+            }),
+        );
         if (attempt.current !== current) return;
         setPhase({ kind: "turning-on", operationId: operation.id, origin: wanted });
       } catch (reason) {
         if (attempt.current !== current) return;
-        setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+        setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
       }
     },
     [hostClient],
@@ -137,7 +142,11 @@ export function usePrivatePhoneSetup(input: {
       return true;
     };
     setPhase({ kind: "sharing" });
-    void share().then(
+    void act(
+      null,
+      { label: "share this computer", done: "shared", happened: "this computer was shared" },
+      () => share(),
+    ).then(
       (result) => {
         if (attempt.current !== current || superseded()) return;
         if (!result.ok) {
@@ -149,7 +158,7 @@ export function usePrivatePhoneSetup(input: {
       },
       (reason: unknown) => {
         if (attempt.current !== current || superseded()) return;
-        setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+        setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
       },
     );
   }, [share, turnOn]);

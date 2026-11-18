@@ -54,7 +54,7 @@ integration("device platform release compatibility", () => {
     await database?.drop();
   }, 120_000);
 
-  it("refuses stale Device commands and exposes current Device state through v62", async () => {
+  it("refuses stale Device commands and exposes current Device state through v63", async () => {
     const directory =
       process.env.OPENSTEER_PLATFORM_COMPAT_EVIDENCE_DIR ??
       (await mkdtemp(join(tmpdir(), "opensteer-platform-compat-")));

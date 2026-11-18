@@ -7,7 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { messageViewFromRow } from "./thread-row-mappers.js";
-import { TranscriptItemSchema } from "@opensteer/protocol/transcript";
+import { clientSendKeyWireReserve, TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   ClientChangesTable,
@@ -361,7 +361,10 @@ export function drawableItems(tx: Read, scope: DetailScope) {
 }
 
 function itemBytes(row: Item) {
-  return Buffer.byteLength(JSON.stringify(itemView(row))) + 1;
+  const item = itemView(row);
+  const privateBytes =
+    item.kind === "message" && item.author?.kind === "human" ? clientSendKeyWireReserve : 0;
+  return Buffer.byteLength(JSON.stringify(item)) + privateBytes + 1;
 }
 
 function itemWindow(items: readonly Item[], limit: number, maxBytes: number, maxTurns: number) {

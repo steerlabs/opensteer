@@ -26,6 +26,7 @@ export function useChannelDirectory(session: TeamSessionClient | null, key: stri
             }))
       : null,
     key,
+    session,
   );
   const { error, loadingMore, more, nextCursor } = list;
   // `more` is new every render; the cursor names the page it reads.

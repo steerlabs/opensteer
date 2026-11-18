@@ -45,6 +45,7 @@ import {
   type PasswordSignInInput,
 } from "@opensteer/client/host";
 import { useHostSnapshot, usePersonalResources } from "@opensteer/client/react";
+import { useConnectionGate, useConnectionInterrupted } from "./components/connection-shell.js";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -54,7 +55,7 @@ import { setupPath } from "./components/workspace/navigation.js";
 import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
-import { actionErrorMessage } from "./ui-utils.js";
+import { outcomeWords, runAction } from "./components/use-action.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
 import { DevicePage } from "./components/devices/device-page.js";
@@ -112,7 +113,7 @@ export function App({
     readonly world: MockTeamWorld;
   } | null;
 }) {
-  const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
+  const { snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   usePersonalResources(snapshot.session === "authenticated" ? hostClient : null, appResources);
   useEffect(
     () =>
@@ -125,7 +126,6 @@ export function App({
   const [onboardingPending, setOnboardingPending] = useState(false);
   const autoOidcStarted = useRef(false);
   const [autoOidcSuppressed, setAutoOidcSuppressed] = useState(hasRecentAutoOidcAttempt);
-  const [refreshing, setRefreshing] = useState(false);
   // Captured once, during the first render, so the code leaves the URL before
   // anything can paint it or persist it in history.
   const [setupToken] = useState(takeSetupToken);
@@ -146,6 +146,19 @@ export function App({
     setContinuingSetup(false);
     onSetupOpened?.();
   }, [continuingSetup, onSetupOpened, shellReady]);
+  // Until this Opensteer has answered, its connection is the one thing said:
+  // setup's own opening screen while setup continues and nothing is wrong.
+  // Only whether it's interrupted: the app never redraws for every connection publish.
+  const interrupted = useConnectionInterrupted(hostClient.connection);
+  const appGate = useConnectionGate(hostClient.connection, {
+    scope: "app",
+    ready: snapshot.session !== "checking" && !interrupted,
+    onSignIn: () => void hostClient.refresh().catch(() => undefined),
+    onUpdate: desktopBridge?.updates
+      ? () => void desktopBridge.updates?.download().catch(() => undefined)
+      : () => window.location.reload(),
+  });
+  const gate = continuingSetup && !interrupted ? null : appGate;
   const [recoveryToken] = useState(takeRecoveryToken);
   const nativeOAuthQuery = useNativeOAuthQuery();
   const [authorizationError, setAuthorizationError] = useState(() =>
@@ -175,16 +188,22 @@ export function App({
     let cancelled = false;
     setSetupAdmission("exchanging");
     setSetupExchangeError(null);
-    void hostClient.rpc["auth.setup.exchange"]({ token: setupToken.trim() })
-      .then(unwrapRpcResult)
-      .then(() => {
-        if (!cancelled) setSetupAdmission("admitted");
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setSetupExchangeError(actionErrorMessage(error));
-        setSetupAdmission("rejected");
-      });
+    // Before sign-in there is no session to be unready: these go straight out.
+    void runAction(null, {
+      label: "check this setup link",
+      done: "checked",
+      happened: "this setup link was checked",
+      execute: async () =>
+        unwrapRpcResult(await hostClient.rpc["auth.setup.exchange"]({ token: setupToken.trim() })),
+    }).then((outcome) => {
+      if (cancelled) return;
+      if (outcome.kind === "confirmed") {
+        setSetupAdmission("admitted");
+        return;
+      }
+      setSetupExchangeError(outcomeWords(outcome));
+      setSetupAdmission("rejected");
+    });
     return () => {
       cancelled = true;
     };
@@ -209,44 +228,52 @@ export function App({
   async function signIn(input: PasswordSignInInput) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      const { redirectUrl } = unwrapRpcResult(
-        await hostClient.rpc["auth.password.signIn"]({
-          email: input.email.trim(),
-          ...(nativeOAuthQuery ? { oauthQuery: nativeOAuthQuery } : {}),
-          password: input.password,
-        }),
-      );
-      if (redirectUrl) window.location.assign(redirectUrl);
-      else await hostClient.refresh();
-    } catch (error) {
+    const outcome = await runAction(null, {
+      label: "sign in",
+      done: "signed in",
+      happened: "you were signed in",
+      execute: async () => {
+        const { redirectUrl } = unwrapRpcResult(
+          await hostClient.rpc["auth.password.signIn"]({
+            email: input.email.trim(),
+            ...(nativeOAuthQuery ? { oauthQuery: nativeOAuthQuery } : {}),
+            password: input.password,
+          }),
+        );
+        if (redirectUrl) window.location.assign(redirectUrl);
+        else await hostClient.refresh();
+      },
+    });
+    setOnboardingPending(false);
+    const words = outcomeWords(outcome);
+    if (words)
       setOnboardingError(
         nativeOAuthQuery
-          ? `${actionErrorMessage(error)} You can close this browser and start sign-in again in the Opensteer app.`
-          : actionErrorMessage(error),
+          ? `${words} You can close this browser and start sign-in again in the Opensteer app.`
+          : words,
       );
-    } finally {
-      setOnboardingPending(false);
-    }
   }
 
   async function claimInitialOwner(input: InitialOwnerClaimInput) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      unwrapRpcResult(
-        await hostClient.rpc["auth.setup.claim"]({
-          email: input.email.trim(),
-          kind: "password",
-          password: input.password,
-        }),
-      );
-      await hostClient.refresh();
-    } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
-    } finally {
-      setOnboardingPending(false);
-    }
+    const outcome = await runAction(null, {
+      label: "create this account",
+      done: "created",
+      happened: "this account was created",
+      execute: async () => {
+        unwrapRpcResult(
+          await hostClient.rpc["auth.setup.claim"]({
+            email: input.email.trim(),
+            kind: "password",
+            password: input.password,
+          }),
+        );
+        await hostClient.refresh();
+      },
+    });
+    setOnboardingPending(false);
+    setOnboardingError(outcomeWords(outcome));
   }
 
   async function admitInitialOwner(token: string) {
@@ -258,33 +285,30 @@ export function App({
   async function startOidc(providerId: string, automatic = false) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      const navigated = await startHostOidcSignIn({
-        desktopBridge,
-        deploymentId: desktopDeployment?.id ?? null,
-        hostClient,
-        navigate: (url) => window.location.assign(url),
-        oauthQuery: nativeOAuthQuery,
-        providerId,
-      });
-      if (!navigated) setOnboardingPending(false);
-    } catch (error) {
-      if (automatic) {
-        recordAutoOidcAttempt();
-        setAutoOidcSuppressed(true);
-      }
-      setOnboardingError(actionErrorMessage(error));
-      setOnboardingPending(false);
+    const outcome = await runAction(null, {
+      label: "sign in",
+      done: "signed in",
+      happened: "you were signed in",
+      execute: () =>
+        startHostOidcSignIn({
+          desktopBridge,
+          deploymentId: desktopDeployment?.id ?? null,
+          hostClient,
+          navigate: (url) => window.location.assign(url),
+          oauthQuery: nativeOAuthQuery,
+          providerId,
+        }),
+    });
+    if (outcome.kind === "confirmed") {
+      if (!outcome.value) setOnboardingPending(false);
+      return;
     }
-  }
-
-  async function refreshHost() {
-    setRefreshing(true);
-    try {
-      await reload();
-    } finally {
-      setRefreshing(false);
+    if (automatic) {
+      recordAutoOidcAttempt();
+      setAutoOidcSuppressed(true);
     }
+    setOnboardingError(outcomeWords(outcome));
+    setOnboardingPending(false);
   }
 
   // An authorization that failed before anyone could act on it. It reports
@@ -389,18 +413,7 @@ export function App({
   }
 
   if (snapshot.session === "checking") {
-    if (continuingSetup && !loadError) {
-      return <SetupOpening />;
-    }
-    return (
-      <Splash detail={loadError ?? "Connecting to your deployment…"}>
-        {loadError ? (
-          <button className="btn" onClick={() => void refreshHost()} type="button">
-            {refreshing ? "Trying again…" : "Try again"}
-          </button>
-        ) : null}
-      </Splash>
-    );
+    return gate ?? <SetupOpening />;
   }
 
   if (nativeOAuthQuery)
@@ -435,18 +448,8 @@ export function App({
   // The Host writes this person's settings (the agent's home folder) on first
   // sign-in, so their absence is a moment on a first run, never an empty app.
   if (snapshot.personalSettings === null) {
-    if (continuingSetup && !loadError) {
-      return <SetupOpening />;
-    }
-    return (
-      <Splash detail={loadError ?? "Preparing your agent’s home…"}>
-        {loadError ? (
-          <button className="btn" onClick={() => void refreshHost()} type="button">
-            {refreshing ? "Trying again…" : "Try again"}
-          </button>
-        ) : null}
-      </Splash>
-    );
+    if (continuingSetup && !interrupted) return <SetupOpening />;
+    return interrupted ? gate : <Splash detail="Preparing your agent’s home…" />;
   }
 
   return (
@@ -497,7 +500,6 @@ export function App({
                     desktopBridge={desktopBridge}
                     desktopDeployment={desktopDeployment}
                     hostClient={hostClient}
-                    loadError={loadError}
                     onNotificationTargetOpened={onNotificationTargetOpened}
                     notificationTarget={notificationTarget}
                   />

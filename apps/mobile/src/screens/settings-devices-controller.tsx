@@ -1,18 +1,25 @@
+import { usePersonalResources } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
-import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
-import { useHostRead, usePersonalResources } from "@opensteer/client/react";
+import { unwrapRpcResult, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { movePhoneHere } from "../phone-setup/move-phone-here.js";
 import { phoneMembership } from "../phone-setup/phone-setup.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { headerActions } from "../navigation-header.js";
+import {
+  notDone,
+  readLine,
+  settingsFooter,
+  useScreenAction,
+  useScreenRead,
+  failureWords,
+} from "../ui/client-feedback.js";
 import { useMobileClient, useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 import { confirmDestructive } from "./confirm.js";
@@ -37,25 +44,41 @@ export function DevicesSettingsController(): ReactNode {
   usePersonalResources(host, deviceResources);
   const machinePreview = useHostValue(host, (state) => state.resourceSummaries?.machine, undefined);
   const deploymentId = selection.deploymentId;
-  const overview = useHostRead(
-    host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
-    "devices-overview",
-  );
-  const sessions = useHostRead(
-    host === null ? null : () => host.rpc["sessions.list"]({}).then(unwrapRpcResult),
-    "devices-sessions",
-  );
-  const reloadOverview = overview.reload;
-  const reloadSessions = sessions.reload;
-  const revision = snapshot?.machineRevision ?? 0;
-  const readRevision = useRef(revision);
-  useEffect(() => {
-    if (readRevision.current === revision) return;
-    readRevision.current = revision;
-    reloadOverview();
-    reloadSessions();
-  }, [reloadOverview, reloadSessions, revision]);
-  useEffect(() => host?.subscribePluginsChanged(reloadOverview), [host, reloadOverview]);
+  const overview = useScreenRead(host, {
+    key: "devices-overview",
+    label: "devices",
+    read: host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
+    subscribeInvalidation: (listener) => {
+      if (host === null) return () => {};
+      const plugins = host.subscribePluginsChanged(listener);
+      const machines = onMachinesChanged(host, listener);
+      return () => {
+        plugins();
+        machines();
+      };
+    },
+  });
+  const sessions = useScreenRead(host, {
+    key: "devices-sessions",
+    label: "where you're signed in",
+    read: host === null ? null : () => host.rpc["sessions.list"]({}).then(unwrapRpcResult),
+    subscribeInvalidation: (listener) =>
+      host === null ? () => {} : onMachinesChanged(host, listener),
+  });
+  const signOutDevice = useScreenAction(host, "device-session-sign-out", {
+    label: "sign out that device",
+    done: "signed out",
+    happened: "that device was signed out",
+    execute: (session: Parameters<typeof client.removeHostSession>[0]) =>
+      client.removeHostSession(session),
+    reconcile: async (session) => {
+      if (host === null) return null;
+      const listed = unwrapRpcResult(await host.rpc["sessions.list"]({})).sessions;
+      return listed.some((row) => row.id === session.id)
+        ? notDone("signed out")
+        : { kind: "confirmed", value: undefined };
+    },
+  });
   const waiting = useHostValue(host, selectWaitingThreads, "");
   const iphoneAppsAvailable = useHostValue(host, (value) => value.iphoneAppsAvailable, false);
 
@@ -131,7 +154,11 @@ export function DevicesSettingsController(): ReactNode {
               navigation.navigate("SetUpPhone", { deploymentId }),
             ).catch((error: unknown) =>
               setFailure(
-                operationDetail(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
+                failureWords(
+                  error,
+                  { label: `move this ${thisPhoneNoun}`, done: "moved" },
+                  `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`,
+                ),
               ),
             );
           },
@@ -145,12 +172,9 @@ export function DevicesSettingsController(): ReactNode {
           confirm: "Sign out",
           onConfirm: () => {
             setFailure(null);
-            void client
-              .removeHostSession(opens.session)
-              .then(reloadSessions)
-              .catch((error: unknown) =>
-                setFailure(operationDetail(error, "That device couldn't be signed out.")),
-              );
+            void signOutDevice.run(opens.session).then((outcome) => {
+              if (outcome.kind === "confirmed") sessions.refresh();
+            });
           },
         });
         return;
@@ -161,18 +185,16 @@ export function DevicesSettingsController(): ReactNode {
   const previewRows = machinePreview?.entries.flatMap(({ id, label }) =>
     label && !knownMachines.has(id) ? [{ key: id, label, kind: "text" as const }] : [],
   );
+  const answer =
+    failure === null
+      ? settingsFooter(signOutDevice.line)
+      : { text: failure, tone: "danger" as const };
+  const missing = settingsFooter(readLine(sessions, sessions.refresh));
   const nativeSections: NativeSettingsSection[] = [
-    ...(failure === null
-      ? []
-      : [
-          {
-            key: "failure",
-            title: "",
-            rows: [],
-            footer: { text: failure, tone: "danger" as const },
-          },
-        ]),
-    ...(previewRows?.length ? [{ key: "device-preview", title: "", rows: previewRows }] : []),
+    ...(previewRows?.length
+      ? [{ key: "machine-preview", title: "Other devices", rows: previewRows }]
+      : []),
+    ...(answer === undefined ? [] : [{ key: "failure", title: "", rows: [], footer: answer }]),
     ...sections.map((section) => ({
       key: section.key,
       title: section.title,
@@ -200,6 +222,22 @@ export function DevicesSettingsController(): ReactNode {
           : []),
       ]),
     })),
+    ...(sessions.data === null
+      ? [
+          {
+            key: "signed-in-waiting",
+            title: "Also signed in",
+            rows: missing
+              ? []
+              : [0, 1, 2].map((index) => ({
+                  key: `placeholder:${index}`,
+                  kind: "placeholder" as const,
+                  label: "Not loaded yet",
+                })),
+            ...(missing ? { footer: missing } : {}),
+          },
+        ]
+      : []),
     ...(pluginRows.length === 0
       ? []
       : [
@@ -339,3 +377,14 @@ const selectWaitingThreads = (snapshot: HostSnapshot): string =>
     .filter((thread) => thread.pendingRequests > 0)
     .map((thread) => thread.id)
     .join(" ");
+
+/** Calls `listener` when the Host's list of computers moves; their sessions and plugins move with it. */
+function onMachinesChanged(host: HostClient, listener: () => void): () => void {
+  let revision = host.getSnapshot().machineRevision;
+  return host.subscribe(() => {
+    const next = host.getSnapshot().machineRevision;
+    if (next === revision) return;
+    revision = next;
+    listener();
+  });
+}

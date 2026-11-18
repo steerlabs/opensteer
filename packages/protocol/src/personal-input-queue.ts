@@ -17,6 +17,7 @@ import { PersonalRevisionSchema } from "./resources.js";
 const WaitingInputSchema = z.strictObject({
   message: z.strictObject({
     id: MessageIdSchema,
+    clientSendKey: z.string().min(1).max(255).optional(),
     revision: z.int().nonnegative(),
     edit: MessageEditSchema.optional(),
     author: MessageAuthorSchema,

@@ -29,6 +29,7 @@ import {
   type,
 } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
@@ -120,7 +121,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
   const settled = (): boolean => Date.now() - arrivedAt.current >= arrivalGuardMs;
 
   const reason = session.pendingId === null ? props.disabledReason : null;
-  const locked = !props.canRespond || session.pendingId !== null;
+  const locked = session.pendingId !== null;
   const several = fields.length > 1;
   const multi = field.multiSelect;
   const choices = field.choices ?? [];
@@ -318,9 +319,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
             </AppText>
           )}
           {session.failure === null ? null : (
-            <AppText role="caption" tone="danger">
-              {session.failure}
-            </AppText>
+            <ActionLine line={session.failure} numberOfLines={2} />
           )}
         </View>
       )}

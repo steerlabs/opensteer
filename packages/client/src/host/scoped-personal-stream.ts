@@ -760,12 +760,19 @@ export class ScopedPersonalStream {
       const checkpoint: PersonalStreamCheckpoint | undefined = detail
         ? (() => {
             const snapshot = detail.transcript.checkpoint();
+            const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
+              if (item.kind !== "message" || item.clientSendKey === undefined) return item;
+              const { clientSendKey: _discard, ...view } = item;
+              return view;
+            };
+            const state = snapshot && {
+              ...snapshot,
+              items: snapshot.items.map(strip),
+              activeItems: snapshot.activeItems.map(strip),
+            };
             const detailCut = detail.transcript.getSnapshot();
             const nextCursor = this.#cursor(scope, detailCut.through);
-            return (
-              snapshot &&
-              nextCursor && { scope: key, cursor: nextCursor, kind: "detail", state: snapshot }
-            );
+            return state && nextCursor && { scope: key, cursor: nextCursor, kind: "detail", state };
           })()
         : (() => {
             const snapshot = this.shell.checkpoint();

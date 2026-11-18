@@ -1,3 +1,5 @@
+import type { ClientScope } from "../connections/connection-controller.js";
+import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
@@ -283,6 +285,15 @@ export interface MessageEntry {
   readonly itemId?: string;
   readonly itemRevision?: string;
   readonly previewTruncated?: boolean;
+  /** The stream has a queued input, while the full queue view may still be on its way. */
+  readonly queuePending?: true;
+  readonly localDelivery?: {
+    readonly inTranscript?: true;
+    readonly phase: "waiting" | "sending" | "rejected" | "restoring";
+    readonly attempted: boolean;
+    readonly issue?: import("../feedback/client-issue.js").ClientIssue;
+  };
+  readonly clientSendKey?: string;
   teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
@@ -1077,6 +1088,10 @@ export type TeamAskDecision =
   | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
 
 export interface HostClient extends TabsClient {
+  readonly connection: import("../connections/connection-controller.js").ClientConnection;
+  openConnection(
+    attempt: import("../connections/connection-controller.js").ConnectionAttempt,
+  ): Promise<import("../connections/connection-controller.js").ConnectionLease>;
   /**
    * What this device's own activation of a tab bound — its page session, its
    * view of a window or phone, or its app — until the tab leaves the list.
@@ -1188,7 +1203,7 @@ export interface HostClient extends TabsClient {
   observeThread(threadId: string): () => void;
   watchNode(threadId: string, nodeId: string): import("./node-detail.js").NodeDetailSubscription;
   /** Starts a Thread and remembers its selection and access mode as the person's latest choice. */
-  createThread(input: CreateThreadInput): Promise<ThreadSummary>;
+  createThread(input: CreateThreadInput, expectedLogin?: ClientScope): Promise<ThreadSummary>;
   /**
    * Names a Thread for good; its engine never renames it afterwards. Only
    * while `threadRenameAvailable`.
@@ -1241,7 +1256,10 @@ export interface HostClient extends TabsClient {
     expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }>;
 
-  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(
+    command: ClientCommandInput,
+    options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
+  ): Promise<HostApiCommandOutput>;
   /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
@@ -1393,7 +1411,7 @@ export interface HostClient extends TabsClient {
    * A lost answer is retried under the same key, never as a second promotion.
    */
   steerThreadInput(threadId: string, messageId: string): Promise<void>;
-  stopRun(threadId: string): Promise<void>;
+  stopRun(threadId: string, expectedRunId?: string): Promise<void>;
   stopNode(threadId: string, nodeId: string): Promise<void>;
   subscribe(listener: () => void): () => void;
   /** Moves a Thread to another access mode; remembered once the Host accepts. */
@@ -1434,6 +1452,7 @@ export class HostClientRequestError extends Error {
   /** The Host's own word on whether the same call may succeed later. */
   readonly retryable: boolean;
   readonly status: number;
+  readonly provenance: import("../connections/operation-error.js").ClientFailureProvenance;
 
   constructor(options: {
     readonly code: string;
@@ -1441,6 +1460,7 @@ export class HostClientRequestError extends Error {
     readonly reason?: string;
     readonly retryable?: boolean;
     readonly status: number;
+    readonly provenance?: import("../connections/operation-error.js").ClientFailureProvenance;
   }) {
     super(options.message);
     this.name = "HostClientRequestError";
@@ -1448,6 +1468,7 @@ export class HostClientRequestError extends Error {
     this.reason = options.reason;
     this.retryable = options.retryable ?? false;
     this.status = options.status;
+    this.provenance = options.provenance ?? failureProvenance(options.reason ?? "");
   }
 }
 
@@ -1459,6 +1480,7 @@ export class HostClientRequestError extends Error {
 export function isHostRefusal(error: unknown): boolean {
   return (
     error instanceof HostClientRequestError &&
+    error.provenance === "host" &&
     error.status < 500 &&
     error.status !== 408 &&
     error.status !== 429

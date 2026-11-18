@@ -6,7 +6,6 @@ import { MockHostClient } from "@opensteer/client/mock";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({ page: null as NativeSettingsPageProps | null }));
 vi.mock("react-native", () => ({ Text: "span", View: "div" }));
-vi.mock("./use-settings-read.js", () => ({ useSettingsLease: () => () => true }));
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
     state.page = props;

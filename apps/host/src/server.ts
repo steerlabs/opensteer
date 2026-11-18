@@ -1,3 +1,5 @@
+import { withClientSendKeys } from "./threads/client-send-keys.js";
+import type { MessageId } from "@opensteer/core";
 import { createPersonalReads } from "./server/personal-reads.js";
 import { PersonalResources } from "./server/personal-resources.js";
 import { IntegrationPlatformStore, IntegrationStore, OpensteerStore } from "@opensteer/database";
@@ -478,6 +480,18 @@ export async function createHostServer(
         (request.url ?? "").split("?", 1)[0]?.startsWith("/media/") === true,
     }),
   });
+  const noSendKeys: ReadonlyMap<string, string> = new Map();
+  const readSendKeys =
+    (session: AuthenticatedHostSession["session"]) => async (ids: readonly MessageId[]) => {
+      if (ids.length === 0) return noSendKeys;
+      try {
+        return await dependencies.store.personalMessageSendKeys(session.user.id, session.id, ids);
+      } catch {
+        // Optional metadata must not turn an accepted send into a failed acknowledgement.
+        app.log.warn("Personal message send keys could not be read");
+        return noSendKeys;
+      }
+    };
   const appGateway = new AppGateway({
     apps: dependencies.apps,
     identity: dependencies.authenticator.identity,
@@ -1290,7 +1304,7 @@ export async function createHostServer(
   };
 
   const personalResources = new PersonalResources(dependencies, machineSummaries);
-  const personalReads = createPersonalReads(dependencies, personalResources);
+  const personalReads = createPersonalReads(dependencies, personalResources, readSendKeys);
   const coreRpcHandlers = {
     ...createReferenceHandlers(dependencies.store, resolvePersonalReferences),
     ...createAssetUrlHandlers(dependencies.assets),
@@ -1437,7 +1451,10 @@ export async function createHostServer(
         maxItems: input.limit ?? 100,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(page);
+      return rpcSuccess({
+        ...page,
+        messages: await withClientSendKeys(page.messages, readSendKeys(requireRpcSession(context))),
+      });
     },
     "browser.searchSuggestions.get": async (input) =>
       rpcSuccess(await searchSuggestions(input.query, dependencies.fetch ?? globalThis.fetch)),
@@ -1491,18 +1508,24 @@ export async function createHostServer(
       const requestedBy = session.user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(
-        hostApi["thread.inputQueue.get"].success.parse(
-          await dependencies.store.getThreadInputQueue({
-            threadId: thread.id,
-            requestedBy,
-            sessionId: session.id,
-            ...(input.expectedRevision === undefined
-              ? {}
-              : { expectedRevision: input.expectedRevision }),
-          }),
-        ),
-      );
+      const queue = await dependencies.store.getThreadInputQueue({
+        threadId: thread.id,
+        requestedBy,
+        sessionId: session.id,
+        ...(input.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: input.expectedRevision }),
+      });
+      const keys = await readSendKeys(session)(queue.items.map(({ message }) => message.id));
+      const schema = hostApi["thread.inputQueue.get"].success;
+      const keyed = schema.safeParse({
+        ...queue,
+        items: queue.items.map((item) => {
+          const key = keys.get(item.message.id);
+          return key ? { ...item, message: { ...item.message, clientSendKey: key } } : item;
+        }),
+      });
+      return rpcSuccess(keyed.success ? keyed.data : schema.parse(queue));
     },
     "assignment.get": async (input, context) => {
       const assignment = await dependencies.store.getAssignmentForOwner({
@@ -1745,8 +1768,15 @@ export async function createHostServer(
           wasDuplicate: result.wasDuplicate,
         };
       }
-      case "thread.sendMessage":
-        return threadService.sendMessage({ kind: "person", userId }, command);
+      case "thread.sendMessage": {
+        const sent = await threadService.sendMessage(
+          { kind: "person", userId },
+          command,
+          session.id,
+        );
+        const [message] = await withClientSendKeys([sent.message], readSendKeys(session));
+        return { ...sent, message: message! };
+      }
 
       case "thread.inputQueue.resume":
         return {
@@ -2928,7 +2958,6 @@ export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
     | "assets"
-    | "attachments"
     | "authenticator"
     | "personalRemoteAccess"
     | "passkeys"
@@ -2940,7 +2969,6 @@ export function advertisedCapabilities(
     "devices-v1",
     ...(dependencies.deviceDrivers ? ["device-drivers-v1" as const] : []),
     "automatic-models-v1",
-    "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
     "thread-titles-v1",

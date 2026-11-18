@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,6 +156,7 @@ describe("Expo engine/account/model journeys", () => {
       updateThreadExecution: execution,
       rememberExecution: remember,
     } as unknown as HostClient;
+    Object.assign(mobile.hostClient, { connection: testHostConnection(mobile.hostClient) });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -377,7 +379,7 @@ describe("Expo engine/account/model journeys", () => {
     await press(cursor.models[0]!.displayName);
     await press("Full access");
     await press("Use Cursor");
-    expect(document.body.textContent).toContain("Access refused");
+    expect(document.body.textContent).toContain("Couldn't confirm this change.");
     expect(execution).not.toHaveBeenCalled();
   });
 
@@ -447,7 +449,6 @@ describe("Expo engine/account/model journeys", () => {
         <FirstMessageComposer
           blocker={firstMessageBlocker({
             attachmentsReady: true,
-            connected: true,
             execution,
           })}
           held={false}
@@ -744,7 +745,7 @@ describe("Expo engine/account/model journeys", () => {
       document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
     );
     await press("Full access");
-    expect(document.body.textContent).toContain("Access refused");
+    expect(document.body.textContent).toContain("Couldn't confirm this change.");
     expect(snapshot.threads[0]!.accessMode).toBe("approval-required");
     expect(execution).not.toHaveBeenCalled();
   });

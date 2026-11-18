@@ -1,5 +1,6 @@
 import type { BrowserEditingTarget } from "@opensteer/client/host";
 import type { PersonFillStatus } from "@opensteer/protocol";
+import { DeviceOwnerUnconfirmed } from "../thread/device-owner.js";
 
 /** What a fill that did not happen means to the person, and what they can do. */
 const unfilled: Record<Exclude<PersonFillStatus, "filled" | "cancelled">, string> = {
@@ -53,7 +54,11 @@ export function createPageAutofill(input: {
         try {
           if (!(await input.authenticate())) return;
         } catch (error) {
-          input.onUnfilled(error instanceof Error ? error.message : String(error));
+          input.onUnfilled(
+            error instanceof DeviceOwnerUnconfirmed
+              ? error.words
+              : "This phone couldn’t confirm it’s you. Try again.",
+          );
           return;
         } finally {
           confirming = false;

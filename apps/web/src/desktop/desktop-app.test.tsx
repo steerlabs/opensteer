@@ -121,12 +121,13 @@ it("lets a connecting place go back and shows cancellation failures", async () =
   await act(async () => button?.click());
 
   expect(cancel).toHaveBeenCalledOnce();
+  // The failure is said in the app's words, never the exception's own text.
   await vi.waitFor(() => {
-    expect(container.textContent).toContain("The connection could not be cancelled.");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "That didn’t work. Try again.",
+    );
   });
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "The connection could not be cancelled.",
-  );
+  expect(container.textContent).not.toContain("The connection could not be cancelled.");
 
   await act(async () => root.unmount());
   container.remove();
@@ -546,7 +547,7 @@ describe("Desktop snapshot presentation", () => {
 });
 
 /**
- * Only states the real ConnectionSupervisor can publish. A row waiting to sign
+ * Only states the real attachment observer can publish. A row waiting to sign
  * in always carries the retryable failure the supervisor attaches to it, and a
  * row this Desktop is not attached to is `idle` with nothing wrong.
  */
