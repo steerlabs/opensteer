@@ -381,9 +381,10 @@ function ThreadView({
           ),
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
+  const hasQueuedInputs = Boolean(inputQueue?.items.length);
   const local = useMemo(
-    () => splitLocalMessages(withOutbox, !conversational),
-    [conversational, withOutbox],
+    () => splitLocalMessages(withOutbox, !conversational, hasQueuedInputs),
+    [conversational, hasQueuedInputs, withOutbox],
   );
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, snapshot.user?.id ?? null, conversational),

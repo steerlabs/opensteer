@@ -122,24 +122,29 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
+  const channelRevoked = snapshot.revokedChannels?.has(channelId) === true;
   const view = snapshot.channel?.scope.channelId === channelId ? snapshot.channel : null;
-  const landing = useLanding(session, channelId, messageId ?? null, (reply) =>
-    navigation.replace("TeamThread", {
-      teamId,
-      channelId,
-      rootId: reply.threadRootId!,
-      replyId: reply.id,
-    }),
+  const landing = useLanding(
+    channelRevoked ? null : session,
+    channelId,
+    messageId ?? null,
+    (reply) =>
+      navigation.replace("TeamThread", {
+        teamId,
+        channelId,
+        rootId: reply.threadRootId!,
+        replyId: reply.id,
+      }),
   );
   useFocusEffect(
     useCallback(() => {
       // A link's message selects its own place; after that this is any other visit.
-      if (session === null || !landing.settled) return;
+      if (channelRevoked || session === null || !landing.settled) return;
       if (session.getSnapshot().channel?.scope.channelId !== channelId)
         session.selectChannel(TeamChannelIdSchema.parse(channelId));
       else if (session.getSnapshot().thread !== null)
         session.selectThread(TeamChannelIdSchema.parse(channelId), null);
-    }, [channelId, landing.settled, session]),
+    }, [channelId, channelRevoked, landing.settled, session]),
   );
   const people = useTeamMembers(teamId, channelId);
   const memberCount = useChannelMemberCount(session, channelId);
@@ -177,6 +182,12 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
     });
   }, [channelId, header, navigation, teamId]);
 
+  if (channelRevoked)
+    return (
+      <TeamWaiting
+        line={{ key: "access-lost", text: "This channel is unavailable.", tone: "muted" }}
+      />
+    );
   if (session === null || view === null || view.channel === null || header === null)
     return <TeamWaiting />;
   const bootstrap = snapshot.bootstrap;
@@ -222,21 +233,22 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
+  const channelRevoked = snapshot.revokedChannels?.has(channelId) === true;
   const view =
     snapshot.thread?.scope.kind === "thread" && snapshot.thread.scope.rootId === rootId
       ? snapshot.thread
       : null;
-  const landing = useLanding(session, channelId, replyId ?? null, null);
+  const landing = useLanding(channelRevoked ? null : session, channelId, replyId ?? null, null);
   useFocusEffect(
     useCallback(() => {
-      if (session === null || !landing.settled) return;
+      if (channelRevoked || session === null || !landing.settled) return;
       const held = session.getSnapshot().thread;
       if (held?.scope.kind !== "thread" || held.scope.rootId !== rootId)
         session.selectThread(
           TeamChannelIdSchema.parse(channelId),
           TeamMessageIdSchema.parse(rootId),
         );
-    }, [channelId, landing.settled, rootId, session]),
+    }, [channelId, channelRevoked, landing.settled, rootId, session]),
   );
   const people = useTeamMembers(teamId, channelId);
   const channelName = view?.channel?.name ?? null;
@@ -256,6 +268,12 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
   }, [channelName, navigation, view?.channel?.kind]);
   const root = view?.messages.find((message) => message.id === rootId) ?? null;
 
+  if (channelRevoked)
+    return (
+      <TeamWaiting
+        line={{ key: "access-lost", text: "This thread is unavailable.", tone: "muted" }}
+      />
+    );
   if (session === null || view === null || view.channel === null || root === null)
     return (
       <TeamWaiting

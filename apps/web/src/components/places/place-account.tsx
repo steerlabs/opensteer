@@ -1,5 +1,5 @@
 import { discardAllStagedFiles } from "../attachments/use-staged-attachments.js";
-import { composerDrafts } from "../composer-drafts.js";
+import { cleanTaskStartJournals, composerDrafts } from "../composer-drafts.js";
 import { useEffect, useId, useState } from "react";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { Dialog } from "../dialog.js";
@@ -161,9 +161,10 @@ export function SignOutDialog({
               setPending(true);
               setError(null);
               void onConfirm()
-                .then(() => {
+                .then(async () => {
                   discardAllStagedFiles();
                   composerDrafts.clearAll();
+                  await cleanTaskStartJournals();
                   onClose();
                 })
                 .catch(() => {

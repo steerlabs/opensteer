@@ -1,3 +1,4 @@
+import { SavedTaskStartSchema, retireTaskStarts } from "./home/task-start.js";
 import { useCallback, useSyncExternalStore } from "react";
 import { z } from "zod";
 import {
@@ -48,6 +49,7 @@ const DraftSchema = z.object({
   refusal: z.string().optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   startGeneration: z.string().optional(),
+  start: SavedTaskStartSchema.optional().catch(undefined),
   text: z.string(),
   updatedAt: z.number(),
 });
@@ -156,6 +158,7 @@ export type DraftStorage = Pick<Storage, "getItem" | "key" | "removeItem" | "set
 export function createComposerDraftStore(
   resolveStorage: () => DraftStorage | null,
   now: () => number = Date.now,
+  onRetire?: (key: string) => void,
 ) {
   /** Drafts storage refused: they last until this window closes. */
   const unsaved = new Map<string, string>();
@@ -240,13 +243,14 @@ export function createComposerDraftStore(
     }
   };
 
-  const clear = (key: string): void => {
+  const clear = (key: string, retire = true): void => {
     if (read(key) === null) return;
     const recoveredSendKeys = read(key)?.recoveredSendKeys;
     if (recoveredSendKeys?.length)
       write(key, { text: "", files: [], quote: null, updatedAt: now(), recoveredSendKeys });
     else remove(key);
     publish();
+    if (retire && key.includes(":task:")) onRetire?.(key);
   };
 
   const buildIndex = (scope: ComposerDraftScope): ComposerDraftIndex => {
@@ -275,6 +279,16 @@ export function createComposerDraftStore(
 
   return {
     clear,
+    matches(key: string, expected: ComposerDraft | null): boolean {
+      const held = read(key);
+      if (!held || !expected) return held === expected;
+      if (expected.startGeneration && expected.startGeneration !== held.startGeneration)
+        return false;
+      return sameDraft(
+        { ...expected, startGeneration: undefined },
+        { ...held, startGeneration: undefined },
+      );
+    },
 
     /** Forgets every draft on this device; signing out leaves nothing behind. */
     clearAll(): void {
@@ -392,6 +406,7 @@ export function createComposerDraftStore(
           write(key, {
             ...draft,
             startGeneration: undefined,
+            start: undefined,
             text: "",
             files: [],
             places: [],
@@ -400,6 +415,7 @@ export function createComposerDraftStore(
           });
         else remove(key);
         if (!open || refusal !== undefined) publish();
+        if (key.includes(":task:")) onRetire?.(key);
         return true;
       }
       if (current !== null && sameDraft(draft, current) && !unsaved.has(key)) return true;
@@ -414,7 +430,19 @@ function browserStorage(): DraftStorage | null {
   return typeof localStorage === "undefined" ? null : localStorage;
 }
 
-export const composerDrafts = createComposerDraftStore(browserStorage);
+export const composerDrafts: ReturnType<typeof createComposerDraftStore> = createComposerDraftStore(
+  browserStorage,
+  Date.now,
+  (key) => void cleanTaskStartJournals(key).catch(() => {}),
+);
+
+export function cleanTaskStartJournals(onlyDraft?: string, discardedGeneration?: string) {
+  return retireTaskStarts(
+    (key) => composerDrafts.read(key)?.startGeneration,
+    onlyDraft,
+    discardedGeneration,
+  );
+}
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {

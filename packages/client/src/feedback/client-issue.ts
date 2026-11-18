@@ -18,6 +18,7 @@ export type ClientIssueCode =
   | "unconfirmed"
   | "rejected"
   | "login-storage-unavailable"
+  | "draft-changed"
   | "storage-unavailable"
   | "queue-full"
   | "preparation-required";
@@ -57,6 +58,7 @@ export function clientIssueFromFailure(
   if (failure.kind === "cancelled") return null;
   if (failure.reason === "login-storage-unavailable") return { code: "login-storage-unavailable" };
   if (failure.reason === "storage-unavailable") return { code: "storage-unavailable" };
+  if (failure.reason === "draft-changed") return { code: "draft-changed" };
   if (failure.reason === "queue-full") return { code: "queue-full" };
   if (failure.code === "unauthorized") return { code: "sign-in" };
   if (["client-too-old", "api-version-mismatch", "unsupported-version"].includes(failure.reason))
@@ -178,6 +180,12 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
     }
     case "login-storage-unavailable":
       return result("Couldn't save this sign-in on this phone.", "retry");
+    case "draft-changed":
+      return {
+        title: "This draft changed while the task was starting.",
+        detail: null,
+        action: null,
+      };
     case "storage-unavailable":
       return result("Couldn't save this message on this device. Try again.", "retry");
     case "queue-full":

@@ -463,6 +463,45 @@ describe("ComputerUseBlock", () => {
     expect(oldSignal?.aborted).toBe(true);
   });
 
+  it("retries a failed next page and starts at page zero under a different login", async () => {
+    const connection = switchableConnection();
+    let rejectNext = true;
+    const installed = vi.fn(async (input: unknown) => {
+      const { offset } = input as { offset: number };
+      if (offset !== 0 && rejectNext) {
+        rejectNext = false;
+        return { ok: false, error: { code: "internal", message: "Failed", retryable: false } };
+      }
+      return {
+        ok: true,
+        data: { apps: [{ identity: offset === 0 ? notes : preview, running: false }], total: 2 },
+      };
+    });
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await settle();
+    await click(button(dialog(), "Show more"));
+    await settle();
+    expect(dialog().querySelector('[role="alert"]')).not.toBeNull();
+    await click(button(dialog(), "Show more"));
+    await settle();
+    expect(installed.mock.calls.map(([input]) => (input as { offset: number }).offset)).toEqual([
+      0, 1, 1,
+    ]);
+    expect(dialog().textContent).toContain("Preview");
+    await act(async () => connection.replaceLogin());
+    await settle();
+    expect(
+      installed.mock.calls.slice(3).map(([input]) => (input as { offset: number }).offset),
+    ).toEqual([0]);
+    expect(dialog().textContent).toContain("Notes");
+    expect(dialog().textContent).not.toContain("Preview");
+  });
+
   it("searches and pages on the Mac rather than in the page", async () => {
     vi.useFakeTimers();
     const installed = vi.fn(async (input: unknown) => {
@@ -765,6 +804,10 @@ function switchableConnection() {
   };
   return {
     connection,
+    replaceLogin() {
+      state = { ...state, scope: { ...state.scope!, loginId: "replacement" } };
+      for (const listener of listeners) listener();
+    },
     set(ready: boolean) {
       state = ready
         ? { ...state, phase: "ready", network: "online", readyRevision: state.readyRevision + 1 }

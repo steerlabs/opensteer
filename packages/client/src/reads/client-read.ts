@@ -28,6 +28,7 @@ export interface ClientReadSpec<T> {
   readonly key: string;
   readonly label: string;
   readonly remember?: boolean | "across-mounts";
+  readonly scopeKey?: string | null;
   readonly read: (signal: AbortSignal) => Promise<T>;
   readonly subscribeInvalidation?: (invalidate: () => void) => () => void;
 }
@@ -258,7 +259,8 @@ class RetainedClientRead<T> implements ClientRead<T> {
       state.phase === "ready" &&
       state.visibility === "foreground" &&
       state.network !== "offline" &&
-      state.scope !== null
+      state.scope !== null &&
+      (this.#spec.scopeKey === undefined || this.#spec.scopeKey === clientScopeKey(state.scope))
     );
   }
   #connectionChanged(): void {

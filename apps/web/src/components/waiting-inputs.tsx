@@ -551,7 +551,7 @@ function WaitingRow({
       ) : (
         <TranscriptMessage
           message={message}
-          queued={input !== null}
+          queued={input !== null || message.queuePending === true}
           reveal={null}
           viewerUserId={viewerUserId}
         />

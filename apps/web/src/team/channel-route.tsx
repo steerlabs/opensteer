@@ -126,21 +126,23 @@ export function ChannelRoute({
   const navigate = useNavigate();
   const location = useLocation();
   const client = view?.client ?? null;
+  const channelRevoked =
+    channelId !== null && view?.snapshot.revokedChannels?.has(channelId) === true;
   useEffect(() => {
-    if (!client || !channelId) return;
+    if (!client || !channelId || channelRevoked) return;
     client.selectChannel(channelId);
     return () => client.selectChannel(null);
-  }, [channelId, client]);
+  }, [channelId, channelRevoked, client]);
   const threadRoot = place.threadId
     ? (TeamMessageIdSchema.safeParse(place.threadId).data ?? null)
     : null;
   useEffect(() => {
-    if (client && channelId) client.selectThread(channelId, threadRoot);
-  }, [channelId, client, threadRoot]);
+    if (client && channelId && !channelRevoked) client.selectThread(channelId, threadRoot);
+  }, [channelId, channelRevoked, client, threadRoot]);
   const [invalidLink, setInvalidLink] = useState(false);
   useEffect(() => {
     setInvalidLink(false);
-    if (!client || !channelId || !place.messageId) return;
+    if (!client || !channelId || channelRevoked || !place.messageId) return;
     let live = true;
     void client
       .landMessage(channelId, TeamMessageIdSchema.parse(place.messageId))
@@ -168,7 +170,7 @@ export function ChannelRoute({
     return () => {
       live = false;
     };
-  }, [client, channelId, place.messageId, threadRoot, teamId, navigate]);
+  }, [client, channelId, channelRevoked, place.messageId, threadRoot, teamId, navigate]);
   const channelTimeline = view?.snapshot.channel ?? null;
   const threadTimeline = view?.snapshot.thread ?? null;
   useEffect(() => {
@@ -179,6 +181,7 @@ export function ChannelRoute({
       ),
     );
   }, [channelTimeline, threadTimeline, view, want]);
+  if (channelRevoked) return <p className="team-empty">This channel is unavailable.</p>;
   if (invalidLink) return <p className="team-empty">This message is no longer available here.</p>;
   if (!channelId) return <p className="team-empty">This channel link isn’t valid.</p>;
   if (!view) return <TeamUnavailable teamId={teamId} />;

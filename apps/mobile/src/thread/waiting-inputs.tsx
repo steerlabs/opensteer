@@ -113,8 +113,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
       "That edit could not be stopped.",
     );
 
-  // Asks wait behind every message, so the fold sits between the two. A
-  // message being edited stays drawn however the list is folded.
+  // The fold counts Host messages. An edit or a bubble from this device stays drawn.
   const foldable = (row: (typeof rows)[number]): boolean =>
     items.length > 3 &&
     row.input?.kind === "message" &&
@@ -191,7 +190,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
                 <WaitingBubble
                   actions={actions}
                   message={entry}
-                  queued={item !== null}
+                  queued={item !== null || entry.queuePending === true}
                   onAction={item ? (id) => choose(item, id) : undefined}
                   onEdit={item && editable(item) ? () => editing.open(item) : undefined}
                   onOpenThread={props.onOpenThread}

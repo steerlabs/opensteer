@@ -16,6 +16,7 @@ import {
   hostMessageOutbox,
   placeList,
   RunPlaceStore,
+  toMessageEntry,
   reconcileBrowserLastPictures,
   type HostClient,
   type HostSnapshot,
@@ -3491,6 +3492,26 @@ describe("a task", () => {
     expect(text(container)).not.toContain("Not stopped");
   });
 
+  it("keeps a lost Stop reply uncertain while the original run is still active", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(running);
+    host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { container } = await mount(host, workId);
+    await press(container, "Stop this run");
+    expect(host.stopRun).toHaveBeenCalledWith(workId, task.runId);
+    expect(text(container)).toContain("Couldn't confirm");
+    host.move({ ...running, network: "offline" });
+    host.move(running);
+    await settle();
+    expect(text(container)).toContain("Couldn't confirm");
+    expect(text(container)).not.toContain("Not stopped");
+  });
+
   it("settles an unconfirmed Stop for its original run when a different run starts", async () => {
     const task = taskAtWork();
     const running = snapshotFor({
@@ -3517,7 +3538,14 @@ describe("a task", () => {
   });
 
   it("keeps the same bubble when the Host queues a local message ahead of its pending sibling", async () => {
-    const initial = snapshotFor({ entries: [], run: null, threadId: workId });
+    const task = taskAtWork();
+    const older = said("Older held bubble", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, older],
+      queue: [waitingInput(older, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
     const host = fakeHost({ ...initial, network: "offline" });
     const { container } = await mount(host, workId);
     const outbox = hostMessageOutbox(host.client)!;
@@ -3541,14 +3569,29 @@ describe("a task", () => {
     const second = body("Second local bubble");
     expect(first).toBeDefined();
     expect(second).toBeDefined();
-    const older = said("Older held bubble", null);
     const confirmed = { ...said("First local bubble", null), clientSendKey: "first-held" };
     const queue = [waitingInput(older, workId), waitingInput(confirmed, workId)];
-    queue[1]!.message.clientSendKey = "first-held";
-    const task = taskAtWork();
+    const eventMessage = toMessageEntry(
+      { ...queue[1]!.message, clientSendKey: "first-held" },
+      "queue",
+      queue[1]!.input,
+    )!;
+    const state = snapshotFor({
+      entries: [...task.entries, older, eventMessage],
+      queue: [queue[0]!],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    host.move({ ...state, network: "offline" });
+    await settle();
+    expect(body("First local bubble")).toBe(first);
+    expect(text(container).indexOf("Older held bubble")).toBeLessThan(
+      text(container).indexOf("First local bubble"),
+    );
+    // The independent queue read carries the new row, even if its view has no alias.
     host.move({
       ...snapshotFor({
-        entries: [...task.entries, older, confirmed],
+        entries: [...task.entries, older, eventMessage],
         queue,
         run: { id: task.runId, status: "running" },
         threadId: workId,
@@ -3564,6 +3607,45 @@ describe("a task", () => {
     expect(text(container).indexOf("First local bubble")).toBeLessThan(
       text(container).indexOf("Second local bubble"),
     );
+  });
+
+  it("keeps an idle task's first bubble mounted when a run takes it directly", async () => {
+    const initial = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost(initial);
+    const ack = Promise.withResolvers<Awaited<ReturnType<typeof host.dispatch>>>();
+    host.dispatch.mockReturnValueOnce(ack.promise);
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const body = () =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === "Launch the task",
+      );
+    try {
+      await act(async () => {
+        await outbox.enqueue({
+          content: [{ text: "Launch the task", type: "text" }],
+          delivery: "queue",
+          idempotencyKey: "starts-run",
+          threadId: workId,
+          type: "thread.sendMessage",
+        });
+      });
+      const bubble = body();
+      expect(bubble).toBeDefined();
+      const runId = createId("run");
+      const message = { ...said("Launch the task", runId), clientSendKey: "starts-run" };
+      host.move(
+        snapshotFor({
+          entries: [message],
+          run: { id: runId, status: "running" },
+          threadId: workId,
+        }),
+      );
+      await settle();
+      expect(body()).toBe(bubble);
+    } finally {
+      ack.resolve({ type: "thread.sendMessage", message: { id: createId("message") } });
+    }
   });
 
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {

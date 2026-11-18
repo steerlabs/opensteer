@@ -1,3 +1,4 @@
+import { ClientOperationError } from "@opensteer/client/connections";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import type { MessageRecordStorage } from "@opensteer/client/host";
 
@@ -69,22 +70,38 @@ export async function mutateBrowserMessageRecord(
   });
   return committed;
 }
+export async function browserTaskStartKeys(): Promise<string[]> {
+  const db = await database();
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction("scopes", "readonly")
+      .objectStore("scopes")
+      .getAllKeys(IDBKeyRange.bound("task-start:", "task-start;"));
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () =>
+      resolve(request.result.filter((key): key is string => typeof key === "string"));
+  });
+}
 const localLocks = new KeyedMutationQueue();
 const changeSignal = "opensteer:message-outbox:changed";
 
-export function browserMessageRecords(): MessageRecordStorage {
+export function browserMessageRecords({ notify = true } = {}): MessageRecordStorage {
   const locks = globalThis.navigator?.locks;
   const channel =
-    typeof BroadcastChannel === "undefined"
+    !notify || typeof BroadcastChannel === "undefined"
       ? null
       : new BroadcastChannel("opensteer-message-outbox");
   const mutate: NonNullable<MessageRecordStorage["mutate"]> = async (key, change) => {
     const committed = await mutateBrowserMessageRecord(key, change);
-    // A closed subscriber never turns a committed write into a failed send.
+    if (!committed || !notify) return;
+    if (channel) {
+      try {
+        channel.postMessage(key);
+        return;
+      } catch {}
+    }
     try {
-      if (!committed) return;
-      if (channel) channel.postMessage(key);
-      else globalThis.localStorage?.setItem(changeSignal, globalThis.crypto.randomUUID());
+      globalThis.localStorage?.setItem(changeSignal, globalThis.crypto.randomUUID());
     } catch {}
   };
   return {
@@ -120,4 +137,14 @@ export function browserMessageRecords(): MessageRecordStorage {
       };
     },
   };
+}
+
+/** No outbox could be opened in this browser, so nothing is kept or sent. */
+export function storageUnavailable(): ClientOperationError {
+  return new ClientOperationError("Message storage is unavailable.", "blocked", {
+    kind: "local",
+    provenance: "local",
+    reason: "storage-unavailable",
+    retryable: false,
+  });
 }

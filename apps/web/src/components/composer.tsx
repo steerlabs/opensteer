@@ -452,6 +452,7 @@ export function Composer({
     const parts = carried.flatMap((item) => (item.part ? [item.part] : []));
     if (parts.length !== carried.length) return;
     const carriedQuote = quote;
+    const saved = draftKey?.includes(":task:") ? composerDrafts.read(draftKey) : undefined;
     const places = context?.parts() ?? [];
     const submission: PendingSubmission = {
       ...(choice || compactionOffer?.visible ? { compaction: choice ?? "compactFirst" } : {}),
@@ -473,6 +474,12 @@ export function Composer({
           idempotencyKey: submission.idempotencyKey,
           ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
         });
+        if (
+          draftKey &&
+          saved !== undefined &&
+          (latestDraft.current !== text || !composerDrafts.matches(draftKey, saved))
+        )
+          return;
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));

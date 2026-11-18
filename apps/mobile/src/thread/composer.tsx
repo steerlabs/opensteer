@@ -2,7 +2,7 @@ import { useMobileNotifications } from "../ui/notifications-context.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
-import { issueLine, notDone, useScreenAction } from "../ui/client-feedback.js";
+import { issueLine, useScreenAction } from "../ui/client-feedback.js";
 import { useConnectionReady } from "../ui/connection-live.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
@@ -28,6 +28,7 @@ import { dictationLabels, dictationView } from "@opensteer/client/dictation";
 import {
   deriveSurface,
   mutationIdempotencyKey,
+  runStopRequested,
   type HostClient,
   type UsageLimitNotice,
 } from "@opensteer/client/host";
@@ -213,12 +214,13 @@ export function Composer(props: {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
         await props.hostClient.stopRun(threadId, runId);
       },
-      reconcile: async (runId) =>
-        props.hostClient
-          .getSnapshot()
-          .runQueue.some((run) => run.id === runId && run.threadId === threadId)
-          ? notDone("stopped")
-          : { kind: "confirmed", value: undefined },
+      reconcile: async (runId) => {
+        const { runQueue, transcripts } = props.hostClient.getSnapshot();
+        const running = runQueue.some((run) => run.id === runId && run.threadId === threadId);
+        return !running || runStopRequested(transcripts[threadId] ?? [], runId)
+          ? { kind: "confirmed", value: undefined }
+          : null;
+      },
     },
   );
   const stopping = stopAction.running;

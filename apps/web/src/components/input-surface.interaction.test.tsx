@@ -27,6 +27,8 @@ const noPlaces = vi.hoisted(() => ({
   session: "authenticated",
   sessionId: "test-login",
   network: "online",
+  threads: [],
+  inputQueues: {},
   transcripts: {},
 }));
 const shell = vi.hoisted(() => ({

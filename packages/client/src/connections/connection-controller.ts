@@ -143,14 +143,21 @@ class SessionConnectionController implements ConnectionController {
         options.lifecycle.onForeground(() => this.#foreground()),
         options.lifecycle.onNetworkChange((network, path) => {
           const previous = this.#state.network;
+          const epoch = this.#state.epoch;
           this.#publish({
             network,
             pathRevision: this.#state.pathRevision + (path === "changed" ? 1 : 0),
           });
-          if (!this.#desired || this.#state.phase === "blocked") return;
+          if (
+            !this.#desired ||
+            this.#state.phase === "blocked" ||
+            this.#state.epoch !== epoch ||
+            this.#state.network !== network
+          )
+            return;
           if (network === "offline") {
             this.#cancel();
-            this.#waiting();
+            if (this.#state.epoch === epoch + 1) this.#waiting();
             return;
           }
           if (path === "same" && previous !== "offline") {
@@ -278,9 +285,12 @@ class SessionConnectionController implements ConnectionController {
       return;
     }
     if (explicit) this.#retryNotBefore = 0;
+    const epoch = this.#state.epoch + 1;
     this.#cancel();
+    if (this.#state.epoch !== epoch) return;
     this.#explicit = explicit;
     this.#waiting();
+    if (this.#state.epoch !== epoch) return;
     if (!this.#desired || this.#suspended()) {
       if (explicit && this.#state.visibility === "foreground")
         this.#publish({ showInterruption: true });
@@ -294,6 +304,7 @@ class SessionConnectionController implements ConnectionController {
       this.#desired &&
       !this.#disposed;
     this.#publish({ trying: true });
+    if (!current()) return;
     const admit = (lease: ConnectionLease): void => {
       if (!current()) {
         lease.close();
@@ -350,27 +361,29 @@ class SessionConnectionController implements ConnectionController {
       if (current()) this.#failed(classifyClientFailure(error));
     });
   }
-  #waiting(): void {
+  #waiting(patch?: Partial<ClientConnectionState>): void {
     if (!this.#desired) return;
+    if (this.#state.visibility === "foreground" && !this.#hold && !this.#state.showInterruption) {
+      const hold = setTimeout(() => {
+        if (this.#hold !== hold) return;
+        this.#hold = null;
+        if (
+          (this.#state.phase === "connecting" || this.#state.phase === "recovering") &&
+          this.#state.visibility === "foreground"
+        )
+          this.#publish({ showInterruption: true });
+      }, connectionInterruptionHoldMs);
+      this.#hold = hold;
+      unrefTimer(hold);
+    }
     this.#publish({
       phase: this.#state.readyRevision === 0 ? "connecting" : "recovering",
       issue: this.#connectionIssue(
         this.#state.issue?.code === "connection" && this.#state.issue.reason === "unreachable",
       ),
       trying: false,
+      ...patch,
     });
-    if (this.#state.visibility === "foreground" && !this.#hold && !this.#state.showInterruption) {
-      this.#hold = setTimeout(() => {
-        this.#hold = null;
-        if (
-          this.#desired &&
-          this.#state.phase !== "ready" &&
-          this.#state.visibility === "foreground"
-        )
-          this.#publish({ showInterruption: true });
-      }, connectionInterruptionHoldMs);
-      unrefTimer(this.#hold);
-    }
   }
   #connectionIssue(unreachable = false): ClientIssue {
     return {
@@ -398,8 +411,9 @@ class SessionConnectionController implements ConnectionController {
       (!failure.retryable &&
         ((failure.provenance === "host" && ["forbidden", "not_found"].includes(failure.code)) ||
           failure.reason === "identity-mismatch"));
+    const epoch = this.#state.epoch + 1;
     this.#cancel(accessLost);
-    if (!this.#desired) return;
+    if (!this.#desired || this.#state.epoch !== epoch) return;
     if (!failure.retryable && failure.kind !== "cancelled") {
       this.#clearHold();
       const issue = clientIssueFromFailure(failure, { operation: "action", label: "connect" });
@@ -417,14 +431,13 @@ class SessionConnectionController implements ConnectionController {
       });
       return;
     }
-    this.#waiting();
-    this.#publish({
+    this.#explicit = false;
+    this.#waiting({
       phase: "recovering",
       issue: this.#connectionIssue(failure.kind === "transport"),
       ...(explicit ? { showInterruption: true } : {}),
     });
-    this.#explicit = false;
-    if (this.#suspended()) return;
+    if (this.#state.epoch !== epoch || this.#suspended()) return;
     const base = this.#options.backoff?.baseMs ?? 300;
     if (failure.reason === "unreadable-frame") this.#unreadable++;
     const maximum = this.#unreadable ? 300_000 : (this.#options.backoff?.maximumMs ?? 12_000);
