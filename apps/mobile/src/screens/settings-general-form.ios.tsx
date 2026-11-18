@@ -163,13 +163,7 @@ export function GeneralSettingsForm(
             symbol="hand.raised"
             title="Privacy Policy"
           />
-          <ErrorText
-            detail={
-              props.storageError === null
-                ? null
-                : `This phone could not save a setting. ${props.storageError}`
-            }
-          />
+          <ErrorText detail={props.storageError} />
         </Section>
       }
     </>

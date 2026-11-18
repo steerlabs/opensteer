@@ -5,6 +5,7 @@ import {
   personalRemoteAuthorizationScheme,
   type DeploymentId,
 } from "@opensteer/core";
+import { credentialStorageError } from "@opensteer/client/auth";
 import type { SessionExchangeResponse } from "@opensteer/protocol";
 import { z } from "zod";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
@@ -44,10 +45,6 @@ export interface PersonalSessionStore {
   clear(deploymentId: DeploymentId): Promise<void>;
   load(deploymentId: DeploymentId): Promise<PersonalRemoteSession | null>;
   save(session: PersonalRemoteSession): Promise<void>;
-  initializeViewLoginId?(
-    deploymentId: DeploymentId,
-    isCurrent: () => boolean,
-  ): Promise<string | undefined>;
 }
 
 export function createPersonalSessionStore(
@@ -61,8 +58,10 @@ export function createPersonalSessionStore(
   const mutations = new MutationQueue();
   const recordName = (deploymentId: DeploymentId): string => `personal.${deploymentId}`;
 
-  const load = async (deploymentId: DeploymentId): Promise<PersonalRemoteSession | null> => {
-    const stored = await records.read(recordName(deploymentId));
+  const read = async (deploymentId: DeploymentId): Promise<PersonalRemoteSession | null> => {
+    const stored = await records.read(recordName(deploymentId)).catch((error: unknown) => {
+      throw credentialStorageError(error);
+    });
     if (stored === null) return null;
     let decoded: unknown;
     try {
@@ -79,7 +78,7 @@ export function createPersonalSessionStore(
 
   return {
     async authorization(deploymentId, now, expectedLoginId): Promise<string | null> {
-      const session = await load(deploymentId);
+      const session = await read(deploymentId);
       if (session === null) return null;
       if (expectedLoginId !== undefined && session.viewLoginId !== expectedLoginId) return null;
       if (Date.parse(session.expiresAt) <= now.getTime()) return null;
@@ -94,16 +93,13 @@ export function createPersonalSessionStore(
       });
     },
 
-    load: (deploymentId) => mutations.run(() => load(deploymentId)),
-
-    initializeViewLoginId: (deploymentId, isCurrent) =>
+    load: (deploymentId) =>
       mutations.run(async () => {
-        const current = await load(deploymentId);
-        if (!isCurrent() || current === null) return undefined;
-        if (current.viewLoginId) return current.viewLoginId;
-        const viewLoginId = globalThis.crypto.randomUUID();
-        await records.write(recordName(deploymentId), JSON.stringify({ ...current, viewLoginId }));
-        return viewLoginId;
+        const current = await read(deploymentId);
+        if (!current || current.viewLoginId) return current;
+        const upgraded = { ...current, viewLoginId: globalThis.crypto.randomUUID() };
+        await records.write(recordName(deploymentId), JSON.stringify(upgraded));
+        return upgraded;
       }),
 
     async save(session): Promise<void> {
@@ -114,7 +110,11 @@ export function createPersonalSessionStore(
       await options.beforeChange?.(parsed.deploymentId);
       await mutations.run(() => {
         options.willChange?.(parsed.deploymentId, parsed.viewLoginId);
-        return records.write(recordName(parsed.deploymentId), JSON.stringify(parsed));
+        return records
+          .write(recordName(parsed.deploymentId), JSON.stringify(parsed))
+          .catch((error: unknown) => {
+            throw credentialStorageError(error);
+          });
       });
       options.changed?.(parsed);
     },

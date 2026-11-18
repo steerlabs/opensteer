@@ -66,6 +66,7 @@ import type { NativeOAuthIdentity } from "./oauth-identity.js";
 import {
   AccountCredentialSchema,
   HostCredentialSchema,
+  credentialStorageError,
   emptyProtectedAuthState,
   type AccountCredential,
   type HostCredential,
@@ -275,7 +276,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   readonly #hostControllers = new Map<DeploymentId, AbortController>();
   #initialized = false;
   readonly #credentialMutations = new MutationQueue();
-  #storageError: string | null = null;
+  #storageError: ClientOperationError | null = null;
 
   constructor(options: {
     readonly beforeAccountIdentityChange?: (
@@ -338,7 +339,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       this.#adoptProtectedState(await this.#store.load());
       this.#storageError = null;
     } catch (error) {
-      this.#storageError = publicError(error, "Protected credential storage is unavailable.");
+      this.#storageError = nativeCredentialStorageError(error);
       this.#adoptProtectedState(emptyProtectedAuthState());
     }
     await this.#emitAccount();
@@ -360,7 +361,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     const accountPending = [...this.#pending.values()].some(({ kind }) => kind === "account");
     const accountIdentity = accountIdentityOf(this.#accountSession);
     const accountSignedIn = accountIdentity !== null;
-    const storageDetail = this.#storageError;
+    const storageDetail = this.#storageError?.message;
     return DesktopAccountAuthStateSchema.parse({
       account: storageDetail
         ? { available: false, detail: storageDetail, identity: null, status: "error" }
@@ -404,7 +405,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     );
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
     const detail =
-      this.#storageError ??
+      this.#storageError?.message ??
       this.#hostDetails.get(key) ??
       (this.#accountChangedTeams.has(connection.authority.document.deploymentId)
         ? "Changing your Account signed this device out of the team."
@@ -441,44 +442,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#accountSession?.credential.viewLoginId;
   }
 
-  /** Called only after a current authenticated bootstrap, inside the credential owner's queue. */
-  async initializeViewLoginIds(
-    connection: DeploymentConnection,
-    isCurrent: () => boolean,
-  ): Promise<void> {
-    const host = this.#hostCredential(connection.authority.document.deploymentId);
-    const account = this.#accountSession;
-    await this.#mutateCredentials(async () => {
-      if (this.#disposed || !isCurrent()) return;
-      if (
-        host &&
-        !host.viewLoginId &&
-        this.#hostCredential(host.deploymentId) === host &&
-        credentialMatchesConnection(host, connection)
-      ) {
-        const next = { ...host, viewLoginId: globalThis.crypto.randomUUID() };
-        const state = await this.#store.setHost(next);
-        if (!this.#disposed && isCurrent() && this.#hostCredential(host.deploymentId) === host) {
-          this.#pendingHostWrites.delete(host.deploymentId);
-          this.#adoptHostCredentials(state.hosts);
-        }
-      }
-      if (!isCurrent() || this.#disposed) return;
-      if (
-        connection.source.kind === "account" &&
-        account &&
-        !account.credential.viewLoginId &&
-        this.#accountSession === account &&
-        account.credential.issuerOrigin === connection.source.issuer &&
-        account.credential.subject === connection.source.subject
-      ) {
-        const next = { ...account.credential, viewLoginId: globalThis.crypto.randomUUID() };
-        await this.#store.setAccount(next);
-        if (!this.#disposed && isCurrent() && this.#accountSession === account) {
-          this.#replaceAccountSession({ ...account, credential: next });
-        }
-      }
-    });
+  credentialStorageFailure(): ClientOperationError | null {
+    return this.#storageError;
   }
 
   async beginAccountSignIn(): Promise<DesktopAccountAuthState> {
@@ -1983,7 +1948,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
 
   #assertStorageReady(): void {
     this.#assertInitialized();
-    if (this.#storageError) throw new Error(this.#storageError);
+    if (this.#storageError) throw this.#storageError;
   }
 
   async #ensureStorageReady(): Promise<void> {
@@ -1998,9 +1963,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
         await this.#store.assertAvailable();
       }
     } catch (error) {
-      this.#storageError = publicError(error, "Protected credential storage is unavailable.");
+      this.#storageError = nativeCredentialStorageError(error);
       await this.#emitAccount().catch(() => undefined);
-      throw new Error(this.#storageError);
+      throw this.#storageError;
     }
   }
 }
@@ -2299,4 +2264,11 @@ function nextAuthGeneration(current: number): number {
 function publicError(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : fallback;
   return message.replace(/[\r\n]/gu, " ").slice(0, 1_000) || fallback;
+}
+
+function nativeCredentialStorageError(error: unknown): ClientOperationError {
+  return credentialStorageError(
+    error,
+    publicError(error, "Protected credential storage is unavailable."),
+  );
 }

@@ -36,14 +36,35 @@ const HostIndexSchema = DeploymentIdSchema.array().max(100);
  * reported, because that is the difference between "sign in again" and "this
  * device's protected storage is broken".
  */
-export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuthStore {
+export function createSecureAuthStore(
+  records: SecureRecordStore,
+  onLoginIdWriteFailure?: (error: unknown) => void,
+): ProtectedAuthStore {
   const mutations = new MutationQueue();
 
-  const readAccount = async (): Promise<AccountCredential | null> => {
+  // Only hydration upgrades old records. Refreshes carry the hydrated ID with
+  // the rotated tokens in the regular credential write.
+  const withLoginId = async <T extends { viewLoginId?: string | undefined }>(
+    record: string,
+    credential: T,
+  ): Promise<T> => {
+    if (credential.viewLoginId) return credential;
+    const upgraded = { ...credential, viewLoginId: globalThis.crypto.randomUUID() };
+    try {
+      await records.write(record, JSON.stringify(upgraded));
+      return upgraded;
+    } catch (error) {
+      onLoginIdWriteFailure?.(error);
+      return credential;
+    }
+  };
+
+  const readAccount = async (upgrade: boolean): Promise<AccountCredential | null> => {
     const stored = await records.read(accountRecord);
     if (stored === null) return null;
     const parsed = AccountCredentialSchema.safeParse(safeJson(stored));
-    return parsed.success ? parsed.data : null;
+    if (!parsed.success) return null;
+    return upgrade ? withLoginId(accountRecord, parsed.data) : parsed.data;
   };
 
   const readHostIndex = async (): Promise<readonly DeploymentId[]> => {
@@ -53,7 +74,7 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
     return parsed.success ? parsed.data : [];
   };
 
-  const readHosts = async (): Promise<readonly HostCredential[]> => {
+  const readHosts = async (upgrade: boolean): Promise<HostCredential[]> => {
     const hosts: HostCredential[] = [];
     for (const deploymentId of await readHostIndex()) {
       const stored = await records.read(hostRecord(deploymentId));
@@ -64,7 +85,7 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
           safeJson((await records.read(hostBindingRecord(deploymentId))) ?? "null"),
         ).data;
         hosts.push({
-          ...parsed.data,
+          ...(upgrade ? await withLoginId(hostRecord(deploymentId), parsed.data) : parsed.data),
           ...(metadata?.refreshToken === parsed.data.refreshToken &&
           metadata?.accountIdentity !== undefined
             ? { accountIdentity: metadata.accountIdentity }
@@ -75,10 +96,10 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
     return hosts;
   };
 
-  const load = async (): Promise<ProtectedAuthState> => ({
+  const load = async (upgrade = false): Promise<ProtectedAuthState> => ({
     ...emptyProtectedAuthState(),
-    account: await readAccount(),
-    hosts: [...(await readHosts())],
+    account: await readAccount(upgrade),
+    hosts: await readHosts(upgrade),
     signedOutTeams: HostIndexSchema.parse(safeJson((await records.read("signedOutTeams")) ?? "[]")),
   });
 
@@ -138,7 +159,7 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
       return removeHosts(ids);
     },
 
-    load: () => mutations.run(load),
+    load: () => mutations.run(() => load(true)),
 
     setAccount: (credential) => {
       const parsed = AccountCredentialSchema.parse(credential);

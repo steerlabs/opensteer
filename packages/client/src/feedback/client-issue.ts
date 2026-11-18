@@ -203,7 +203,7 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
       );
     }
     case "login-storage-unavailable":
-      return result("Couldn't save this sign-in on this phone.", "retry");
+      return result("Couldn't access sign-in storage on this device.");
     case "draft-changed":
       return {
         title: "This draft changed while the task was starting.",
@@ -343,7 +343,13 @@ export function presentConnectionGate(
           action: "retry",
         };
   if (issue.code === "sign-in")
-    return { title: `Sign in to ${name}`, detail: "You were signed out.", action: "sign-in" };
+    return issue.reason === "account-required"
+      ? {
+          title: "Sign in to your Opensteer Account",
+          detail: `Use the Account linked to ${name}.`,
+          action: "sign-in",
+        }
+      : { title: `Sign in to ${name}`, detail: "You were signed out.", action: "sign-in" };
   if (issue.code === "update-app")
     return {
       title: "Update Opensteer",

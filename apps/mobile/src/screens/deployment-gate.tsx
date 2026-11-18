@@ -177,7 +177,13 @@ export function DeploymentGate(props: {
         connection={selection.session?.connection ?? null}
         issue={
           row.signIn !== null
-            ? { code: "sign-in", name: row.name }
+            ? {
+                code: "sign-in",
+                name: row.name,
+                ...(row.sessionFailure === "account-required"
+                  ? { reason: "account-required" }
+                  : {}),
+              }
             : row.verification === "client-too-old"
               ? { code: "update-app", name: row.name }
               : null

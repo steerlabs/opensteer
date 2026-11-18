@@ -111,7 +111,7 @@ export function GeneralSettingsController(): ReactNode {
           onNotificationAction={onNotificationAction}
           onPreferenceChange={onPreferenceChange}
           quietTasks={quietTasks}
-          storageError={storageFailure ?? savedViewFailure}
+          storageError={storageFailure?.message ?? savedViewFailure}
           version={Constants.expoConfig?.version ?? "unknown"}
         />
       </SettingsPageLayout>
