@@ -1,10 +1,10 @@
-import { act, failureWords, runRead } from "../use-action.js";
-import { useEffect, useState, type FormEvent } from "react";
+import { act, failureWords } from "../use-action.js";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useParams } from "react-router";
 import {
   conversationName,
   mutationIdempotencyKey,
-  unwrapRpcResult,
+  schedulesClient,
   type ThreadSummary,
   type TriggerDetail,
 } from "@opensteer/client/host";
@@ -40,23 +40,14 @@ interface Draft {
 export function AutomationEditorPage() {
   const { triggerId = "" } = useParams();
   const { hostClient, openMobileNavigation } = useShell();
-  const [editing, setEditing] = useState<TriggerDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let current = true;
-    void runRead(hostClient, {
-      resource: "this automation",
-      read: async () => unwrapRpcResult(await hostClient.rpc["triggers.get"]({ triggerId })),
-    }).then((result) => {
-      if (!current) return;
-      if (result.ok) setEditing(result.value);
-      else setLoadError(result.words);
-    });
-    return () => {
-      current = false;
-    };
-  }, [hostClient, triggerId]);
+  // The automation page's own read: it waits through an outage and reloads on recovery.
+  const resource = useMemo(
+    () => schedulesClient(hostClient).detail(triggerId),
+    [hostClient, triggerId],
+  );
+  const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const editing = state.data?.definition ?? null;
+  const loadError = editing ? null : state.error;
 
   const back = (
     <AreaLink className="page__back" to={automationPath(triggerId)}>
@@ -73,6 +64,13 @@ export function AutomationEditorPage() {
           <p aria-live="assertive" className="notice notice--error" role="alert">
             <Icon name="alert-circle" />
             <span>{loadError}</span>
+            <button
+              className="btn btn--small"
+              onClick={() => void resource.refresh().catch(() => undefined)}
+              type="button"
+            >
+              Try again
+            </button>
           </p>
         ) : null}
         {!editing && !loadError ? (
