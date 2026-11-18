@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compatibility, forbidden } from "./renames.mjs";
@@ -7,26 +7,18 @@ import { compatibility, forbidden } from "./renames.mjs";
 export async function checkNames(root) {
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const [project, first, last] = forbidden.map(escape);
-  const common = [
-    "--hidden",
-    "--line-number",
-    "--ignore-case",
-    "--glob",
-    "!.git/**",
-    "--glob",
-    "!node_modules/**",
-    "--glob",
-    "!THIRD_PARTY_NOTICES.md",
-    "--glob",
-    "!scripts/plugin-engine/renames.mjs",
-    "--glob",
-    "!vendor/plugin-engine/apps/src/published-compat.ts",
-    "--glob",
-    "!vendor/plugin-engine/catalog/src/published-compat.ts",
-  ];
+  const excluded = new Set([
+    "THIRD_PARTY_NOTICES.md",
+    "scripts/plugin-engine/renames.mjs",
+    "vendor/plugin-engine/apps/src/published-compat.ts",
+    "vendor/plugin-engine/catalog/src/published-compat.ts",
+  ]);
   const scopes = [
-    [`@${project}(?:-js|[.])|${project}[.](?:sh|community)(?:/|["'])|${first}[ -]${last}`, ["."]],
-    [forbidden.map(escape).join("|"), ["vendor/plugin-engine", "scripts/plugin-engine", "patches"]],
+    [`@${project}(?:-js|[.])|${project}[.](?:sh|community)(?:/|["'])|${first}[ -]${last}`, [""]],
+    [
+      forbidden.map(escape).join("|"),
+      ["vendor/plugin-engine/", "scripts/plugin-engine/", "patches/"],
+    ],
   ];
   const violations = [];
   const allNames = new RegExp(forbidden.map(escape).join("|"), "i");
@@ -43,31 +35,41 @@ export async function checkNames(root) {
     );
     if (allNames.test(remaining)) violations.push(file);
   }
-  const inventory = spawnSync(
-    "rg",
-    ["--files", "--hidden", "vendor/plugin-engine", "scripts/plugin-engine"],
-    { cwd: root, encoding: "utf8" },
-  );
-  if (inventory.error) throw inventory.error;
-  if (inventory.status !== 0)
-    throw new Error(inventory.stderr || "Could not enumerate imported paths");
-  violations.push(...inventory.stdout.split("\n").filter((path) => allNames.test(path)));
-  for (const [pattern, paths] of scopes) {
-    const result = spawnSync("rg", [...common, "--", pattern, ...paths], {
+  // Tracked and unignored files, the set a search honouring .gitignore would visit.
+  const listed = spawnSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    {
       cwd: root,
       encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  if (listed.error) throw listed.error;
+  if (listed.status !== 0) throw new Error(listed.stderr || "Could not enumerate repository files");
+  const files = listed.stdout
+    .split("\0")
+    .filter((path) => path && statSync(join(root, path), { throwIfNoEntry: false })?.isFile());
+  violations.push(
+    ...files.filter(
+      (path) =>
+        (path.startsWith("vendor/plugin-engine/") || path.startsWith("scripts/plugin-engine/")) &&
+        allNames.test(path),
+    ),
+  );
+  const patterns = scopes.map(([pattern, prefixes]) => [new RegExp(pattern, "i"), prefixes]);
+  for (const path of files) {
+    if (excluded.has(path)) continue;
+    const applicable = patterns.filter(([, prefixes]) =>
+      prefixes.some((prefix) => path.startsWith(prefix)),
+    );
+    if (!applicable.length) continue;
+    const source = readFileSync(join(root, path), "utf8");
+    if (source.includes("\0")) continue;
+    source.split("\n").forEach((line, index) => {
+      if (applicable.some(([pattern]) => pattern.test(line)))
+        violations.push(`${path}:${index + 1}`);
     });
-    if (result.error) throw result.error;
-    if (result.status !== 0 && result.status !== 1)
-      throw new Error(result.stderr || `Naming search exited ${result.status}`);
-    if (result.stdout)
-      violations.push(
-        ...result.stdout
-          .trim()
-          .split("\n")
-          .map((line) => line.split(":").slice(0, 2).join(":")),
-      );
   }
   if (violations.length)
     throw new Error("Forbidden imported identity: " + [...new Set(violations)].join(", "));

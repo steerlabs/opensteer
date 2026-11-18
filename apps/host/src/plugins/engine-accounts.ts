@@ -646,7 +646,7 @@ export function engineAccounts(options: {
       Effect.gen(function* () {
         const plugins = yield* RemovingAccount;
         if (!plugins) return;
-        // Freeze foreign-key references before capturing the links the deletion will cascade.
+        // FOR UPDATE: this account row is deleted next; take it before reading the links that cascade.
         yield* storage(sql`select id from plugin_engine_accounts where id = ${id} for update`);
         const links = yield* storage(sql<{ app: string }>`
           select distinct app from opensteer_account_links where account = ${id} order by app
