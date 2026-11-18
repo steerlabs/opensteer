@@ -1,3 +1,6 @@
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import type { Selectable } from "kysely";
+import type { DatabaseSchema } from "@opensteer/database";
 import type { HostConfig } from "@opensteer/config";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
 import type {
@@ -30,13 +33,19 @@ import type {
 import type { HostApiClient } from "@opensteer/protocol";
 import { HostToClientMessageSchema, type HostToClientMessage } from "@opensteer/protocol";
 import { ScopedHostMessageSchema, type ScopedHostMessage } from "@opensteer/protocol/personal-sync";
-import type { RawData, WebSocket } from "ws";
+import WebSocket, { type RawData } from "ws";
+
+export type VerticalToolCall = Pick<
+  Selectable<DatabaseSchema["toolCalls"]>,
+  "callId" | "tool" | "arguments" | "integration" | "status" | "isError" | "output" | "startedAt"
+>;
 
 export interface VerticalTurn {
   readonly assistantText: string;
   readonly status: "completed" | "failed" | "interrupted";
   readonly items: readonly { id: string; kind: string; position: string | null }[];
   readonly runId: RunId;
+  readonly tools: readonly VerticalToolCall[];
 }
 export interface VerticalStack {
   readonly api: HostApiClient;
@@ -216,6 +225,33 @@ export function attachmentReference(attachment: Attachment): ArtifactContentPart
     sizeBytes: attachment.sizeBytes,
   };
 }
+export async function openVerticalViewer(
+  { hostOrigin, sessionCookie }: Pick<VerticalStack, "hostOrigin" | "sessionCookie">,
+  threadId: ThreadId,
+) {
+  const client = new HttpHostClient({
+    baseUrl: hostOrigin,
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", sessionCookie);
+      headers.set("origin", hostOrigin.origin);
+      return fetch(input, { ...init, headers });
+    },
+    webSocketFactory: (url) =>
+      new WebSocket(url, {
+        headers: { cookie: sessionCookie, origin: hostOrigin.origin },
+      }) as unknown as WebSocketClient,
+  });
+  try {
+    await client.load();
+    client.activateThread(threadId);
+    return client;
+  } catch (error) {
+    client.dispose();
+    throw error;
+  }
+}
+
 export function waitForRealtimeMessage(
   socket: WebSocket,
   predicate: (message: HostToClientMessage | ScopedHostMessage) => boolean,

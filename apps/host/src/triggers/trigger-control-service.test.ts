@@ -367,7 +367,6 @@ function makeService(options: {
       isEnvironmentConnected: () => true,
       store,
       tokens,
-      onEvent: () => {},
       execution: {
         environmentFor: async () => environmentId,
         canExecute: (id) => id === environmentId,

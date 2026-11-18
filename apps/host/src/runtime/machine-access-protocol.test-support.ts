@@ -2,7 +2,6 @@ import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
   PendingRequestSchema,
-  zeroSequence,
   type EnvironmentId,
   type RequestId,
   type RunId,
@@ -1808,52 +1807,6 @@ export async function runGrants(host: MachineAccessHost, runId: RunId) {
     .where("runId", "=", runId)
     .orderBy("bindingGeneration", "asc")
     .execute();
-}
-
-export async function followPersonalDeployment(host: MachineAccessHost) {
-  const socket = new WebSocket(
-    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
-    { headers: host.ownerHeaders },
-  );
-  await withTimeout(
-    new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve);
-      socket.once("error", reject);
-    }),
-    15000,
-    { timeoutError: () => new Error("Personal event socket did not open") },
-  );
-  const live: Record<string, unknown>[] = [];
-  let synchronized = false;
-  socket.on("message", (raw) => {
-    const message = JSON.parse(raw.toString()) as {
-      type: string;
-      events?: Record<string, unknown>[];
-    };
-    if (message.type === "host.synchronized") synchronized = true;
-    if (message.type === "host.events" && synchronized) live.push(...(message.events ?? []));
-  });
-  const ready = waitForMessage(socket, (m) => m.type === "host.synchronized");
-  socket.send(
-    JSON.stringify({
-      type: "client.subscribe",
-      apiVersion: hostApiVersion,
-      cursor: {
-        deploymentId: host.runtime.deployment.id,
-        apiVersion: hostApiVersion,
-        afterSequence: zeroSequence,
-      },
-      threadId: null,
-    }),
-  );
-  await ready;
-  return {
-    live,
-    close: async () => {
-      socket.close();
-      await closed(socket);
-    },
-  };
 }
 
 export async function additionalOwnerSession(host: MachineAccessHost) {

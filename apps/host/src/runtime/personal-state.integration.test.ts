@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { createDatabase } from "@opensteer/database/connection";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import type { RealtimeHub } from "@opensteer/orchestration";
+import { installPersonalMutationHooks } from "@opensteer/database/personal-mutation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it } from "vitest";
 import { initializePersonalState } from "./personal-state.js";
 
-it("rereads bootstrap once when the hosting computer first makes personal settings ready", async () => {
+it("invalidates Personal settings resources once when the hosting computer first makes personal settings ready", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "personal-state-notice-")));
   const clone = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: clone.url });
@@ -22,22 +22,30 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
       .set({ revokedAt: new Date() })
       .where("id", "=", personal.runnerId)
       .execute();
-    const notices: Parameters<RealtimeHub["sendToUsers"]>[] = [];
+    const notices: string[] = [];
+    const syncState = () =>
+      database
+        .selectFrom("clientSyncState")
+        .select(["sequence", "resourceRevisions"])
+        .executeTakeFirstOrThrow();
+    const before = await syncState();
+    let latestHead = before.sequence;
     const committed: Promise<unknown>[] = [];
-    const realtime: Pick<RealtimeHub, "sendToUsers"> = {
-      sendToUsers: (...notice) => {
-        notices.push(notice);
+    const unhook = installPersonalMutationHooks(database, {
+      wake: ({ head }) => {
+        if (head === latestHead) return;
+        latestHead = head;
+        notices.push(head);
         committed.push(
           database.selectFrom("personalSettings").select("ownerId").executeTakeFirstOrThrow(),
         );
       },
-    };
+      onFailure: (error) => {
+        throw error;
+      },
+    });
     const initialize = () =>
-      initializePersonalState(
-        database,
-        { ...config, environmentId: personal.environmentId },
-        realtime,
-      );
+      initializePersonalState(database, { ...config, environmentId: personal.environmentId });
     expect(await initialize()).toBeNull();
     expect(notices).toEqual([]);
     await database
@@ -47,7 +55,10 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
       .execute();
     const services = await Promise.all([initialize(), initialize()]);
     expect(services.every(Boolean)).toBe(true);
-    expect(notices).toEqual([[[personal.userId], { type: "host.machines.changed" }]]);
+    const after = await syncState();
+    expect(notices).toEqual([after.sequence]);
+    expect(after.resourceRevisions.settings).toBe(after.sequence);
+    expect(after.resourceRevisions.settings).not.toBe(before.resourceRevisions.settings);
     expect(await Promise.all(committed)).toEqual([{ ownerId: personal.userId }]);
     await initialize();
     expect(notices).toHaveLength(1);
@@ -74,6 +85,7 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
       await fence;
     }
     expect(notices).toHaveLength(1);
+    unhook();
   } finally {
     await database.destroy();
     await clone.drop();

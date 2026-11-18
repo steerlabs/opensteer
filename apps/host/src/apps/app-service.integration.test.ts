@@ -18,7 +18,6 @@ import {
   appMaxBytes,
   createId,
   OpensteerError,
-  type AgentEvent,
   type AppId,
   type ComputerFolder,
   type RunId,
@@ -120,13 +119,21 @@ function appDatabase(database: unknown): Kysely<DatabaseSchema> {
   return database as Kysely<DatabaseSchema>;
 }
 
+function appCards(database: Kysely<DatabaseSchema>, runId: RunId) {
+  return database
+    .selectFrom("transcriptItems")
+    .select(["appId", "view"])
+    .where("runId", "=", runId)
+    .where("kind", "=", "app")
+    .execute();
+}
+
 function serviceFor(
   database: unknown,
   agentHome: ComputerFolder,
   overrides: Partial<ConstructorParameters<typeof AppService>[0]> = {},
 ) {
   const store = new AppStore(appDatabase(database));
-  const events: AgentEvent[] = [];
   const changes: AppId[][] = [];
   const removedTabs: AppId[] = [];
   const service = new AppService({
@@ -143,10 +150,9 @@ function serviceFor(
       },
     },
     changed: (_ownerId, appIds) => changes.push(appIds),
-    publishEvent: (event) => events.push(event),
     ...overrides,
   });
-  return { service, store, events, changes, removedTabs };
+  return { service, store, changes, removedTabs };
 }
 
 describeStore("published app HTML", (it) => {
@@ -349,7 +355,7 @@ describeStore("published app HTML", (it) => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-apps-test-"));
     let bytes = Buffer.from(html);
     const files = htmlFiles(() => bytes);
-    const { service, events, changes } = serviceFor(database, f.agentHome, {
+    const { service, changes } = serviceFor(database, f.agentHome, {
       dataDirectory: directory,
       files,
     });
@@ -361,17 +367,10 @@ describeStore("published app HTML", (it) => {
       });
       expect(first).toEqual({ appId: expect.stringMatching(/^app_/u), version: 1 });
       expect(files.download).toHaveBeenCalledWith("opaque_html_key", expect.any(AbortSignal));
-      expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({
-        type: "app.published",
-        runId: f.run.id,
-        threadId: f.thread.id,
-        data: { appId: first.appId, version: 1, title: "Budget" },
-      });
       expect(changes).toContainEqual([first.appId]);
-      expect(
-        (await store.threadEventPageForOwner({ ownerId: f.userId, threadId: f.thread.id }))?.events,
-      ).toContainEqual(events[0]);
+      expect(await appCards(database, f.run.id)).toMatchObject([
+        { appId: first.appId, view: { version: 1, title: "Budget" } },
+      ]);
       const view = await service.view(f.userId, first.appId, "dark");
       expect(view.app).toMatchObject({ kind: "html", state: "running", server: null });
       expect(view.app).not.toHaveProperty("localUrl");
@@ -392,7 +391,9 @@ describeStore("published app HTML", (it) => {
           appId: first.appId,
         }),
       ).toEqual(updates[1]);
-      expect(events).toHaveLength(3);
+      expect(await appCards(database, f.run.id)).toMatchObject([
+        { appId: first.appId, view: { version: 3 } },
+      ]);
       expect(await service.get(f.userId, first.appId)).toMatchObject({ version: 3 });
       expect(await service.content(first.appId, token, "light")).toContain("Latest");
       await expect(service.get(createId("user"), first.appId)).rejects.toMatchObject({
@@ -456,7 +457,7 @@ describeStore("published app HTML", (it) => {
     const f = await startRunFixture("app-refusals");
     let bytes = Buffer.from(html);
     const files = htmlFiles(() => bytes);
-    const { service, events } = serviceFor(database, f.agentHome, { files });
+    const { service } = serviceFor(database, f.agentHome, { files });
     const scope = toolScope(f);
     const publish = (input = {}) =>
       service.publish(scope, crypto.randomUUID(), { path: "index.html", name: "Test", ...input });
@@ -491,7 +492,7 @@ describeStore("published app HTML", (it) => {
       code: "forbidden",
       message: expect.stringContaining("full-access"),
     });
-    expect(events).toEqual([]);
+    expect(await appCards(database, f.run.id)).toEqual([]);
     expect(await database.selectFrom("apps").selectAll().execute()).toEqual([]);
   });
 
@@ -693,7 +694,7 @@ describeStore("published app HTML", (it) => {
         message: expect.stringContaining("failure tail"),
       });
       expect(await database.selectFrom("apps").selectAll().execute()).toEqual([]);
-      expect(built.events).toEqual([]);
+      expect(await appCards(database, f.run.id)).toEqual([]);
 
       const published = await service.publish(toolScope(f), "notes", {
         path: "notes",
@@ -701,7 +702,7 @@ describeStore("published app HTML", (it) => {
         start: "node s.js",
       });
       expect(published).toEqual({ appId: expect.stringMatching(/^app_/u), version: 1 });
-      expect(built.events).toHaveLength(1);
+      expect(await appCards(database, f.run.id)).toHaveLength(1);
       const { appId } = published;
       const running = await service.get(f.userId, appId);
       const port = running.server!.port;

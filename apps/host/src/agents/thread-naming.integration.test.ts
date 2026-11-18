@@ -200,7 +200,7 @@ integration("Task naming through the Runner", () => {
     const threadId = await f.task("Plan moving our support team to a new help desk");
     const turn = await f.send(threadId, "Plan moving our support team to a new help desk");
     // The Run completed while its task's naming was still held open.
-    expect(turn.events.map((event) => event.type)).toContain("run.completed");
+    expect(turn.status).toBe("completed");
     await vi.waitFor(async () => expect(await f.turns()).toHaveLength(1), waitOptions);
     expect(await f.thread(threadId)).toMatchObject({
       titleSource: "provisional",

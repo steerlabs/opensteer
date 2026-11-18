@@ -295,7 +295,7 @@ integration("Host browser broker vertical", () => {
     await expect(
       runtime.store.attachBrowserSession({
         agentBindingId: `run:${projectionRunId}`,
-        ownerId: bootstrap.user.id,
+        ownerId: (await runtime.store.firstUser())!.id,
         sessionId: started.session.id,
       }),
     ).resolves.toBe(false);

@@ -1,3 +1,4 @@
+import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
 import { forkRunnerChild } from "../agents/runner-child.test-support.js";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { ExecutionContainment, executionScopeVariable } from "@opensteer/runner";
@@ -66,12 +67,7 @@ export interface PersonalRuntime {
     messageId: MessageId,
     signal: AbortSignal,
     replacementRunId?: RunId,
-  ): Promise<{
-    readonly runId: RunId;
-    readonly status: "completed" | "failed" | "interrupted";
-    readonly items: readonly { id: string; kind: string; position: string | null }[];
-    readonly assistantText: string;
-  }>;
+  ): Promise<VerticalTurn>;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
   restartHost(outage?: {
     readonly downForMs?: number;
@@ -555,7 +551,24 @@ export async function startPersonalRuntime(input: {
                 .where("kind", "=", "assistant")
                 .orderBy("sequence")
                 .execute();
+              const tools = await host!.store.database
+                .selectFrom("toolCalls")
+                .select([
+                  "callId",
+                  "tool",
+                  "arguments",
+                  "integration",
+                  "status",
+                  "isError",
+                  "output",
+                  "startedAt",
+                ])
+                .where("runId", "=", run.id)
+                .orderBy("startedAt")
+                .orderBy("completionOrder")
+                .execute();
               return {
+                tools,
                 runId: run.id,
                 status: run.status,
                 items: items.reverse(),

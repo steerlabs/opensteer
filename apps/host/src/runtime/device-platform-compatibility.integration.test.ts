@@ -1,15 +1,14 @@
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { TabStore } from "@opensteer/database";
-import { DeviceIdSchema, type Tab, type TabLayout } from "@opensteer/core";
-import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
-import { hostApiVersionHeader, hostApiCurrentHeader } from "@opensteer/deployment-authority";
-import { frozenPersonalReader } from "@opensteer/protocol/test-support/personal-wire";
+import { DeviceIdSchema } from "@opensteer/core";
+import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import { openAuxiliaryStream } from "./computer-apps.test-support.js";
 import { runnerIntegrationsProtocolVersion } from "@opensteer/protocol";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
-import { HostToClientMessageSchema, RunnerDescriptorSchema, hostApi } from "@opensteer/protocol";
+import { RunnerDescriptorSchema, hostApi } from "@opensteer/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -21,7 +20,6 @@ import {
   enrollmentToken,
   openRealtime,
   startMachineAccessWireHost,
-  waitForCondition,
 } from "./machine-access-protocol.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -41,13 +39,6 @@ const methods = [
 ] as const;
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 
-/*
- * Capture actual responses, not re-encoded parsed views: an older parser must
- * see precisely what the Host emitted. Include the later-parsed installation
- * manifest and an actual machine notification, beside a known Mac and pending
- * app approval. The release check runs the previous release's own parsers over
- * this corpus; current-schema success alone is not compatibility evidence.
- */
 integration("device platform release compatibility", () => {
   let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
   let closeCurrent: (() => Promise<void>) | undefined;
@@ -63,7 +54,7 @@ integration("device platform release compatibility", () => {
     await database?.drop();
   }, 120_000);
 
-  it("exports live Host responses and a machine event for previous-release readers", async () => {
+  it("refuses stale Device commands and exposes current Device state through v62", async () => {
     const directory =
       process.env.OPENSTEER_PLATFORM_COMPAT_EVIDENCE_DIR ??
       (await mkdtemp(join(tmpdir(), "opensteer-platform-compat-")));
@@ -86,12 +77,11 @@ integration("device platform release compatibility", () => {
     const runnerId = createId("runner");
     let setupRequestId: string | null = null;
     try {
-      const v60Headers = {
+      const oldHeaders = {
         ...host.ownerHeaders,
-        [hostApiVersionHeader]: "60",
-        [hostApiCurrentHeader]: "60",
+        [hostApiVersionHeader]: String(hostApiVersion - 1),
       };
-      const realtime = await openRealtime(host, v60Headers, 60);
+      const realtime = await openRealtime(host, host.ownerHeaders);
       closers.unshift(() => realtime.close());
       const primary = await connectPrimary(
         host.hostPort,
@@ -163,14 +153,13 @@ integration("device platform release compatibility", () => {
           machineId: screen.deviceId,
           name: "Changed",
         },
-        { headers: v60Headers },
+        { headers: oldHeaders },
       );
       expect(refused.status).toBe(400);
       expect(await refused.json()).toMatchObject({
         ok: false,
         error: {
-          reason: "device-api-update-required",
-          message: expect.stringContaining("Update Opensteer"),
+          reason: "unsupported-version",
         },
       });
       const oldAttach = await testRpcRequest(
@@ -182,7 +171,7 @@ integration("device platform release compatibility", () => {
           driverRunnerId: runnerId,
           target: { kind: "new", name: "Must not be created" },
         },
-        { headers: v60Headers },
+        { headers: oldHeaders },
       );
       expect(oldAttach.status).toBe(400);
       expect(await host.store.getDevice(screen.deviceId)).toMatchObject({
@@ -225,50 +214,55 @@ integration("device platform release compatibility", () => {
       const group = grouped.layout.items.find((item) => item.kind === "group");
       if (group?.kind !== "group") throw new Error("Expected a mixed group");
       host.runtime.tabs.changed(host.ownerId);
+      realtime.socket.on("message", (raw) => {
+        const decoded = ScopedHostMessageSchema.safeParse(JSON.parse(raw.toString()));
+        if (!decoded.success) return;
+        const frame = decoded.data;
+        if (frame.type === "host.snapshot" || frame.type === "host.changes") {
+          const { subscriptionId, generation, throughSequence } = frame;
+          realtime.socket.send(
+            JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
+          );
+        }
+      });
       realtime.socket.send(
         JSON.stringify({
-          type: "client.subscribe",
-          apiVersion: 60,
-          threadId: null,
-          cursor: { deploymentId: host.runtime.deployment.id, apiVersion: 60, afterSequence: "0" },
+          type: "client.attach",
+          apiVersion: hostApiVersion,
+          generation: 1,
+          interests: ["tab", "machine"],
+          installed: {},
         }),
       );
       await vi.waitFor(
-        () =>
-          expect(
-            realtime.messages.some(
-              (message) =>
-                message.type === "host.tabs" && (message.stream as { op: string }).op === "end",
-            ),
-          ).toBe(true),
+        () => {
+          expect(realtime.messages).toContainEqual(
+            expect.objectContaining({
+              type: "host.resource",
+              kind: "tab",
+              view: expect.objectContaining({
+                entries: expect.arrayContaining([
+                  expect.objectContaining({ id: visibleTabId }),
+                  expect.objectContaining({ id: phoneTabId }),
+                  expect.objectContaining({ id: anchorTabId }),
+                ]),
+              }),
+            }),
+          );
+        },
         { timeout: 5_000 },
       );
-      const receiver = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({
-        key: "tabId",
-      });
-      for (const raw of realtime.messages) {
-        expect(
-          frozenPersonalReader(`host frame ${String(raw.type)}`).safeParse(raw).success,
-          String(raw.type),
-        ).toBe(true);
-        if (raw.type === "host.tabs") {
-          const frame = HostToClientMessageSchema.parse(raw);
-          if (frame.type === "host.tabs") expect(receiver.apply(frame.stream)).not.toBe("resync");
-        }
-      }
-      expect(receiver.state).toBe("committed");
-      expect([...receiver.rows.keys()].sort()).toEqual([visibleTabId, anchorTabId].sort());
       await testRpcData(
         host.origin,
         "commands.dispatch",
         {
           type: "tab.organize",
-          idempotencyKey: "old-group-move",
+          idempotencyKey: "group-move",
           tabIds: [visibleTabId],
           group: { groupId: group.group.groupId },
           beforeTabId: anchorTabId,
         },
-        { headers: v60Headers },
+        { headers: host.ownerHeaders },
       );
       expect((await tabStore.snapshot(host.ownerId)).layout.items[0]).toMatchObject({
         kind: "group",
@@ -279,10 +273,10 @@ integration("device platform release compatibility", () => {
         "commands.dispatch",
         {
           type: "tab.close",
-          idempotencyKey: "old-visible-close",
+          idempotencyKey: "visible-close",
           tabIds: [visibleTabId],
         },
-        { headers: v60Headers },
+        { headers: host.ownerHeaders },
       );
       expect((await tabStore.snapshot(host.ownerId)).rows.map((tab) => tab.id)).toContain(
         phoneTabId,
@@ -316,40 +310,30 @@ integration("device platform release compatibility", () => {
         "apple-calendar",
       );
       setupRequestId = request.id;
-      await waitForCondition(async () =>
-        realtime.messages.some((message) => message.type === "host.machines.changed"),
+      const machineResource = realtime.messages.find(
+        (message) => message.type === "host.resource" && message.kind === "machine",
       );
-      const changed = realtime.messages.find((message) => message.type === "host.machines.changed");
-      HostToClientMessageSchema.parse(changed);
-      expect(
-        frozenPersonalReader("host frame host.machines.changed").safeParse(changed).success,
-      ).toBe(true);
-      frames.push(changed);
+      expect(ScopedHostMessageSchema.parse(machineResource)).toMatchObject({
+        type: "host.resource",
+        kind: "machine",
+      });
+      frames.push(machineResource);
       for (const method of methods) {
-        const response = await testRpcRequest(host.origin, method, {}, { headers: v60Headers });
+        const response = await testRpcRequest(
+          host.origin,
+          method,
+          {},
+          { headers: host.ownerHeaders },
+        );
         expect(response.status, method).toBe(200);
         const raw = envelope.parse(await response.json()).data;
         hostApi[method].success.parse(raw);
-        expect(frozenPersonalReader(`rpc ${method}`).safeParse(raw).success, method).toBe(true);
-        expect(JSON.stringify(raw), method).not.toContain(screen.deviceId);
-        expect(JSON.stringify(raw), method).not.toContain("iphone-screen");
         rpc.push({ method, data: raw });
       }
       const machineList = hostApi["machines.list"].success.parse(
         rpc.find(({ method }) => method === "machines.list")?.data,
       );
-      for (const legacy of machineList.machines) {
-        const current = currentMachines.machines.find((machine) => machine.id === legacy.id);
-        if (!current) continue;
-        const {
-          selfRunnerId: _self,
-          drivers: _drivers,
-          capabilities: _capabilities,
-          phoneDisplay: _display,
-          ...original
-        } = current;
-        expect(legacy).toEqual(original);
-      }
+      expect(machineList.machines.some(({ id }) => id === screen.deviceId)).toBe(true);
       expect(machineList.machines.find(({ id }) => id === runnerId)).toMatchObject({
         device: { form: "laptop", platform: "macos" },
         name: "Compatibility Mac",

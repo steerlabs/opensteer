@@ -122,6 +122,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   const store = Object.assign(
     {
       countLiveThreadsByEnvironment: async () => new Map(),
+      recordHarnessCatalogs: async () => [],
       database: personalFixture.database,
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
@@ -212,7 +213,6 @@ function createHostServer(dependencies: HostServerTestOverrides) {
           } as HostAuthenticator),
     browser: Object.assign(
       {
-        latestTabPlaces: async () => [],
         withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
       },
       complete.browser,
@@ -279,11 +279,10 @@ function injectHarnessAuthentication(
 }
 
 /**
- * The realtime hub as a command handler uses it: `publish` for a Workspace's
- * durable events, `broadcast` for the "read the computers list again" nudge.
+ * Narrow realtime collaborators for a command-handler fixture.
  */
 function testRealtime(overrides: Record<string, unknown> = {}) {
-  return { broadcast: vi.fn(), publish: vi.fn(), ...overrides } as never;
+  return { broadcast: vi.fn(), ...overrides } as never;
 }
 
 const testDiscoveryKeys = generateKeyPairSync("ed25519");
@@ -677,6 +676,7 @@ describe("rpc envelope", () => {
       } as never,
       store: {
         countLiveThreadsByEnvironment: async () => new Map(),
+        recordHarnessCatalogs: async () => [],
         database: personalFixture.database,
         listPendingRunnerEnrollments: overrides.listPendingRunnerEnrollments ?? (async () => []),
         listRunners: overrides.listRunners ?? (async () => ({ runners: [] })),
@@ -933,70 +933,6 @@ describe("rpc envelope", () => {
       expect(approved.statusCode, approved.body).toBe(200);
       expect(publishConnectionsChanged).toHaveBeenCalledTimes(2);
       expect(publishConnectionsChanged).toHaveBeenLastCalledWith(ownerId);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("publishes the terminal events for work the removed computer never claimed", async () => {
-    const ownerId = fixtureOwnerId;
-    const runnerId = createId("runner");
-    const terminalEvent = {
-      id: createId("event"),
-      runId: createId("run"),
-      threadId: createId("thread"),
-      data: {
-        code: "forbidden",
-        message: "Access revoked",
-        retryable: false,
-        status: "failed",
-        startedAt: "2026-08-09T09:00:00.000Z",
-        personWaiting: true,
-        startedBy: {
-          displayName: "Alex",
-          kind: "human",
-          userId: createId("user"),
-          principalId: "test-principal",
-        },
-      },
-      type: "run.failed",
-      purpose: "task",
-      teamOrigin: null,
-    };
-    const publish = vi.fn();
-    const app = await createHostServer({
-      authenticator: {
-        authenticateSession: async () => testAuthenticatedSession(ownerId),
-        identity: testIdentity,
-      } as never,
-      discovery: testDiscovery,
-      channels: { relay: { forget: vi.fn() }, service: {} } as never,
-      browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
-      realtime: testRealtime({ publish }),
-      runners: { revoke: vi.fn(async () => undefined) } as never,
-      store: {
-        removeDevice: vi.fn(async () => ({
-          removedDeviceIds: [],
-          detachedDeviceBindings: [],
-          endedSessionIds: [],
-          cancelledRequestIds: [],
-          closedBrowserSessions: [],
-          deletedBrowserProfiles: [],
-          events: [terminalEvent],
-          requestEvents: [],
-          revokedComputerConnectionIds: [],
-        })),
-      } as never,
-    });
-    try {
-      const response = await injectRpcRequest(app, "commands.dispatch", {
-        idempotencyKey: "revoke-settles-queued-work",
-        machineId: runnerId,
-        type: "machine.revoke",
-      });
-      expect(response.statusCode, response.body).toBe(200);
-      // A parent Thread waiting on a delegation only learns about it here.
-      expect(publish).toHaveBeenCalledWith(terminalEvent);
     } finally {
       await app.close();
     }

@@ -43,6 +43,7 @@ describeStore("Continuation paging", (it) => {
       rows.push(opened.request.id);
       await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
+        expectedRevision: (await store.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",

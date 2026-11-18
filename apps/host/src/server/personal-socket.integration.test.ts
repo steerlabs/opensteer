@@ -1,3 +1,4 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { createDatabase } from "@opensteer/database";
 import { preparePersonalConversion } from "@opensteer/database/test-support/personal-state";
@@ -116,7 +117,7 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
     };
     const attach = {
       type: "client.attach",
-      apiVersion: 62,
+      apiVersion: hostApiVersion,
       generation: 1,
       interests: [],
       installed: {},
@@ -188,6 +189,103 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
   }
 });
 import { Writable } from "node:stream";
+
+it("sends the public Request decision without its settlement session", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  let socket: WebSocket | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url);
+    const tasks = createPersonalRunFixturePort(host.store);
+    const { threadId } = await tasks.createTask({
+      ownerId: host.ownerId,
+      suffix: "request-receipt",
+    });
+    const { runId } = await tasks.startTask(threadId, "Choose browser access");
+    const shell = await host.api["personal.shell.get"]({});
+    if (!shell.ok) throw new Error(shell.error.message);
+    const sessionId = shell.data.session.sessionId;
+    await host.store.database
+      .updateTable("authSessions")
+      .set({ deviceLabel: "iPhone" })
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    const { request } = await host.store.requests.create({
+      callId: "receipt-browser-access",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: runId,
+      originatingThreadId: threadId,
+      requestedBy: host.ownerId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Choose browser access",
+        suggestion: { kind: "user_choice" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser access",
+        subject: { kind: "thread", id: threadId },
+      },
+    });
+    const revision = await host.store.requests.revision(request.id);
+    if (!revision) throw new Error("Request revision is missing");
+    const peer = await connect(host.origin, host.ownerHeaders.cookie!);
+    socket = peer.socket;
+    peer.send({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: [],
+      installed: {},
+      selected: { subscriptionId: "detail:0", generation: 1, scope: { kind: "thread", threadId } },
+    });
+    await peer.read(
+      (frame) => frame.type === "host.synchronized" && frame.subscriptionId === "detail:0",
+      "The task subscription did not synchronize before Request settlement",
+    );
+    const settled = await host.store.requests.resolveBrowserRequest({
+      requestId: request.id,
+      expectedRevision: revision,
+      resolvedBy: host.ownerId,
+      settlementSessionId: sessionId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(settled.request.settlementProvenance).toMatchObject({
+      sessionId,
+      deviceLabel: "iPhone",
+    });
+    const update = await peer.read(
+      (frame) =>
+        frame.type === "host.changes" &&
+        frame.changes.some(
+          (change) =>
+            change.entityKind === "item" &&
+            change.operation === "upsert" &&
+            change.value.kind === "request" &&
+            change.value.requestId === request.id,
+        ),
+      "The settled Request receipt never arrived on the task subscription",
+    );
+    expect(JSON.stringify(update)).not.toContain(sessionId);
+    expect(update).toMatchObject({
+      changes: expect.arrayContaining([
+        expect.objectContaining({
+          entityKind: "item",
+          value: expect.objectContaining({
+            requestId: request.id,
+            view: expect.objectContaining({ preview: "Declined on iPhone" }),
+          }),
+        }),
+      ]),
+    });
+  } finally {
+    socket?.terminate();
+    await host?.close();
+    await database.drop();
+  }
+});
 
 it.each(["fresh", "converted"] as const)(
   "synchronizes a task through the shared Node client on a %s Host",

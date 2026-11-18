@@ -1,12 +1,7 @@
 import Fastify from "fastify";
 import { afterEach, expect, it, vi } from "vitest";
-import {
-  AgentEventSchema,
-  createId,
-  OpensteerError,
-  type AgentEvent,
-  type Thread,
-} from "@opensteer/core";
+import { createId, OpensteerError, type Thread } from "@opensteer/core";
+import type { AgentToolActivityStore } from "@opensteer/database";
 import { agentToolHostRoutePath } from "@opensteer/protocol/agent-tool-relay";
 import type { RunCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
@@ -14,8 +9,7 @@ import { registerAgentToolRoute } from "./agent-tool-route.js";
 import type { ToolCall } from "./handlers/types.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-type Started = Extract<AgentEvent, { type: "tool.started" }>;
-type Completed = Extract<AgentEvent, { type: "tool.completed" }>;
+type ToolCallRow = Awaited<ReturnType<AgentToolActivityStore["complete"]>>["call"];
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -58,45 +52,52 @@ function fixture() {
     store: { getThreadForOwner: async () => thread, requests: { get: async () => null } },
     publicUrl: new URL("http://host.test"),
   });
-  const published: AgentEvent[] = [];
-  const saved = new Map<string, { started: Started; completed: Completed | null }>();
+  const saved = new Map<string, ToolCallRow>();
   const activity = {
-    start: vi.fn(
-      async (
-        context: { runId: string; threadId: string; environmentId: string },
-        callId: string,
-        name: string,
-        args: unknown,
-      ) => {
-        const previous = saved.get(callId);
-        if (previous) return { ...previous, replay: true };
-        const started = AgentEventSchema.parse({
-          ...context,
-          type: "tool.started",
-          eventId: createId("event"),
-          sequence: "1",
-          createdAt: new Date().toISOString(),
-          data: { callId, tool: { namespace: "opensteer", name }, arguments: args },
-        });
-        if (started.type !== "tool.started") throw new Error("Wrong event");
-        const pair = { started, completed: null };
-        saved.set(callId, pair);
-        return { ...pair, replay: false };
-      },
-    ),
-    complete: vi.fn(async (started: Started, output: { text: string }, isError: boolean) => {
-      const pair = saved.get(started.data.callId)!;
-      if (pair.completed) return pair.completed;
-      const completed = AgentEventSchema.parse({
-        ...started,
-        type: "tool.completed",
-        eventId: createId("event"),
-        sequence: "2",
-        data: { callId: started.data.callId, output, isError },
+    start: vi.fn<AgentToolActivityStore["start"]>(async (context, callId, name, args) => {
+      const handle = { toolCallId: callId, origin: "host-harness" } as const;
+      const previous = saved.get(callId);
+      if (previous)
+        return {
+          handle,
+          replay: true,
+          completed: previous.output
+            ? { output: previous.output, isError: previous.isError === true }
+            : null,
+        };
+      saved.set(callId, {
+        id: callId,
+        callId,
+        ...context,
+        nodeId: null,
+        attemptId: null,
+        origin: handle.origin,
+        status: "open",
+        tool: { namespace: "opensteer", name },
+        arguments: args,
+        argumentDigest: null,
+        provisional: false,
+        integration: null,
+        startedAt: new Date(),
+        completedAt: null,
+        completionOrder: null,
+        output: null,
+        isError: null,
       });
-      if (completed.type !== "tool.completed") throw new Error("Wrong event");
-      pair.completed = completed;
-      return completed;
+      return { handle, replay: false, completed: null };
+    }),
+    complete: vi.fn<AgentToolActivityStore["complete"]>(async (handle, output, isError) => {
+      const previous = saved.get(handle.toolCallId)!;
+      if (previous.status !== "open") return { call: previous, completed: false };
+      const call = {
+        ...previous,
+        status: "completed" as const,
+        completedAt: new Date(),
+        output,
+        isError,
+      };
+      saved.set(call.id, call);
+      return { call, completed: true };
     }),
   };
   let changed: (() => void) | undefined;
@@ -106,14 +107,12 @@ function fixture() {
     callers,
     service,
     activity,
-    publish: (events) => {
-      published.push(...events);
-    },
     realtime: {
-      observe: (listener) => {
-        changed = () => listener({ type: "host.requests-changed" } as never);
+      observeScopes: (_scopes, listener) => {
+        changed = listener;
         return () => {
           changed = undefined;
+          return true;
         };
       },
     },
@@ -135,7 +134,7 @@ function fixture() {
     service,
     handler,
     activity,
-    published,
+    saved,
     call,
     stop: () => {
       live = false;
@@ -158,15 +157,12 @@ it("derives the Run from its token and matches MCP success, input, unknown-tool 
       await f.service.callToolResult("run-token", name, input, { operationKey: `mcp:${callId}` }),
     );
   }
-  expect(f.published.map((event) => event.type)).toEqual([
-    "tool.started",
-    "tool.completed",
-    "tool.started",
-    "tool.completed",
-    "tool.started",
-    "tool.completed",
+  expect([...f.saved.values()].map(({ status }) => status)).toEqual([
+    "completed",
+    "completed",
+    "completed",
   ]);
-  expect(f.published[2]!.data).toMatchObject({ arguments: null });
+  expect([...f.saved.values()][1]?.arguments).toBeNull();
   expect(f.handler.mock.calls[0]![0].input).toMatchObject({ cursor: 2, limit: 10, query: "mail" });
   expect(f.handler.mock.calls[0]![0].caller).toEqual(f.caller);
   expect(
@@ -228,8 +224,10 @@ it("joins in-flight retries, persists a single pair and replays without another 
   const replay = await f.call(request);
   expect(replay.json()).toMatchObject({ structuredContent: { total: 0 } });
   expect(f.handler).toHaveBeenCalledTimes(1);
-  expect(f.published.map((event) => event.type)).toEqual(["tool.started", "tool.completed"]);
-  expect(f.published[0]!.data).toMatchObject({
+  expect([...f.saved.values()]).toMatchObject([
+    { status: "completed", startedAt: expect.any(Date) },
+  ]);
+  expect([...f.saved.values()][0]).toMatchObject({
     callId: `harness:${f.caller.claims.runId}:1:${request.callId}`,
     arguments: { query: "mail", limit: 10 },
   });
@@ -279,6 +277,8 @@ it.each(["Stop", "deadline"])(
       timeoutError: () => new Error("Cancelled handler did not settle"),
     });
     expect(effected).toBe(false);
-    expect(f.published.map((event) => event.type)).toEqual(["tool.started", "tool.completed"]);
+    expect([...f.saved.values()]).toMatchObject([
+      { status: "completed", startedAt: expect.any(Date) },
+    ]);
   },
 );

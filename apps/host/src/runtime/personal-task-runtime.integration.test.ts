@@ -63,7 +63,6 @@ it("executes a private task through the real Host and Runner with a fake Codex e
         harnessAccessModes: () => undefined,
       },
       readAgentInstructions: async () => null,
-      onEvent: () => {},
       onChanged: () => {},
       onError: (error) => {
         throw error;

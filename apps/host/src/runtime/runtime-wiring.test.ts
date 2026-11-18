@@ -8,7 +8,6 @@ import {
   integrationConnectionReaction,
   runnerRegistrationHook,
   runnerAttachedReaction,
-  terminalRunReaction,
 } from "./runtime.js";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 
@@ -96,64 +95,6 @@ describe("Host runtime wiring", () => {
 
     await expect(onRegistered({ runnerId: "runner-1" })).rejects.toThrow(/catalog capture failed/u);
     expect(wake).toHaveBeenCalledOnce();
-  });
-
-  describe("terminal Run reaction", () => {
-    const runEvent = (type: "run.completed" | "run.started", runId: string | null) =>
-      ({
-        createdAt: "2026-08-09T09:00:00.000Z",
-        data: {
-          status: type === "run.completed" ? "completed" : "running",
-          startedAt: "2026-08-09T09:00:00.000Z",
-          personWaiting: true,
-          startedBy: {
-            displayName: "Alex",
-            kind: "human",
-            userId: createId("user"),
-            principalId: "test-principal",
-          },
-        },
-        environmentId: createId("environment"),
-        eventId: createId("event"),
-        runId,
-        sequence: 1,
-        threadId: createId("thread"),
-        type,
-      }) as never;
-
-    it("releases Run-owned sessions when a Run ends", async () => {
-      const runId = createId("run");
-      const detachBrowserSessions = vi.fn(async () => undefined);
-      const endShellSessions = vi.fn(async () => undefined);
-      const closeComputerUseSessions = vi.fn();
-
-      terminalRunReaction({
-        closeComputerUseSessions,
-        detachBrowserSessions,
-        endShellSessions,
-      })(runEvent("run.completed", runId));
-
-      expect(closeComputerUseSessions).toHaveBeenCalledWith(runId);
-      expect(detachBrowserSessions).toHaveBeenCalledWith(`run:${runId}`);
-      expect(endShellSessions).toHaveBeenCalledWith(runId);
-    });
-
-    it("leaves Run-owned sessions alone before the Run ends", () => {
-      const runId = createId("run");
-      const closeComputerUseSessions = vi.fn();
-      const detachBrowserSessions = vi.fn(async () => undefined);
-      const endShellSessions = vi.fn(async () => undefined);
-
-      terminalRunReaction({
-        closeComputerUseSessions,
-        detachBrowserSessions,
-        endShellSessions,
-      })(runEvent("run.started", runId));
-
-      expect(closeComputerUseSessions).not.toHaveBeenCalled();
-      expect(detachBrowserSessions).not.toHaveBeenCalled();
-      expect(endShellSessions).not.toHaveBeenCalled();
-    });
   });
 
   describe("integration connection reaction", () => {

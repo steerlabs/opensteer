@@ -12,7 +12,6 @@ import {
 import { describeStore } from "@opensteer/database/test-support/store";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { RealtimeHub } from "@opensteer/orchestration";
-import type { HostToClientMessage } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { HostApiCommand } from "@opensteer/protocol";
 import { expect, vi } from "vitest";
@@ -68,17 +67,9 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
     },
   };
 }
-function realtime(store: AdministrationDependencies["store"], userId: UserId) {
-  const hub = new RealtimeHub({ store });
-  const messages: HostToClientMessage[] = [];
-  const release = hub.registerConnection(userId, createId("authSession"), {
-    id: randomUUID(),
-    send: async (message) => {
-      messages.push(message);
-    },
-    close: () => {},
-  });
-  return { hub, messages, release };
+function realtime() {
+  const hub = new RealtimeHub();
+  return { hub, sendToUsers: vi.spyOn(hub, "sendToUsers") };
 }
 
 async function retryAfterPersonChange(
@@ -302,16 +293,13 @@ describeStore("MCP administration", (it) => {
       url: "https://example.test/history",
       typed: true,
     });
-    const rt = realtime(f.store, run.userId);
+    const rt = realtime();
     const browser = new BrowserService({
       deploymentId: run.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: () => {},
-      onDeploymentEvent: (event) => rt.hub.publish(event),
-      onProfilesChanged: (ownerId) =>
-        rt.hub.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
       onHistoryChanged: (ownerId, profileId) =>
         rt.hub.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
     });
@@ -379,13 +367,15 @@ describeStore("MCP administration", (it) => {
       await vi.waitFor(
         () =>
           expect(
-            rt.messages.some((message) => message.type === "host.browser-history-changed"),
+            rt.sendToUsers.mock.calls.some(
+              ([owners, message]) =>
+                [...owners].includes(run.userId) && message.type === "host.browser-history-changed",
+            ),
             "history change never reached the other device",
           ).toBe(true),
         { timeout: 2000 },
       );
     } finally {
-      rt.release();
       await agent.service.close();
       await browser.close();
     }
@@ -558,16 +548,13 @@ describeStore("MCP administration", (it) => {
       ownerId: run.userId,
       runtimeId: "browser",
     });
-    const rt = realtime(f.store, run.userId);
+    const rt = realtime();
     const browser = new BrowserService({
       deploymentId: run.deploymentId,
       hostOrigin: new URL("https://host.test"),
       repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: () => undefined,
-
-      onProfilesChanged: (ownerId) =>
-        rt.hub.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
     });
     const abandonSession = vi.spyOn(browser, "abandonSession");
     const revoked = vi.fn(async () => {
@@ -599,6 +586,10 @@ describeStore("MCP administration", (it) => {
       integrations: { continuations: { notify: vi.fn() } },
       realtime: rt.hub,
     };
+    const before = await f.database
+      .selectFrom("clientSyncState")
+      .select("resourceRevisions")
+      .executeTakeFirstOrThrow();
     const agent = mcp(deps as unknown as AdministrationDependencies, run.userId);
     try {
       await retryAfterPersonChange(
@@ -617,15 +608,20 @@ describeStore("MCP administration", (it) => {
       expect(revoked).toHaveBeenCalledOnce();
       expect(abandonSession).toHaveBeenCalledWith(session.id);
       expect(await f.store.getBrowserProfile(profile.id, run.userId)).toBeNull();
-      expect(rt.messages).toContainEqual({
-        type: "host.browser-sessions-changed",
-      });
-      expect(rt.messages).toContainEqual({ type: "host.machines.changed" });
+      const after = await f.database
+        .selectFrom("clientSyncState")
+        .select("resourceRevisions")
+        .executeTakeFirstOrThrow();
+      expect(BigInt(after.resourceRevisions.machine)).toBeGreaterThan(
+        BigInt(before.resourceRevisions.machine),
+      );
+      expect(BigInt(after.resourceRevisions["browser-profile"])).toBeGreaterThan(
+        BigInt(before.resourceRevisions["browser-profile"]),
+      );
       expect(await f.store.effectiveMachineOwner(targetRunnerId)).toBeNull();
     } finally {
       await agent.service.close();
       await browser.close();
-      rt.release();
     }
   });
   it("pauses/resumes existing channels and revokes a binding without changing its policies", async ({
