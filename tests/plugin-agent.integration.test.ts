@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { z } from "zod";
 import {
   createId,
+  RequestIdSchema,
   TeamMessageIdSchema,
   type ThreadAccessMode,
   type RequestId,
@@ -162,7 +163,13 @@ beforeAll(async () => {
   personal = await seedPersonalFixture(database, directory);
   store = new OpensteerStore(database);
   records = new PluginAgentStore(database);
-  authority = new PluginAuthority({ store, settings: records, owner: async () => personal.userId });
+  authority = new PluginAuthority({
+    store,
+    settings: records,
+    owner: async () => personal.userId,
+    // Like the Host, wait for the execution report before checking its authority.
+    beforeAuthorize: () => executions.settled(),
+  });
   registry = await pluginFixtureRegistry(
     directory,
     undefined,
@@ -783,7 +790,8 @@ test.each(["approval-required", "auto-accept-edits"] as const)(
       const pending = await call(caller, "plugin_execute", {
         code: 'await tools.fixture.input({label:"before write"}); return await tools.fixture.reviewed({amount:2});',
       });
-      const requestId = z.custom<RequestId>().parse(pending.requestId);
+      expect(pending).toMatchObject({ status: "pending" });
+      const requestId = RequestIdSchema.parse(pending.requestId);
       if (stage === "resume") await answer(requestId, true, { name: "answer" });
       await database
         .updateTable("threads")
@@ -822,12 +830,13 @@ test.each(["trigger", "watch", "voice", "background"] as const)(
     const pending = await call(caller, "plugin_execute", {
       code: 'await tools.fixture.input({label:"before write"}); return await tools.fixture.reviewed({amount:2});',
     });
+    expect(pending).toMatchObject({ status: "pending" });
+    const requestId = RequestIdSchema.parse(pending.requestId);
     await database
       .updateTable("threads")
       .set({ accessMode: "approval-required" })
       .where("id", "=", caller.kind === "run" ? caller.thread.id : caller.anchor.id)
       .execute();
-    const requestId = z.custom<RequestId>().parse(pending.requestId);
     await expect(answer(requestId, true, { name: "answer" })).rejects.toThrow(
       /authority changed/iu,
     );
@@ -1481,10 +1490,12 @@ test("engine loss interrupts open and answered-but-unconsumed waits", async () =
   process.kill(health.pid, "SIGKILL");
   await deadline(lost.promise, "Engine loss did not recover executions");
   for (const result of [pending, answered]) {
-    expect(await store.requests.get(z.custom<RequestId>().parse(result.requestId))).toMatchObject({
+    const requestId = RequestIdSchema.parse(result.requestId);
+    expect(await store.requests.get(requestId)).toMatchObject({
       status: "cancelled",
       cancellationReason: "plugin-interrupted",
     });
+    await expect(answer(requestId)).rejects.toThrow(/plugin engine stopped/iu);
     expect(await call(caller, "plugin_resume", { executionId: result.executionId })).toMatchObject({
       status: "interrupted",
       next: expect.stringContaining("never rerun"),
@@ -1694,13 +1705,14 @@ test("workflow history projects metadata when a plugin turns off before the engi
     { timeout: 10_000 },
   );
   const original = authority.authorize.bind(authority);
-  const authorize = vi.spyOn(authority, "authorize");
-  authorize.mockImplementationOnce(async (input, signal) => {
-    if (input.operation === "resourcesRead")
+  const authorize = vi.spyOn(authority, "authorize").mockImplementation(async (input, signal) => {
+    if (input.operation === "resourcesRead" && input.plugin === plugin)
       await records.setAccess(personal.userId, plugin, "off");
     return original(input, signal);
   });
   try {
+    // A background authorization can arrive before the resource read.
+    await authority.authorize({ ...ownerContext, operation: "background", plugin });
     const history = await read();
     expect(history.items).toEqual([expect.objectContaining({ status: "complete" })]);
     expect(history.items).toEqual([expect.not.objectContaining({ output: expect.anything() })]);

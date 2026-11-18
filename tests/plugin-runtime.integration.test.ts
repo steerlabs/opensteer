@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { expect, test } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { parseHostConfig } from "../packages/config/src/index.js";
@@ -13,7 +13,7 @@ import { personalDeploymentOwner } from "../packages/database/src/machine-store.
 import { apiVersionHeaders } from "../packages/deployment-authority/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import {
-  stageNodeService,
+  bundleNodeService,
   stagePluginRuntime,
   stageSharpRuntime,
 } from "../apps/desktop/scripts/build-personal-runtime.js";
@@ -48,15 +48,15 @@ test.skipIf(process.platform === "win32")(
       main,
       `export { createHostRuntime } from ${JSON.stringify(resolve("apps/host/src/runtime/runtime.ts"))};`,
     );
-    await stageNodeService(
-      staged,
+    await bundleNodeService(
+      join(staged, layout.hostScript),
       "host",
       main,
-      { launcher: layout.hostLauncher, script: layout.hostScript },
       Object.fromEntries(
-        Object.entries({ ...hostProcessEntries.workers, ...hostProcessEntries.processes }).map(
-          ([name, entry]) => [name, resolve("apps/host", entry)],
-        ),
+        Object.entries(hostProcessEntries.processes).map(([name, entry]) => [
+          name,
+          resolve("apps/host", entry),
+        ]),
       ),
     );
     const architecture = process.arch === "x64" ? "amd64" : "arm64";
@@ -69,9 +69,8 @@ test.skipIf(process.platform === "win32")(
       resolve("apps/host/dist/plugin-engine-bridge.json"),
       join(staged, layout.pluginBridge),
     );
-    await mkdir(join(staged, "node/bin"), { recursive: true });
-    await copyFile(process.execPath, join(staged, layout.interpreter));
-    const bundled = (await import(pathToFileURL(join(staged, layout.hostScript)).href)) as {
+    // Use Node's ESM loader for the staged bundle, bypassing Vitest's source transforms.
+    const bundled = createRequire(import.meta.url)(join(staged, layout.hostScript)) as {
       createHostRuntime: typeof createHostRuntime;
     };
     const port = await freePort();
