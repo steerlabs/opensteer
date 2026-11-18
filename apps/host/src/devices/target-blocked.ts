@@ -1,5 +1,45 @@
+import { normalizeToolError } from "@opensteer/agent-tools";
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type { Blocked } from "@opensteer/core";
 import type { IntegrationReadiness } from "@opensteer/integration-core";
+
+export function deviceAccessBlocked(error: unknown): Blocked | undefined {
+  if (!(error instanceof DeviceAccessRefusal)) return undefined;
+  const { code, message, next } = normalizeToolError({
+    code: error.code,
+    message: error.message,
+    reason: error.reason,
+    computerId: error.machineId,
+    capability: error.capability,
+    ...(error.reason === "device-offline"
+      ? { next: "Continue without it and tell the person what the message says." }
+      : {}),
+  });
+  return { code, message, next: next ?? "Continue without this device." };
+}
+
+export function deviceAppBlocked(
+  readiness: IntegrationReadiness | undefined,
+  input: {
+    name: string;
+    dataApp: string;
+    computerId: string;
+    readOnlyGrant: boolean;
+    operation: string;
+  },
+): Blocked | undefined {
+  const blocked = localTargetBlocked(readiness, input.name, {
+    dataApp: input.dataApp,
+    computerId: input.computerId,
+  });
+  if (blocked?.code === "access_required" && input.readOnlyGrant)
+    return {
+      code: "access_denied",
+      message: `${input.name} allows reading only.`,
+      next: `To ${input.operation}, call app_access_request with dataApp "${input.dataApp}", computerId "${input.computerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
+    };
+  return blocked;
+}
 
 export function localTargetBlocked(
   readiness: IntegrationReadiness | undefined,

@@ -325,10 +325,16 @@ integration("computer apps", () => {
       text: "again",
       to: { address: "friend@example.test" },
     });
-    expect(narrowed.failure).toContain("Messages on Studio Mac allows reading only.");
-    expect(narrowed.failure).toContain("app_access_request");
-    expect(narrowed.failure).toContain("dataApp");
-    expect(narrowed.failure).toContain("read-write");
+    expect(narrowed.raw).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message: "Apple Messages on Studio Mac allows reading only.",
+          next: `To send_message, call app_access_request with dataApp "messages", computerId "${computer.runnerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
+        },
+      },
+    });
 
     const widenSetup = await requestComputerAppSetup(
       host,
@@ -364,14 +370,22 @@ integration("computer apps", () => {
         { headers: host.ownerHeaders },
       );
     await updateSwitch(false, beforeSwitch.accessPolicyRevision, "apps-off-during-write");
-    expect((await appsOffWrite).failure).toContain(
+    expect((await appsOffWrite).failure).toBe(
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
     const offRefusal = await pluginCall(gateway, sendMessage, {
       text: "not admitted",
       to: { address: "friend@example.test" },
     });
-    expect(offRefusal.failure).toContain(`computerId=${computer.runnerId}, access=apps`);
+    expect(offRefusal.raw).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          next: expect.stringContaining(`computerId=${computer.runnerId}, access=apps`),
+        },
+      },
+    });
     const connectionAfterOff = await host.store.database
       .selectFrom("integrationConnections")
       .select("status")
@@ -387,14 +401,23 @@ integration("computer apps", () => {
     });
     await provider.writeStarted;
     await computer.disconnectModule();
-    expect((await uncertain).failure).toContain(
+    expect((await uncertain).failure).toBe(
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
 
     // Unavailable, the provider says why instead of listing tools.
-    expect(
-      JSON.stringify(await gateway.call("plugin_search", { namespace: messagesNamespace })),
-    ).toContain("Opensteer's integrations service is unavailable on Studio Mac.");
+    expect(await gateway.call("plugin_search", { namespace: messagesNamespace })).toMatchObject({
+      unavailableApps: [
+        {
+          blocked: {
+            code: "unavailable",
+            message:
+              "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
+            next: "Continue without it and tell the person what the message says.",
+          },
+        },
+      ],
+    });
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("plugin_search", { query: "query_messages" });
@@ -706,9 +729,18 @@ integration("computer apps", () => {
       const blocked = await calendarNamespace();
       record("calendar before its grant", blocked);
       expect(blocked.items).toEqual([]);
-      expect(JSON.stringify(blocked)).toContain(
-        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
-      );
+      expect(blocked).toMatchObject({
+        unavailableApps: [
+          {
+            blocked: {
+              code: "unavailable",
+              message:
+                "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+              next: "Continue without it and tell the person what the message says.",
+            },
+          },
+        ],
+      });
 
       // 2. The person allows it on the Mac.
       helper.grants.calendars = "granted";
@@ -730,7 +762,7 @@ integration("computer apps", () => {
           title: "Dentist",
         },
       );
-      expect(change.failure).toContain("Calendar on Studio Mac allows reading only.");
+      expect(change.failure).toBe("Calendar on Studio Mac allows reading only.");
       expect(helper.invocations).toHaveLength(before3);
 
       // 4. A read, carried whole.
@@ -764,7 +796,7 @@ integration("computer apps", () => {
         },
       );
       record("list_events with a malformed date", malformed.failure);
-      expect(malformed.failure).toBeDefined();
+      expect(malformed.raw.isError).toBe(true);
       expect(helper.invocations).toHaveLength(before);
 
       // 6. A change, with write access and its contract.
@@ -825,7 +857,7 @@ integration("computer apps", () => {
         },
       );
       record("update_reminder whose answer was lost", lost.failure);
-      expect(lost.failure).toContain(
+      expect(lost.failure).toBe(
         "Studio Mac did not confirm this. Check whether it happened before trying again.",
       );
       expect(helper.invocations).toHaveLength(sent + 1);

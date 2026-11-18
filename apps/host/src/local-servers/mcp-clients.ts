@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ErrorCode, McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CredentialResponseRedactor } from "@opensteer/access/host";
-import { refused } from "@opensteer/core";
+import { refused, type Blocked } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import type {
@@ -17,6 +17,11 @@ import type {
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { boundedToolDescription, boundedToolTitle } from "@opensteer/integration-core/tool-schemas";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
+
+export const localToolBlocked = Symbol("local tool refusal");
+export type LocalToolResponse = Awaited<ReturnType<Client["callTool"]>> & {
+  readonly [localToolBlocked]?: Blocked;
+};
 
 export const connectionTimeoutMs = 15_000;
 export const toolCallTimeoutMs = 60_000;

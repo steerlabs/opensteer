@@ -25,6 +25,7 @@ import {
   type PluginHostProvider,
   type PluginAuthorizationResult,
   type PluginJson,
+  type HostToolResult,
 } from "./engine-protocol.js";
 
 /**
@@ -64,7 +65,7 @@ export interface EngineHostCallbacks {
       input: PluginJson;
     },
     elicitation: ElicitationHandler | undefined,
-  ): Effect.Effect<PluginJson, Error>;
+  ): Effect.Effect<HostToolResult, Error>;
 }
 export function compositeBackend(
   engine: PluginEngine,
@@ -72,6 +73,7 @@ export function compositeBackend(
   owner: OwnerId,
   context: PluginCaller,
   host: EngineHostCallbacks,
+  direct = false,
 ): McpBackend<Error> {
   const checked = (operation: string, plugin?: string, tool?: string) =>
     Effect.gen(function* () {
@@ -114,7 +116,7 @@ export function compositeBackend(
     const words = input.query.toLowerCase().split(/\W+/u).filter(Boolean);
     const items = input.targets.flatMap((target, index) => {
       const provider = providers.find((item) => item.id === target.app);
-      if (!provider) return [];
+      if (!provider || provider.unavailable) return [];
       return hostTools(provider)
         .filter(
           (tool) =>
@@ -168,7 +170,7 @@ export function compositeBackend(
         yield* checked("listTools", input.app);
         const local = yield* provider(input.app);
         if (local) {
-          yield* available(local);
+          if (!direct) yield* available(local);
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
@@ -234,7 +236,7 @@ export function compositeBackend(
         yield* checked("callTool", input.app, input.tool);
         const local = yield* provider(input.app);
         if (local) {
-          yield* available(local);
+          if (!direct) yield* available(local);
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (
             !current ||
@@ -253,20 +255,33 @@ export function compositeBackend(
             return yield* Effect.fail(
               new PluginServiceError("invalid", "Host tool call has no execution identity"),
             );
-          return {
-            status: "completed",
-            value: yield* host
-              .call(
-                {
-                  execution,
-                  plugin: input.app,
-                  tool: input.tool,
-                  input: JsonSchema.parse(input.input ?? null),
-                },
-                options?.elicitation,
-              )
-              .pipe(Effect.mapError(hostFailure)),
-          };
+          const result = yield* host
+            .call(
+              {
+                execution,
+                plugin: input.app,
+                tool: input.tool,
+                input: JsonSchema.parse(input.input ?? null),
+              },
+              options?.elicitation,
+            )
+            .pipe(Effect.mapError(hostFailure));
+          switch (result.kind) {
+            case "blocked":
+              if (!direct)
+                return yield* new HostToolFailed({
+                  explanation: `${result.blocked.message} ${result.blocked.next}`,
+                });
+              return { status: "completed", value: result, toolError: true };
+            case "mcp":
+              return {
+                status: "completed",
+                value: JsonSchema.parse(direct ? result : result.result),
+                ...(result.result.isError ? { toolError: true as const } : {}),
+              };
+            case "value":
+              return { status: "completed", value: direct ? result : result.value };
+          }
         }
         return yield* engine.tools.call(
           { ...input, accounts: yield* accounts.accounts(input.app, input.version) },

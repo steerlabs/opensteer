@@ -33,6 +33,7 @@ import {
   type PluginAuthorizationResult,
   type PluginExecution,
   type PluginHostProvider,
+  type HostToolResult,
   type PluginJson,
 } from "./engine-protocol.js";
 export { PluginServiceError } from "./engine-protocol.js";
@@ -77,7 +78,7 @@ export interface PluginServiceOptions {
     input: PluginCaller & { execution: string; plugin: string; tool: string; input: PluginJson },
     signal: AbortSignal,
     elicit: PluginElicit,
-  ) => Promise<PluginJson>;
+  ) => Promise<HostToolResult>;
   readonly eventAuthorize?: (
     input: Record<string, PluginJson>,
     signal: AbortSignal,

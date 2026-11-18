@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId, OpensteerError } from "@opensteer/core";
+import { createId, ToolBlockedError } from "@opensteer/core";
 import { resolveIntegrationReadiness } from "@opensteer/integration-core/readiness";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { computerCallable } from "../devices/device-service.test-support.js";
@@ -42,13 +42,13 @@ it.each([false, true])(
       store,
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
         callTool: async () => {
           failed = true;
-          throw new OpensteerError({
-            code: "harness_error",
+          throw new ToolBlockedError({
+            code: "outcome_unknown",
             message: "Outcome unknown. Check whether it happened before trying again.",
             next: "Check the event list before retrying.",
-            retryable: false,
           });
         },
       },
@@ -78,10 +78,13 @@ it.each([false, true])(
           throw new Error("Unexpected approval");
         },
       ),
-    ).rejects.toMatchObject({
-      message: fails
-        ? "Outcome unknown. Check whether it happened before trying again. Check the event list before retrying."
-        : expect.stringMatching(/Outcome unknown.*Check the event list.*app_access_request/s),
+    ).resolves.toEqual({
+      kind: "blocked",
+      blocked: {
+        code: "outcome_unknown",
+        message: "Outcome unknown. Check whether it happened before trying again.",
+        next: "Check the event list before retrying.",
+      },
     });
     if (!fails)
       expect(await providers.blockers(context)).toMatchObject([
@@ -168,11 +171,17 @@ it.each([false, true])(
         access: "read",
       }),
       getToolSchemas: async () => ({ inputSchema: { type: "object" } }),
-      localMcp: { computerName: async () => "Studio Mac" },
+      localMcp: { list: async () => [] },
     };
     const providers = new LocalProviders({
       store,
-      devices: { withAvailability: async (entries: unknown) => entries },
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({
+          connectionFor: store.getDeviceComputerConnectionForCall,
+          localServers: store.localMcp.list,
+        }),
+      },
       localServers: {},
       authority: {
         caller: () => ({
@@ -218,6 +227,69 @@ it.each([false, true])(
           throw new Error("Unexpected approval");
         },
       ),
-    ).rejects.toMatchObject({ message: expect.stringContaining("task's ceiling") });
+    ).resolves.toMatchObject({
+      kind: "blocked",
+      blocked: { code: "read_only_task", next: expect.stringContaining("task's ceiling") },
+    });
   },
 );
+
+const image = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+it.each([
+  { content: [image] },
+  {
+    content: [
+      { type: "text", text: "Report" },
+      image,
+      { type: "resource", resource: { uri: "fixture:///report", text: "Attached" } },
+    ],
+    structuredContent: { rows: 2 },
+  },
+])("passes the sanitized MCP blocks and structured payload through the provider", async (mcp) => {
+  const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+  const base = computerCallable("read", definition);
+  const server = { ...base.server, transport: { type: "runner", runnerId: "run_mac" } };
+  const tool = { ...base.tool, connectionId: null };
+  const readiness = { code: "READY", serverId: server.id };
+  const providers = new LocalProviders({
+    store: {
+      listDiscoveryInventory: async () => [
+        {
+          installation: base.installation,
+          servers: [server],
+          accounts: [],
+          tools: [tool],
+          readiness: { servers: [readiness], tools: [{ toolId: tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [
+        { ...base, server, tool, grant: { ...base.grant, connectionId: null } },
+      ],
+      getToolSchemas: async () => ({ inputSchema: { type: "object" } }),
+      localMcp: { list: async () => [] },
+    },
+    devices: {
+      withAvailability: async (entries: unknown) => entries,
+      localDiscoveryFacts: () => ({ localServers: async () => [] }),
+    },
+    localServers: { callTool: async () => mcp },
+    authority: {
+      caller: () => ({ kind: "run", userId: createId("user"), thread: { id: createId("thread") } }),
+    },
+  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+  const result = await providers.call(
+    {
+      caller: "fixture",
+      mode: "automatic",
+      execution: "fixture",
+      plugin: `app_server_${server.id}`,
+      tool: tool.name,
+      input: {},
+    },
+    AbortSignal.timeout(5_000),
+    async () => {
+      throw new Error("Unexpected approval");
+    },
+  );
+  expect(result).toEqual({ kind: "mcp", result: mcp });
+});

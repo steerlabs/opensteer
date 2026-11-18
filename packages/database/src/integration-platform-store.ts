@@ -1,3 +1,9 @@
+import {
+  administrationCommand,
+  replayAdministrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
@@ -86,7 +92,29 @@ export class IntegrationPlatformStore {
   readonly settings: PluginSettingsStore;
   readonly plugins: PluginStore;
 
+  readonly #database: Kysely<DatabaseSchema>;
+
+  replayAdministration(identity: AdministrationCommandIdentity) {
+    return replayAdministrationCommand(this.#database, identity);
+  }
+
+  administer<Result>(
+    identity: AdministrationCommandIdentity,
+    mutate: (store: IntegrationPlatformStore) => Promise<Result>,
+  ) {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      let applied = false;
+      const result = await administrationCommand(transaction, identity, async () => {
+        const value = await mutate(new IntegrationPlatformStore(transaction));
+        applied = true;
+        return value;
+      });
+      return { result, applied };
+    });
+  }
+
   constructor(database: Kysely<DatabaseSchema>) {
+    this.#database = database;
     this.settings = new PluginSettingsStore(database);
     this.plugins = new PluginStore(database);
     this.computerOperations = new ComputerOperationStore(database);

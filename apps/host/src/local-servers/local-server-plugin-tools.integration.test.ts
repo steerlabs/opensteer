@@ -1,4 +1,4 @@
-import { IntegrationGrantStore } from "@opensteer/database";
+import { IntegrationGrantStore, IntegrationInstallStore } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { LocalMcpServers } from "@opensteer/runner";
 import { createId, DeviceIdSchema, type RequestId } from "@opensteer/core";
-import { computer_list } from "@opensteer/agent-tools/tools";
+import { computer_list, local_server_add } from "@opensteer/agent-tools/tools";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { DeviceService } from "../devices/device-service.js";
@@ -159,12 +159,13 @@ integration("local servers as plugin tools", () => {
           if (id === computerId) queued.resolve("queued");
           return admit.call(this, id, action);
         });
-      const platform = host.runtime.localServers.options.store;
-      const uninstall = platform.uninstall.bind(platform);
-      const mutation = vi.spyOn(platform, "uninstall").mockImplementationOnce((input) => {
-        queued.resolve("uninstalled");
-        return uninstall(input);
-      });
+      const uninstall = IntegrationInstallStore.prototype.uninstall;
+      const mutation = vi
+        .spyOn(IntegrationInstallStore.prototype, "uninstall")
+        .mockImplementationOnce(function (this: IntegrationInstallStore, input) {
+          queued.resolve("uninstalled");
+          return uninstall.call(this, input);
+        });
       const removing = gateway.call("local_server_remove", { name: launch.name });
       void removing.catch(() => {});
       try {
@@ -195,6 +196,58 @@ integration("local servers as plugin tools", () => {
       }
     }
     expect(await gateway.call("local_server_list", {})).toEqual({ servers: [] });
+
+    // Lose the first responses, then let the person replace the registration.
+    const add = (args: Record<string, unknown>) =>
+      gateway
+        .call("local_server_add", args)
+        .then(local_server_add.output.required({ server: true }).parse);
+    const input = { ...launch, computerId, operationKey: randomUUID() };
+    const removal = { name: launch.name, operationKey: randomUUID() };
+    const first = await add(input);
+    await expect(gateway.call("local_server_remove", removal)).resolves.toEqual({ ok: true });
+    const replacement = await add({
+      ...input,
+      url: "http://127.0.0.1:12346/mcp",
+      operationKey: randomUUID(),
+    });
+    expect(replacement.server.pluginId).not.toBe(first.server.pluginId);
+    await expect(gateway.call("local_server_remove", removal)).resolves.toEqual({ ok: true });
+    await expect(gateway.call("local_server_list", {})).resolves.toEqual({
+      servers: [replacement.server],
+    });
+    await expect(add(input)).resolves.toEqual(first);
+    await expect(gateway.call("local_server_list", {})).resolves.toEqual({
+      servers: [replacement.server],
+    });
+    for (const [tool, args] of [
+      ["local_server_add", { ...input, url: "http://127.0.0.1:12347/mcp" }],
+      ["local_server_remove", { ...removal, name: "other-server" }],
+    ] as const)
+      expect(await gateway.callRaw(tool, args)).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "conflict" } },
+      });
+    const [pending] = await database
+      .selectFrom("computerAppSetupRequests")
+      .select(["id"])
+      .where("kind", "=", "server")
+      .execute();
+    if (!pending) throw new Error("No approval for the replacement server");
+    await host.runtime.localServers.options.store.localMcp.decline({
+      actorUserId: host.ownerId,
+      runnerId: computer.runnerId,
+      setupRequestId: pending.id,
+    });
+    await expect(gateway.call("local_server_list", {})).resolves.toMatchObject({
+      servers: [
+        {
+          state: "declined",
+          detail:
+            "The computer's owner declined running it there. Register it again with local_server_add to ask again.",
+        },
+      ],
+    });
   }, 60_000);
 
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {
@@ -332,7 +385,7 @@ integration("local servers as plugin tools", () => {
       ),
     ).not.toHaveProperty("blocked");
     expect(
-      JSON.stringify(await gateway.call("plugin_call", { calls: { path: pair, input: {} } })),
+      JSON.stringify(await gateway.callRaw("plugin_call", { calls: { path: pair, input: {} } })),
     ).toContain("app_access_request");
     await expect(readFile(join(work, "calls"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await dispatch(host, {
@@ -360,6 +413,22 @@ integration("local servers as plugin tools", () => {
       { timeout: 30_000 },
     );
     expect(await pluginPath(gateway, "pair", "pair")).toBe(pair);
+
+    const statusPath = pair.replace(/\.pair$/u, ".status");
+    const statusResult = {
+      content: [
+        { type: "text", text: "TV status" },
+        { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
+        { type: "resource", resource: { uri: "tv://status", text: "ready" } },
+      ],
+      structuredContent: { ready: true },
+    };
+    expect(
+      await gateway.callRaw("plugin_call", { calls: { path: statusPath, input: {} } }),
+    ).toMatchObject(statusResult);
+    expect(
+      await gateway.call("plugin_execute", { code: `return await ${statusPath}({});` }),
+    ).toMatchObject({ result: { execution: { ok: true, value: statusResult } } });
 
     // Two tasks call it at once. Each question reaches the person for its own call only.
     const second = await dispatchCallerRun(host, caller, { key: "pair-b", title: "Pair again" });
@@ -420,7 +489,7 @@ integration("local servers as plugin tools", () => {
       return release;
     });
     try {
-      const queued = gateway.call("plugin_call", {
+      const queued = gateway.callRaw("plugin_call", {
         calls: { path: pair, input: { mode: "queued" } },
       });
       await withTimeout(entered.promise, 10000, {
@@ -460,7 +529,7 @@ integration("local servers as plugin tools", () => {
       awaitingInventory = true;
       return release;
     });
-    const narrowing = gateway.call("plugin_call", {
+    const narrowing = gateway.callRaw("plugin_call", {
       calls: { path: pair, input: { mode: "queued" } },
     });
     try {
@@ -494,7 +563,7 @@ integration("local servers as plugin tools", () => {
       accessMode: "full-access",
     });
     const failed = await withTimeout(
-      gateway.call("plugin_call", {
+      gateway.callRaw("plugin_call", {
         calls: { path: pair, input: { mode: "error" } },
       }),
       30_000,
@@ -670,6 +739,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 
 let acceptedCode;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   require("node:fs").appendFileSync(${JSON.stringify(join(work, "calls"))}, "call\\n");
+  if (params.name === "status") return { content: [
+    { type: "text", text: "TV status" },
+    { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
+    { type: "resource", resource: { uri: "tv://status", text: "ready" } },
+  ], structuredContent: { ready: true } };
   if (params.arguments?.mode === "queued") return { content: [{ type: "text", text: "queued write ran" }] };
   if (params.arguments?.mode === "error") throw new Error("Pairing failed with " + acceptedCode);
   const properties = { code: { type: "string", title: "Pairing code", minLength: 4, maxLength: 4 }, count: { type: "integer" }, enabled: { type: "boolean" }, ratio: { type: "number" }, room: { type: "string", enum: ["Living room", "Den"] } };

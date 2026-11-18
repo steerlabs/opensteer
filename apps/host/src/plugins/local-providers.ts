@@ -1,10 +1,14 @@
-import { localTargetBlocked } from "../devices/target-blocked.js";
+import {
+  deviceAppBlocked,
+  deviceAccessBlocked,
+  localTargetBlocked,
+} from "../devices/target-blocked.js";
 import type { Blocked } from "@opensteer/core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { localToolPath, localNamespace, slugify } from "./provider-names.js";
 import { createHash } from "node:crypto";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { UserId } from "@opensteer/core";
+import { localToolBlocked, type LocalToolResponse } from "../local-servers/mcp-clients.js";
+import type { DeviceId, UserId } from "@opensteer/core";
 import type { IntegrationPlatformStore, IntegrationRequester } from "@opensteer/database";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
@@ -14,12 +18,19 @@ import { IntegrationConnectionIdSchema } from "@opensteer/integration-core";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import { dataAppName } from "../devices/access-requests.js";
 import type { DeviceService } from "../devices/device-service.js";
-import type { LocalServerService } from "../local-servers/local-server-service.js";
+import {
+  localServerStatus,
+  type LocalServerService,
+} from "../local-servers/local-server-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { ToolCaller } from "../agents/tool-caller.js";
 import { normalizeToolError } from "@opensteer/agent-tools";
 import { agentToolFailure, internalToolFailureCode } from "../mcp/agent-tool-failure.js";
 import {
+  directMcpResultBytes,
+  jsonBytes,
+  LocalMcpResultSchema,
+  type HostToolResult,
   PluginServiceError,
   type PluginCaller,
   type PluginHostProvider,
@@ -35,7 +46,7 @@ import type { PluginElicit } from "./plugin-service.js";
  */
 type Located = PluginHostProvider & {
   readonly kind: "device-app" | "local-server";
-  readonly computer: { readonly id: string; readonly name: string } | null;
+  readonly computer: { readonly id: DeviceId; readonly name: string } | null;
   readonly installationId: string;
   readonly installationName: string;
   readonly serverId: string;
@@ -46,15 +57,12 @@ type Located = PluginHostProvider & {
   readonly blocked?: Blocked;
   readonly toolBlockers: Readonly<Record<string, Blocked>>;
 };
-/** How an agent asks for more of a provider: the data app on its computer, or the server by name. */
-const requestAccess = (provider: Pick<Located, "kind" | "computer" | "requestName">) =>
-  provider.kind === "device-app"
-    ? `call app_access_request with dataApp "${provider.requestName}"${provider.computer ? `, computerId "${provider.computer.id}"` : ""} and access "read-write"; do not retry this call until it is fulfilled`
-    : `call app_access_request with server "${provider.requestName}" and access "read-write"; do not retry this call until it is fulfilled`;
-
 interface LocalProvidersOptions {
   readonly store: IntegrationPlatformStore;
-  readonly devices: Pick<DeviceService, "withAvailability" | "callTool">;
+  readonly devices: Pick<
+    DeviceService,
+    "withAvailability" | "callTool" | "localDeviceAccessBlocked" | "localDiscoveryFacts"
+  >;
   readonly localServers: Pick<LocalServerService, "callTool">;
   readonly authority: Pick<PluginAuthority, "caller" | "authorize">;
 }
@@ -63,7 +71,10 @@ export class LocalProviders {
   constructor(options: LocalProvidersOptions) {
     this.#options = options;
   }
-  async providers(context: PluginCaller): Promise<PluginHostProvider[]> {
+  async providers(
+    context: PluginCaller,
+    includeUnavailableTools = false,
+  ): Promise<PluginHostProvider[]> {
     const caller = this.#options.authority.caller(context.caller);
     if (!caller) return [];
     return (await this.#list(caller)).providers.map(
@@ -79,7 +90,10 @@ export class LocalProviders {
         blocked: _b,
         toolBlockers: _tb,
         ...provider
-      }) => provider,
+      }) => ({
+        ...provider,
+        tools: provider.unavailable && !includeUnavailableTools ? [] : provider.tools,
+      }),
     );
   }
 
@@ -111,14 +125,20 @@ export class LocalProviders {
     input: PluginCaller & { execution: string; plugin: string; tool: string; input: PluginJson },
     signal: AbortSignal,
     elicit: PluginElicit,
-  ): Promise<PluginJson> {
+  ): Promise<HostToolResult> {
     const caller = this.#options.authority.caller(input.caller);
     if (!caller || caller.kind === "connection")
       throw failure("Local tools are called only from a task or its programs.");
     const { providers, callables } = await this.#list(caller);
     const provider = providers.find(({ id }) => id === input.plugin);
     if (!provider) throw failure("This local tool was removed or changed; search again.");
-    if (provider.unavailable) throw failure(provider.unavailable);
+    if (provider.blocked) {
+      const access =
+        provider.kind === "device-app" && provider.computer
+          ? await this.#options.devices.localDeviceAccessBlocked(provider.computer.id)
+          : undefined;
+      return { kind: "blocked", blocked: access ?? provider.blocked };
+    }
     const tool = provider.tools.find(({ name }) => name === input.tool);
     const callable = callables.find(
       (candidate) =>
@@ -128,7 +148,7 @@ export class LocalProviders {
         candidate.tool.name === input.tool,
     );
     const blocked = provider.toolBlockers[input.tool];
-    if (blocked) throw failure(`${blocked.message} ${blocked.next}`);
+    if (blocked) return { kind: "blocked", blocked };
     if (!tool || !callable)
       throw failure(
         `${provider.name} has no tool ${input.tool} now; use plugin_search for current tools.`,
@@ -173,33 +193,55 @@ export class LocalProviders {
         }
       },
     };
-    let result: Awaited<ReturnType<Client["callTool"]>>;
+    let result: LocalToolResponse;
     try {
       result =
         provider.transport === "computer"
           ? await this.#options.devices.callTool(callable, input.input, toolCaller, signal)
           : await this.#options.localServers.callTool(callable, input.input, toolCaller, signal);
     } catch (error) {
-      // The same projection agent tools use, so a refusal keeps its computer and next step.
+      if (error instanceof PluginServiceError && error.code === "tool") throw error;
+      const access = deviceAccessBlocked(error);
+      if (access) return { kind: "blocked", blocked: access };
       const refusal = agentToolFailure(error, tool.readOnly ? "read" : "write");
       if (refusal.code === internalToolFailureCode) throw error;
-      const { message, next } = normalizeToolError(refusal);
-      const live = await this.#list(caller).catch(() => undefined);
-      const currentProvider = live?.providers.find((entry) => entry.id === provider.id);
-      const current = currentProvider?.toolBlockers[input.tool] ?? currentProvider?.blocked;
-      throw failure([...new Set([message, next, current?.next].filter(Boolean))].join(" "));
+      const { code, message, next } = normalizeToolError(refusal);
+      return {
+        kind: "blocked",
+        blocked: {
+          code,
+          message,
+          next: next ?? "Continue without this tool and tell the person what the message says.",
+        },
+      };
+    }
+    if (result[localToolBlocked]) return { kind: "blocked", blocked: result[localToolBlocked] };
+    if (Array.isArray(result.content) && result.content.some((part) => part.type !== "text")) {
+      const mcp = LocalMcpResultSchema.parse(result);
+      if (jsonBytes(mcp) > directMcpResultBytes)
+        throw failure(`${provider.name}'s answer was too large to carry; ask for less.`);
+      return { kind: "mcp", result: mcp };
     }
     const text = (Array.isArray(result.content) ? result.content : [])
       .flatMap((part: { type?: unknown; text?: unknown }) =>
         part.type === "text" && typeof part.text === "string" ? [part.text] : [],
       )
       .join("\n");
-    if (result.isError) throw failure(text || `${provider.name} could not complete ${input.tool}.`);
-    if (result.structuredContent) return JSON.parse(JSON.stringify(result.structuredContent));
+    if (result.isError)
+      return {
+        kind: "blocked",
+        blocked: {
+          code: "unavailable",
+          message: text.slice(0, 2_000) || `${provider.name} could not complete ${input.tool}.`,
+          next: "Continue without this tool and tell the person what the message says.",
+        },
+      };
+    if (result.structuredContent)
+      return { kind: "value", value: JSON.parse(JSON.stringify(result.structuredContent)) };
     try {
-      return JSON.parse(text) as PluginJson;
+      return { kind: "value", value: JSON.parse(text) as PluginJson };
     } catch {
-      return text;
+      return { kind: "value", value: text };
     }
   }
 
@@ -215,7 +257,9 @@ export class LocalProviders {
       title: entry.name,
       computer: entry.computer,
       unavailable: entry.unavailable?.slice(0, 1000) ?? null,
-      tools: entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
+      tools: entry.unavailable
+        ? []
+        : entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
     }));
   }
 
@@ -258,17 +302,15 @@ export class LocalProviders {
     const scoped = (access: "read" | "read-write") => {
       let result = scopes.get(access);
       if (!result) {
-        result = this.#options.store
-          .listDiscoveryInventory({
-            ...requester,
-            target: {
-              connectionId: provider.connectionId
-                ? IntegrationConnectionIdSchema.parse(provider.connectionId)
-                : null,
-              access,
-            },
-          })
-          .then((entries) => this.#options.devices.withAvailability(entries, requester));
+        result = this.#options.store.listDiscoveryInventory({
+          ...requester,
+          target: {
+            connectionId: provider.connectionId
+              ? IntegrationConnectionIdSchema.parse(provider.connectionId)
+              : null,
+            access,
+          },
+        });
         scopes.set(access, result);
       }
       return result;
@@ -280,23 +322,27 @@ export class LocalProviders {
           state = (await scoped(tool.readOnly === true ? "read" : "read-write"))
             .find((entry) => entry.installation.id === provider.installationId)
             ?.readiness.servers.find((state) => state.serverId === provider.serverId);
-        let blocked = localTargetBlocked(state, provider.name, requestTarget(provider)) ?? {
-          code: "unavailable",
-          message: `${provider.name} has no usable ${tool.name} operation.`,
-          next: "Use plugin_search for current tools; continue other work.",
-        };
-        if (
-          blocked.code === "access_required" &&
-          !tool.readOnly &&
-          provider.connectionId &&
-          readOnlyConnections.get(provider.connectionId)
-        )
-          blocked = {
-            ...blocked,
-            message: `${provider.name} allows reading only.`,
-            next: `To ${tool.name}, ${requestAccess(provider)}.`,
-          };
-        return [tool.name, blocked] as const;
+        const blocked =
+          provider.kind === "device-app" && provider.computer
+            ? deviceAppBlocked(state, {
+                name: provider.name,
+                dataApp: provider.requestName,
+                computerId: provider.computer.id,
+                readOnlyGrant:
+                  !tool.readOnly &&
+                  !!provider.connectionId &&
+                  readOnlyConnections.get(provider.connectionId) === true,
+                operation: tool.name,
+              })
+            : localTargetBlocked(state, provider.name, { server: provider.requestName });
+        return [
+          tool.name,
+          blocked ?? {
+            code: "unavailable",
+            message: `${provider.name} has no usable ${tool.name} operation.`,
+            next: "Use plugin_search for current tools; continue other work.",
+          },
+        ] as const;
       }),
     );
     const toolBlockers = Object.fromEntries(blockers);
@@ -330,12 +376,18 @@ export class LocalProviders {
               ownerUserId: caller.userId,
               threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
             };
+    const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store
         .listDiscoveryInventory(requester)
-        .then((entries) => this.#options.devices.withAvailability(entries, requester)),
+        .then((entries) => this.#options.devices.withAvailability(entries, requester, facts)),
       store.listCallableTools(requester),
     ]);
+    const localServers = inventory.some((entry) =>
+      entry.servers.some(({ transport }) => transport.type === "runner"),
+    )
+      ? await facts.localServers()
+      : [];
     const readOnlyConnections = new Map<string, boolean>();
     const located: Located[] = [];
     for (const entry of inventory) {
@@ -364,10 +416,7 @@ export class LocalProviders {
             const ready = states.some(({ code }) => code === "READY");
             const state = states.find(({ code }) => code !== "READY");
             if (!ready && !state) continue;
-            const connection = await store.getDeviceComputerConnectionForCall({
-              connectionId: account.connectionId,
-              ownerUserId: caller.userId as UserId,
-            });
+            const connection = await facts.connectionFor(account.connectionId);
             if (!connection) continue;
             readOnlyConnections.set(account.connectionId, connection.access === "read");
             located.push(
@@ -385,11 +434,10 @@ export class LocalProviders {
                 requestName: dataAppName(definition),
                 blocked: ready
                   ? undefined
-                  : localTargetBlocked(
-                      state,
-                      `${entry.installation.title} on ${connection.runnerName}`,
-                      { dataApp: dataAppName(definition), computerId: connection.deviceId },
-                    ),
+                  : localTargetBlocked(state, definition.id, {
+                      dataApp: dataAppName(definition),
+                      computerId: connection.deviceId,
+                    }),
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
@@ -423,14 +471,16 @@ export class LocalProviders {
             }),
           );
           const runnerId = server.transport.runnerId;
+          const localServer = localServers.find(({ id }) => id === server.id);
           located.push(
             provider({
               id: `app_server_${server.id}`,
               kind: "local-server",
               base: serverName(entry.installation),
-              computer: runnerId
-                ? { id: runnerId, name: (await store.localMcp.computerName(runnerId)) ?? runnerId }
-                : null,
+              computer:
+                localServer?.deviceId && localServer.runnerName
+                  ? { id: localServer.deviceId, name: localServer.runnerName }
+                  : null,
               named: false,
               name: entry.installation.title,
               installationId: entry.installation.id,
@@ -440,6 +490,7 @@ export class LocalProviders {
               transport: "runner",
               requestName: serverName(entry.installation),
               blocked:
+                (localServer ? localServerStatus(localServer).blocked : undefined) ??
                 localTargetBlocked(state, entry.installation.title, {
                   server: serverName(entry.installation),
                 }) ??
@@ -475,7 +526,6 @@ export class LocalProviders {
       .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))
       .map((entry) => ({
         ...entry,
-        tools: entry.unavailable ? [] : entry.tools,
         version: `dpl_${createHash("sha256")
           .update(JSON.stringify([entry.slug, entry.unavailable ?? null, entry.tools]))
           .digest("hex")
@@ -560,10 +610,4 @@ function serverName(installation: IntegrationInstallation): string {
 
 function failure(message: string) {
   return new PluginServiceError("tool", message.slice(0, 4000));
-}
-
-function requestTarget(provider: Pick<Located, "kind" | "computer" | "requestName">) {
-  return provider.kind === "device-app" && provider.computer
-    ? { dataApp: provider.requestName, computerId: provider.computer.id }
-    : { server: provider.requestName };
 }

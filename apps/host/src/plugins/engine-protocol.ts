@@ -1,5 +1,5 @@
 import { plugin_resources, opensteer_plugin_resource_update } from "@opensteer/agent-tools/tools";
-import { PluginAccountConsentSchema } from "@opensteer/core";
+import { BlockedSchema, PluginAccountConsentSchema } from "@opensteer/core";
 import { PluginOAuthClientChoiceSchema } from "@opensteer/protocol";
 import { z } from "zod";
 import {
@@ -19,6 +19,8 @@ const id = z.string().min(1);
 export const executionResultBytes = 48_000;
 export const interactionBytes = 60_000;
 export const ipcMessageBytes = 2 * 1024 * 1024;
+// Leave room for the execution and IPC envelopes around a direct attachment.
+export const directMcpResultBytes = ipcMessageBytes - 1024;
 // A 24 MiB source package can expand sixfold when JSON escapes its text.
 const sourceEnvelopeBytes = 160 * 1024 * 1024;
 export const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
@@ -140,6 +142,7 @@ const interaction = z
 const agentResult = z
   .object({
     status: z.string(),
+    hostPresentation: z.enum(["blocked", "mcp"]).optional(),
     execution: z
       .object({
         ok: z.boolean(),
@@ -173,7 +176,9 @@ export const ExecutionSchema = z.strictObject({
         jsonBytes(value) <=
         (value.status === "approval-required" || value.status === "input-required"
           ? interactionBytes
-          : executionResultBytes),
+          : value.hostPresentation === "mcp"
+            ? directMcpResultBytes
+            : executionResultBytes),
       "Plugin result too large",
     )
     .optional(),
@@ -458,7 +463,7 @@ export const HostProviderSchema = z.strictObject({
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
   version: id,
   tools: z.array(HostToolSchema),
-  /** Why the provider cannot be used now, as a sentence the agent can act on. It then lists no tools. */
+  /** Discovery hides tools while the provider is unavailable. */
   unavailable: z.string().min(1).max(2000).optional(),
 });
 export type PluginHostProvider = z.infer<typeof HostProviderSchema>;
@@ -544,6 +549,19 @@ export class PluginBrokerError extends Error {
     this.reason = reason;
   }
 }
+export const LocalMcpResultSchema = z.object({
+  content: z.array(object),
+  structuredContent: object.optional(),
+  isError: z.boolean().optional(),
+  _meta: object.optional(),
+});
+export const HostToolResultSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("value"), value: JsonSchema }),
+  z.strictObject({ kind: z.literal("mcp"), result: LocalMcpResultSchema }),
+  z.strictObject({ kind: z.literal("blocked"), blocked: BlockedSchema }),
+]);
+export type HostToolResult = z.infer<typeof HostToolResultSchema>;
+
 export const callbackOperations = {
   ...brokerCallbackOperations,
   oauthConfiguration: {
@@ -560,7 +578,7 @@ export const callbackOperations = {
       tool: id,
       input: JsonSchema,
     }),
-    output: JsonSchema,
+    output: HostToolResultSchema,
   },
   eventAuthorize: { input: object, output: z.boolean() },
   webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },

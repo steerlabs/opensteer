@@ -22,10 +22,11 @@ import {
   type PhoneDisplayDefinitionId,
 } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
 import { TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
 import {
   OpensteerError,
+  ToolBlockedError,
   refused,
   UserIdSchema,
   type AgentEvent,
@@ -116,7 +117,12 @@ import {
   type ComputerUseLease,
 } from "../computer-use/computer-use-service.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
-import { sanitizeToolResult } from "../local-servers/mcp-clients.js";
+import { deviceAccessBlocked } from "./target-blocked.js";
+import {
+  localToolBlocked,
+  sanitizeToolResult,
+  type LocalToolResponse,
+} from "../local-servers/mcp-clients.js";
 import type { TabServicePort } from "../tabs/ports.js";
 import {
   ComputerAppApprovalService,
@@ -365,8 +371,38 @@ export class DeviceService {
     return this.#store;
   }
 
+  async localDeviceAccessBlocked(deviceId: DeviceId) {
+    try {
+      await this.#deviceApps.requireAgentAccess(deviceId);
+    } catch (error) {
+      const blocked = deviceAccessBlocked(error);
+      if (!blocked) throw error;
+      return blocked;
+    }
+    return undefined;
+  }
+
   async listCallableTools(input: IntegrationRequester) {
     return this.#store.listCallableTools(input);
+  }
+
+  localDiscoveryFacts(ownerUserId: UserId) {
+    const connections = new Map<
+      IntegrationConnectionId,
+      ReturnType<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>
+    >();
+    const connectionFor = (connectionId: IntegrationConnectionId) => {
+      const pending = connections.get(connectionId);
+      if (pending) return pending;
+      const loaded = this.#store.getDeviceComputerConnectionForCall({
+        connectionId,
+        ownerUserId,
+      });
+      connections.set(connectionId, loaded);
+      return loaded;
+    };
+    let servers: ReturnType<IntegrationPlatformStore["localMcp"]["list"]> | undefined;
+    return { connectionFor, localServers: () => (servers ??= this.#store.localMcp.list()) };
   }
 
   /** Every installation as this requester's agents see it, with what makes each unusable now. */
@@ -381,36 +417,26 @@ export class DeviceService {
   async withAvailability<Entry extends DiscoveryInventoryEntry>(
     inventory: readonly Entry[],
     input: { readonly ownerUserId: UserId },
+    facts = this.localDiscoveryFacts(input.ownerUserId),
   ): Promise<Entry[]> {
-    const connections = new Map<
-      IntegrationConnectionId,
-      ReturnType<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>
-    >();
-    const connectionFor = (connectionId: IntegrationConnectionId) => {
-      const pending = connections.get(connectionId);
-      if (pending) return pending;
-      const loaded = this.#store.getDeviceComputerConnectionForCall({
-        connectionId,
-        ownerUserId: input.ownerUserId,
-      });
-      connections.set(connectionId, loaded);
+    const { connectionFor, localServers } = facts;
+    const computerName = async (runnerId: RunnerId) =>
+      (await localServers()).find((server) => server.runnerId === runnerId)?.runnerName ??
+      "its computer";
+    const readRuntime = (deviceId: DeviceId, definitionId: string) =>
+      Promise.all([
+        this.#deviceApps.attached(deviceId),
+        this.#targetConnected(deviceId),
+        this.#deviceApps.appStatus(deviceId, definitionId),
+      ]).then(([attached, runnerConnected, status]) => ({ attached, runnerConnected, status }));
+    const runtime = new Map<string, ReturnType<typeof readRuntime>>();
+    const appRuntime = (deviceId: DeviceId, definitionId: string) => {
+      const key = `${deviceId}:${definitionId}`;
+      const previous = runtime.get(key);
+      if (previous) return previous;
+      const loaded = readRuntime(deviceId, definitionId);
+      runtime.set(key, loaded);
       return loaded;
-    };
-    // What each computer that runs an MCP server is called, read once and
-    // only when an entry has such a server.
-    let computerNames: Promise<ReadonlyMap<RunnerId, string>> | undefined;
-    const computerName = async (runnerId: RunnerId) => {
-      computerNames ??= this.#store.localMcp
-        .list()
-        .then(
-          (servers) =>
-            new Map(
-              servers.flatMap(({ runnerId: id, runnerName }) =>
-                id && runnerName ? [[id, runnerName] as const] : [],
-              ),
-            ),
-        );
-      return (await computerNames).get(runnerId) ?? "its computer";
     };
     return Promise.all(
       inventory.map(async (entry) => {
@@ -455,13 +481,14 @@ export class DeviceService {
           if (!definitionId || readiness.connectionId === null) return readiness;
           const connection = await connectionFor(readiness.connectionId);
           if (!connection) return readiness;
-          const status = await this.#deviceApps.appStatus(connection.deviceId, definitionId);
-          const attached = await this.#deviceApps.attached(connection.deviceId);
+          const { status, attached, runnerConnected } = await appRuntime(
+            connection.deviceId,
+            definitionId,
+          );
           const operationStatus =
             operation === undefined
               ? null
               : (status?.operations.find((candidate) => candidate.operation === operation) ?? null);
-          const runnerConnected = await this.#targetConnected(connection.deviceId);
           const operationStatuses =
             operation === undefined ? (status?.operations ?? null) : operationStatus;
           const detail = isPhoneDisplayDefinitionId(definitionId)
@@ -651,7 +678,8 @@ export class DeviceService {
       ) => Promise<Result>,
     ) =>
       this.#deviceApps.withAdmission(placement.deviceId, async () => {
-        await this.#deviceApps.requireAgentAccess(placement.deviceId);
+        const blocked = await this.localDeviceAccessBlocked(placement.deviceId);
+        if (blocked) throw new ToolBlockedError(blocked);
         const [connection, authority] = await Promise.all([
           this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId }),
           this.#store.listCallableTools({ ownerUserId, threadId: caller.threadId }),
@@ -703,7 +731,7 @@ export class DeviceService {
     args: Readonly<Record<string, unknown>>,
     caller: ToolCaller,
     signal?: AbortSignal,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
+  ): Promise<LocalToolResponse> {
     const transport = callable.server.transport;
     if (
       transport.type === "computer" &&
@@ -841,7 +869,7 @@ export class DeviceService {
     callable: CallableIntegrationTool,
     operation: ComputerAppOperation,
     placement: ComputerPlacement,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
+  ): Promise<LocalToolResponse> {
     const answer = await sent.outcome;
     if (answer.kind !== "ok") route?.close();
     const peer = route?.peer ? await route.peer.catch(() => null) : undefined;
@@ -901,7 +929,17 @@ export class DeviceService {
         break;
       case "outcome-unknown":
         message = `${placement.runnerName} did not confirm this. Check whether it happened before trying again.`;
-        break;
+        return {
+          ...sanitizeToolResult(
+            { content: [{ type: "text", text: message }], isError: true },
+            null,
+          ),
+          [localToolBlocked]: {
+            code: "outcome_unknown",
+            message,
+            next: "Check current state before repeating the write.",
+          },
+        };
       case "lost":
         message = `${placement.runnerName} did not answer. Try again.`;
         break;

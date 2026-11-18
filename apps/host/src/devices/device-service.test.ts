@@ -520,6 +520,9 @@ describe("DeviceService computer invocation", () => {
           RunnerIdSchema.parse(id),
         ),
         listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
+        localMcp: {
+          list: vi.fn(async () => []),
+        } as unknown as IntegrationPlatformStore["localMcp"],
         listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
         listInstallations: vi.fn(async () => [callable.installation]),
         revokeComputerConnection: vi.fn(async () => {

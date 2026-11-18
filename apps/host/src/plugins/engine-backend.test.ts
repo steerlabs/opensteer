@@ -72,7 +72,7 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
             ],
           },
         ]),
-      call: () => Effect.succeed("local"),
+      call: () => Effect.succeed({ kind: "value", value: "local" }),
     },
   );
   const listed = await Effect.runPromise(backend.listApps());

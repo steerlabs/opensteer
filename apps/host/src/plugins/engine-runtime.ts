@@ -1,4 +1,5 @@
 import { CurrentPluginRequest } from "./engine-authority.js";
+import { projectDirectLocalTools } from "./local-tool-results.js";
 import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
@@ -107,6 +108,7 @@ import {
   PluginBrokerError,
   JsonSchema,
   executionResultBytes,
+  directMcpResultBytes,
   interactionBytes,
   jsonBytes,
   pluginResultTooLarge,
@@ -524,6 +526,7 @@ export async function startEngine(
             context: PluginCaller;
             controller: AbortController;
             driving: boolean;
+            direct: boolean;
           }
         >();
         const manager = yield* makeExecutions(
@@ -592,26 +595,33 @@ export async function startEngine(
               ),
         ),
       );
-    const backend = (context: PluginCaller, execution?: string) =>
-      compositeBackend(engine, accountAdapter, owner, context, {
-        authorize: (input) =>
-          callback("authorize", {
-            ...context,
-            ...input,
-            ...(execution === undefined ? {} : { execution }),
-          }),
-        providers: () => callback("providers", context),
-        call: (input, elicitation) =>
-          callback(
-            "providerCall",
-            {
+    const backend = (context: PluginCaller, execution?: string, direct = false) =>
+      compositeBackend(
+        engine,
+        accountAdapter,
+        owner,
+        context,
+        {
+          authorize: (input) =>
+            callback("authorize", {
               ...context,
               ...input,
               ...(execution === undefined ? {} : { execution }),
-            },
-            elicitation,
-          ),
-      });
+            }),
+          providers: () => callback("providers", context),
+          call: (input, elicitation) =>
+            callback(
+              "providerCall",
+              {
+                ...context,
+                ...input,
+                ...(execution === undefined ? {} : { execution }),
+              },
+              elicitation,
+            ),
+        },
+        direct,
+      );
     const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
       record.view = { ...record.view, ...value };
       if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
@@ -621,10 +631,19 @@ export async function startEngine(
         executions.delete(record.view.id);
       return record.view;
     };
-    const completed = (record: { view: PluginExecution }, result: McpExecutionResult) =>
+    const completed = (
+      record: { view: PluginExecution; direct: boolean },
+      result: McpExecutionResult,
+    ) =>
       Effect.gen(function* () {
         const pending = result.status === "approval-required" || result.status === "input-required";
-        if (jsonBytes(result) > (pending ? interactionBytes : executionResultBytes)) {
+        const presented = record.direct && !pending ? projectDirectLocalTools(result) : result;
+        const sizeLimit = pending
+          ? interactionBytes
+          : z.object({ hostPresentation: z.literal("mcp") }).safeParse(presented).success
+            ? directMcpResultBytes
+            : executionResultBytes;
+        if (jsonBytes(presented) > sizeLimit) {
           if (pending)
             yield* manager.discard(
               record.view.caller,
@@ -639,7 +658,9 @@ export async function startEngine(
         return update(record, {
           state: pending ? "waiting" : "completed",
           interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
-          result: operations.execute.output.shape.result.parse(JSON.parse(JSON.stringify(result))),
+          result: operations.execute.output.shape.result.parse(
+            JSON.parse(JSON.stringify(presented)),
+          ),
         });
       });
     const perform = (
@@ -1135,6 +1156,7 @@ export async function startEngine(
               context,
               controller,
               driving: true,
+              direct: operation === "call",
             };
             executions.set(id, record);
             report(record.view);
@@ -1151,7 +1173,7 @@ export async function startEngine(
                     manager
                       .execute(
                         context.caller,
-                        backend(context, id),
+                        backend(context, id, record.direct),
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
@@ -1230,7 +1252,7 @@ export async function startEngine(
             const requestId = Schema.decodeUnknownSync(InteractionId)(interaction.requestId);
             const pending = yield* manager.pendingInteraction(context.caller, requestId);
             if (pending)
-              yield* backend(context, record.view.id).authorizeElicitation(
+              yield* backend(context, record.view.id, record.direct).authorizeElicitation(
                 pending.status === "approval-required"
                   ? { app: pending.invocation.app, tool: pending.invocation.tool }
                   : pending.tool,
@@ -1262,7 +1284,7 @@ export async function startEngine(
                   try: () =>
                     run(
                       manager
-                        .resume(context.caller, backend(context, record.view.id), {
+                        .resume(context.caller, backend(context, record.view.id, record.direct), {
                           requestId,
                           response,
                         })

@@ -80,7 +80,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
         typeof input.input.value !== "number"
       )
         throw new Error("Invalid fixture value");
-      return input.input.value * 2;
+      return { kind: "value", value: input.input.value * 2 };
     },
     onExecution: (execution) => {
       events.emit("execution", execution);

@@ -2364,6 +2364,12 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
           "type": "string",
         },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
         "url": {
           "description": "http://127.0.0.1:<port>/… or another loopback URL on that computer.",
           "format": "uri",
@@ -2406,6 +2412,12 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "name": {
           "description": "Lowercase letters, digits and single hyphens; its tools are found under this name.",
           "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
           "type": "string",
         },
       },

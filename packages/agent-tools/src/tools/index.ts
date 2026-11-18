@@ -113,6 +113,7 @@ export * from "./ai-accounts.js";
 export * from "./messaging-bridges.js";
 export * from "./person.js";
 export * from "./plugins.js";
+export * from "./local-servers.js";
 export * from "./team.js";
 export * from "./requests.js";
 export * from "./threads.js";

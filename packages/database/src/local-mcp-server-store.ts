@@ -37,6 +37,8 @@ export interface LocalMcpServerRecord {
   /** What the computer is called, or null when none runs it or it was removed. */
   readonly runnerName: string | null;
   readonly status: "active" | "disabled" | "needs-attention";
+  readonly statusDetail: string | null;
+  readonly declined: boolean;
 }
 
 /**
@@ -409,6 +411,7 @@ async function serverRows(
       "integrationServers.installationId",
       "integrationServers.name",
       "integrationServers.status",
+      "integrationServers.statusDetail",
       "integrationServers.toolGeneration",
       "integrationServers.transport",
     ])
@@ -462,6 +465,8 @@ async function records(
     deviceId: transport.runnerId ? (computers.get(transport.runnerId)?.deviceId ?? null) : null,
     runnerName: transport.runnerId ? (computers.get(transport.runnerId)?.name ?? null) : null,
     status: row.status,
+    statusDetail: row.statusDetail,
+    declined: row.status === "disabled" && row.statusDetail === declinedSentence,
   }));
 }
 

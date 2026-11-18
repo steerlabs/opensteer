@@ -1186,7 +1186,7 @@ export async function createHostRuntime(
         if (!pluginOAuth) throw new Error("Plugin sign-in is unavailable");
         return pluginOAuth.broker(operation, input);
       },
-      providers: async (caller) => (await localProviders?.providers(caller)) ?? [],
+      providers: async (caller) => (await localProviders?.providers(caller, true)) ?? [],
       providerCall: async (input, signal, elicit) => {
         if (!localProviders)
           throw new PluginServiceError("unavailable", "Local tools are starting");
