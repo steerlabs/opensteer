@@ -31,6 +31,12 @@ const snapshot = {
   tasks: [],
   visits: [],
   attention: [],
+  attentionHasMore: false,
+  activeTaskIds: [],
+  activeHasMore: false,
+  recentTaskIds: [],
+  nextBefore: null,
+  taskCounts: { active: 0, open: 0 },
   counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
   resourceRevisions: PersonalResourceRevisionsSchema.parse(
     Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
@@ -276,66 +282,9 @@ test("a thread authority change fences a held node-only dispatch", async () => {
   }
 });
 
-test("shell repair keeps resource interests for the replacement generation", async () => {
-  const repair = Promise.withResolvers<void>();
-  const updated = Promise.withResolvers<void>();
-  const socket = new PersonalSyncSocket({
-    async read(_scope, after) {
-      if (after?.afterSequence === "0")
-        return {
-          throughSequence: "1",
-          cursor: null,
-          frames: [
-            {
-              type: "host.snapshot-required",
-              scope,
-              throughSequence: "1",
-              reason: "cursor-unavailable",
-            },
-          ],
-        };
-      return {
-        throughSequence: "1",
-        cursor,
-        frames: [{ type: "host.snapshot", scope, snapshot, throughSequence: "1" }],
-      };
-    },
-    async readResources(interests) {
-      return interests.map((kind) => ({
-        kind,
-        revision: "1",
-        view: { entries: [], complete: true, hasMore: false },
-      }));
-    },
-    async send(raw, guard) {
-      if (!guard()) return false;
-      const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
-      if (frame.type === "host.snapshot-required") repair.resolve();
-      if (frame.type === "host.resource" && frame.generation === 2 && frame.kind === "settings")
-        updated.resolve();
-      return true;
-    },
-    close() {},
-  });
-  try {
-    socket.attach({
-      type: "client.attach",
-      apiVersion: 64,
-      generation: 1,
-      interests: ["settings"],
-      installed: {},
-      cursor: { ...cursor, afterSequence: "0" },
-    });
-    await deadline(repair.promise, "Expired shell did not ask for repair");
-    socket.subscribe(subscription(2));
-    await deadline(updated.promise, "Replacement shell lost its settings watch");
-  } finally {
-    socket.close("test finished");
-  }
-});
-
-test("oversized encoded commits dispatch a bounded repair", async () => {
-  const delivered = Promise.withResolvers<ScopedHostMessage>();
+test("a commit too large for one frame is repaired inline by a snapshot on the same generation", async () => {
+  const frames: ScopedHostMessage[] = [];
+  const repaired = Promise.withResolvers<void>();
   const changes = Array.from({ length: 12 }, (_, ordinal) => {
     const id = createId("thread");
     return {
@@ -359,28 +308,48 @@ test("oversized encoded commits dispatch a bounded repair", async () => {
       },
     };
   });
+  const read = vi.fn(async (_scope: PersonalScope, after: PersonalResumeCursor | null) =>
+    after
+      ? {
+          throughSequence: "2",
+          cursor: { ...cursor, afterSequence: "2" },
+          frames: [
+            {
+              type: "host.changes" as const,
+              scope,
+              fromSequence: "1",
+              throughSequence: "2",
+              changes,
+            },
+          ],
+        }
+      : {
+          throughSequence: "2",
+          cursor: { ...cursor, afterSequence: "2" },
+          frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "2" }],
+        },
+  );
+  const closed = vi.fn();
   const socket = new PersonalSyncSocket({
-    read: async () => ({
-      throughSequence: "2",
-      cursor: { ...cursor, afterSequence: "2" },
-      frames: [{ type: "host.changes", scope, fromSequence: "1", throughSequence: "2", changes }],
-    }),
+    read,
     async send(raw, guard) {
       if (!guard()) return false;
-      delivered.resolve(ScopedHostMessageSchema.parse(JSON.parse(raw)));
+      const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
+      frames.push(frame);
+      if (frame.type === "host.snapshot") repaired.resolve();
       return true;
     },
-    close() {},
+    close: closed,
   });
   try {
     socket.subscribe({ ...subscription(1), cursor });
-    expect(
-      await deadline(delivered.promise, "Oversized commit did not request repair"),
-    ).toMatchObject({
-      type: "host.snapshot-required",
-      reason: "replay-overflow",
-      throughSequence: "2",
-    });
+    await deadline(repaired.promise, "The oversized commit was not repaired by a snapshot");
+    expect(read.mock.calls.map(([, after]) => after?.afterSequence ?? null)).toEqual(["1", null]);
+    expect(frames).toMatchObject([
+      { type: "host.snapshot", generation: 1, throughSequence: "2" },
+      { type: "host.synchronized", generation: 1, throughSequence: "2" },
+    ]);
+    expect(closed).not.toHaveBeenCalled();
   } finally {
     socket.close("test finished");
   }
@@ -522,7 +491,7 @@ test("coalesces live text for its synchronized detail after the durable barrier"
   }
 });
 
-test.each(["acknowledged", "expired"] as const)(
+test.each(["acknowledged", "unacknowledged"] as const)(
   "keeps a pressured cut while another scope streams until its credit is %s",
   async (outcome) => {
     vi.useFakeTimers();
@@ -556,10 +525,9 @@ test.each(["acknowledged", "expired"] as const)(
             changes: Array.from({ length: count }, (_, ordinal) => ({
               sequence,
               ordinal,
-              entityKind: "collection" as const,
-              entityId: `collection-${ordinal}`,
-              operation: "invalidate" as const,
-              value: { revision: sequence },
+              entityKind: "visit" as const,
+              entityId: `visit-${ordinal}`,
+              operation: "remove" as const,
             })),
           };
         }),
@@ -623,8 +591,8 @@ test.each(["acknowledged", "expired"] as const)(
         expect(closed).not.toHaveBeenCalled();
       } else {
         socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "1" });
-        await vi.advanceTimersByTimeAsync(100);
-        expect(closed).toHaveBeenCalledWith("Personal sync credit expired");
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        expect(closed).not.toHaveBeenCalled();
         expect(delivered()).toEqual(["2"]);
         expect(shellReads()).toBe(2);
       }
@@ -635,3 +603,69 @@ test.each(["acknowledged", "expired"] as const)(
     }
   },
 );
+
+test("live text out of credit pauses its scope until the client acknowledges", async () => {
+  vi.useFakeTimers();
+  const detail = { kind: "thread", threadId: createId("thread") } as const;
+  const closed = vi.fn();
+  const frames: ScopedHostMessage[] = [];
+  const socket = new PersonalSyncSocket({
+    read: async () => ({
+      throughSequence: "1",
+      cursor: { ...cursor, scopeKey: `thread:${detail.threadId}` as const },
+      frames: [],
+    }),
+    async send(encoded, guard) {
+      if (!guard()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      return true;
+    },
+    close: closed,
+  });
+  const live = () => frames.filter((frame) => frame.type === "host.live").length;
+  const text = "x".repeat(12 * 1024);
+  const offer = (index: number) =>
+    socket.offerLive(detail, {
+      runId: createId("run"),
+      attemptId: createId("runAttempt"),
+      bindingGeneration: 1,
+      liveBootId: crypto.randomUUID(),
+      streamId: `tool:${index}`,
+      itemId: `tool:${index}`,
+      afterSequence: "1",
+      update: {
+        operation: "replace",
+        offset: 0,
+        totalLength: text.length,
+        text,
+        incomplete: false,
+      },
+    });
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: detail,
+      generation: 1,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let index = 0; index < 40; index++) {
+      offer(index);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    const paused = live();
+    expect(paused).toBeGreaterThan(10);
+    expect(paused).toBeLessThan(40);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(live()).toBe(paused);
+    expect(closed).not.toHaveBeenCalled();
+    socket.ack({ subscriptionId: "detail:0", generation: 1, throughSequence: "1" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(live()).toBeGreaterThan(paused);
+    expect(closed).not.toHaveBeenCalled();
+  } finally {
+    socket.close("test finished");
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  }
+});

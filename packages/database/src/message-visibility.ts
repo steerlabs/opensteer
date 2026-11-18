@@ -13,7 +13,7 @@ import {
 } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { itemView } from "./personal-sync-store.js";
-import { invalidateThreadCollection, publishThreadSummary } from "./thread-status.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { messageEditFromRow } from "./thread-row-mappers.js";
 import { describeTranscriptMessage } from "./transcript-store.js";
 import type { TranscriptItemTable } from "./personal-state-schema.js";
@@ -143,23 +143,12 @@ export async function syncTranscriptMessage(
       else if (prior?.visible)
         mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
     });
-    if (!visible && !prior?.visible)
-      await invalidateThreadCollection(tx, message.threadId, "messages");
     if (orderChanged) {
       await tx
         .updateTable("threads")
         .set({ transcriptOrderRevision: mutation.sequence })
         .where("id", "=", message.threadId)
         .execute();
-      mutation.change(
-        {
-          scopeKey,
-          entityKind: "collection",
-          entityId: "transcript-order",
-          operation: "invalidate",
-        },
-        () => ({ revision: mutation.sequence }),
-      );
     }
     if (visible && message.kind === "assistant") {
       const updated = await tx
@@ -203,7 +192,6 @@ export async function publishThreadCard(
       .set({ transcriptOrderRevision: mutation.sequence })
       .where("id", "=", card.threadId)
       .execute();
-    await invalidateThreadCollection(tx, card.threadId, "transcript-order");
   }
   mutation.stageTranscript(
     card.id,

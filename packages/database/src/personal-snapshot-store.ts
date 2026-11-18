@@ -5,7 +5,9 @@ import {
   PersonalShellSnapshotSchema,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
-import { activeRunQueue, encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
+import { encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
+import { threadQueueView } from "./personal-queue-view.js";
+import { nodeSubjectView } from "./execution-nodes.js";
 import { boundedSerializedPrefix } from "./message-window.js";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
@@ -14,7 +16,11 @@ import {
   type PersonalReadScope,
   readTranscriptPage,
 } from "./personal-sync-store.js";
-import { currentTasks, readInitialTaskWindows } from "./personal-task-store.js";
+import {
+  currentTasks,
+  readInitialTaskWindows,
+  readTaskPageThreads,
+} from "./personal-task-store.js";
 
 type Tx = PersonalMutationTransaction;
 type SyncState = Awaited<ReturnType<typeof authorizedSyncState>>;
@@ -54,14 +60,7 @@ export async function buildPersonalShellSnapshot(
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
   await requireFreshPersonalAttention(tx);
-  const attention = (await readAttentionKeys(tx, { limit: 20 })).slice(0, 20).map((entry) => ({
-    id: entry.id,
-    kind: entry.kind,
-    threadId: entry.threadId,
-    revision: entry.revision,
-    title: utf8Prefix(entry.title || (entry.kind === "request" ? "Request" : "Team ask"), 240),
-    ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
-  }));
+  const attention = await readPendingAttention(tx);
   const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
   const resources: { kind: PersonalResourceKind; revision: string; view: PersonalResourceView }[] =
     [];
@@ -80,6 +79,8 @@ export async function buildPersonalShellSnapshot(
     tasks: window.tasks.map(taskView),
     recentTaskIds: window.recent,
     activeTaskIds: window.active,
+    activeHasMore: window.activeHasMore,
+    taskCounts: window.taskCounts,
     nextBefore: window.recentNextBefore
       ? Buffer.from(JSON.stringify({ ...window.recentNextBefore, window: "recent" })).toString(
           "base64url",
@@ -90,12 +91,15 @@ export async function buildPersonalShellSnapshot(
       lastVisitedAt: visit.lastVisitedAt.toISOString(),
       revision: state.sequence,
     })),
-    attention: boundedSerializedPrefix(attention, 20, 16 * 1024).items,
+    attention: attention.items,
+    attentionHasMore: attention.hasMore,
     counts: { pendingRequestCount, needsYouCount, unreadTaskCount },
     resourceRevisions: state.resourceRevisions,
     ...(readResources ? { resources } : {}),
   });
 }
+
+const inputQueueSnapshotBytes = 24 * 1024;
 
 export async function buildPersonalDetailSnapshot(
   tx: Tx,
@@ -106,8 +110,9 @@ export async function buildPersonalDetailSnapshot(
 ) {
   const thread = await currentTasks(tx, viewerId)
     .where("id", "=", scope.threadId)
-    .select(["inputQueueRevision", "inputQueuePaused"])
     .executeTakeFirstOrThrow();
+  const view = (await readTaskPageThreads(tx, viewerId, [thread.id])).get(thread.id);
+  if (!view) throw new Error("The selected task changed in its read cut");
   const page = await readTranscriptPage(tx, {
     viewerId,
     scope,
@@ -129,14 +134,22 @@ export async function buildPersonalDetailSnapshot(
   const requests = await overlayPage(tx, scope, address, "requests");
   const tools = await overlayPage(tx, scope, address, "tools", 10, 8 * 1024);
   const nodes = await overlayPage(tx, scope, address, "nodes", 10, 8 * 1024);
-  const queue = root ? await activeRunQueue(tx, thread.id) : [];
+  const queue = root ? await threadQueueView(tx, thread.id, state.sequence) : null;
+  const nodeSubject =
+    scope.kind === "node" ? await nodeSubjectView(tx, thread.id, scope.nodeId) : undefined;
   return PersonalDetailSnapshotSchema.parse({
-    thread: taskView(thread),
-    orderRevision: page.orderRevision,
-    inputQueueRevision: thread.inputQueueRevision,
-    ...(root
-      ? { queue: { revision: state.sequence, runs: queue, paused: thread.inputQueuePaused } }
+    thread: { ...taskView(thread), thread: view },
+    ...(queue
+      ? {
+          queue: queue.queue,
+          inputQueue: boundedSerializedPrefix(
+            queue.entries,
+            queue.entries.length,
+            inputQueueSnapshotBytes,
+          ).items,
+        }
       : {}),
+    ...(nodeSubject ? { nodeSubject } : {}),
     items: page.items,
     pendingRequests: requests.items,
     activeItems: [...tools.items, ...nodes.items],
@@ -149,4 +162,42 @@ export async function buildPersonalDetailSnapshot(
     nextAfter: page.nextAfter,
     anchorItemId: "anchorItemId" in page ? page.anchorItemId : null,
   });
+}
+
+const attentionSnapshotBytes = 16 * 1024;
+const attentionSnapshotRows = 200;
+
+/** Every pending attention row while it fits the shell frame. */
+async function readPendingAttention(tx: Tx) {
+  const items: {
+    id: string;
+    kind: "request" | "team-ask" | "failed-ask";
+    threadId: ThreadId | null;
+    revision: string;
+    title: string;
+    preview?: string;
+  }[] = [];
+  let bytes = 2;
+  let before: { at: string; id: string } | undefined;
+  for (;;) {
+    const page = await readAttentionKeys(tx, { limit: 50, ...(before ? { before } : {}) });
+    for (const entry of page.slice(0, 50)) {
+      const row = {
+        id: entry.id,
+        kind: entry.kind,
+        threadId: entry.threadId,
+        revision: entry.revision,
+        title: utf8Prefix(entry.title || (entry.kind === "request" ? "Request" : "Team ask"), 240),
+        ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
+      };
+      const size = Buffer.byteLength(JSON.stringify(row)) + 1;
+      if (bytes + size > attentionSnapshotBytes || items.length === attentionSnapshotRows)
+        return { items, hasMore: true };
+      bytes += size;
+      items.push(row);
+    }
+    if (page.length <= 50) return { items, hasMore: false };
+    const last = page[49]!;
+    before = { at: last.at, id: last.id };
+  }
 }

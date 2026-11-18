@@ -83,8 +83,8 @@ import {
   settleSteer,
   settleStoppedConversationInputs,
 } from "./thread-inbox.js";
+import { publishThreadQueues } from "./personal-queue-view.js";
 import {
-  invalidateExecution,
   publishExecutionInput,
   recordExecutionRunChange,
   updateExecutionThread,
@@ -918,8 +918,8 @@ export async function enqueueRunnerControlInTransaction(
           .set({ inputQueueRevision: mutation.sequence, revision: mutation.sequence })
           .where("id", "=", thread.id)
           .execute();
-        invalidateExecution(mutation, thread.id, "input-queue");
       });
+      await publishThreadQueues(transaction, thread.id);
     }
     // Finalizing a Run that ends here settles its Requests and Thread state.
     if (!endsHere) {

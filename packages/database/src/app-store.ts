@@ -614,7 +614,8 @@ export class AppStore {
             operation: "remove",
           });
       }
-      mutation.fence("deployment");
+      // Not a revocation: viewers see the cards and tabs go. Sign-ins and place authority re-check.
+      mutation.react({ type: "authorityChanged", scopes: new Set(["deployment"]) });
       mutation.bumpResource("tab");
       mutation.bumpResource("tab-layout");
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));

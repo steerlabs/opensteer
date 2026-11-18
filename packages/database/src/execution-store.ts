@@ -1,4 +1,5 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
@@ -64,7 +65,6 @@ import { newestMessageWindow } from "./message-window.js";
 
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
-import { invalidateExecution } from "./execution-changes.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
   assertActiveGrant as assertActiveGrantInStore,
@@ -802,7 +802,7 @@ export async function acquireExecutionBinding(
         .where("id", "=", session.id)
         .where("continuationIdentity", "is", null)
         .executeTakeFirstOrThrow();
-      invalidateExecution(mutation, input.threadId, "thread");
+      await publishThreadSummary(transaction, input.threadId);
     }
     const row = await transaction
       .updateTable("providerSessions")

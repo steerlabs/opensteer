@@ -8,24 +8,6 @@ import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
 
-export function invalidateExecution(
-  mutation: PersonalMutation,
-  threadId: ThreadId,
-  ...collections: string[]
-) {
-  for (const entityId of collections) {
-    mutation.change(
-      {
-        scopeKey: `thread:${threadId}`,
-        entityKind: "collection",
-        entityId,
-        operation: "invalidate",
-      },
-      () => ({ revision: mutation.sequence }),
-    );
-  }
-}
-
 export async function updateExecutionThread(
   tx: PersonalMutationTransaction,
   threadId: ThreadId,

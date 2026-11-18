@@ -618,12 +618,10 @@ export class ChannelStore {
           message: "Channel access policy changed while it was being edited",
         });
       }
-      mutation.change({
-        scopeKey: "shell",
-        entityKind: "collection",
-        entityId: "channels",
-        operation: "invalidate",
-      });
+      mutation.change(
+        { scopeKey: "shell", entityKind: "signal", entityId: "channels", operation: "upsert" },
+        () => ({ revision: mutation.sequence }),
+      );
       return channelBindingFromRow(row);
     });
     await drainRevokedChannelInputs(this.#database, input.bindingId);
@@ -680,12 +678,10 @@ export class ChannelStore {
           message: "Channel access request changed while it was being reviewed",
         });
       }
-      mutation.change({
-        scopeKey: "shell",
-        entityKind: "collection",
-        entityId: "channels",
-        operation: "invalidate",
-      });
+      mutation.change(
+        { scopeKey: "shell", entityKind: "signal", entityId: "channels", operation: "upsert" },
+        () => ({ revision: mutation.sequence }),
+      );
       if (row.requestIngressId) {
         const text =
           input.decision === "approved"
@@ -727,12 +723,10 @@ export class ChannelStore {
         if (!connection) {
           throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
         }
-        mutation.change({
-          scopeKey: "shell",
-          entityKind: "collection",
-          entityId: "channels",
-          operation: "invalidate",
-        });
+        mutation.change(
+          { scopeKey: "shell", entityKind: "signal", entityId: "channels", operation: "upsert" },
+          () => ({ revision: mutation.sequence }),
+        );
         if (status === "revoked") {
           await revokeChannelConnectionsInTransaction(transaction, [connectionId]);
           return;
@@ -792,12 +786,10 @@ export class ChannelStore {
           .set({ status: "revoked", updatedAt: new Date() })
           .where("id", "=", input.bindingId)
           .executeTakeFirstOrThrow();
-        mutation.change({
-          scopeKey: "shell",
-          entityKind: "collection",
-          entityId: "channels",
-          operation: "invalidate",
-        });
+        mutation.change(
+          { scopeKey: "shell", entityKind: "signal", entityId: "channels", operation: "upsert" },
+          () => ({ revision: mutation.sequence }),
+        );
         return true;
       }),
     );

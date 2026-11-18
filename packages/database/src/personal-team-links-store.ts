@@ -22,9 +22,9 @@ function linkChanged(
   mutation.change(
     {
       scopeKey: "shell",
-      entityKind: "collection",
+      entityKind: "signal",
       entityId: "team-links",
-      operation: "invalidate",
+      operation: "upsert",
     },
     () => ({ revision: mutation.sequence }),
   );

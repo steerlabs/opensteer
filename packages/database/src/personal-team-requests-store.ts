@@ -769,9 +769,9 @@ export class PersonalTeamRequestsStore {
         mutation.change(
           {
             scopeKey: "shell",
-            entityKind: "collection",
+            entityKind: "signal",
             entityId: "team-replies",
-            operation: "invalidate",
+            operation: "upsert",
           },
           () => ({ revision: mutation.sequence }),
         );

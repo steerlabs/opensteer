@@ -2,9 +2,8 @@ import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import type { MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
-  executionNodeFromRow,
+  decorateQueueEntries,
   findPersonalSettings,
-  getThreadForOwner,
   isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
@@ -14,12 +13,13 @@ import {
   readTranscriptOverlays,
   readTranscriptPage,
 } from "@opensteer/database";
+import { personalScopeKey, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
 import {
-  itemView,
-  personalScopeKey,
-  withPersonalSyncRead,
-} from "@opensteer/database/personal-sync-store";
-import { hostApi, rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
+  hostApi,
+  rpcSuccess,
+  type HostApiHandlers,
+  type WaitingInputView,
+} from "@opensteer/protocol";
 import {
   PersonalChangeSchema,
   type PersonalResumeCursor,
@@ -35,9 +35,7 @@ import type { PersonalResources } from "./personal-resources.js";
 type Session = AuthenticatedHostSession["session"];
 type CutFrame = Extract<
   ScopedHostMessage,
-  {
-    type: "host.snapshot" | "host.changes" | "host.snapshot-required" | "host.removed";
-  }
+  { type: "host.snapshot" | "host.changes" | "host.removed" }
 >;
 type UnaddressedFrame<T> = T extends CutFrame ? Omit<T, "subscriptionId" | "generation"> : never;
 type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
@@ -96,6 +94,32 @@ export function createPersonalReads(
     );
     return items.map((item) => decorateItem(item, keys));
   };
+  const decorateDetail = async <
+    Snapshot extends {
+      readonly items: readonly TranscriptItem[];
+      readonly activeItems: readonly TranscriptItem[];
+      readonly inputQueue?: readonly WaitingInputView[] | undefined;
+    },
+  >(
+    session: Session,
+    snapshot: Snapshot,
+  ): Promise<Snapshot> => {
+    const items = await decorateItems(session, [...snapshot.items, ...snapshot.activeItems]);
+    const inputQueue = snapshot.inputQueue
+      ? await decorateQueueEntries(
+          database,
+          session.id,
+          snapshot.inputQueue,
+          await readSendKeys(session)(snapshot.inputQueue.map(({ message }) => message.id)),
+        )
+      : undefined;
+    return {
+      ...snapshot,
+      items: items.slice(0, snapshot.items.length),
+      activeItems: items.slice(snapshot.items.length),
+      ...(inputQueue ? { inputQueue } : {}),
+    };
+  };
   const shell = async (
     session: Session,
     surface: AuthenticatedHostSession["surface"],
@@ -142,34 +166,7 @@ export function createPersonalReads(
         ...(cursor ? { cursor } : {}),
         ...(anchorItemId ? { anchorItemId } : {}),
       });
-      if (cut.kind !== "snapshot") return cut;
-      const thread = await getThreadForOwner(tx, scope.threadId, session.user.id);
-      if (!thread) return cut;
-      let snapshot = { ...cut.snapshot, thread: { ...cut.snapshot.thread, thread } };
-      if (scope.kind === "node") {
-        const node = await tx
-          .selectFrom("executionNodes as node")
-          .innerJoin("runs as run", "run.id", "node.runId")
-          .selectAll("node")
-          .where("node.id", "=", scope.nodeId)
-          .where("run.threadId", "=", scope.threadId)
-          .executeTakeFirst();
-        const card = await tx
-          .selectFrom("transcriptItems")
-          .selectAll()
-          .where("id", "=", `node:${scope.nodeId}`)
-          .where("threadId", "=", scope.threadId)
-          .executeTakeFirst();
-        if (node && card) {
-          const subject = itemView(card);
-          if (subject.kind === "node")
-            snapshot = {
-              ...snapshot,
-              nodeSubject: { ...subject, node: executionNodeFromRow(node) },
-            };
-        }
-      }
-      return { ...cut, snapshot };
+      return cut;
     });
 
   const readCut = async (
@@ -216,24 +213,13 @@ export function createPersonalReads(
         if (scope.kind === "shell") return unavailable();
         frames.push({ type: "host.removed", scope, reason: "unavailable" });
         break;
-      case "snapshot-required":
-        frames.push({ type: "host.snapshot-required", scope, throughSequence, reason: cut.reason });
-        break;
       case "snapshot":
         if ("items" in cut.snapshot) {
-          const items = await decorateItems(session, [
-            ...cut.snapshot.items,
-            ...cut.snapshot.activeItems,
-          ]);
           frames.push({
             type: "host.snapshot",
             scope,
             throughSequence,
-            snapshot: {
-              ...cut.snapshot,
-              items: items.slice(0, cut.snapshot.items.length),
-              activeItems: items.slice(cut.snapshot.items.length),
-            },
+            snapshot: await decorateDetail(session, cut.snapshot),
           });
         } else
           frames.push({ type: "host.snapshot", scope, throughSequence, snapshot: cut.snapshot });
@@ -242,17 +228,31 @@ export function createPersonalReads(
         const framesByCommit = cut.commits.map((commit) =>
           commit.changes.map((change) => PersonalChangeSchema.parse(change)),
         );
+        const rows = framesByCommit.flat();
         const keys = await readSendKeys(session)(
-          framesByCommit.flatMap((changes) =>
-            changes.flatMap((row) =>
-              row.operation === "upsert" &&
-              row.entityKind === "item" &&
-              row.value.kind === "message" &&
-              row.value.author?.kind === "human"
+          rows.flatMap((row) =>
+            row.operation !== "upsert"
+              ? []
+              : row.entityKind === "item" &&
+                  row.value.kind === "message" &&
+                  row.value.author?.kind === "human"
                 ? [row.value.messageId]
-                : [],
-            ),
+                : row.entityKind === "queue-entry"
+                  ? [row.value.message.id]
+                  : [],
           ),
+        );
+        const entries = new Map(
+          (
+            await decorateQueueEntries(
+              database,
+              session.id,
+              rows.flatMap((row) =>
+                row.operation === "upsert" && row.entityKind === "queue-entry" ? [row.value] : [],
+              ),
+              keys,
+            )
+          ).map((entry) => [entry.message.id, entry]),
         );
         for (const [index, commit] of cut.commits.entries())
           frames.push({
@@ -260,9 +260,13 @@ export function createPersonalReads(
             scope,
             ...commit,
             changes: framesByCommit[index]!.map((row) =>
-              row.operation === "upsert" && row.entityKind === "item"
-                ? { ...row, value: decorateItem(row.value, keys) }
-                : row,
+              row.operation !== "upsert"
+                ? row
+                : row.entityKind === "item"
+                  ? { ...row, value: decorateItem(row.value, keys) }
+                  : row.entityKind === "queue-entry"
+                    ? { ...row, value: entries.get(row.value.message.id) ?? row.value }
+                    : row,
             ),
             ...(shellProgress && commit.throughSequence === throughSequence
               ? { shellProgress }
@@ -400,15 +404,7 @@ export function createPersonalReads(
     "thread.snapshot.get": async (input, context) => {
       const cut = await detail(requireSession(context), detailScope(input));
       if (cut.kind !== "snapshot") return unavailable();
-      const items = await decorateItems(requireSession(context), [
-        ...cut.snapshot.items,
-        ...cut.snapshot.activeItems,
-      ]);
-      return rpcSuccess({
-        ...cut.snapshot,
-        items: items.slice(0, cut.snapshot.items.length),
-        activeItems: items.slice(cut.snapshot.items.length),
-      });
+      return rpcSuccess(await decorateDetail(requireSession(context), cut.snapshot));
     },
     "thread.items.page": itemPage,
     "node.items.page": itemPage,

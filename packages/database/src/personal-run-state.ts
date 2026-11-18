@@ -17,6 +17,7 @@ import { uncertainEarlierRun, type FinishIntent } from "./personal-state-schema.
 
 import { recordFinishedRunnerStatement } from "./personal-runner-receipts.js";
 import { storableText } from "./storable-json.js";
+import { publishRunQueue } from "./thread-status.js";
 
 type Tx = PersonalMutationTransaction;
 
@@ -259,16 +260,15 @@ export async function beginPersonalRunFinish(
     .set({ finishIntent: intent, revision: mutation.sequence })
     .where("id", "=", input.runId)
     .execute();
-  mutation.fence(`thread:${run.threadId}`);
-  mutation.change(
-    {
-      scopeKey: `thread:${run.threadId}`,
-      entityKind: "collection",
-      entityId: "run-queue",
-      operation: "invalidate",
-    },
-    () => ({ revision: mutation.sequence }),
-  );
+  // A finish that spans commits is not a revocation: viewers keep their sockets and see it finish.
+  mutation.react({
+    type: "runLiveClosed",
+    runId: input.runId,
+    threadId: run.threadId,
+    attemptId: intent.attemptId,
+    bindingGeneration: intent.bindingGeneration,
+  });
+  await publishRunQueue(tx, run.threadId);
   return intent;
 }
 
@@ -329,14 +329,6 @@ export async function advancePersonalRunFinish(
     .set({ finishIntent: null, revision: mutation.sequence })
     .where("id", "=", runId)
     .execute();
-  mutation.change(
-    {
-      scopeKey: `thread:${run.threadId}`,
-      entityKind: "collection",
-      entityId: "run-queue",
-      operation: "invalidate",
-    },
-    () => ({ revision: mutation.sequence }),
-  );
+  await publishRunQueue(tx, run.threadId);
   return "settled" as const;
 }

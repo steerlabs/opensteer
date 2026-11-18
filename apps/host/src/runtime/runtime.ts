@@ -608,8 +608,18 @@ export async function createHostRuntime(
     });
     const realtime = new RealtimeHub();
     const resourceObservations = new PersonalResourceObservations();
-    const liveText = new PersonalLiveText(realtime, (runId) =>
-      runnerRegistry?.requestLiveProgress(runId),
+    const readLiveTail = (threadId: import("@opensteer/core").ThreadId) =>
+      void database
+        .selectFrom("threads")
+        .select("nextTranscriptPosition")
+        .where("id", "=", threadId)
+        .executeTakeFirst()
+        .then((row) => row && liveText.observeTail(threadId, row.nextTranscriptPosition))
+        .catch(reportMutationFailure);
+    const liveText = new PersonalLiveText(
+      realtime,
+      (runId) => runnerRegistry?.requestLiveProgress(runId),
+      readLiveTail,
     );
     const trackLiveRun = async (runId: RunId, bindingGeneration: number) => {
       if (liveText.knows(runId, bindingGeneration)) return;
@@ -625,6 +635,7 @@ export async function createHostRuntime(
         .executeTakeFirst();
       if (!current) return;
       liveText.track(runId, { ...current, bindingGeneration });
+      readLiveTail(current.threadId);
       const nodes = await database
         .selectFrom("executionNodes")
         .select(["id as nodeId", "parentNodeId"])
@@ -1765,6 +1776,9 @@ export async function createHostRuntime(
           break;
         case "nodeProgressPlacement":
           liveText.placeNode(reaction, syncHead);
+          break;
+        case "runLiveClosed":
+          liveText.finish(reaction, syncHead);
           break;
         case "liveClosed":
           liveText.closeItem(reaction);
