@@ -14,8 +14,8 @@
  * or the person can remove the queue entry and keep any draft already saved.
  * Migration copies before retiring the source. Unbound legacy rows wait for a person.
  * A failed write leaves the prior owner in place, and local settlement is retried.
- * Login changes stop new dispatches and hide old rows. Host admission checks the
- * browser credential against the queued login. Late results settle their own scope.
+ * Login changes stop new dispatches and hide old rows. API 62 checks a bound
+ * browser credential at admission. Late results settle their own scope.
  * Reply handoffs bind the revision to its login and keep a receipt through draft cleanup.
  */
 import { MutationQueue } from "@opensteer/shared/mutationQueue";

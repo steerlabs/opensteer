@@ -130,6 +130,7 @@ import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
 import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
+import { AnswerPill } from "./answer-pill.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { pillRowClearance } from "../ui/pill-metrics.js";
 import {
@@ -479,6 +480,9 @@ function ThreadPaneForUser(
   );
   const askDecisions = useAskDecisions(hostClient);
   const [focusDraft, setFocusDraft] = useState(0);
+  const [replyEditMessage, setReplyEditMessage] = useState<string | null>(null);
+  const waitingEdit = editing.edit;
+  const editingReply = waitingEdit !== null && waitingEdit.messageId === replyEditMessage;
   const drafts = client.drafts;
   const sendAsNew = useCallback(
     async (words: { readonly parts: readonly ContentPart[]; readonly text: string }) => {
@@ -1153,8 +1157,8 @@ function ThreadPaneForUser(
       (waiting !== null || editing.edit !== null || local.afterQueue.length > 0) ? (
         <TranscriptHostClientContext value={hostClient}>
           <WaitingInputs
-            canRespond={canRespond}
-            editing={editing}
+            canRespond={canRespond && !editingReply}
+            editing={editingReply ? { ...editing, edit: null } : editing}
             hostClient={hostClient}
             items={waiting ?? noWaiting}
             local={local.afterQueue}
@@ -1173,6 +1177,7 @@ function ThreadPaneForUser(
       inputQueue,
       waiting,
       editing,
+      editingReply,
       canRespond,
       hostClient,
       local.afterQueue,
@@ -1550,14 +1555,26 @@ function ThreadPaneForUser(
             </>
           ) : (
             <>
-              {editingInPlace ? (
-                <WaitingEditBar
-                  canRespond={canRespond}
-                  decisions={askDecisions}
-                  editing={editing}
-                  item={editedItem}
-                  onSendAsNew={sendAsNew}
+              {waitingEdit?.replyFull ? (
+                <AnswerPill
+                  label={editingReply ? "Back to waiting edit" : "Edit reply draft"}
+                  onPress={() => {
+                    setReplyEditMessage(editingReply ? null : waitingEdit.messageId);
+                    if (!editingReply) setFocusDraft((value) => value + 1);
+                  }}
+                  tone="secondary"
                 />
+              ) : null}
+              {editingInPlace ? (
+                editingReply ? null : (
+                  <WaitingEditBar
+                    canRespond={canRespond}
+                    decisions={askDecisions}
+                    editing={editing}
+                    item={editedItem}
+                    onSendAsNew={sendAsNew}
+                  />
+                )
               ) : dockedAsk === null ? null : (
                 <Animated.View entering={enter} exiting={exit} key={dockedAsk.messageId}>
                   <WaitingAskDock
@@ -1568,7 +1585,7 @@ function ThreadPaneForUser(
                 </Animated.View>
               )}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
-              <View style={editingInPlace ? styles.hidden : undefined}>
+              <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
                   variant={conversational ? "conversation" : "work"}
                   voice={false}
@@ -1617,7 +1634,7 @@ function ThreadPaneForUser(
                       ? "Message your agent privately"
                       : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                   }
-                  requests={dockableRequests}
+                  requests={editingReply ? [] : dockableRequests}
                   focusDraft={focusDraft}
                   running={stopTarget !== null}
                   stopRunId={stopTarget?.id ?? null}

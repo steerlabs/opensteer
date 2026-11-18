@@ -45,6 +45,7 @@ export interface WaitingEdit {
   readonly phase: "opening" | "open" | "saving" | "away" | "refused";
   /** Why it could not be held or saved, under the words until the next try. */
   readonly failure: string | null;
+  readonly replyFull?: boolean;
   /** It left the line, taken by a Run or settled elsewhere; only its words are left. */
   readonly gone: boolean;
 }
@@ -346,7 +347,7 @@ export function useWaitingEdit(
         const shown = editRef.current;
         if (flushed?.composing || shown?.messageId !== opened.messageId) return;
         const draft = flushed ? setWaitingDraftText(shown.draft, flushed.text) : shown.draft;
-        setKept({ ...shown, draft, failure: null, phase: "saving" });
+        setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
         let issue = null;
         try {
           if (await keep({ parts: draft.parts, text: draft.text.trim() })) {
@@ -356,12 +357,11 @@ export function useWaitingEdit(
         } catch (error) {
           issue = clientIssue(error, { operation: "action", label: "save this draft" });
         }
-        const failure = presentClientIssue(
-          issue?.code === "draft-limit" ? issue : { code: "draft-unsaved" },
-        ).title;
+        const limit = issue?.code === "draft-limit" ? issue : null;
+        const failure = presentClientIssue(limit ?? { code: "draft-unsaved" }).title;
         setKept((current) =>
           current?.messageId === shown.messageId
-            ? { ...current, failure, phase: shown.phase }
+            ? { ...current, failure, phase: shown.phase, replyFull: limit !== null }
             : current,
         );
       } finally {

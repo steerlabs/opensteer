@@ -31,8 +31,8 @@ import {
  * same commit order as edits. A completion can only merge into its own ID.
  */
 
-const prefix = "opensteer:composer-draft:v2:";
-const legacyPrefix = "opensteer:composer-draft:v1:";
+// Tabs on the previous release retain their existing draft behavior until they reload.
+const prefix = "opensteer:composer-draft:v1:";
 
 const QuoteSchema = z.object({
   attribution: z.string(),
@@ -58,7 +58,6 @@ const DraftSchema = z.object({
   files: z.array(FileSchema).catch([]),
   editId: z.string().optional(),
   editReserved: z.literal(true).optional(),
-  importedRevision: z.string().optional(),
   revision: z.string().optional(),
   replyScope: z.string().optional(),
   /** Absent while an untouched draft still follows the place in front. */
@@ -113,17 +112,9 @@ export interface TaskDraftRow {
 export interface ComposerDraftIndex {
   readonly replies: ReadonlySet<string>;
   readonly tasks: readonly TaskDraftRow[];
-  readonly legacy: readonly LegacyDraftRow[];
 }
 
-export interface LegacyDraftRow {
-  readonly target: ComposerDraftTarget;
-  readonly key: string;
-  readonly revision: string;
-  readonly title: string;
-}
-
-const emptyIndex: ComposerDraftIndex = { replies: new Set(), tasks: [], legacy: [] };
+const emptyIndex: ComposerDraftIndex = { replies: new Set(), tasks: [] };
 
 function scopePrefix({ deploymentId, userId }: ComposerDraftScope): string {
   return `${prefix}${encodeURIComponent(deploymentId)}:${encodeURIComponent(userId)}:`;
@@ -256,23 +247,6 @@ export function createComposerDraftStore(
     }
   };
 
-  const legacyDraft = (key: string) => {
-    if (!key.startsWith(prefix)) return null;
-    const older = read(`${legacyPrefix}${key.slice(prefix.length)}`);
-    if (!older || (!holdsContent(older) && !holdsTaskStart(older))) return null;
-    const revision = messageStorageFingerprint(
-      JSON.stringify([
-        older.text,
-        older.files,
-        older.quote,
-        older.places,
-        older.start,
-        older.startGeneration,
-      ]),
-    );
-    return read(key)?.importedRevision === revision ? null : { draft: older, revision };
-  };
-
   const keys = (start: string): readonly string[] => {
     const found = new Set([...unsaved.keys()].filter((key) => key.startsWith(start)));
     const store = storage();
@@ -322,7 +296,6 @@ export function createComposerDraftStore(
         : undefined;
     const revised = {
       ...draft,
-      importedRevision: draft.importedRevision ?? previous?.importedRevision,
       editId: draft.editId ?? globalThis.crypto.randomUUID(),
       revision: revision ?? globalThis.crypto.randomUUID(),
       replyScope: revision ? draft.replyScope : undefined,
@@ -345,20 +318,10 @@ export function createComposerDraftStore(
   };
 
   const clear = (key: string, retire = true): boolean => {
-    const held = read(key);
-    const saved =
-      held?.recoveredSendKeys?.length || held?.importedRevision
-        ? write(
-            key,
-            {
-              ...blank(),
-              updatedAt: now(),
-              recoveredSendKeys: held.recoveredSendKeys,
-              importedRevision: held.importedRevision,
-            },
-            false,
-          )
-        : remove(key);
+    const recoveredSendKeys = read(key)?.recoveredSendKeys;
+    const saved = recoveredSendKeys?.length
+      ? write(key, { text: "", files: [], quote: null, updatedAt: now(), recoveredSendKeys }, false)
+      : remove(key);
     if (saved) {
       publish();
       if (retire && key.includes(":task:")) onRetire?.(key);
@@ -388,29 +351,7 @@ export function createComposerDraftStore(
       }
     }
     tasks.sort((first, second) => second.updatedAt - first.updatedAt);
-    const legacy: LegacyDraftRow[] = [];
-    const legacyStart = `${legacyPrefix}${start.slice(prefix.length)}`;
-    for (const source of keys(legacyStart)) {
-      const key = `${prefix}${source.slice(legacyPrefix.length)}`;
-      const available = legacyDraft(key);
-      if (!available) continue;
-      const name = source.slice(legacyStart.length);
-      const encoded = name.slice(name.indexOf(":") + 1);
-      let target: ComposerDraftTarget;
-      try {
-        if (name.startsWith("task:"))
-          target = { kind: "task", draftId: decodeURIComponent(encoded) };
-        else if (name.startsWith("thread:"))
-          target = { kind: "thread", threadId: decodeURIComponent(encoded) };
-        else continue;
-      } catch {
-        continue;
-      }
-      legacy.push({ key, target, revision: available.revision, title: rowTitle(available.draft) });
-    }
-    return tasks.length === 0 && replies.size === 0 && legacy.length === 0
-      ? emptyIndex
-      : { replies, tasks, legacy };
+    return tasks.length === 0 && replies.size === 0 ? emptyIndex : { replies, tasks };
   };
 
   const matches = (held: ComposerDraft, expected: ComposerDraft): boolean => {
@@ -554,36 +495,6 @@ export function createComposerDraftStore(
 
     read,
 
-    importLegacy(key: string, revision: string): "copied" | "occupied" | "changed" | "unavailable" {
-      const legacy = legacyDraft(key);
-      if (!legacy || legacy.revision !== revision) return "changed";
-      const held = read(key);
-      if (held && (holdsContent(held) || holdsTaskStart(held) || held.editReserved))
-        return "occupied";
-      const saved = write(
-        key,
-        {
-          ...legacy.draft,
-          editId: held?.editId,
-          editReserved: undefined,
-          importedRevision: revision,
-        },
-        false,
-        true,
-      );
-      if (saved) {
-        const { draft } = legacy;
-        receivers.get(key)?.({
-          edit: () => draft.text,
-          files: draft.files,
-          ...(draft.places ? { places: draft.places } : {}),
-          quote: draft.quote,
-        });
-        publish();
-      }
-      return saved ? "copied" : "unavailable";
-    },
-
     /**
      * Lays a draft down. An open composer is handed `returned` to merge into what
      * it holds, or else the whole draft, exactly as it was.
@@ -656,12 +567,7 @@ export function createComposerDraftStore(
         if (current === null) return true;
         const preserveStart = key.includes(":task:") && holdsTaskStart(draft);
         let saved = true;
-        if (
-          preserveStart ||
-          draft.editReserved ||
-          draft.recoveredSendKeys?.length ||
-          draft.importedRevision
-        ) {
+        if (preserveStart || draft.editReserved || draft.recoveredSendKeys?.length) {
           saved = write(key, {
             ...draft,
             ...(preserveStart
@@ -738,8 +644,6 @@ export function transactionalComposerDrafts(
     transaction,
     reserveEdit: (...args: Parameters<typeof drafts.reserveEdit>) =>
       transaction((store) => store.reserveEdit(...args)),
-    importLegacy: (...args: Parameters<typeof drafts.importLegacy>) =>
-      transaction((store) => store.importLegacy(...args)),
     update: (...args: Parameters<typeof drafts.update>) => write((store) => store.update(...args)),
     clear: (...args: Parameters<typeof drafts.clear>) => write((store) => store.clear(...args)),
     discard: (key: string, revision: string | undefined, retire = true) =>
@@ -822,8 +726,7 @@ export function cleanTaskStartJournals(onlyDraft?: string, discardedGeneration?:
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    if (event.key === null || event.key.startsWith(prefix) || event.key.startsWith(legacyPrefix))
-      composerDrafts.invalidate();
+    if (event.key === null || event.key.startsWith(prefix)) composerDrafts.invalidate();
   });
 }
 

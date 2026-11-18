@@ -998,37 +998,47 @@ export function createThreadDraftStore(options: {
       const entryKey = key(deploymentId, userId, threadId);
       const prefix = dictationPrefix(deploymentId, userId, threadId);
       let merged = false;
+      let overlay: ReturnType<typeof textEdits.get>;
       try {
-        await mutate((nextDrafts) => {
-          if (editOwners.get(entryKey) !== editId) return false;
-          const current = nextDrafts.get(entryKey);
-          const text = current?.text ?? "";
-          const end = text.length;
-          const combined =
-            text === before
-              ? next
-              : insertDictationText(text, { start: end, end }, transcript).text;
-          if (combined.length <= maxDraftCharacters) {
-            putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: combined });
-            merged = true;
-          } else {
-            const saved = [...nextDrafts.keys()].some((key) => key.startsWith(prefix));
-            const recovered = (saved ? "\n\n" : "") + transcript;
-            const id = globalThis.crypto.randomUUID();
-            // The ordinary draft limit still applies to each stored record.
-            for (let start = 0; start < recovered.length; start += maxDraftCharacters) {
-              nextDrafts.set(
-                `${prefix}${id}:${start}`,
-                DraftSchema.parse({
-                  text: recovered.slice(start, start + maxDraftCharacters),
-                  updatedAt: options.now().toISOString(),
-                  userId,
-                }),
-              );
+        await mutate(
+          (nextDrafts) => {
+            if (editOwners.get(entryKey) !== editId) return false;
+            const current = nextDrafts.get(entryKey);
+            overlay = textEdits.get(entryKey);
+            const text = overlay?.text ?? current?.text ?? "";
+            const end = text.length;
+            const combined =
+              text === before
+                ? next
+                : insertDictationText(text, { start: end, end }, transcript).text;
+            if (combined.length <= maxDraftCharacters) {
+              putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: combined });
+              merged = true;
+            } else {
+              const saved = [...nextDrafts.keys()].some((key) => key.startsWith(prefix));
+              const recovered = (saved ? "\n\n" : "") + transcript;
+              const id = globalThis.crypto.randomUUID();
+              // The ordinary draft limit still applies to each stored record.
+              for (let start = 0; start < recovered.length; start += maxDraftCharacters) {
+                nextDrafts.set(
+                  `${prefix}${id}:${start}`,
+                  DraftSchema.parse({
+                    text: recovered.slice(start, start + maxDraftCharacters),
+                    updatedAt: options.now().toISOString(),
+                    userId,
+                  }),
+                );
+              }
             }
-          }
-          return undefined;
-        });
+            return undefined;
+          },
+          () => {
+            if (merged && overlay && textEdits.get(entryKey) === overlay) {
+              textEdits.delete(entryKey);
+              unsaved.get(entryKey)?.delete("text");
+            }
+          },
+        );
         return merged;
       } catch {
         if (editOwners.get(entryKey) !== editId) return false;

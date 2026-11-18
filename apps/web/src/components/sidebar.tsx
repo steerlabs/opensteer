@@ -78,10 +78,8 @@ import {
   cleanTaskStartJournals,
   composerDraftKey,
   composerDrafts,
-  homeDraftId,
   useComposerDraftIndex,
   type ComposerDraftTarget,
-  type LegacyDraftRow,
 } from "./composer-drafts.js";
 import { TaskMark, TaskState, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
 import {
@@ -464,31 +462,6 @@ export function Sidebar({
     onCloseMobile();
     nav.openConversation("/voice");
   };
-  const openSavedDraft = (draftId: string) => {
-    onCloseMobile();
-    nav.openConversation("/", { draftId });
-  };
-  const recoverDraft = async (legacy: LegacyDraftRow) => {
-    const outcome = await composerDrafts
-      .importLegacy(legacy.key, legacy.revision)
-      .catch(() => "unavailable");
-    if (outcome === "copied") {
-      if (legacy.target.kind === "thread") openTask(legacy.target.threadId);
-      else openSavedDraft(legacy.target.draftId);
-    } else if (outcome === "occupied") {
-      toast.error(
-        "This draft is already in use. Close it or finish it before recovering the earlier draft.",
-      );
-    } else {
-      if (outcome === "changed") composerDrafts.invalidate();
-      toast.error(
-        outcome === "changed"
-          ? "The earlier draft changed. Pick it again to recover it."
-          : "Couldn’t copy the earlier draft. Try again.",
-      );
-    }
-  };
-  const savedTaskDrafts = drafts.tasks.filter(({ draftId }) => draftId !== homeDraftId);
   const discardDraft = useCallback(
     (target: ComposerDraftTarget) => {
       if (!deploymentId || !userId) return;
@@ -918,42 +891,6 @@ export function Sidebar({
                       ]}
                 </RowMotion>
               </SideList>
-              {!doneView && (drafts.legacy.length > 0 || savedTaskDrafts.length > 0) ? (
-                <details>
-                  <summary>Drafts</summary>
-                  <ul>
-                    {drafts.legacy.map((row) => (
-                      <li key={row.key}>
-                        <button
-                          className="btn btn--ghost btn--small"
-                          onClick={() => void recoverDraft(row)}
-                          type="button"
-                        >
-                          Recover earlier draft · {row.title}
-                        </button>
-                      </li>
-                    ))}
-                    {savedTaskDrafts.map((row) => (
-                      <li key={row.draftId}>
-                        <button
-                          className="btn btn--ghost btn--small"
-                          onClick={() => openSavedDraft(row.draftId)}
-                          type="button"
-                        >
-                          {row.title}
-                        </button>
-                        <button
-                          className="btn btn--ghost btn--small"
-                          onClick={() => discardDraft({ kind: "task", draftId: row.draftId })}
-                          type="button"
-                        >
-                          Discard draft
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
             </>
           ) : (
             <TeamSideFor onNavigate={onCloseMobile} teamId={side} />

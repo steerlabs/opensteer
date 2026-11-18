@@ -1247,29 +1247,23 @@ export class HttpHostClient {
     const commandPayload = hostApi["commands.dispatch"].payload.parse(parsedCommand);
     const login = options?.expectedLogin;
     if (!login) return this.#dispatchCommand(commandPayload);
-    const assertCurrent = () => assertMessageLogin(login, this.connection.getSnapshot().scope);
-    assertCurrent();
-    if (!this.#bindMutationsToSession) return this.#dispatchCommand(commandPayload);
+    assertMessageLogin(login, this.connection.getSnapshot().scope);
+    // API 60/61 use the released unbound request, including the stale-tab cookie race.
+    if (
+      !this.#bindMutationsToSession ||
+      (this.#snapshot.session === "authenticated" &&
+        this.#servedApiVersion < sessionBoundMutationApiVersion)
+    )
+      return this.#dispatchCommand(commandPayload);
     try {
-      if (
-        this.#snapshot.session !== "authenticated" ||
-        this.#servedApiVersion >= sessionBoundMutationApiVersion
-      ) {
-        try {
-          return await this.#dispatchCommand(commandPayload, login.loginId);
-        } catch (error) {
-          // The version gate refuses before admission, including when the Host rolled back.
-          if (classifyClientFailure(error).reason !== "unsupported-version") throw error;
-        }
-      }
-      assertCurrent();
-      const { sessions } = unwrapRpcResult(await this.rpc["sessions.list"]({}));
-      if (!sessions.some((session) => session.current && session.id === login.loginId))
-        assertMessageLogin(login, null);
-      assertCurrent();
-      return await this.#dispatchCommand(commandPayload);
+      return await this.#dispatchCommand(commandPayload, login.loginId);
     } catch (error) {
       const { reason } = classifyClientFailure(error);
+      // A rollback can refuse the version before admitting the command.
+      if (reason === "unsupported-version") {
+        assertMessageLogin(login, this.connection.getSnapshot().scope);
+        return this.#dispatchCommand(commandPayload);
+      }
       if (
         clientScopeKey(this.connection.getSnapshot().scope) === clientScopeKey(login) &&
         reason === "session-changed"

@@ -79,6 +79,7 @@ describe("DesktopHostTransport", () => {
     view.change({ scope });
     const admitted: { type: string; session: string | null }[] = [];
     const answer = (headers: Headers, path: string, body: string | null) => {
+      expect(path.endsWith("/commands.dispatch")).toBe(true);
       if (Number(headers.get(hostApiVersionHeader)) > version) {
         return Response.json(
           {
@@ -93,25 +94,6 @@ describe("DesktopHostTransport", () => {
           { status: 400 },
         );
       }
-      if (path.includes("sessions.list"))
-        return Response.json({
-          ok: true,
-          data: {
-            sessions: [
-              {
-                id: loginId,
-                current: true,
-                createdAt: at,
-                expiresAt: at,
-                absoluteExpiresAt: at,
-                lastSeenAt: at,
-                deviceLabel: "Opensteer",
-                form: null,
-                deviceId: null,
-              },
-            ],
-          },
-        });
       const command = JSON.parse(body!) as { type: string };
       admitted.push({ type: command.type, session: headers.get(expectedMutationSessionHeader) });
       return Response.json({

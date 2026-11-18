@@ -3866,7 +3866,7 @@ describe("a task", () => {
     ).toBe("Include the card fees and the FX rate");
   });
 
-  it("keeps the waiting edit when its file will not fit in the reply draft", async () => {
+  it("lets the reader make room in a full reply without dropping the waiting edit", async () => {
     const waiting = said("Include the notes", null);
     const item = waitingInput(waiting, workId);
     const part = {
@@ -3912,6 +3912,18 @@ describe("a task", () => {
     expect(editField(container)?.value).toBe("Words returning from the waiting message");
     expect(text(container)).toContain("Too many files");
     expect(drafts.readDraft(deploymentId, userId, workId)).toEqual(originalDraft);
+    await press(container, "Edit reply draft");
+    await type(container, "Message", "Edited reply");
+    await press(container, "Remove file-9.txt");
+    await press(container, "Back to waiting edit");
+    expect(editField(container)?.value).toBe("Words returning from the waiting message");
+    await press(container, "Send as new message…");
+    const merged = drafts.readDraft(deploymentId, userId, workId);
+    expect(merged?.text).toBe("Words returning from the waiting message\nEdited reply");
+    expect(merged?.attachments?.map(({ name }) => name)).toEqual([
+      "notes.txt",
+      ...Array.from({ length: 9 }, (_, index) => `file-${index}.txt`),
+    ]);
   });
 
   it("shows a message another device is editing, and lets it go from here", async () => {
