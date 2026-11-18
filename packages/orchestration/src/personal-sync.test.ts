@@ -1,6 +1,7 @@
 import { createId } from "@opensteer/core";
 import {
   type PersonalResumeCursor,
+  type PersonalScope,
   type ScopedHostMessage,
   ScopedHostMessageSchema,
 } from "@opensteer/protocol/personal-sync";
@@ -520,3 +521,117 @@ test("coalesces live text for its synchronized detail after the durable barrier"
     vi.useRealTimers();
   }
 });
+
+test.each(["acknowledged", "expired"] as const)(
+  "keeps a pressured cut while another scope streams until its credit is %s",
+  async (outcome) => {
+    vi.useFakeTimers();
+    const detail = { kind: "thread", threadId: createId("thread") } as const;
+    const closed = vi.fn();
+    const frames: ScopedHostMessage[] = [];
+    const read = vi.fn(async (requested: PersonalScope, after: PersonalResumeCursor | null) => {
+      if (requested.kind === "node") throw new Error("Unexpected node scope");
+      if (requested.kind === "thread")
+        return {
+          throughSequence: "1",
+          cursor: { ...cursor, scopeKey: `thread:${requested.threadId}` as const },
+          frames: [],
+        };
+      if (!after)
+        return {
+          throughSequence: "1",
+          cursor,
+          frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "1" }],
+        };
+      return {
+        throughSequence: "3",
+        cursor: { ...cursor, afterSequence: "3" },
+        frames: [128, 1].map((count, index) => {
+          const sequence = String(index + 2);
+          return {
+            type: "host.changes" as const,
+            scope,
+            fromSequence: String(index + 1),
+            throughSequence: sequence,
+            changes: Array.from({ length: count }, (_, ordinal) => ({
+              sequence,
+              ordinal,
+              entityKind: "collection" as const,
+              entityId: `collection-${ordinal}`,
+              operation: "invalidate" as const,
+              value: { revision: sequence },
+            })),
+          };
+        }),
+      };
+    });
+    const socket = new PersonalSyncSocket({
+      read,
+      async send(encoded, guard) {
+        if (!guard()) return false;
+        frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+        return true;
+      },
+      close: closed,
+    });
+    const update = {
+      runId: createId("run"),
+      attemptId: createId("runAttempt"),
+      bindingGeneration: 1,
+      liveBootId: crypto.randomUUID(),
+      streamId: "assistant",
+      itemId: "message:assistant",
+      afterSequence: "1",
+    };
+    const shellReads = () => read.mock.calls.filter(([target]) => target.kind === "shell").length;
+    const delivered = () =>
+      frames.filter((frame) => frame.type === "host.changes").map((frame) => frame.throughSequence);
+    try {
+      socket.subscribe(subscription(1));
+      socket.subscribe({
+        type: "client.subscribe",
+        subscriptionId: "detail:0",
+        scope: detail,
+        generation: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      socket.wake("3", new Set(["shell"]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(delivered()).toEqual(["2"]);
+      for (let tick = 0; tick < 49; tick++) {
+        socket.offerLive(detail, {
+          ...update,
+          update: {
+            operation: "replace",
+            offset: 0,
+            totalLength: 1,
+            text: String(tick % 10),
+            incomplete: false,
+          },
+        });
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(frames.filter((frame) => frame.type === "host.live")).toHaveLength(49);
+      expect(shellReads()).toBe(2);
+      expect(delivered()).toEqual(["2"]);
+      expect(closed).not.toHaveBeenCalled();
+      if (outcome === "acknowledged") {
+        socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "2" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(delivered()).toEqual(["2", "3"]);
+        expect(shellReads()).toBe(2);
+        expect(closed).not.toHaveBeenCalled();
+      } else {
+        socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "1" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(closed).toHaveBeenCalledWith("Personal sync credit expired");
+        expect(delivered()).toEqual(["2"]);
+        expect(shellReads()).toBe(2);
+      }
+    } finally {
+      socket.close("test finished");
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  },
+);

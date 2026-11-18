@@ -883,7 +883,8 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
 
 async function dropOldState(tx: Tx) {
   await sql`set local transaction_timeout = '10s'; set local lock_timeout = '5s'`.execute(tx);
-  await sql`drop table deployment_events,thread_state_pending;
+  await sql`drop index runs_unsettled_upgrade;
+    drop table deployment_events,thread_state_pending;
     alter table threads drop column projected_input_queue_paused;
     alter table client_sync_state drop column upgrade_cursor`.execute(tx);
 }

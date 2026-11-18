@@ -599,7 +599,6 @@ const currentStateIndexes = `
     where policy = 'queue' and state in ('pending','awaiting-approval');
   create index runs_current_seed on runs(seed_input_id) where status in ('queued','starting','running','waiting');
   create index runs_seed_source on runs(seed_input_id,run_ordinal desc);
-  create index runs_with_finish_intent on runs(id) where finish_intent is not null;
   create index runs_unsettled_upgrade on runs(id) where status in ('queued','starting','running','waiting');
   create index delegations_current_parent_run on delegations(parent_run_id,id)
     where status = 'open';

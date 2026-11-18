@@ -89,6 +89,7 @@ interface Subscription {
   readonly sentLive: Map<string, number>;
   liveTimer?: ReturnType<typeof setTimeout> | undefined;
   liveReady?: boolean;
+  checkCredit?: () => void;
   resources?: { interests: Watch["interests"]; installed: Watch["installed"]; dirty: boolean };
 }
 
@@ -106,7 +107,6 @@ export class PersonalSyncSocket {
   #initialShellReady = true;
   #selectedThreadId: string | undefined;
   #attached = false;
-  #pressureTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(port: PersonalSyncPort) {
     this.#port = port;
@@ -178,7 +178,7 @@ export class PersonalSyncSocket {
     if (prior) this.#cancel(prior);
     this.#generations.set(request.subscriptionId, request.generation);
     this.#subscriptions.set(request.subscriptionId, current);
-    this.#schedule(current);
+    this.#reschedule();
   }
 
   unsubscribe(address: Address) {
@@ -251,7 +251,10 @@ export class PersonalSyncSocket {
     const affected = () =>
       [...this.#subscriptions.values()].filter((current) => matches(current.request.scope));
     this.#fences.add(matches);
-    for (const current of affected()) current.pauseCount++;
+    for (const current of affected()) {
+      current.pauseCount++;
+      current.checkCredit?.();
+    }
     return {
       committed: () => {
         if (!this.#fences.delete(matches)) return;
@@ -271,7 +274,6 @@ export class PersonalSyncSocket {
   close(reason: string) {
     if (this.#closed) return;
     this.#closed = true;
-    clearTimeout(this.#pressureTimer);
     for (const current of this.#subscriptions.values()) this.#cancel(current);
     this.#subscriptions.clear();
     this.#port.close(reason);
@@ -282,6 +284,7 @@ export class PersonalSyncSocket {
     current.live.clear();
     current.sentLive.clear();
     current.controller.abort();
+    current.checkCredit?.();
   }
 
   observesThread(threadId: string) {
@@ -429,12 +432,11 @@ export class PersonalSyncSocket {
   }
 
   #reschedule() {
-    clearTimeout(this.#pressureTimer);
-    this.#pressureTimer = undefined;
     for (const current of this.#subscriptions.values()) this.#schedule(current);
   }
 
   #schedule(current: Subscription) {
+    current.checkCredit?.();
     if (
       !this.#matches(current) ||
       current.pauseCount > 0 ||
@@ -459,7 +461,7 @@ export class PersonalSyncSocket {
       })
       .finally(() => {
         current.sending = false;
-        if (this.#pressureTimer === undefined) this.#schedule(current);
+        this.#schedule(current);
       });
   }
 
@@ -571,6 +573,25 @@ export class PersonalSyncSocket {
     }
   }
 
+  #hasCredit(current: Subscription, bytes: number, changes: number) {
+    if (current.bytes + bytes > scopeBudget || current.changes + changes > 128) return false;
+    let socketBytes = [...this.#subscriptions.values()].reduce(
+      (sum, entry) => sum + entry.bytes,
+      0,
+    );
+    let socketChanges = [...this.#subscriptions.values()].reduce(
+      (sum, entry) => sum + entry.changes,
+      0,
+    );
+    for (const [credit, entry] of this.#inFlight) {
+      if (!this.#matches(entry)) {
+        socketBytes += credit.bytes;
+        socketChanges += credit.changes;
+      }
+    }
+    return socketBytes + bytes <= socketBudget && socketChanges + changes <= 256;
+  }
+
   async #send(current: Subscription, frame: ScopedHostMessage, stillCurrent = () => true) {
     const guard = () => this.#matches(current) && current.pauseCount === 0 && stillCurrent();
     if (!guard()) return false;
@@ -595,31 +616,24 @@ export class PersonalSyncSocket {
     const encoded = JSON.stringify(parsed.data);
     const bytes = Buffer.byteLength(encoded);
     const changes = frame.type === "host.changes" ? frame.changes.length : 0;
-    let socketBytes = [...this.#subscriptions.values()].reduce(
-      (sum, entry) => sum + entry.bytes,
-      0,
-    );
-    let socketChanges = [...this.#subscriptions.values()].reduce(
-      (sum, entry) => sum + entry.changes,
-      0,
-    );
-    for (const [credit, entry] of this.#inFlight) {
-      if (!this.#matches(entry)) {
-        socketBytes += credit.bytes;
-        socketChanges += credit.changes;
-      }
-    }
     if (bytes > scopeBudget || changes > 128)
       throw new Error("A single personal frame exceeded its credit");
-    if (
-      current.bytes + bytes > scopeBudget ||
-      socketBytes + bytes > socketBudget ||
-      current.changes + changes > 128 ||
-      socketChanges + changes > 256
-    ) {
-      this.#pressureTimer ??= setTimeout(() => this.close("Personal sync credit expired"), 5000);
-      return false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Keep this frame and its cut while the subscription waits for capacity.
+      while (guard() && !this.#hasCredit(current, bytes, changes)) {
+        const available = Promise.withResolvers<void>();
+        current.checkCredit = () => {
+          if (!guard() || this.#hasCredit(current, bytes, changes)) available.resolve();
+        };
+        deadline ??= setTimeout(() => this.close("Personal sync credit expired"), 5000);
+        await available.promise;
+      }
+    } finally {
+      delete current.checkCredit;
+      clearTimeout(deadline);
     }
+    if (!guard()) return false;
     const durable = frame.type === "host.snapshot" || frame.type === "host.changes";
     const credit: Credit = {
       through: "throughSequence" in frame ? frame.throughSequence : "0",

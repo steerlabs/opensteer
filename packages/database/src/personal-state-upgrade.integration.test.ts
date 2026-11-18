@@ -56,6 +56,12 @@ test.each(["empty", "personal", "team"] as const)(
         where name = ${personalCurrentStateMigrationName}`.execute(database);
       expect(applied.rows).toEqual([{ name: personalCurrentStateMigrationName }]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
+      const indexes = await sql<{ name: string }>`
+        select indexname as name from pg_indexes
+        where schemaname = 'public' and tablename = 'runs'
+          and indexname in ('runs_finishing', 'runs_with_finish_intent', 'runs_unsettled_upgrade')
+      `.execute(database);
+      expect(indexes.rows).toEqual([{ name: "runs_finishing" }]);
       const state =
         await sql`select ready,sequence,pruned_through_sequence from client_sync_state limit 1`.execute(
           database,
