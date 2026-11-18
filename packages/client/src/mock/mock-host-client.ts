@@ -112,6 +112,7 @@ import {
   ModelIdSchema,
   backgroundModelWants,
   excludedBackgroundAccounts,
+  modelEffortLabel,
   resolveModelCandidates,
   type AgentHomeSettings,
   type BackgroundModelRole,
@@ -5130,12 +5131,13 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
     if (!chosen) return null;
     const account = accounts.find((a) => a.harnessInstanceId === chosen.harnessInstanceId)!;
     const { modelId } = chosen.storedModelSelection;
+    const model = account.catalog?.models.find((m) => m.modelId === modelId);
     return {
       harnessInstanceId: chosen.harnessInstanceId,
       accountDisplayName: account.accountDisplayName,
       computerDisplayName: account.computerDisplayName,
-      modelDisplayName:
-        account.catalog?.models.find((m) => m.modelId === modelId)?.displayName ?? modelId,
+      modelDisplayName: model?.displayName ?? modelId,
+      effortDisplayName: model ? modelEffortLabel(model, chosen.runModelSelection.options) : null,
       usageLimited: false,
     };
   };

@@ -6,6 +6,7 @@ import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { timedOutLanes, validateResults } from "../.github/scripts/ci-check.mjs";
 import { checkInventories } from "../.github/scripts/ci-inventories.mjs";
 import { notReleaseGating } from "../.github/scripts/ci-release-gate.mjs";
+import { verifyReuse } from "../.github/scripts/ci-reuse.mjs";
 import {
   darwinOnlyTests,
   realBrowserTests,
@@ -33,6 +34,17 @@ validateResults(plan, needs, process.env.CI_EVENT, process.env.GITHUB_SHA, {
     ? await timeouts()
     : new Map(),
 });
+// A reused pull request run must still be green and have tested this exact tree and parent.
+if (plan.reused) {
+  await verifyReuse(plan.reused, {
+    sha: process.env.GITHUB_SHA,
+    repository: process.env.GITHUB_REPOSITORY,
+    token: process.env.GITHUB_TOKEN,
+  });
+  console.log(
+    `${plan.reused.lanes.join(", ")} passed in pull request #${plan.reused.pullRequest} run ${plan.reused.run} on this tree`,
+  );
+}
 /** Lanes this run attempt cut at their time limit; an unreadable API only loses the detail. */
 async function timeouts() {
   try {

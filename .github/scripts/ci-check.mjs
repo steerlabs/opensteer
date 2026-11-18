@@ -1,4 +1,5 @@
 import { allNativeMacTasks, lanes } from "./ci-changes.mjs";
+import { reusableLanes } from "./ci-reuse.mjs";
 const events = new Set(["pull_request", "push", "schedule", "workflow_dispatch"]);
 /**
  * GitHub reports a job that hit its `timeout-minutes` only as cancelled. A cancelled job
@@ -76,6 +77,17 @@ export function validateResults(
     )
       throw new Error(`Missing/invalid plan output: ${lane}-shards`);
   }
+  // ci-check.ts then asks GitHub whether the reused run still vouches for this commit.
+  const reused = plan.reused;
+  if (
+    reused !== undefined &&
+    (event !== "push" ||
+      plan.full !== false ||
+      !Array.isArray(reused?.lanes) ||
+      !reused.lanes.length ||
+      reused.lanes.some((lane) => !reusableLanes.includes(lane) || plan.lanes?.[lane] !== false))
+  )
+    throw new Error("Only a main push may reuse a pull request run, and only its tree's lanes");
   const failures = [];
   for (const lane of lanes) {
     const flag = plan.lanes?.[lane];
