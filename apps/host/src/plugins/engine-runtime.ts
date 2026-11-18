@@ -84,7 +84,7 @@ import {
   ScheduleAccessRevoked,
   deliverEvents,
 } from "@opensteer/plugin-engine-sdk/scheduling";
-import { createCatalog } from "@opensteer/plugin-engine-catalog";
+import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource } from "@opensteer/plugin-engine-app-templates";
 import { DestinationRefused, safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
 import {
@@ -138,9 +138,6 @@ import {
   type ElicitationHandler,
   type HostContext,
 } from "apps/contracts";
-
-/** Opensteer's own copy of the plugin catalog (`pnpm catalog:snapshot`); `catalogUrl` replaces it. */
-const catalogFeedUrl = "https://catalog.opensteer.com/index.json";
 
 const packagedSkills = (files: Schema.Schema.Type<typeof SourceFiles>) =>
   Effect.tryPromise({
@@ -523,7 +520,7 @@ export async function startEngine(
         );
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
-        const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? catalogFeedUrl });
+        const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? officialCatalogUrl });
         const executions = new Map<
           string,
           {
@@ -717,10 +714,11 @@ export async function startEngine(
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
           case "catalogList": {
             const listing = yield* catalog.list;
-            return {
-              ...catalogPage(listing.apps, operations.catalogList.input.parse(raw)),
-              feed: listing.feed,
-            };
+            const input = operations.catalogList.input.parse(raw);
+            // An unread feed has no pages: a cursor from before it failed cannot continue.
+            if (listing.feed.status !== "listed")
+              return { items: [], cursor: null, feed: { status: listing.feed.status } };
+            return { ...catalogPage(listing.apps, input), feed: { status: "listed" } };
           }
           case "catalogDetail": {
             const input = operations.catalogDetail.input.parse(raw);

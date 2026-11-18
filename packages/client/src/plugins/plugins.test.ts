@@ -5,6 +5,7 @@ import type { HostApiCommand } from "@opensteer/protocol";
 import { controlledClientSession } from "../test-support/client-connection.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
+import { PagedList, type PagedListState } from "../team/paged-list.js";
 import {
   readPluginWebhookSetup,
   removePluginWebhook,
@@ -13,7 +14,9 @@ import {
   pluginAccountComplete,
   createPluginAccountAttempt,
   pluginAccountValues,
+  pluginCatalogListView,
   pluginCatalogReader,
+  pluginCatalogUnavailable,
   pluginInputContent,
   pluginInputForm,
   pluginRequestView,
@@ -27,6 +30,7 @@ import {
   pluginWebhookSetupCompletion,
   pluginWebhookSetupForm,
   PluginWorkflowRuns,
+  type PluginCatalogEntryView,
   type PluginsHost,
 } from "./index.js";
 import type { PluginWorkflowRunView } from "@opensteer/protocol";
@@ -240,6 +244,97 @@ describe("catalog paging", () => {
     // A cursor belongs to the search it came from.
     const whole = await read(null);
     await expect(search(whole.nextCursor)).rejects.toThrow(/restart the listing/u);
+  });
+});
+
+describe("a catalog the Host can't reach", () => {
+  const entry: PluginCatalogEntryView = {
+    id: "mail",
+    name: "Mail",
+    description: "d",
+    icon: null,
+    auth: [],
+  };
+  function host(pages: { items: PluginCatalogEntryView[]; catalog?: "listed" | "unavailable" }[]) {
+    return {
+      rpc: {
+        "plugins.catalog.list": async () => ({
+          ok: true,
+          data: { cursor: pages.length > 1 ? "next" : null, ...pages.shift()! },
+        }),
+      },
+      dispatch: () => Promise.reject(new Error("unused")),
+    } as unknown as PluginsHost;
+  }
+  async function settle(list: { getState(): PagedListState<unknown, unknown> }) {
+    await vi.waitFor(() => expect(list.getState().loading).toBe(false));
+    return list.getState();
+  }
+
+  it("fails the list's read with a reason to try again, never an empty catalog", async () => {
+    const list = new PagedList(
+      controlledClientSession(),
+      pluginCatalogReader(host([{ items: [], catalog: "unavailable" }]), ""),
+    );
+    const stop = list.subscribe(() => {});
+    const state = await settle(list);
+    stop();
+    expect(state.error).toMatchObject({ code: "read-failed", reason: pluginCatalogUnavailable });
+    expect(pluginCatalogListView(state, "")).toEqual({
+      kind: "failed",
+      text: "The plugin catalog can't be reached right now.",
+      retry: true,
+    });
+  });
+
+  it("keeps the entries already shown when a later page can't be read", async () => {
+    const list = new PagedList(
+      controlledClientSession(),
+      pluginCatalogReader(
+        host([
+          { items: [entry], catalog: "listed" },
+          { items: [], catalog: "unavailable" },
+        ]),
+        "",
+      ),
+    );
+    const stop = list.subscribe(() => {});
+    await settle(list);
+    await list.more();
+    const state = list.getState();
+    stop();
+    expect(state.items).toEqual([entry]);
+    expect(pluginCatalogListView(state, "")).toEqual({
+      kind: "entries",
+      issue: { text: "The plugin catalog can't be reached right now.", retry: true },
+    });
+  });
+
+  it("says empty or no match only after a read that listed, including from an older Host", async () => {
+    for (const page of [{ items: [], catalog: "listed" as const }, { items: [] }]) {
+      const list = new PagedList(controlledClientSession(), pluginCatalogReader(host([page]), "x"));
+      const stop = list.subscribe(() => {});
+      const state = await settle(list);
+      stop();
+      expect(pluginCatalogListView(state, "x")).toEqual({
+        kind: "empty",
+        text: "Nothing in the catalog matches “x”.",
+      });
+    }
+    expect(pluginCatalogListView({ loading: false, items: [], error: null }, "")).toEqual({
+      kind: "empty",
+      text: "The catalog is empty.",
+    });
+    expect(pluginCatalogListView({ loading: true, items: [], error: null }, "")).toEqual({
+      kind: "loading",
+    });
+    // Any other failed read keeps its own words.
+    expect(
+      pluginCatalogListView(
+        { loading: false, items: [], error: { code: "read-failed", resource: "this list" } },
+        "",
+      ),
+    ).toEqual({ kind: "failed", text: "Couldn't load the catalog.", retry: true });
   });
 });
 

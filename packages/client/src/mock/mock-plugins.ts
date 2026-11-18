@@ -1440,7 +1440,11 @@ export class MockPlugins {
         const next = offset + items.length;
         // A weak link takes a moment per page; enough to see the loading row.
         await new Promise((resolve) => setTimeout(resolve, 250));
-        return rpcSuccess({ items, cursor: next < matched.length ? `${text}:${next}` : null });
+        return rpcSuccess({
+          items,
+          cursor: next < matched.length ? `${text}:${next}` : null,
+          catalog: "listed" as const,
+        });
       },
       "plugins.catalog.get": async ({ catalogId }) => {
         const entry = this.catalog.find((candidate) => candidate.id === catalogId);
