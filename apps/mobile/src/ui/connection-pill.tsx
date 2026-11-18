@@ -3,7 +3,8 @@ import { AccessibilityInfo, Pressable, StyleSheet } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { controlFontScaleLimit, material, radius, space } from "../theme.js";
-import { pillHeight, pillPlacement } from "./header-clearance.js";
+import { pillPlacement } from "./header-clearance.js";
+import { pillHeight } from "./pill-metrics.js";
 import { appear, descend, exit, move } from "./motion.js";
 import { AppText, StatusDot } from "./primitives.js";
 

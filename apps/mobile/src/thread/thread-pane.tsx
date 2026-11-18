@@ -130,6 +130,7 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
 import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
 import { WaitingInputs } from "./waiting-inputs.js";
+import { pillRowClearance } from "../ui/pill-metrics.js";
 import {
   TranscriptComputersContext,
   computerLine,
@@ -1297,7 +1298,11 @@ function ThreadPaneForUser(
             {
               ...sides,
               paddingBottom: clearance + space[16],
-              paddingTop: headerClearance + pageInset + space[8],
+              paddingTop:
+                headerClearance +
+                pageInset +
+                space[8] +
+                (companion === null ? pillRowClearance : 0),
             },
           ]}
           data={items}

@@ -6,9 +6,7 @@ import { Platform, useWindowDimensions } from "react-native";
 import { makeMutable } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { space } from "../theme.js";
-
-/** The connection pill's height, which a bar row centres it in. */
-export const pillHeight = 36;
+import { pillHeight } from "./pill-metrics.js";
 
 /** Room a pill in a bar's row leaves for that bar's buttons on each side. */
 const barButtonClearance = space[16] + 48 + space[8];
