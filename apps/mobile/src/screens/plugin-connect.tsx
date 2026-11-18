@@ -1,5 +1,5 @@
 import {
-  createPluginAccount,
+  createPluginAccountAttempt,
   forgetPluginOAuthApp,
   linkPluginAccount,
   pluginAccountComplete,
@@ -108,6 +108,7 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
     "connect the account",
     "connected",
   );
+  const createAccount = useMemo(() => createPluginAccountAttempt(host), [host]);
   const [method, setMethod] = useState(review.methods[0]?.method ?? null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
@@ -202,7 +203,7 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
           onPress: () =>
             method &&
             action.run("create", async () => {
-              await createPluginAccount(host, {
+              await createAccount({
                 provider: review.requirement.provider,
                 method,
                 fields: pluginAccountValues(fields, values),

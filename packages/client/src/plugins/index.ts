@@ -1,4 +1,5 @@
 import cronstrue from "cronstrue";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Request, RequestResponse } from "@opensteer/core";
 import type {
   InstalledPluginView,
@@ -24,7 +25,8 @@ import type {
   PluginVersionView,
   PluginWorkflowRunView,
 } from "@opensteer/protocol";
-import type { HostClient } from "../host/client.js";
+import { isHostRefusal, type HostClient } from "../host/client.js";
+import { clientScopeKey } from "../connections/connection-controller.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { KeysetPage } from "../team/paged-list.js";
 import { pluginInputForm, type PluginInputForm } from "./input-form.js";
@@ -163,11 +165,12 @@ async function command<T extends PluginCommand["type"]>(
   client: PluginsHost,
   type: T,
   input: CommandInput<T>,
+  idempotencyKey = mutationIdempotencyKey(type),
 ): Promise<Extract<PluginCommandResult, { type: T }>> {
   const result = await client.dispatch({
     ...input,
     type,
-    idempotencyKey: mutationIdempotencyKey(type),
+    idempotencyKey,
   } as Extract<PluginCommand, { type: T }>);
   if (result.type !== type) throw new Error(`The Host answered ${result.type} to ${type}.`);
   return result as Extract<PluginCommandResult, { type: T }>;
@@ -186,7 +189,35 @@ export const setPluginAccess = (client: PluginsHost, pluginId: string, access: P
 export const createPluginAccount = (
   client: PluginsHost,
   input: CommandInput<"plugins.account.create">,
-) => command(client, "plugins.account.create", input).then(({ account }) => account);
+  idempotencyKey?: string,
+) =>
+  command(client, "plugins.account.create", input, idempotencyKey).then(({ account }) => account);
+
+/** An unchanged key submission can recover its receipt after a lost answer. */
+export function createPluginAccountAttempt(client: PluginsHost & Pick<HostClient, "connection">) {
+  type Input = CommandInput<"plugins.account.create">;
+  let uncertain: {
+    readonly scope: string | null;
+    readonly input: Input;
+    readonly key: string;
+  } | null = null;
+  return async (input: Input) => {
+    const scope = clientScopeKey(client.connection.getSnapshot().scope);
+    const attempt =
+      uncertain?.scope === scope && canonicalJson(uncertain.input) === canonicalJson(input)
+        ? uncertain
+        : { scope, input, key: mutationIdempotencyKey("plugins.account.create") };
+    uncertain = attempt;
+    try {
+      const account = await createPluginAccount(client, attempt.input, attempt.key);
+      if (uncertain === attempt) uncertain = null;
+      return account;
+    } catch (error) {
+      if (uncertain === attempt && isHostRefusal(error)) uncertain = null;
+      throw error;
+    }
+  };
+}
 export const removePluginAccount = (client: PluginsHost, accountId: string) =>
   command(client, "plugins.account.remove", { accountId });
 export const linkPluginAccount = (

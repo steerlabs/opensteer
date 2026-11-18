@@ -402,6 +402,7 @@ export class PluginSignInFlow {
 
   /** A fresh connection: every start and every refusal needs a new one. */
   prepare(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
     this.#stopReading?.();
     const generation = ++this.#generation;
     this.#set({ step: "preparing" }, generation);

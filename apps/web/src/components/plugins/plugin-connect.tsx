@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
-  createPluginAccount,
+  createPluginAccountAttempt,
   forgetPluginOAuthApp,
   linkPluginAccount,
   pluginAccountComplete,
@@ -98,6 +98,7 @@ function ConnectBody({
     happened: "the account was connected",
     execute: (operation: () => Promise<unknown>) => operation(),
   });
+  const createAccount = useMemo(() => createPluginAccountAttempt(hostClient), [hostClient]);
   const [method, setMethod] = useState(review.methods[0]?.method ?? null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
@@ -217,7 +218,7 @@ function ConnectBody({
               event.preventDefault();
               if (!method || !pluginAccountComplete(fields, values)) return;
               run("create", () =>
-                createPluginAccount(hostClient, {
+                createAccount({
                   provider: review.requirement.provider,
                   method,
                   fields: pluginAccountValues(fields, values),
