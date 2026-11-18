@@ -412,16 +412,23 @@ export class PluginExecutions {
     response: RequestResponse;
   }) {
     const request = await this.options.store.requests.get(input.requestId);
-    // The interruption can land just before the answer; the person gets the same reason either way.
+    // A late answer reports what interrupted the execution, including engine loss.
     if (
       request?.requestedBy === input.resolvedBy &&
       request.status === "cancelled" &&
       request.cancellationReason === "plugin-interrupted"
-    )
+    ) {
+      const { payload } = request;
+      const reason =
+        payload.kind === "plugin.approval" || payload.kind === "plugin.input"
+          ? ((await this.options.records.execution(payload.executionId))?.reason ??
+            pluginInterruptedReason)
+          : "Plugin authority changed.";
       throw new OpensteerError({
         code: "conflict",
-        message: `Plugin authority changed. ${pluginInterruptedReason}`,
+        message: reason,
       });
+    }
     if (!request || request.requestedBy !== input.resolvedBy || request.status !== "pending")
       throw new OpensteerError({ code: "forbidden", message: "Plugin Request is unavailable." });
     if (request.payload.kind === "plugin.account") {
