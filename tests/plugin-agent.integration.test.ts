@@ -827,12 +827,17 @@ test.each(["trigger", "watch", "voice", "background"] as const)(
       .set({ accessMode: "approval-required" })
       .where("id", "=", caller.kind === "run" ? caller.thread.id : caller.anchor.id)
       .execute();
-    await expect(
-      answer(z.custom<RequestId>().parse(pending.requestId), true, { name: "answer" }),
-    ).rejects.toThrow(/authority changed/iu);
+    const requestId = z.custom<RequestId>().parse(pending.requestId);
+    await expect(answer(requestId, true, { name: "answer" })).rejects.toThrow(
+      /authority changed/iu,
+    );
     expect(await executions.resume(caller, String(pending.executionId))).toMatchObject({
       status: "interrupted",
     });
+    // An answer that arrives after the interruption is told the same thing.
+    await expect(answer(requestId, true, { name: "answer" })).rejects.toThrow(
+      /authority changed/iu,
+    );
   },
 );
 
