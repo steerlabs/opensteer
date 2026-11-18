@@ -36,9 +36,6 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   context.onTestFinished(() => registry.close());
   const origin = registry.origin;
   let refused = false;
-  const authorized: string[] = [];
-  let heldInstall:
-    { reached: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
   const interrupted: PluginExecution[] = [];
   const calls: { caller: string; execution: string }[] = [];
   const hostProvider: PluginHostProvider = {
@@ -72,14 +69,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     npmRegistry: origin,
     catalogUrl: origin + "/catalog",
     selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
-    authorize: async (input) => {
-      authorized.push(`${input.operation}:${input.plugin ?? ""}`);
-      if (input.operation === "install" && heldInstall) {
-        heldInstall.reached.resolve();
-        await heldInstall.release.promise;
-      }
-      return { allowed: !refused };
-    },
+    authorize: async () => ({ allowed: !refused }),
     providers: async () => [hostProvider],
     providerCall: async (input) => {
       calls.push(input);
@@ -255,39 +245,6 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     status: "completed",
     execution: { ok: false },
   });
-  const spare = await service.install(
-    { kind: "files", name: "Spare", files: pluginFixtureFiles(1) },
-    caller,
-  );
-  if (spare.status !== "installed") throw new Error("Spare fixture did not install");
-  heldInstall = { reached: Promise.withResolvers(), release: Promise.withResolvers() };
-  const held = service.install(
-    {
-      kind: "files",
-      plugin: secured.plugin.id,
-      files: pluginFixtureFiles(1, ["api.fixture.invalid"]),
-    },
-    caller,
-  );
-  await deadline(heldInstall.reached.promise, "Held install never reached authorization");
-  const sameAfterHeld = service.activate(
-    { plugin: secured.plugin.id, version: secured.version.id },
-    caller,
-  );
-  await deadline(
-    Promise.all([
-      service.activate({ plugin, version: v1 }, caller),
-      service.remove({ plugin: spare.plugin.id }, caller),
-    ]),
-    "Another plugin's version change waited behind an install",
-  );
-  expect(authorized).not.toContain(`activate:${secured.plugin.id}`);
-  heldInstall.release.resolve();
-  heldInstall = undefined;
-  await deadline(Promise.all([held, sameAfterHeld]), "Queued same-plugin activation never ran");
-  expect(authorized.slice(authorized.lastIndexOf(`install:${secured.plugin.id}`))).toContain(
-    `activate:${secured.plugin.id}`,
-  );
   console.log("Plugin service one plugin RSS", pluginFixtureProcesses(health.pid));
   const waiting = once(events, "waiting");
   const pending = service.execute({ code: "return await tools.fixture.wait({});" }, caller);
@@ -305,7 +262,10 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   for (const row of final) expect(() => process.kill(row.pid, 0)).toThrow();
 });
 
-async function outputFixture(context: import("vitest").TestContext) {
+async function outputFixture(
+  context: import("vitest").TestContext,
+  authorize?: ConstructorParameters<typeof PluginService>[0]["authorize"],
+) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
@@ -321,11 +281,57 @@ async function outputFixture(context: import("vitest").TestContext) {
     catalogUrl: registry.origin + "/catalog",
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
+    ...(authorize ? { authorize } : {}),
   });
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
   context.onTestFinished(() => service.close());
   return service;
 }
+
+test("a version change of one plugin waits only for that plugin's earlier changes", async (context) => {
+  const authorized: string[] = [];
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<boolean>();
+  let hold = false;
+  const service = await outputFixture(context, async (input) => {
+    authorized.push(`${input.operation}:${input.plugin ?? ""}`);
+    if (!hold || input.operation !== "install") return { allowed: true };
+    reached.resolve();
+    return { allowed: await release.promise };
+  });
+  const installed = await Promise.all(
+    ["First", "Second"].map((name) =>
+      service.install({ kind: "files", name, files: pluginFixtureFiles(1) }, caller),
+    ),
+  );
+  const [a, b] = installed.map((result) => {
+    if (result.status !== "installed") throw new Error("Fixture did not install");
+    return { plugin: result.plugin.id, version: result.version.id };
+  });
+  hold = true;
+  const held = service.install(
+    { kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(2) },
+    caller,
+  );
+  const heldOutcome = expect(held).rejects.toMatchObject({ code: "forbidden" });
+  await deadline(reached.promise, "The held install never reached authorization");
+  const queued = service.activate(a!, caller);
+  await deadline(
+    service.activate(b!, caller),
+    "Another plugin's activation waited behind an install",
+  );
+  await deadline(
+    service.remove({ plugin: b!.plugin }, caller),
+    "Another plugin's removal waited behind an install",
+  );
+  expect(authorized).not.toContain(`activate:${a!.plugin}`);
+  release.resolve(false);
+  await heldOutcome;
+  await deadline(queued, "The same plugin's queued activation never ran");
+  expect(authorized.slice(authorized.indexOf(`install:${a!.plugin}`))).toContain(
+    `activate:${a!.plugin}`,
+  );
+});
 
 test("consent discloses a raw secret that reaches plugin code", async (context) => {
   const service = await outputFixture(context);
