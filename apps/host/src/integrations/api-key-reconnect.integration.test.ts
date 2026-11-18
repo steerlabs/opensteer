@@ -1,3 +1,4 @@
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { ToolFailureSchema } from "@opensteer/core";
 import { startHeldRequest } from "./held-request.test-support.js";
 /**
@@ -585,7 +586,7 @@ integration("API-key reconnect incident", () => {
       ).toBe(true);
       const delayedRequestId = createId("request");
       const seedFulfilledContinuation = async (requestId: RequestId, callId: string) =>
-        host.store.database.transaction().execute(async (transaction) => {
+        commitPersonalMutation(host.store.database, async (transaction, mutation) => {
           const fulfilled = await transaction
             .selectFrom("requests")
             .selectAll()
@@ -622,6 +623,7 @@ integration("API-key reconnect incident", () => {
               updatedAt: new Date(),
             })
             .execute();
+          mutation.react({ type: "continuationsChanged" });
         });
       await seedFulfilledContinuation(delayedRequestId, "delayed-fulfillment-state");
       await expect
