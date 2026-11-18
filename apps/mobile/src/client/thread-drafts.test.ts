@@ -35,6 +35,7 @@ function open(privateFiles: MemoryPrivateFilesystem = new FlakyFilesystem()) {
       filePath,
       now: () => new Date("2026-09-14T12:00:00.000Z"),
       privateFiles,
+      saveRetryDelaysMs: [0],
     }),
     privateFiles,
   };
@@ -358,6 +359,45 @@ describe("createThreadDraftStore", () => {
     expect(relaunched.readTaskStart(deploymentId, userId, threadId)?.idempotencyKey).toBe(
       "message:first",
     );
+  });
+
+  it("retries a failed draft save, then says it is unsaved and keeps the words until one lands", async () => {
+    let refusals = 1;
+    class RefusingFilesystem extends MemoryPrivateFilesystem {
+      override async writeFileAtomic(path: string, content: Uint8Array | string): Promise<void> {
+        if (refusals > 0) {
+          refusals -= 1;
+          throw new Error("This device has no space left.");
+        }
+        await super.writeFileAtomic(path, content);
+      }
+    }
+    const { drafts, privateFiles } = open(new RefusingFilesystem());
+    await drafts.load();
+
+    // One refusal: the retry saves it, so a relaunch finds the words.
+    await drafts.writeDraft(deploymentId, userId, threadId, "first words");
+    expect(drafts.readDraftUnsaved(deploymentId, userId, threadId)).toBe(false);
+    const relaunched = open(privateFiles).drafts;
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe("first words");
+
+    // Every attempt refused: the words stay on screen and the store says so.
+    refusals = Number.POSITIVE_INFINITY;
+    await expect(drafts.writeDraft(deploymentId, userId, threadId, "newer words")).rejects.toThrow(
+      /no space/u,
+    );
+    expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe("newer words");
+    expect(drafts.readDraftUnsaved(deploymentId, userId, threadId)).toBe(true);
+    // A later edit still pending keeps saying so instead of flickering clear.
+    const later = drafts.writeDraft(deploymentId, userId, threadId, "newest words");
+    expect(drafts.readDraftUnsaved(deploymentId, userId, threadId)).toBe(true);
+    refusals = 0;
+    await later;
+    expect(drafts.readDraftUnsaved(deploymentId, userId, threadId)).toBe(false);
+    const again = open(privateFiles).drafts;
+    await again.load();
+    expect(again.readDraft(deploymentId, userId, threadId)?.text).toBe("newest words");
   });
 
   it("recovers the write queue after a failure instead of rejecting everything after it", async () => {

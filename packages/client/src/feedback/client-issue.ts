@@ -19,6 +19,7 @@ export type ClientIssueCode =
   | "rejected"
   | "login-storage-unavailable"
   | "draft-changed"
+  | "draft-unsaved"
   | "storage-unavailable"
   | "queue-full"
   | "preparation-required";
@@ -188,6 +189,12 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
         detail: null,
         action: null,
       };
+    case "draft-unsaved":
+      return result(
+        "Couldn't save this draft on this device.",
+        null,
+        "It stays here until you close Opensteer.",
+      );
     case "storage-unavailable":
       return result("Couldn't save this message on this device. Try again.", "retry");
     case "queue-full":
