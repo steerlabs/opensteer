@@ -50,9 +50,16 @@ import {
 } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useComputerUseStop } from "@opensteer/client/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
-import { act, failureWords } from "../use-action.js";
+import { act, failureWords, runRead } from "../use-action.js";
 
 import { AppMark } from "./app-icons.js";
 
@@ -603,19 +610,17 @@ function AddAppDialog({
   const searchRef = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
 
+  // A read the connection interrupted; the ready transition reruns it, unannounced.
+  const interrupted = useRef<{ readonly search: string; readonly offset: number } | null>(null);
   const load = useCallback(
     (search: string, offset: number) => {
       const current = ++generation.current;
+      interrupted.current = null;
       setLoading(true);
       setLoadError(null);
-      void act(
-        hostClient,
-        {
-          label: "list this computer's apps",
-          done: "listed",
-          happened: "this computer's apps were listed",
-        },
-        async () =>
+      void runRead(hostClient, {
+        resource: "this computer's apps",
+        read: async () =>
           unwrapRpcResult(
             await hostClient.rpc["integration.computer.apps.installed"]({
               icons: true,
@@ -625,9 +630,15 @@ function AddAppDialog({
               runnerId: machine.id,
             }),
           ),
-      )
-        .then((result) => {
+      })
+        .then((read) => {
           if (current !== generation.current) return;
+          if (!read.ok) {
+            if (read.words === null) interrupted.current = { offset, search };
+            else setLoadError(read.words);
+            return;
+          }
+          const result = read.value;
           if (result.unavailableReason) {
             setListing(null);
             setLoadError(
@@ -646,9 +657,6 @@ function AddAppDialog({
             total: result.total,
           }));
         })
-        .catch((reason: unknown) => {
-          if (current === generation.current) setLoadError(failureWords(reason));
-        })
         .finally(() => {
           if (current === generation.current) setLoading(false);
         });
@@ -661,6 +669,15 @@ function AddAppDialog({
     const timer = globalThis.setTimeout(() => load(search, 0), search ? pickerSearchDelayMs : 0);
     return () => globalThis.clearTimeout(timer);
   }, [load, query]);
+
+  const readyRevision = useSyncExternalStore(
+    hostClient.connection.subscribe,
+    () => hostClient.connection.getSnapshot().readyRevision,
+  );
+  useEffect(() => {
+    const pending = interrupted.current;
+    if (pending) load(pending.search, pending.offset);
+  }, [load, readyRevision]);
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -724,12 +741,22 @@ function AddAppDialog({
             value={query}
           />
         </label>
-        {loadError ? (
-          <p className="notice notice--error" role="alert">
-            {loadError}
-          </p>
-        ) : listing === null ? (
-          <p className="computer-use__fine">Asking {machine.name} for its apps…</p>
+        {listing === null ? (
+          loadError ? (
+            <p className="notice notice--error" role="alert">
+              {loadError}{" "}
+              <button
+                className="btn btn--small"
+                disabled={loading}
+                onClick={() => load(query.trim(), 0)}
+                type="button"
+              >
+                Try again
+              </button>
+            </p>
+          ) : (
+            <p className="computer-use__fine">Asking {machine.name} for its apps…</p>
+          )
         ) : apps.length === 0 ? (
           <p className="computer-use__fine">
             {listing.query ? `No app matches “${listing.query}”.` : "No apps found on this Mac."}
@@ -790,7 +817,12 @@ function AddAppDialog({
             })}
           </ul>
         )}
-        {listing && apps.length < listing.total && !loadError ? (
+        {listing && loadError ? (
+          <p className="form-actions__error" role="alert">
+            {loadError}
+          </p>
+        ) : null}
+        {listing && apps.length < listing.total ? (
           <button
             className="btn btn--ghost btn--small computer-use__more"
             disabled={loading}

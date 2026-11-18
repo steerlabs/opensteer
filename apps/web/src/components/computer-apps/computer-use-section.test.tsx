@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import type { ClientConnection, ClientConnectionState } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
@@ -369,6 +370,55 @@ describe("ComputerUseBlock", () => {
     expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
 
+  it("keeps the listed apps through an outage and rereads the current search on recovery", async () => {
+    vi.useFakeTimers();
+    let ready = true;
+    const installed = vi.fn(async (input: unknown) => {
+      if (!ready) throw new TypeError("Failed to fetch");
+      const { query } = input as { query: string };
+      return {
+        data: {
+          apps: [query ? preview : notes].map((identity) => ({ identity, running: false })),
+          total: 1,
+        },
+        ok: true,
+      };
+    });
+    const connection = switchableConnection();
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(dialog().textContent).toContain("Notes");
+    ready = false;
+    await act(async () => connection.set(false));
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]');
+    if (!search) throw new Error("search missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(search, "pre");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+    expect(dialog().textContent).toContain("Notes");
+    ready = true;
+    await act(async () => connection.set(true));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ query: "pre" }));
+    expect(dialog().textContent).toContain("Preview");
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("searches and pages on the Mac rather than in the page", async () => {
     vi.useFakeTimers();
     const installed = vi.fn(async (input: unknown) => {
@@ -492,6 +542,7 @@ describe("ComputerUseBlock", () => {
 
 interface MountInput {
   readonly dispatch?: (command: { type: string }) => Promise<unknown>;
+  readonly connection?: ClientConnection;
   readonly local?: ComputerUseLocalActions | null;
   readonly onChanged?: () => Promise<void>;
   readonly refresh?: () => Promise<void>;
@@ -505,7 +556,7 @@ async function mount(input: MountInput) {
   const root = createRoot(container);
   mountedRoots.push(root);
   const hostClient = {
-    connection: localSession.connection,
+    connection: input.connection ?? localSession.connection,
     dispatch: input.dispatch ?? (async (command: { type: string }) => ({ type: command.type })),
     // Stop outcomes are kept per signed-in person on one deployment.
     getSnapshot: () => ({
@@ -650,6 +701,28 @@ function reviewResult() {
         path: "/System/Applications/Preview.app",
         risk: "normal",
       },
+    },
+  };
+}
+
+function switchableConnection() {
+  const listeners = new Set<() => void>();
+  let state: ClientConnectionState = localSession.connection.getSnapshot();
+  const connection: ClientConnection = {
+    getSnapshot: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    retry: () => undefined,
+  };
+  return {
+    connection,
+    set(ready: boolean) {
+      state = ready
+        ? { ...state, phase: "ready", network: "online", readyRevision: state.readyRevision + 1 }
+        : { ...state, phase: "recovering", network: "offline" };
+      for (const listener of listeners) listener();
     },
   };
 }

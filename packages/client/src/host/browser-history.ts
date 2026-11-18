@@ -10,8 +10,10 @@ interface ProfileHistory {
   value: BrowserHistory;
   version: number;
   stale: boolean;
-  /** The last read failed; what is shown may not be the Host's history. */
+  /** The last read failed while connected; what is shown may not be the Host's history. */
   failed: boolean;
+  /** A read succeeded, so an empty value is the Host's answer rather than nothing yet. */
+  loaded: boolean;
   pending?: Promise<void>;
   mutations: Set<Promise<void>>;
 }
@@ -54,7 +56,14 @@ export class BrowserHistoryClient {
   #profile(profileId: string): ProfileHistory {
     let state = this.#profiles.get(profileId);
     if (!state) {
-      state = { value: empty(), version: 0, stale: false, failed: false, mutations: new Set() };
+      state = {
+        value: empty(),
+        version: 0,
+        stale: false,
+        failed: false,
+        loaded: false,
+        mutations: new Set(),
+      };
       this.#profiles.set(profileId, state);
     }
     return state;
@@ -81,6 +90,9 @@ export class BrowserHistoryClient {
   }
   failed(profileId: string | null): boolean {
     return (profileId && this.#profiles.get(profileId)?.failed) || false;
+  }
+  loaded(profileId: string | null): boolean {
+    return (profileId && this.#profiles.get(profileId)?.loaded) || false;
   }
   entries(profileId: string | null): readonly BrowserHistoryEntry[] {
     return (profileId && this.#profiles.get(profileId)?.value.entries) || emptyEntries;
@@ -116,12 +128,14 @@ export class BrowserHistoryClient {
         if (!value || !current()) return;
         state.value = value;
         state.failed = false;
+        state.loaded = true;
         for (const { iconRef } of value.icons)
           if (this.#icons.get(iconRef) === null) this.#icons.delete(iconRef);
         this.#publish();
       })
       .catch(() => {
-        if (!current() || state.failed) return;
+        // While disconnected the connection explains it, and reconnecting rereads.
+        if (!current() || state.failed || !this.#connected) return;
         state.failed = true;
         this.#publish();
       })

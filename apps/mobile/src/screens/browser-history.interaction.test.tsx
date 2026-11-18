@@ -261,6 +261,7 @@ function host(online = true, owned = true) {
   }));
   const history = new BrowserHistoryClient({ get, remove, clear, icons });
   history.setScope({ deploymentId: "deployment-a", userId: "user-a" });
+  history.setConnected(online);
   const snapshot = {
     connection: online ? "connected" : "disconnected",
     deploymentId: "deployment-a",
@@ -355,6 +356,29 @@ describe("mobile browsing history", () => {
     await press("Try again");
     expect(get).toHaveBeenCalledTimes(2);
     expect(text()).toContain("Newest");
+    expect(text()).not.toContain("Couldn't load");
+  });
+
+  it("leaves an outage to the pill, then shows the history once the connection returns", async () => {
+    const { get, history, snapshot } = host(false);
+    get.mockRejectedValueOnce(new TypeError("Network request failed"));
+    await render();
+    expect(text()).not.toContain("Couldn't load");
+    expect(text()).not.toContain("No browsing history yet.");
+    Object.assign(snapshot, { connection: "connected", network: "online" });
+    await act(async () => history.setConnected(true));
+    expect(text()).toContain("Newest");
+    expect(text()).not.toContain("Couldn't load");
+  });
+
+  it("keeps a loaded empty history empty through a failed reread", async () => {
+    const { get, history } = host();
+    get.mockResolvedValueOnce({ entries: [], icons: [] });
+    await render();
+    expect(text()).toContain("No browsing history yet.");
+    get.mockRejectedValueOnce(new Error("Host unreachable"));
+    await act(async () => history.changed("bpr_work"));
+    expect(text()).toContain("No browsing history yet.");
     expect(text()).not.toContain("Couldn't load");
   });
 
