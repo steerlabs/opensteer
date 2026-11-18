@@ -374,13 +374,16 @@ function expandFilters(selected, universe) {
   }
   return universe.filter((file) => chosen.has(file));
 }
-/** Shards in proportion to the selected files' recorded duration, up to the full count. */
+/** Shards in proportion to the selected files' duration, with at least one file per runner. */
 export function shardCount(lane, selected, universe) {
   if (!selected.length) return 0;
   const weight = (files) =>
     files.reduce((sum, file) => sum + (durations[lane][file] ?? unknownDuration[lane]), 0);
   const limit = shardLimits[lane];
-  return Math.max(1, Math.min(limit, Math.ceil((limit * weight(selected)) / weight(universe))));
+  return Math.max(
+    1,
+    Math.min(limit, selected.length, Math.ceil((limit * weight(selected)) / weight(universe))),
+  );
 }
 const emptyRepo = { tracked: [], read: () => undefined, readBase: () => undefined };
 /**

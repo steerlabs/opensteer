@@ -22,7 +22,9 @@ export default defineConfig({
       "./packages/database/src/lock-order-setup.test-support.ts",
       "./tests/process-supervisor-setup.test-support.ts",
     ],
-    maxWorkers: 4,
+    // Hosts, PostgreSQL and browsers already run concurrently within a file.
+    // CI spreads files across runners so their services do not compete on one runner.
+    fileParallelism: false,
     maxConcurrency: 1,
     sequence: { concurrent: false, setupFiles: "list", sequencer: CiSequencer },
     include: integrationTestInclude,
