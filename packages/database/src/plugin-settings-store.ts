@@ -42,20 +42,6 @@ export function pluginTargetKey(input: PluginTarget): string {
   }
 }
 
-export async function pluginPolicyAllows(
-  database: Kysely<DatabaseSchema>,
-  owner: UserId,
-  target: PluginTarget,
-): Promise<boolean> {
-  const setting = await database
-    .selectFrom("pluginOwnerSettings")
-    .select("enabled")
-    .where("ownerUserId", "=", owner)
-    .where("targetKey", "=", pluginTargetKey(target))
-    .executeTakeFirst();
-  return setting?.enabled ?? true;
-}
-
 export type { AgentHomeSkillInventory } from "./agent-home-skill-inventory-store.js";
 
 export class PluginSettingsStore {
@@ -100,90 +86,52 @@ export class PluginSettingsStore {
     };
   }
 
-  private async snapshot(
-    owner: UserId,
-    availableDeviceIds?: ReadonlySet<string>,
-    opening?: PluginTarget,
-  ) {
+  private async rows(owner: UserId): Promise<PluginRow[]> {
     await requirePersonalOwner(this.database, owner);
-    const [settings, connections, installations, grants, packages, tools, inventory] =
-      await Promise.all([
-        this.database
-          .selectFrom("pluginOwnerSettings")
-          .selectAll()
-          .where("ownerUserId", "=", owner)
-          .execute(),
-        this.database
-          .selectFrom("integrationConnections")
-          .selectAll()
-          .where("ownerUserId", "=", owner)
-          .where("status", "!=", "revoked")
-          .execute(),
-        this.database.selectFrom("integrationInstallations").selectAll().execute(),
-        this.database
-          .selectFrom("integrationGrants")
-          .selectAll()
-          .where("ownerUserId", "=", owner)
-          .where("revokedAt", "is", null)
-          .execute(),
-        this.database
-          .selectFrom("plugins")
-          .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
-          .selectAll("plugins")
-          .select("pluginVersions.manifest")
-          .execute(),
-        this.database
-          .selectFrom("integrationTools")
-          .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
-          .select(["integrationTools.name", "integrationServers.installationId"])
-          .execute(),
-        this.inventory?.(owner) ?? Promise.resolve(null),
-      ]);
+    const [settings, packages, tools, inventory] = await Promise.all([
+      this.database
+        .selectFrom("pluginOwnerSettings")
+        .selectAll()
+        .where("ownerUserId", "=", owner)
+        .execute(),
+      this.database
+        .selectFrom("plugins")
+        .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+        .selectAll("plugins")
+        .select("pluginVersions.manifest")
+        .where(({ not, exists, selectFrom }) =>
+          not(
+            exists(
+              selectFrom("integrationInstallations")
+                .innerJoin(
+                  "integrationServers",
+                  "integrationServers.installationId",
+                  "integrationInstallations.id",
+                )
+                .select("integrationServers.id")
+                .whereRef("integrationInstallations.pluginId", "=", "plugins.id")
+                .where(sql<string>`integration_servers.transport->>'type'`, "=", "runner"),
+            ),
+          ),
+        )
+        .execute(),
+      this.database
+        .selectFrom("integrationTools")
+        .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
+        .innerJoin(
+          "integrationInstallations",
+          "integrationInstallations.id",
+          "integrationServers.installationId",
+        )
+        .select("integrationInstallations.pluginId")
+        .execute(),
+      this.inventory?.(owner) ?? Promise.resolve(null),
+    ]);
     const placement = (target: PluginTarget) => {
       const setting = settings.find((row) => row.targetKey === pluginTargetKey(target));
       return { enabled: setting?.enabled ?? true, revision: setting?.revision ?? 0 };
     };
     const rows: PluginRow[] = [];
-    for (const installation of installations) {
-      if (installation.pluginId) continue;
-      const definition =
-        installation.manifest.definition && typeof installation.manifest.definition === "object"
-          ? (installation.manifest.definition as Readonly<Record<string, unknown>>)
-          : {};
-      const definitionId = typeof definition.id === "string" ? definition.id : installation.name;
-      const accounts = connections.filter((row) => row.integrationDefinitionId === definitionId);
-      const ownGrants = grants.filter((row) => row.installationId === installation.id);
-      const saved = settings.find(
-        (row) => row.target.kind === "device-app" && row.target.definitionId === definitionId,
-      );
-      const adding = opening?.kind === "device-app" && opening.definitionId === definitionId;
-      if (!accounts.length && !ownGrants.length && !saved && !adding) continue;
-      const target: PluginTarget = { kind: "device-app", definitionId };
-      rows.push({
-        target,
-        title: installation.title.slice(0, 120),
-        description: installation.description.slice(0, 320) || null,
-        source: { kind: installation.sourceKind, version: installation.version },
-        tags: ["devices"],
-        placement: placement(target),
-        accountCount: accounts.length,
-        issues: [
-          ...(accounts.some((row) => row.status === "needs-attention")
-            ? ["needs-sign-in" as const]
-            : []),
-          ...(installation.status !== "active" ? ["invalid-installation" as const] : []),
-          ...(availableDeviceIds &&
-          accounts.some((row) => row.deviceId && !availableDeviceIds.has(row.deviceId))
-            ? ["waiting-device" as const]
-            : []),
-        ],
-        contents: {
-          skills: 0,
-          tools: tools.filter((row) => row.installationId === installation.id).length,
-        },
-        permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
-      });
-    }
     for (const plugin of packages) {
       const target: PluginTarget = { kind: "plugin", pluginId: plugin.id };
       const skills = Array.isArray(plugin.manifest.skills) ? plugin.manifest.skills.length : 0;
@@ -204,12 +152,7 @@ export class PluginSettingsStore {
         issues: [],
         contents: {
           skills,
-          tools: tools.filter((tool) =>
-            installations.some(
-              (installation) =>
-                installation.pluginId === plugin.id && tool.installationId === installation.id,
-            ),
-          ).length,
+          tools: tools.filter((tool) => tool.pluginId === plugin.id).length,
         },
         permissions: {
           canEnable: true,
@@ -222,7 +165,7 @@ export class PluginSettingsStore {
       rows.push(row);
     }
     rows.push(...projectLooseSkillRows(inventory, settings));
-    return { rows, settings, connections, installations, grants, packages, tools };
+    return rows;
   }
 
   async setEnabled(
@@ -231,8 +174,14 @@ export class PluginSettingsStore {
     administration?: AdministrationCommandIdentity,
   ) {
     const command = SettingsPluginEnableCommandSchema.parse(input);
+    const { target } = command;
     return withPersonalTransaction(this.database, async (tx) => {
       await requirePersonalOwner(tx, owner);
+      if (target.kind === "device-app")
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Manage data app access in Plugins",
+        });
       return administrationCommand(tx, administration, async () => {
         if (!administration) {
           await lockCommandIdempotency(tx, owner, command.idempotencyKey);
@@ -254,11 +203,7 @@ export class PluginSettingsStore {
             };
           }
         }
-        const row = await new PluginSettingsStore(tx, this.inventory).row(
-          owner,
-          command.target,
-          command.enabled,
-        );
+        const row = await new PluginSettingsStore(tx, this.inventory).row(owner, target);
         if (row.placement.revision !== command.expectedRevision)
           throw new OpensteerError({
             code: "conflict",
@@ -268,8 +213,8 @@ export class PluginSettingsStore {
           .insertInto("pluginOwnerSettings")
           .values({
             ownerUserId: owner,
-            targetKey: pluginTargetKey(command.target),
-            target: command.target,
+            targetKey: pluginTargetKey(target),
+            target,
             enabled: command.enabled,
             revision: command.expectedRevision + 1,
           })
@@ -305,18 +250,13 @@ export class PluginSettingsStore {
     });
   }
 
-  async overview(owner: UserId, availableDeviceIds?: ReadonlySet<string>) {
-    return PluginsOverviewViewSchema.parse({
-      rows: (await this.snapshot(owner, availableDeviceIds)).rows,
-    });
+  async overview(owner: UserId) {
+    return PluginsOverviewViewSchema.parse({ rows: await this.rows(owner) });
   }
 
-  /** One target's row as the overview lists it; `adding` lists one with no setting yet. */
-  async row(owner: UserId, target: PluginTarget, adding = false): Promise<PluginRow> {
-    const snapshot = await this.snapshot(owner, undefined, adding ? target : undefined);
-    const row = snapshot.rows.find(
-      (row) => pluginTargetKey(row.target) === pluginTargetKey(target),
-    );
+  async row(owner: UserId, target: PluginTarget): Promise<PluginRow> {
+    const key = pluginTargetKey(target);
+    const row = (await this.rows(owner)).find((row) => pluginTargetKey(row.target) === key);
     if (!row) throw new OpensteerError({ code: "not_found", message: "Plugin is unavailable" });
     return row;
   }
@@ -329,8 +269,13 @@ export class PluginSettingsStore {
       status: import("@opensteer/protocol").MachineSummary["status"];
     }[],
   ) {
-    const snapshot = await this.snapshot(owner);
-    const devices = snapshot.packages.filter((plugin) => pluginDeviceFromManifest(plugin.manifest));
+    await requirePersonalOwner(this.database, owner);
+    const packages = await this.database
+      .selectFrom("plugins")
+      .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+      .select(["plugins.id", "plugins.setupThreadId", "pluginVersions.manifest"])
+      .execute();
+    const devices = packages.filter((plugin) => pluginDeviceFromManifest(plugin.manifest));
     if (!devices.length) return [];
     const servers = await this.database
       .selectFrom("integrationServers")

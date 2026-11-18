@@ -4,6 +4,7 @@ import {
   pluginDetailPreview,
   pluginsInstalledPageMax,
   pluginRunsMax,
+  pluginScheduleApprovalsPageMax,
   rpcSuccess,
   type ConnectedAccountView,
   type HostApiCommand,
@@ -12,6 +13,7 @@ import {
   type InstalledPluginView,
   type PluginAccountReviewView,
   type PluginCatalogEntryView,
+  type PluginChange,
   type PluginCommand,
   type PluginCommandResult,
   type PluginConsentView,
@@ -750,7 +752,7 @@ export class MockPlugins {
   scenario: MockPluginScenario;
   engine: PluginEngineStateView;
   readonly #engineListeners = new Set<(engine: PluginEngineStateView) => void>();
-  readonly #changed: () => void;
+  readonly #changed: (change?: PluginChange) => void;
   readonly #accountLinked: (target: PluginRequirementTarget) => void;
   #started: Promise<void> | undefined;
   #nextId = 0;
@@ -825,7 +827,7 @@ export class MockPlugins {
   readonly #webhookSetups = new Map(Object.entries(seedWebhookSetups));
 
   constructor(options: {
-    readonly changed: () => void;
+    readonly changed: (change?: PluginChange) => void;
     readonly accountLinked: (target: PluginRequirementTarget) => void;
     readonly scenario?: MockPluginScenario;
   }) {
@@ -898,11 +900,25 @@ export class MockPlugins {
     return `${prefix}_${Date.now().toString(36)}${this.#nextId}`;
   }
 
+  #readiness(plugin: MockPlugin, requirement: MockRequirement) {
+    const links = plugin.links.filter((link) => link.requirement === requirement.name);
+    return links.some((link) => link.stale)
+      ? "consent-needs-review"
+      : !links.length && requirement.cardinality === "one"
+        ? "required-but-missing"
+        : "usable";
+  }
+
   summary(plugin: MockPlugin): PluginSummaryView {
     const linked = plugin.requirements.filter((r) =>
       plugin.links.some((link) => link.requirement === r.name),
     );
-    const missing = plugin.requirements.some((r) => r.cardinality === "one" && !linked.includes(r));
+    const readiness = plugin.requirements.map((r) => this.#readiness(plugin, r));
+    const accountReadiness = readiness.includes("consent-needs-review")
+      ? "consent-needs-review"
+      : readiness.includes("required-but-missing")
+        ? "required-but-missing"
+        : "usable";
     return {
       id: plugin.id,
       name: plugin.name,
@@ -911,15 +927,19 @@ export class MockPlugins {
       author: plugin.author,
       access: plugin.access,
       activeVersion: plugin.activeVersion,
-      status: plugin.activeVersion === null ? "not-built" : missing ? "needs-account" : "ready",
+      status:
+        plugin.activeVersion === null
+          ? "not-built"
+          : accountReadiness === "usable"
+            ? "ready"
+            : "needs-account",
+      accountReadiness,
       accounts: { required: plugin.requirements.length, linked: linked.length },
     };
   }
 
   detail(plugin: MockPlugin): InstalledPluginView {
-    const ready = plugin.requirements.every(
-      (r) => r.cardinality === "many" || plugin.links.some((link) => link.requirement === r.name),
-    );
+    const ready = plugin.requirements.every((r) => this.#readiness(plugin, r) === "usable");
     return {
       plugin: this.summary(plugin),
       requirements: plugin.requirements.map((r) => ({
@@ -928,6 +948,7 @@ export class MockPlugins {
         provider: r.provider,
         providerName: r.providerName,
         cardinality: r.cardinality,
+        readiness: this.#readiness(plugin, r),
         consent: plugin.activeVersion ? consentOf(plugin, r) : null,
         links: plugin.links
           .filter((link) => link.requirement === r.name)
@@ -1320,7 +1341,10 @@ export class MockPlugins {
         if (this.engine.status !== "ready") {
           if (this.scenario === "error") await this.#ready();
           if (this.engine.status !== "unavailable" && !this.#started)
-            void this.#ready().then(this.#changed, this.#changed);
+            void this.#ready().then(
+              () => this.#changed(),
+              () => this.#changed(),
+            );
           return rpcSuccess({
             engine: this.engine.status === "idle" ? { status: "starting" } : this.engine,
             plugins: null,
@@ -1439,15 +1463,28 @@ export class MockPlugins {
         await this.#ready();
         return rpcSuccess(this.review(target));
       },
-      "plugins.schedule.runs": async ({ pluginId, pending }) => {
+      "plugins.schedule.runs": async ({ pluginId, cursor, pending }) => {
         await this.#ready();
         this.#plugin(pluginId);
         const runs = pluginId === "plg_linear" ? this.#runs : [];
+        const page = mockPage(
+          runs.filter(({ status }) => status === "awaiting-approval"),
+          `approvals:${pluginId}`,
+          cursor,
+          pluginScheduleApprovalsPageMax,
+        );
         return rpcSuccess({
-          runs: pending ? runs.filter(({ status }) => status === "awaiting-approval") : runs,
+          pending: page.items,
+          cursor: page.cursor,
+          runs: cursor
+            ? []
+            : (pending ? runs.filter(({ status }) => status === "awaiting-approval") : runs).slice(
+                0,
+                pluginRunsMax,
+              ),
         });
       },
-      "plugins.workflow.runs": async ({ pluginId, workflow, cursor }) => {
+      "plugins.workflow.runs": async ({ pluginId, workflow, cursor, runIds }) => {
         await this.#ready();
         this.#plugin(pluginId);
         // As the Host pages: newest first by creation, unfinished runs added to the first page.
@@ -1456,6 +1493,8 @@ export class MockPlugins {
             (run) => workflow === undefined || run.workflow === workflow,
           ),
         );
+        if (runIds)
+          return rpcSuccess({ runs: runs.filter(({ id }) => runIds.includes(id)), cursor: null });
         const lane = cursor
           ? []
           : runs.filter(pluginWorkflowRunLive).slice(0, Math.floor(pluginRunsMax / 2));
@@ -1649,7 +1688,7 @@ export class MockPlugins {
           running: false,
           accountRequired: null,
         };
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["schedules"] });
         return { type: command.type };
       }
       case "plugins.schedule.answer": {
@@ -1665,7 +1704,7 @@ export class MockPlugins {
               }
             : entry,
         );
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["scheduledRuns"] });
         return { type: command.type };
       }
       case "plugins.workflow.start": {
@@ -1680,14 +1719,14 @@ export class MockPlugins {
             failure: null,
           },
         ];
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["workflowRuns"] });
         return { type: command.type, runId };
       }
       case "plugins.workflow.stop":
         this.#workflowRuns[command.pluginId] = (this.#workflowRuns[command.pluginId] ?? []).map(
           (run) => (run.id === command.runId ? { ...run, status: "terminated" } : run),
         );
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["workflowRuns"] });
         return { type: command.type };
       case "plugins.webhook.setup.complete": {
         const webhook = this.#plugin(command.pluginId).webhooks.find(
@@ -1709,7 +1748,7 @@ export class MockPlugins {
         )
           throw refusal("bad_request", "The service rejected that setup.", "plugin-invalid");
         webhook.status = "active";
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["webhooks"] });
         return { type: command.type };
       }
       case "plugins.webhook.remove": {
@@ -1719,7 +1758,7 @@ export class MockPlugins {
         if (!webhook) throw refusal("not_found", "That webhook is gone.");
         webhook.status = "stopping";
         this.#removingWebhooks.add(webhook.id);
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["webhooks"] });
         return { type: command.type };
       }
       case "plugins.webhook.removal.confirm": {
@@ -1728,7 +1767,7 @@ export class MockPlugins {
           throw refusal("conflict", "Remove the webhook before confirming its cleanup.");
         plugin.webhooks = plugin.webhooks.filter((entry) => entry.id !== command.webhookId);
         this.#removingWebhooks.delete(command.webhookId);
-        this.#changed();
+        this.#changed({ pluginId: command.pluginId, categories: ["webhooks"] });
         return { type: command.type };
       }
     }

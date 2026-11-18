@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostApi } from "@opensteer/protocol";
-import { agentHomeSkills } from "../plugins/index.js";
+import { agentHomeSkills, pluginChangeAffects } from "../plugins/index.js";
 import { MockHostClient } from "./mock-host-client.js";
 
 function value<T>(result: { ok: true; data: T } | { ok: false }): T {
@@ -9,6 +9,41 @@ function value<T>(result: { ok: true; data: T } | { ok: false }): T {
 }
 
 describe("Settings mock RPC", () => {
+  it("delivers a workflow change only to its subscribed plugin resource", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    try {
+      const workflow = vi.fn();
+      const detail = vi.fn();
+      const unrelatedSettings = vi.fn();
+      const unsub = client.subscribePluginsChanged((change) => {
+        if (pluginChangeAffects(change, ["workflowRuns"], "plg_linear")) workflow(change);
+        if (pluginChangeAffects(change, ["schedules", "webhooks"], "plg_linear")) detail();
+        if (pluginChangeAffects(change)) unrelatedSettings();
+      });
+      expect(
+        value(
+          await client.rpc["commands.dispatch"]({
+            type: "plugins.workflow.start",
+            pluginId: "plg_linear",
+            workflow: "Triage",
+            input: {},
+            idempotencyKey: "workflow-category",
+          }),
+        ).type,
+      ).toBe("plugins.workflow.start");
+      expect(workflow).toHaveBeenCalledExactlyOnceWith({
+        type: "host.plugins-changed",
+        categories: ["workflowRuns"],
+        pluginId: "plg_linear",
+      });
+      expect(detail).not.toHaveBeenCalled();
+      expect(unrelatedSettings).not.toHaveBeenCalled();
+      unsub();
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("turns an Agent home skill off and on, emits hints, and deduplicates retries", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     try {

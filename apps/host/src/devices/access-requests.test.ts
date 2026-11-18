@@ -56,7 +56,7 @@ it.each([false, true])(
     const result = await service.requestDataApp(
       {
         requestedBy: createId("user"),
-        runId: createId("run"),
+        origin: { originatingRunId: createId("run") },
         threadId: createId("thread"),
         callId: "named-computer",
         reason: "Read Calendar on the requested computer",

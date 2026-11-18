@@ -2658,7 +2658,4 @@ create trigger integration_connections_authority_generation after insert or upda
   for each row execute function opensteer_bump_integration_owner_authority();
 create trigger integration_grants_authority_generation after insert or update or delete on integration_grants
   for each row execute function opensteer_bump_integration_owner_authority();
-create trigger plugin_owner_settings_authority_generation after insert or update or delete on plugin_owner_settings
-  for each row execute function opensteer_bump_integration_owner_authority();
-
 `;

@@ -1,3 +1,4 @@
+import type { EngineAccountMetadata } from "./engine-protocol.js";
 import type { Blocked } from "@opensteer/core";
 
 export function pluginTargetBlocked(input: {
@@ -6,11 +7,16 @@ export function pluginTargetBlocked(input: {
   reason: string;
   requirements: Readonly<Record<string, { scope: "app" | "user" }>>;
   canRequestAccount?: boolean;
-  links: readonly { requirement: string; scope: "app" | "user" }[];
+  readiness: EngineAccountMetadata["readiness"];
 }): Blocked {
+  if (Object.values(input.readiness).some(({ state }) => state === "consent-needs-review"))
+    return {
+      code: "sign_in_required",
+      message: `${input.name} needs its account link reviewed.`,
+      next: "The person can review the changed account link in Plugins. Continue without this plugin until it is reviewed.",
+    };
   const missing = Object.entries(input.requirements).filter(
-    ([requirement, { scope }]) =>
-      !input.links.some((link) => link.requirement === requirement && link.scope === scope),
+    ([requirement]) => input.readiness[requirement]?.state === "required-but-missing",
   );
   return missing.length
     ? {

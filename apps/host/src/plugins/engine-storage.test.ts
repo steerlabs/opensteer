@@ -33,7 +33,7 @@ test("continuous committed changes notify within the coalescing window", async (
     await vi.advanceTimersByTimeAsync(10);
     expect(started, "Committed-change stream never registered").toBe(true);
     await vi.advanceTimersByTimeAsync(150);
-    expect(notify).toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(["workflowRuns"]);
   } finally {
     controller.abort();
     await running;

@@ -94,7 +94,7 @@ import {
   agentPhonePackageName,
   androidPhoneDefinitionId,
   type AgentPhoneArtifactManifest,
-  type AndroidPhoneAction,
+  type PhoneDisplayAction,
 } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -205,7 +205,7 @@ interface Agent extends PhoneAgent {
 }
 
 const PhoneAppsSchema = z.object({
-  apps: z.array(z.object({ label: z.string(), packageName: z.string() })),
+  apps: z.array(z.object({ label: z.string(), appId: z.string() })),
   nextCursor: z.string().nullable(),
   total: z.number().int().nonnegative(),
 });
@@ -642,7 +642,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
 
   async function commandsFor(agent: Agent, runnerId: RunnerId): Promise<PhoneCommands> {
     const row = await phoneRow(agent, runnerId);
-    if (!row.callable) throw new Error(`The phone is not callable: ${JSON.stringify(row)}`);
+    if (!row.access) throw new Error(`The phone is not callable: ${JSON.stringify(row)}`);
     return phoneCommands(row);
   }
 
@@ -680,7 +680,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   function act(
     agent: Agent,
     refs: PhoneCommands,
-    actions: readonly AndroidPhoneAction[],
+    actions: readonly PhoneDisplayAction[],
   ): Promise<ToolResult> {
     if (!refs.act) throw new Error("This agent may not act on the phone.");
     return call(agent, "computer_use", { code: `${refs.act}(${JSON.stringify(actions)})` });
@@ -690,7 +690,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   async function actOk(
     agent: Agent,
     refs: PhoneCommands,
-    actions: readonly AndroidPhoneAction[],
+    actions: readonly PhoneDisplayAction[],
   ): Promise<{ readonly observation: PhoneObservationText; readonly result: ToolResult }> {
     const result = await act(agent, refs, actions);
     if (result.isError) throw new Error(`The act failed: ${resultText(result)}`);
@@ -708,7 +708,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   async function openFixture(agent: Agent, refs: PhoneCommands): Promise<PhoneObservationText> {
     await lookAwake(agent, refs);
     await actOk(agent, refs, [{ to: "home", type: "navigate" }]);
-    const launched = await actOk(agent, refs, [{ packageName: fixturePackage, type: "launch" }]);
+    const launched = await actOk(agent, refs, [{ appId: fixturePackage, type: "launch" }]);
     return untilShown(agent, refs, launched.observation, "button", "Record a tap");
   }
 
@@ -720,7 +720,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   async function startWaitingBatch(agent: Agent, refs: PhoneCommands, waits = 1) {
     const fixture = await openFixture(agent, refs);
     await clearReceipts(phone());
-    const tap: AndroidPhoneAction = {
+    const tap: PhoneDisplayAction = {
       count: 1,
       target: { index: elementIndex(fixture, "button", "Record a tap") },
       type: "tap",
@@ -977,16 +977,15 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     const caller = await newCaller("caller-1");
     const agentA = await startAgent(caller, { title: "Text the driver" });
     let refsA!: PhoneCommands;
+    let fixtureAppId!: string;
 
     await step("main agent finds the phone", async () => {
       const row = await phoneRow(agentA, runnerId);
       expect(row).toMatchObject({
         access: "read-write",
-        approval: "approved",
-        callable: true,
         name: phoneName,
         computerId: runnerId,
-        state: "ready",
+        definitionId: androidPhoneDefinitionId,
       });
       refsA = phoneCommands(row);
     });
@@ -1051,18 +1050,19 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     });
 
     await step(
-      "main agent lists the phone's apps and opens one by the package it read",
+      "main agent lists the phone's apps and opens one by the app ID it read",
       async () => {
         // A query matches labels and packages alike; the Opensteer app, labelled
         // "Opensteer Agent Phone", is never among them.
         const found = await phoneApps(agentA, runnerId, "Agent Phone");
         expect(found).toEqual({
-          apps: [{ label: "Agent Phone fixture", packageName: fixturePackage }],
+          apps: [{ label: "Agent Phone fixture", appId: expect.any(String) }],
           nextCursor: null,
           total: 1,
         });
-        // Every page together: each package once, all of them counted, ours absent.
-        const listed: { label: string; packageName: string }[] = [];
+        fixtureAppId = found.apps[0]!.appId;
+        // Every page together: each app ID once, all of them counted, ours absent.
+        const listed: { label: string; appId: string }[] = [];
         let cursor: string | null = null;
         let more = true;
         let total = -1;
@@ -1075,8 +1075,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           more = cursor !== null;
         }
         expect(listed).toHaveLength(total);
-        expect(new Set(listed.map(({ packageName }) => packageName)).size).toBe(total);
-        expect(listed.map(({ packageName }) => packageName)).not.toContain(agentPhonePackageName);
+        expect(new Set(listed.map(({ appId }) => appId)).size).toBe(total);
+        expect(listed.map(({ appId }) => appId)).not.toContain(agentPhonePackageName);
         expect(listed).toContainEqual(found.apps[0]);
         // Listing is not control: it took no hold on the phone.
         expect(await phoneSessions(runnerId)).toHaveLength(1);
@@ -1084,7 +1084,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         await lookAwake(agentA, refsA);
         await actOk(agentA, refsA, [{ to: "home", type: "navigate" }]);
         expect(await activityResumed(device, fixtureActivities.main)).toBe(false);
-        await actOk(agentA, refsA, [{ packageName: found.apps[0]!.packageName, type: "launch" }]);
+        await actOk(agentA, refsA, [{ appId: fixtureAppId, type: "launch" }]);
         await eventually(
           "Android to have the fixture in front",
           async () => ((await activityResumed(device, fixtureActivities.main)) ? true : undefined),
@@ -1231,18 +1231,62 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       await screenshot("secure-window-blacked-out-by-android");
     });
 
+    await step("a stale observation runs nothing", async () => {
+      const earlier = await openFixture(agentA, refsA);
+      const { observation: latest } = await observe(agentA, refsA);
+      expect(latest.observationId).not.toBe(earlier.observationId);
+      const before = actions(await readReceipts(device));
+      const computerUse = host.runtime.computerUse;
+      const sendAct = computerUse.sendAct.bind(computerUse);
+      const staleInput = vi
+        .spyOn(computerUse, "sendAct")
+        .mockImplementationOnce((lease, target, params, ...rest) => {
+          expect(params).toMatchObject({ observationId: latest.observationId });
+          // The REPL uses the latest ID. Send the old ID at the driver boundary to test the phone.
+          return sendAct(
+            lease,
+            target,
+            {
+              ...z.record(z.string(), z.unknown()).parse(params),
+              observationId: earlier.observationId,
+            },
+            ...rest,
+          );
+        });
+      try {
+        const stale = await act(agentA, refsA, [
+          {
+            count: 1,
+            target: { index: elementIndex(latest, "button", "Record a tap") },
+            type: "tap",
+          },
+        ]);
+        expect(stale.isError).toBe(true);
+        expect(stale.structuredContent).toMatchObject({
+          error: {
+            code: "stale-observation",
+            message: `Observation ${earlier.observationId} is not this phone's latest; observe again.`,
+            performed: [],
+          },
+        });
+        expect(actions(await readReceipts(device))).toEqual(before);
+      } finally {
+        staleInput.mockRestore();
+      }
+    });
+
     await step(
       "a batch near 40 s answers within its budget while a look queued behind it expires unrun",
       async () => {
         const fixture = await openFixture(agentA, refsA);
         await clearReceipts(device);
-        const tap: AndroidPhoneAction = {
+        const tap: PhoneDisplayAction = {
           count: 1,
           target: { index: elementIndex(fixture, "button", "Record a tap") },
           type: "tap",
         };
         // 39 s of waits between two taps: within a second of the most a batch may hold.
-        const waits: AndroidPhoneAction[] = [
+        const waits: PhoneDisplayAction[] = [
           ...Array.from({ length: 7 }, () => ({ ms: 5_000, type: "wait" as const })),
           { ms: 4_000, type: "wait" },
         ];
@@ -1302,7 +1346,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
               10_000,
             );
             // No fresh observe: this act still cites the node before its label changed.
-            const action: AndroidPhoneAction =
+            const action: PhoneDisplayAction =
               operation === "type"
                 ? { submit: false, target: { index }, text: "wrong field", type: "type" }
                 : { target: { index }, type: "clear" };
@@ -1389,9 +1433,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         "The Opensteer Agent Phone app is in front, and agents may not operate it. Navigate home or launch another app first.",
       );
       expect(
-        refusalOf(
-          await act(agentA, refsA, [{ packageName: agentPhonePackageName, type: "launch" }]),
-        ),
+        refusalOf(await act(agentA, refsA, [{ appId: agentPhonePackageName, type: "launch" }])),
       ).toBe("Agents may not open the Opensteer Agent Phone app; launch another app.");
       expect(await activityResumed(device, agentPhoneActivities.main)).toBe(true);
       expect(actions(await readReceipts(device))).toEqual(before);
@@ -1411,15 +1453,16 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     let agentB = await startAgent(caller, { title: "Order lunch" });
     let refsB!: PhoneCommands;
 
-    await step("a second task finds the phone held and is told by whom", async () => {
+    await step("a second task finds the phone held and leaves it with the first task", async () => {
       const row = await phoneRow(agentB, runnerId);
-      expect(row).toMatchObject({ access: "read-write", inUse: true });
-      expect(row.inUse).toBe(true);
+      const message = `${phoneName} is in use by another task.`;
+      expect(row).toMatchObject({ blocked: { code: "in_use", message } });
       refsB = phoneCommands(row);
       const busy = refusalOf(await call(agentB, "computer_use", { code: refsB.observe }));
-      expect(busy).toContain(
-        `${phoneName} is already being used by another task. (Task: Text the driver)`,
-      );
+      expect(busy).toBe(message);
+      expect(await phoneSessions(runnerId)).toEqual([
+        expect.objectContaining({ runId: agentA.run.runId, threadTitle: "Text the driver" }),
+      ]);
     });
 
     await step("release hands the phone over, and releasing nothing is fine", async () => {
@@ -1444,7 +1487,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         title: "Track the delivery",
       });
       const row = await phoneRow(agentC, runnerId);
-      expect(row).toMatchObject({ access: "read", approval: "approved" });
+      expect(row).toMatchObject({ access: "read" });
       expect(row.access).toBe("read");
       expect(row).not.toHaveProperty("toolRefs");
       expect(Object.keys(phoneCommands(row)).sort()).toEqual(["observe", "release"]);
@@ -1955,7 +1998,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(search).not.toContain("Paused on the phone on");
       // Its app list still answers: listing is not control.
       expect(await phoneApps(agentA3, runnerId, "Agent Phone")).toMatchObject({
-        apps: [{ label: "Agent Phone fixture", packageName: fixturePackage }],
+        apps: [{ label: "Agent Phone fixture", appId: fixtureAppId }],
         total: 1,
       });
       expect(await phoneSessions(runnerId)).toEqual([]);
@@ -2051,7 +2094,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         30_000,
       );
       const widened = await phoneRow(agentA3, runnerId);
-      expect(widened).toMatchObject({ access: "read-write", approval: "approved" });
+      expect(widened).toMatchObject({ access: "read-write" });
       refsA3 = phoneCommands(widened);
       expect(refsA3.act).toEqual(expect.any(String));
       await lookAwake(agentA3, refsA3);
@@ -2337,10 +2380,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       agentB = await startAgent(restartedCaller, {
         title: "Order lunch again",
       });
-      refsB = await commandsFor(agentB, runnerId);
       expect(resultJson(await call(agentE, "computer_use", { code: refsE.release }))).toEqual({
         released: true,
       });
+      refsB = await commandsFor(agentB, runnerId);
       const { acting } = await startWaitingBatch(agentB, refsB);
       expect(await phoneSessions(runnerId)).toHaveLength(1);
       const revokedAt = Date.now();

@@ -1595,13 +1595,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const childClient = await connectMcp(endpoint, childProgram);
     const chatClient = await connectMcp(endpoint, chatProgram);
     const watchClient = await connectMcp(endpoint, watchToken);
-    for (const [label, actor, client] of [
-      ["delegated Trigger", f.fullChild, childClient],
-      ["Root task Trigger", f.root, chatClient],
-      ["delegated Watch", f.crossChild, watchClient],
+    for (const [label, kind, actor, client] of [
+      ["delegated Trigger", "trigger", f.fullChild, childClient],
+      ["Root task Trigger", "trigger", f.root, chatClient],
+      ["delegated Watch", "watch", f.crossChild, watchClient],
     ] as const) {
       const expectedNames = toolsFor({
         kind: "program",
+        program: { kind },
         accessMode: actor.accessMode,
       }).map((t) => t.name);
       await check(

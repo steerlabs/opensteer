@@ -5,10 +5,15 @@ export function localTargetBlocked(
   readiness: IntegrationReadiness | undefined,
   name: string,
   target: { dataApp: string; computerId?: string } | { server: string } = { server: name },
+  canAsk = true,
 ): Blocked | undefined {
   if (!readiness || readiness.code === "READY") return undefined;
   if (readiness.code === "ACCESS_GRANT_REQUIRED" && readiness.requiredAccess === null)
     throw new Error("Access-grant readiness must name its required access");
+  const ownerAction =
+    "dataApp" in target
+      ? "Ask the owner to manage this data app in the device's settings in Opensteer."
+      : "Ask the owner to review this server in Plugins in Opensteer, or request access from a task.";
   switch (readiness.code) {
     case "READ_ONLY_TASK":
       return {
@@ -20,14 +25,18 @@ export function localTargetBlocked(
       return {
         code: "access_required",
         message: `${name} requires an access grant.`,
-        next: `Call app_access_request ${JSON.stringify({ ...target, access: readiness.requiredAccess, reason: "<why you need it>" })}.`,
+        next: canAsk
+          ? `Call app_access_request ${JSON.stringify({ ...target, access: readiness.requiredAccess, reason: "<why you need it>" })}.`
+          : ownerAction,
       };
     case "USER_AUTHORIZATION_REQUIRED":
     case "REAUTHORIZATION_REQUIRED":
       return {
         code: "setup_required",
         message: `${name} needs the person's setup or approval.`,
-        next: `Call app_access_request ${JSON.stringify({ ...target, access: "read-write", reason: "<why you need it>" })}; the person can finish setup in Opensteer.`,
+        next: canAsk
+          ? `Call app_access_request ${JSON.stringify({ ...target, access: "read-write", reason: "<why you need it>" })}; the person can finish setup in Opensteer.`
+          : ownerAction,
       };
     case "INTEGRATION_UNAVAILABLE":
       return {

@@ -88,6 +88,7 @@ function setup(
     versions?: number;
     local?: number;
     engineDown?: boolean;
+    staleConsent?: boolean;
     /** Not started yet: a read starts it and the list waits on this. */
     starting?: Promise<void>;
   } = {},
@@ -119,7 +120,31 @@ function setup(
               ? { requirements: { accounts: {} } }
               : {},
         ),
-        links: index === 0 ? [{ requirement: "linear", scope: "app", account: "acc1" }] : [],
+        links:
+          index === 0
+            ? [
+                {
+                  requirement: "linear",
+                  scope: "app",
+                  account: "acc1",
+                  current: !options.staleConsent,
+                },
+              ]
+            : [],
+        readiness:
+          index === 2
+            ? {}
+            : {
+                linear: {
+                  state:
+                    index !== 0
+                      ? "required-but-missing"
+                      : options.staleConsent
+                        ? "consent-needs-review"
+                        : "usable",
+                  consent,
+                },
+              },
       }));
     }),
     detail: vi.fn(async ({ plugin: id }: { plugin: string }) => ({
@@ -129,9 +154,10 @@ function setup(
           requirement: "linear",
           scope: "app",
           account: "acc1",
-          consent: { ...consent, digest: "d".repeat(64) },
+          current: false,
         },
       ],
+      readiness: { linear: { state: "consent-needs-review", consent } },
       tools: {
         version: "v",
         items: Array.from({ length: options.tools ?? 2 }, (_, index) => ({
@@ -156,6 +182,10 @@ function setup(
       toolCount: options.tools ?? 2,
       skillCount: 1,
       versionCount: options.versions ?? 2,
+    })),
+    scheduleApprovals: vi.fn(async (_input: unknown) => ({
+      runs: [] as unknown[],
+      next: null as string | null,
     })),
     detailSection: vi.fn(
       async (input: {
@@ -203,7 +233,7 @@ function setup(
     reviewAccountLink: vi.fn(async () => consent),
     linkAccount: vi.fn(async () => consent),
     unlinkAccount: vi.fn(async () => null),
-    manage: vi.fn(async (input: unknown, _context: unknown) => {
+    manage: vi.fn(async (input: unknown, _context: unknown): Promise<unknown> => {
       const { operation } = z.object({ operation: z.string() }).parse(input);
       return operation === "schedules.answer"
         ? {
@@ -521,6 +551,75 @@ describe("the person's plugin API", () => {
       reference: { kind: "plugin", pluginId: "p0" },
       unavailable: expect.any(String),
     });
+  });
+
+  it("reads pending schedule approvals beside history when declarations are unavailable", async () => {
+    const { api, service } = setup();
+    const run = {
+      id: "pending",
+      scheduleId: "schedule1",
+      app: "p0",
+      owner: "personal",
+      name: "reviewed",
+      status: "awaiting-approval",
+      scheduledAt: "2026-10-01T00:00:00.000Z",
+      startedAt: "2026-10-01T00:00:00.000Z",
+      finishedAt: null,
+      expiresAt: "2026-12-01T00:00:00.000Z",
+      requestId: "request1",
+      failure: null,
+    };
+    service.detail.mockRejectedValue(new Error("Declarations unavailable"));
+    service.scheduleApprovals.mockResolvedValue({ runs: [run], next: "more-pending" });
+    service.manage.mockImplementation(async (input) => {
+      const operation = z.object({ operation: z.string() }).parse(input).operation;
+      if (operation === "schedules.approval")
+        return {
+          run,
+          expiresAt: 1796083200000,
+          invocation: { app: "p0", tool: "reviewed", input: { source: "saved" } },
+        };
+      return Array.from({ length: 50 }, (_, index) => ({
+        ...run,
+        id: `finished-${index}`,
+        status: "succeeded",
+        scheduledAt: "2026-11-01T00:00:00.000Z",
+      }));
+    });
+    const result = await api.reads()["plugins.schedule.runs"]({ pluginId: "p0" }, context(ownerId));
+    expect(result.ok && result.data).toMatchObject({
+      cursor: "more-pending",
+      pending: [{ id: "pending", approval: { tool: "reviewed", arguments: { source: "saved" } } }],
+      runs: Array.from({ length: 50 }, (_, index) => ({ id: `finished-${index}` })),
+    });
+    expect(service.detail).not.toHaveBeenCalled();
+    service.manage.mockClear();
+    service.scheduleApprovals.mockResolvedValue({ runs: [], next: null });
+    const more = await api
+      .reads()
+      ["plugins.schedule.runs"]({ pluginId: "p0", cursor: "more-pending" }, context(ownerId));
+    expect(more.ok && more.data).toEqual({ pending: [], runs: [], cursor: null });
+    expect(service.scheduleApprovals).toHaveBeenLastCalledWith(
+      { plugin: "p0", cursor: "more-pending" },
+      owner,
+    );
+    expect(service.manage).not.toHaveBeenCalled();
+  });
+
+  it("uses readiness for the owner detail and the installed list", async () => {
+    const { api, service } = setup({ staleConsent: true });
+    const installed = await api.reads()["plugins.installed.list"]({}, context(ownerId));
+    expect(installed.ok && installed.data.plugins?.find(({ id }) => id === "p0")).toMatchObject({
+      status: "needs-account",
+      accountReadiness: "consent-needs-review",
+    });
+    const detail = await api.detail(ownerId, "p0");
+    expect(detail.plugin).toMatchObject({
+      status: "needs-account",
+      accountReadiness: "consent-needs-review",
+    });
+    expect(detail.requirements[0]?.links[0]?.current).toBe(false);
+    expect(service.reviewAccountLink).not.toHaveBeenCalled();
   });
 
   it("lists saved accounts with their provider's name and the plugins they serve, in one read", async () => {

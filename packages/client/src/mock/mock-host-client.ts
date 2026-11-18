@@ -1,3 +1,4 @@
+import type { PluginChange } from "@opensteer/protocol";
 import {
   DeviceComputerAppSetupRequestReaderSchema,
   type DeviceComputerAppSetupRequest,
@@ -3731,7 +3732,7 @@ export class MockHostClient implements HostClient {
 
   readonly desktopUpdates: MockDesktopUpdates;
   subscribePluginsChanged(
-    listener: (message: { type: "host.plugins-changed" }) => void,
+    listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void {
     this.#state.settings.listeners.add(listener);
     return () => this.#state.settings.listeners.delete(listener);
@@ -6086,8 +6087,9 @@ class MockHostState {
 
   constructor(options: MockHostClientOptions = {}) {
     this.enginePlugins = new MockPlugins({
-      changed: () => {
-        for (const listener of this.settings.listeners) listener({ type: "host.plugins-changed" });
+      changed: (change) => {
+        for (const listener of this.settings.listeners)
+          listener({ type: "host.plugins-changed", ...change });
       },
       accountLinked: (target) => this.settlePluginAccount(target),
       ...(options.plugins ? { scenario: options.plugins } : {}),

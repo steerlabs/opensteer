@@ -2228,7 +2228,7 @@ export interface DatabaseSchema {
   pluginOwnerSettings: {
     ownerUserId: UserId;
     targetKey: string;
-    target: JsonColumn<import("@opensteer/protocol").PluginTarget>;
+    target: JsonColumn<Exclude<import("@opensteer/protocol").PluginTarget, { kind: "device-app" }>>;
     enabled: boolean;
 
     revision: number;

@@ -1,5 +1,4 @@
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
-import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   RunIdSchema,
@@ -23,10 +22,6 @@ export interface ResourceAccessInput {
   readonly agentBindingId?: string;
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
-  readonly resource?: {
-    readonly type: "integration" | "browser-profile" | "computer-app" | "phone";
-    readonly id: string;
-  };
 }
 
 export async function resolveResourceAccess(
@@ -114,29 +109,12 @@ export async function resolveResourceAccess(
   const runAccess = integrationAccessCeilingForRun(
     connection?.accessMode ?? run?.accessMode ?? thread?.accessMode ?? "full-access",
   );
-  const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
-  let policyAllowed = true;
-  if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
-    const resource = await database
-      .selectFrom("integrationConnections")
-      .select(["integrationDefinitionId", "connectionKind"])
-      .where("id", "=", input.resource.id as DatabaseSchema["integrationConnections"]["id"])
-      .where("ownerUserId", "=", input.ownerUserId)
-      .executeTakeFirst();
-    if (resource?.connectionKind === "computer" && resource.integrationDefinitionId)
-      policyAllowed = await pluginPolicyAllows(database, input.ownerUserId, {
-        kind: "device-app",
-        definitionId: resource.integrationDefinitionId,
-      });
-  }
   return {
     runAccess,
-    access: policyAllowed
-      ? intersectResourceAccess(
-          intersectResourceAccess(input.explicitAccess ?? null, input.connectionCeiling),
-          runAccess,
-        )
-      : null,
+    access: intersectResourceAccess(
+      intersectResourceAccess(input.explicitAccess ?? null, input.connectionCeiling),
+      runAccess,
+    ),
   };
 }
 

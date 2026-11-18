@@ -201,6 +201,37 @@ alter table integration_installations add constraint integration_installations_s
   check (source_kind in ('plugin', 'built-in'));
 alter table integration_auth_attempts drop column if exists result_connection_id;
 `;
+export const unifyLocalPluginAccessMigrationName = "0034_unify_local_plugin_access_contract";
+const UNIFY_LOCAL_PLUGIN_ACCESS_SQL = `
+insert into plugin_agent_settings (owner_user_id, plugin_id, access, author)
+  select setting.owner_user_id, 'app_device_' || connection.id, 'off', 'agent'
+  from plugin_owner_settings setting
+  join integration_connections connection
+    on connection.owner_user_id = setting.owner_user_id
+    and connection.integration_definition_id = setting.target->>'definitionId'
+  where setting.target->>'kind' = 'device-app' and not setting.enabled
+    and connection.connection_kind = 'computer' and connection.status <> 'revoked'
+    and connection.integration_definition_id not in ('macos-app', 'android-phone', 'iphone-screen')
+  union
+  select setting.owner_user_id, 'app_server_' || server.id, 'off', 'agent'
+  from plugin_owner_settings setting
+  join integration_installations installation on installation.plugin_id = setting.target->>'pluginId'
+  join integration_servers server on server.installation_id = installation.id
+  where setting.target->>'kind' = 'plugin' and not setting.enabled and server.transport->>'type' = 'runner'
+  on conflict (owner_user_id, plugin_id) do update set access = excluded.access;
+
+drop trigger if exists plugin_owner_settings_authority_generation on plugin_owner_settings;
+delete from plugin_owner_settings setting
+  where setting.target->>'kind' = 'device-app'
+    or (setting.target->>'kind' = 'plugin' and exists (
+      select 1 from integration_installations installation
+      join integration_servers server on server.installation_id = installation.id
+      where installation.plugin_id = setting.target->>'pluginId' and server.transport->>'type' = 'runner'
+    ));
+
+update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '5')
+  where program->'toolContractVersion' = '4'::jsonb;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -463,6 +494,11 @@ export function migrationProvider(): MigrationProvider {
         [dropServiceIntegrationsMigrationName]: {
           async up(database) {
             await sql.raw(DROP_SERVICE_INTEGRATIONS_SQL).execute(database);
+          },
+        },
+        [unifyLocalPluginAccessMigrationName]: {
+          async up(database) {
+            await sql.raw(UNIFY_LOCAL_PLUGIN_ACCESS_SQL).execute(database);
           },
         },
       };

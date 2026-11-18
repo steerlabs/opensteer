@@ -7,6 +7,7 @@ import {
   pluginAccountComplete,
   pluginAccountValues,
   pluginConsentLines,
+  pluginChangeAffects,
   pluginLinkableAccounts,
   pluginSignInRetryable,
   readPluginAccountReview,
@@ -51,7 +52,9 @@ export function PluginConnectDialog({
         (error: unknown) => alive && setLoadError(error),
       );
     read();
-    const unsubscribe = hostClient.subscribePluginsChanged(read);
+    const unsubscribe = hostClient.subscribePluginsChanged((change) => {
+      if (pluginChangeAffects(change, [], target.pluginId)) read();
+    });
     return () => {
       alive = false;
       unsubscribe();

@@ -1,3 +1,4 @@
+import type { PluginChange } from "@opensteer/protocol";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
@@ -1167,7 +1168,7 @@ export interface HostClient extends TabsClient {
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
   /** Invalidates remote administration on Host changes and stream recovery. */
   subscribePluginsChanged(
-    listener: (message: { type: "host.plugins-changed" }) => void,
+    listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void;
   /** The plugin engine's state as the Host reports it; nothing to reread. */
   subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void;

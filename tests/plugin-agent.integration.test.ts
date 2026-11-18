@@ -1179,6 +1179,79 @@ test("Stop discards an execution and cancels its Request", async () => {
   ).rejects.toThrow();
 });
 
+test("an empty many account slot is usable and changed consent needs owner review", async () => {
+  const caller = await run();
+  const source = (sites: string[]) =>
+    pluginFixtureFiles(1, sites).map((file) =>
+      file.path === "index.ts"
+        ? {
+            ...file,
+            content: file.content.replace(
+              "accounts: { service }",
+              "accounts: { service: service.many() }",
+            ),
+          }
+        : file,
+    );
+  const installed = await service.install(
+    {
+      kind: "files",
+      name: "Account readiness fixture",
+      files: source(["api.fixture.invalid"]),
+    },
+    ownerContext,
+  );
+  if (installed.status !== "installed")
+    throw new Error("Account readiness fixture did not install");
+  const { id, slug } = installed.plugin;
+  const toolList = async () =>
+    z
+      .object({ plugins: z.array(z.record(z.string(), z.unknown())) })
+      .parse(await call(caller, "opensteer_plugin_list", {}))
+      .plugins.find((item) => item.id === id);
+  const empty = await toolList();
+  expect(empty).toMatchObject({ status: "active", links: [] });
+  expect(empty).not.toHaveProperty("blocked");
+  const target = { plugin: id, requirement: "service", scope: "user" as const };
+  const account = await service.createApiKeyAccount(
+    {
+      provider: installed.plugin.requirements.accounts.service!.provider,
+      method: "key",
+      fields: { token: "fixture-readiness-key" },
+    },
+    ownerContext,
+  );
+  await service.linkAccount(
+    {
+      ...target,
+      account: account.id,
+      consent: await service.reviewAccountLink(target, ownerContext),
+    },
+    ownerContext,
+  );
+  const updated = await service.install(
+    {
+      kind: "files",
+      plugin: id,
+      files: source(["api.fixture.invalid", "other.fixture.invalid"]),
+    },
+    ownerContext,
+  );
+  if (updated.status !== "installed")
+    throw new Error("Changed account declaration did not install");
+  const guidance = {
+    code: "sign_in_required",
+    message: expect.stringContaining("account link reviewed"),
+    next: expect.stringContaining("review the changed account link in Plugins"),
+  };
+  expect(await toolList()).toMatchObject({ status: "unavailable", blocked: guidance });
+  expect(await call(caller, "plugin_search", { namespace: slug })).toMatchObject({
+    unavailableApps: expect.arrayContaining([
+      expect.objectContaining({ app: id, blocked: guidance }),
+    ]),
+  });
+});
+
 test("account Request pins disclosure and a person-reviewed link fulfils it", async () => {
   const caller = await run();
   const installed = await service.install(

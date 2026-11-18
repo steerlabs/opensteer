@@ -5,6 +5,7 @@ import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
+import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
@@ -17,6 +18,8 @@ import { operations, type PluginConsent, type PluginInput } from "../../plugins/
 import { keysetPage } from "../../plugins/keyset-page.js";
 import { engineInstallReceipt } from "../../plugins/engine-storage.js";
 import { pluginNamespace } from "../../plugins/provider-names.js";
+
+const owner = { caller: "personal", mode: "automatic" } as const;
 
 export class PluginToolHandlers {
   readonly options: {
@@ -41,7 +44,7 @@ export class PluginToolHandlers {
     publish: (event: import("@opensteer/core").AgentEvent) => void;
     notify: () => void;
     /** Tells the owner's clients their plugins changed. */
-    changed?: (owner: UserId) => void;
+    changed?: (owner: UserId, change?: PluginChange) => void;
     removed?: (plugin: string) => void;
   };
   constructor(options: PluginToolHandlers["options"]) {
@@ -69,6 +72,13 @@ export class PluginToolHandlers {
           cursor: c.input.cursor,
           max: 25,
         });
+    const installed = page.items.length
+      ? await this.options.service.installed(
+          { plugins: page.items.map(({ id }) => id), versions: true },
+          owner,
+          c.signal,
+        )
+      : [];
     let versionCursor: string | null = null;
     return {
       // An agent sees one list: local tools are addressed as tools.<slug> like plugins.
@@ -91,76 +101,70 @@ export class PluginToolHandlers {
           readOnlyToolCount: provider.tools.filter(({ readOnly }) => readOnly === true).length,
         })),
       plugins: await Promise.all(
-        page.items.map(async (plugin) => {
-          const detail = await this.options.service.detail(
-            { plugin: plugin.id },
-            { caller: "personal", mode: "automatic" },
-            c.signal,
-          );
-          const versionPage = c.input.pluginId
-            ? await this.options.service.detailSection(
-                {
-                  plugin: plugin.id,
-                  section: "versions",
-                  ...(c.input.cursor ? { cursor: c.input.cursor } : {}),
-                },
-                { caller: "personal", mode: "automatic" },
-                c.signal,
-              )
-            : undefined;
-          if (versionPage) versionCursor = versionPage.cursor;
-          const versions = z
-            .array(z.object({ id: z.string().min(1), createdAt: z.string() }).passthrough())
-            .catch([])
-            .parse(versionPage?.items ?? detail.versions)
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-          const missingAccount = Object.entries(detail.plugin.requirements.accounts).some(
-            ([requirement, { scope }]) =>
-              !detail.links.some(
-                (link) => link.requirement === requirement && link.scope === scope,
-              ),
-          );
-          const blocked = !plugin.activeVersion
-            ? {
-                code: "unavailable",
-                message: `${plugin.name} has no active version.`,
-                next: "The person can choose an active version in Plugins; continue without it until then.",
-              }
-            : missingAccount
-              ? pluginTargetBlocked({
-                  id: plugin.id,
-                  name: plugin.name,
-                  reason: `${plugin.name} has no active version.`,
-                  requirements: detail.plugin.requirements.accounts,
-                  links: z
-                    .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
-                    .parse(detail.links),
-                  canRequestAccount: c.caller.kind === "run",
-                })
+        page.items
+          .flatMap(({ id }) => installed.find(({ plugin }) => plugin.id === id) ?? [])
+          .map(async (detail) => {
+            const { plugin } = detail;
+            const versionPage = c.input.pluginId
+              ? await this.options.service.detailSection(
+                  {
+                    plugin: plugin.id,
+                    section: "versions",
+                    ...(c.input.cursor ? { cursor: c.input.cursor } : {}),
+                  },
+                  { caller: "personal", mode: "automatic" },
+                  c.signal,
+                )
               : undefined;
-          return {
-            ...(blocked ? { blocked } : {}),
-            id: plugin.id,
-            name: plugin.name,
-            slug: plugin.slug,
-            activeVersion: plugin.activeVersion,
-            versions: versions
-              .slice(0, c.input.pluginId ? 200 : 10)
-              .map((version) => ({ id: version.id, active: version.id === plugin.activeVersion })),
-            versionCount: detail.versionCount,
-            requirements: Object.fromEntries(
-              Object.entries(detail.plugin.requirements.accounts).map(([name, r]) => [
-                name,
-                { scope: r.scope, provider: r.provider },
-              ]),
-            ),
-            access: access(plugin.id) as "all" | "read-only",
-            links: detail.links
-              .slice(0, 100)
-              .map(({ requirement, scope, account }) => ({ requirement, scope, account })),
-            status: plugin.activeVersion ? "active" : "unavailable",
-          };
-        }),
+            if (versionPage) versionCursor = versionPage.cursor;
+            const versions = z
+              .array(z.object({ id: z.string().min(1), createdAt: z.string() }).passthrough())
+              .catch([])
+              .parse(versionPage?.items ?? detail.versions)
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+            const needsAccount = Object.values(detail.readiness).some(
+              ({ state }) => state !== "usable",
+            );
+            const blocked = !plugin.activeVersion
+              ? {
+                  code: "unavailable",
+                  message: `${plugin.name} has no active version.`,
+                  next: "The person can choose an active version in Plugins; continue without it until then.",
+                }
+              : needsAccount
+                ? pluginTargetBlocked({
+                    id: plugin.id,
+                    name: plugin.name,
+                    reason: `${plugin.name} needs account setup.`,
+                    requirements: plugin.requirements.accounts,
+                    readiness: detail.readiness,
+                    canRequestAccount: c.caller.kind === "run",
+                  })
+                : undefined;
+            return {
+              ...(blocked ? { blocked } : {}),
+              id: plugin.id,
+              name: plugin.name,
+              slug: plugin.slug,
+              activeVersion: plugin.activeVersion,
+              versions: versions.slice(0, c.input.pluginId ? 200 : 10).map((version) => ({
+                id: version.id,
+                active: version.id === plugin.activeVersion,
+              })),
+              versionCount: detail.versionCount ?? versions.length,
+              requirements: Object.fromEntries(
+                Object.entries(detail.plugin.requirements.accounts).map(([name, r]) => [
+                  name,
+                  { scope: r.scope, provider: r.provider },
+                ]),
+              ),
+              access: access(plugin.id) as "all" | "read-only",
+              links: detail.links
+                .slice(0, 100)
+                .map(({ requirement, scope, account }) => ({ requirement, scope, account })),
+              status: blocked ? "unavailable" : "active",
+            };
+          }),
       ),
       cursor: c.input.pluginId ? versionCursor : page.cursor,
     };
@@ -174,6 +178,16 @@ export class PluginToolHandlers {
       })
       .parse(result);
     const local = (await this.options.localProviders?.blockers(context)) ?? [];
+    const remoteIds = [
+      ...new Set(
+        (unavailable ?? [])
+          .filter(({ app }) => !local.some((target) => target.id === app))
+          .map(({ app }) => app),
+      ),
+    ];
+    const installed = remoteIds.length
+      ? await this.options.service.installed({ plugins: remoteIds }, owner).catch(() => [])
+      : [];
     return {
       ...result,
       items: z
@@ -185,31 +199,24 @@ export class PluginToolHandlers {
         }),
       ...(unavailable?.length
         ? {
-            unavailableApps: await Promise.all(
-              unavailable.map(async (entry) => {
-                const known = local.find(
-                  (target) => target.id === entry.app && !target.path,
-                )?.blocked;
-                if (known) return { ...entry, blocked: known };
-                const detail = await this.options.service
-                  .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
-                  .catch(() => null);
-                return {
-                  ...entry,
-                  blocked: pluginTargetBlocked({
-                    id: entry.app,
-                    name: entry.name,
-                    reason: entry.reason,
-                    canRequestAccount:
-                      this.options.authority.caller(context.caller)?.kind === "run",
-                    requirements: detail?.plugin.requirements.accounts ?? {},
-                    links: z
-                      .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
-                      .parse(detail?.links ?? []),
-                  }),
-                };
-              }),
-            ),
+            unavailableApps: unavailable.map((entry) => {
+              const known = local.find(
+                (target) => target.id === entry.app && !target.path,
+              )?.blocked;
+              if (known) return { ...entry, blocked: known };
+              const detail = installed.find(({ plugin }) => plugin.id === entry.app);
+              return {
+                ...entry,
+                blocked: pluginTargetBlocked({
+                  id: entry.app,
+                  name: entry.name,
+                  reason: entry.reason,
+                  canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+                  requirements: detail?.plugin.requirements.accounts ?? {},
+                  readiness: detail?.readiness ?? {},
+                }),
+              };
+            }),
           }
         : {}),
     };
@@ -300,9 +307,21 @@ export class PluginToolHandlers {
       requirement: c.input.requirement,
       scope: c.input.scope,
     };
-    const owner = { caller: "personal", mode: "automatic" as const };
-    const consent = await this.options.service.reviewAccountLink(target, owner, c.signal);
-    const detail = await this.options.service.detail({ plugin: target.plugin }, owner, c.signal);
+    const [detail] = await this.options.service.installed(
+      { plugins: [target.plugin] },
+      owner,
+      c.signal,
+    );
+    const consent = detail?.readiness[target.requirement]?.consent;
+    if (
+      !detail ||
+      !consent ||
+      detail.plugin.requirements.accounts[target.requirement]?.scope !== target.scope
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The plugin account requirement is unavailable.",
+      });
     const version = detail.plugin.activeVersion;
     const author =
       (version
@@ -358,31 +377,20 @@ export class PluginToolHandlers {
     consent: PluginConsent;
     settlementSessionId?: string;
   }) {
-    const current = await this.options.service.reviewAccountLink(
-      { plugin: input.plugin, requirement: input.requirement, scope: input.scope },
-      {
-        caller: "personal",
-        mode: "automatic",
-      },
-    );
-    if (current.digest !== input.consent.digest)
+    const [detail] = await this.options.service.installed({ plugins: [input.plugin] }, owner);
+    const current = detail?.readiness[input.requirement]?.consent;
+    if (
+      current?.digest !== input.consent.digest ||
+      detail?.plugin.requirements.accounts[input.requirement]?.scope !== input.scope
+    )
       throw new OpensteerError({
         code: "conflict",
         message: "Plugin consent changed; review the account link again.",
       });
-    const detail = await this.options.service.detail(
-      { plugin: input.plugin },
-      { caller: "personal", mode: "automatic" },
-    );
     if (
       !detail.links.some(
         (link) =>
-          link.requirement === input.requirement &&
-          link.scope === input.scope &&
-          link.consent !== null &&
-          typeof link.consent === "object" &&
-          !Array.isArray(link.consent) &&
-          link.consent.digest === current.digest,
+          link.requirement === input.requirement && link.scope === input.scope && link.current,
       )
     )
       return;
@@ -461,7 +469,17 @@ export class PluginToolHandlers {
           o.authority.admit(c.caller),
           c.signal,
         );
-        o.changed?.(c.caller.userId);
+        const categories = {
+          "schedule.configure": ["schedules"],
+          "schedule.run": ["schedules", "scheduledRuns"],
+          "workflow.start": ["workflowRuns"],
+          "workflow.stop": ["workflowRuns"],
+          "webhook.remove": ["webhooks"],
+        } satisfies Record<typeof c.input.change.action, PluginResourceCategory[]>;
+        o.changed?.(c.caller.userId, {
+          pluginId: c.input.pluginId,
+          categories: categories[c.input.change.action],
+        });
         return result;
       },
       plugin_search: async (c) => {

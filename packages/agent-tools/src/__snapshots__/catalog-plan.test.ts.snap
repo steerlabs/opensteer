@@ -1159,8 +1159,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
-    "description": "Ask the person to let this task use one Mac app or a whole phone screen through computer_use, a device data app on a Mac or iPhone, or a local server, through their plugin tools. A Mac-driven iPhone needs its own approval, separate from its Mac and iPhone data apps. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId; for a data app pass dataApp and the computerId it is on, when known; for a local server pass server. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+    "description": "Ask the person for access. For a device data app on a Mac or iPhone pass dataApp and its computerId, when known. For a local server pass server. A Trigger occurrence can ask for either and returns pending without a continuation. Only a running task can ask for computer_use access: pass app for one Mac app and its computerId unless the task runs there, or only computerId for a whole phone screen. A Mac-driven iPhone screen needs its own approval. read observes and read-write also acts. Pending grants no access. Never repeat a pending or declined ask.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

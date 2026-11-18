@@ -4,6 +4,7 @@ import { agentTools } from "./tools/index.js";
 
 export function toolsFor(caller: {
   readonly kind: AgentCallerKind;
+  readonly program?: { readonly kind: "trigger" | "watch" };
   readonly capabilities?: RunToolCapabilities;
   readonly accessMode: ThreadAccessMode;
   readonly teamsAvailable?: boolean;
@@ -12,6 +13,7 @@ export function toolsFor(caller: {
   return agentTools.filter(
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
+      (caller.program?.kind !== "watch" || tool.name !== "app_access_request") &&
       (!("capability" in tool) ||
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&

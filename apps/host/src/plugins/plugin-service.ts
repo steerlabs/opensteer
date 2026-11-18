@@ -85,7 +85,9 @@ export interface PluginServiceOptions {
     input: PluginBrokerInput<K>,
     signal: AbortSignal,
   ) => Promise<PluginBrokerOutput<K>>;
-  readonly onResourcesChanged?: () => void;
+  readonly onResourcesChanged?: (
+    categories: import("@opensteer/protocol").PluginResourceCategory[],
+  ) => void;
   readonly onExecution?: (execution: PluginExecution) => void;
   readonly onDiagnostic?: (phase: string) => void;
   readonly onState?: (state: PluginServiceState) => void;
@@ -387,7 +389,7 @@ export class PluginService {
       }
       const message = parsed.data;
       if (message.type === "resourcesChanged") {
-        this.#options.onResourcesChanged?.();
+        this.#options.onResourcesChanged?.(message.categories);
       } else if (message.type === "diagnostic") {
         this.#options.onDiagnostic?.(message.phase);
       } else if (message.type === "ready") {
@@ -791,6 +793,7 @@ export class PluginService {
   readonly completeOAuth = this.#method("completeOAuth");
   readonly cancelOAuth = this.#method("cancelOAuth");
   readonly oauthStatus = this.#method("oauthStatus");
+  readonly scheduleApprovals = this.#method("scheduleApprovals");
   readonly detailSection = this.#method("detailSection");
   readonly saveOAuthApp = this.#method("saveOAuthApp");
   readonly removeOAuthApp = this.#method("removeOAuthApp");

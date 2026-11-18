@@ -6,7 +6,12 @@ import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { refused, type Request, type DeviceId } from "@opensteer/core";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { DeviceService } from "../../devices/device-service.js";
-import type { AccessRequestOutcome, AccessRequests } from "../../devices/access-requests.js";
+import type {
+  AccessAsker,
+  AccessRequestOrigin,
+  AccessRequestOutcome,
+  AccessRequests,
+} from "../../devices/access-requests.js";
 import {
   computerAppRequestShape,
   noComputerUseMac,
@@ -78,41 +83,54 @@ export class DeviceToolHandlers {
   }
 
   async app_access_request(call: ToolCall<"app_access_request">) {
+    const caller = call.caller;
     const { operationKey: _operationKey, ...input } = call.input;
-    const scope = requireRun(call.caller).claims;
-    const callId = operationId(call.caller, call.operationKey, "app_access_request");
-    return (await this.#replay(scope, callId)) ?? (await this.#request(scope, input, callId));
-  }
-
-  async #request(
-    scope: RunToolScope,
-    input: Omit<z.infer<typeof AppAccessRequestInputSchema>, "operationKey">,
-    callId: string,
-  ) {
-    const asker = {
+    const callId = operationId(caller, call.operationKey, "app_access_request");
+    if (input.dataApp === undefined && input.server === undefined) {
+      const { claims } = requireRun(caller);
+      return (
+        (await this.#replay({ originatingRunId: claims.runId }, callId)) ??
+        (input.app === undefined
+          ? this.#requestPhone(claims, input, callId)
+          : this.#requestComputerApp(claims, { ...input, app: input.app }, callId))
+      );
+    }
+    const scope =
+      caller.kind === "run"
+        ? caller.claims
+        : caller.kind === "program" && caller.program.kind === "trigger"
+          ? caller.program
+          : null;
+    if (!scope)
+      throw refused(
+        "forbidden",
+        "Only a running task or Trigger occurrence can ask for local access.",
+      );
+    const origin =
+      "runId" in scope
+        ? { originatingRunId: scope.runId }
+        : { originatingOccurrenceId: scope.occurrenceId };
+    const replay = await this.#replay(origin, callId);
+    if (replay) return replay;
+    const asker: AccessAsker = {
+      origin,
       callId,
       reason: input.reason,
       requestedBy: scope.requestedBy,
-      runId: scope.runId,
       threadId: scope.threadId,
     };
-    if (input.dataApp !== undefined)
-      return accessResult(
-        await this.#access.requestDataApp(asker, {
-          dataApp: input.dataApp,
-          computerId: input.computerId,
-          access: input.access,
-        }),
-      );
-    if (input.server !== undefined)
-      return accessResult(
-        await this.#access.requestLocalServer(asker, {
-          server: input.server,
-          access: input.access,
-        }),
-      );
-    if (input.app === undefined) return this.#requestPhone(scope, input, callId);
-    return this.#requestComputerApp(scope, { ...input, app: input.app }, callId);
+    const outcome =
+      input.dataApp !== undefined
+        ? await this.#access.requestDataApp(asker, {
+            dataApp: input.dataApp,
+            computerId: input.computerId,
+            access: input.access,
+          })
+        : await this.#access.requestLocalServer(asker, {
+            server: input.server!,
+            access: input.access,
+          });
+    return accessResult(outcome, caller.kind === "run");
   }
 
   /**
@@ -207,15 +225,15 @@ export class DeviceToolHandlers {
   }
 
   /** A retried ask answers with the Request it already opened. */
-  async #replay(scope: RunToolScope, callId: string) {
+  async #replay(origin: AccessRequestOrigin, callId: string) {
     const replay = await this.#devices.store.requests.findByCallIdentity({
-      originatingRunId: scope.runId,
+      ...origin,
       callId,
     });
     if (!replay) return null;
     if (replay.kind !== "integration.access" && replay.kind !== "computer.app.access")
       throw new Error("MCP call identity belongs to another Request kind");
-    return requestResult(replay, true);
+    return requestResult(replay, true, origin.originatingRunId !== undefined);
   }
 
   /**
@@ -318,8 +336,8 @@ function computerAccessResult(
     app: created.app,
   };
 }
-function accessResult(outcome: AccessRequestOutcome) {
-  if (outcome.kind === "request") return requestResult(outcome.request, outcome.replayed);
+function accessResult(outcome: AccessRequestOutcome, fromRun: boolean) {
+  if (outcome.kind === "request") return requestResult(outcome.request, outcome.replayed, fromRun);
   return {
     ...immediateRequestResult(
       "integration.access",
@@ -329,12 +347,22 @@ function accessResult(outcome: AccessRequestOutcome) {
     replayed: false,
   };
 }
-function requestResult(request: Pick<Request, "id" | "kind" | "status">, replayed: boolean) {
-  return domainRequestResult(request, requestGuidance(request, replayed), replayed);
+function requestResult(
+  request: Pick<Request, "id" | "kind" | "status">,
+  replayed: boolean,
+  fromRun = true,
+) {
+  return domainRequestResult(request, requestGuidance(request, replayed, fromRun), replayed);
 }
-function requestGuidance(request: Pick<Request, "kind" | "status">, replayed: boolean): string {
+function requestGuidance(
+  request: Pick<Request, "kind" | "status">,
+  replayed: boolean,
+  fromRun: boolean,
+): string {
   switch (request.status) {
     case "pending":
+      if (!fromRun)
+        return `${replayed ? "An equivalent Request is already pending. " : ""}The person can approve this Request from any Opensteer app. Nothing is granted until they answer. A later occurrence can check access.`;
       return `${replayed ? "An equivalent Request is already pending; its outcome goes to the task that opened it. " : ""}The person has been asked to approve from any Opensteer app. Nothing is granted until they answer; you will be told in the originating task when they answer.`;
     case "fulfilled":
       return request.kind === "computer.app.access"

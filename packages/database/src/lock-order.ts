@@ -243,8 +243,8 @@ export const databaseLockOrder = [
   "advisory:browser-session-use",
   "browser_session_uses",
   // Personal plugin policy changes follow their resource mutations.
-  "plugin_settings_revision_pending",
   "plugin_owner_settings",
+  "plugin_agent_settings",
   "plugin_oauth_records",
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",

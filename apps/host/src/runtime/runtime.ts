@@ -1192,9 +1192,11 @@ export async function createHostRuntime(
           throw new PluginServiceError("unavailable", "Local tools are starting");
         return localProviders.call(input, signal, elicit);
       },
-      onResourcesChanged: () => {
+      onResourcesChanged: (categories) => {
         void personalSettings(database)
-          .then(({ ownerId }) => realtime.sendToUsers([ownerId], { type: "host.plugins-changed" }))
+          .then(({ ownerId }) =>
+            realtime.sendToUsers([ownerId], { type: "host.plugins-changed", categories }),
+          )
           .catch(() => undefined);
       },
       onExecution: (execution) => pluginExecutions?.report(execution),
@@ -2712,7 +2714,8 @@ export async function createHostRuntime(
       publish: publishDeploymentEvent,
       notify: () => continuations.notify(),
       removed: (plugin) => pluginPages.forget(plugin),
-      changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
+      changed: (owner, change) =>
+        realtime.sendToUsers([owner], { type: "host.plugins-changed", ...change }),
       folder: async (caller, directory) => {
         requirePluginRun(caller);
         return withFolderPluginPackage({ directory, files, install: pluginSourceFiles });
@@ -2739,7 +2742,8 @@ export async function createHostRuntime(
       localTools: (owner) => providerNames.owned(owner),
       cancelPlugin: (owner, plugin) =>
         pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
-      changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
+      changed: (owner, change) =>
+        realtime.sendToUsers([owner], { type: "host.plugins-changed", ...change }),
     });
     pluginOAuth = new PluginOAuthService({
       plugins: pluginService,

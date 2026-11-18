@@ -225,6 +225,7 @@ export class LocalProviders {
     callables: Awaited<ReturnType<IntegrationPlatformStore["listCallableTools"]>>,
     requester: IntegrationRequester,
     readOnlyConnections: ReadonlyMap<string, boolean>,
+    canAsk: boolean,
   ): Promise<Located> {
     if (provider.unavailable) return provider;
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
@@ -280,7 +281,7 @@ export class LocalProviders {
           state = (await scoped(tool.readOnly === true ? "read" : "read-write"))
             .find((entry) => entry.installation.id === provider.installationId)
             ?.readiness.servers.find((state) => state.serverId === provider.serverId);
-        let blocked = localTargetBlocked(state, provider.name, requestTarget(provider)) ?? {
+        let blocked = localTargetBlocked(state, provider.name, requestTarget(provider), canAsk) ?? {
           code: "unavailable",
           message: `${provider.name} has no usable ${tool.name} operation.`,
           next: "Use plugin_search for current tools; continue other work.",
@@ -294,7 +295,7 @@ export class LocalProviders {
           blocked = {
             ...blocked,
             message: `${provider.name} allows reading only.`,
-            next: `To ${tool.name}, ${requestAccess(provider)}.`,
+            next: canAsk ? `To ${tool.name}, ${requestAccess(provider)}.` : blocked.next,
           };
         return [tool.name, blocked] as const;
       }),
@@ -321,6 +322,8 @@ export class LocalProviders {
 
   async #list(caller: AgentCaller | { readonly kind: "owner"; readonly userId: UserId }) {
     const store = this.#options.store;
+    const canAsk =
+      caller.kind === "run" || (caller.kind === "program" && caller.program.kind === "trigger");
     const requester: IntegrationRequester =
       caller.kind === "owner"
         ? { ownerUserId: caller.userId }
@@ -389,6 +392,7 @@ export class LocalProviders {
                       state,
                       `${entry.installation.title} on ${connection.runnerName}`,
                       { dataApp: dataAppName(definition), computerId: connection.deviceId },
+                      canAsk,
                     ),
                 unavailable: ready
                   ? undefined
@@ -440,9 +444,14 @@ export class LocalProviders {
               transport: "runner",
               requestName: serverName(entry.installation),
               blocked:
-                localTargetBlocked(state, entry.installation.title, {
-                  server: serverName(entry.installation),
-                }) ??
+                localTargetBlocked(
+                  state,
+                  entry.installation.title,
+                  {
+                    server: serverName(entry.installation),
+                  },
+                  canAsk,
+                ) ??
                 (!runnerId
                   ? {
                       code: "setup_required",
@@ -455,10 +464,8 @@ export class LocalProviders {
                   ? runnerId
                     ? undefined
                     : `${entry.installation.title} has no computer to run on. Register it again, choosing one.`
-                  : state.code === "ACCESS_GRANT_REQUIRED"
-                    ? `${entry.installation.title} needs the person's access: call app_access_request with server "${serverName(entry.installation)}" and access "read" or "read-write".`
-                    : (state.detail ??
-                      `${entry.installation.title} is waiting for the person to approve it on its computer. Do not retry until they do.`),
+                  : (state.detail ??
+                    `${entry.installation.title} is waiting for the person to approve it on its computer. Do not retry until they do.`),
               tools: listed,
             }),
           );
@@ -467,7 +474,14 @@ export class LocalProviders {
     }
     const assessed = await Promise.all(
       located.map((provider) =>
-        this.#withToolBlockers(provider, inventory, callables, requester, readOnlyConnections),
+        this.#withToolBlockers(
+          provider,
+          inventory,
+          callables,
+          requester,
+          readOnlyConnections,
+          canAsk,
+        ),
       ),
     );
     const providers = assessed

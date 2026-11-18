@@ -2,6 +2,7 @@ import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
+import { pluginChangeAffects } from "@opensteer/client/plugins";
 import { useHostRead } from "@opensteer/client/react";
 import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
@@ -51,7 +52,13 @@ export function DevicesSettingsController(): ReactNode {
     reloadOverview();
     reloadSessions();
   }, [reloadOverview, reloadSessions, revision]);
-  useEffect(() => host?.subscribePluginsChanged(reloadOverview), [host, reloadOverview]);
+  useEffect(
+    () =>
+      host?.subscribePluginsChanged((change) => {
+        if (pluginChangeAffects(change)) reloadOverview();
+      }),
+    [host, reloadOverview],
+  );
   const waiting = useHostValue(host, selectWaitingThreads, "");
   const iphoneAppsAvailable = useHostValue(host, (value) => value.iphoneAppsAvailable, false);
 
