@@ -37,6 +37,7 @@ export const scenarios = [
   "network-change",
   "open-subagent-parent",
   "open-subagent",
+  "idle",
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -293,6 +294,10 @@ export async function runMobileNetworkSample(options: {
             ...(position === undefined ? {} : { afterSequence: position }),
             ...(data.changes ? { eventCount: data.changes.length } : {}),
           });
+          if (direction === "down" && data.type === "host.snapshot") {
+            if (scope === "shell") mark("shellFirstFrame");
+            if (scope === "thread") mark("taskFirstFrame");
+          }
           if (data.type === "host.synchronized" && scope === "shell") synchronized++;
           lastActivity = performance.now();
         };
@@ -343,7 +348,7 @@ export async function runMobileNetworkSample(options: {
             Math.max(150, options.link.latencyDownMs + options.link.latencyUpMs + 25),
       );
     const results: ScenarioResult[] = [];
-    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- The foreground scenario measures a fixed background interval; readiness uses vi.waitFor.
+    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- Foreground and idle measure fixed intervals; readiness uses vi.waitFor.
     for (const scenario of scenarios) {
       const selected = options.scenarios.includes(scenario);
       // Warm scenarios all need the same real attach; run only the prerequisites they use.
@@ -441,6 +446,10 @@ export async function runMobileNetworkSample(options: {
           return Boolean(thread?.synchronized && thread.entries.length > 0);
         });
         mark("historyFirstPage");
+      } else if (scenario === "idle") {
+        // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- The benchmark measures five minutes of real idle traffic.
+        await delay(5 * 60_000, undefined, { signal: options.signal });
+        expect(client.getSnapshot().connection).toBe("connected");
       } else {
         if (scenario === "reconnect") {
           proxy.dropConnections();

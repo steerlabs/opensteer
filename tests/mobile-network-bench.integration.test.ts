@@ -16,7 +16,18 @@ const options = process.env.OPENSTEER_MOBILE_BENCH_OPTIONS
       .object({
         profile: z.enum(["all", "lan", "4g", "weak-cell", "edge", "cell-target"]),
         seed: z.enum(["all", "light", "heavy", "busy-subagents"]),
-        scenario: z.enum(["all", "busy-subagents", ...scenarios]),
+        scenario: z
+          .string()
+          .refine((selection) =>
+            selection
+              .split(",")
+              .every(
+                (scenario) =>
+                  scenario === "all" ||
+                  scenario === "busy-subagents" ||
+                  scenarios.some((name) => name === scenario),
+              ),
+          ),
         runs: z.coerce.number().int().positive(),
         out: z.string(),
         "stall-every": z.coerce.number().int().positive().optional(),
@@ -137,11 +148,14 @@ integration("phone network performance using the real shared client", () => {
                   ? options.scenario === "all"
                     ? scenarios.filter(
                         (scenario) =>
-                          seed === "busy-subagents" || !scenario.startsWith("open-subagent"),
+                          scenario !== "idle" &&
+                          (seed === "busy-subagents" || !scenario.startsWith("open-subagent")),
                       )
                     : options.scenario === "busy-subagents"
                       ? ["open-subagent-parent", "open-subagent"]
-                      : [options.scenario]
+                      : scenarios.filter((scenario) =>
+                          options.scenario.split(",").includes(scenario),
+                        )
                   : ["cold-attach", "open-task", "reconnect"],
                 link: {
                   ...linkProfiles[profile],
@@ -171,6 +185,14 @@ integration("phone network performance using the real shared client", () => {
                       (frame) => frame.type === "host.snapshot" && frame.scope === "thread",
                     ),
                   ).toBe(true);
+                }
+                if (sample.scenario === "idle") {
+                  expect(sample.requests).toEqual([]);
+                  expect(
+                    sample.websocket.filter(
+                      (frame) => !["client.ping", "host.pong"].includes(frame.type),
+                    ),
+                  ).toEqual([]);
                 }
                 if (sample.scenario === "reconnect") {
                   expect(BigInt(sample.resume.cursor ?? "0")).toBeGreaterThan(0n);
