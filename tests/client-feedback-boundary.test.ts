@@ -221,109 +221,201 @@ function nameOf(value: unknown): string {
   return String(value["name"] ?? value["value"] ?? "");
 }
 
+/** The property a member expression reads: `a.b`, `a?.b` and `a["b"]` all read `b`. */
+function memberName(node: unknown): string | null {
+  if (
+    !isNode(node) ||
+    (node.type !== "MemberExpression" && node.type !== "OptionalMemberExpression")
+  )
+    return null;
+  const property = node["property"];
+  if (!node["computed"]) return nameOf(property);
+  return isNode(property) && property.type === "StringLiteral" ? nameOf(property) : null;
+}
+
 const statements = (program: SyntaxNode) => program["body"] as readonly SyntaxNode[];
 const specifiers = (node: SyntaxNode) => (node["specifiers"] ?? []) as readonly SyntaxNode[];
 
+type ImportRule = "raw-presenter" | "transport-error" | "connection-notice";
+const originals = new Map<string, ImportRule>([
+  ...[...rawPresenters].map((name) => [name, "raw-presenter"] as const),
+  ...[...transportErrors].map((name) => [name, "transport-error"] as const),
+  ...[...connectionNotices].map((name) => [name, "connection-notice"] as const),
+]);
+
 /**
- * Names re-exported under another name are the same binding: a module that
- * re-exports a forbidden name forbids its alias too, wherever it is imported.
+ * Where a module's imports lead. A forbidden binding is the shared packages'
+ * own: imported from `@opensteer/*` or their source, or re-exported, under
+ * any name, by a UI module. A same-named export of an unrelated module is not.
  */
-function aliasesOf(files: readonly Parsed[], names: ReadonlySet<string>): Set<string> {
-  const all = new Set(names);
+interface ModuleGraph {
+  /** The forbidden bindings each UI module exports, by the names it exports them as. */
+  readonly exports: Map<string, Map<string, ImportRule>>;
+  readonly isUiModule: (file: string) => boolean;
+  /** The repository file a relative specifier names, or null when there is none. */
+  readonly resolve: (from: string, source: string) => string | null;
+}
+
+function importedRule(
+  graph: ModuleGraph,
+  from: string,
+  source: string,
+  name: string,
+): ImportRule | null {
+  if (source.startsWith("@opensteer/")) return originals.get(name) ?? null;
+  if (!source.startsWith(".")) return null;
+  const target = graph.resolve(from, source);
+  if (target === null) return null;
+  return graph.isUiModule(target)
+    ? (graph.exports.get(target)?.get(name) ?? null)
+    : (originals.get(name) ?? null);
+}
+
+/** Every forbidden binding a module's imports bring in, by local name. */
+function importedBindings(graph: ModuleGraph, parsed: Parsed): Map<string, ImportRule> {
+  const bound = new Map<string, ImportRule>();
+  for (const statement of statements(parsed.program)) {
+    if (statement.type !== "ImportDeclaration" || statement["importKind"] === "type") continue;
+    const source = nameOf(statement["source"]);
+    for (const specifier of specifiers(statement)) {
+      if (specifier.type !== "ImportSpecifier" || specifier["importKind"] === "type") continue;
+      const rule = importedRule(graph, parsed.file, source, nameOf(specifier["imported"]));
+      if (rule) bound.set(nameOf(specifier["local"]), rule);
+    }
+  }
+  return bound;
+}
+
+/** Follows re-exports through barrels, renamed or not, until nothing new is exported. */
+function exportsOf(
+  files: readonly Parsed[],
+  graph: Omit<ModuleGraph, "exports">,
+): Map<string, Map<string, ImportRule>> {
+  const exports = new Map(files.map(({ file }) => [file, new Map<string, ImportRule>()]));
+  const full: ModuleGraph = { ...graph, exports };
   for (let grew = true; grew;) {
     grew = false;
-    for (const { program } of files) {
-      for (const statement of statements(program)) {
-        if (statement.type !== "ExportNamedDeclaration" || statement["exportKind"] === "type")
-          continue;
-        for (const specifier of specifiers(statement)) {
-          if (specifier.type !== "ExportSpecifier") continue;
-          const exported = nameOf(specifier["exported"]);
-          if (all.has(nameOf(specifier["local"])) && !all.has(exported)) {
-            all.add(exported);
-            grew = true;
+    for (const parsed of files) {
+      const mine = exports.get(parsed.file)!;
+      const add = (name: string, rule: ImportRule | null | undefined) => {
+        if (!rule || mine.has(name)) return;
+        mine.set(name, rule);
+        grew = true;
+      };
+      const bound = importedBindings(full, parsed);
+      for (const statement of statements(parsed.program)) {
+        if (statement["exportKind"] === "type") continue;
+        const source = isNode(statement["source"]) ? nameOf(statement["source"]) : null;
+        if (statement.type === "ExportNamedDeclaration")
+          for (const specifier of specifiers(statement)) {
+            if (specifier.type !== "ExportSpecifier" || specifier["exportKind"] === "type")
+              continue;
+            const local = nameOf(specifier["local"]);
+            add(
+              nameOf(specifier["exported"]),
+              source === null ? bound.get(local) : importedRule(full, parsed.file, source, local),
+            );
           }
+        if (
+          statement.type === "ExportAllDeclaration" &&
+          source !== null &&
+          !statement["exported"]
+        ) {
+          const target = source.startsWith(".") ? graph.resolve(parsed.file, source) : null;
+          const all =
+            target !== null && graph.isUiModule(target)
+              ? (exports.get(target) ?? new Map<string, ImportRule>())
+              : source.startsWith("@opensteer/") || target !== null
+                ? originals
+                : new Map<string, ImportRule>();
+          for (const [name, rule] of all) add(name, rule);
         }
       }
     }
   }
-  return all;
+  return exports;
 }
 
-/** What one module does that the rules forbid, given the forbidden name sets. */
-function violationsIn(
-  parsed: Parsed,
-  rules: {
-    readonly rawPresenters: ReadonlySet<string>;
-    readonly transportErrors: ReadonlySet<string>;
-    readonly connectionNotices: ReadonlySet<string> | null;
-  },
-): Violation[] {
+/** The names of errors an `x instanceof Error` test proves, anywhere inside it. */
+function testedErrors(test: unknown): Set<string> {
+  const tested = new Set<string>();
+  if (!isNode(test)) return tested;
+  walk(test, (inner) => {
+    if (
+      inner.type === "BinaryExpression" &&
+      inner["operator"] === "instanceof" &&
+      isNode(inner["left"]) &&
+      inner["left"].type === "Identifier" &&
+      nameOf(inner["right"]) === "Error"
+    )
+      tested.add(nameOf(inner["left"]));
+  });
+  return tested;
+}
+
+/** Whether a statement always leaves the block it is in. */
+function exits(statement: unknown): boolean {
+  if (!isNode(statement)) return false;
+  if (
+    ["ReturnStatement", "ThrowStatement", "ContinueStatement", "BreakStatement"].includes(
+      statement.type,
+    )
+  )
+    return true;
+  const body = statement.type === "BlockStatement" ? (statement["body"] as unknown[]) : [];
+  return body.length > 0 && exits(body.at(-1));
+}
+
+/** What one module does that the rules forbid. */
+function violationsIn(parsed: Parsed, graph: ModuleGraph, allowNotices = false): Violation[] {
   const { file, program } = parsed;
   const found: Violation[] = [];
-  const ruleFor = (name: string): Violation["rule"] | null =>
-    rules.rawPresenters.has(name)
-      ? "raw-presenter"
-      : rules.transportErrors.has(name)
-        ? "transport-error"
-        : rules.connectionNotices?.has(name)
-          ? "connection-notice"
-          : null;
-  const flag = (node: SyntaxNode, name: string) => {
-    const rule = ruleFor(name);
-    if (rule) found.push({ file, line: node.loc?.start.line ?? 0, rule, name });
+  const flag = (node: SyntaxNode, name: string, rule: ImportRule | null) => {
+    if (rule && !(allowNotices && rule === "connection-notice"))
+      found.push({ file, line: node.loc?.start.line ?? 0, rule, name });
   };
   // Namespace imports are read through their members: `feedback.presentActionFailure`.
-  const namespaces = new Set<string>();
+  const namespaces = new Map<string, string>();
   // Results branched on `.ok`: an RPC or bridge result, whose failed `.error.message` is raw.
   const results = new Set<string>();
   walk(program, (node) => {
-    if (
-      (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") &&
-      !node["computed"] &&
-      nameOf(node["property"]) === "ok" &&
-      isNode(node["object"]) &&
-      node["object"].type === "Identifier"
-    )
+    if (memberName(node) === "ok" && isNode(node["object"]) && node["object"].type === "Identifier")
       results.add(nameOf(node["object"]));
   });
   for (const statement of statements(program)) {
+    const source = isNode(statement["source"]) ? nameOf(statement["source"]) : "";
     if (statement.type === "ImportDeclaration" && statement["importKind"] !== "type") {
       for (const specifier of specifiers(statement)) {
         if (specifier.type === "ImportNamespaceSpecifier")
-          namespaces.add(nameOf(specifier["local"]));
+          namespaces.set(nameOf(specifier["local"]), source);
         // The exported name decides, however it is renamed locally.
-        if (specifier.type === "ImportSpecifier" && specifier["importKind"] !== "type")
-          flag(specifier, nameOf(specifier["imported"]));
+        if (specifier.type === "ImportSpecifier" && specifier["importKind"] !== "type") {
+          const imported = nameOf(specifier["imported"]);
+          flag(specifier, imported, importedRule(graph, file, source, imported));
+        }
       }
     }
     if (
       statement.type === "ExportNamedDeclaration" &&
-      statement["source"] &&
+      source !== "" &&
       statement["exportKind"] !== "type"
     ) {
       for (const specifier of specifiers(statement)) {
-        if (specifier.type === "ExportSpecifier" && specifier["exportKind"] !== "type")
-          flag(specifier, nameOf(specifier["local"]));
+        if (specifier.type !== "ExportSpecifier" || specifier["exportKind"] === "type") continue;
+        const local = nameOf(specifier["local"]);
+        flag(specifier, local, importedRule(graph, file, source, local));
       }
     }
   }
   walk(program, (node) => {
-    if (node.type !== "MemberExpression" && node.type !== "OptionalMemberExpression") return;
-    if (node["computed"]) return;
+    const property = memberName(node);
+    if (property === null) return;
     const object = node["object"];
-    const property = nameOf(node["property"]);
     if (isNode(object) && object.type === "Identifier" && namespaces.has(nameOf(object)))
-      flag(node, property);
+      flag(node, property, importedRule(graph, file, namespaces.get(nameOf(object))!, property));
     // A failed result read for its message: `if (!result.ok) … result.error.message`.
-    if (
-      property === "message" &&
-      isNode(object) &&
-      (object.type === "MemberExpression" || object.type === "OptionalMemberExpression") &&
-      !object["computed"] &&
-      nameOf(object["property"]) === "error"
-    ) {
-      const receiver = object["object"];
+    if (property === "message" && memberName(object) === "error") {
+      const receiver = (object as SyntaxNode)["object"];
       if (isNode(receiver) && receiver.type === "Identifier" && results.has(nameOf(receiver)))
         found.push({
           file,
@@ -333,6 +425,19 @@ function violationsIn(
         });
     }
   });
+  /** `x.message`, `x?.message` or `x["message"]` of an error the guard proved. */
+  const shown = (value: unknown, tested: ReadonlySet<string>): value is SyntaxNode =>
+    memberName(value) === "message" &&
+    isNode((value as SyntaxNode)["object"]) &&
+    ((value as SyntaxNode)["object"] as SyntaxNode).type === "Identifier" &&
+    tested.has(nameOf((value as SyntaxNode)["object"]));
+  const flagShown = (value: SyntaxNode) =>
+    found.push({
+      file,
+      line: value.loc?.start.line ?? 0,
+      rule: "message-fallback",
+      name: `${nameOf(value["object"])}.message`,
+    });
   // An exception's own text shown with a fallback for anything else:
   // `error instanceof Error ? error.message : "It didn't work."`.
   walk(program, (node) => {
@@ -344,37 +449,33 @@ function violationsIn(
         alternate.type === "TemplateLiteral" ||
         (alternate.type === "CallExpression" && nameOf(alternate["callee"]) === "String"));
     if (!fallback) return;
-    const tested = new Set<string>();
-    walk(node["test"] as SyntaxNode, (inner) => {
-      if (
-        inner.type === "BinaryExpression" &&
-        inner["operator"] === "instanceof" &&
-        isNode(inner["left"]) &&
-        inner["left"].type === "Identifier" &&
-        nameOf(inner["right"]) === "Error"
-      )
-        tested.add(nameOf(inner["left"]));
-    });
+    const tested = testedErrors(node["test"]);
     if (tested.size === 0) return;
     walk(node["consequent"] as SyntaxNode, (inner) => {
-      const object = inner["object"];
-      if (
-        (inner.type === "MemberExpression" || inner.type === "OptionalMemberExpression") &&
-        nameOf(inner["property"]) === "message" &&
-        isNode(object) &&
-        object.type === "Identifier" &&
-        tested.has(nameOf(object))
-      )
-        found.push({
-          file,
-          line: inner.loc?.start.line ?? 0,
-          rule: "message-fallback",
-          name: `${nameOf(object)}.message`,
-        });
+      if (shown(inner, tested)) flagShown(inner);
     });
   });
+  /** What a guarded body hands the screen: a React state setter's argument, or JSX. */
+  const scanShown = (body: SyntaxNode, tested: ReadonlySet<string>) =>
+    walk(body, (inner) => {
+      if (inner.type === "CallExpression") {
+        const callee = inner["callee"];
+        const name = isNode(callee)
+          ? callee.type === "Identifier"
+            ? nameOf(callee)
+            : (memberName(callee) ?? "")
+          : "";
+        // A React state setter: what it holds is drawn.
+        if (/^set[A-Z]/u.test(name))
+          for (const argument of (inner["arguments"] ?? []) as unknown[])
+            if (shown(argument, tested)) flagShown(argument);
+      }
+      if (inner.type === "JSXExpressionContainer" && shown(inner["expression"], tested))
+        flagShown(inner["expression"] as SyntaxNode);
+    });
   // An exception's own text handed to the screen under a guard:
-  // `if (error instanceof Error) setError(error.message)` or `{e instanceof Error && <T>{e.message}</T>}`.
+  // `if (error instanceof Error) setError(error.message)`, `{e instanceof Error && <T>{e.message}</T>}`,
+  // or after one that leaves otherwise: `if (!(error instanceof Error)) return; setError(error.message)`.
   walk(program, (node) => {
     const guarded =
       node.type === "IfStatement"
@@ -382,48 +483,29 @@ function violationsIn(
         : node.type === "LogicalExpression" && node["operator"] === "&&"
           ? { test: node["left"], body: node["right"] }
           : null;
-    if (guarded === null || !isNode(guarded.test) || !isNode(guarded.body)) return;
-    const tested = new Set<string>();
-    walk(guarded.test, (inner) => {
+    if (guarded !== null && isNode(guarded.body)) {
+      const tested = testedErrors(guarded.test);
+      if (tested.size > 0) scanShown(guarded.body, tested);
+    }
+    const block =
+      node.type === "BlockStatement" || node.type === "Program"
+        ? (node["body"] as readonly SyntaxNode[])
+        : node.type === "SwitchCase"
+          ? (node["consequent"] as readonly SyntaxNode[])
+          : null;
+    block?.forEach((statement, index) => {
+      const test = statement["test"];
       if (
-        inner.type === "BinaryExpression" &&
-        inner["operator"] === "instanceof" &&
-        isNode(inner["left"]) &&
-        inner["left"].type === "Identifier" &&
-        nameOf(inner["right"]) === "Error"
+        statement.type !== "IfStatement" ||
+        statement["alternate"] ||
+        !isNode(test) ||
+        test.type !== "UnaryExpression" ||
+        test["operator"] !== "!" ||
+        !exits(statement["consequent"])
       )
-        tested.add(nameOf(inner["left"]));
-    });
-    if (tested.size === 0) return;
-    const shown = (value: unknown): value is SyntaxNode =>
-      isNode(value) &&
-      (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") &&
-      nameOf(value["property"]) === "message" &&
-      isNode(value["object"]) &&
-      value["object"].type === "Identifier" &&
-      tested.has(nameOf(value["object"]));
-    const flagShown = (value: SyntaxNode) =>
-      found.push({
-        file,
-        line: value.loc?.start.line ?? 0,
-        rule: "message-fallback",
-        name: `${nameOf(value["object"])}.message`,
-      });
-    walk(guarded.body, (inner) => {
-      if (inner.type === "CallExpression") {
-        const callee = inner["callee"];
-        const name = isNode(callee)
-          ? callee.type === "Identifier"
-            ? nameOf(callee)
-            : nameOf(callee["property"])
-          : "";
-        // A React state setter: what it holds is drawn.
-        if (/^set[A-Z]/u.test(name))
-          for (const argument of (inner["arguments"] ?? []) as unknown[])
-            if (shown(argument)) flagShown(argument);
-      }
-      if (inner.type === "JSXExpressionContainer" && shown(inner["expression"]))
-        flagShown(inner["expression"] as SyntaxNode);
+        return;
+      const tested = testedErrors(test["argument"]);
+      if (tested.size > 0) for (const after of block.slice(index + 1)) scanShown(after, tested);
     });
   });
   return found;
@@ -435,33 +517,82 @@ function mentions(text: string, names: Iterable<string>): boolean {
   return false;
 }
 
-function boundaryViolations(): Violation[] {
-  const texts = uiModules().map((file) => ({
-    file,
-    text: readFileSync(path.join(repositoryRoot, file), "utf8"),
-  }));
-  const forbidden = [...rawPresenters, ...transportErrors, ...connectionNotices];
-  // A module that renames a forbidden name names it too, so aliases are found among these;
-  // a namespace import's member access names it as well.
-  const exporting = texts
-    .filter(({ text }) => text.includes("export") && mentions(text, forbidden))
-    .map(({ file, text }) => parse(file, text));
-  const presenters = aliasesOf(exporting, rawPresenters);
-  const errors = aliasesOf(exporting, transportErrors);
-  const notices = aliasesOf(exporting, connectionNotices);
-  const patterns = [...presenters, ...errors, ...notices, "instanceof Error", ".error.message"];
+/** A module the raw-text rules could find something in: an exception or result read for words. */
+const mayReadMessage = (text: string) =>
+  text.includes("message") && /instanceof|\bok\b/u.test(text);
+
+/**
+ * The violations among these UI modules. Parsing is the costly part, so only
+ * modules that could re-export a forbidden name, or break a rule, are parsed;
+ * each new alias widens the search until none is found.
+ */
+function scan(
+  texts: readonly { readonly file: string; readonly text: string }[],
+  exists: (file: string) => boolean,
+): Violation[] {
+  const uiFiles = new Set(texts.map(({ file }) => file));
+  const resolve = (from: string, source: string): string | null => {
+    const base = path.posix.join(path.posix.dirname(from), source);
+    const stem = base.replace(/\.(?:js|jsx|ts|tsx)$/u, "");
+    for (const candidate of [
+      base,
+      `${stem}.ts`,
+      `${stem}.tsx`,
+      `${stem}/index.ts`,
+      `${stem}/index.tsx`,
+    ])
+      if (uiFiles.has(candidate) || exists(candidate)) return candidate;
+    return null;
+  };
+  const isUiModule = (file: string) => uiFiles.has(file);
+  const parsed = new Map<string, Parsed>();
+  const parsedText = (file: string, text: string) => {
+    let value = parsed.get(file);
+    if (!value) parsed.set(file, (value = parse(file, text)));
+    return value;
+  };
+  let names = new Set(originals.keys());
+  let exports = new Map<string, Map<string, ImportRule>>();
+  for (let size = -1; size !== names.size;) {
+    size = names.size;
+    const exporting = texts
+      .filter(
+        ({ text }) =>
+          /export\s*\*/u.test(text) || (text.includes("export") && mentions(text, names)),
+      )
+      .map(({ file, text }) => parsedText(file, text));
+    exports = exportsOf(exporting, { isUiModule, resolve });
+    names = new Set([...names, ...[...exports.values()].flatMap((map) => [...map.keys()])]);
+  }
+  const graph: ModuleGraph = { exports, isUiModule, resolve };
   const under = (file: string, list: typeof boundaryModules) =>
     list.some((entry) => file === entry.prefix || file.startsWith(entry.prefix));
   return texts
-    .filter(({ file, text }) => !under(file, boundaryModules) && mentions(text, patterns))
-    .map(({ file, text }) => parse(file, text))
-    .flatMap((parsed) =>
-      violationsIn(parsed, {
-        rawPresenters: presenters,
-        transportErrors: errors,
-        connectionNotices: under(parsed.file, shellAdapters) ? null : notices,
-      }),
+    .filter(
+      ({ file, text }) =>
+        !under(file, boundaryModules) && (mentions(text, names) || mayReadMessage(text)),
+    )
+    .flatMap(({ file, text }) =>
+      violationsIn(parsedText(file, text), graph, under(file, shellAdapters)),
     );
+}
+
+function boundaryViolations(): Violation[] {
+  return scan(
+    uiModules().map((file) => ({
+      file,
+      text: readFileSync(path.join(repositoryRoot, file), "utf8"),
+    })),
+    (file) => existsSync(path.join(repositoryRoot, file)),
+  );
+}
+
+/** Checks in-memory modules as the repository scan would; `screen.tsx` unless named. */
+function check(modules: Readonly<Record<string, string>>, others: readonly string[] = []) {
+  return scan(
+    Object.entries(modules).map(([file, text]) => ({ file, text })),
+    (file) => others.includes(file),
+  ).map(({ file, rule, name }) => `${file === "screen.tsx" ? "" : `${file} `}${rule} ${name}`);
 }
 
 describe("client feedback boundary", () => {
@@ -473,21 +604,19 @@ describe("client feedback boundary", () => {
   });
 
   it("finds forbidden names however they are imported", () => {
-    const rules = { rawPresenters, transportErrors, connectionNotices };
-    const check = (text: string, file = "screen.tsx") =>
-      violationsIn(parse(file, text), rules).map(({ rule, name }) => `${rule} ${name}`);
-
     expect(
-      check(
-        [
+      check({
+        "screen.tsx": [
           'import { presentActionFailure } from "@opensteer/client/feedback";',
           'import { presentActionFailure as say } from "@opensteer/client/feedback";',
           'import { HostClientRequestError as Refusal } from "@opensteer/client/host";',
           'import { connectionNotice } from "@opensteer/client/connections";',
           'import * as feedback from "@opensteer/client/feedback";',
           "feedback.presentActionFailure(error);",
+          'feedback["clientPublicDetail"](error);',
           'export { safeMessage as words } from "@opensteer/shared/safeMessage";',
           "if (!result.ok) setError(result.error.message);",
+          'if (!reply.ok) setError(reply.error?.["message"]);',
           'setError(failure instanceof Error ? failure.message : "Couldn\'t rename it.");',
           "const words = reason instanceof Error && reason.message ? reason.message : `No.`;",
           'import { presentConnectionGate } from "@opensteer/client/feedback";',
@@ -495,8 +624,12 @@ describe("client feedback boundary", () => {
           'import { failureNotice as notice, operationFailure } from "@opensteer/client/host";',
           "try { load(); } catch (error) { if (error instanceof Error) setError(error.message); }",
           "const view = <p>{thrown instanceof Error && <b>{thrown.message}</b>}</p>;",
+          "function show(cause: unknown) {",
+          "  if (!(cause instanceof Error)) return;",
+          "  setStatus(cause.message);",
+          "}",
         ].join("\n"),
-      ),
+      }),
     ).toEqual([
       "raw-presenter presentActionFailure",
       "raw-presenter presentActionFailure",
@@ -508,66 +641,91 @@ describe("client feedback boundary", () => {
       "raw-presenter failureNotice",
       "raw-presenter operationFailure",
       "raw-presenter presentActionFailure",
+      "raw-presenter clientPublicDetail",
       "message-unwrap result.error.message",
+      "message-unwrap reply.error.message",
       "message-fallback failure.message",
       "message-fallback reason.message",
       "message-fallback error.message",
       "message-fallback thrown.message",
+      "message-fallback cause.message",
     ]);
   });
 
   it("lets presenters, types and unrelated messages through", () => {
-    const rules = { rawPresenters, transportErrors, connectionNotices };
-    const check = (text: string) =>
-      violationsIn(parse("screen.tsx", text), rules).map(({ rule, name }) => `${rule} ${name}`);
-
     expect(
       check(
-        [
-          'import { presentClientIssue, clientIssue } from "@opensteer/client/feedback";',
-          'import type { HostClientRequestError } from "@opensteer/client/host";',
-          'import { type ClientOperationError, useClientConnection } from "@opensteer/client/react";',
-          'import { presentActionFailureCopy } from "./elsewhere.js";',
-          "const text = message.message;",
-          "const words = error.reason;",
-          "const failed = run.error.message;",
-          // A reason code parsed out of a message is not text shown to anyone.
-          'const code = error instanceof Error ? error.message : "";',
-          "const detail = dev && error instanceof Error ? error.message : null;",
-          'const said = other instanceof Error ? error.message : "Couldn\'t.";',
-          // Logged or rethrown under a guard, an exception's text is not drawn.
-          "if (error instanceof Error) console.warn(error.message);",
-          "if (error instanceof Error) throw new Error(error.message);",
-          "if (error instanceof Error) setError(other.message);",
-          "// import { presentActionFailure } from '@opensteer/client/feedback';",
-        ].join("\n"),
+        {
+          "screen.tsx": [
+            'import { presentClientIssue, clientIssue } from "@opensteer/client/feedback";',
+            'import type { HostClientRequestError } from "@opensteer/client/host";',
+            'import { type ClientOperationError, useClientConnection } from "@opensteer/client/react";',
+            'import { presentActionFailureCopy } from "./elsewhere.js";',
+            // A screen's own helper that happens to share a forbidden name.
+            'import { safeMessage } from "./words.js";',
+            'import { safeMessage as quiet } from "some-library";',
+            "const text = message.message;",
+            "const words = error.reason;",
+            "const failed = run.error.message;",
+            // A reason code parsed out of a message is not text shown to anyone.
+            'const code = error instanceof Error ? error.message : "";',
+            "const detail = dev && error instanceof Error ? error.message : null;",
+            'const said = other instanceof Error ? error.message : "Couldn\'t.";',
+            // Logged or rethrown under a guard, an exception's text is not drawn.
+            "if (error instanceof Error) console.warn(error.message);",
+            "if (error instanceof Error) throw new Error(error.message);",
+            "if (error instanceof Error) setError(other.message);",
+            // A guard that doesn't leave proves nothing about what follows it.
+            "if (!(error instanceof Error)) log(error);",
+            "setError(error.message);",
+            "// import { presentActionFailure } from '@opensteer/client/feedback';",
+          ].join("\n"),
+          "words.ts": "export function safeMessage(value: string) { return value.trim(); }",
+        },
+        ["elsewhere.ts"],
       ),
     ).toEqual([]);
   });
 
-  it("follows a forbidden name through a module that renames it", () => {
-    const files = [
-      parse(
-        "ui-utils.ts",
-        'export { presentActionFailure as actionErrorMessage } from "@opensteer/client/feedback";',
-      ),
-      parse("screen.tsx", 'import { actionErrorMessage as say } from "./ui-utils.js";'),
-    ];
-    const aliases = aliasesOf(files, rawPresenters);
+  it("follows a forbidden name through every module that renames it, and only those", () => {
     expect(
-      violationsIn(files[1]!, {
-        rawPresenters: aliases,
-        transportErrors,
-        connectionNotices,
-      }).map(({ rule, name }) => `${rule} ${name}`),
-    ).toEqual(["raw-presenter actionErrorMessage"]);
-    // Where a name is allowed, the allowance holds only for the notice rule it was given for.
-    expect(
-      violationsIn(parse("shell.tsx", 'import { connectionNotice } from "x";'), {
-        rawPresenters,
-        transportErrors,
-        connectionNotices: null,
+      check({
+        "ui-utils.ts":
+          'export { presentActionFailure as actionErrorMessage } from "@opensteer/client/feedback";',
+        // A second barrel names only the first one's alias.
+        "barrel.ts": 'export { actionErrorMessage as words } from "./ui-utils.js";',
+        "stars.ts": 'export * from "./barrel.js";',
+        "local.ts": [
+          'import { actionErrorMessage } from "./ui-utils.js";',
+          "export { actionErrorMessage as again };",
+        ].join("\n"),
+        "unrelated.ts": "export const words = 1;",
+        "screen.tsx": [
+          'import { actionErrorMessage as say } from "./ui-utils.js";',
+          'import { words } from "./barrel.js";',
+          'import { words as starred } from "./stars.js";',
+          'import { again } from "./local.js";',
+          'import { words as count } from "./unrelated.js";',
+        ].join("\n"),
       }),
-    ).toEqual([]);
+    ).toEqual([
+      "ui-utils.ts raw-presenter presentActionFailure",
+      "barrel.ts raw-presenter actionErrorMessage",
+      "local.ts raw-presenter actionErrorMessage",
+      "raw-presenter actionErrorMessage",
+      "raw-presenter words",
+      "raw-presenter words",
+      "raw-presenter again",
+    ]);
+    // Where a name is allowed, the allowance holds only for the notice rule it was given for.
+    const shell = "apps/web/src/components/connection-shell.tsx";
+    expect(
+      check({
+        [shell]: [
+          'import { connectionNotice } from "@opensteer/client/connections";',
+          'import { safeMessage } from "@opensteer/shared/safeMessage";',
+        ].join("\n"),
+      }),
+    ).toEqual([`${shell} raw-presenter safeMessage`]);
   });
 });
