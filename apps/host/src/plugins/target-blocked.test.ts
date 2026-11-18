@@ -44,6 +44,10 @@ it.each([{ dataApp: "Calendar", computerId: "dev_mac" }, { server: "Issues" }])(
     expect(blocked.next).toBe(
       `Call app_access_request ${JSON.stringify({ ...target, access: "read-write", reason: "<why you need it>" })}.`,
     );
+    expect(localTargetBlocked(readiness, "Local", target, false)).toMatchObject({
+      code: "access_required",
+      next: expect.stringMatching(/^Ask the owner .*Opensteer/),
+    });
     const readOnly = localTargetBlocked(
       { ...readiness, code: "READ_ONLY_TASK", requiredAccess: null },
       "Local",

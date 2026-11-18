@@ -15,6 +15,7 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import type {
   IntegrationPlatformStore,
   PreparedIntegrationInstallFulfillment,
+  RequestOriginInput,
 } from "@opensteer/database";
 import {
   OpensteerError,
@@ -24,7 +25,6 @@ import {
   type Request,
   type RequestId,
   type RequestResponse,
-  type RunId,
   type DeviceId,
   type ThreadId,
   type UserId,
@@ -33,12 +33,17 @@ import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { DeviceService } from "./device-service.js";
 
-/** Who asks: always a Run, whose Request its continuation answers. */
+export type AccessRequestOrigin = Exclude<
+  RequestOriginInput,
+  { originatingWatchActivationId: string }
+>;
+
+/** A Run or Trigger occurrence can ask for durable access. */
 export interface AccessAsker {
+  readonly origin: AccessRequestOrigin;
   readonly callId: string;
   readonly reason: string;
   readonly requestedBy: UserId;
-  readonly runId: RunId;
   readonly threadId: ThreadId;
 }
 
@@ -337,7 +342,7 @@ export class AccessRequests {
       callId: asker.callId,
       installationId: target.installationId,
       manifest: target.manifest,
-      originatingRunId: asker.runId,
+      ...asker.origin,
       originatingThreadId: asker.threadId,
       reason: asker.reason,
       requestedBy: asker.requestedBy,

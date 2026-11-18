@@ -130,15 +130,8 @@ export function createHostApiHandlers(
   return {
     ...pluginOAuthHandlers(pluginOAuth),
     "plugins.overview.get": async (_input, context) => {
-      const machines = await coreHandlers["machines.list"]({}, context);
-      if (!machines.ok) return machines;
       const overview = await devices.devices.store.settings.overview(
         requireSession(context).user.id,
-        new Set(
-          machines.data.machines
-            .filter((machine) => machine.status === "online")
-            .map((machine) => machine.id),
-        ),
       );
       return rpcSuccess(overview);
     },

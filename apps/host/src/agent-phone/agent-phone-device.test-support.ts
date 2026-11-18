@@ -26,6 +26,7 @@ import {
 } from "@opensteer/agent-phone-setup";
 import { HttpHostClient } from "@opensteer/client/host";
 import { DeploymentIdSchema, type RunnerId } from "@opensteer/core";
+import { computer_apps } from "@opensteer/agent-tools/tools";
 import {
   AgentPhoneArtifactManifestSchema,
   AgentPhoneHostTargetSchema,
@@ -1961,15 +1962,7 @@ export function resultImages(
   );
 }
 
-const PhoneRowSchema = z.object({
-  access: z.enum(["read", "read-write"]).optional(),
-  approval: z.string(),
-  inUse: z.boolean().optional(),
-  name: z.string(),
-  computerId: z.string(),
-  state: z.string(),
-  callable: z.boolean(),
-});
+const PhoneRowSchema = computer_apps.output.shape.phones.unwrap().element;
 export type PhoneRow = z.infer<typeof PhoneRowSchema>;
 export interface PhoneCommands {
   readonly observe: string;

@@ -1221,129 +1221,106 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       this.authoritySnapshot(input.ownerUserId),
       this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);
-    const policySettings = await this.database
-      .selectFrom("pluginOwnerSettings")
-      .selectAll()
-      .where("ownerUserId", "=", input.ownerUserId)
-      .execute();
-    const deniedSettings = policySettings.filter((s) => !s.enabled);
-    const deniedDefinitions = new Set(
-      deniedSettings.flatMap((s) =>
-        s.target.kind === "device-app" ? [s.target.definitionId] : [],
-      ),
-    );
-    const deniedPlugins = new Set(
-      deniedSettings.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
-    );
     const activeGrants = grants.filter(({ status }) => status === "active");
-    let connections = authority.connections;
-    connections = connections.filter(
-      (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
-    );
+    const { connections } = authority;
     const requesterAccess = await resolveResourceAccess(this.database, input);
     return Promise.all(
-      installations
-        .filter(
-          (row) =>
-            (!row.pluginId || !deniedPlugins.has(row.pluginId)) &&
-            !deniedDefinitions.has(installationDefinitionId(row)),
-        )
-        .map(async (row) => {
-          const installation = installationFromRow(row);
-          const [servers, tools] = await Promise.all([
-            this.listServers(row.id),
-            this.listTools(row.id, input.ownerUserId),
-          ]);
-          const serverById = new Map(servers.map((server) => [server.id, server]));
-          const installationConnections = connections.filter((connection) =>
-            servers.some((server) => {
-              const requirement = server.connectionRequirement;
-              return (
-                requirement.kind === "computer" &&
-                connection.connectionKind === "computer" &&
-                connection.definitionId === requirement.definitionId &&
-                connection.integrationServerId === server.id
-              );
-            }),
-          );
-          const hasInstallationAccess = (
-            connectionId: IntegrationConnectionId | null,
-            requiredAccess: IntegrationAccess,
-          ) => {
-            if (!integrationAccessCovers(requesterAccess.runAccess, requiredAccess)) return false;
-            const connection =
-              connectionId === null
-                ? null
-                : (installationConnections.find(({ id }) => id === connectionId) ?? null);
-            return activeGrants.some((grant) => {
-              const access = effectiveIntegrationAccess(grant.access, connection);
-              return (
-                grant.installationId === installation.id &&
-                grant.connectionId === connectionId &&
-                access !== null &&
-                integrationAccessCovers(access, requiredAccess)
-              );
-            });
-          };
-          const readinessFor = (
-            server: IntegrationServer,
-            tool: IntegrationTool | null,
-          ): IntegrationReadiness =>
-            resolveIntegrationReadiness({
-              connectionRequirement: server.connectionRequirement,
-              connections,
-              hasAccess: hasInstallationAccess,
-              runAccess: requesterAccess.runAccess,
-              installationStatus: installation.status,
-              requiredAccess:
-                input.target?.access ??
-                (tool === null || integrationToolEffect(tool.annotations) === "read"
-                  ? "read"
-                  : "read-write"),
-              requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
-              serverId: server.id,
-              serverStatus: server.status,
-              statusDetail: server.statusDetail,
-            });
-          return {
-            accounts: installationConnections.map((connection) => {
-              const grant = activeGrants.find(
-                (candidate) =>
-                  candidate.installationId === installation.id &&
-                  candidate.connectionId === connection.id,
-              );
-              return {
-                access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
-                account: integrationAccountLabel(connection),
-                connectionId: connection.id,
-                isDefault: grant?.isDefault ?? false,
-              };
-            }),
-            installation,
-            readiness: {
-              servers: servers.map((server) =>
-                resolveIntegrationReadiness({
-                  connectionRequirement: server.connectionRequirement,
-                  connections,
-                  hasAccess: hasInstallationAccess,
-                  runAccess: requesterAccess.runAccess,
-                  installationStatus: installation.status,
-                  requiredAccess: input.target?.access ?? "read",
-                  requiredConnectionId: input.target?.connectionId ?? null,
-                  serverId: server.id,
-                  serverStatus: server.status,
-                  statusDetail: server.statusDetail,
-                }),
-              ),
-              tools: tools.flatMap((tool) => {
-                const server = serverById.get(tool.serverId);
-                return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
+      installations.map(async (row) => {
+        const installation = installationFromRow(row);
+        const [servers, tools] = await Promise.all([
+          this.listServers(row.id),
+          this.listTools(row.id, input.ownerUserId),
+        ]);
+        const serverById = new Map(servers.map((server) => [server.id, server]));
+        const installationConnections = connections.filter((connection) =>
+          servers.some((server) => {
+            const requirement = server.connectionRequirement;
+            return (
+              requirement.kind === "computer" &&
+              connection.connectionKind === "computer" &&
+              connection.definitionId === requirement.definitionId &&
+              connection.integrationServerId === server.id
+            );
+          }),
+        );
+        const hasInstallationAccess = (
+          connectionId: IntegrationConnectionId | null,
+          requiredAccess: IntegrationAccess,
+        ) => {
+          if (!integrationAccessCovers(requesterAccess.runAccess, requiredAccess)) return false;
+          const connection =
+            connectionId === null
+              ? null
+              : (installationConnections.find(({ id }) => id === connectionId) ?? null);
+          return activeGrants.some((grant) => {
+            const access = effectiveIntegrationAccess(grant.access, connection);
+            return (
+              grant.installationId === installation.id &&
+              grant.connectionId === connectionId &&
+              access !== null &&
+              integrationAccessCovers(access, requiredAccess)
+            );
+          });
+        };
+        const readinessFor = (
+          server: IntegrationServer,
+          tool: IntegrationTool | null,
+        ): IntegrationReadiness =>
+          resolveIntegrationReadiness({
+            connectionRequirement: server.connectionRequirement,
+            connections,
+            hasAccess: hasInstallationAccess,
+            runAccess: requesterAccess.runAccess,
+            installationStatus: installation.status,
+            requiredAccess:
+              input.target?.access ??
+              (tool === null || integrationToolEffect(tool.annotations) === "read"
+                ? "read"
+                : "read-write"),
+            requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
+            serverId: server.id,
+            serverStatus: server.status,
+            statusDetail: server.statusDetail,
+          });
+        return {
+          accounts: installationConnections.map((connection) => {
+            const grant = activeGrants.find(
+              (candidate) =>
+                candidate.installationId === installation.id &&
+                candidate.connectionId === connection.id,
+            );
+            return {
+              access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
+              account: integrationAccountLabel(connection),
+              connectionId: connection.id,
+              isDefault: grant?.isDefault ?? false,
+            };
+          }),
+          installation,
+          readiness: {
+            servers: servers.map((server) =>
+              resolveIntegrationReadiness({
+                connectionRequirement: server.connectionRequirement,
+                connections,
+                hasAccess: hasInstallationAccess,
+                runAccess: requesterAccess.runAccess,
+                installationStatus: installation.status,
+                requiredAccess: input.target?.access ?? "read",
+                requiredConnectionId: input.target?.connectionId ?? null,
+                serverId: server.id,
+                serverStatus: server.status,
+                statusDetail: server.statusDetail,
               }),
-            },
-            servers,
-            tools,
-          };
-        }),
+            ),
+            tools: tools.flatMap((tool) => {
+              const server = serverById.get(tool.serverId);
+              return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
+            }),
+          },
+          servers,
+          tools,
+        };
+      }),
     );
   }
 
@@ -1670,42 +1647,12 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       .orderBy("integrationTools.name", "asc")
       .execute();
     const { connections } = await this.authoritySnapshot(input.ownerUserId);
-    const settings = await this.database
-      .selectFrom("pluginOwnerSettings")
-      .selectAll()
-      .where("ownerUserId", "=", input.ownerUserId)
-      .execute();
-    const denied = settings.filter((s) => !s.enabled);
-    const blockedDefinitions = new Set(
-      denied.flatMap((s) => (s.target.kind === "device-app" ? [s.target.definitionId] : [])),
-    );
-    const blockedConnections = blockedDefinitions.size
-      ? await this.database
-          .selectFrom("integrationConnections")
-          .select("id")
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("integrationDefinitionId", "in", [...blockedDefinitions])
-          .execute()
-      : [];
-    const blockedConnectionIds = new Set(blockedConnections.map((c) => c.id));
-    const blockedPackages = new Set(
-      denied.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
-    );
-    const blockedInstallations = blockedPackages.size
-      ? await this.database
-          .selectFrom("integrationInstallations")
-          .select("id")
-          .where("pluginId", "in", [...blockedPackages])
-          .execute()
-      : [];
-    const blockedIds = new Set(blockedInstallations.map((i) => i.id));
-
     const byId = new Map(rows.map((row) => [row.id, row]));
     const installationById = new Map(
       rows.map((row) => [row.joinedInstallationId, installationFromCallableToolRow(row)]),
     );
     const resolved = resolveEffectiveGrants({
-      connections: connections.filter((c) => !blockedConnectionIds.has(c.id)),
+      connections,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
       storedGrants: grants,
@@ -1718,16 +1665,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         serverStatus: row.joinedServerStatus,
       })),
     });
-    return resolved.tools
-      .filter(({ tool }) => {
-        const installationId = byId.get(tool.id)!.joinedInstallationId;
-        const installation = installationById.get(installationId)!;
-        return (
-          !blockedIds.has(installationId) &&
-          !blockedDefinitions.has(installationDefinitionId(installation))
-        );
-      })
-      .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
+    return resolved.tools.map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
 }
 
@@ -2310,17 +2248,4 @@ export async function replaceServerToolsInTransaction(
     now: input.now,
     serverId: input.serverId,
   });
-}
-
-function installationDefinitionId(installation: {
-  name: string;
-  manifest: Record<string, unknown>;
-}): string {
-  const definition = installation.manifest.definition;
-  return typeof definition === "object" &&
-    definition !== null &&
-    "id" in definition &&
-    typeof definition.id === "string"
-    ? definition.id
-    : installation.name;
 }

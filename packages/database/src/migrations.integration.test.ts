@@ -32,6 +32,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
+import { TriggerStore } from "./trigger-store.js";
 import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
 import { teamRequestView } from "./team-chat-store.js";
 import {
@@ -829,11 +830,10 @@ describe("fresh personal/team lineage", () => {
     const connection = (id: string, kind: string, serverId: string | null) =>
       sql`insert into integration_connections
         (id, owner_user_id, connection_kind, provider, connection_method, status, display_name,
-          capabilities, integration_server_id, granted_scopes, runner_id, device_id)
+          capabilities, integration_server_id, granted_scopes, runner_id, device_id, integration_definition_id)
         values (${id}, ${userId}, ${kind}, ${kind}, 'computer', 'connected', ${id}, '[]',
-          ${serverId}, '[]', ${kind === "computer" ? runnerId : null}, ${kind === "computer" ? runnerId : null})`.execute(
-        database,
-      );
+          ${serverId}, '[]', ${kind === "computer" ? runnerId : null}, ${kind === "computer" ? runnerId : null},
+          ${kind === "computer" ? "apple-calendar" : null})`.execute(database);
     const grant = (id: string, installationId: string, connectionId: string | null) =>
       sql`insert into integration_grants
         (access, id, owner_user_id, installation_id, connection_id, alias, is_default, created_by, status)
@@ -905,7 +905,8 @@ describe("fresh personal/team lineage", () => {
     await grant("remote-grant", "remote", "mcp-account");
     await sql`insert into plugin_owner_settings (owner_user_id, target_key, target, enabled, revision)
       values (${userId}, '["service","gmail"]', '{"kind":"service","definitionId":"gmail"}', false, 1),
-        (${userId}, '["device-app","apple-calendar"]', '{"kind":"device-app","definitionId":"apple-calendar"}', false, 1)`.execute(
+        (${userId}, '["device-app","apple-calendar"]', '{"kind":"device-app","definitionId":"apple-calendar"}', false, 1),
+        (${userId}, '["plugin","local-plugin"]', '{"kind":"plugin","pluginId":"local-plugin"}', false, 2)`.execute(
       database,
     );
 
@@ -917,6 +918,44 @@ describe("fresh personal/team lineage", () => {
     const store = new OpensteerStore(database);
     const runs = createPersonalRunFixturePort(store);
     const task = await runs.createTask({ ownerId: userId, suffix: "service-upgrade" });
+    const triggers = new TriggerStore(database);
+    const program = {
+      language: "javascript",
+      source: 'export default async ({opensteer}) => opensteer.callTool("opensteer_task_list", {})',
+      toolContractVersion: 5,
+    } as const;
+    const savedSchedule = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "saved-schedule",
+      name: "Saved schedule",
+      program,
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    const savedWatch = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "saved-watch",
+      name: "Saved watch",
+      program: {
+        ...program,
+        source:
+          'export default async ({opensteer}) => { await opensteer.callTool("opensteer_task_list", {}); await new Promise(() => setInterval(() => {}, 1000)); }',
+      },
+      source: { kind: "watch" },
+    });
+    for (const { revision } of [savedSchedule, savedWatch]) {
+      await database
+        .updateTable("triggerRevisions")
+        .set({ program: { ...revision.program, toolContractVersion: 4 } })
+        .where("id", "=", revision.id)
+        .execute();
+    }
     const { run } = await runs.startTask(task.threadId, "Existing task");
     const removedRequests: string[] = [];
     const keptRequests: string[] = [];
@@ -1059,9 +1098,28 @@ describe("fresh personal/team lineage", () => {
       ).rows,
     ).toEqual([{ name: null }]);
     expect(await ids("credential_access_audit")).toEqual(["channel-connection"]);
-    expect(await database.selectFrom("pluginOwnerSettings").select("targetKey").execute()).toEqual([
-      { targetKey: '["device-app","apple-calendar"]' },
+    expect(await database.selectFrom("pluginOwnerSettings").select("targetKey").execute()).toEqual(
+      [],
+    );
+    expect(
+      await database
+        .selectFrom("pluginAgentSettings")
+        .select(["pluginId", "access"])
+        .orderBy("pluginId")
+        .execute(),
+    ).toEqual([
+      { pluginId: "app_device_computer-connection", access: "off" },
+      { pluginId: "app_server_local-server", access: "off" },
     ]);
+    for (const saved of [savedSchedule, savedWatch]) {
+      const detail = await triggers.getForOwner(saved.trigger.id, userId, 1);
+      expect(detail?.revision.program).toEqual(saved.revision.program);
+    }
+    expect(
+      (await triggers.getForOwner(savedWatch.trigger.id, userId, 1))?.activation,
+    ).toMatchObject({
+      desired: "active",
+    });
     expect(
       (
         await sql`select table_name, column_name from information_schema.columns where table_schema='public'
@@ -1377,21 +1435,14 @@ describe("fresh personal/team lineage", () => {
         .where("ownerUserId", "=", owner)
         .executeTakeFirst();
     await database.transaction().execute(async (tx) => {
-      await tx
-        .insertInto("pluginOwnerSettings")
-        .values({
-          ownerUserId: owner,
-          targetKey: '["device-app","apple-calendar"]',
-          target: { kind: "device-app", definitionId: "apple-calendar" },
-          enabled: true,
-          revision: 1,
-        })
-        .execute();
-      await tx
-        .updateTable("pluginOwnerSettings")
-        .set({ enabled: false })
-        .where("ownerUserId", "=", owner)
-        .execute();
+      await sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name, capabilities)
+        values ('connection', ${owner}, 'channel', 'fixture', 'computer', 'connected', 'Initial', '[]')`.execute(
+        tx,
+      );
+      await sql`update integration_connections set display_name = 'Changed' where id = 'connection'`.execute(
+        tx,
+      );
       expect(await generation()).toBeUndefined();
       expect(
         await tx.selectFrom("integrationAuthorityPending").select("ownerUserId").execute(),
@@ -1401,11 +1452,9 @@ describe("fresh personal/team lineage", () => {
     const rejection = new Error("rejected mutation");
     await expect(
       database.transaction().execute(async (tx) => {
-        await tx
-          .updateTable("pluginOwnerSettings")
-          .set({ enabled: true })
-          .where("ownerUserId", "=", owner)
-          .execute();
+        await sql`update integration_connections set display_name = 'Rolled back' where id = 'connection'`.execute(
+          tx,
+        );
         throw rejection;
       }),
     ).rejects.toBe(rejection);

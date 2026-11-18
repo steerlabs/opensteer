@@ -2801,7 +2801,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Look.",
       }),
-    ).toEqual(refusal("Tool is unavailable"));
+    ).toEqual(toolRefusal("access_denied", "This tool requires a live Run"));
     expect(await trigger.call("computer_use", { code: "return 1" })).toEqual(
       refusal("Tool is unavailable"),
     );

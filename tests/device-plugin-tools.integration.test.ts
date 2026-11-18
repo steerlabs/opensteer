@@ -8,6 +8,9 @@ import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ComputerUseBridgeError, createHelperAppProvider } from "../apps/runner/src/index.js";
 import { TriggerStore } from "../packages/database/src/index.js";
+import { DeviceToolHandlers } from "../apps/host/src/mcp/handlers/devices.js";
+import { AccessRequests } from "../apps/host/src/devices/access-requests.js";
+import { deviceDefinitions } from "../packages/integration-catalog/src/devices.js";
 import type { AgentCaller } from "../apps/host/src/mcp/agent-caller.js";
 import type { ThreadId } from "../packages/core/src/index.js";
 import { pluginFixtureFiles, pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.js";
@@ -334,7 +337,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       ]),
     );
     expect(calendarTool.toolCount).toBe(calendarTool.tools.length);
-    const setAccess = (access: "all" | "read-only") =>
+    const setAccess = (access: "all" | "read-only" | "off") =>
       testRpcData(
         host.origin,
         "commands.dispatch",
@@ -369,7 +372,33 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     const refused = await pluginCall(gateway, create, { title: "Renew passport" });
     expect(refused.failure).toBeDefined();
     expect(helper.invocations).toHaveLength(sent);
+    await setAccess("off");
+    const whileOff = await testRpcData(
+      host.origin,
+      "plugins.installed.list",
+      {},
+      { headers: host.ownerHeaders },
+    );
+    expect(whileOff.local.find(({ id }) => id === reminderPlugin)?.access).toBe("off");
+    expect(
+      await testRpcData(
+        host.origin,
+        "plugins.local.get",
+        { id: reminderPlugin },
+        { headers: host.ownerHeaders },
+      ),
+    ).toMatchObject({ access: "off" });
+    expect((await pluginCall(gateway, create, { title: "Renew passport" })).failure).toBeDefined();
+    expect(helper.invocations).toHaveLength(sent);
     await setAccess("all");
+    expect(
+      await testRpcData(
+        host.origin,
+        "plugins.local.get",
+        { id: reminderPlugin },
+        { headers: host.ownerHeaders },
+      ),
+    ).toMatchObject({ access: "all" });
 
     // A change whose answer is lost is an unknown outcome, sent once and never again.
     helper.answer = () => {
@@ -426,7 +455,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
   }, 240_000);
 
   it("serves a Trigger program's device call with the Trigger's own authority", async () => {
-    const { host, helper, gateway, run, calendar } = await start();
+    const { host, helper, gateway, run, calendar, computer } = await start();
     await pluginPath(gateway, "list_events", "list_events");
     const page = { events: [{ id: "E1" }], nextCursor: null };
     helper.answer = () => page;
@@ -443,6 +472,64 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       result: { execution: { ok: true, value: page } },
     });
     expect(helper.invocations.at(-1)).toMatchObject({ operation: "list_events", access: "read" });
+
+    const devices = host.runtime.devices;
+    const handlers = new DeviceToolHandlers({
+      devices,
+      access: new AccessRequests({
+        definitions: deviceDefinitions,
+        devices,
+        onDeploymentEvent: () => {},
+        store: devices.store,
+      }),
+    });
+    expect(
+      await gateway.call("local_server_add", {
+        name: "policy-fixture",
+        computerId: computer.runnerId,
+        launch: { command: "node", args: ["fixture-server.js"] },
+      }),
+    ).toMatchObject({ server: { name: "policy-fixture" } });
+    for (const [operationKey, target] of [
+      ["trigger-calendar-access", { dataApp: "calendar" }],
+      ["trigger-server-access", { server: "policy-fixture" }],
+    ] as const) {
+      const call = {
+        caller,
+        operationKey,
+        input: { ...target, access: "read-write", reason: "Use this tool on the morning schedule" },
+      } as const;
+      const asked = await handlers.app_access_request(call);
+      expect(asked).toMatchObject({
+        kind: "integration.access",
+        status: "pending",
+        replayed: false,
+        next: expect.stringContaining("A later occurrence can check access"),
+      });
+      expect(await handlers.app_access_request(call)).toMatchObject({
+        requestId: asked.requestId,
+        replayed: true,
+        status: "pending",
+      });
+      expect(
+        await host.store.database
+          .selectFrom("requests")
+          .select(["originatingOccurrenceId", "originatingRunId", "mode"])
+          .where("id", "=", asked.requestId!)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({
+        originatingOccurrenceId: caller.program.occurrenceId,
+        originatingRunId: null,
+        mode: "durable",
+      });
+      expect(
+        await host.store.database
+          .selectFrom("requestContinuations")
+          .select("status")
+          .where("requestId", "=", asked.requestId!)
+          .executeTakeFirst(),
+      ).toBeUndefined();
+    }
   }, 240_000);
 });
 
@@ -502,5 +589,5 @@ async function triggerCaller(
       threadId: anchor.id,
       toolContractVersion: 5,
     },
-  } as AgentCaller;
+  } satisfies AgentCaller;
 }
