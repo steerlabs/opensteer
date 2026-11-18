@@ -1431,18 +1431,22 @@ export class HostClientRequestError extends Error {
    * the sentence beside it. Undefined for refusals that need no distinction.
    */
   readonly reason: string | undefined;
+  /** The Host's own word on whether the same call may succeed later. */
+  readonly retryable: boolean;
   readonly status: number;
 
   constructor(options: {
     readonly code: string;
     readonly message: string;
     readonly reason?: string;
+    readonly retryable?: boolean;
     readonly status: number;
   }) {
     super(options.message);
     this.name = "HostClientRequestError";
     this.code = options.code;
     this.reason = options.reason;
+    this.retryable = options.retryable ?? false;
     this.status = options.status;
   }
 }

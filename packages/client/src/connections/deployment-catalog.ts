@@ -37,6 +37,7 @@ import {
 } from "@opensteer/core";
 import { DesktopAccessOriginSchema, type DesktopAccessOrigin } from "@opensteer/protocol/desktop";
 import { z } from "zod";
+import { HostTransportError, isGatewayFailure } from "./host-transport-error.js";
 import { ClientOperationError, clientTimeoutError, unrefTimer } from "./operation-error.js";
 import type { PrivateFilesystem } from "./private-filesystem.js";
 
@@ -297,10 +298,13 @@ export async function verifyAccessEndpoint(
       redirect: "error",
       referrerPolicy: "no-referrer",
       signal: controller.signal,
+    }).catch((error: unknown) => {
+      throw new HostTransportError("unreachable", { cause: error });
     });
     if (response.redirected || (response.url !== "" && response.url !== discoveryUrl)) {
       throw new Error("Host discovery must not redirect.");
     }
+    if (isGatewayFailure(response.status)) throw new HostTransportError("unreachable");
     if (!response.ok) {
       throw new Error(`Host discovery returned HTTP ${response.status}.`);
     }

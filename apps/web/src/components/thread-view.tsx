@@ -29,6 +29,7 @@ import {
   groupTranscriptEntries,
   incomingTranscriptMessages,
   observedSequence,
+  operationFailure,
   placementAccountTitle,
   selectionForModel,
   threadActivity,
@@ -50,6 +51,7 @@ import {
   type ThreadPlacementOption,
   type ThreadSummary,
   type HostClient,
+  type OperationFailure,
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
@@ -103,7 +105,7 @@ import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
-import { notFound, useLinkedRequest } from "./references/linked-request.js";
+import { useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -148,7 +150,12 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
     )
       return (
         <div className="thread">
-          <Unavailable offline onBack={back} onRetry={() => hostClient.activateThread(threadId)} />
+          <Unavailable
+            failure="unavailable"
+            network={snapshot.network}
+            onBack={back}
+            onRetry={() => hostClient.activateThread(threadId)}
+          />
         </div>
       );
     if (threadId && snapshot.threadLookups[threadId] === "failed")
@@ -310,7 +317,7 @@ function ThreadView({
   // A message a link named that this conversation no longer holds, or could not reach.
   const [missingMessage, setMissingMessage] = useState<{
     readonly id: string;
-    readonly offline: boolean;
+    readonly failure: OperationFailure;
   } | null>(null);
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
@@ -769,18 +776,15 @@ function ThreadView({
     setHistorical(true);
     setFollows(false);
     setRevealMessage({ id: messageId });
-    const unreachable = async (error: unknown) => {
-      setMissingMessage({
-        id: messageId,
-        offline: !notFound(error) && hostClient.getSnapshot().connection !== "connected",
-      });
+    const missing = async (failure: OperationFailure) => {
+      setMissingMessage({ id: messageId, failure });
       await returnToLatest().catch(() => undefined);
       return false;
     };
     try {
       await hostClient.loadTranscriptAround(thread.id, messageId);
     } catch (error) {
-      return unreachable(error);
+      return missing(operationFailure(error));
     }
     const anchored = hostClient
       .getThreadTranscript(thread.id)
@@ -793,7 +797,7 @@ function ThreadView({
         (entry) => entry.kind === "message" && entry.id === messageId,
       )
     )
-      return unreachable(null);
+      return missing("gone");
     requestAnimationFrame(() => {
       const target = currentScroller()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`,
@@ -1334,8 +1338,9 @@ function ThreadView({
                       {missingMessage ? (
                         <Unavailable
                           backLabel="Dismiss"
+                          failure={missingMessage.failure}
                           inline
-                          offline={missingMessage.offline}
+                          network={snapshot.network}
                           onBack={() => setMissingMessage(null)}
                           onRetry={() =>
                             void jumpToMessage(missingMessage.id).catch(reportActionError)

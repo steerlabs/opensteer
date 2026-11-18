@@ -26,6 +26,16 @@ function text(text = "Report", revision = "1"): TranscriptFileOpen {
     preview: { kind: "text", text, truncated: false },
   };
 }
+/** What the client throws when no answer arrived. */
+function unreachable() {
+  return new HostClientRequestError({
+    code: "internal",
+    message: "The Host could not be reached.",
+    reason: "transport-unreachable",
+    retryable: true,
+    status: 500,
+  });
+}
 function setup() {
   const openFile = vi.fn(
     async (_input: TranscriptFileOpenInput, _signal?: AbortSignal): Promise<TranscriptFileOpen> =>
@@ -63,19 +73,12 @@ it("coalesces identical opens, retains nullable context, and separates source ki
   await controller.open(null, { kind: "attachment", attachmentId: createId("attachment") });
   expect(openFile).toHaveBeenCalledTimes(3);
 });
-it("distinguishes offline cached content, infrastructure failure, authoritative absence and sign-in", async () => {
+it("distinguishes unreachable cached content, infrastructure failure, authoritative absence and sign-in", async () => {
   const { controller, openFile } = setup();
   await controller.open(null, source);
-  openFile.mockRejectedValueOnce(
-    new HostClientRequestError({
-      code: "internal",
-      reason: "transport-unreachable",
-      status: 500,
-      message: "Offline",
-    }),
-  );
+  openFile.mockRejectedValueOnce(unreachable());
   expect(await controller.open(null, source)).toMatchObject({
-    status: "offline",
+    status: "unreachable",
     cached: { preview: { text: "Report" } },
   });
   openFile.mockRejectedValueOnce(new OpensteerError({ code: "internal", message: "Failed" }));
@@ -84,8 +87,6 @@ it("distinguishes offline cached content, infrastructure failure, authoritative 
     new HostClientRequestError({ code: "forbidden", status: 403, message: "Unavailable" }),
   );
   expect(await controller.open(null, source)).toEqual({ status: "unavailable" });
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
-  expect(await controller.open(null, source)).toEqual({ status: "offline", cached: null });
   openFile.mockRejectedValueOnce(new OpensteerError({ code: "unauthorized", message: "Sign in" }));
   await expect(controller.open(null, source)).rejects.toMatchObject({ code: "unauthorized" });
 });
@@ -108,8 +109,8 @@ it("cancels one view without cancelling a shared read, and the last view discard
   expect(openFile.mock.calls[0]![1]?.aborted).toBe(true);
   deferred.resolve(text("Should never be cached"));
   await Promise.resolve();
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
-  expect(await controller.open(null, source)).toEqual({ status: "offline", cached: null });
+  openFile.mockRejectedValueOnce(unreachable());
+  expect(await controller.open(null, source)).toEqual({ status: "unreachable", cached: null });
 });
 it("clears text and cancels pending operations on owner invalidation and disposal", async () => {
   const { controller, openFile, owner } = setup();
@@ -129,23 +130,23 @@ it("bounds UTF-8 cached text to 4 MiB and evicts the least recently used preview
   const halfMiB = "é".repeat(256 * 1024);
   openFile.mockImplementation(async () => text(halfMiB));
   for (let i = 0; i < 8; i++) await controller.open(null, { kind: "path", path: `/${i}` });
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
-  expect((await controller.open(null, { kind: "path", path: "/0" })).status).toBe("offline");
+  openFile.mockRejectedValueOnce(unreachable());
+  expect((await controller.open(null, { kind: "path", path: "/0" })).status).toBe("unreachable");
   await controller.open(null, { kind: "path", path: "/8" });
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
+  openFile.mockRejectedValueOnce(unreachable());
   expect(await controller.open(null, { kind: "path", path: "/1" })).toEqual({
-    status: "offline",
+    status: "unreachable",
     cached: null,
   });
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
+  openFile.mockRejectedValueOnce(unreachable());
   expect(await controller.open(null, { kind: "path", path: "/0" })).toMatchObject({
-    status: "offline",
+    status: "unreachable",
     cached: { status: "ok" },
   });
   controller.reset();
-  openFile.mockRejectedValueOnce(new TypeError("offline"));
+  openFile.mockRejectedValueOnce(unreachable());
   expect(await controller.open(null, { kind: "path", path: "/0" })).toEqual({
-    status: "offline",
+    status: "unreachable",
     cached: null,
   });
 });

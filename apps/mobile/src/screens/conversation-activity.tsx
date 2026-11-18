@@ -4,10 +4,12 @@ import {
   conversationActivityTurn,
   formatClockTime,
   groupTranscriptEntries,
+  operationFailure,
   showsHostLive,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
+  type OperationFailure,
   type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
@@ -35,7 +37,7 @@ import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
-import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
 
 export type ConversationActivityScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -74,7 +76,7 @@ export function ConversationActivityScreen(props: ConversationActivityScreenProp
   );
 }
 
-type RunLoad = "loading" | "loaded" | "unavailable" | "offline" | "failed";
+type RunLoad = "loading" | "loaded" | OperationFailure;
 
 /**
  * A Run a link named may be from long ago: the conversation is held while
@@ -99,7 +101,7 @@ function useRunLoad(
     setState("loading");
     hostClient.loadTranscriptAround(threadId, anchor).then(
       () => current && setState("loaded"),
-      (error: unknown) => current && setState(readFailure(error)),
+      (error: unknown) => current && setState(operationFailure(error)),
     );
     return () => {
       current = false;
@@ -201,8 +203,10 @@ function ReplyActivity(props: {
     ) : (
       <View style={styles.sheet}>
         <UnavailableState
+          failure={load.state === "loaded" ? "gone" : load.state}
+          network={snapshot.network}
           onBack={() => navigation.goBack()}
-          onRetry={load.state === "offline" || load.state === "failed" ? load.retry : undefined}
+          onRetry={load.retry}
         />
       </View>
     );

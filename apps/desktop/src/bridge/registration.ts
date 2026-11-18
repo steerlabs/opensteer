@@ -75,13 +75,8 @@ import {
   handleUnlinkPersonal,
 } from "./methods/connections.js";
 import {
+  handleCancelHostRequest,
   handleCloseHostWebSocket,
-  handleHostRequest,
-  handleHostBinaryOpen,
-  handleHostBinaryWrite,
-  handleHostBinaryFinish,
-  handleHostBinaryRead,
-  handleHostBinaryClose,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
 } from "./methods/host.js";
@@ -331,6 +326,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.agentPhoneAdbClose, handleAgentPhoneAdbClose(context));
   register(desktopBridgeChannels.chooseUsbDevice, handleChooseUsbDevice(context));
   register(desktopBridgeChannels.closeFullDiskAccessPanel, handleCloseFullDiskAccessPanel(context));
+  register(desktopBridgeChannels.cancelHostRequest, handleCancelHostRequest(context));
   register(desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(context));
   register(desktopBridgeChannels.connectPrivate, handleConnectPrivate(context));
   register(desktopBridgeChannels.createPersonalDeployment, handleCreatePersonalDeployment(context));
@@ -339,12 +335,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleGetDeploymentAccessSnapshot(context),
   );
   register(desktopBridgeChannels.getLocalExecutionStatus, handleGetLocalExecutionStatus(context));
-  register(desktopBridgeChannels.hostRequest, handleHostRequest(context));
-  register(desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context));
-  register(desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context));
-  register(desktopBridgeChannels.hostBinaryFinish, handleHostBinaryFinish(context));
-  register(desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context));
-  register(desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context));
   register(
     desktopBridgeChannels.issuePersonalAccountLinkChallenge,
     handleIssuePersonalAccountLinkChallenge(context),

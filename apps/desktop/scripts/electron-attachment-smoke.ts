@@ -1,28 +1,21 @@
 import { DeploymentCatalogSchema } from "@opensteer/client/connections";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain, protocol } from "electron";
+import { app, BrowserWindow, protocol } from "electron";
 import { createId, type HostInstanceId } from "@opensteer/core";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
-import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
-import type { DesktopBridgeContext } from "../src/bridge/context.js";
-import {
-  handleHostBinaryClose,
-  handleHostBinaryFinish,
-  handleHostBinaryOpen,
-  handleHostBinaryRead,
-  handleHostBinaryWrite,
-} from "../src/bridge/methods/host.js";
+import { forwardHostRoute } from "../src/app/host-route.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
 
 const profile = mkdtempSync(path.join(tmpdir(), "opensteer-attachment-electron-"));
@@ -66,29 +59,27 @@ function finish(code: number, artifact: object | null): void {
 
 async function run(): Promise<object> {
   await app.whenReady();
+  // Every byte value, so a UTF-8 decode anywhere on the path would change it.
   const source = Uint8Array.from(
     { length: 2 * 1_024 * 1_024 + 17 },
     (_, index) => (index * 37 + 13) & 255,
   );
   const sourceHash = createHash("sha256").update(source).digest("hex");
   let upload: Uint8Array | null = null;
-  let requestCount = 0;
-  let slowStarted = false;
-  let abortedDownload = false;
   let observedHeaders: Record<string, string | undefined> = {};
+  const closed = new Set<string>();
   const server = createServer((request, response) => {
-    requestCount += 1;
     const url = new URL(request.url ?? "/", "http://localhost");
-    if (url.searchParams.get("input") !== JSON.stringify({ attachmentId: "att_smoke" })) {
-      response.writeHead(400).end("Missing attachment metadata");
-      return;
-    }
+    response.once("close", () => {
+      if (!response.writableEnded) closed.add(url.searchParams.get("case") ?? url.pathname);
+    });
     if (url.pathname === "/v1/rpc/attachment.upload" && request.method === "POST") {
       observedHeaders = {
         authorization: request.headers.authorization,
         contentType: request.headers["content-type"],
+        cookie: request.headers.cookie,
         origin: request.headers.origin,
-        version: request.headers[hostApiVersionHeader],
+        version: request.headers[hostApiVersionHeader] as string | undefined,
       };
       const parts: Uint8Array[] = [];
       request.on("data", (chunk: Buffer) => parts.push(chunk));
@@ -99,23 +90,19 @@ async function run(): Promise<object> {
       });
       return;
     }
-    if (url.pathname === "/v1/rpc/attachment.content" && request.method === "GET") {
-      if (url.searchParams.get("slow") === "1") {
-        slowStarted = true;
-        response.writeHead(200, { "content-type": "application/octet-stream" });
-        response.write(source.subarray(0, 256 * 1_024));
-        const end = setTimeout(() => response.end(source), 10_000);
-        response.once("close", () => {
-          clearTimeout(end);
-          abortedDownload = !response.writableEnded;
-        });
-        return;
-      }
+    if (url.pathname === "/v1/rpc/file.content") {
+      const stall = url.searchParams.get("case");
       response.writeHead(200, {
-        "content-type": "application/octet-stream",
+        "content-type": "image/png",
         etag: '"smoke"',
+        "last-modified": "Tue, 17 Nov 2026 10:00:00 GMT",
+        "set-cookie": "host-session=secret; HttpOnly",
         "x-opensteer-file-size": String(source.byteLength),
       });
+      if (stall === "mid-body") {
+        response.write(source.subarray(0, 256 * 1_024));
+        return;
+      }
       response.end(source);
       return;
     }
@@ -167,168 +154,94 @@ async function run(): Promise<object> {
         read: async () => ({ deployments: [], revision: 1, selectedDeploymentId: deploymentId }),
       },
     });
-    const bridgeToken = randomBytes(32).toString("base64url");
-    const context = {
-      options: { bridgeToken, hostTransport: transport },
-      trackedHostSenders: new Set<number>(),
-    } as unknown as DesktopBridgeContext;
-    const handlers = [
-      [desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context)],
-      [desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context)],
-      [desktopBridgeChannels.hostBinaryFinish, handleHostBinaryFinish(context)],
-      [desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context)],
-      [desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context)],
-    ] as const;
-    for (const [channel, handler] of handlers) ipcMain.handle(channel, handler);
-    protocol.handle(
-      "app",
-      () =>
-        new Response("<!doctype html><title>Attachment smoke</title>", {
-          headers: { "content-type": "text/html" },
-        }),
+    protocol.handle("app", (request) =>
+      new URL(request.url).pathname.startsWith("/host/")
+        ? forwardHostRoute(request, transport)
+        : new Response("<!doctype html><title>Attachment smoke</title>", {
+            headers: { "content-type": "text/html" },
+          }),
     );
-    const before = attachmentSpools();
     const window = new BrowserWindow({
       show: false,
       webPreferences: desktopWebPreferences(
         { mode: "production" },
-        bridgeToken,
+        randomBytes(32).toString("base64url"),
         path.resolve("dist/preload.cjs"),
       ),
     });
     try {
       await window.loadURL("app://opensteer/");
-      await window.webContents.executeJavaScript(`
-        window.attachmentSmokeBridge = Object.fromEntries(
-          ["hostBinaryOpen", "hostBinaryWrite", "hostBinaryFinish", "hostBinaryRead", "hostBinaryClose"].map((name) => [name, async (input) => {
-            const result = await window.opensteerDesktop[name](input);
-            if (!result.ok) throw new Error(result.error.code);
-            return result.data;
-          }]),
-        );
-        void 0;
-      `);
+      // Main admits a request by the id the bundled app's adapter gives it. Cancelling one
+      // before headers is the adapter's own, proved by electron-host-transport-smoke.
+      await window.webContents.executeJavaScript(`window.hostFetch = (url, init = {}) => {
+        const headers = new Headers(init.headers);
+        headers.set("${desktopHostRequestIdHeader}", crypto.randomUUID());
+        return fetch(url, { ...init, headers });
+      }; undefined`);
+      const route = `app://opensteer/host/${deploymentId}`;
       const result: {
         uploadStatus: number;
         downloadHash: string;
         downloadedBytes: number;
-        originRejected: boolean;
+        headers: Record<string, string | null>;
+        staleStatus: number;
       } = await window.webContents.executeJavaScript(`(async () => {
-        const bridge = window.attachmentSmokeBridge;
         const input = encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" }));
         const source = Uint8Array.from({ length: ${source.byteLength} }, (_, i) => (i * 37 + 13) & 255);
-        const upload = await bridge.hostBinaryOpen({
-          headers: { contentType: "application/octet-stream", apiVersion: "${hostApiVersion}" },
-          method: "POST", path: "/v1/rpc/attachment.upload?input=" + input,
+        const uploaded = await hostFetch("${route}/v1/rpc/attachment.upload?input=" + input, {
+          method: "POST",
+          body: new Blob([source]),
+          headers: { "content-type": "application/octet-stream", "${hostApiVersionHeader}": "${hostApiVersion}", authorization: "Bearer renderer" },
         });
-        for (let offset = 0; offset < source.length; offset += 256 * 1024) {
-          await bridge.hostBinaryWrite({ transferId: upload.transferId, bytes: source.subarray(offset, offset + 256 * 1024) });
-        }
-        const uploaded = await bridge.hostBinaryFinish(upload);
-        const download = await bridge.hostBinaryOpen({
-          headers: { apiVersion: "${hostApiVersion}" },
-          method: "GET", path: "/v1/rpc/attachment.content?input=" + input,
-        });
-        const chunks = [];
-        let count = 0;
-        while (true) {
-          const part = await bridge.hostBinaryRead(download);
-          chunks.push(part.bytes);
-          count += part.bytes.length;
-          if (part.done) break;
-        }
-        await bridge.hostBinaryClose(download);
-        const bytes = new Uint8Array(count);
-        let offset = 0;
-        for (const part of chunks) { bytes.set(part, offset); offset += part.length; }
+        await uploaded.arrayBuffer();
+        const download = await hostFetch("${route}/v1/rpc/file.content?input=" + input);
+        const bytes = new Uint8Array(await download.arrayBuffer());
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-        let originRejected = false;
-        try {
-          await bridge.hostBinaryOpen({ headers: {}, method: "GET", path: "https://evil.test/v1/rpc/attachment.content?input=" + input });
-        } catch { originRejected = true; }
-        return { uploadStatus: uploaded.status, downloadHash: hash, downloadedBytes: count, originRejected };
+        const headers = Object.fromEntries(["content-type", "etag", "last-modified", "set-cookie", "x-opensteer-file-size"].map((name) => [name, download.headers.get(name)]));
+        const stale = await hostFetch("app://opensteer/host/${createId("deployment")}/v1/rpc/file.content?input=" + input);
+        return { uploadStatus: uploaded.status, downloadHash: hash, downloadedBytes: bytes.length, headers, staleStatus: stale.status };
       })()`);
       assert.equal(result.uploadStatus, 200);
-      assert.equal(result.downloadHash, sourceHash);
-      assert.equal(result.downloadedBytes, source.byteLength);
-      assert(result.originRejected);
       assert(upload);
       assert.equal(createHash("sha256").update(upload).digest("hex"), sourceHash);
       assert.deepEqual(observedHeaders, {
         authorization: "Bearer smoke",
         contentType: "application/octet-stream",
+        cookie: undefined,
         origin,
         version: String(hostApiVersion),
       });
-      assert.equal(requestCount, 2);
-      const slow: { transferId: string } = await window.webContents.executeJavaScript(`
-        window.attachmentSmokeBridge.hostBinaryOpen({
-          headers: {}, method: "GET",
-          path: "/v1/rpc/attachment.content?input=" + encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" })) + "&slow=1",
-        })`);
-      await waitUntil(() => slowStarted);
-      await window.webContents.executeJavaScript(`
-        window.attachmentSmokeBridge.hostBinaryClose({ transferId: "${slow.transferId}" })`);
-      const oversizedRejected: boolean = await window.webContents.executeJavaScript(`(async () => {
-          const bridge = window.attachmentSmokeBridge;
-          const input = encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" }));
-          const large = await bridge.hostBinaryOpen({
-            headers: { contentType: "application/octet-stream" }, method: "POST",
-            path: "/v1/rpc/attachment.upload?input=" + input,
-          });
-          const chunk = new Uint8Array(256 * 1024);
-          for (let index = 0; index < 100; index += 1) {
-            await bridge.hostBinaryWrite({ transferId: large.transferId, bytes: chunk });
-          }
-          let oversizedRejected = false;
-          try {
-            await bridge.hostBinaryWrite({ transferId: large.transferId, bytes: new Uint8Array(1) });
-          } catch { oversizedRejected = true; }
-          await bridge.hostBinaryClose(large);
-          return oversizedRejected;
-        })()`);
-      assert(oversizedRejected);
-      await waitUntil(() => abortedDownload);
-      await waitUntil(() => sameSpools(before, attachmentSpools()));
-      const concurrent: { opened: number; rejected: number } = await window.webContents
-        .executeJavaScript(`(async () => {
-          const input = encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" }));
-          const results = await Promise.allSettled(Array.from({ length: 9 }, () =>
-            window.attachmentSmokeBridge.hostBinaryOpen({
-              headers: { contentType: "application/octet-stream" }, method: "POST",
-              path: "/v1/rpc/attachment.upload?input=" + input,
-            })));
-          const opened = results.filter((result) => result.status === "fulfilled");
-          await Promise.all(opened.map((result) => window.attachmentSmokeBridge.hostBinaryClose(result.value)));
-          return { opened: opened.length, rejected: results.length - opened.length };
-        })()`);
-      assert.equal(concurrent.opened, 8);
-      assert.equal(concurrent.rejected, 1);
-      await waitUntil(() => sameSpools(before, attachmentSpools()));
-      const unfinished: { transferId: string } = await window.webContents.executeJavaScript(`
-        window.attachmentSmokeBridge.hostBinaryOpen({
-          headers: { contentType: "application/octet-stream" },
-          method: "POST", path: "/v1/rpc/attachment.upload?input=" + encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" })),
-        })`);
-      assert(unfinished.transferId);
-      window.destroy();
-      await waitUntil(() => sameSpools(before, attachmentSpools()));
+      assert.equal(result.downloadHash, sourceHash);
+      assert.equal(result.downloadedBytes, source.byteLength);
+      assert.deepEqual(result.headers, {
+        "content-type": "image/png",
+        etag: '"smoke"',
+        "last-modified": "Tue, 17 Nov 2026 10:00:00 GMT",
+        "set-cookie": null,
+        "x-opensteer-file-size": String(source.byteLength),
+      });
+      assert.equal(result.staleStatus, 502);
+      // Once headers arrive, Chromium's own cancellation of the body reaches the Host.
+      await window.webContents.executeJavaScript(`(async () => {
+        const controller = new AbortController();
+        const pending = hostFetch("${route}/v1/rpc/file.content?case=mid-body", { signal: controller.signal });
+        try {
+          for await (const _chunk of (await pending).body) controller.abort();
+        } catch {}
+      })()`);
+      await waitUntil(() => closed.has("mid-body"), "the mid-body Host request was not cancelled");
       return {
         event: "electron-attachment-smoke.passed",
         bytes: source.byteLength,
         sha256: sourceHash,
-        requestCount,
-        originFence: result.originRejected,
-        abortedDownload,
-        oversizedRejected,
-        concurrentBound: concurrent.opened,
-        destroyedRendererCleanup: true,
+        headers: result.headers,
+        cancelled: [...closed],
       };
     } finally {
       if (!window.isDestroyed()) window.destroy();
-      for (const [channel] of handlers) ipcMain.removeHandler(channel);
       protocol.unhandle("app");
+      transport.dispose();
     }
   } finally {
     server.closeAllConnections();
@@ -338,18 +251,10 @@ async function run(): Promise<object> {
   }
 }
 
-function attachmentSpools(): Set<string> {
-  return new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("opensteer-attachment-")));
-}
-
-function sameSpools(left: Set<string>, right: Set<string>): boolean {
-  return left.size === right.size && [...left].every((name) => right.has(name));
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
+async function waitUntil(predicate: () => boolean, failure: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("Binary spool was not cleaned after its renderer was destroyed.");
+  throw new Error(failure);
 }

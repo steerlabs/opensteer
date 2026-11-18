@@ -9,6 +9,7 @@ import {
   iphoneOwnershipRoot,
 } from "./iphone/bridge-paths.js";
 import { forwardMedia } from "./app/media-protocol.js";
+import { forwardHostRoute } from "./app/host-route.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
 import {
@@ -334,7 +335,10 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
     (request) => reportEvent("desktop.app-protocol.slow", request),
-    (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
+    {
+      host: (request) => forwardHostRoute(request, hostTransport),
+      media: (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
+    },
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,
@@ -1397,6 +1401,13 @@ async function runDesktop(
         });
       });
       window.webContents.once("destroyed", () => detachMcpAuthorization());
+      // Electron never tells main's Host route its page went away, so neither does the page's
+      // cancel; what that page asked for ends with it. The bundled app runs in this one window,
+      // and `did-navigate` is a committed main-frame document, never a blocked navigation.
+      const abandonHostRequests = () => hostTransport.cancelForwardedRequests();
+      window.webContents.on("did-navigate", abandonHostRequests);
+      window.webContents.on("render-process-gone", abandonHostRequests);
+      window.webContents.once("destroyed", abandonHostRequests);
       browserPresentation.attachWindow(window);
       passkeys.attachWindow(window);
       window.on("focus", () => {

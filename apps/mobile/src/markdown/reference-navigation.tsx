@@ -1,4 +1,4 @@
-import type { HostClient } from "@opensteer/client/host";
+import { operationFailure, type HostClient } from "@opensteer/client/host";
 import {
   refTarget,
   tabReferenceState,
@@ -18,7 +18,6 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import type { MobileClient } from "../client/mobile-client.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { ReferenceNavigationContext, type ReferenceNavigation } from "./reference-context.js";
-import { readFailure } from "../ui/unavailable-state.js";
 
 /** An open that a newer open, or another Deployment's selection, made moot. */
 class Superseded extends Error {
@@ -188,7 +187,7 @@ export function PersonalReferenceProvider(props: {
       } catch (error) {
         if (error instanceof Superseded || controller.signal.aborted) return;
         // A stale positive the Host now refuses becomes the same unavailable chip.
-        if (link.kind === "reference" && host !== null && readFailure(error) === "unavailable")
+        if (link.kind === "reference" && host !== null && operationFailure(error) === "gone")
           host.references.unavailable(link.reference.id);
         else cannotOpen();
       } finally {

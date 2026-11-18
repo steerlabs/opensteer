@@ -205,13 +205,16 @@ export interface HttpHostClientOptions {
    * no document to read one from, and a renderer may address another Host. */
   readonly baseUrl: string | URL;
   readonly fetch?: Fetch;
-  readonly bufferedResponses?: boolean;
+  /** See `HttpHostApiClientOptions.pacedUploads`. */
+  readonly pacedUploads?: boolean;
   /** Absent means the platform reports nothing, and the client never suspends. */
   readonly lifecycle?: ClientLifecycle;
   readonly random?: () => number;
 
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
+  /** Watches delivery when a socket is proxied across the Desktop bridge. */
+  readonly realtimeLiveness?: { readonly idleMs: number; readonly deadlineMs: number };
   /** Where a platform keeps a record of realtime frames this client could not read. */
   readonly reportRealtimeFrame?: (record: RealtimeFrameDiagnostic) => void;
 
@@ -264,6 +267,9 @@ export class HttpHostClient {
   readonly #prepareSocket: HttpHostClientOptions["prepareSocket"];
   #socketGeneration = 0;
   #probe: { nonce: string; timer: Timer } | undefined;
+  readonly #realtimeLiveness: HttpHostClientOptions["realtimeLiveness"];
+  #lastRealtimeFrameAt = 0;
+  #idleProbeTimer: Timer | undefined;
   #attachDeadline: Timer | undefined;
   #warmRead: AbortController | undefined;
   readonly #cacheDeploymentId: string | undefined;
@@ -627,6 +633,7 @@ export class HttpHostClient {
   constructor(options: HttpHostClientOptions) {
     this.#origin = options.origin;
     this.#prepareSocket = options.prepareSocket;
+    this.#realtimeLiveness = options.realtimeLiveness;
     this.#cacheDeploymentId = options.cacheDeploymentId;
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#stream = new ScopedPersonalStream(options.streamCache, (kind) =>
@@ -671,9 +678,7 @@ export class HttpHostClient {
       baseUrl: this.#baseUrl,
       fetch: this.#fetch,
       personalVersion: scopedPersonalApiVersion,
-      ...(options.bufferedResponses === undefined
-        ? {}
-        : { bufferedResponses: options.bufferedResponses }),
+      ...(options.pacedUploads ? { pacedUploads: true } : {}),
       onSignedOut: () => this.#expireSession(),
       onAuthenticationRequired: () => {
         this.#expireSession();
@@ -1674,6 +1679,7 @@ export class HttpHostClient {
     if (state.synchronized && !old?.synchronized) {
       this.#attempt = 0;
       this.#finishLoad();
+      this.#watchRealtime();
       this.references.reconnect();
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
@@ -3487,6 +3493,7 @@ export class HttpHostClient {
     this.#finishLoad();
     this.#stream.setBackground(true);
     this.#invalidateAttention();
+    this.#clearRealtimeWatch();
     this.#clearProbe();
     for (const { controller } of this.#resourceReads.values()) controller.abort();
     this.#resourceReads.clear();
@@ -3529,7 +3536,35 @@ export class HttpHostClient {
     return this.#visibility === "background" || this.#network === "offline";
   }
 
-  #probeSocket() {
+  #watchRealtime() {
+    const socket = this.#socket;
+    const liveness = this.#realtimeLiveness;
+    if (
+      !liveness ||
+      this.#idleProbeTimer ||
+      this.#probe ||
+      this.#reconnectSuspended() ||
+      socket?.readyState !== 1 ||
+      this.#attachDeadline !== undefined
+    )
+      return;
+    const remaining = liveness.idleMs - (Date.now() - this.#lastRealtimeFrameAt);
+    if (remaining <= 0) {
+      this.#probeSocket(liveness.deadlineMs);
+      return;
+    }
+    this.#idleProbeTimer = setTimeout(() => {
+      this.#idleProbeTimer = undefined;
+      if (this.#socket === socket) this.#watchRealtime();
+    }, remaining);
+  }
+
+  #clearRealtimeWatch() {
+    if (this.#idleProbeTimer) clearTimeout(this.#idleProbeTimer);
+    this.#idleProbeTimer = undefined;
+  }
+
+  #probeSocket(deadlineMs = 3_000) {
     const socket = this.#socket;
     if (this.#probe || this.#reconnectSuspended() || socket?.readyState !== 1) return;
     const nonce = crypto.randomUUID();
@@ -3537,13 +3572,13 @@ export class HttpHostClient {
       nonce,
       timer: setTimeout(() => {
         this.#probe = undefined;
-        if (this.#socket === socket) this.#socketFailed();
-      }, 3_000),
+        if (this.#socket === socket) this.#socketFailed("Liveness probe unanswered");
+      }, deadlineMs),
     };
     try {
       socket.send(JSON.stringify({ type: "client.ping", nonce }));
     } catch {
-      this.#socketFailed();
+      this.#socketFailed("Liveness probe unsendable");
     }
   }
 
@@ -3608,9 +3643,14 @@ export class HttpHostClient {
       return;
     }
     this.#socket = socket;
-    this.#attachDeadline = setTimeout(() => {
-      if (this.#socket === socket) this.#socketFailed();
-    }, 15_000);
+    this.#lastRealtimeFrameAt = Date.now();
+    const liveness = this.#realtimeLiveness;
+    this.#attachDeadline = setTimeout(
+      () => {
+        if (this.#socket === socket) this.#socketFailed("Realtime channel silent");
+      },
+      liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
+    );
     socket.addEventListener("open", () => {
       if (this.#socket !== socket) return;
       try {
@@ -3621,10 +3661,11 @@ export class HttpHostClient {
     });
     socket.addEventListener("message", ({ data }) => {
       if (this.#socket !== socket || typeof data !== "string") return;
+      if (this.#realtimeLiveness) this.#lastRealtimeFrameAt = Date.now();
       const wireBytes = utf8ByteLength(data);
       if (wireBytes > 128 * 1024) {
         this.#frameRejected("frame", wireBytes);
-        this.#socketFailed();
+        this.#socketFailed("Invalid Host protocol frame");
         return;
       }
       let parsed = false;
@@ -3657,7 +3698,7 @@ export class HttpHostClient {
         if (notice.success) this.#applyNotice(notice.data);
       } catch {
         this.#frameRejected(parsed ? "schema" : "json", wireBytes);
-        this.#socketFailed();
+        this.#socketFailed("Invalid Host protocol frame");
       }
     });
     socket.addEventListener("close", (event) => {
@@ -3709,8 +3750,8 @@ export class HttpHostClient {
     });
   }
 
-  #socketFailed() {
-    this.#closeSocket();
+  #socketFailed(reason?: string) {
+    this.#closeSocket(reason);
     this.#update({
       ...this.#snapshot,
       connection: "offline",
@@ -3730,9 +3771,10 @@ export class HttpHostClient {
     );
   }
 
-  #closeSocket() {
+  #closeSocket(reason = "Client closed") {
     this.#socketGeneration++;
     this.#warmRead?.abort();
+    this.#clearRealtimeWatch();
     this.#clearProbe();
     const socket = this.#socket;
     this.#socket = null;
@@ -3743,7 +3785,7 @@ export class HttpHostClient {
     for (const { controller } of this.#resourceReads.values()) controller.abort();
     this.#resourceReads.clear();
     this.#finishLoad();
-    socket?.close(1000, "Client closed");
+    socket?.close(1000, reason);
   }
 
   #finishLoad() {
@@ -3758,7 +3800,10 @@ export class HttpHostClient {
     const deploymentId = this.#snapshot.deploymentId;
     switch (message.type) {
       case "host.pong":
-        if (message.nonce === this.#probe?.nonce) this.#clearProbe();
+        if (message.nonce === this.#probe?.nonce) {
+          this.#clearProbe();
+          this.#watchRealtime();
+        }
         break;
       case "host.error":
         if (!message.error.retryable && message.error.code === "forbidden") this.#expireSession();
@@ -4361,6 +4406,7 @@ export function unwrapRpcResult<Success>(
     code: result.error.code,
     message: result.error.message,
     ...(result.error.reason === undefined ? {} : { reason: result.error.reason }),
+    retryable: result.error.retryable,
     status: rpcErrorStatus(result.error.code),
   });
 }

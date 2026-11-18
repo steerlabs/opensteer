@@ -254,18 +254,21 @@ async function renderOpensteer(): Promise<void> {
                   import("@opensteer/protocol/desktop"),
                 ]).then(
                   ([
-                    { desktopPreviewBridge, desktopPreviewDownloads },
+                    {
+                      desktopPreviewBridge,
+                      desktopPreviewDownloads,
+                      installDesktopPreviewHostRoute,
+                    },
                     { DesktopDownloadsSnapshotSchema },
                   ]) => {
                     const initial = DesktopDownloadsSnapshotSchema.parse({
                       downloads: JSON.parse(downloadsScript),
                     });
                     const downloads = desktopPreviewDownloads(initial.downloads);
+                    const bridge = desktopPreviewBridge("?desktop-preview=first-run", true);
+                    if (bridge) installDesktopPreviewHostRoute(bridge);
                     Object.assign(window, {
-                      opensteerDesktop: {
-                        ...desktopPreviewBridge("?desktop-preview=first-run", true),
-                        downloads,
-                      },
+                      opensteerDesktop: { ...bridge, downloads },
                       opensteerPreviewDownloads: downloads,
                     });
                     return client;
@@ -278,7 +281,10 @@ async function renderOpensteer(): Promise<void> {
               client: InstanceType<typeof MockHostClient>,
               scenario: string,
             ) {
-              const [{ desktopPreviewBridge }, { desktopSummaryFromAccess }] = await Promise.all([
+              const [
+                { desktopPreviewBridge, installDesktopPreviewHostRoute },
+                { desktopSummaryFromAccess },
+              ] = await Promise.all([
                 import("./desktop/desktop-preview-bridge.js"),
                 import("./desktop/desktop-deployment-selection.js"),
               ]);
@@ -307,6 +313,7 @@ async function renderOpensteer(): Promise<void> {
                 host: client.rpc,
               });
               if (!bridge) return client;
+              installDesktopPreviewHostRoute(bridge);
               const access = await bridge.getDeploymentAccessSnapshot();
               const selected = access.deployments.find(
                 ({ id }) => id === access.selectedDeploymentId,
@@ -405,8 +412,11 @@ async function resolveDesktopPreviewBridge() {
   ) {
     return null;
   }
-  const { desktopPreviewBridge } = await import("./desktop/desktop-preview-bridge.js");
-  return desktopPreviewBridge();
+  const { desktopPreviewBridge, installDesktopPreviewHostRoute } =
+    await import("./desktop/desktop-preview-bridge.js");
+  const bridge = desktopPreviewBridge();
+  if (bridge) installDesktopPreviewHostRoute(bridge);
+  return bridge;
 }
 
 void renderOpensteer().catch((error: unknown) => {

@@ -1,7 +1,9 @@
+import type { HostNetwork } from "@opensteer/client/connections";
+import type { HostClient } from "@opensteer/client/host";
 import { ModelSelectionSchema, createId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { hostApiVersionHeader } from "@opensteer/protocol";
+import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,21 +70,10 @@ interface SocketRecord {
     readonly message: (data: string | Uint8Array) => void;
   };
 }
-interface ViewerClient {
-  activateThread(threadId: string): void;
-  dispose(): void;
-  getSnapshot(): {
-    readonly connection: string;
-    readonly transcripts: Record<
-      string,
-      readonly {
-        readonly kind: string;
-        readonly messageKind?: string;
-      }[]
-    >;
-  };
-  load(): Promise<void>;
-}
+type ViewerClient = Pick<
+  HostClient,
+  "activateThread" | "dispose" | "getSnapshot" | "getThreadTranscript" | "load"
+>;
 interface DesktopTransport {
   openWebSocket(
     ownerId: number,
@@ -93,7 +84,7 @@ interface DesktopTransport {
   }>;
   sendWebSocket(ownerId: number, input: unknown): void;
   closeWebSocket(ownerId: number, input: unknown): void;
-  request(input: unknown): Promise<unknown>;
+  cancelRequest(input: unknown): void;
   selection(): Promise<unknown>;
 }
 interface DesktopApp {
@@ -299,7 +290,7 @@ async function journey(
   }
 }
 function assistantReplies(client: ViewerClient, threadId: ThreadId): number {
-  return (client.getSnapshot().transcripts[threadId] ?? []).filter(
+  return (client.getThreadTranscript(threadId)?.getSnapshot().entries ?? []).filter(
     (entry) => entry.kind === "message" && entry.messageKind === "assistant",
   ).length;
 }
@@ -323,6 +314,7 @@ async function desktopApp(
   const desktopTransportPath = "../../../desktop/src/connections/host-transport.js";
   const desktopProjectionPath = "../../../desktop/src/connections/access-projection.js";
   const webTransportPath = "../../../web/src/desktop/desktop-host-transport.js";
+  const hostRoutePath = "../../../desktop/src/app/host-route.js";
   const connectionsPath = "@opensteer/client/connections";
   const testSupportPath = "@opensteer/client/test-support";
   const hostClientPath = "@opensteer/client/host";
@@ -333,6 +325,7 @@ async function desktopApp(
     connections,
     { testDiscoveryEnvelope },
     { HttpHostClient },
+    { forwardHostRoute },
   ] = (await Promise.all([
     import(desktopTransportPath),
     import(desktopProjectionPath),
@@ -340,6 +333,7 @@ async function desktopApp(
     import(connectionsPath),
     import(testSupportPath),
     import(hostClientPath),
+    import(hostRoutePath),
   ])) as [
     {
       DesktopHostTransport: new (options: unknown) => DesktopTransport;
@@ -351,10 +345,13 @@ async function desktopApp(
       createDesktopHostFetch: (
         bridge: OpensteerDesktopBridge,
         canonicalOrigin: string,
+        deploymentId: string,
+        fetch: typeof globalThis.fetch,
       ) => typeof globalThis.fetch;
       createDesktopHostWebSocketFactory: (
         bridge: OpensteerDesktopBridge,
         canonicalOrigin: string,
+        deploymentId: string,
       ) => (url: string) => unknown;
     },
     {
@@ -374,6 +371,9 @@ async function desktopApp(
     },
     {
       HttpHostClient: new (options: Record<string, unknown>) => ViewerClient;
+    },
+    {
+      forwardHostRoute: (request: Request, transport: DesktopTransport) => Promise<Response>;
     },
   ];
   const now = new Date(startedAt).toISOString();
@@ -456,21 +456,8 @@ async function desktopApp(
     const target = new URL(url);
     return new URL(`${target.pathname}${target.search}`, stack.hostOrigin);
   };
-  const network = {
-    request: async (input: {
-      readonly url: string;
-      readonly signal: AbortSignal;
-      readonly request: {
-        readonly body?: string | Blob;
-        readonly method: string;
-        readonly headers: {
-          readonly accept?: string;
-          readonly apiVersion?: string;
-          readonly contentType?: string;
-          readonly idempotencyKey?: string;
-        };
-      };
-    }) => {
+  const network: HostNetwork = {
+    request: async (input) => {
       const headers = new Headers({
         accept: input.request.headers.accept ?? "application/json",
         cookie: stack.sessionCookie,
@@ -478,6 +465,8 @@ async function desktopApp(
       });
       if (input.request.headers.apiVersion)
         headers.set(hostApiVersionHeader, input.request.headers.apiVersion);
+      if (input.request.headers.apiCurrent)
+        headers.set(hostApiCurrentHeader, input.request.headers.apiCurrent);
       if (input.request.headers.contentType)
         headers.set("content-type", input.request.headers.contentType);
       if (input.request.headers.idempotencyKey)
@@ -577,24 +566,8 @@ async function desktopApp(
     return structuredClone(await operation());
   };
   const bridge = {
+    cancelHostRequest: (input: unknown) => invoke(() => transport.cancelRequest(input)),
     closeHostWebSocket: (input: unknown) => invoke(() => transport.closeWebSocket(ownerId, input)),
-    hostRequest: (input: unknown) =>
-      invoke(async () => {
-        try {
-          return {
-            data: await transport.request(input),
-            ok: true,
-          };
-        } catch (error) {
-          if (!(error instanceof connections.HostTransportError)) throw error;
-          return {
-            error: {
-              code: error.code,
-            },
-            ok: false,
-          };
-        }
-      }),
     onHostWebSocketEvent: (listener: (event: unknown) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -605,7 +578,13 @@ async function desktopApp(
   } as unknown as OpensteerDesktopBridge;
   const client = new HttpHostClient({
     baseUrl: new URL(canonicalOrigin),
-    fetch: web.createDesktopHostFetch(bridge, canonicalOrigin),
+    // Main's Host route, reached the way the bundled app's frame reaches it.
+    fetch: web.createDesktopHostFetch(bridge, canonicalOrigin, deploymentId, async (input, init) =>
+      forwardHostRoute(
+        Object.assign(new Request(input, init), { initiatorOrigin: "app://opensteer" }),
+        transport,
+      ),
+    ),
     ...(liveness
       ? {
           realtimeLiveness: liveness,
@@ -613,9 +592,7 @@ async function desktopApp(
       : {}),
     reconnectBaseDelayMs: 20,
     reconnectMaxDelayMs: 200,
-    // The person's app polls; the poll must not be what repairs a channel.
-    refreshIntervalMs: 60_000,
-    webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin),
+    webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin, deploymentId),
   });
   const realtimeSockets = () => sockets.filter((record) => record.path === "/v1/realtime");
   let restoreDeployments: readonly Record<string, unknown>[] | null = null;

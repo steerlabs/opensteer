@@ -321,12 +321,12 @@ class StagedFiles {
       (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
-        const unreachable = retryable(error) && !isNotFound(error);
+        const again = retryable(error) && !isNotFound(error);
         this.#patch(localId, {
-          error: unreachable
-            ? "This file could not be checked. Check your connection and try again."
+          error: again
+            ? "This file couldn't be checked. Try again."
             : "This file is no longer available. Remove it and attach it again.",
-          retryable: unreachable,
+          retryable: again,
           status: "failed",
         });
       },
@@ -563,9 +563,8 @@ function defaultName(mediaType: string): string {
 
 function uploadFailure(error: unknown): string {
   if (error instanceof HostClientRequestError) return error.message;
-  if (error instanceof TypeError) {
-    return "The upload did not finish. Check your connection and try again.";
-  }
+  // A local fault's own words mean nothing to the person, and say nothing about the connection.
+  if (error instanceof TypeError) return "The upload did not finish. Try again.";
   return error instanceof Error && error.message ? error.message : "The upload did not finish.";
 }
 

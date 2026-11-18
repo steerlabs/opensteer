@@ -15,6 +15,7 @@ export * from "./execution-menu.js";
 export * from "./execution-preferences.js";
 export * from "./host-api-client.js";
 export * from "./host-connection.js";
+export * from "./operation-failure.js";
 export * from "./host-session-client.js";
 export * from "./host-snapshot-selectors.js";
 export * from "./host-snapshot-store.js";

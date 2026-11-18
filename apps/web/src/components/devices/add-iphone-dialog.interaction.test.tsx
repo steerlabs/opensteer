@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import type { DeploymentId } from "@opensteer/core";
+import { HostClientRequestError } from "@opensteer/client/host";
 import {
   createMockIphoneSetupPort,
   MockHostClient,
@@ -251,7 +252,14 @@ it("opens Local Network settings through the Mac's offered help action", async (
 });
 
 it("retries a failed Host attach with the original command and finishes", async () => {
-  const dispatch = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({
+  const unanswered = new HostClientRequestError({
+    code: "internal",
+    message: "No answer.",
+    reason: "transport-unreachable",
+    retryable: true,
+    status: 0,
+  });
+  const dispatch = vi.fn().mockRejectedValueOnce(unanswered).mockResolvedValueOnce({
     type: "iphone.screen.attach",
     deviceId: mockIphoneScreenDeviceId,
     generation: 1,

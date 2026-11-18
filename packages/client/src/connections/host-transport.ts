@@ -30,7 +30,7 @@ import {
   hostResponseHeadersTimeoutMs,
   hostResponseStallTimeoutMs,
 } from "./host-response-deadline.js";
-import { HostTransportError } from "./host-transport-error.js";
+import { HostCapacityError, HostTransportError } from "./host-transport-error.js";
 
 const scopedPersonalHeaders = {
   [hostApiVersionHeader]: String(scopedPersonalApiVersion),
@@ -51,7 +51,12 @@ export interface HostTransportRequest {
   /** The initiating client identity must survive a newer main-process selection. */
   readonly expectedDeploymentId?: DeploymentId | undefined;
   readonly expectedAttachmentKey?: string;
-  readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
+  /**
+   * The authorization a caller admitted this request under (`retainAuthorization`),
+   * checked again before every send, a replay after recovery included.
+   */
+  readonly admitted?: () => void;
+  readonly body?: string | Blob | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array> | undefined;
   readonly credentials?: "omit";
   readonly redirect?: "manual";
   readonly headers: {
@@ -189,10 +194,33 @@ export class HostTransport {
     return this.#fence.subscribe(listener);
   }
 
+  /**
+   * Holds a caller to this transport's session and attachment as they are now,
+   * before anything has resolved; `retainAuthorization` also pins the route.
+   */
+  retainSelection(): () => void {
+    const generation = this.#sessionGeneration;
+    const attachmentGeneration = this.#fence.generation;
+    return () => {
+      if (generation !== this.#sessionGeneration || attachmentGeneration !== this.#fence.generation)
+        throw new HostTransportError("deployment-changed");
+    };
+  }
+
+  /**
+   * Holds a caller to the session and attachment it resolved. The attachment
+   * generation is monotone, so a selection that moves away and back still
+   * fails; a refreshed token on the same session and route does not.
+   */
   retainAuthorization(selected: SelectedAttachment): () => void {
     const generation = this.#sessionGeneration;
+    const attachmentGeneration = this.#fence.generation;
     return () => {
-      if (generation !== this.#sessionGeneration || selected.resolved.key !== this.currentKey())
+      if (
+        generation !== this.#sessionGeneration ||
+        attachmentGeneration !== this.#fence.generation ||
+        selected.resolved.key !== this.currentKey()
+      )
         throw new HostTransportError("deployment-changed");
       if (selected.resolved.teamRuntime?.signal.aborted)
         throw new HostTransportError("deployment-changed");
@@ -226,7 +254,7 @@ export class HostTransport {
         ? this.#activeAppStreams >= maximumConcurrentAppStreams
         : this.#activeRequests >= maximumConcurrentRequests
     ) {
-      throw new Error(
+      throw new HostCapacityError(
         appStream ? "The app stream limit is full." : "The Host request limit is full.",
       );
     }
@@ -236,6 +264,7 @@ export class HostTransport {
       const selected = await this.current();
       if (sessionGeneration !== this.#sessionGeneration)
         throw new HostTransportError("deployment-changed");
+      request.admitted?.();
       const assertCurrent = this.retainAuthorization(selected);
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
@@ -477,6 +506,7 @@ export class HostTransport {
   ): Promise<Response> {
     signal.throwIfAborted();
     resolved.teamRuntime?.assertCurrent();
+    request.admitted?.();
     let response: Response;
     try {
       response = await this.#network.request({

@@ -17,6 +17,7 @@ import {
   fullAccessDeclineLabel,
   fullAccessRequestBody,
   isQuestionRequest,
+  operationFailure,
   passwordSignInAccountList,
   passwordSignInAllowRemembers,
   passwordSignInConsent,
@@ -26,6 +27,7 @@ import {
   passwordSignInPrivacy,
   type BrowserAccessSelection,
   type HostClient,
+  type OperationFailure,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
   type RequestAsker,
@@ -70,7 +72,7 @@ import { HomeMenu } from "../screens/profile-home-menu.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
-import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
@@ -218,7 +220,7 @@ function SubscribedRequestSheet(props: {
 type TargetedRead =
   | { readonly state: "loading" }
   | { readonly state: "read"; readonly request: Request | null }
-  | { readonly state: "offline" | "failed" };
+  | { readonly state: "failed"; readonly failure: OperationFailure };
 
 /**
  * A Request a link named, which may have been settled long ago. One still
@@ -238,6 +240,7 @@ function ReferencedRequest(props: {
   const [read, setRead] = useState<TargetedRead>({ state: "loading" });
   // The conversation's Requests stay live while it is open, so an answer given here shows.
   const transcript = useThreadTranscript(hostClient, threadId);
+  const network = useHostSelector(hostClient, (snapshot) => snapshot.network);
   useEffect(() => {
     let current = true;
     setRead({ state: "loading" });
@@ -245,8 +248,10 @@ function ReferencedRequest(props: {
       (request) => current && setRead({ state: "read", request }),
       (error: unknown) => {
         if (!current) return;
-        const failure = readFailure(error);
-        setRead(failure === "unavailable" ? { state: "read", request: null } : { state: failure });
+        const failure = operationFailure(error);
+        setRead(
+          failure === "gone" ? { state: "read", request: null } : { state: "failed", failure },
+        );
       },
     );
     return () => {
@@ -289,8 +294,10 @@ function ReferencedRequest(props: {
   return (
     <View style={styles.referenced}>
       <UnavailableState
+        failure={read.state === "read" ? "gone" : read.failure}
+        network={network}
         onBack={() => navigation.goBack()}
-        onRetry={read.state === "read" ? undefined : () => setAttempt((count) => count + 1)}
+        onRetry={() => setAttempt((count) => count + 1)}
       />
     </View>
   );

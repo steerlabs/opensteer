@@ -1,5 +1,5 @@
-import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
-import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
+import { failureNotice, type HostClient, type TranscriptFileState } from "@opensteer/client/host";
+import { TranscriptImageContext, useAssetImage, useHostSelector } from "@opensteer/client/react";
 import type { FileSource } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { Image } from "expo-image";
@@ -81,7 +81,8 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
     );
     return () => controller.abort();
   }, [attempt, client, params.threadId, source]);
-  const file = shown.status === "ok" ? shown : shown.status === "offline" ? shown.cached : null;
+  const network = useHostSelector(client, (snapshot) => snapshot.network);
+  const file = shown.status === "ok" ? shown : shown.status === "unreachable" ? shown.cached : null;
   const path = source.kind === "path" ? source.path : null;
   const name = file?.name ?? baseName(path) ?? "Attachment";
   const imageSource =
@@ -149,14 +150,19 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
         <Skeleton />
       ) : shown.status === "unavailable" ? (
         <UnavailableState onBack={() => navigation.goBack()} />
-      ) : shown.status === "failed" || (shown.status === "offline" && file === null) ? (
-        <UnavailableState onBack={() => navigation.goBack()} onRetry={retry} />
+      ) : shown.status === "failed" || (shown.status === "unreachable" && file === null) ? (
+        <UnavailableState
+          failure={shown.status === "failed" ? "failed" : "unavailable"}
+          network={network}
+          onBack={() => navigation.goBack()}
+          onRetry={retry}
+        />
       ) : file === null ? null : file.preview.kind === "text" ? (
         <>
-          {shown.status === "offline" ? (
+          {shown.status === "unreachable" ? (
             <Banner
               action={{ label: "Retry", onPress: retry }}
-              text="Offline. Showing a saved copy."
+              text={`${failureNotice("unavailable", network).title}. This is the copy you opened before.`}
             />
           ) : null}
           {file.preview.truncated ? (

@@ -1,5 +1,5 @@
 import { TeamEntryOutcomeError, TeamRuntimeOwner } from "@opensteer/client/team";
-import { HostVersionMismatchError } from "@opensteer/client/connections";
+import { ClientOperationError, HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError } from "@opensteer/client/host";
 import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
@@ -89,7 +89,16 @@ function fixture(
               ? async (input: never) => {
                   if (bootstrapCalls++ > 0 && bootstrapFailures > 0) {
                     bootstrapFailures--;
-                    throw new Error("Team offline");
+                    // What the client returns when no answer came back from the team.
+                    return {
+                      ok: false,
+                      error: {
+                        code: "internal",
+                        message: "The Host could not be reached.",
+                        reason: "transport-unreachable",
+                        retryable: true,
+                      },
+                    };
                   }
                   return target["team.bootstrap.get"](input);
                 }
@@ -447,7 +456,7 @@ describe("adding a computer's team to the phone", () => {
     const exchange = vi.fn(async () => {
       if (mode === "not-member")
         throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
-      if (mode === "outage") throw new Error("Account unreachable");
+      if (mode === "outage") throw new ClientOperationError("Account unreachable", "transient");
       return { admitted: false, member: {} };
     });
     const browser = vi.fn(async (held: DeploymentConnection) => ({
@@ -552,7 +561,12 @@ it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
       ...(reason ? { reason } : {}),
     });
     expect(teamFailure(error)).toBe(
-      reason === "not-a-member" ? "join" : reason === "removed" ? "removed" : "offline",
+      reason === "not-a-member"
+        ? "join"
+        : reason === "removed"
+          ? "removed"
+          : // The team answered: a refusal is never the team being out of reach.
+            "failed",
     );
   },
 );
