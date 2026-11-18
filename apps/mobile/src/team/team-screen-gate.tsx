@@ -190,8 +190,8 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
           : issue.code === "open-failed"
             ? "computer"
             : issue.code === "update-app" || issue.code === "update-server"
-            ? "update"
-            : "signed-out"
+              ? "update"
+              : "signed-out"
       }
       title={copy.title}
     />

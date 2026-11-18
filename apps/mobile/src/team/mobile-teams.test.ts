@@ -229,12 +229,21 @@ describe("the one team socket a phone keeps", () => {
     try {
       const session = await f.teams.session(mockFamilyTeamId);
       await f.teams.select(mockFamilyTeamId);
-      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("offline");
+      expect(session.connection.getSnapshot()).toMatchObject({
+        phase: "recovering",
+        showInterruption: false,
+        issue: { code: "connection", reason: "unreachable" },
+      });
       expect(session.getSnapshot().bootstrap).toBeNull();
       await f.teams.select(mockFamilyTeamId);
       expect(session.getSnapshot().bootstrap).not.toBeNull();
       expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live");
-      expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+      await vi.waitFor(
+        () => expect(f.sockets()[mockFamilyTeamId], "team socket never opened").toBe(1),
+        {
+          timeout: 1_000,
+        },
+      );
     } finally {
       f.teams.dispose();
     }
@@ -561,7 +570,7 @@ describe("adding a computer's team to the phone", () => {
       }
       if (mode === "not-member" || mode === "outage") {
         await expect(adding).rejects.toThrow();
-        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
+        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "failed");
       } else await adding;
       expect(browser).toHaveBeenCalledTimes(
         mode.endsWith("no-account") || mode === "old-team" ? 1 : 0,

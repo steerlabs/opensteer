@@ -1,7 +1,12 @@
 import { OpensteerError } from "@opensteer/core";
 import { HostClientRequestError } from "../host/client.js";
 import { describe, expect, it } from "vitest";
-import { classifyClientFailure, clientEndpointUnavailable, hostUnanswered, isMissingClientResource } from "./operation-error.js";
+import {
+  classifyClientFailure,
+  clientEndpointUnavailable,
+  hostUnanswered,
+  isMissingClientResource,
+} from "./operation-error.js";
 import { HostTransportError } from "./host-transport-error.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { teamRpcResult } from "../team/rpc-result.js";

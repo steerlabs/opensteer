@@ -42,9 +42,7 @@ function imageFile(bytes: Uint8Array, name: string, mediaType: string): File {
   return new File([bytes as Uint8Array<ArrayBuffer>], fileName(name), { type: mediaType });
 }
 
-function unavailable(
-  status: "unavailable" | "unreachable" | "failed",
-): ImageUnavailableError {
+function unavailable(status: "unavailable" | "unreachable" | "failed"): ImageUnavailableError {
   return new ImageUnavailableError(
     // Offline is the pill's to say; the image says only that it couldn't be read.
     status === "unavailable" ? "This image isn't available anymore." : "Couldn't read this image.",

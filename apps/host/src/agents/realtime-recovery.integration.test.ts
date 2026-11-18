@@ -549,7 +549,7 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-  openHostWebSocket: (input: { readonly path: string; readonly expectedDeploymentId: string }) =>
+    openHostWebSocket: (input: { readonly path: string; readonly expectedDeploymentId: string }) =>
       invoke(() => transport.openWebSocket(ownerId, input, toRenderer)),
     sendHostWebSocket: (input: unknown) => invoke(() => transport.sendWebSocket(ownerId, input)),
   } as unknown as OpensteerDesktopBridge;

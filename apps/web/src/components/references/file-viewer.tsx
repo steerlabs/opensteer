@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { fileIcon, type FileOpenInput } from "@opensteer/client/references";
 import type { ThreadId } from "@opensteer/core";
@@ -20,6 +21,7 @@ import { openImageRead, useImageActions, type ImageActions } from "../image-acti
 import { Icon } from "../icon.js";
 import { NativeBrowserOverlay } from "../native-browser-overlays.js";
 import { referenceGlyphs } from "./reference-glyphs.js";
+import { Unavailable } from "./unavailable.js";
 
 /** Each line's height in the text view; lines are drawn only near the screen. */
 export const fileLineHeight = 20;
@@ -214,35 +216,20 @@ function FileBody({
     );
   switch (state.status) {
     case "unavailable":
-      return (
-        <ViewerState
-          body="It may have been moved or deleted, or it's outside what Opensteer can show."
-          icon="help-circle"
-          title="This isn't available"
-        />
-      );
+      return <Unavailable />;
     case "failed":
-      return (
-        <ViewerState
-          action={<RetryButton retry={retry} />}
-          body="Try again in a moment."
-          icon="alert-circle"
-          title="Couldn't open this file"
-        />
-      );
+      return <Unavailable unloaded="this file" onRetry={retry} />;
     case "unreachable":
       return state.cached && state.cached.preview.kind === "text" ? (
         <>
-          {/* The copy opened before stays; the pill says why it isn't fresher. */}
+          <p className="file-viewer__banner" role="status">
+            Showing the copy you opened before.
+            <RetryButton retry={retry} />
+          </p>
           <TextLines input={input} text={state.cached.preview.text} />
         </>
       ) : (
-        <ViewerState
-          action={<RetryButton retry={retry} />}
-          body="It will open once this file can be read."
-          icon="file"
-          title="Couldn't open this file yet"
-        />
+        <Unavailable unloaded="this file" onRetry={retry} />
       );
     case "ok": {
       const { preview } = state;
@@ -489,15 +476,16 @@ function DownloadButton({
           if (mounted.current)
             setError(
               result.status === "unavailable"
-                ? "This file isn't available."
-                : "Couldn't download this file.",
+                ? presentClientIssue({ code: "access-lost" }).title
+                : presentClientIssue({ code: "rejected", action: "download this file" }).title,
             );
           return;
         }
         saveFile(result.bytes as Uint8Array<ArrayBuffer>, name);
       })
       .catch(() => {
-        if (mounted.current) setError("Couldn't download this file.");
+        if (mounted.current)
+          setError(presentClientIssue({ code: "rejected", action: "download this file" }).title);
       })
       .finally(() => {
         if (mounted.current) setPending(false);

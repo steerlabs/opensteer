@@ -108,11 +108,7 @@ function useRunLoad(
       // Gone or not the reader's is a fact about the run; anything else may pass.
       (error: unknown) =>
         current &&
-        setState(
-          isMissingClientResource(classifyClientFailure(error))
-            ? "unavailable"
-            : "failed",
-        ),
+        setState(isMissingClientResource(classifyClientFailure(error)) ? "unavailable" : "failed"),
     );
     return () => {
       current = false;

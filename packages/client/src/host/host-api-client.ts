@@ -300,8 +300,6 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     answered = true;
-    options.assertResponseCurrent?.(response);
-    call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
       const metadata = TranscriptFileContentSchema.shape.metadata.parse({
@@ -311,6 +309,8 @@ async function request<Name extends keyof typeof hostApi>(
         sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
         truncated: false,
       });
+      options.assertResponseCurrent?.(response);
+      call?.signal?.throwIfAborted();
       return {
         data: declaration.success.parse({
           bytes,
@@ -327,6 +327,8 @@ async function request<Name extends keyof typeof hostApi>(
       // Neither decodes to an envelope; the status below says what kind of answer it was.
     }
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
+    options.assertResponseCurrent?.(response);
+    call?.signal?.throwIfAborted();
     if (
       parsed.success &&
       (!authenticationRequired || (!parsed.data.ok && parsed.data.error.code === "unauthorized"))

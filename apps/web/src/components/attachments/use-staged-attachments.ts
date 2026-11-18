@@ -1,4 +1,8 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
+import {
+  classifyClientFailure,
+  isMissingClientResource,
+  type ClientFailure,
+} from "@opensteer/client/connections";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   AttachmentMediaTypeSchema,
@@ -180,8 +184,13 @@ class StagedFiles {
   }
 
   /** Whether a failure is the connection's, and if so, parks the file as waiting. */
-  #interrupted(localId: string, record: StagedRecord, revision: number, error: unknown): boolean {
-    if (classifyClientFailure(error).kind !== "transport") return false;
+  #interrupted(
+    localId: string,
+    record: StagedRecord,
+    revision: number,
+    failure: ClientFailure,
+  ): boolean {
+    if (failure.kind !== "transport") return false;
     const connection = this.client.connection.getSnapshot();
     record.interruptedAt = revision;
     if (connection.phase === "ready") {
@@ -344,10 +353,13 @@ class StagedFiles {
         (error: unknown) => {
           if (controller.signal.aborted) return;
           record.controller = null;
-          if (this.#interrupted(localId, record, revision, error)) return;
+          const failure = classifyClientFailure(error);
+          if (this.#interrupted(localId, record, revision, failure)) return;
           this.#patch(localId, {
             error: uploadFailure(),
-            retryable: retryable(error),
+            retryable:
+              !(error instanceof UploadPreparationError) &&
+              (failure.provenance !== "host" || failure.retryable || failure.code === "not_found"),
             status: "failed",
           });
         },
@@ -382,13 +394,14 @@ class StagedFiles {
       (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
-        if (this.#interrupted(localId, record, revision, error)) return;
-        const again = retryable(error) && !isNotFound(error);
+        const failure = classifyClientFailure(error);
+        if (this.#interrupted(localId, record, revision, failure)) return;
+        const gone = isMissingClientResource(failure);
         this.#patch(localId, {
-          error: again
-            ? "This file couldn't be checked. Try again."
-            : "This file is no longer available. Remove it and attach it again.",
-          retryable: again,
+          error: gone
+            ? "This file is no longer available. Remove it and attach it again."
+            : "This file couldn't be checked. Try again.",
+          retryable: !gone,
           status: "failed",
         });
       },
@@ -629,16 +642,4 @@ function defaultName(mediaType: string): string {
 /** The file's own fact, never the exception's text or the connection's. */
 function uploadFailure(): string {
   return "Couldn’t upload this file.";
-}
-
-function isNotFound(error: unknown): boolean {
-  return classifyClientFailure(error).code === "not_found";
-}
-
-function retryable(error: unknown): boolean {
-  if (error instanceof UploadPreparationError) return false;
-  const failure = classifyClientFailure(error);
-  // Anything the Host did not answer, such as a dropped connection, may work next time.
-  if (failure.provenance !== "host") return true;
-  return failure.retryable || failure.code === "not_found";
 }

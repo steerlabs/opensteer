@@ -11,7 +11,12 @@ import { useAppLinks } from "../ui/app-links-context.js";
 import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
-import { useHostValue, useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import {
+  useHostValue,
+  useMobileClient,
+  useMobileState,
+  useSelectedHostClient,
+} from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
@@ -22,7 +27,12 @@ import {
   type TeamLinkIntent,
 } from "./mobile-teams.js";
 import { classifyClientFailure, clientEndpointUnavailable } from "@opensteer/client/connections";
-import { clientIssueActions, clientIssueFromFailure, presentClientIssue, type ClientIssue } from "@opensteer/client/feedback";
+import {
+  clientIssueActions,
+  clientIssueFromFailure,
+  presentClientIssue,
+  type ClientIssue,
+} from "@opensteer/client/feedback";
 import { ConnectionGate } from "../ui/connection-gate.js";
 import { useShellGate } from "../ui/shell-gate.js";
 import { UnavailableState } from "../ui/unavailable-state.js";
@@ -31,6 +41,8 @@ import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from ".
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
+type InviteState = InviteView | { readonly kind: "unreachable" };
+const selectNetwork = (snapshot: HostSnapshot) => snapshot.network;
 
 /** Where getting Opensteer for a computer starts. */
 const downloadPage = "https://opensteer.com/download";
@@ -138,9 +150,11 @@ function Invite(props: {
   const [computerId, setComputerId] = useState<string | null>(shown);
   const computers = state.rows.map((row) => ({ id: row.deploymentId, name: row.name }));
   const joinAs = state.account.account.identity?.email ?? "your Opensteer Account";
-  const [invite, setInvite] = useState<InviteView>({ kind: "checking" });
+  const [invite, setInvite] = useState<InviteState>({ kind: "checking" });
   const [attempt, setAttempt] = useState(0);
   const tile = (name: string) => ({ id: intent.origin, name, imageUri: null });
+  const network = useHostValue(state.selection.hostClient, selectNetwork, "unknown");
+  useShellGate(invite.kind === "unreachable");
 
   useEffect(() => {
     let current = true;
@@ -163,7 +177,7 @@ function Invite(props: {
           computers: [],
           computerId: null,
         }),
-      (error: unknown) => current && setInvite(inviteFailure(error, host, tile(host))),
+      (error: unknown) => current && setInvite(inviteFailure(error, tile(host))),
     );
     return () => {
       current = false;
@@ -181,6 +195,17 @@ function Invite(props: {
     });
     return () => subscription.remove();
   }, [coordinator, inBrowser]);
+
+  const retry = () => setAttempt((count) => count + 1);
+  if (invite.kind === "unreachable")
+    return (
+      <OpenPlaceGate
+        failure={{ code: "connection", target: "team", reason: "unreachable" }}
+        network={network}
+        onBack={() => navigation.goBack()}
+        onRetry={retry}
+      />
+    );
 
   const shownInvite: InviteView =
     invite.kind === "ready"
@@ -211,20 +236,20 @@ function Invite(props: {
                 computerId === null ? null : DeploymentIdSchema.parse(computerId),
             }),
           )
-          .catch((error: unknown) => setInvite(inviteFailure(error, host, invite.team)));
+          .catch((error: unknown) => setInvite(inviteFailure(error, invite.team)));
       }}
       onOpenTeam={() => {
         const team = teams.teamAt(intent.origin);
         if (team !== null)
           void openTeamGeneral(client, teams, DeploymentIdSchema.parse(team.teamId));
       }}
-      onRetry={() => setAttempt((next) => next + 1)}
+      onRetry={retry}
       onUpdate={() => void Linking.openURL(downloadPage)}
     />
   );
 }
 
-function inviteFailure(error: unknown, host: string, team: TeamTileView): InviteView {
+function inviteFailure(error: unknown, team: TeamTileView): InviteState {
   if (error instanceof HostVersionMismatchError)
     return { kind: error.code === "client-too-old" ? "update-app" : "update-server", team };
   const failure = classifyClientFailure(error);
@@ -236,13 +261,11 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
     (failure.kind === "rejection" && ["not_found", "forbidden", "conflict"].includes(failure.code))
   )
     return { kind: "no-longer-works", team, inviter: null };
-  if (clientEndpointUnavailable(failure)) return { kind: "unreachable", host };
+  if (clientEndpointUnavailable(failure)) return { kind: "unreachable" };
   const state = teamFailure(error);
   if (state === "update-app" || state === "update-server") return { kind: state, team };
   return { kind: "failed", detail: teamFailureWords(error, "Joining didn't finish.") };
 }
-
-const selectNetwork = (snapshot: HostSnapshot) => snapshot.network;
 
 /** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
@@ -255,7 +278,7 @@ function OpenPlace(props: {
   const { captureNavigationIntent } = useAppLinks();
   const [failure, setFailure] = useState<ClientIssue | null>(null);
   useShellGate(true);
-  const network = useHostValue(useMobileState().selection.hostClient, selectNetwork, "unknown");
+  const network = useHostValue(useSelectedHostClient(), selectNetwork, "unknown");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;

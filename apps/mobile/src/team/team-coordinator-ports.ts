@@ -5,11 +5,7 @@ import {
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
 } from "@opensteer/client/connections";
-import {
-  PersonalTeamLinks,
-  unwrapRpcResult,
-  type HostClient,
-} from "@opensteer/client/host";
+import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import {
   previewTeamInvite,
   revokeOwnAgentLinks,

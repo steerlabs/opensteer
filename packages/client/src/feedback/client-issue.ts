@@ -86,6 +86,8 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "browser-session-closed": "This tab is closed.",
   "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
   "resource-exhausted": "Too many messages waiting.",
+  "team-file-too-large": "Files can be up to 100 MB.",
+  "team-file-capacity": "Too many files are moving at once. Try again in a moment.",
   "integration-key-rejected": "The service turned this key away.",
   "integration-key-unchecked": "Opensteer couldn't check this key. Check it and its permissions.",
 };
@@ -143,11 +145,7 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
             "It may have been deleted, or you don't have access.",
           );
     case "open-failed":
-      return result(
-        `Couldn't open ${issue.resource ?? name}`,
-        "retry",
-        "Try again in a moment.",
-      );
+      return result(`Couldn't open ${issue.resource ?? name}`, "retry", "Try again in a moment.");
     case "read-failed":
       return result(
         `Couldn't load ${issue.resource ?? "this"}.`,
@@ -211,7 +209,7 @@ export function presentReadFailure(error: unknown, resource: string): string {
   const issue = clientIssue(error, { operation: "read", label: resource });
   if (!issue) return "";
   const { title, detail } = presentClientIssue(issue);
-  return detail ? `${title} ${detail}` : title;
+  return detail ? `${title}${title.endsWith(".") ? "" : "."} ${detail}` : title;
 }
 export function presentDeliveryActions(): {
   readonly edit: string;

@@ -146,7 +146,10 @@ it.each([
       expect(action).toBeTruthy();
       await act(async () => action.click());
       expect(
-        state === "signed-out" || state === "offline" || state === "failed" || state === "update-server"
+        state === "signed-out" ||
+          state === "offline" ||
+          state === "failed" ||
+          state === "update-server"
           ? h.select
           : state === "update-app"
             ? h.openURL

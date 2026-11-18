@@ -10,7 +10,11 @@ import {
   HostedTeamViewSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opensteer/client/auth";
-import { AccountRequestError, classifyClientFailure, hostUnanswered } from "@opensteer/client/connections";
+import {
+  AccountRequestError,
+  classifyClientFailure,
+  hostUnanswered,
+} from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
   PersonalTeamLinks,

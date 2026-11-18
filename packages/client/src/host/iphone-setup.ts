@@ -1,4 +1,7 @@
-import { classifyClientFailure, clientEndpointUnavailable } from "../connections/operation-error.js";
+import {
+  classifyClientFailure,
+  clientEndpointUnavailable,
+} from "../connections/operation-error.js";
 import { DesktopIphoneSetupReasonSchema } from "@opensteer/protocol/desktop";
 import {
   IphoneScreenAttachResultSchema,

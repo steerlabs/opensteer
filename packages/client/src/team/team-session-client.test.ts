@@ -235,7 +235,7 @@ describe("team synchronization", () => {
       await vi.waitFor(
         () =>
           expect(f.client.getSnapshot().error).toBe(
-            "Couldn't load this thread. It may have been deleted, or you don't have access.",
+            "This isn't available. It may have been deleted, or you don't have access.",
           ),
         { timeout: 1000 },
       );
