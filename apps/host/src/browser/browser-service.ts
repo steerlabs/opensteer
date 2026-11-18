@@ -315,6 +315,7 @@ export interface BrowserSessionRepository {
     get(id: RequestId): Promise<Request | null>;
     resolveBrowserRequest(input: {
       readonly requestId: RequestId;
+      readonly expectedRevision: string;
       readonly resolvedBy: UserId;
       readonly settlementSessionId?: string;
       readonly response: RequestResponse;
@@ -4028,6 +4029,7 @@ export class BrowserService {
 
   async resolveRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
@@ -4050,6 +4052,7 @@ export class BrowserService {
     }
     const resolved = await this.#repository.requests.resolveBrowserRequest({
       requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
       resolvedBy: input.resolvedBy,
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response: await this.#profileRequestResponse(input.response, pending),

@@ -4669,6 +4669,7 @@ describe("BrowserService", () => {
     } as const;
     const resolved = await service.resolveRequest({
       requestId: requested.requestId,
+      expectedRevision: "1",
       resolvedBy: ownerId,
       response,
     });
@@ -4699,6 +4700,7 @@ describe("BrowserService", () => {
     await expect(
       service.resolveRequest({
         requestId: requested.requestId,
+        expectedRevision: "1",
         resolvedBy: ownerId,
         response: { kind: "external", value: { decision: "declined" } },
       }),
@@ -4726,7 +4728,12 @@ describe("BrowserService", () => {
     const pending = await service.requestAccess(request);
     const response = { kind: "external", value: { decision: "declined" } } as const;
     expect(
-      await service.resolveRequest({ requestId: pending.requestId, resolvedBy: ownerId, response }),
+      await service.resolveRequest({
+        requestId: pending.requestId,
+        expectedRevision: "1",
+        resolvedBy: ownerId,
+        response,
+      }),
     ).toMatchObject({ profile: null, request: { response, status: "declined" } });
     await expect(service.listAgentProfiles(ownerId)).resolves.toEqual([]);
     await expect(service.requestAccess(request)).resolves.toEqual({
