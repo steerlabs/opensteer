@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { ClientConnection, ClientConnectionState } from "@opensteer/client/connections";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
@@ -586,13 +586,19 @@ describe("ComputerUseBlock", () => {
       view: view({}),
       dispatch: async (command) => {
         if (command.type === "integration.computer.setup.respond")
-          throw new Error("Your session changed. Review this approval again.");
+          throw new HostClientRequestError({
+            code: "unauthorized",
+            status: 401,
+            message: "Your session changed. Review this approval again.",
+          });
         return { type: command.type, request: { id: setupRequestId } };
       },
     });
     await click(radio(container, "automatic"));
     await click(button(dialog(), "Allow"));
-    expect(dialog().textContent).toContain("Your session changed.");
+    // Said in the presenter's words, never the Host's own sentence.
+    expect(dialog().textContent).toContain("Signed out");
+    expect(dialog().textContent).not.toContain("Your session changed.");
     expect(radio(container, "automatic").checked).toBe(false);
   });
 

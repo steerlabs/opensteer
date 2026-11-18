@@ -1251,7 +1251,7 @@ describe("mobile pages", () => {
     });
   });
 
-  it("says nothing of the connection when a page refuses a control, then gives the page's own reason", async () => {
+  it("says nothing of the connection when a page refuses a control, then says the page refused it", async () => {
     const sendBrowserCommand = vi.fn(() => {
       throw new Error("The targeted browser control is not synchronized.");
     });
@@ -1268,9 +1268,13 @@ describe("mobile pages", () => {
     expect(() => press(container, "Reload")).not.toThrow();
     expect(container.textContent).not.toContain("reconnecting");
     expect(container.textContent).not.toContain("Page unavailable");
-    feed = { ...liveFeed, admissionId: "admission-2", inputError: "A dialog is open on the page." };
+    feed = {
+      ...liveFeed,
+      admissionId: "admission-2",
+      inputError: { code: "rejected", action: "send that to the page", done: "sent" },
+    };
     await render();
-    expect(container.textContent).toContain("A dialog is open on the page.");
+    expect(container.textContent).toContain("Couldn't send that to the page.");
   });
 
   it("closes the page keyboard when the page refuses what was typed, and types afresh after", async () => {
