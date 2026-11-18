@@ -13,7 +13,12 @@ import {
   type DesktopHostWebSocketEvent,
 } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
-import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import {
+  hostApiVersionHeader,
+  sessionBoundMutationApiVersion,
+  teamApiVersion,
+  teamApiVersionHeader,
+} from "@opensteer/deployment-authority";
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
@@ -70,6 +75,7 @@ describe("DesktopHostTransport", () => {
       );
       expect(request.mock.lastCall?.[0].request.headers.additional).toMatchObject({
         [expectedMutationSessionHeader]: expectedSessionId,
+        [hostApiVersionHeader]: String(sessionBoundMutationApiVersion),
       });
     } finally {
       transport.dispose();

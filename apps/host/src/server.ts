@@ -3234,7 +3234,6 @@ export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
     | "assets"
-    | "attachments"
     | "authenticator"
     | "personalRemoteAccess"
     | "passkeys"
@@ -3246,12 +3245,10 @@ export function advertisedCapabilities(
     "devices-v1",
     ...(dependencies.deviceDrivers ? ["device-drivers-v1" as const] : []),
     "automatic-models-v1",
-    "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
     "thread-titles-v1",
     "message-origin-v1",
-    "session-bound-mutations-v1",
     "task-marks-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",

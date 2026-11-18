@@ -1,4 +1,4 @@
-import { clientScopeKey } from "@opensteer/client/connections";
+import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -7,6 +7,7 @@ import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useVoiceCursor } from "./voice-cursor.js";
 import {
   hostMessageOutbox,
+  assertMessageLogin,
   changedTaskDraft,
   startAccountSignIn,
   type AccountSignInFlow,
@@ -143,6 +144,13 @@ import { useToast } from "./toast.js";
 import { useTeams } from "../team/team-attachments.js";
 import { presentFailure } from "./use-action.js";
 
+interface TaskStartDraft {
+  readonly draftKey: string | null;
+  readonly draftRevision: string | undefined;
+  readonly confirmLegacy: boolean;
+  readonly scope: ClientScope | null;
+}
+
 export interface ShellContext {
   /**
    * Starts a task and keeps its first message, words and files, in the
@@ -152,10 +160,7 @@ export interface ShellContext {
     message: PendingSubmission,
     selection: ExecutionSelection | null,
     accessMode: ThreadAccessMode,
-    /** The draft the task starts from, which keeps the start across retries. */
-    draftKey: string | null,
-    confirmLegacy?: boolean,
-    draftRevision?: string,
+    draft: TaskStartDraft,
   ) => Promise<{
     readonly id: string;
     readonly draftGeneration: string;
@@ -692,21 +697,17 @@ export function AppShell({
       message: PendingSubmission,
       selection: ExecutionSelection | null,
       accessMode: ThreadAccessMode,
-      draftKey: string | null,
-      confirmLegacy?: boolean,
-      draftRevision?: string,
+      { draftKey, confirmLegacy, draftRevision, scope }: TaskStartDraft,
     ) => {
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
       const outbox = hostMessageOutbox(hostClient);
-      const scope = hostClient.connection.getSnapshot().scope;
       if (!outbox || !draftKey || !scope) throw storageUnavailable();
       if (!draftRevision) throw changedTaskDraft();
       const scopeKey = clientScopeKey(scope)!;
-      const assertLogin = () => {
-        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey)
-          throw storageUnavailable();
-      };
+      const assertLogin = () =>
+        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+      assertLogin();
       const held = composerDrafts.read(draftKey);
       if (
         held?.startGeneration &&
@@ -734,7 +735,7 @@ export function AppShell({
         },
         assertCurrent,
         legacyStart: composerDrafts.read(draftKey)?.start,
-        confirmLegacy: confirmLegacy === true,
+        confirmLegacy,
         creation: selection && {
           accessMode,
           environmentId: selection.environmentId,
@@ -746,7 +747,13 @@ export function AppShell({
         creationKey: () => mutationIdempotencyKey("thread"),
         messageKey: message.idempotencyKey,
         createThread: (creation) => beginCreation(() => hostClient.createThread(creation, scope)),
-        enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
+        enqueue: (command) =>
+          outbox.enqueue(command, {
+            handoff: true,
+            expectedLogin: scope,
+            assertCurrent,
+            verifyDraftAfterCommit: true,
+          }),
         hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });
       assertLogin();

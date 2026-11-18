@@ -1,5 +1,5 @@
-import { clientScopeKey } from "@opensteer/client/connections";
-import { changedTaskDraft, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
+import type { ClientScope } from "@opensteer/client/connections";
+import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
@@ -547,6 +547,7 @@ export function Composer(props: {
     useMobileClient().usageNotices,
   );
   const sendMessage = async (
+    scope: ClientScope,
     sourceText: string,
     choice?: import("@opensteer/core").CompactionSendChoice,
   ): Promise<void> => {
@@ -560,11 +561,9 @@ export function Composer(props: {
       return part === null ? [] : [part];
     });
     if (attachments.length !== carried.length) return;
-    const scope = hostClient.connection.getSnapshot().scope;
     const source = await drafts.readSavedDraft(deploymentId, userId, threadId);
     const revision = threadDraftRevision(source);
     if (
-      !scope ||
       !revision ||
       source?.text.trim() !== sourceText.trim() ||
       source?.quote?.messageId !== quote?.messageId ||
@@ -588,10 +587,8 @@ export function Composer(props: {
       // per file and null for a file only the Host holds, so a relaunch can
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
-      const assertCurrent = () => {
-        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== clientScopeKey(scope))
-          throw changedTaskDraft();
-      };
+      const assertCurrent = () =>
+        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
       const id = await enqueueDraftReply(
         outbox,
         scope,
@@ -654,6 +651,11 @@ export function Composer(props: {
   const finishingSend = useRef(false);
   const send = async (choice?: import("@opensteer/core").CompactionSendChoice): Promise<void> => {
     if (finishingSend.current) return;
+    const scope = hostClient.connection.getSnapshot().scope;
+    if (!scope) {
+      setFailure(issueLine({ code: "sign-in" }, `send:${Date.now()}`));
+      return;
+    }
     finishingSend.current = true;
     try {
       const generation = input.current?.readSnapshot().generation ?? null;
@@ -668,7 +670,7 @@ export function Composer(props: {
         words = flushed.text;
       }
       if (!mounted.current || !visible.current || !latestSend.current.canSend) return;
-      await latestSend.current.sendMessage(words, choice);
+      await latestSend.current.sendMessage(scope, words, choice);
     } finally {
       finishingSend.current = false;
     }

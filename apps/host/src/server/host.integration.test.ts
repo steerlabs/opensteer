@@ -462,7 +462,6 @@ describe("Host signing keys", () => {
         capabilities: [
           "devices-v1",
           "automatic-models-v1",
-          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "message-origin-v1",
@@ -615,7 +614,6 @@ describe("Host signing keys", () => {
         capabilities: [
           "devices-v1",
           "automatic-models-v1",
-          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "message-origin-v1",
@@ -4207,14 +4205,11 @@ it("registers phone previews as a session mutation without durable command admis
   );
   try {
     const capabilityDependencies = {
-      attachments: {} as never,
       authenticator,
       notificationPreviews: previews,
     };
     expect(advertisedCapabilities(capabilityDependencies)).toContain("notification-preview-v1");
-    expect(advertisedCapabilities({ attachments: {} as never, authenticator })).not.toContain(
-      "notification-preview-v1",
-    );
+    expect(advertisedCapabilities({ authenticator })).not.toContain("notification-preview-v1");
     const command = {
       type: "notification.preview.register",
       installationId: "phone-installation",

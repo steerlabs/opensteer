@@ -1,4 +1,5 @@
 import { MockHostClient } from "@opensteer/client/mock";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { initializeMessageOutbox, createMessageOutboxStorage } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";
 // @vitest-environment happy-dom
@@ -151,10 +152,13 @@ function render(
     local?: readonly MessageEntry[];
   } = {},
 ) {
+  const host = client.connection
+    ? client
+    : { ...client, connection: controlledClientSession().connection };
   return (
     <MemoryRouter>
       <WaitingInputs
-        client={client}
+        client={host}
         disabled={options.disabled ?? false}
         inputs={inputs}
         {...(options.local ? { local: options.local } : {})}

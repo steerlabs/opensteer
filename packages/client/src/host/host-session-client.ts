@@ -1245,22 +1245,26 @@ export class HttpHostClient {
     const expectedSession = this.#bindMutationsToSession
       ? options?.expectedLogin?.loginId
       : undefined;
-    if (expectedSession && !this.#capabilities?.includes("session-bound-mutations-v1"))
-      throw new ClientOperationError("Update Opensteer to send saved messages.", "blocked", {
-        kind: "protocol",
-        reason: "host-too-old",
-        retryable: false,
-      });
     try {
       return await this.#dispatchCommand(
         hostApi["commands.dispatch"].payload.parse(parsedCommand),
         expectedSession,
       );
     } catch (error) {
+      const { reason } = classifyClientFailure(error);
+      if (
+        expectedSession &&
+        (reason === "unsupported-version" || reason === "api-version-mismatch")
+      )
+        throw new ClientOperationError("Update Opensteer to send saved messages.", "blocked", {
+          kind: "protocol",
+          reason: "host-too-old",
+          retryable: false,
+        });
       if (
         expectedSession &&
         this.connection.getSnapshot().scope?.loginId === expectedSession &&
-        classifyClientFailure(error).reason === "session-changed"
+        reason === "session-changed"
       ) {
         this.connection.invalidateScope();
         if (this.#ownsConnection) void this.reauthenticate().catch(() => {});

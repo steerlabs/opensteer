@@ -3,6 +3,7 @@ import { ActionNotDone, failureWords } from "./use-action.js";
 
 const isNotDone = (error: unknown) => error instanceof ActionNotDone;
 import { changedTaskDraft, compactionOfferText } from "@opensteer/client/host";
+import type { ClientConnection, ClientScope } from "@opensteer/client/connections";
 import {
   dictationLabels,
   dictationView,
@@ -64,6 +65,7 @@ export interface ComposerQuote {
 
 /** What a send carries beside its words. */
 export interface ComposerSubmission {
+  readonly scope: ClientScope | null;
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   /** The places the message includes — pages, Mac apps, phones — as the draft held them. */
   readonly places: readonly PlaceContentPart[];
@@ -117,6 +119,7 @@ interface ComposerProps {
    */
   placeContext?: { readonly context: ComposerContext; readonly hostClient: HostClient } | null;
   disabled?: boolean;
+  connection?: ClientConnection;
   readOnly?: boolean;
   footerExtras?: ReactNode;
   /** Chat's voice button, beside Send. */
@@ -202,6 +205,7 @@ export function Composer({
   placeContext = null,
   references = null,
   disabled = false,
+  connection,
   readOnly = false,
   footerExtras,
   voice,
@@ -503,7 +507,8 @@ export function Composer({
   }, [chips, context, draft, draftKey, followingPlace, keepDraft, quote]);
 
   const submit = async (
-    text = latestDraft.current,
+    scope: ClientScope | null,
+    text: string,
     choice?: import("@opensteer/core").CompactionSendChoice,
   ) => {
     const body = text.trim();
@@ -550,6 +555,7 @@ export function Composer({
           throw changedTaskDraft();
         sourceEditId = source?.editId;
         const result = await onSend(submission.body, {
+          scope,
           attachments: submission.attachments,
           places: submission.places ?? [],
           ...(submission.compaction ? { compaction: submission.compaction } : {}),
@@ -625,6 +631,7 @@ export function Composer({
   latestSubmit.current = submit;
   const finishAndSend = async (choice?: import("@opensteer/core").CompactionSendChoice) => {
     if (waitingSend.current) return;
+    const scope = connection?.getSnapshot().scope ?? null;
     waitingSend.current = true;
     try {
       if (!dictating) {
@@ -634,7 +641,7 @@ export function Composer({
           ? await editor.flushPendingInput(editor.readSnapshot().generation).catch(() => null)
           : null;
         if (typed?.composing) return;
-        await latestSubmit.current(typed?.text ?? latestDraft.current, choice);
+        await latestSubmit.current(scope, typed?.text ?? latestDraft.current, choice);
         return;
       }
       const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
@@ -647,6 +654,7 @@ export function Composer({
       )
         return;
       await latestSubmit.current(
+        scope,
         finish.kind === "committed" ? finish.text : latestDraft.current,
         choice,
       );

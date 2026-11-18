@@ -1,4 +1,4 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
+import { classifyClientFailure, type ClientScope } from "@opensteer/client/connections";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import {
   memo,
@@ -215,6 +215,7 @@ interface EditSession {
   closed: boolean;
   /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
   saving: boolean;
+  readonly scope: ClientScope | null;
   /** The words sent as a new message, kept under one key until the Host answers them. */
   sending: PendingSubmission | null;
 }
@@ -275,6 +276,7 @@ function useInPlaceEdit(
       closed: false,
       opening: client.editWaitingMessage(input.threadId, input.messageId),
       saving: false,
+      scope: client.connection.getSnapshot().scope,
       sending: null,
     };
     session.current = held;
@@ -362,7 +364,7 @@ function useInPlaceEdit(
     const held = session.current;
     if (!input || !held || !draft) return;
     const outbox = hostMessageOutbox(client);
-    if (!outbox) throw storageUnavailable();
+    if (!outbox || !held.scope) throw storageUnavailable();
     let submission = held.sending;
     if (!submission) {
       const current = await typed();
@@ -377,7 +379,9 @@ function useInPlaceEdit(
       };
       held.sending = submission;
     }
-    await outbox.enqueue(sendMessageCommand(input.threadId, submission));
+    await outbox.enqueue(sendMessageCommand(input.threadId, submission), {
+      expectedLogin: held.scope,
+    });
     held.sending = null;
     finish(held);
   };

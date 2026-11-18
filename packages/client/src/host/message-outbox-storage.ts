@@ -103,6 +103,7 @@ export function enqueueDraftReply(
   draft: {
     readonly revision: string;
     readonly assertCurrent: () => void;
+    readonly verifyDraftAfterCommit?: boolean;
     readonly bindDraft?: () => Promise<void>;
     readonly localAttachmentUris?: readonly (string | null)[];
   },
@@ -111,7 +112,9 @@ export function enqueueDraftReply(
     { ...command, idempotencyKey: draftReplySendKey(scope, command.threadId, draft.revision) },
     {
       handoff: "resume",
+      expectedLogin: scope,
       assertCurrent: draft.assertCurrent,
+      ...(draft.verifyDraftAfterCommit ? { verifyDraftAfterCommit: true } : {}),
       ...(draft.bindDraft ? { bindDraft: draft.bindDraft } : {}),
       ...(draft.localAttachmentUris ? { localAttachmentUris: draft.localAttachmentUris } : {}),
     },
@@ -376,7 +379,7 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
         },
       };
     },
-    async replace(scope, previous, next, takeBack) {
+    async replace(scope, previous, next, takeBack, canReplace) {
       let replaced = false;
       await update(scope, (record) => {
         const index = record.entries.findIndex((row) => row.localId === previous.localId);
@@ -398,6 +401,7 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
             ))
         )
           return false;
+        if (canReplace?.() === false) return false;
         if (next) record.entries[index] = next;
         else record.entries.splice(index, 1);
         if (takeBack) (record.takenBack ??= []).push(messageStorageFingerprint(previous.localId));

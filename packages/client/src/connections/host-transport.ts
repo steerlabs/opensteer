@@ -1,11 +1,12 @@
 import { HostVersionMismatchError } from "./deployment-catalog.js";
 import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { expectedMutationSessionHeader, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
   apiVersionHeaders,
   hostApiCurrentHeader,
   hostApiVersionHeader,
+  sessionBoundMutationApiVersion,
   setApiVersionQuery,
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
@@ -276,7 +277,10 @@ export class HostTransport {
           ),
         );
         const { apiVersion: _version, apiCurrent: _current, ...headers } = request.headers;
-        const versions = apiVersionHeaders(deploymentKind);
+        const versions = apiVersionHeaders(
+          deploymentKind,
+          additional[expectedMutationSessionHeader] ? sessionBoundMutationApiVersion : undefined,
+        );
         request = {
           ...request,
           headers: {

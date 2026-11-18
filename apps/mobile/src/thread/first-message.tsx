@@ -335,7 +335,12 @@ export async function handOverFirstMessage(input: {
         ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
         ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
       },
-      { assertCurrent, handoff: true, ...(threadUris ? { localAttachmentUris: threadUris } : {}) },
+      {
+        assertCurrent,
+        expectedLogin: scope,
+        handoff: true,
+        ...(threadUris ? { localAttachmentUris: threadUris } : {}),
+      },
     );
   }
   assertCurrent();

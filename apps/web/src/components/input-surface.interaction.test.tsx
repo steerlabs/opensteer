@@ -5,7 +5,7 @@ import {
   disposeMessageOutbox,
   type HostClient,
 } from "@opensteer/client/host";
-import { testHostConnection } from "@opensteer/client/test-support";
+import { controlledClientSession, testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -90,18 +90,20 @@ Object.assign(shell.hostClient, {
   tabViewer: () => null,
   connection: testHostConnection(shell.hostClient as unknown as HostClient),
 });
+let messageStorage: ReturnType<typeof createMessageOutboxStorage>;
 beforeEach(() => {
   const records = new Map<string, string>();
+  messageStorage = createMessageOutboxStorage({
+    read: async (key) => records.get(key) ?? null,
+    write: async (key, value) => {
+      records.set(key, value);
+    },
+    remove: async (key) => {
+      records.delete(key);
+    },
+  });
   initializeMessageOutbox(shell.hostClient as unknown as HostClient, {
-    storage: createMessageOutboxStorage({
-      read: async (key) => records.get(key) ?? null,
-      write: async (key, value) => {
-        records.set(key, value);
-      },
-      remove: async (key) => {
-        records.delete(key);
-      },
-    }),
+    storage: messageStorage,
     drafts: { restore: async () => "restored" },
   });
 });
@@ -115,6 +117,75 @@ afterEach(async () => {
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
   shell.snapshot.waitingRequests = [];
+});
+
+it("keeps a reply tapped before sign-in changed in the draft", async () => {
+  const client = shell.hostClient as unknown as HostClient;
+  const original = client.connection.getSnapshot().scope!;
+  const control = controlledClientSession();
+  control.change({ scope: original });
+  const connection = vi
+    .spyOn(client.connection, "getSnapshot")
+    .mockImplementation(control.connection.getSnapshot);
+  initializeMessageOutbox(client, {
+    session: control,
+    storage: messageStorage,
+    drafts: { restore: async () => "restored" },
+  });
+  const threadId = createId("thread");
+  const key = composerDraftKeyFor(original.deploymentId, original.viewerId, {
+    kind: "thread",
+    threadId,
+  })!;
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let restorePause: (() => void) | undefined;
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface disabled={false} placeholder="Reply…" running={false} threadId={threadId} />
+        </MemoryRouter>,
+      ),
+    );
+    await act(async () => rewrite(composerField(node), "Words from the original sign-in"));
+    await vi.waitFor(() =>
+      expect(composerDrafts.read(key)?.text).toBe("Words from the original sign-in"),
+    );
+    const transact = composerDrafts.transaction;
+    const pause = vi.spyOn(composerDrafts, "transaction").mockImplementationOnce(async (edit) => {
+      entered.resolve();
+      await release.promise;
+      return transact(edit);
+    });
+    restorePause = () => pause.mockRestore();
+    await act(async () =>
+      node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(),
+    );
+    await vi.waitFor(() => expect(pause).toHaveBeenCalled());
+    await entered.promise;
+    const replacement = { ...original, loginId: "replacement" };
+    await act(async () => {
+      control.change({ scope: replacement });
+      release.resolve();
+    });
+    await vi.waitFor(() =>
+      expect(
+        shell.hostClient.dispatch.mock.calls.length > 0 ||
+          node.querySelector(".composer__error") !== null,
+      ).toBe(true),
+    );
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    expect(await messageStorage.load(replacement)).toEqual([]);
+    expect(composerDrafts.read(key)?.text).toBe("Words from the original sign-in");
+  } finally {
+    release.resolve();
+    restorePause?.();
+    connection.mockRestore();
+  }
 });
 
 function request(presentation: Request["presentation"]): Request {

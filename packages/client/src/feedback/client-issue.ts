@@ -91,6 +91,8 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   not_found: "It may have been deleted, or you don't have access.",
   "thread-not-found": "This task is no longer available.",
   "thread-closed": "This task is closed.",
+  "draft-unverified": "The draft may have changed or been discarded. Edit to recover your message.",
+  "host-too-old": "Update Opensteer on the computer to send this message.",
   "browser-session-closed": "This tab is closed.",
   "browser-capture-limit": "Too many pages are being watched.",
   "browser-input-owner-conflict": "Someone else is using this page.",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { clientScopeKey } from "@opensteer/client/connections";
+import { hostApiVersionHeader } from "@opensteer/protocol";
 import {
   createMessageOutbox,
   createMessageOutboxStorage,
@@ -92,11 +93,12 @@ function webDrafts(database: ReturnType<typeof disk>) {
       return data.size;
     },
   };
-  return () =>
+  const open = () =>
     transactionalComposerDrafts(
       createComposerDraftStore(() => local),
       database.port.mutate,
     );
+  return Object.assign(open, { legacyDiscard: (key: string) => local.removeItem(key) });
 }
 
 const interrupted = new Error("renderer crashed");
@@ -154,7 +156,12 @@ function home(
         message: { content: [{ type: "text", text: editor.text }] },
         enqueue: (command) => {
           beforeEnqueue?.();
-          return outbox.enqueue(command, { handoff: true, assertCurrent });
+          return outbox.enqueue(command, {
+            handoff: true,
+            expectedLogin: original,
+            assertCurrent,
+            verifyDraftAfterCommit: true,
+          });
         },
         assertCurrent,
       });
@@ -219,7 +226,6 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       session.change({ phase: "recovering" });
       const host = new HttpHostClient({
         baseUrl: "https://host.test",
-        capabilities: ["session-bound-mutations-v1"],
         bindMutationsToSession: true,
         fetch: async (_url, init) => {
           await wire.promise;
@@ -368,6 +374,139 @@ it("P1.2 gives handoff, revision and discard one commit order", async () => {
       controller.outbox.dispose();
     }
   });
+});
+
+it("holds the words for Edit if a previous-release tab discards during the first append", async () => {
+  await seeds([["append", "commit"], ["legacy-discard"]], async (events) => {
+    const database = disk();
+    const reopen = webDrafts(database);
+    const draft = reopen();
+    await draft.update(draftKey, { text: "The saved words" });
+    const owner = home(database);
+    const prepared = Promise.withResolvers<void>();
+    const allowCommit = Promise.withResolvers<void>();
+    let start: Promise<unknown> | undefined;
+    let committed = false;
+    let discardedBeforeCommit = false;
+    try {
+      for (const event of events) {
+        if (event === "append") {
+          const editor = draft.read(draftKey);
+          if (editor === null) continue;
+          start = owner
+            .start(draft, editor, () =>
+              database.afterEdit(async () => {
+                prepared.resolve();
+                await allowCommit.promise;
+              }),
+            )
+            .catch(() => {});
+          await Promise.race([prepared.promise, start]);
+        } else if (event === "legacy-discard") {
+          discardedBeforeCommit = start !== undefined && !committed;
+          reopen.legacyDiscard(draftKey);
+        } else {
+          allowCommit.resolve();
+          await start;
+          committed = true;
+        }
+      }
+      const [row] = await createMessageOutboxStorage(database.port).load(original);
+      if (discardedBeforeCommit) {
+        assert.equal(row?.phase, "rejected");
+        assert.deepEqual(row.command.content, [{ type: "text", text: "The saved words" }]);
+        assert.equal(row.attempted, false);
+      } else if (start) assert.equal(row?.phase, "waiting");
+      else assert.equal(row, undefined);
+    } finally {
+      allowCommit.resolve();
+      owner.outbox.dispose();
+    }
+  });
+});
+
+it("a reply's originating login cannot be replaced between tap and enqueue", async () => {
+  await seeds([["tap", "enqueue"], ["replace-login"]], async (events) => {
+    const session = controlledClientSession();
+    session.change({ phase: "recovering" });
+    const storage = createMessageOutboxStorage(disk().port);
+    const outbox = createMessageOutbox({
+      session,
+      storage,
+      dispatch: async () => ({ messageId: "unexpected" }),
+      drafts: { restore: async () => "restored" },
+    });
+    let tapped = original;
+    let keptFor: typeof original | null = null;
+    try {
+      for (const event of events) {
+        if (event === "tap") tapped = session.connection.getSnapshot().scope!;
+        else if (event === "replace-login") session.change({ scope: replacement });
+        else {
+          if (session.connection.getSnapshot().scope?.loginId === tapped.loginId) keptFor = tapped;
+          await enqueueDraftReply(outbox, tapped, message("reply"), {
+            revision: "saved-reply",
+            assertCurrent: () => {},
+          }).catch(() => {});
+        }
+      }
+      for (const scope of [original, replacement]) {
+        const rows = await storage.load(scope);
+        assert.equal(rows.length, Number(keptFor?.loginId === scope.loginId));
+      }
+    } finally {
+      outbox.dispose();
+    }
+  });
+});
+
+it("keeps the reply recoverable when the Host cannot enforce its originating login", async () => {
+  vi.useFakeTimers();
+  const restored: PendingSendCommand[] = [];
+  const version = 61;
+  const request = vi.fn<typeof fetch>(async (_url, init) => {
+    assert(Number(new Headers(init?.headers).get(hostApiVersionHeader)) > version);
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: "bad_request",
+          reason: "unsupported-version",
+          message: "Unsupported version",
+          retryable: false,
+        },
+      },
+      { status: 400 },
+    );
+  });
+  const host = new HttpHostClient({
+    baseUrl: "https://host.test",
+    bindMutationsToSession: true,
+    fetch: request,
+  });
+  const outbox = initializeMessageOutbox(host, {
+    session: controlledClientSession(),
+    storage: createMessageOutboxStorage(disk().port),
+    drafts: {
+      restore: async (_scope, row) => {
+        restored.push(row.command);
+        return "restored";
+      },
+    },
+  });
+  try {
+    const reply = message("saved-reply");
+    await outbox.enqueue(reply, { expectedLogin: original });
+    await vi.advanceTimersByTimeAsync(0);
+    assert.equal(request.mock.calls.length, 1);
+    const [row] = outbox.getSnapshot().messages;
+    assert.equal(row?.phase, "rejected");
+    assert.equal(row.rejection?.reason, "host-too-old");
+    assert.equal(await outbox.restoreDraft(reply.idempotencyKey), "restored");
+    assert.deepEqual(restored, [reply]);
+  } finally {
+    host.dispose();
+  }
 });
 
 it("P1.3 refuses a dormant editor after the same draft has started", async () => {
@@ -575,6 +714,7 @@ it.each(["web", "mobile"] as const)(
           },
           {
             revision: saved,
+            verifyDraftAfterCommit: platform === "web",
             assertCurrent: () => {
               if (platform === "web") browser.bindReply(keyForReply, clientScopeKey(scope)!, saved);
             },
@@ -664,7 +804,7 @@ it.each(["web", "mobile"] as const)(
 it("recovers the Home handoff at each committed step, including the Host's creation", async () => {
   // Count both the local commit notifications and the Host's independently
   // durable creation. Each cut kills the renderer before its next transition.
-  for (let cut = 1; cut <= 7; cut++) {
+  for (let cut = 1; cut <= 8; cut++) {
     const database = disk();
     const open = webDrafts(database);
     const first = open();
@@ -697,6 +837,7 @@ it("recovers the Home handoff at each committed step, including the Host's creat
       assert.equal(firstOwner.tasks.size, 1, `duplicate or missing task at cut ${cut}`);
       const queue = await createMessageOutboxStorage(database.port).load(original);
       assert.equal(queue.length, 1, `duplicate or missing first message at cut ${cut}`);
+      assert.equal(queue[0]?.phase, "waiting", `first message held after resuming at cut ${cut}`);
       assert.deepEqual(queue[0]?.command.content, [{ type: "text", text: "Survives the cut" }]);
       assert.equal(second.read(draftKey), null);
     } finally {

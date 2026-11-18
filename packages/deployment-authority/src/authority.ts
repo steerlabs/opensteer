@@ -43,8 +43,10 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
  * speak the lower of their two current versions.
  */
-export const hostApiVersion = 61;
+export const hostApiVersion = 62;
 export const minimumHostApiVersion = 60;
+// This version enforces the initiating login at mutation admission.
+export const sessionBoundMutationApiVersion = 62;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
@@ -76,11 +78,12 @@ export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): st
 /** What every caller that can set headers sends to a Host of `kind`. */
 export function apiVersionHeaders(
   kind: z.infer<typeof DeploymentKindSchema>,
+  personalMinimum = minimumHostApiVersion,
 ): Readonly<Record<string, string>> {
   return kind === "team"
     ? { [teamApiVersionHeader]: String(teamApiVersion) }
     : {
-        [hostApiVersionHeader]: String(minimumHostApiVersion),
+        [hostApiVersionHeader]: String(personalMinimum),
         [hostApiCurrentHeader]: String(hostApiVersion),
       };
 }
@@ -156,7 +159,6 @@ export const HostCapabilitySchema = z.enum([
   "tab-reopen-v1",
   "iphone-apps-v1",
   "ownerViewWindows",
-  "task-attachments",
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
   "browser-backend-v1",
@@ -184,7 +186,6 @@ export const HostCapabilitySchema = z.enum([
   "thread-titles-v1",
   /** `thread.sendMessage` and `voice.start` accept the sender's `origin`. */
   "message-origin-v1",
-  "session-bound-mutations-v1",
 
   "task-marks-v1",
   /**

@@ -1,5 +1,5 @@
 import { clientScopeKey } from "@opensteer/client/connections";
-import { changedTaskDraft, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
+import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
@@ -157,16 +157,15 @@ export function InputSurface({
       quotedMessageId,
       compaction,
       draftRevision,
+      scope,
     }: ComposerSubmission,
   ) => {
     if (!body.trim() && attachments.length === 0 && places.length === 0) return;
     if (!outbox) throw storageUnavailable();
-    const scope = hostClient.connection.getSnapshot().scope;
     if (!scope || !draftKey || !draftRevision) throw storageUnavailable();
     const login = clientScopeKey(scope)!;
     const assertCurrent = () => {
-      if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== login)
-        throw changedTaskDraft();
+      assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
       composerDrafts.bindReply(draftKey, login, draftRevision);
     };
     const id = await enqueueDraftReply(
@@ -180,10 +179,11 @@ export function InputSurface({
         idempotencyKey,
         ...(quotedMessageId ? { quotedMessageId } : {}),
       }),
-      { revision: draftRevision, assertCurrent },
+      { revision: draftRevision, assertCurrent, verifyDraftAfterCommit: true },
     );
     const cleared = await composerDrafts
       .transaction((store) => {
+        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
         if (store.durableDraft(draftKey)?.revision !== draftRevision) return false;
         return store.clear(draftKey);
       })
@@ -253,6 +253,7 @@ export function InputSurface({
       <div hidden={messageHidden}>
         <Composer
           compactionOffer={compactionOffer}
+          connection={hostClient.connection}
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
           draftKey={draftKey}
           hidden={messageHidden}

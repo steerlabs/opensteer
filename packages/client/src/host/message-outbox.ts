@@ -1,8 +1,11 @@
 /*
- * One durable FIFO per task and login. Enqueue appends waiting. A dispatcher claims
- * the head with an expiring lease before sending the frozen command. If it never
- * calls dispatch, it releases the lease. Transport loss or a reclaimed lease leaves
- * uncertainty about admission. Reload, reconnect and expiry replay the same key.
+ * One durable FIFO per task and login. Enqueue appends waiting. Browser drafts
+ * first append an unsent copy, then become waiting once the durable source is
+ * rechecked. An invalid source or crash leaves the copy available for Edit.
+ * A dispatcher claims the head with an expiring lease before sending the frozen
+ * command. If it never calls dispatch, it releases the lease. Transport loss or a
+ * reclaimed lease leaves uncertainty about admission. Reload, reconnect and
+ * expiry replay the same key.
  * An ack or matching Host event removes the row. Only the current lease can record a
  * refusal, and an earlier uncertain attempt makes that refusal unconfirmed. The person
  * can retry an unconfirmed refusal with the same key or remove its local copy.
@@ -68,6 +71,7 @@ export interface MessageOutboxStorage {
     previous: StoredMessage,
     next: StoredMessage | null,
     takeBack?: boolean,
+    canReplace?: () => boolean,
   ): Promise<boolean>;
   claim(
     scope: ClientScope,
@@ -119,7 +123,9 @@ export interface MessageOutbox {
     options?: {
       readonly localAttachmentUris?: readonly (string | null)[];
       readonly handoff?: boolean | "resume";
+      readonly expectedLogin?: ClientScope;
       readonly assertCurrent?: () => void;
+      readonly verifyDraftAfterCommit?: boolean;
       /** Native draft ownership is committed in enqueue order, before the outbox write. */
       readonly bindDraft?: () => Promise<void>;
     },
@@ -137,6 +143,24 @@ export interface MessageOutbox {
   discard(localId: string): Promise<void>;
   removeLocalCopy(localId: string): Promise<void>;
   dispose(): void;
+}
+
+export function assertMessageLogin(expected: ClientScope, current: ClientScope | null): void {
+  if (clientScopeKey(expected) !== clientScopeKey(current))
+    throw new ClientOperationError("This message belongs to another sign-in.", "blocked", {
+      kind: "session",
+      reason: "session-changed",
+      retryable: false,
+    });
+}
+
+function draftChanged(reason: string): boolean {
+  return (
+    reason === "draft-changed" ||
+    reason === "draft-superseded" ||
+    reason === "draft-previous-login" ||
+    reason === "session-changed"
+  );
 }
 export interface MessageOutboxOptions {
   readonly legacy?: {
@@ -437,6 +461,7 @@ class SessionMessageOutbox implements MessageOutbox {
   enqueue: MessageOutbox["enqueue"] = async (command, options) => {
     const scope = this.#scope;
     const generation = this.#generation;
+    if (options?.expectedLogin) assertMessageLogin(options.expectedLogin, scope);
     if (!scope) throw storageFailure();
     const parsed = hostApi["commands.dispatch"].payload.parse(
       this.#options.prepare?.(command) ?? command,
@@ -454,25 +479,54 @@ class SessionMessageOutbox implements MessageOutbox {
         createdAt: new Date().toISOString(),
         order: 0,
         attempted: false,
-        phase: "waiting",
+        ...(options?.verifyDraftAfterCommit
+          ? { phase: "rejected", rejection: { code: "rejected", reason: "draft-unverified" } }
+          : { phase: "waiting" }),
         ...(this.#options.startsRun?.(parsed.threadId) ? { inTranscript: true } : {}),
         ...(options?.localAttachmentUris
           ? { localAttachmentUris: options.localAttachmentUris }
           : {}),
       };
+      const assertCurrent = () => {
+        if (options?.expectedLogin) assertMessageLogin(options.expectedLogin, this.#scope);
+        if (!this.#current(scope, generation)) throw storageFailure();
+        options?.assertCurrent?.();
+      };
       try {
         if (options?.bindDraft) {
-          if (!this.#current(scope, generation)) throw storageFailure();
+          assertCurrent();
           await options.bindDraft();
         }
-        const saved = await this.#options.storage.put(scope, entry, {
+        const storage = this.#options.storage;
+        let saved = await storage.put(scope, entry, {
           append: true,
           ...(options?.handoff ? { handoff: options.handoff } : {}),
-          assertCurrent: () => {
-            if (!this.#current(scope, generation)) throw storageFailure();
-            options?.assertCurrent?.();
-          },
+          assertCurrent,
         });
+        if (options?.verifyDraftAfterCommit) {
+          const held =
+            saved ?? (await storage.load(scope)).find((row) => row.localId === entry.localId);
+          if (held?.phase === "rejected" && held.rejection?.reason === "draft-unverified") {
+            // A previous-release tab can change localStorage during the first
+            // IndexedDB commit. The copy stays unsendable until this second check.
+            const waiting = { ...held, phase: "waiting" as const, rejection: undefined };
+            const verified = await storage.replace(scope, held, waiting, false, () => {
+              if (!this.#current(scope, generation)) return false;
+              try {
+                assertCurrent();
+                return true;
+              } catch (error) {
+                if (draftChanged(classifyClientFailure(error).reason)) return false;
+                throw error;
+              }
+            });
+            if (verified) saved = waiting;
+            else {
+              await this.#load(scope, generation, false);
+              return parsed.idempotencyKey;
+            }
+          }
+        }
         if (saved && this.#current(scope, generation)) {
           this.#publishRows(
             [...this.#state.messages.filter((row) => row.localId !== saved.localId), saved],
@@ -482,12 +536,7 @@ class SessionMessageOutbox implements MessageOutbox {
         }
       } catch (error) {
         const { reason } = classifyClientFailure(error);
-        if (
-          this.#current(scope, generation) &&
-          reason !== "draft-changed" &&
-          reason !== "draft-superseded" &&
-          reason !== "draft-previous-login"
-        ) {
+        if (this.#current(scope, generation) && !draftChanged(reason)) {
           if (reason === "queue-full") this.#publish({ issue: { code: "queue-full" } });
           else this.#storageFailed();
         }
@@ -760,8 +809,10 @@ class SessionMessageOutbox implements MessageOutbox {
       acknowledgement = await this.#options.dispatch(entry.command, scope);
     } catch (error) {
       const failure = classifyClientFailure(error);
-      const notStarted = failure.reason === "session-changed" || failure.reason === "host-too-old";
-      const rejected = !notStarted && failure.kind === "rejection" && !failure.retryable;
+      const notStarted = failure.reason === "session-changed";
+      const rejected =
+        failure.reason === "host-too-old" ||
+        (!notStarted && failure.kind === "rejection" && !failure.retryable);
       if (!rejected && this.#current(scope, generation) && !this.#confirmed.has(entry.localId))
         this.#pause(entry.localId);
       const rejection: ClientIssue | undefined = rejected

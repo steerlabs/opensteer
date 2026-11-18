@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./composer.js";
@@ -19,10 +20,18 @@ describe("composer connection transitions", () => {
     root = createRoot(node);
     const send = vi.fn(async () => undefined);
     const stop = vi.fn(async () => undefined);
+    const { connection } = controlledClientSession();
     const render = (disabled: boolean) =>
       act(() =>
         root.render(
-          <Composer disabled={disabled} onSend={send} onStop={stop} placeholder="Reply…" running />,
+          <Composer
+            connection={connection}
+            disabled={disabled}
+            onSend={send}
+            onStop={stop}
+            placeholder="Reply…"
+            running
+          />,
         ),
       );
     render(false);
@@ -55,6 +64,7 @@ describe("composer connection transitions", () => {
       attachments: [],
       idempotencyKey: expect.any(String),
       places: [],
+      scope: connection.getSnapshot().scope,
     });
     expect(field.value).toBe("");
     expect(node.querySelector('[aria-label="Queue message"]')).toBeNull();

@@ -189,9 +189,10 @@ function NewTaskComposer({
       idempotencyKey,
       draftRevision,
       quotedMessageId,
+      scope: submittingScope,
     }: Pick<
       ComposerSubmission,
-      "attachments" | "places" | "idempotencyKey" | "quotedMessageId" | "draftRevision"
+      "attachments" | "places" | "idempotencyKey" | "quotedMessageId" | "draftRevision" | "scope"
     >,
   ) => {
     if (!canCreateThread || previousLogin)
@@ -204,20 +205,18 @@ function NewTaskComposer({
       ...(quotedMessageId ? { quotedMessageId } : {}),
     };
     const expected = draftKey && composerDrafts.read(draftKey)?.startGeneration;
-    const login = clientScopeKey(hostClient.connection.getSnapshot().scope);
+    const login = clientScopeKey(submittingScope);
     try {
       const thread = await act(
         hostClient,
         { label: "start this task", done: "started", happened: "this task started" },
         () =>
-          createThreadAndSend(
-            message,
-            canCreate ? selection : null,
-            accessMode,
+          createThreadAndSend(message, canCreate ? selection : null, accessMode, {
             draftKey,
-            legacyStart,
+            confirmLegacy: legacyStart,
             draftRevision,
-          ),
+            scope: submittingScope,
+          }),
       );
       if (!thread.preserveDraft) nav.openConversation(nav.threadPath(thread.id));
       return thread;
@@ -280,6 +279,7 @@ function NewTaskComposer({
             if (saved) context.restore(saved);
             setEditorVersion((version) => version + 1);
           }}
+          connection={hostClient.connection}
           onSend={startThread}
           placeContext={placeContext}
           placeholder={
