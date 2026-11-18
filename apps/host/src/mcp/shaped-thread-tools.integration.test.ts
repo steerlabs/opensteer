@@ -721,8 +721,17 @@ describeStore("agents answering task questions", (it) => {
   }) => {
     let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
     const s = await questionTask(storeFixture, "question-notice-wait", async (task) => {
+      const registered = Promise.withResolvers<void>();
+      const wait = task.questionNotices.wait.bind(task.questionNotices);
+      vi.spyOn(task.questionNotices, "wait").mockImplementationOnce((...args) => {
+        const finish = wait(...args);
+        registered.resolve();
+        return finish;
+      });
       waiting = task.wait();
-      await vi.waitFor(() => expect(task.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+      await withTimeout(registered.promise, 1_000, {
+        timeoutError: () => new Error("The parent wait never registered for question delivery"),
+      });
     });
     s.questionNotices.requestChanged(s.opened);
     expect(await waiting).toMatchObject({ pendingRequest: { id: s.request.id } });
