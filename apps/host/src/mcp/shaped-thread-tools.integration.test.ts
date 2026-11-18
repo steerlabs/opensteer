@@ -1463,9 +1463,17 @@ describeStore("shaped agent task tools", (it) => {
     }) => {
       const s = await waitingTask(storeFixture, `wait-held-${ending}`);
       const read = Promise.withResolvers<void>();
-      s.checkLive
-        .mockImplementationOnce(async () => {})
-        .mockImplementationOnce(async () => read.resolve());
+      const releaseRead = Promise.withResolvers<void>();
+      if (ending === "abort") {
+        s.checkLive.mockImplementationOnce(async () => {
+          read.resolve();
+          await releaseRead.promise;
+        });
+      } else {
+        s.checkLive
+          .mockImplementationOnce(async () => {})
+          .mockImplementationOnce(async () => read.resolve());
+      }
       const abort = new AbortController();
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
@@ -1483,14 +1491,17 @@ describeStore("shaped agent task tools", (it) => {
         await s.settle();
         await storeFixture.store.drainAssignmentReturn(s.assignmentId);
         expect(await s.returns()).toEqual([]);
-        if (ending === "abort") abort.abort(new Error("Tool call cut off"));
-        else await vi.advanceTimersByTimeAsync(2_000);
+        if (ending === "abort") {
+          abort.abort(new Error("Tool call cut off"));
+          releaseRead.resolve();
+        } else await vi.advanceTimersByTimeAsync(2_000);
         const result = await outcome;
         if (ending === "abort")
           expect(result).toMatchObject({ error: new Error("Tool call cut off") });
         else expect(result).toMatchObject({ value: { status: "timed_out" } });
       } finally {
         abort.abort();
+        releaseRead.resolve();
         vi.useRealTimers();
       }
       await storeFixture.store.drainPendingAssignmentReturns();
