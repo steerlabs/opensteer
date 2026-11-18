@@ -44,7 +44,7 @@ import {
   type InitialOwnerClaimInput,
   type PasswordSignInInput,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
+import { useHostSnapshot, usePersonalResources } from "@opensteer/client/react";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -73,6 +73,7 @@ const McpAuthorizationLaunch = lazy(() =>
 
 const autoOidcAttemptKey = "opensteer.oidc.auto-attempt";
 const autoOidcAttemptWindowMs = 2 * 60 * 1_000;
+const appResources = ["settings"] as const;
 
 export function App({
   mcpAuthorizationRequestId = null,
@@ -112,6 +113,7 @@ export function App({
   } | null;
 }) {
   const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
+  usePersonalResources(snapshot.session === "authenticated" ? hostClient : null, appResources);
   useEffect(
     () =>
       desktopBridge

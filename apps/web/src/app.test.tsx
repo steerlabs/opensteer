@@ -75,7 +75,8 @@ vi.mock("react", async (importOriginal) => {
 
 let snapshot: HostSnapshot;
 
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/client/react")>()),
   useHostSnapshot: () => ({
     loadError: null,
     reload: async () => undefined,

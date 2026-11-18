@@ -250,7 +250,6 @@ const selectAttentionCount = (snapshot: HostSnapshot) =>
 
 const workspaceResources = ["tab", "tab-layout", "browser-availability"] as const;
 const settingsResources = [
-  "settings",
   "identity",
   "owner-profile",
   "machine",

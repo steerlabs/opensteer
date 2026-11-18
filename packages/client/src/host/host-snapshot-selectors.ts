@@ -1,7 +1,11 @@
 import type { HostSnapshot, ThreadSummary } from "./client.js";
 
 export function sameAppGateSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
-  return previous.session === next.session && previous.identityConfig === next.identityConfig;
+  return (
+    previous.session === next.session &&
+    previous.identityConfig === next.identityConfig &&
+    (previous.personalSettings === null) === (next.personalSettings === null)
+  );
 }
 
 export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
