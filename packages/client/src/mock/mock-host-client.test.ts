@@ -1046,13 +1046,23 @@ it("offers transient Passwords choices and settles the pinned shared command in 
 // its browser tabs then never showed a picture.
 it("opens its own connection only once its Host state has loaded", async () => {
   const client = new MockHostClient({ latencyMs: 50 });
+  // Read at every publication, and at once: a later poll sees both done either way.
+  const early: string[] = [];
+  const check = () => {
+    if (client.connection.getSnapshot().phase !== "ready") return;
+    const said = client.getSnapshot().connection;
+    if (said !== "connected") early.push(said);
+  };
+  check();
+  const stop = client.connection.subscribe(check);
   try {
     await vi.waitFor(
       () => expect(client.connection.getSnapshot().phase, "never connected").toBe("ready"),
       { timeout: 2000 },
     );
-    expect(client.getSnapshot().connection).toBe("connected");
+    expect(early).toEqual([]);
   } finally {
+    stop();
     client.dispose();
   }
 });
