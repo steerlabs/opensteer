@@ -151,7 +151,12 @@ describe("personal connection admission", () => {
     });
     const releaseIdentity = client.watchPersonalResource("identity", () => {});
     const execute = vi.fn(async () => "confirmed");
-    const action = createClientAction(client, { label: "open this", done: "opened", execute });
+    const action = createClientAction(client, {
+      key: "open:test",
+      label: "open this",
+      done: "opened",
+      execute,
+    });
     try {
       await client.load();
       const connected = client.getSnapshot();
@@ -218,7 +223,9 @@ describe("personal connection admission", () => {
     };
     const host = new MockPersonalHost();
     const first = Promise.withResolvers<void>();
-    const prepareSocket = vi.fn(async () => undefined).mockReturnValueOnce(first.promise);
+    const prepareSocket = vi
+      .fn<() => Promise<void>>(async () => undefined)
+      .mockReturnValueOnce(first.promise);
     const open = vi.fn(host.connect);
     const client = new HttpHostClient({
       baseUrl: "http://scoped-host",

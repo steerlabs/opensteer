@@ -1625,7 +1625,6 @@ export class MobileClient {
     );
     const connection = createConnectionController({
       idleProbes: false,
-      resumeByReconnecting: true,
       ...(this.#lifecycle ? { lifecycle: this.#lifecycle } : {}),
       presentation: {
         name: this.#state.rows.find((row) => row.deploymentId === id)?.name ?? null,

@@ -282,7 +282,6 @@ export class HttpHostClient {
   readonly #baseUrl: URL;
   readonly #stream: ScopedPersonalStream;
   readonly #prepareSocket: HttpHostClientOptions["prepareSocket"];
-  #socketGeneration = 0;
   #probe: { nonce: string; finish(): void; abort(): void } | undefined;
   #checkingHandshake = false;
   readonly #realtimeLiveness: HttpHostClientOptions["realtimeLiveness"];
@@ -297,6 +296,7 @@ export class HttpHostClient {
   #connectionFailed: ((error: unknown) => void) | null = null;
   #connectionAdmit: (() => void) | null = null;
   #socketCloseReason: string | undefined;
+  #backgroundShellGeneration: number | undefined;
   #load: Promise<void> | undefined;
   #resolveLoad: (() => void) | undefined;
   readonly #resourceReads = new Map<
@@ -779,7 +779,6 @@ export class HttpHostClient {
         ...(options.presentation ? { presentation: options.presentation } : {}),
         ...(options.realtimeLiveness ? { liveness: options.realtimeLiveness } : {}),
         idleProbes: options.realtimeLiveness !== undefined,
-        resumeByReconnecting: true,
         random: this.#random,
         backoff: { baseMs: this.#reconnectBaseDelayMs, maximumMs: this.#reconnectMaxDelayMs },
       });
@@ -3560,16 +3559,12 @@ export class HttpHostClient {
   #connectionChanged(state: ClientConnectionState, old: ClientConnectionState) {
     this.#network = state.network;
     this.#visibility = state.visibility;
-    if (state.visibility !== old.visibility) {
-      this.#stream.setBackground(state.visibility === "background");
+    if (state.visibility === "background" && old.visibility !== "background") {
+      this.#backgroundShellGeneration = this.#stream.shell.getSnapshot().generation;
+      this.#stream.setBackground(true);
       this.#invalidateAttention();
-      if (state.visibility === "background") {
-        for (const { controller } of this.#resourceReads.values()) controller.abort();
-        this.#resourceReads.clear();
-      } else if (state.phase === "ready") {
-        const { interests } = this.#stream.resources.getInterests();
-        for (const kind of interests) this.#readResource(kind);
-      }
+      for (const { controller } of this.#resourceReads.values()) controller.abort();
+      this.#resourceReads.clear();
     }
     this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
@@ -3632,7 +3627,20 @@ export class HttpHostClient {
       closed: closed.promise,
       close,
       lastProgressAt: () => this.#lastRealtimeFrameAt,
-      probe: (signal) => this.#probeSocket(signal),
+      reconnectOnForeground: () =>
+        this.#backgroundShellGeneration !== this.#stream.shell.getSnapshot().generation,
+      probe: async (signal) => {
+        await this.#probeSocket(signal);
+        signal.throwIfAborted();
+        if (this.#visibility === "foreground" && this.#backgroundShellGeneration !== undefined) {
+          this.#resumeForeground();
+          this.#refreshStaleDoneTasks();
+          if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
+            this.#invalidateAttention(true);
+          const { interests } = this.#stream.resources.getInterests();
+          for (const kind of interests) this.#readResource(kind);
+        }
+      },
     };
     this.#connectionFailed = fail;
     this.#connectionAdmit = () => {
@@ -3706,8 +3714,14 @@ export class HttpHostClient {
     }
   }
 
+  #resumeForeground() {
+    this.#backgroundShellGeneration = undefined;
+    this.#stream.setBackground(false);
+  }
+
   async #open(attempt: ConnectionAttempt) {
     attempt.signal.throwIfAborted();
+    if (this.#visibility === "foreground") this.#resumeForeground();
     await this.#prepareSocket?.();
     attempt.signal.throwIfAborted();
     const cache = this.#stream.cache;
@@ -3878,7 +3892,6 @@ export class HttpHostClient {
   }
 
   #closeSocket(reason = "Client closed") {
-    this.#socketGeneration++;
     this.#socketCloseReason = undefined;
     this.#probe?.abort();
     const socket = this.#socket;

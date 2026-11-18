@@ -160,24 +160,35 @@ it("delivers a bound send key only to the sending login in live and retained vie
     });
     expect(sent.statusCode, sent.body).toBe(200);
     const id = sent.json<{ data: { message: { id: string } } }>().data.message.id;
-    const live = async (peer: Awaited<ReturnType<typeof attach>>) =>
-      peer.read(
+    const live = async (peer: Awaited<ReturnType<typeof attach>>) => {
+      const cut = await peer.read(
         (frame) =>
-          frame.type === "host.changes" &&
+          "scope" in frame &&
           frame.scope.kind === "thread" &&
-          frame.changes.some((change) => change.entityKind === "item" && change.entityId === id),
-        "The committed message was absent from the viewer's live changes",
+          (frame.type === "host.snapshot-required" ||
+            (frame.type === "host.changes" &&
+              frame.changes.some(
+                (change) => change.entityKind === "item" && change.entityId === id,
+              ))),
+        "The committed message was absent from the viewer's synchronized detail",
       );
-    const [sentFrame, viewerFrame] = await Promise.all([live(sender), live(viewer)]);
-    expect(sentFrame).toMatchObject({
-      changes: expect.arrayContaining([
-        expect.objectContaining({
-          entityId: id,
-          value: expect.objectContaining({ clientSendKey: key }),
-        }),
-      ]),
-    });
-    expect(JSON.stringify(viewerFrame)).not.toContain(key);
+      if (cut.type === "host.changes") {
+        const row = cut.changes.find(
+          (change) => change.entityKind === "item" && change.entityId === id,
+        );
+        if (row?.operation === "upsert" && row.entityKind === "item") return row.value;
+      }
+      if (cut.type !== "host.snapshot-required") throw new Error("The message was not upserted");
+      peer.send({ type: "client.subscribe", subscriptionId: "detail:0", generation: 2, scope });
+      const replacement = await peer.read(
+        (frame) =>
+          frame.type === "host.snapshot" && frame.scope.kind === "thread" && frame.generation === 2,
+        "The selected detail could not repair its cut",
+      );
+      if (replacement.type !== "host.snapshot" || !("items" in replacement.snapshot))
+        throw new Error("Expected a replacement detail");
+      return replacement.snapshot.items.find((item) => item.id === id);
+    };
     const items = await host.store.database
       .selectFrom("clientChanges")
       .select("payload")
@@ -185,6 +196,10 @@ it("delivers a bound send key only to the sending login in live and retained vie
       .execute();
     expect(items.length).toBeGreaterThan(0);
     expect(JSON.stringify(items)).not.toContain(key);
+    const [sentItem, viewerItem] = await Promise.all([live(sender), live(viewer)]);
+    expect(sentItem).toMatchObject({ id, clientSendKey: key });
+    expect(viewerItem).toMatchObject({ id });
+    expect(viewerItem).not.toHaveProperty("clientSendKey");
     const page = (headers: Readonly<Record<string, string>>) =>
       host.runtime.app.inject({
         method: "POST",

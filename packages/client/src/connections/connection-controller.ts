@@ -68,6 +68,7 @@ export interface ConnectionAttempt {
 export interface ConnectionLease {
   readonly closed: Promise<ClientFailure>;
   lastProgressAt?(): number;
+  reconnectOnForeground?(): boolean;
   probe(signal: AbortSignal): Promise<void>;
   close(): void;
 }
@@ -89,7 +90,6 @@ export interface ConnectionControllerOptions {
   readonly presentation?: ConnectionPresentation;
   readonly keepAliveInBackground?: boolean | (() => boolean);
   readonly idleProbes?: boolean;
-  readonly resumeByReconnecting?: boolean;
   readonly liveness?: { readonly idleMs: number; readonly deadlineMs: number };
   readonly backoff?: { readonly baseMs: number; readonly maximumMs: number };
 }
@@ -469,8 +469,8 @@ class SessionConnectionController implements ConnectionController {
     this.#publish({ visibility: "foreground" });
     if (!this.#desired || this.#state.phase === "blocked") return;
     if (
-      !this.#options.resumeByReconnecting &&
       this.#lease &&
+      !this.#lease.reconnectOnForeground?.() &&
       duration < (this.#options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs) &&
       this.#state.network !== "offline"
     ) {

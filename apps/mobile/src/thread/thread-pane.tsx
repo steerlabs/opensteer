@@ -1231,15 +1231,13 @@ function ThreadPaneForUser(
       : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const loadMoreActivity = (kind: "tools" | "nodes") => {
-    void hostClient
-      .loadMoreOverlays(threadId, kind)
-      .catch(() =>
-        setFailure({
-          key: Date.now(),
-          resource: "more activity",
-          retry: () => loadMoreActivity(kind),
-        }),
-      );
+    void hostClient.loadMoreOverlays(threadId, kind).catch(() =>
+      setFailure({
+        key: Date.now(),
+        resource: "more activity",
+        retry: () => loadMoreActivity(kind),
+      }),
+    );
   };
   const conversationFooter =
     passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
