@@ -136,7 +136,7 @@ export async function startTask(input: {
   readonly assertCurrent: () => void;
   readonly createThread: (creation: CreateThreadInput) => Promise<{ readonly id: string }>;
   readonly enqueue: (command: PendingSendCommand) => Promise<unknown>;
-  readonly hasHandoff?: (key: string) => Promise<boolean>;
+  readonly hasLegacyHandoff?: (key: string) => Promise<boolean>;
 }): Promise<{ readonly id: string }> {
   const message = TaskStartMessageSchema.parse(input.message);
   const serialized = JSON.stringify(message);
@@ -173,7 +173,7 @@ export async function startTask(input: {
   }
   input.assertCurrent();
   const { content, compaction, quotedMessageId } = message;
-  if (start.message && (await input.hasHandoff?.(start.messageKey))) {
+  if (start.message && (await input.hasLegacyHandoff?.(start.messageKey))) {
     if (JSON.stringify(start.message) !== serialized) throw changedTaskDraft();
   } else {
     await input.enqueue({

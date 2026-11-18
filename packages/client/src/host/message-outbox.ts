@@ -57,7 +57,11 @@ export interface MessageOutboxStorage {
     start: () => Promise<T> | null,
   ): Promise<{ readonly answer: Promise<T> } | null>;
   forgetMigrations?(scope: ClientScope, sourceExists: (id: string) => boolean): Promise<void>;
-  hasHandoff?(scope: ClientScope, id: string): Promise<boolean>;
+  hasHandoff?(
+    scope: ClientScope,
+    id: string,
+    expected?: PendingSendCommand | "legacy",
+  ): Promise<boolean>;
   forgetHandoff?(scope: ClientScope, id: string): Promise<void>;
   forgetLegacyHandoffs?(scope: ClientScope, referenced: ReadonlySet<string>): Promise<void>;
   remove(scope: ClientScope, localId: string): Promise<void>;
@@ -93,7 +97,11 @@ export interface MessageOutbox {
   ): Promise<string>;
   observe(messages: readonly { readonly id: string; readonly clientSendKey?: string }[]): void;
   retry(localId: string): Promise<"retried" | "settled">;
-  hasHandoff(scope: ClientScope, id: string): Promise<boolean>;
+  hasHandoff(
+    scope: ClientScope,
+    id: string,
+    expected?: PendingSendCommand | "legacy",
+  ): Promise<boolean>;
   forgetHandoff(scope: ClientScope, id: string): Promise<void>;
   /** Edit: disable delivery durably before handing the message back to the draft. */
   restoreDraft(localId: string): Promise<MessageTakeBack>;
@@ -414,10 +422,15 @@ class SessionMessageOutbox implements MessageOutbox {
         options?.assertCurrent?.();
         if (
           options?.handoff &&
-          !options.assertCurrent &&
-          (await this.hasHandoff(scope, parsed.idempotencyKey))
-        )
+          (await this.hasHandoff(
+            scope,
+            parsed.idempotencyKey,
+            options.assertCurrent ? parsed : undefined,
+          ))
+        ) {
+          options.assertCurrent?.();
           return null;
+        }
         const entries = await this.#options.storage.load(scope);
         const previous = entries.find((entry) => entry.localId === parsed.idempotencyKey);
         if (previous) {
@@ -514,8 +527,12 @@ class SessionMessageOutbox implements MessageOutbox {
     this.#publish({ acknowledged });
     this.#drain();
   };
-  hasHandoff = (scope: ClientScope, id: string): Promise<boolean> =>
-    this.#options.storage.hasHandoff?.(scope, id) ?? Promise.resolve(false);
+  hasHandoff = (
+    scope: ClientScope,
+    id: string,
+    expected?: PendingSendCommand | "legacy",
+  ): Promise<boolean> =>
+    this.#options.storage.hasHandoff?.(scope, id, expected) ?? Promise.resolve(false);
   forgetHandoff = (scope: ClientScope, id: string): Promise<void> =>
     this.#options.storage.forgetHandoff?.(scope, id) ?? Promise.resolve();
 

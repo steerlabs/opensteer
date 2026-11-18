@@ -98,6 +98,18 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
     handoffs?: z.infer<typeof recordSchema>["handoffs"];
     takenBack?: string[] | undefined;
   };
+  const checkHandoff = (
+    record: Record,
+    id: string,
+    expected?: StoredMessage["command"] | "legacy",
+  ): boolean => {
+    const held = record.handoffs?.find((receipt) => handoffId(receipt) === id);
+    if (expected === "legacy") return typeof held === "string";
+    if (!held) return false;
+    if (expected && (typeof held === "string" || held[1] !== payloadHash(expected)))
+      throw changedTaskDraft();
+    return true;
+  };
   const parse = (scope: ClientScope, raw: string | null): Record => {
     if (raw === null) return { entries: [] };
     if (exceeds(raw, 2 * maxBytes)) throw new Error("Message storage exceeds its bound.");
@@ -166,17 +178,11 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       options?.assertCurrent?.();
       if (options?.sourceExists?.() === false) return false;
       if (options?.migrated && record.migrated?.includes(entry.localId)) return false;
-      if (options?.handoff) {
-        const held = record.handoffs?.find((receipt) => handoffId(receipt) === entry.localId);
-        if (held) {
-          if (
-            options.assertCurrent &&
-            (typeof held === "string" || held[1] !== payloadHash(entry.command))
-          )
-            throw changedTaskDraft();
-          return false;
-        }
-      }
+      if (
+        options?.handoff &&
+        checkHandoff(record, entry.localId, options.assertCurrent ? entry.command : undefined)
+      )
+        return false;
       if (record.takenBack?.includes(messageStorageFingerprint(entry.localId))) return false;
       const existing = entries.find((row) => row.localId === entry.localId);
       const lane = options?.migrated ? entries.filter((row) => row.migrated) : entries;
@@ -222,12 +228,8 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
   return {
     load,
     put,
-    async hasHandoff(scope, id) {
-      return (
-        parse(scope, await records.read(key(scope))).handoffs?.some(
-          (held) => handoffId(held) === id,
-        ) ?? false
-      );
+    async hasHandoff(scope, id, expected) {
+      return checkHandoff(parse(scope, await records.read(key(scope))), id, expected);
     },
     forgetHandoff: (scope, id) =>
       update(scope, (record) => {

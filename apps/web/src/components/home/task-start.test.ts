@@ -1,4 +1,8 @@
-import { createMessageOutboxStorage, messageStorageFingerprint } from "@opensteer/client/host";
+import {
+  createMessageOutbox,
+  createMessageOutboxStorage,
+  messageStorageFingerprint,
+} from "@opensteer/client/host";
 import { controlledClientSession } from "@opensteer/client/test-support";
 import { createId } from "@opensteer/core";
 import {
@@ -319,6 +323,81 @@ describe("starting a new task from a draft", () => {
     ).rejects.toThrow();
     expect([...saved.records.values()].join()).not.toContain("Private unfinished message");
     expect(drafts.read(draftKey)?.text).toBe("Private unfinished message");
+  });
+
+  it("settles the revised message's durable receipt after upgrade and interrupted completion", async () => {
+    const session = controlledClientSession();
+    session.change({ phase: "recovering" });
+    const scope = session.connection.getSnapshot().scope!;
+    const threadId = createId("thread");
+    const saved = journal();
+    const generation = "previous-journal";
+    const messageKey = "previous-first-message";
+    const message = { content: [{ type: "text" as const, text: "Revised and saved" }] };
+    const command = {
+      ...message,
+      threadId,
+      idempotencyKey: messageKey,
+      type: "thread.sendMessage" as const,
+      delivery: "queue" as const,
+    };
+    saved.records.set(
+      `task-start:${draftKey}`,
+      JSON.stringify({
+        generation,
+        start: {
+          creation: { ...creation, idempotencyKey: "previous-creation" },
+          message: { content: [{ type: "text", text: "Old words" }] },
+          messageKey,
+          threadId,
+        },
+      }),
+    );
+    const raw = new Map<string, string>();
+    const storage = createMessageOutboxStorage({
+      read: async (key) => raw.get(key) ?? null,
+      write: async (key, value) => void raw.set(key, value),
+      remove: async (key) => void raw.delete(key),
+    });
+    await storage.put(
+      scope,
+      {
+        command,
+        localId: messageKey,
+        phase: "waiting",
+        attempted: false,
+        order: 1,
+        createdAt: new Date().toISOString(),
+      },
+      { handoff: true },
+    );
+    await storage.remove(scope, messageKey);
+    const outbox = createMessageOutbox({
+      session,
+      storage,
+      dispatch: vi.fn(async () => ({ messageId: "unexpected" })),
+      drafts: { restore: async () => "restored" },
+    });
+    const createThread = vi.fn();
+    try {
+      await expect(
+        startTask({
+          records: draftTaskStart(draftKey, generation, saved.mutate),
+          creation,
+          creationKey: () => "unused",
+          createThread,
+          message,
+          messageKey,
+          assertCurrent: () => {},
+          hasLegacyHandoff: (id) => outbox.hasHandoff(scope, id, "legacy"),
+          enqueue: (pending) => outbox.enqueue(pending, { handoff: true, assertCurrent: () => {} }),
+        }),
+      ).resolves.toEqual({ id: threadId });
+      expect(createThread).not.toHaveBeenCalled();
+      expect(await storage.load(scope)).toEqual([]);
+    } finally {
+      outbox.dispose();
+    }
   });
 
   it("starts afresh after the Host refused the creation, so a changed choice is not refused again", async () => {

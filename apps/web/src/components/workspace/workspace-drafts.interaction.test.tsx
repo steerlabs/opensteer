@@ -108,11 +108,11 @@ it("keeps another window's revised task draft and files after the earlier start 
       type: "text",
       text: "Earlier first message",
     });
+    await vi.waitFor(() => expect(history.at(-1)?.path).toMatch(/^\/tasks\//u), { timeout: 1000 });
     expect(composerDrafts.read(key)).toMatchObject({
       text: "Revised in another window",
       files: [file],
     });
-    expect(history.at(-1)?.path).toMatch(/^\/tasks\//u);
   } finally {
     answer.resolve();
   }

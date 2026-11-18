@@ -723,7 +723,7 @@ export function AppShell({
         messageKey: message.idempotencyKey,
         createThread: (creation) => hostClient.createThread(creation),
         enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
-        hasHandoff: (key) => outbox.hasHandoff(scope, key),
+        hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });
     },
     [hostClient],
