@@ -5,7 +5,6 @@ import {
   desktopHostRequestIdHeader,
   desktopHostRouteUrl,
   desktopHostTransportErrorHeader,
-  desktopHostUploadConcurrency,
   isDesktopHostUploadPath,
   type DesktopCloseHostWebSocketInput,
   type DesktopHostWebSocketEvent,
@@ -36,10 +35,7 @@ export function createDesktopHostFetch(
     const release = isDesktopHostUploadPath(url.pathname) ? await uploadSlot(signal) : null;
     const requestId = crypto.randomUUID();
     // Main never sees this signal; until headers arrive, it learns of an abort only here.
-    let cancelled: Promise<void> | null = null;
-    const cancel = () => {
-      cancelled = bridge.cancelHostRequest({ requestId }).catch(() => undefined);
-    };
+    const cancel = () => void bridge.cancelHostRequest({ requestId }).catch(() => undefined);
     try {
       // A Blob is handed on by reference rather than read into this renderer again.
       const body = request.body ? await request.blob() : null;
@@ -47,31 +43,39 @@ export function createDesktopHostFetch(
       const headers = new Headers(request.headers);
       headers.set(desktopHostRequestIdHeader, requestId);
       signal.addEventListener("abort", cancel, { once: true });
-      const response = await fetch(desktopHostRouteUrl(deploymentId, url), {
-        ...(body ? { body } : {}),
-        headers,
-        method: request.method,
-        signal,
-      });
+      let response: Response;
+      try {
+        response = await fetch(desktopHostRouteUrl(deploymentId, url), {
+          ...(body ? { body } : {}),
+          headers,
+          method: request.method,
+          signal,
+        });
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
       const failure = DesktopHostTransportErrorCodeSchema.safeParse(
         response.headers.get(desktopHostTransportErrorHeader),
       );
       if (failure.success) throw new HostTransportError(failure.data);
-      return response;
-    } finally {
-      signal.removeEventListener("abort", cancel);
-      // A cancelled upload's slot is free in main once main has heard the cancel.
-      if (release) void (cancelled ?? Promise.resolve()).then(release);
+      return release ? releasedWhenSettled(response, signal, release) : response;
+    } catch (error) {
+      release?.();
+      throw error;
     }
   };
 }
 
+/**
+ * Uploads this renderer sends at once. Electron reads each one's Blob into main
+ * as soon as main's route receives it, so this caps main at three upload
+ * payloads (each at most an attachment's 25 MiB, or a team file's 100 MiB and
+ * its preview); the rest wait here, where a Blob is only a reference.
+ */
+export const desktopHostUploadConcurrency = 3;
 const uploads = { active: 0, waiting: [] as (() => void)[] };
 
-/**
- * One of the few uploads main admits at once, waited for here, where a queued
- * Blob is only a reference. A released slot passes straight to the next waiter.
- */
+/** One upload slot, waited for in turn; releasing one passes it straight to the next waiter. */
 async function uploadSlot(signal: AbortSignal): Promise<() => void> {
   signal.throwIfAborted();
   if (uploads.active < desktopHostUploadConcurrency) uploads.active += 1;
@@ -97,6 +101,41 @@ async function uploadSlot(signal: AbortSignal): Promise<() => void> {
     if (next) next();
     else uploads.active -= 1;
   };
+}
+
+/** The upload's slot is held until its answer is read whole, fails, or is abandoned. */
+function releasedWhenSettled(response: Response, signal: AbortSignal, release: () => void) {
+  if (!response.body || signal.aborted) {
+    release();
+    return response;
+  }
+  const done = () => {
+    signal.removeEventListener("abort", done);
+    release();
+  };
+  signal.addEventListener("abort", done, { once: true });
+  const reader = response.body.getReader();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const next = await reader.read();
+          if (next.done) {
+            done();
+            controller.close();
+          } else controller.enqueue(next.value);
+        } catch (error) {
+          done();
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        done();
+        return reader.cancel(reason);
+      },
+    }),
+    { headers: response.headers, status: response.status, statusText: response.statusText },
+  );
 }
 
 export function createDesktopHostWebSocketFactory(

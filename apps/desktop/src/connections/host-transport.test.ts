@@ -1,13 +1,15 @@
 import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
-import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
+import {
+  createDesktopHostFetch,
+  desktopHostUploadConcurrency,
+} from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
 import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
 import {
   desktopHostRequestIdHeader,
   desktopHostTransportErrorHeader,
-  desktopHostUploadConcurrency,
   type DesktopHostWebSocketEvent,
 } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
@@ -302,6 +304,115 @@ describe("DesktopHostTransport", () => {
     await dispatch();
     expect(observeCommand).toHaveBeenCalledOnce();
     transport.dispose();
+  });
+
+  it("refuses a request whose session changed while main was still finding its Deployment", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = selected.authority.document.deploymentId;
+    const store = catalogStore([selected], id);
+    const looking = Promise.withResolvers<void>();
+    const found = Promise.withResolvers<void>();
+    let hold = true;
+    const request = vi.fn(async () => Response.json({ ok: true, data: {} }));
+    const transport = desktopHostTransport({
+      catalog: {
+        ...store,
+        load: async () => {
+          if (hold) {
+            hold = false;
+            looking.resolve();
+            await found.promise;
+          }
+          return store.load();
+        },
+      },
+      network: { openWebSocket: () => socket(), request },
+    });
+    try {
+      const pending = send(transport, id, "/v1/rpc/bootstrap.get");
+      await looking.promise;
+      // Signed out and in again: the same Host and route, another session.
+      transport.closeDeploymentConnections(id);
+      found.resolve();
+      await expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      found.resolve();
+      transport.dispose();
+    }
+  });
+
+  it("holds an upload to its attachment through a token refresh, not a selection that left and came back", async () => {
+    const home = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const work = deployment("Work", "https://work.connect.opensteer.test", "personal");
+    const team = deployment("Team", "https://team.example");
+    const owner = new TeamRuntimeOwner(null);
+    let token = "Bearer first";
+    const request = vi.fn(async (_input: HostNetworkRequest) => Response.json({}));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([home, work, team], home.authority.document.deploymentId),
+      credentials: { teamRuntime: () => owner, authorizationHeader: async () => token },
+      network: { openWebSocket: () => socket(), request },
+    });
+    // An upload main is reading, finished only when told.
+    const paused = (deploymentId: DeploymentId, path: string) => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const reading = Promise.withResolvers<void>();
+      const body = new ReadableStream<Uint8Array>(
+        {
+          start: (stream) => {
+            controller = stream;
+          },
+          pull: () => reading.resolve(),
+        },
+        { highWaterMark: 0 },
+      );
+      const response = forwardHostRoute(
+        Object.assign(
+          new Request(`app://opensteer/host/${deploymentId}${path}`, {
+            body,
+            duplex: "half",
+            headers: {
+              "content-type": "application/octet-stream",
+              [desktopHostRequestIdHeader]: crypto.randomUUID(),
+            },
+            method: "POST",
+          } as RequestInit),
+          { initiatorOrigin: "app://opensteer" },
+        ),
+        transport,
+      );
+      return {
+        reading: reading.promise,
+        finish: () => {
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          controller.close();
+          return response;
+        },
+      };
+    };
+    try {
+      const homeId = home.authority.document.deploymentId;
+      const away = paused(homeId, "/v1/rpc/attachment.upload");
+      await away.reading;
+      await transport.select({ deploymentId: work.authority.document.deploymentId });
+      await transport.select({ deploymentId: homeId });
+      const returned = await away.finish();
+      expect(returned.headers.get(desktopHostTransportErrorHeader)).toBe("deployment-changed");
+      expect(request).not.toHaveBeenCalled();
+
+      const teamId = team.authority.document.deploymentId;
+      const refreshed = paused(teamId, "/v1/team/files/upload/channel_1");
+      await refreshed.reading;
+      token = "Bearer second";
+      // Another read meanwhile resolves the team's attachment again with the new token.
+      await send(transport, teamId, "/v1/rpc/team.bootstrap.get", { method: "POST", body: "{}" });
+      const sent = await refreshed.finish();
+      expect(sent.status).toBe(200);
+      expect(request.mock.calls.at(-1)![0]).toMatchObject({ authorization: "Bearer second" });
+    } finally {
+      transport.dispose();
+    }
   });
 
   it("refuses a buffered command whose session changed on the same route while main prepared it", async () => {
@@ -2329,21 +2440,14 @@ describe("Desktop Host route admission", () => {
       );
     return { gate, id, request, route, transport };
   };
-  /** A body as Electron builds one from a Blob: pulled at once, its bytes arriving as one chunk. */
-  const electronBody = (bytes: Uint8Array, blobData: Promise<void> = Promise.resolve()) => {
-    const pulled = vi.fn();
-    const cancelled = vi.fn();
-    const body = new ReadableStream<Uint8Array>({
-      pull: async (controller) => {
-        pulled();
-        await blobData;
+  /** A body as Electron builds one from a Blob: its bytes arriving as one chunk. */
+  const electronBody = (bytes: Uint8Array) =>
+    new ReadableStream<Uint8Array>({
+      start: (controller) => {
         controller.enqueue(bytes);
         controller.close();
       },
-      cancel: cancelled,
     });
-    return { body, cancelled, pulled };
-  };
   const upload = (bytes: Uint8Array | ReadableStream<Uint8Array>) =>
     ({
       body: bytes,
@@ -2387,7 +2491,7 @@ describe("Desktop Host route admission", () => {
       const bytes = new Uint8Array(2 * 1_024 * 1_024);
       const uploaded = await route(
         `/v1/rpc/attachment.upload?input=${encodeURIComponent('{"attachmentId":"a"}')}`,
-        upload(electronBody(bytes).body),
+        upload(electronBody(bytes)),
       );
       expect(uploaded.status).toBe(200);
       await uploaded.body?.cancel();
@@ -2398,29 +2502,54 @@ describe("Desktop Host route admission", () => {
     }
   });
 
-  it("admits only a few uploads at once, refusing the next before Electron's eager read is used", async () => {
+  it("refuses a request over this client's own limit as busy, never as an unreachable Host", async () => {
     const { gate, request, route, transport } = fixture();
     try {
-      const path = "/v1/rpc/attachment.upload";
-      const held = Array.from({ length: desktopHostUploadConcurrency }, () =>
-        route(path, upload(electronBody(new Uint8Array(8)).body)),
+      const held = Array.from({ length: 32 }, () => route("/v1/rpc/bootstrap.get"));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(32), { timeout: 1_000 });
+      const refused = await route("/v1/rpc/bootstrap.get");
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toMatchObject({
+        ok: false,
+        error: { code: "resource_exhausted", retryable: true },
+      });
+      expect(request).toHaveBeenCalledTimes(32);
+      gate.resolve();
+      for (const response of await Promise.all(held)) expect(response.status).toBe(200);
+    } finally {
+      gate.resolve();
+      transport.dispose();
+    }
+  });
+
+  it("ends an upload whose answer never comes after a bounded wait, freeing its slot", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { id, request, transport } = fixture();
+    try {
+      const fetch = hostFetch(transport, id);
+      const sent = Array.from({ length: desktopHostUploadConcurrency + 1 }, () =>
+        fetch(`${routeOrigin}/v1/rpc/attachment.upload?input=%7B%7D`, {
+          body: new Blob(["bytes"]),
+          headers: { "content-type": "application/octet-stream" },
+          method: "POST",
+        }).catch((error: unknown) => error),
       );
       await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency), {
         timeout: 1_000,
       });
-      // Electron starts reading a Blob's bytes as soon as it builds the Request.
-      const blobData = Promise.withResolvers<void>();
-      const next = electronBody(new Uint8Array(8), blobData.promise);
-      await vi.waitFor(() => expect(next.pulled).toHaveBeenCalledOnce(), { timeout: 1_000 });
-      expect((await route(path, upload(next.body))).status).toBe(429);
-      expect(next.cancelled).toHaveBeenCalledOnce();
-      blobData.resolve();
-      gate.resolve();
-      for (const response of await Promise.all(held)) expect(response.status).toBe(200);
-      expect((await route(path, upload(electronBody(new Uint8Array(8)).body))).status).toBe(200);
-      expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1);
+      expect(request.mock.calls[0]![0].request.timeoutMs).toBe(120_000);
+      await vi.advanceTimersByTimeAsync(120_000);
+      for (const failed of await Promise.all(sent.slice(0, desktopHostUploadConcurrency)))
+        expect(failed).toMatchObject({ code: "timed-out" });
+      // The queued upload goes as soon as one of those settles.
+      await vi.waitFor(
+        () => expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1),
+        { timeout: 1_000 },
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await sent.at(-1)).toMatchObject({ code: "timed-out" });
     } finally {
-      gate.resolve();
+      vi.useRealTimers();
       transport.dispose();
     }
   });
@@ -2447,22 +2576,6 @@ describe("Desktop Host route admission", () => {
       expect(request.mock.calls[1]![0].signal.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
-      transport.dispose();
-    }
-  });
-
-  it("gives a team file a bounded header budget whatever its size", async () => {
-    const { gate, request, route, transport } = fixture();
-    gate.resolve();
-    try {
-      // Above ~75 KiB a size-scaled budget would pass 120 s and keep growing to hours.
-      const large = await route(
-        "/v1/team/files/upload/channel_1",
-        upload(new Uint8Array(100 * 1_024)),
-      );
-      await large.body?.cancel();
-      expect(request.mock.calls[0]![0].request.timeoutMs).toBe(120_000);
-    } finally {
       transport.dispose();
     }
   });

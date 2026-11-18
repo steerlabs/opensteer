@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
+import { HostCapacityError } from "../connections/host-transport-error.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
@@ -196,6 +197,20 @@ describe("bounded Host rpc requests", () => {
         error: { reason: "transport-unreachable", retryable: true },
       });
     }
+  });
+
+  it("reads this client's own full request pool as busy, not as an unreachable Host", async () => {
+    const client = createHttpHostApiClient({
+      baseUrl: new URL("https://opensteer.example"),
+      fetch: async () => {
+        throw new HostCapacityError("The Host request limit is full.");
+      },
+      onAuthenticationRequired: vi.fn(),
+    });
+    await expect(client["auth.config"]({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "resource_exhausted", retryable: true },
+    });
   });
 
   it("preserves a Host operation refusal without treating it as network loss", async () => {

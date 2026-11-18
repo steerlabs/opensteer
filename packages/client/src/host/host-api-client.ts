@@ -26,7 +26,11 @@ import {
   hostResponseHeadersTimeoutMs,
   hostResponseStallTimeoutMs,
 } from "../connections/host-response-deadline.js";
-import { HostTransportError, isGatewayFailure } from "../connections/host-transport-error.js";
+import {
+  HostCapacityError,
+  HostTransportError,
+  isGatewayFailure,
+} from "../connections/host-transport-error.js";
 
 type Fetch = typeof globalThis.fetch;
 type HostApiHandler<Name extends keyof typeof hostApi> = (
@@ -317,6 +321,16 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
+    // Nothing was sent: this client is at its own limit, which says nothing about the Host.
+    if (error instanceof HostCapacityError)
+      return {
+        error: HostApiErrorSchema.parse({
+          code: "resource_exhausted",
+          message: error.message,
+          retryable: true,
+        }),
+        ok: false,
+      } as RpcOutput<(typeof hostApi)[Name]>;
     const failure =
       error instanceof HostTransportError
         ? error

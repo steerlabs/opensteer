@@ -1,13 +1,13 @@
 import { createId } from "@opensteer/core";
-import {
-  desktopHostUploadConcurrency,
-  type DesktopHostWebSocketEvent,
-  type OpensteerDesktopBridge,
+import type {
+  DesktopHostWebSocketEvent,
+  OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { describe, expect, it, vi } from "vitest";
 import {
   createDesktopHostFetch,
   createDesktopHostWebSocketFactory,
+  desktopHostUploadConcurrency,
 } from "./desktop-host-transport.js";
 
 const deploymentId = createId("deployment");
@@ -161,7 +161,7 @@ describe("Desktop Host renderer adapter", () => {
     expect(route).toHaveBeenCalledOnce();
   });
 
-  it("queues uploads beyond the few main admits, passing each freed slot to the next", async () => {
+  it("queues uploads beyond three, passing a slot on only when its upload settles", async () => {
     const origin = "https://home.test";
     const answers: ((response: Response) => void)[] = [];
     const route = vi.fn<typeof globalThis.fetch>(
@@ -193,8 +193,12 @@ describe("Desktop Host renderer adapter", () => {
     });
     leaving.abort(new Error("Composer closed"));
     await expect(abandoned).rejects.toThrow("Composer closed");
+    // A slot frees once its answer is read whole, not when its headers arrive.
     answers[0]!(new Response("{}"));
-    await admitted[0];
+    const answered = await admitted[0]!;
+    await Promise.resolve();
+    expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1);
+    await answered.text();
     await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 2), {
       timeout: 1_000,
     });

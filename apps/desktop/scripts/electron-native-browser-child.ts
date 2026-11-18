@@ -48,6 +48,7 @@ import {
   BrowserSessionIdSchema,
   BrowserServerMessageSchema,
 } from "@opensteer/protocol";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 import { BrowserController, type NativePresentationSource } from "@opensteer/browser-runtime-core";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
@@ -1144,7 +1145,8 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     let denial: unknown = null;
     try {
       await evaluateApp(
-        `fetch(${JSON.stringify(`app://opensteer/host/${manifest.deploymentId}/.well-known/opensteer`)}).then((response) => { if (!response.ok) throw new Error("refused with " + response.status); })`,
+        // The renderer's own Host route, as the app reaches it: a /v1 read with its request id.
+        `fetch(${JSON.stringify(`app://opensteer/host/${manifest.deploymentId}/v1/rpc/auth.config?input=%7B%7D`)}, { headers: { ${JSON.stringify(desktopHostRequestIdHeader)}: crypto.randomUUID() } }).then((response) => { if (!response.ok) throw new Error("refused with " + response.status); })`,
       );
     } catch (error) {
       denial = errorText(error);
@@ -1157,7 +1159,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       artifacts.event("capture.failure", { error: errorText(error) });
     }
     const blockedReason = denial
-      ? `Native mount setup failed; descriptor preload request rejected: ${String(denial)}`
+      ? `Native mount setup failed; the app's Host route request was rejected: ${String(denial)}`
       : `Native mount setup failed after descriptor access succeeded; ${authorityEvents.some((event) => event.type === "admitted") ? "Host snapshot admitted" : "no Host snapshot admission observed"}; ${presentationEvents.length} presentation events; ${
           outgoing
             .filter((item) => item.type === "stream.subscribe")

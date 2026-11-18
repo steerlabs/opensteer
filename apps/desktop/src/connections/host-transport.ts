@@ -18,7 +18,7 @@ import {
   teamApiVersionHeader,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  teamFileHeadersTimeoutMs,
+  fileTransferHeadersTimeoutMs,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
@@ -29,6 +29,7 @@ import type {
 } from "@opensteer/client/auth";
 import {
   bufferedHostResponseTimeoutMs,
+  HostCapacityError,
   HostTransport,
   HostTransportError,
   HostRouteUnavailableError,
@@ -44,7 +45,6 @@ import {
   desktopHostRequestIdHeader,
   DesktopHostRequestIdSchema,
   desktopHostTransportErrorHeader,
-  desktopHostUploadConcurrency,
   DesktopHostWebSocketCommandSchema,
   isDesktopHostUploadPath,
   DesktopHostWebSocketEventSchema,
@@ -88,8 +88,6 @@ const maximumJsonRequestBytes = 1_024 * 1_024;
 const teamFilesPath = "/v1/team/files/";
 const teamUploadPath = "/v1/team/files/upload/";
 const requestBodyStallTimeoutMs = 20_000;
-// At most this many in flight at once, each JSON body at most 1 MiB; uploads are fewer still.
-const maximumForwardedRequests = 64;
 const maximumEarlyCancellations = 64;
 const maximumCommandResponseBytes = 1_024 * 1_024;
 const forwardedRequestHeaders = {
@@ -176,7 +174,8 @@ export class DesktopHostTransport extends HostTransport {
   readonly #ownerGenerations = new Map<number, number>();
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   readonly #forwarded = new Map<string, AbortController>();
-  readonly #uploads = new Set<string>();
+  /** Bumped when a Deployment's session changes; a request admitted before it isn't sent. */
+  readonly #sessionEpochs = new Map<DeploymentId, number>();
   /** A cancel can overtake its request on the way to main. */
   readonly #cancelledEarly = new Set<string>();
   #selectedDeploymentId: DeploymentId | null = null;
@@ -311,52 +310,53 @@ export class DesktopHostTransport extends HostTransport {
    * request replayed. A transport failure is named in a header.
    */
   forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response> {
-    // Admission is decided before anything awaits: Electron may already be reading the body.
-    const refuse = (response: Response) => {
-      void request.body?.cancel().catch(() => undefined);
-      return Promise.resolve(response);
-    };
     const requestId = DesktopHostRequestIdSchema.safeParse(
       request.headers.get(desktopHostRequestIdHeader),
     );
-    if (!requestId.success || this.#forwarded.has(requestId.data) || this.#disposed)
-      return refuse(new Response(null, { status: 400 }));
-    if (!forwardedMethods.includes(request.method))
-      return refuse(new Response(null, { status: 405 }));
-    const pathname = path.split("?", 1)[0]!;
-    const upload = isDesktopHostUploadPath(pathname);
-    if (
-      this.#forwarded.size >= maximumForwardedRequests ||
-      (upload && this.#uploads.size >= desktopHostUploadConcurrency)
-    )
-      return refuse(
-        hostRefusal(429, "resource_exhausted", "Too many Host requests are open.", true),
-      );
+    const refused =
+      !requestId.success || this.#forwarded.has(requestId.data) || this.#disposed
+        ? 400
+        : !forwardedMethods.includes(request.method)
+          ? 405
+          : null;
+    if (refused !== null || !requestId.success) {
+      void request.body?.cancel().catch(() => undefined);
+      return Promise.resolve(new Response(null, { status: refused ?? 400 }));
+    }
     const id = requestId.data;
     const controller = new AbortController();
     this.#forwarded.set(id, controller);
     if (this.#cancelledEarly.delete(id)) controller.abort(new HostTransportError("cancelled"));
-    if (upload) this.#uploads.add(id);
+    // Taken before anything awaits: a sign-in again during the lookups below is another session.
+    const epoch = this.#sessionEpoch(deploymentId);
+    const sameSession = () => {
+      if (this.#sessionEpoch(deploymentId) !== epoch)
+        throw new HostTransportError("deployment-changed");
+    };
     let settled: Promise<void> = Promise.resolve();
-    return this.#forward(deploymentId, path, pathname, request, controller.signal, (exchange) => {
-      settled = exchange;
-    })
+    return this.#forward(
+      deploymentId,
+      path,
+      request,
+      controller.signal,
+      sameSession,
+      (exchange) => {
+        settled = exchange;
+      },
+    )
       .catch(transportFailure)
-      .finally(() => {
-        // An upload's slot ends with its answer, by when the Host has its bytes.
-        this.#uploads.delete(id);
-        void settled.finally(() => this.#forwarded.delete(id));
-      });
+      .finally(() => void settled.finally(() => this.#forwarded.delete(id)));
   }
 
   async #forward(
     deploymentId: DeploymentId,
     path: string,
-    pathname: string,
     request: Request,
     signal: AbortSignal,
+    sameSession: () => void,
     relaying: (settled: Promise<void>) => void,
   ): Promise<Response> {
+    const pathname = path.split("?", 1)[0]!;
     const headers: Partial<Record<ForwardedHeader, string>> = {};
     for (const [name, field] of Object.entries(forwardedRequestHeaders)) {
       const value = request.headers.get(name);
@@ -368,30 +368,39 @@ export class DesktopHostTransport extends HostTransport {
       request.method === "POST" &&
       (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
     const transport = await this.#transport(deploymentId, summary);
+    sameSession();
     let body: Uint8Array<ArrayBuffer> | undefined;
     let attachment: SelectedAttachment | undefined;
-    let admitted: (() => void) | undefined;
+    let admitted = sameSession;
     if (request.body) {
-      // The body can take a while; the Account, session and route it was sent under are fixed
-      // first, and every send of it, a replay included, is checked against them.
+      // The body can take a while; the Account, route and attachment it was sent under are
+      // fixed first, and every send of it, a replay included, is checked against them.
       attachment = await transport.current();
       if (attachment.resolved.deploymentId !== deploymentId)
         throw new HostTransportError("deployment-changed");
-      admitted = transport.retainAuthorization(attachment);
+      const retained = transport.retainAuthorization(attachment);
+      admitted = () => {
+        sameSession();
+        retained();
+      };
+      admitted();
       const read = await readRequestBody(request, requestByteLimit(pathname), signal);
       if (!read) return hostRefusal(413, "bad_request", "Request body is too large", false);
       body = read;
       admitted();
     }
-    const timeoutMs = pathname.startsWith(teamFilesPath)
-      ? teamFileHeadersTimeoutMs
-      : body
-        ? bufferedHostResponseTimeoutMs(body.byteLength)
-        : undefined;
+    // An upload's bytes go out before its answer, and a team Host fetches a partner's file
+    // before it answers: these wait longer for headers, but never without bound.
+    const timeoutMs =
+      isDesktopHostUploadPath(pathname) || pathname.startsWith(teamFilesPath)
+        ? fileTransferHeadersTimeoutMs
+        : body
+          ? bufferedHostResponseTimeoutMs(body.byteLength)
+          : undefined;
     const forwarded = {
       expectedDeploymentId: deploymentId,
       ...(attachment ? { expectedAttachmentKey: attachment.resolved.key } : {}),
-      ...(admitted ? { admitted } : {}),
+      admitted,
       headers: {
         ...headers,
         ...(teamUpload ? { additional: { "x-opensteer-team-upload": teamUpload } } : {}),
@@ -413,7 +422,6 @@ export class DesktopHostTransport extends HostTransport {
   /** Ends every request still being forwarded: the page that made them has gone. */
   cancelForwardedRequests(): void {
     this.#cancelledEarly.clear();
-    this.#uploads.clear();
     for (const controller of this.#forwarded.values())
       controller.abort(new HostTransportError("cancelled"));
   }
@@ -424,8 +432,6 @@ export class DesktopHostTransport extends HostTransport {
     const controller = this.#forwarded.get(requestId);
     if (controller) {
       controller.abort(new HostTransportError("cancelled"));
-      // Freed now, so the renderer's next upload, sent once this call returns, is admitted.
-      this.#uploads.delete(requestId);
       return;
     }
     this.#cancelledEarly.add(requestId);
@@ -838,6 +844,7 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   closeDeploymentConnections(deploymentId: DeploymentId): void {
+    this.#sessionEpochs.set(deploymentId, this.#sessionEpoch(deploymentId) + 1);
     // The selected transport caches its identity; do not resolve a different route during fencing.
     if (this.#selectedDeploymentId === deploymentId) this.invalidateSession();
     const summary = this.#summaries.get(deploymentId);
@@ -850,6 +857,10 @@ export class DesktopHostTransport extends HostTransport {
       this.#closeTransportSockets(team);
       team.invalidateSession();
     }
+  }
+
+  #sessionEpoch(deploymentId: DeploymentId): number {
+    return this.#sessionEpochs.get(deploymentId) ?? 0;
   }
 
   closeAllConnections(): void {
@@ -1138,6 +1149,8 @@ function responseHeaders(source: Headers): Headers {
 }
 
 function transportFailure(error: unknown): Response {
+  if (error instanceof HostCapacityError)
+    return hostRefusal(429, "resource_exhausted", error.message, true);
   return new Response(null, {
     status: 502,
     headers: {

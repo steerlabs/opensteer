@@ -28,7 +28,7 @@ import {
   hostResponseHeadersTimeoutMs,
   hostResponseStallTimeoutMs,
 } from "./host-response-deadline.js";
-import { HostTransportError } from "./host-transport-error.js";
+import { HostCapacityError, HostTransportError } from "./host-transport-error.js";
 
 const maximumConcurrentRequests = 32;
 const maximumConcurrentAppStreams = 32;
@@ -188,10 +188,20 @@ export class HostTransport {
     return this.#fence.subscribe(listener);
   }
 
+  /**
+   * Holds a caller to the session and attachment it resolved. The attachment
+   * generation is monotone, so a selection that moves away and back still
+   * fails; a refreshed token on the same session and route does not.
+   */
   retainAuthorization(selected: SelectedAttachment): () => void {
     const generation = this.#sessionGeneration;
+    const attachmentGeneration = this.#fence.generation;
     return () => {
-      if (generation !== this.#sessionGeneration || selected.resolved.key !== this.currentKey())
+      if (
+        generation !== this.#sessionGeneration ||
+        attachmentGeneration !== this.#fence.generation ||
+        selected.resolved.key !== this.currentKey()
+      )
         throw new HostTransportError("deployment-changed");
       if (selected.resolved.teamRuntime?.signal.aborted)
         throw new HostTransportError("deployment-changed");
@@ -225,7 +235,7 @@ export class HostTransport {
         ? this.#activeAppStreams >= maximumConcurrentAppStreams
         : this.#activeRequests >= maximumConcurrentRequests
     ) {
-      throw new Error(
+      throw new HostCapacityError(
         appStream ? "The app stream limit is full." : "The Host request limit is full.",
       );
     }

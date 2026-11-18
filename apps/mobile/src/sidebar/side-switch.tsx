@@ -453,7 +453,8 @@ export function teamStatus(team: MobileTeam): string | null {
     case "loading":
       return null;
     case "offline":
-      return "Offline";
+      // One unanswered call says the team is out of reach, not that this phone is offline.
+      return "Can't reach";
     case "failed":
       return "Couldn't open";
     case "signed-out":

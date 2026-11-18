@@ -18,7 +18,11 @@ import type {
   TeamSessionOptions,
   TeamRuntimeOwner,
 } from "@opensteer/client/team";
-import { teamCacheKey, TeamSavedStateSchema } from "@opensteer/client/team";
+import {
+  teamCacheKey,
+  TeamSavedStateSchema,
+  teamUploadReplyMaxBytes,
+} from "@opensteer/client/team";
 import type { z } from "zod";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import {
@@ -125,7 +129,12 @@ function teamFiles(
         await response.body?.cancel();
         throw teamFileRefusal(response, "The team file could not be uploaded.");
       }
-      const uploaded = TeamFileSchema.parse(await response.json());
+      const reply = await readBoundedResponse(response, {
+        maximumBytes: teamUploadReplyMaxBytes,
+        ...(signal ? { signal } : {}),
+        sizeError: () => new Error("Team upload response exceeds its byte bound."),
+      });
+      const uploaded = TeamFileSchema.parse(JSON.parse(new TextDecoder().decode(reply)));
       owner?.assertCurrent();
       return uploaded;
     },
