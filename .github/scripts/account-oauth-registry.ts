@@ -1,12 +1,12 @@
-// Moves the managed OAuth apps' credentials from the Account runtime secret's retired
-// per-provider keys into OPENSTEER_HOSTED_OAUTH_PROVIDERS, built from
-// deploy/account/oauth-providers.json, and adds the result as a new secret version.
+// Removes obsolete provider identity settings from the pinned Account runtime registry
+// and adds a new runtime secret version with the validated result.
 // Usage: pnpm exec tsx .github/scripts/account-oauth-registry.ts [--dry-run]
 //
 // Secret values stay in this process: they are read from and written to gcloud through pipes,
 // never printed, logged or written to disk. gcloud's own stderr passes through for diagnosis.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { z } from "zod";
 import { HostedOAuthProviderRegistrySchema } from "../../apps/control-plane/src/auth/hosted-oauth-provider-registry.ts";
 
 const secret = "opensteer-account-runtime";
@@ -68,56 +68,38 @@ function main(argv: string[]) {
     // The init container in deploy/account/account.yaml reads one object of string values.
     throw new Refusal(`${secret} version ${version} is not an object of string values`);
   }
-  if (registryKey in document) {
-    throw new Refusal(`${secret} version ${version} already has ${registryKey}`);
+  const source = document[registryKey];
+  if (typeof source !== "string") {
+    throw new Refusal(`${secret} version ${version} is missing ${registryKey}`);
   }
+  let previous: unknown;
+  try {
+    previous = JSON.parse(source);
+  } catch {
+    throw new Refusal(`${registryKey} is not JSON`);
+  }
+  const entries = z
+    .array(z.looseObject({ oauth: z.looseObject({ identity: z.unknown().optional() }) }))
+    .min(1)
+    .safeParse(previous);
+  if (!entries.success) throw new Refusal(`${registryKey} is not a nonempty provider registry`);
 
-  const template = JSON.parse(
-    readFileSync(new URL("deploy/account/oauth-providers.json", root), "utf8"),
-  ) as Array<Record<string, unknown> & { provider: string }>;
-  const included: string[] = [];
-  const skipped: string[] = [];
-  const legacy = new Set<string>();
-  const registry = template.flatMap((entry) => {
-    if (["clientId", "clientSecret", "installationUrl"].some((field) => field in entry)) {
-      throw new Refusal(`The template's ${entry.provider} entry must not hold credentials`);
-    }
-    const prefix = `OPENSTEER_HOSTED_OAUTH_${entry.provider.toUpperCase()}_`;
-    for (const field of ["CLIENT_ID", "CLIENT_SECRET", "REVISION", "INSTALLATION_URL"]) {
-      if (prefix + field in document) legacy.add(prefix + field);
-    }
-    const clientId = document[`${prefix}CLIENT_ID`];
-    const clientSecret = document[`${prefix}CLIENT_SECRET`];
-    if (clientId === undefined && clientSecret === undefined) {
-      skipped.push(entry.provider);
-      return [];
-    }
-    if (clientId === undefined || clientSecret === undefined) {
-      throw new Refusal(`${entry.provider} has only one of ${prefix}CLIENT_ID and _CLIENT_SECRET`);
-    }
-    const installationUrl = document[`${prefix}INSTALLATION_URL`];
-    included.push(entry.provider);
-    return [{ ...entry, clientId, clientSecret, ...(installationUrl ? { installationUrl } : {}) }];
-  });
-  if (registry.length === 0) throw new Refusal("No provider in the template has credentials");
-
+  const registry = entries.data.map(({ oauth: { identity: _identity, ...oauth }, ...entry }) => ({
+    ...entry,
+    oauth,
+  }));
   const validated = HostedOAuthProviderRegistrySchema.safeParse(registry);
   if (!validated.success) {
-    // Issue paths and the schema's own messages; never the input.
-    const issues = validated.error.issues.map(({ path, message }) => {
-      const [index, ...rest] = path;
-      const provider = typeof index === "number" ? registry[index]!.provider : "registry";
-      return `  ${[provider, ...rest].join(".")}: ${message}`;
+    // Only schema-authored messages are safe to show. Other issues may include input keys.
+    const issues = validated.error.issues.map(({ path, code, message }) => {
+      const index = typeof path[0] === "number" ? `entry ${path[0] + 1}` : "registry";
+      return `  ${index}: ${code === "custom" ? message : code}`;
     });
     throw new Refusal(`The registry is invalid:\n${issues.join("\n")}`);
   }
 
-  // The retired keys are dead configuration; earlier versions keep them for a rollback.
-  const next = Object.fromEntries(Object.entries(document).filter(([key]) => !legacy.has(key)));
-  next[registryKey] = JSON.stringify(registry);
-
-  console.log(`Included: ${included.join(", ")}`);
-  console.log(`Skipped, no credentials: ${skipped.join(", ") || "none"}`);
+  const next = { ...document, [registryKey]: JSON.stringify(registry) };
+  console.log(`Validated providers: ${validated.data.map(({ provider }) => provider).join(", ")}`);
   if (dryRun) {
     console.log("Dry run: no version added");
     return;

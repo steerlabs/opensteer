@@ -1,14 +1,5 @@
 import { z } from "zod";
 
-export const OAuthIdentitySourceSchema = z.strictObject({
-  accountIdentifierPath: z.string().min(1).max(256).optional(),
-  displayNamePath: z.string().min(1).max(256).optional(),
-  identityPath: z.string().min(1).max(256),
-  source: z.enum(["token-response", "userinfo"]),
-  tenantPath: z.string().min(1).max(256).optional(),
-  userinfoUrl: z.url().optional(),
-});
-
 export const OAuthClientAuthSchema = z.enum(["basic", "body", "none"]);
 
 /**
@@ -36,12 +27,11 @@ export const OAuthRevocationConfigSchema = z.strictObject({
 /**
  * The broker registry owns provider request settings and response profiles.
  */
-const OAuthMethodConfigObjectSchema = z.strictObject({
+export const OAuthMethodConfigSchema = z.strictObject({
   authorizationUrl: z.url(),
   clientAuth: OAuthClientAuthSchema,
   extraAuthorizeParams: z.record(z.string().max(64), z.string().max(512)).optional(),
   idTokenValidation: OAuthIdTokenValidationSchema.optional(),
-  identity: OAuthIdentitySourceSchema,
   issuer: z.url().optional(),
   revocation: OAuthRevocationConfigSchema.optional(),
   /** Provider aliases for equivalent returned scopes, keyed by canonical scope. */
@@ -55,15 +45,4 @@ const OAuthMethodConfigObjectSchema = z.strictObject({
   tokenResponseProfile: OAuthTokenResponseProfileSchema.optional(),
   usesPkce: z.boolean(),
 });
-export const OAuthMethodConfigSchema = OAuthMethodConfigObjectSchema.superRefine(
-  (config, context) => {
-    if (config.idTokenValidation === "ignore" && config.identity.source !== "userinfo") {
-      context.addIssue({
-        code: "custom",
-        message: "Ignoring ID tokens requires userinfo to be the identity authority",
-        path: ["idTokenValidation"],
-      });
-    }
-  },
-);
 export type OAuthMethodConfig = z.infer<typeof OAuthMethodConfigSchema>;

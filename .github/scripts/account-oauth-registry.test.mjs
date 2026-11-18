@@ -16,8 +16,7 @@ const template = JSON.parse(
 const [, project, version] =
   /projects\/([a-z0-9-]+)\/secrets\/opensteer-account-runtime\/versions\/([0-9]+)"/u.exec(manifest);
 
-// Made-up values: the keys the Account init container requires, plus the retired per-provider
-// OAuth apps the registry is built from.
+// Made-up values: the keys the Account init container requires, plus the managed provider registry.
 const runtime = {
   OPENSTEER_ADOPTION_OPERATION_KEY: "fake-adoption-key-0001",
   OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY: "fake-link-key-0002",
@@ -33,21 +32,31 @@ const runtime = {
     "-----BEGIN PRIVATE KEY-----\nfake-apns-0011\n-----END PRIVATE KEY-----\n",
   OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY: 'fake-apple-key-0012 "quoted" ünïcode',
 };
-const apps = {
-  OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID: "fake-google-id-1001.apps.example",
-  OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET: "fake-google-secret-1002",
-  OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION: "3",
-  OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID: "fake-slack-id-1003",
-  OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET: "fake-slack-secret-1004",
-  OPENSTEER_HOSTED_OAUTH_SLACK_REVISION: "2",
-  OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID: "fake-microsoft-id-1005",
-  OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET: "fake-microsoft-secret-1006",
-  OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION: "1",
-  OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID: "fake-discord-id-1007",
-  OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET: "fake-discord-secret-1008",
-  OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION: "1",
-};
-const values = (document) => Object.values(document).filter((value) => value.length > 1);
+const registryKey = "OPENSTEER_HOSTED_OAUTH_PROVIDERS";
+const registry = template.map((entry, index) => ({
+  ...entry,
+  revision: entry.revision + index,
+  clientId: `fake-${entry.provider}-id-${index}`,
+  clientSecret: `fake-${entry.provider}-secret-${index}`,
+  ...(entry.provider === "github"
+    ? { installationUrl: "https://github.com/apps/test-app/installations/new" }
+    : {}),
+}));
+const legacyEntry = (entry) => ({
+  ...entry,
+  oauth: {
+    ...entry.oauth,
+    identity: {
+      source: "userinfo",
+      userinfoUrl: "https://provider.example.test/userinfo",
+      identityPath: "sub",
+    },
+  },
+});
+const legacyDocument = (entries) => ({
+  ...runtime,
+  [registryKey]: JSON.stringify(entries.map(legacyEntry)),
+});
 
 // A fake gcloud that serves one secret version and records what it was asked and given.
 function fixture(document) {
@@ -90,7 +99,10 @@ esac
 }
 
 function assertNoSecrets(result, document) {
-  for (const value of values(document)) {
+  const values = Object.values(document).filter((value) => value.length > 1);
+  // A plain value can leak even if the full registry string does not.
+  values.push(...(document[registryKey]?.match(/fake-[a-z]+-(?:id|secret)-[0-9]+/gu) ?? []));
+  for (const value of values) {
     assert.ok(!result.stdout.includes(value), "stdout carries a secret value");
     assert.ok(!result.stderr.includes(value), "stderr carries a secret value");
   }
@@ -120,16 +132,15 @@ function expandRuntimeSecrets(dir, added) {
   return (key) => readFileSync(path.join(out, "secrets", key), "utf8");
 }
 
-test("adds a version with the registry joined from the existing apps and no retired keys", () => {
-  const document = { ...runtime, ...apps };
+test("adds a version without the obsolete identity fields and preserves existing settings", () => {
+  const document = legacyDocument(registry);
   const f = fixture(document);
   try {
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       result.stdout,
-      "Included: google, microsoft, slack, discord\n" +
-        "Skipped, no credentials: github\n" +
+      "Validated providers: google, microsoft, slack, discord, github\n" +
         `Added opensteer-account-runtime version ${Number(version) + 1}\n`,
     );
     assert.equal(
@@ -140,23 +151,12 @@ test("adds a version with the registry joined from the existing apps and no reti
     assertNoSecrets(result, document);
 
     const added = JSON.parse(result.added);
-    const { OPENSTEER_HOSTED_OAUTH_PROVIDERS: registry, ...rest } = added;
-    // Every other key is carried unchanged, in order; the retired per-provider keys are gone.
+    const { [registryKey]: updated, ...rest } = added;
     assert.deepEqual(Object.entries(rest), Object.entries(runtime));
-    const credentials = (provider) => ({
-      clientId: apps[`OPENSTEER_HOSTED_OAUTH_${provider.toUpperCase()}_CLIENT_ID`],
-      clientSecret: apps[`OPENSTEER_HOSTED_OAUTH_${provider.toUpperCase()}_CLIENT_SECRET`],
-    });
-    assert.deepEqual(
-      JSON.parse(registry),
-      template
-        .filter(({ provider }) => provider !== "github")
-        .map((entry) => ({ ...entry, ...credentials(entry.provider) })),
-    );
+    assert.deepEqual(JSON.parse(updated), registry);
 
-    // The init container in account.yaml still expands the new document.
     const expanded = expandRuntimeSecrets(f.dir, result.added);
-    assert.equal(expanded("OPENSTEER_HOSTED_OAUTH_PROVIDERS"), registry);
+    assert.equal(expanded(registryKey), updated);
     assert.equal(
       expanded("OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY"),
       runtime.OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY,
@@ -166,23 +166,13 @@ test("adds a version with the registry joined from the existing apps and no reti
   }
 });
 
-test("a dry run names included and skipped providers and adds nothing", () => {
-  const document = {
-    ...runtime,
-    OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID: apps.OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID,
-    OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET: apps.OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET,
-    OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION: "1",
-  };
+test("a dry run names the validated providers and adds nothing", () => {
+  const document = legacyDocument(registry.slice(0, 1));
   const f = fixture(document);
   try {
     const result = f.run("--dry-run");
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      result.stdout,
-      "Included: google\n" +
-        "Skipped, no credentials: microsoft, slack, discord, github\n" +
-        "Dry run: no version added\n",
-    );
+    assert.equal(result.stdout, "Validated providers: google\nDry run: no version added\n");
     assert.doesNotMatch(result.calls, /versions add/);
     assert.equal(result.added, "");
     assertNoSecrets(result, document);
@@ -193,12 +183,8 @@ test("a dry run names included and skipped providers and adds nothing", () => {
 
 test("refuses a registry the service would reject, without adding or printing a value", () => {
   // A GitHub App without its installation URL fails the service's own registry schema.
-  const document = {
-    ...runtime,
-    ...apps,
-    OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: "fake-github-id-1009",
-    OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET: "fake-github-secret-1010",
-  };
+  const { installationUrl: _installationUrl, ...github } = registry.at(-1);
+  const document = legacyDocument([github]);
   const f = fixture(document);
   try {
     const result = f.run();
@@ -206,7 +192,7 @@ test("refuses a registry the service would reject, without adding or printing a 
     assert.equal(result.stdout, "");
     assert.match(
       result.stderr,
-      /The registry is invalid:\n {2}github: Hosted OAuth GitHub requires its exact installation URL/,
+      /The registry is invalid:\n {2}entry 1: Hosted OAuth GitHub requires its exact installation URL/,
     );
     assert.doesNotMatch(result.calls, /versions add/);
     assertNoSecrets(result, document);
@@ -215,19 +201,13 @@ test("refuses a registry the service would reject, without adding or printing a 
   }
 });
 
-test("refuses half an app's credentials and a secret that already has a registry", () => {
+test("refuses a missing, malformed or incomplete source registry", () => {
+  const { clientSecret: _clientSecret, ...incomplete } = registry[0];
   for (const [document, message] of [
-    [
-      {
-        ...runtime,
-        OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID: apps.OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID,
-      },
-      /slack has only one of OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID and _CLIENT_SECRET/,
-    ],
-    [
-      { ...runtime, ...apps, OPENSTEER_HOSTED_OAUTH_PROVIDERS: "[]" },
-      /already has OPENSTEER_HOSTED_OAUTH_PROVIDERS/,
-    ],
+    [runtime, /missing OPENSTEER_HOSTED_OAUTH_PROVIDERS/],
+    [{ ...runtime, [registryKey]: "broken JSON" }, /is not JSON/],
+    [{ ...runtime, [registryKey]: "[]" }, /not a nonempty provider registry/],
+    [legacyDocument([incomplete]), /The registry is invalid:\n {2}entry 1: invalid_type/],
   ]) {
     const f = fixture(document);
     try {

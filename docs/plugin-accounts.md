@@ -9,8 +9,8 @@ credentials. Provider registration and real-provider checks belong to the
 
 Account setup creates an engine connection before review. The person reviews that connection's
 plugin requirement, requested scopes, declared sites and whether credentials reach plugin code as
-sealed handles or values. Completion must still match that declaration and its scope. The account,
-reviewed link and successful local attempt commit together. Merely installing a plugin, closing a
+sealed handles or values. Completion must use that reviewed declaration and scope request. The
+account, reviewed link and successful local attempt commit together. Merely installing a plugin, closing a
 popup or receiving a sealed broker response does not complete setup. A committed reviewed link
 fulfils matching `plugin.account` Requests and the existing continuation outbox wakes their tasks.
 Agents ask for accounts; they do not enter credentials or approve links.
@@ -26,16 +26,33 @@ A Deployment with an active Account link returns every OAuth consent through Acc
 client surface. One-click sign-in exchanges, refreshes and revokes at the broker; no managed client
 secret or provider authorization code reaches the Host. The Host opens only normalized tokens
 sealed to its ephemeral key. Account's registry owns provider endpoints, allowed scopes, revision
-and managed credential placement; a plugin cannot choose where a managed token is sent. An entry
-without placement is unavailable for one-click sign-in.
+and managed credential placement. An entry without placement is unavailable for one-click sign-in.
+Consent and renewal use the reviewed scopes. The broker accepts only reported grants within the
+provider's allowlist that cover every requested functional scope, after normalizing provider aliases. Providers can omit `offline_access` from access-token scopes because it requests renewal.
+A provider may return previously consented permissions for the same app. The Host and engine retain
+the reported scopes with the grant and keep the original request pinned separately for renewal.
+Managed credential handles restrict the destination and token header. A provider can honor any
+permission on that token at an allowed destination.
+
+The initiating Opensteer Account and Deployment supply the identity binding. The engine creates an
+account with the chosen or default label, and reconnect replaces credentials on the selected account
+with a new generation.
 
 The broker accepts only plugin sign-in requests. Hosts using the retired built-in service
 integration protocol receive an explicit HTTP 400 asking them to update and restart sign-in.
 Account deploys before the plugin-capable desktop release: Beta first, then Stable after qualification. Deploying Account does not upgrade a Host. During this deliberate cutover older Hosts cannot sign in; update the Host and its separately installed web/mobile clients, then restart consent.
-Plugin-only metadata uses version 3; older metadata requests receive the same refusal before an
-older Host can try to decode the changed response.
+Plugin-only metadata uses version 4. Older metadata requests receive the update refusal. Managed
+authorization and refresh seal their token results with context version 3. Restart in-flight managed
+consent and reconnect if a pending managed refresh crosses this cutover.
 The plugin-only broker migration discards short-lived attempts and refresh results: in-flight
 consent must restart, and an uncommitted renewal whose recovery result is gone needs reconnecting.
+
+The Account runtime secret at version 11 still contains the old registry shape. Before deploying
+this Account build, run `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run`, then
+run it without `--dry-run` to create a version with the obsolete `oauth.identity` fields removed.
+Pin the reported secret version in `deploy/account/account.yaml` and give the SecretProviderClass
+and the Deployment's reference a fresh name. The strict registry schema rejects the old fields at
+startup. See the [operator procedure](../.agents/skills/setup/references/plugin-accounts.md).
 
 Custom apps, dynamic registration and client metadata keep discovery, client secrets, PKCE,
 exchange and token renewal in the engine on the Host. Account relays only the authorization
@@ -98,7 +115,7 @@ safe grant/client/binding/outage classifications, never provider bodies, codes o
 
 Local disconnect removes credentials even if upstream revocation fails.
 Providers without a token revocation endpoint support local removal only. Slack bot consent needs
-confidential Web OAuth; Microsoft delegated scopes must be explicit rather than `.default`, and
-incidental ID tokens are not identity authority. GitHub App installation permissions and provider
+confidential Web OAuth. Microsoft requires explicit delegated scopes and rejects `.default`. GitHub
+App installation permissions and provider
 organization approval remain separate from OAuth consent. Real-provider behavior must be checked
 against the registration; a hermetic provider test does not establish it.

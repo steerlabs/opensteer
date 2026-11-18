@@ -56,6 +56,7 @@ describe("broker provider registry", () => {
     { clientSecret: "" },
     { allowedScopes: [] },
     { allowedScopes: ["read", "read"] },
+    { oauth: { ...application.oauth, identity: { source: "userinfo", identityPath: "sub" } } },
     { oauth: { ...application.oauth, tokenUrl: "http://provider.example.test/token" } },
     {
       oauth: {
@@ -94,7 +95,10 @@ describe("broker provider registry", () => {
     };
     expect(
       HostedOAuthProviderRegistrySchema.safeParse([
-        { ...microsoft, oauth: { ...microsoft.oauth, idTokenValidation: "issuer" } },
+        {
+          ...microsoft,
+          allowedScopes: [...microsoft.allowedScopes, "https://graph.microsoft.com/.default"],
+        },
       ]).success,
     ).toBe(false);
     expect(

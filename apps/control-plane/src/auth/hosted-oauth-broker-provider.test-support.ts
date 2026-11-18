@@ -8,6 +8,7 @@ import {
   OAuthBrokerPluginRefreshContextSchema,
   OAuthBrokerPluginRevocationContextSchema,
   OAuthBrokerTokenBundleSchema,
+  oauthBrokerManagedTokenContextVersion,
   OAuthBrokerSealedEnvelopeSchema,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -171,7 +172,7 @@ export function providerScenario(
     requestedScopes: request.requestedScopes,
     binding: request.binding,
     expiresAt: request.expiresAt,
-    schemaVersion: 2 as const,
+    schemaVersion: oauthBrokerManagedTokenContextVersion,
   };
   return {
     broker,
@@ -244,6 +245,7 @@ export function providerScenario(
     revocationRequest() {
       const context = OAuthBrokerPluginRevocationContextSchema.parse({
         ...pins,
+        schemaVersion: 2,
         transactionId: `hov_${crypto.randomUUID()}`,
       });
       const { schemaVersion: _version, ...fields } = context;

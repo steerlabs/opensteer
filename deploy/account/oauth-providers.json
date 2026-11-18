@@ -112,13 +112,6 @@
         "email": ["https://www.googleapis.com/auth/userinfo.email"],
         "profile": ["https://www.googleapis.com/auth/userinfo.profile"]
       },
-      "identity": {
-        "source": "userinfo",
-        "userinfoUrl": "https://openidconnect.googleapis.com/v1/userinfo",
-        "identityPath": "sub",
-        "accountIdentifierPath": "email",
-        "displayNamePath": "name"
-      },
       "revocation": {
         "url": "https://oauth2.googleapis.com/revoke",
         "method": "post-form",
@@ -224,13 +217,6 @@
         "Calendars.ReadWrite": ["https://graph.microsoft.com/Calendars.ReadWrite"],
         "Contacts.ReadWrite": ["https://graph.microsoft.com/Contacts.ReadWrite"],
         "Sites.ReadWrite.All": ["https://graph.microsoft.com/Sites.ReadWrite.All"]
-      },
-      "identity": {
-        "source": "userinfo",
-        "userinfoUrl": "https://graph.microsoft.com/oidc/userinfo",
-        "identityPath": "sub",
-        "accountIdentifierPath": "email",
-        "displayNamePath": "name"
       }
     },
     "placement": {
@@ -280,12 +266,6 @@
       "scopes": [],
       "scopeSeparator": ",",
       "tokenResponseProfile": "slack-bot",
-      "identity": {
-        "source": "token-response",
-        "identityPath": "bot_user_id",
-        "tenantPath": "team.id",
-        "displayNamePath": "team.name"
-      },
       "revocation": {
         "url": "https://slack.com/api/auth.revoke",
         "method": "post-form",
@@ -315,13 +295,6 @@
       "extraAuthorizeParams": {
         "prompt": "consent"
       },
-      "identity": {
-        "source": "userinfo",
-        "userinfoUrl": "https://discord.com/api/v10/users/@me",
-        "identityPath": "id",
-        "accountIdentifierPath": "email",
-        "displayNamePath": "username"
-      },
       "revocation": {
         "url": "https://discord.com/api/v10/oauth2/token/revoke",
         "method": "post-form",
@@ -345,13 +318,6 @@
       "usesPkce": true,
       "scopes": [],
       "scopeSeparator": " ",
-      "identity": {
-        "source": "userinfo",
-        "userinfoUrl": "https://api.github.com/user",
-        "identityPath": "id",
-        "accountIdentifierPath": "login",
-        "displayNamePath": "login"
-      },
       "revocation": {
         "url": "https://api.github.com/applications/{clientId}/token",
         "method": "delete-json",

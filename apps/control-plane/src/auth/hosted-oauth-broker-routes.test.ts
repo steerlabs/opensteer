@@ -32,7 +32,7 @@ describe("hosted OAuth metadata", () => {
     });
     const current = await server.inject({
       method: "GET",
-      url: "/v1/oauth-broker/metadata?version=3",
+      url: "/v1/oauth-broker/metadata?version=4",
     });
     await server.close();
 
@@ -52,6 +52,7 @@ describe("retired Host OAuth protocol", () => {
     "revocations",
     "metadata",
     "metadata?version=2",
+    "metadata?version=3",
   ])("refuses %s with an update instruction before invoking the broker", async (endpoint) => {
     const createAuthorizationAttempt = vi.fn();
     const createCallbackRelay = vi.fn();

@@ -26,19 +26,23 @@ not fall back to plugin consent.
 **Production registry**: [deploy/account/oauth-providers.json](../../../../deploy/account/oauth-providers.json)
 holds every entry except credentials. Its `allowedScopes` and `placement.hosts` are the union of
 what the catalog plugins for that provider request and where they send tokens; change it only with
-that check, and remember a changed entry makes existing grants reconnect. To build the registry
-from the managed apps' credentials in the runtime secret (with gcloud signed in to the project):
+that check, and remember a changed entry makes existing grants reconnect. The deployed runtime
+secret at version 11 already has a registry. Its obsolete `oauth.identity` fields must be removed
+before deploying the Account build that serves metadata v4, or registry validation stops startup.
+With gcloud signed in to the project:
 
-1. `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run` reads the version
-   `deploy/account/account.yaml` pins, joins and validates, and names included and skipped
-   providers.
-2. Run it again without `--dry-run`. It adds a version with `OPENSTEER_HOSTED_OAUTH_PROVIDERS` and
-   without the retired `OPENSTEER_HOSTED_OAUTH_<PROVIDER>_*` keys, and prints its number.
+1. Run `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run`. It reads the version
+   `deploy/account/account.yaml` pins, removes `oauth.identity` from each provider entry, validates
+   the result and lists the providers.
+2. Run it again without `--dry-run`. It adds a runtime secret version and prints its number.
+   The rest of the registry and runtime settings carry over.
 3. Set that number in the `opensteer-account-runtime` `resourceName` line of
-   `deploy/account/account.yaml`, rename its `SecretProviderClass` (`account-runtime-vN`) and the
-   Deployment's reference to it, and deploy. Rolling back means pinning the earlier version.
-4. Check `/v1/oauth-broker/metadata?version=3` lists each provider with its placement, then sign
-   in once per provider.
+   `deploy/account/account.yaml`. Give its SecretProviderClass and the Deployment's reference
+   a fresh name. The current class is already `account-runtime-v12`, so use a distinct name
+   such as `account-runtime-v<N>-plugin-oauth`. Deploy the new Account image and manifest together.
+   To roll back, restore the previous image and its matching secret pin and class.
+4. Check `/v1/oauth-broker/metadata?version=4` lists each provider with its placement, then qualify
+   the sign-in and renewal flows with an updated Host.
 
 **Custom apps**: prepare the plugin account connection, review its sites, credential exposure and
 scopes, then save or select the owner's OAuth client. With an Account
@@ -72,7 +76,7 @@ without switching accounts.
 
 ## Plugin broker cutover
 
-Deploy Account and its plugin-only registry/metadata first, verify metadata v3 and the registered
+Deploy Account and its plugin-only registry/metadata first, verify metadata v4 and the registered
 placement, then qualify the plugin-capable Beta Host and matching web/mobile builds. Promote
 Stable only after that qualification. Update separately installed clients to the Host's API
 window. This order deliberately interrupts old built-in sign-ins; Account does not upgrade Hosts.

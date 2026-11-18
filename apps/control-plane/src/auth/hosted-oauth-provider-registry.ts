@@ -34,7 +34,6 @@ function validateProvider(
     config.tokenUrl,
     config.issuer,
     config.revocation?.url,
-    config.identity.userinfoUrl,
   ].filter((value) => value !== undefined);
   if (endpoints.some((value) => !HttpsEndpointSchema.safeParse(value).success)) {
     context.addIssue({ code: "custom", message: "Provider endpoints must use HTTPS" });
@@ -84,23 +83,17 @@ function validateProvider(
     (config.tokenResponseProfile !== "slack-bot" ||
       config.usesPkce ||
       config.clientAuth !== "body" ||
-      config.scopeSeparator !== "," ||
-      config.identity.source !== "token-response" ||
-      config.identity.identityPath !== "bot_user_id" ||
-      config.identity.tenantPath !== "team.id")
+      config.scopeSeparator !== ",")
   ) {
     context.addIssue({ code: "custom", message: "Slack requires a confidential bot grant" });
   }
   if (
     application.provider === "microsoft" &&
-    (config.identity.source !== "userinfo" ||
-      config.idTokenValidation !== "ignore" ||
-      config.revocation ||
-      application.allowedScopes.some((scope) => scope.endsWith(".default")))
+    (config.revocation || application.allowedScopes.some((scope) => scope.endsWith(".default")))
   ) {
     context.addIssue({
       code: "custom",
-      message: "Microsoft requires delegated scopes and userinfo identity",
+      message: "Microsoft requires explicit delegated scopes and has no token revocation endpoint",
     });
   }
 }
