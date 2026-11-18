@@ -90,9 +90,55 @@ export function finalizedItemText(item: TranscriptItem | undefined): boolean {
   );
 }
 
+type RequestSummary = DetailSnapshot["pendingRequests"][number];
+type Pending =
+  | {
+      readonly kind: "item";
+      readonly id: string;
+      readonly sequence: string;
+      readonly value?: TranscriptItem;
+    }
+  | {
+      readonly kind: "request";
+      readonly id: string;
+      readonly sequence: string;
+      readonly value?: RequestSummary;
+    };
+
 export class ThreadTranscriptStore {
   readonly #listeners = new Set<Listener>();
   #state: TranscriptState = emptyState;
+  // Changes that land while a page read is in flight, so the page cannot undo them.
+  readonly #pending = new Map<string, Pending>();
+  readonly #reads = new Set<number>();
+  #readCount = 0;
+  #lostReads = 0;
+
+  /** Starts recording changes for a page read; pass the token to the install and to endRead. */
+  beginRead() {
+    const token = ++this.#readCount;
+    this.#reads.add(token);
+    return token;
+  }
+
+  endRead(token: number) {
+    this.#reads.delete(token);
+    if (!this.#reads.size) this.#pending.clear();
+  }
+
+  #record(change: Pending) {
+    if (!this.#reads.size) return;
+    const key = `${change.kind}:${change.id}`;
+    this.#pending.delete(key);
+    this.#pending.set(key, change);
+    if (this.#pending.size <= 2000) return;
+    this.#pending.clear();
+    this.#lostReads = this.#readCount;
+  }
+
+  #readable(token: number | undefined) {
+    return token === undefined || (this.#reads.has(token) && token > this.#lostReads);
+  }
 
   getSnapshot = () => this.#state;
 
@@ -105,6 +151,8 @@ export class ThreadTranscriptStore {
 
   begin(generation: number, retained: boolean) {
     if (generation <= this.#state.generation) return;
+    this.#pending.clear();
+    this.#lostReads = this.#readCount;
     this.#set({
       ...(retained ? this.#state : emptyState),
       generation,
@@ -221,6 +269,13 @@ export class ThreadTranscriptStore {
               snapshot = rest;
             }
           }
+          if (change.entityKind === "request")
+            this.#record({
+              kind: "request",
+              id: change.entityId,
+              sequence: change.sequence,
+              ...(change.operation === "upsert" ? { value: change.value } : {}),
+            });
           if (snapshot && change.entityKind === "request") {
             const previous = snapshot.pendingRequests.find(({ id }) => id === change.entityId);
             if (
@@ -237,6 +292,12 @@ export class ThreadTranscriptStore {
             snapshot = { ...snapshot, pendingRequests: requests };
           }
           if (change.entityKind !== "item") continue;
+          this.#record({
+            kind: "item",
+            id: change.entityId,
+            sequence: change.sequence,
+            ...(change.operation === "upsert" ? { value: change.value } : {}),
+          });
           const provisional = (liveItems ?? state.liveItems).has(change.entityId);
           if (provisional) {
             liveItems ??= new Map(state.liveItems);
@@ -348,15 +409,19 @@ export class ThreadTranscriptStore {
     return true;
   }
 
-  installPage(page: Page, generation: number, mode: "earlier" | "newer" | "around" | "latest") {
+  installPage(
+    page: Page,
+    generation: number,
+    mode: "earlier" | "newer" | "around" | "latest",
+    read?: number,
+  ) {
     const state = this.#state;
     if (
       state.generation !== generation ||
       !state.synchronized ||
       !state.snapshot ||
       state.through === null ||
-      BigInt(page.revision) < BigInt(state.through) ||
-      BigInt(page.orderRevision) < BigInt(state.orderRevision)
+      !this.#readable(read)
     )
       return false;
     const merge = mode === "earlier" || mode === "newer";
@@ -370,18 +435,23 @@ export class ThreadTranscriptStore {
     }
     const historyIds = [
       ...new Set([...(merge ? state.historyIds : []), ...page.items.map(({ id }) => id)]),
-    ].sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
+    ];
+    const nextBefore = mode === "newer" ? state.snapshot.nextBefore : page.nextBefore;
+    const newest =
+      mode !== "around" && (mode === "earlier" ? state.newest : page.nextAfter == null);
+    this.#replay(items, historyIds, nextBefore != null, newest);
+    historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
     const snapshot = trimWindow(
       historyIds,
       items,
       state.activeIds,
       {
         ...state.snapshot,
-        nextBefore: mode === "newer" ? state.snapshot.nextBefore : page.nextBefore,
+        nextBefore,
         nextAfter:
           mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null),
       },
-      page.orderRevision,
+      maxRevision(state.orderRevision, page.orderRevision),
       mode === "earlier" ? "earlier" : "latest",
       state.cursorScope,
     );
@@ -401,7 +471,7 @@ export class ThreadTranscriptStore {
       liveItems: liveItems ?? state.liveItems,
       stale,
       readRevision: maxRevision(state.readRevision, page.revision),
-      orderRevision: page.orderRevision,
+      orderRevision: maxRevision(state.orderRevision, page.orderRevision),
       newest: mode !== "around" && snapshot?.nextAfter == null,
     });
     return true;
@@ -416,6 +486,7 @@ export class ThreadTranscriptStore {
     },
     generation: number,
     replace = false,
+    read?: number,
   ) {
     const state = this.#state;
     if (
@@ -423,7 +494,7 @@ export class ThreadTranscriptStore {
       !state.synchronized ||
       !state.snapshot ||
       state.through === null ||
-      BigInt(page.revision) < BigInt(state.through)
+      !this.#readable(read)
     )
       return false;
     const snapshot = { ...state.snapshot };
@@ -434,7 +505,7 @@ export class ThreadTranscriptStore {
     const items = new Map(state.items);
     const activeIds = new Set(state.activeIds);
     if (kind === "requests") {
-      const requests = new Map(
+      const requests = new Map<string, RequestSummary>(
         (replace ? [] : snapshot.pendingRequests).map((request) => [request.id, request]),
       );
       for (const entry of page.entries) {
@@ -442,6 +513,15 @@ export class ThreadTranscriptStore {
         const previous = requests.get(entry.id);
         if (!previous || BigInt(entry.revision) > BigInt(previous.revision))
           requests.set(entry.id, entry);
+      }
+      for (const change of this.#pending.values()) {
+        if (change.kind !== "request") continue;
+        const held = requests.get(change.id);
+        if (change.value?.status === "pending") {
+          if (!held || BigInt(change.value.revision) > BigInt(held.revision))
+            requests.set(change.id, change.value);
+        } else if (!held || BigInt(held.revision) <= BigInt(change.sequence))
+          requests.delete(change.id);
       }
       snapshot.pendingRequests = [...requests.values()].slice(-100);
     } else {
@@ -459,6 +539,17 @@ export class ThreadTranscriptStore {
         const held = items.get(entry.id);
         if (!held || BigInt(entry.revision) > BigInt(held.revision)) items.set(entry.id, entry);
       }
+      for (const change of this.#pending.values()) {
+        if (change.kind !== "item" || !activeIds.has(change.id)) continue;
+        const held = items.get(change.id)!;
+        if (change.value) {
+          if (BigInt(change.value.revision) > BigInt(held.revision))
+            items.set(change.id, change.value);
+        } else if (BigInt(held.revision) <= BigInt(change.sequence)) {
+          activeIds.delete(change.id);
+          if (!state.historyIds.includes(change.id)) items.delete(change.id);
+        }
+      }
     }
     const stale = new Set(state.stale);
     stale.delete(kind);
@@ -472,6 +563,44 @@ export class ThreadTranscriptStore {
       ids: stableIds(state.ids, sortedIds(items)),
     });
     return true;
+  }
+
+  // Applies the changes recorded during a page read on top of the page.
+  #replay(
+    items: Map<string, TranscriptItem>,
+    historyIds: string[],
+    hasEarlier: boolean,
+    newest: boolean,
+  ) {
+    if (!this.#pending.size) return;
+    const window = historyIds.map((id) => items.get(id)!).sort(comparePosition);
+    const first = window[0];
+    const last = window.at(-1);
+    const removed = new Set<string>();
+    for (const change of this.#pending.values()) {
+      if (change.kind !== "item") continue;
+      const held = items.get(change.id);
+      if (!change.value) {
+        if (held && BigInt(held.revision) <= BigInt(change.sequence)) removed.add(change.id);
+        continue;
+      }
+      if (held) {
+        if (BigInt(change.value.revision) > BigInt(held.revision))
+          items.set(change.id, change.value);
+        continue;
+      }
+      if (
+        (!hasEarlier || !first || comparePosition(change.value, first) >= 0) &&
+        (newest || !last || comparePosition(change.value, last) <= 0)
+      ) {
+        items.set(change.id, change.value);
+        historyIds.push(change.id);
+      }
+    }
+    for (const id of removed) {
+      items.delete(id);
+      removeId(historyIds, id);
+    }
   }
 
   canCheckpoint(state = this.#state) {

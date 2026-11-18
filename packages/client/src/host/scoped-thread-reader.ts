@@ -434,11 +434,36 @@ export class ScopedThreadReader implements ThreadViewSource {
     const after = mode === "newer" ? snapshot.nextAfter : null;
     if ((mode === "earlier" && !before) || (mode === "newer" && !after)) return;
     const read = ++this.#historyRead;
+    const transcript = this.#detail.transcript;
+    const token = transcript.beginRead();
+    try {
+      await this.#history(mode, signal, generation, read, token, before, after, aroundMessageId);
+    } finally {
+      transcript.endRead(token);
+    }
+  }
+
+  async #history(
+    mode: "earlier" | "newer" | "around" | "latest",
+    signal: AbortSignal,
+    generation: number,
+    read: number,
+    token: number,
+    before: TranscriptOrderCursor | null | undefined,
+    after: TranscriptOrderCursor | null | undefined,
+    aroundMessageId: string | undefined,
+  ) {
     const current = () =>
       !signal.aborted &&
       read === this.#historyRead &&
       generation === this.#detail.transcript.getSnapshot().generation;
-    const page = await this.#page(signal, before, aroundMessageId, undefined, after ?? undefined);
+    const page = await this.#page(
+      signal,
+      before ?? null,
+      aroundMessageId,
+      undefined,
+      after ?? undefined,
+    );
     if (!current()) return;
     if (page.kind === "page") {
       if (
@@ -446,7 +471,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
       )
         throw new Error("The requested message is unavailable.");
-      this.#installPage(page, generation, mode);
+      this.#installPage(page, generation, mode, token);
       return;
     }
     const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
@@ -468,6 +493,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
           ? "around"
           : "latest",
+        token,
       );
   }
 
@@ -575,6 +601,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         )
       : 20;
     let page: OverlayPage | undefined;
+    const token = this.#detail.transcript.beginRead();
     try {
       do {
         const result = await this.#rpc["thread.overlays.page"](
@@ -620,10 +647,17 @@ export class ScopedThreadReader implements ThreadViewSource {
         cursor = page.next ?? undefined;
       } while (cursor && entries.length < desired && refresh);
       const combined = { ...page, entries };
-      return this.#detail.transcript.installOverlays(kind, combined, state.generation, refresh)
+      return this.#detail.transcript.installOverlays(
+        kind,
+        combined,
+        state.generation,
+        refresh,
+        token,
+      )
         ? combined
         : undefined;
     } finally {
+      this.#detail.transcript.endRead(token);
       if (this.#overlayReads.get(kind) === state.generation) {
         this.#overlayReads.delete(kind);
         const current = this.#detail.transcript.getSnapshot();
