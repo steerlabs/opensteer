@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
+import { collectStreamText, spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { text } from "node:stream/consumers";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CursorHookBridge,
@@ -19,14 +19,32 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function within<T>(promise: Promise<T>, what: string, ms = 15_000): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms} ms`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
+function within<T>(promise: Promise<T>, what: string, signal?: AbortSignal): Promise<T> {
+  return withTimeout(promise, 15_000, {
+    ...(signal ? { signal } : {}),
+    timeoutError: () => new Error(`${what} did not happen within 15000 ms`),
+  });
+}
+
+function ownHook(child: SupervisedProcess) {
+  const output = [
+    child.exited,
+    collectStreamText(child.stdout),
+    collectStreamText(child.stderr),
+  ] as const;
+  const joined = Promise.allSettled(output);
+  let stopping: Promise<void> | undefined;
+  const stop = () =>
+    (stopping ??= (async () => {
+      // PowerShell can still have a Node child running in the fixture's cwd.
+      await child.terminate(0);
+      await joined;
+    })());
+  cleanups.push(stop);
+  child.child.stdin.on("error", () => {
+    // Early shell exit is reported by its exit status and stderr.
+  });
+  return { output, stop };
 }
 
 function inheritedEnvironment(): Record<string, string> {
@@ -61,7 +79,7 @@ async function bridge(decide: CursorHookBridgeOptions["decide"]) {
  * executor does: as one line of a `-File` script, with the payload on stdin
  * (which is why it passes no `-NonInteractive`).
  */
-async function runLikeCursor(command: string, cwd: string, payload: string) {
+async function runLikeCursor(command: string, cwd: string, payload: string, signal?: AbortSignal) {
   const environment = cursorHookShellEnvironment(inheritedEnvironment());
   const script = join(cwd, "hook-run.ps1");
   const body = [
@@ -74,22 +92,27 @@ async function runLikeCursor(command: string, cwd: string, payload: string) {
     "",
   ].join("\n");
   await writeFile(script, `﻿${body}`, "utf8");
-  const child = spawn(environment.SHELL ?? "", ["-ExecutionPolicy", "Bypass", "-File", script], {
+  signal?.throwIfAborted();
+  const child = spawnSupervised({
+    args: ["-ExecutionPolicy", "Bypass", "-File", script],
     cwd,
-    env: environment,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
+    environment,
+    executable: environment.SHELL ?? "",
+    stdin: "pipe",
   });
-  child.stderr.resume();
-  child.stdin.end(payload);
-  const [stdout, code] = await within(
-    Promise.all([
-      text(child.stdout),
-      new Promise<number | null>((resolve) => child.once("exit", (exit) => resolve(exit))),
-    ]),
-    "The hook command finishing in Windows PowerShell",
-  );
-  return { code, verdict: JSON.parse(stdout.trim()) as unknown };
+  const hook = ownHook(child);
+  try {
+    child.child.stdin.end(payload);
+    const [{ code }, stdout, stderr] = await within(
+      Promise.all(hook.output),
+      "The hook command finishing in Windows PowerShell",
+      signal,
+    );
+    if (code !== 0) throw new Error(`PowerShell hook exited with code ${code}: ${stderr}`);
+    return { code, verdict: JSON.parse(stdout.trim()) as unknown };
+  } finally {
+    await hook.stop();
+  }
 }
 
 describe("Cursor approval hooks on Windows", () => {
@@ -137,10 +160,45 @@ describe("Cursor approval hooks on Windows", () => {
       root,
       "{}\n",
     );
-    await within(askedOnce, "The bridge receiving the hook payload");
-    await listening.close();
+    const [result] = await Promise.all([
+      running,
+      within(askedOnce, "The bridge receiving the hook payload").then(() => listening.close()),
+    ]);
+    expect(result.verdict).toMatchObject({ permission: "deny" });
+  });
 
-    expect((await running).verdict).toMatchObject({ permission: "deny" });
+  it("joins PowerShell and its hook before removing the working directory on cancellation", async () => {
+    const asked = Promise.withResolvers<void>();
+    const disconnected = Promise.withResolvers<unknown>();
+    const { endpoint, program, root } = await bridge(
+      (_, signal) =>
+        new Promise<never>(() => {
+          signal.addEventListener("abort", () => disconnected.resolve(signal.reason), {
+            once: true,
+          });
+          asked.resolve();
+        }),
+    );
+    const abort = new AbortController();
+    const reason = new Error("Stop the held hook");
+    const canceled = expect(
+      runLikeCursor(
+        cursorHookCommand(process.execPath, program, endpoint.path),
+        root,
+        "{}\n",
+        abort.signal,
+      ),
+    ).rejects.toBe(reason);
+    await Promise.all([
+      canceled,
+      within(asked.promise, "The bridge receiving the hook payload").then(() =>
+        abort.abort(reason),
+      ),
+    ]);
+    await expect(
+      within(disconnected.promise, "The held hook disconnecting"),
+    ).resolves.toBeInstanceOf(Error);
+    await rm(root, { force: true, recursive: true });
   });
 
   it("tells the waiting decision when the hook's process is killed", async () => {
@@ -155,16 +213,17 @@ describe("Cursor approval hooks on Windows", () => {
           asked();
         }),
     );
-    const hook = spawn(process.execPath, [program, endpoint.path], {
-      stdio: ["pipe", "ignore", "ignore"],
-      windowsHide: true,
+    const child = spawnSupervised({
+      args: [program, endpoint.path],
+      cwd: tmpdir(),
+      environment: inheritedEnvironment(),
+      executable: process.execPath,
+      stdin: "pipe",
     });
-    cleanups.push(async () => {
-      if (hook.exitCode === null) hook.kill();
-    });
-    hook.stdin.end("{}\n");
+    const hook = ownHook(child);
+    child.child.stdin.end("{}\n");
     await within(askedOnce, "The bridge receiving the hook payload");
-    hook.kill();
+    await hook.stop();
 
     await expect(within(wentAway, "The bridge noticing the killed hook")).resolves.toBeInstanceOf(
       Error,
