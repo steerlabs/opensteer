@@ -16,6 +16,7 @@ import {
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   hostApi,
+  runEventsCapability,
   type RunnerDescriptor,
   type ComputerAppStatusEntry,
 } from "@opensteer/protocol";
@@ -330,6 +331,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       },
       { modules: { integrations: descriptor.modules.integrations, shell } },
       {
+        capabilities: [runEventsCapability],
         modules: {
           integrations: descriptor.modules.integrations,
           agents: {
