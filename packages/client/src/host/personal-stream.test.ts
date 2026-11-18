@@ -1358,7 +1358,11 @@ test("evicts inactive scope previews before they exceed the structural budget", 
       scope,
       type: "host.snapshot",
       throughSequence: "1",
-      snapshot: { ...snapshot, thread: detailThread({ ...task, id: scope.threadId }), nextBefore: null },
+      snapshot: {
+        ...snapshot,
+        thread: detailThread({ ...task, id: scope.threadId }),
+        nextBefore: null,
+      },
     });
     const store = f.stream.detail(scope);
     expect(store.transcript.getSnapshot().items.size).toBe(50);
@@ -1531,9 +1535,10 @@ test("keeps the waiting-message tray from queue values and reads only entries th
   try {
     // The cut had room for A only; one read fills B and never overrides the pushed A.
     await vi.waitFor(() =>
-      expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview)).toEqual(
-        ["A", "B"],
-      ),
+      expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview)).toEqual([
+        "A",
+        "B",
+      ]),
     );
     const trays: (readonly string[] | null)[] = [];
     reader.subscribe(() =>
@@ -1838,13 +1843,23 @@ type Subscribe = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
 type DetailAddress = Pick<Subscribe, "scope" | "subscriptionId" | "generation">;
 
 /** A Host that answers attach and subscribe with a cut, and lets a test push commits. */
-function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] = [item]) {
+function scriptedHost(
+  options: {
+    readonly tasks?: readonly object[];
+    readonly items?: TranscriptItem[];
+    readonly lists?: Readonly<Record<string, unknown>>;
+  } = {},
+) {
+  const tasks = (options.tasks ?? [task]) as (typeof task)[];
+  const items = options.items ?? [item];
   const sent: ScopedClientMessage[] = [];
   let socket!: MockPersonalSocket;
   let head = 1;
   let shell = { subscriptionId: "shell" as const, scope: shellScope, generation: 0 };
   const details = new Map<string, DetailAddress>();
+  const delivered = new Map<string, string>();
   const shellCut = () => {
+    delivered.set("shell", String(head));
     socket.deliver({
       ...shell,
       type: "host.snapshot",
@@ -1859,6 +1874,7 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
         attention: [],
         counts,
         ...shellLists,
+        ...(options.lists as typeof shellLists | undefined),
         resourceRevisions: revisions("0"),
       },
     });
@@ -1868,16 +1884,21 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
     if (scope.kind !== "thread" || subscriptionId === "shell") return;
     const address = { scope, subscriptionId, generation };
     details.set(scope.threadId, address);
+    delivered.set(scope.threadId, String(head));
     socket.deliver({
       ...address,
       type: "host.snapshot",
       throughSequence: String(head),
       snapshot: {
-        thread: detailThread(tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId }),
+        thread: detailThread(
+          tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId },
+        ),
         items,
         activeItems: [],
         pendingRequests: [],
         nextBefore: null,
+        queue: { revision: "1", runs: [], paused: false, steerRunId: null, inputs: [] },
+        inputQueue: [],
       },
     });
     socket.deliver({ ...address, type: "host.synchronized", throughSequence: String(head) });
@@ -1912,7 +1933,7 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
       shellChanges: readonly unknown[],
       detail?: { threadId: string; changes: readonly unknown[] },
     ) {
-      const from = String(head++);
+      head++;
       const through = String(head);
       const rows = (changes: readonly unknown[]) =>
         changes.map((change, ordinal) => ({
@@ -1920,23 +1941,28 @@ function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] =
           sequence: through,
           ordinal,
         }));
-      if (shellChanges.length)
+      // Each subscription's feed chains from the last commit it was sent.
+      if (shellChanges.length) {
         socket.deliver({
           ...shell,
           type: "host.changes",
-          fromSequence: from,
+          fromSequence: delivered.get("shell") ?? "1",
           throughSequence: through,
           changes: rows(shellChanges),
         } as never);
+        delivered.set("shell", through);
+      }
       const address = detail && details.get(detail.threadId);
-      if (address)
+      if (address) {
         socket.deliver({
           ...address,
           type: "host.changes",
-          fromSequence: from,
+          fromSequence: delivered.get(detail.threadId) ?? "1",
           throughSequence: through,
           changes: rows(detail.changes),
         } as never);
+        delivered.set(detail.threadId, through);
+      }
       return through;
     },
     live(threadId: string, itemId: string, text: string, offset = 0) {
@@ -2025,4 +2051,223 @@ test("an early detail past the buffer is set aside and resubscribed after the sh
     { subscriptionId: f.address.subscriptionId, scope: threadScope },
   ]);
   expect(f.detail.transcript.getSnapshot().items.size).toBe(0);
+});
+
+const upsert = (entityKind: string, entityId: string, value: unknown) => ({
+  operation: "upsert",
+  entityKind,
+  entityId,
+  value,
+});
+
+test("a whole Run arrives as values: no resubscribe after attach and no connection change", async () => {
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const client = scriptedClient(host);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const subscribes = () => host.sent.filter((frame) => frame.type === "client.subscribe").length;
+    const attached = subscribes();
+    const connections = new Set<string>();
+    client.subscribe(() => connections.add(client.getSnapshot().connection));
+    const reader = client.getThreadTranscript(threadId)!;
+    let revision = 1;
+    const row = (status: "running" | "idle", extra: object = {}) => ({
+      ...task,
+      status,
+      revision: String(++revision),
+      ...extra,
+    });
+    const queue = (runs: object[], inputs: string[]) => ({
+      revision: String(revision),
+      runs,
+      paused: false,
+      steerRunId: null,
+      inputs,
+    });
+    const run = (status: string) => ({
+      id: runId,
+      revision: String(revision),
+      status,
+      finishing: false,
+      createdAt: time,
+      runOrdinal: 1,
+    });
+    const tool = (status: string) => ({
+      ...item,
+      kind: "tool",
+      id: "tool-1",
+      toolCallId: "call-1",
+      position: "2",
+      revision: String(revision),
+      messageId: undefined,
+      view: { status },
+    });
+    const node = (status: string) => ({
+      ...item,
+      kind: "node",
+      id: "node:1",
+      executionNodeId: nodeId,
+      position: "3",
+      revision: String(revision),
+      messageId: undefined,
+      view: { status },
+    });
+    const waitingId = createId("message");
+    const waiting = {
+      message: {
+        id: waitingId,
+        revision: 0,
+        author: { kind: "human", principalId: viewerId, displayName: "Owner" },
+        createdAt: time,
+        preview: "Next",
+        truncated: false,
+      },
+      input: { messageId: waitingId, state: "pending", queueRank: "1" },
+      ask: null,
+      canEdit: true,
+      canCancel: true,
+      canMove: true,
+      canSteer: true,
+      lease: null,
+    };
+    const strip = <T extends object>(value: T) => JSON.parse(JSON.stringify(value)) as T;
+    // The Run starts.
+    let next = row("running");
+    host.commit([upsert("task", threadId, next)], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, detailThread(next)),
+        upsert("run-queue", threadId, queue([run("running")], [])),
+      ],
+    });
+    expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.id)).toEqual([threadId]);
+    expect(reader.getSnapshot().runQueue).toMatchObject([{ id: runId, status: "running" }]);
+    // A tool and a subagent run, and the person queues a message.
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("item", "tool-1", strip(tool("running"))),
+        upsert("item", "node:1", strip(node("running"))),
+      ],
+    });
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("queue-entry", waitingId, waiting),
+        upsert("run-queue", threadId, queue([run("running")], [waitingId])),
+      ],
+    });
+    expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.id)).toEqual([
+      waitingId,
+    ]);
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("item", "node:1", strip(node("done"))),
+        upsert("item", "tool-1", strip(tool("done"))),
+      ],
+    });
+    // The Run takes the queued message and finishes.
+    next = row("idle", { latestRunCompletedAt: time });
+    host.commit([upsert("task", threadId, next)], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, detailThread(next)),
+        upsert("run-queue", threadId, queue([], [])),
+        { operation: "remove", entityKind: "queue-entry", entityId: waitingId },
+      ],
+    });
+    expect(client.getSnapshot().activeTasks).toEqual([]);
+    expect(reader.getSnapshot()).toMatchObject({ runQueue: [], inputQueue: { items: [] } });
+    expect(reader.getSnapshot().entries.map(({ id }) => id)).toEqual([item.id, "tool-1", "node:1"]);
+    expect(subscribes()).toBe(attached);
+    expect([...connections]).toEqual(["connected"]);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("every running task stays listed while others finish, and loaded task pages survive a change", async () => {
+  const running = Array.from({ length: 12 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Task ${index + 1}`,
+    askedAt: new Date(Date.parse(time) - index * 60_000).toISOString(),
+  }));
+  const settled = Array.from({ length: 25 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Settled ${index + 1}`,
+    status: "idle" as const,
+    askedAt: new Date(Date.parse(time) - (index + 20) * 60_000).toISOString(),
+  }));
+  const host = scriptedHost({
+    tasks: [...running, ...settled],
+    lists: {
+      activeTaskIds: running.map(({ id }) => id),
+      recentTaskIds: [...running, ...settled].slice(0, 25).map(({ id }) => id),
+      nextBefore: "older",
+    },
+  });
+  const older = createId("thread");
+  const pages: unknown[] = [];
+  const client = scriptedClient(host, async (input) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+    pages.push(JSON.parse(url.searchParams.get("input") ?? "{}"));
+    const listed = new MockHostClient({ latencyMs: 0 }).getSnapshot().threads[0]!;
+    return Response.json({
+      ok: true,
+      data: {
+        asOfSequence: host.head(),
+        tasks: [
+          {
+            thread: {
+              ...detailThread({ ...task, id: older, title: "Older", status: "idle" }).thread,
+              askedAt: "2026-11-01T00:00:00.000Z",
+              environmentId: listed.environmentId,
+            },
+            lastReply: null,
+            failure: null,
+          },
+        ],
+        window: { nextBefore: null, hasMore: false, totalItems: 1, byteCount: 0, itemCount: 1 },
+      },
+    });
+  });
+  try {
+    await client.load();
+    expect(client.getSnapshot().activeTasks).toHaveLength(12);
+    await client.loadEarlierTasks();
+    expect(pages).toEqual([{ before: "older", limit: 50 }]);
+    const ids = () => client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id) ?? [];
+    expect(ids()).toContain(older);
+    host.commit(
+      running.slice(0, 10).map((row, index) =>
+        upsert("task", row.id, {
+          ...row,
+          status: "idle",
+          revision: "2",
+          latestRunCompletedAt: time,
+          title: `Finished ${index}`,
+        }),
+      ),
+    );
+    expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.id)).toEqual(
+      running.slice(10).map(({ id }) => id),
+    );
+    expect(ids()).toContain(older);
+    expect(ids()).toHaveLength(12 + 25 + 1);
+    expect(host.sent.filter((frame) => frame.type === "client.subscribe")).toEqual([]);
+    expect(pages).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
 });

@@ -1774,11 +1774,7 @@ export class HttpHostClient {
             ({ thread }) => thread.status === "running" || thread.status === "waiting",
           ),
         };
-        if (
-          state.synchronized &&
-          window.hasMore &&
-          open.length - taskLists.activeTasks.length < personalShellSettledTasks
-        )
+        if (state.synchronized && window.hasMore && open.length < personalShellSettledTasks)
           void this.loadEarlierTasks().catch(() => undefined);
       }
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
