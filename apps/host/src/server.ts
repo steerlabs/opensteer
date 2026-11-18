@@ -1624,9 +1624,18 @@ export async function createHostServer(
       const requestedBy = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(
-        await dependencies.store.getThreadInputQueue({ threadId: thread.id, requestedBy }),
+      const queue = await dependencies.store.getThreadInputQueue({
+        threadId: thread.id,
+        requestedBy,
+      });
+      const messages = await withClientSendKeys(
+        queue.items.map(({ message }) => message),
+        (ids) => dependencies.store.personalMessageSendKeys(requestedBy, ids),
       );
+      return rpcSuccess({
+        ...queue,
+        items: queue.items.map((item, index) => ({ ...item, message: messages[index]! })),
+      });
     },
     "assignment.get": async (input, context) => {
       const assignment = await dependencies.store.getAssignmentForOwner({

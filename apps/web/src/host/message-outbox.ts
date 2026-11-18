@@ -1,3 +1,4 @@
+export { storageUnavailable } from "./message-outbox-records.js";
 import { browserMessageRecords } from "./message-outbox-records.js";
 import { hostApi } from "@opensteer/protocol";
 import {
@@ -9,7 +10,7 @@ import {
   type PendingSendCommand,
   type StoredMessage,
 } from "@opensteer/client/host";
-import { ClientOperationError, type ClientScope } from "@opensteer/client/connections";
+import type { ClientScope } from "@opensteer/client/connections";
 import {
   MessageContentSchema,
   type ArtifactContentPart,
@@ -34,6 +35,8 @@ export function initializeBrowserMessageOutbox(
     storage,
     legacy: {
       load: async (scope) => browserLegacyMessages(scope).map(({ command }) => ({ command })),
+      has: (scope, id) =>
+        browserLegacyMessages(scope).some(({ command }) => command.idempotencyKey === id),
       remove: async (scope, id) => {
         for (const { key, command } of browserLegacyMessages(scope))
           if (command.idempotencyKey === id) globalThis.localStorage.removeItem(key);
@@ -155,14 +158,4 @@ export function sendMessageCommand(
     threadId,
     type: "thread.sendMessage",
   };
-}
-
-/** No outbox could be opened in this browser, so nothing is kept or sent. */
-export function storageUnavailable(): ClientOperationError {
-  return new ClientOperationError("Message storage is unavailable.", "blocked", {
-    kind: "local",
-    provenance: "local",
-    reason: "storage-unavailable",
-    retryable: false,
-  });
 }

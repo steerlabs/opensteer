@@ -8,6 +8,7 @@ import {
   compareOutboxOrder,
   sameStoredMessage,
   type MessageOutboxStorage,
+  type MessageOutboxWrite,
   type StoredMessage,
 } from "./message-outbox.js";
 
@@ -21,7 +22,9 @@ const entrySchema = z
     createdAt: z.string().min(1).max(40),
     order: z.number().int().safe(),
     attempted: z.boolean(),
+    attemptId: z.uuid().optional(),
     migrated: z.literal(true).optional(),
+    inTranscript: z.literal(true).optional(),
     phase: z.enum(["waiting", "sending", "rejected", "restoring"]),
     localAttachmentUris: z.array(z.string().min(1).max(2048).nullable()).max(20).optional(),
     rejection: z
@@ -37,9 +40,17 @@ const entrySchema = z
 const recordSchema = z.object({
   version: z.literal(1),
   scope: z.string(),
-  entries: z.array(entrySchema).max(48),
+  entries: z.array(entrySchema).max(96),
+  takenBack: z.array(z.string().length(64)).optional(),
   migrated: z.array(z.string().min(1).max(255)).optional(),
-  handoffs: z.array(z.string().min(1).max(255)).optional(),
+  handoffs: z
+    .array(
+      z.union([
+        z.string().min(1).max(255),
+        z.tuple([z.string().min(1).max(255), z.string().length(64)]),
+      ]),
+    )
+    .optional(),
 });
 
 export interface MessageRecordStorage {
@@ -50,19 +61,46 @@ export interface MessageRecordStorage {
   mutate?(key: string, change: (raw: string | null) => string | null): Promise<void>;
   subscribe?(listener: () => void): () => void;
 }
+export function changedTaskDraft(): ClientOperationError {
+  return new ClientOperationError("The draft changed while the task was starting.", "blocked", {
+    kind: "local",
+    reason: "draft-changed",
+    retryable: false,
+  });
+}
+
+export function messageStorageFingerprint(value: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(value)));
+}
+
 export function createMessageOutboxStorage(records: MessageRecordStorage): MessageOutboxStorage {
   const key = (scope: ClientScope) =>
-    `message-outbox-v1-${bytesToHex(sha256(new TextEncoder().encode(clientScopeKey(scope)!)))}`;
+    `message-outbox-v1-${messageStorageFingerprint(clientScopeKey(scope)!)}`;
+  const handoffId = (held: NonNullable<z.infer<typeof recordSchema>["handoffs"]>[number]) =>
+    typeof held === "string" ? held : held[0];
+  const payloadHash = ({
+    content,
+    threadId,
+    delivery,
+    quotedMessageId,
+    compaction,
+  }: StoredMessage["command"]) =>
+    messageStorageFingerprint(
+      JSON.stringify([content, threadId, delivery, quotedMessageId, compaction]),
+    );
+  const maxBytes = 10 * 1024 * 1024;
+  const exceeds = (value: string, limit: number) =>
+    new TextEncoder().encode(value).byteLength > limit;
   let writes: Promise<void> = Promise.resolve();
   type Record = {
     entries: StoredMessage[];
     migrated?: string[] | undefined;
-    handoffs?: string[] | undefined;
+    handoffs?: z.infer<typeof recordSchema>["handoffs"];
+    takenBack?: string[] | undefined;
   };
   const parse = (scope: ClientScope, raw: string | null): Record => {
     if (raw === null) return { entries: [] };
-    if (new TextEncoder().encode(raw).byteLength > 10 * 1024 * 1024)
-      throw new Error("Message storage exceeds its bound.");
+    if (exceeds(raw, 2 * maxBytes)) throw new Error("Message storage exceeds its bound.");
     const record = recordSchema.parse(JSON.parse(raw));
     if (record.scope !== clientScopeKey(scope))
       throw new Error("Message storage belongs to another login.");
@@ -80,6 +118,7 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       })),
       migrated: record.migrated,
       handoffs: record.handoffs,
+      takenBack: record.takenBack,
     };
   };
   const load = async (scope: ClientScope): Promise<readonly StoredMessage[]> =>
@@ -88,13 +127,17 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
     const edit = (raw: string | null): string | null => {
       const record = parse(scope, raw);
       if (!change(record)) return raw;
-      if (!record.entries.length && !record.migrated?.length && !record.handoffs?.length)
+      if (
+        !record.entries.length &&
+        !record.migrated?.length &&
+        !record.handoffs?.length &&
+        !record.takenBack?.length
+      )
         return null;
       const value = JSON.stringify(
         recordSchema.parse({ ...record, version: 1, scope: clientScopeKey(scope) }),
       );
-      if (new TextEncoder().encode(value).byteLength > 10 * 1024 * 1024)
-        throw new Error("Message storage exceeds its bound.");
+      if (exceeds(value, 2 * maxBytes)) throw new Error("Message storage exceeds its bound.");
       return value;
     };
     const work = async () => {
@@ -112,53 +155,134 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
     writes = pending;
     return pending;
   };
-  const put = (
+  const put = async (
     scope: ClientScope,
     entry: StoredMessage,
-    options?: { readonly migrated?: boolean; readonly handoff?: boolean },
-  ) =>
-    update(scope, (record) => {
+    options?: MessageOutboxWrite,
+  ): Promise<StoredMessage | null> => {
+    let saved: StoredMessage | null = null;
+    await update(scope, (record) => {
       const { entries } = record;
+      options?.assertCurrent?.();
+      if (options?.sourceExists?.() === false) return false;
       if (options?.migrated && record.migrated?.includes(entry.localId)) return false;
-      if (options?.handoff && record.handoffs?.includes(entry.localId)) return false;
-      const exists = entries.some((row) => row.localId === entry.localId);
+      if (options?.handoff) {
+        const held = record.handoffs?.find((receipt) => handoffId(receipt) === entry.localId);
+        if (held) {
+          if (
+            options.assertCurrent &&
+            (typeof held === "string" || held[1] !== payloadHash(entry.command))
+          )
+            throw changedTaskDraft();
+          return false;
+        }
+      }
+      if (record.takenBack?.includes(messageStorageFingerprint(entry.localId))) return false;
+      const existing = entries.find((row) => row.localId === entry.localId);
+      const lane = options?.migrated ? entries.filter((row) => row.migrated) : entries;
       if (
-        !exists &&
-        (entries.length >= 48 ||
-          entries.filter((row) => row.command.threadId === entry.command.threadId).length >= 20)
+        !existing &&
+        (lane.length >= 48 ||
+          lane.filter((row) => row.command.threadId === entry.command.threadId).length >= 20)
       )
         throw new ClientOperationError("Too many messages waiting.", "blocked", {
           kind: "local",
           reason: "queue-full",
           retryable: false,
         });
-      if (!exists || !options?.migrated)
-        record.entries = [...entries.filter((row) => row.localId !== entry.localId), entry].sort(
+      if (
+        existing &&
+        options?.append &&
+        JSON.stringify(existing.command) !== JSON.stringify(entry.command)
+      )
+        throw new Error("The message key is already in use.");
+      saved = options?.append
+        ? (existing ?? { ...entry, order: Math.max(0, ...entries.map((row) => row.order)) + 1 })
+        : options?.migrated && existing
+          ? existing
+          : entry;
+      if (saved !== existing)
+        record.entries = [...entries.filter((row) => row.localId !== entry.localId), saved].sort(
           compareOutboxOrder,
         );
+      if (options?.append || options?.migrated) {
+        const partition = record.entries.filter(
+          (row) => Boolean(row.migrated) === Boolean(options.migrated),
+        );
+        if (exceeds(JSON.stringify(partition), maxBytes))
+          throw new Error("Message storage exceeds its bound.");
+      }
       if (options?.migrated) (record.migrated ??= []).push(entry.localId);
-      if (options?.handoff) (record.handoffs ??= []).push(entry.localId);
-      return true;
+      if (options?.handoff)
+        (record.handoffs ??= []).push([entry.localId, payloadHash(entry.command)]);
+      return saved !== existing || options?.migrated === true || options?.handoff === true;
     });
+    return saved;
+  };
   return {
     load,
     put,
     async hasHandoff(scope, id) {
-      return parse(scope, await records.read(key(scope))).handoffs?.includes(id) ?? false;
+      return (
+        parse(scope, await records.read(key(scope))).handoffs?.some(
+          (held) => handoffId(held) === id,
+        ) ?? false
+      );
     },
     forgetHandoff: (scope, id) =>
       update(scope, (record) => {
-        if (!record.handoffs?.includes(id)) return false;
-        record.handoffs = record.handoffs.filter((held) => held !== id);
+        if (!record.handoffs?.some((held) => handoffId(held) === id)) return false;
+        record.handoffs = record.handoffs.filter((held) => handoffId(held) !== id);
         return true;
       }),
-    async replace(scope, previous, next) {
+    forgetLegacyHandoffs: (scope, referenced) =>
+      update(scope, (record) => {
+        const receipts = record.handoffs ?? [];
+        const kept = receipts.filter(
+          (receipt) => typeof receipt !== "string" || referenced.has(receipt),
+        );
+        if (kept.length === receipts.length) return false;
+        record.handoffs = kept;
+        return true;
+      }),
+    forgetMigrations: (scope, sourceExists) =>
+      update(scope, (record) => {
+        const existing = record.migrated ?? [];
+        const pending = existing.filter(sourceExists);
+        if (pending.length === existing.length) return false;
+        record.migrated = pending;
+        return true;
+      }),
+    async dispatchIfPending(scope, entry, claim, start) {
+      let dispatch = null;
+      await update(scope, (record) => {
+        const index = record.entries.findIndex(
+          (row) => row.command.threadId === entry.command.threadId,
+        );
+        if (
+          index === -1 ||
+          !sameStoredMessage(record.entries[index]!, entry) ||
+          record.takenBack?.includes(messageStorageFingerprint(entry.localId))
+        )
+          return false;
+        const answer = start();
+        if (!answer) return false;
+        // The dispatch starts at the transaction's fence, before another window can take back.
+        void answer.catch(() => {});
+        dispatch = { answer };
+        record.entries[index] = claim;
+        return true;
+      });
+      return dispatch;
+    },
+    async replace(scope, previous, next, takeBack) {
       let replaced = false;
       await update(scope, (record) => {
         const index = record.entries.findIndex((row) => row.localId === previous.localId);
         if (index === -1 || !sameStoredMessage(record.entries[index]!, previous)) return false;
         if (next) record.entries[index] = next;
         else record.entries.splice(index, 1);
+        if (takeBack) (record.takenBack ??= []).push(messageStorageFingerprint(previous.localId));
         replaced = true;
         return true;
       });

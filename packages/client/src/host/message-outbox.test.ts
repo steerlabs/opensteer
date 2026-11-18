@@ -1,6 +1,7 @@
 import { createMessageOutboxStorage } from "./message-outbox-storage.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
+import { splitLocalMessages, waitingMessageRows } from "./message-delivery-view.js";
 import { visibleTranscript } from "./transcript.js";
 import type { TranscriptEntry } from "./client.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -594,6 +595,38 @@ describe("app lifetime message delivery", () => {
   );
 });
 
+it("keeps a stream-first queued acknowledgement under the same key and ahead of newer local work", () => {
+  const viewer = createId("user");
+  const state = {
+    acknowledged: new Map<string, string>(),
+    issue: null,
+    loading: false,
+    messages: ["first", "second"].map((key, order): StoredMessage => ({
+      command: command(key),
+      localId: key,
+      order,
+      createdAt: new Date().toISOString(),
+      phase: "waiting",
+      attempted: false,
+    })),
+  };
+  const place = (entries: readonly TranscriptEntry[]) =>
+    splitLocalMessages(projectMessageOutbox(state, threadId, entries, viewer), true);
+  const local = place([]);
+  expect(waitingMessageRows([], local.afterQueue)).toMatchObject([
+    { key: "first" },
+    { key: "second" },
+  ]);
+  const { localDelivery: _local, ...pending } = local.afterQueue[0]!;
+  const acknowledged = { ...pending, id: "message-id", queuePending: true as const };
+  const afterEvent = place([acknowledged]);
+  expect(afterEvent.transcript).toEqual([]);
+  expect(waitingMessageRows([], afterEvent.afterQueue)).toMatchObject([
+    { key: "first", entry: { id: "message-id" } },
+    { key: "second", entry: { id: "second" } },
+  ]);
+});
+
 it("surfaces a full legacy queue and imports the remainder when a slot is freed", async () => {
   vi.useFakeTimers();
   const session = controlledClientSession();
@@ -629,6 +662,104 @@ it("surfaces a full legacy queue and imports the remainder when a slot is freed"
     expect(outbox.getSnapshot().messages).toHaveLength(48);
     expect(outbox.getSnapshot().messages.some((row) => row.localId === "legacy-48")).toBe(true);
     expect(legacy.size).toBe(0);
+  } finally {
+    outbox.dispose();
+  }
+});
+
+it("delivers an older fallback head before draining a full current queue", async () => {
+  vi.useFakeTimers();
+  const session = controlledClientSession();
+  const scope = session.connection.getSnapshot().scope!;
+  const records = new Map<string, string>();
+  const port = createMessageOutboxStorage({
+    read: async (key) => records.get(key) ?? null,
+    write: async (key, value) => void records.set(key, value),
+    remove: async (key) => void records.delete(key),
+  });
+  const row = (key: string, order: number): StoredMessage => ({
+    localId: key,
+    command: command(key),
+    order,
+    phase: "waiting",
+    attempted: false,
+    createdAt: new Date().toISOString(),
+  });
+  for (let i = 1; i <= 20; i++) await port.put(scope, row(`new-${i}`, i));
+  let fallback = [row("older", 0)];
+  const ack = Promise.withResolvers<{ messageId: string }>();
+  const dispatch = vi.fn(() => ack.promise);
+  const outbox = createMessageOutbox({
+    session,
+    storage: port,
+    dispatch,
+    drafts: { restore: async () => "restored" },
+    legacy: {
+      load: async () => fallback,
+      remove: async () => {
+        fallback = [];
+      },
+    },
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(command("older"));
+  } finally {
+    outbox.dispose();
+    ack.resolve({ messageId: "delivered" });
+  }
+});
+
+it("reclaims absent migration receipts while enforcing the active queue byte limit", async () => {
+  const scope = controlledClientSession().connection.getSnapshot().scope!;
+  const row = (id: string, text: string, more = ""): StoredMessage => ({
+    localId: id,
+    phase: "waiting",
+    attempted: false,
+    order: 1,
+    createdAt: new Date().toISOString(),
+    command: {
+      ...command(id),
+      threadId: createId("thread"),
+      content: [{ type: "text", text }, ...(more ? [{ type: "text" as const, text: more }] : [])],
+    },
+  });
+  const receipts = Array.from({ length: 390 }, (_, index) => String(index).padStart(255, "0"));
+  const first = "x".repeat(245_000);
+  const more = "y".repeat(110_000);
+  let record = JSON.stringify({
+    version: 1,
+    scope: clientScopeKey(scope),
+    entries: Array.from({ length: 29 }, (_, index) => row(`large-${index}`, first, more)),
+    migrated: receipts,
+  });
+  const storage = createMessageOutboxStorage({
+    read: async () => record,
+    write: async (_key, value) => {
+      record = value;
+    },
+    remove: async () => {
+      record = "";
+    },
+  });
+  const session = controlledClientSession();
+  session.change({ phase: "recovering" });
+  const outbox = createMessageOutbox({
+    session,
+    storage,
+    drafts: { restore: async () => "restored" },
+    dispatch: async () => {
+      throw new Error("Offline");
+    },
+    legacy: { load: async () => [], remove: async () => {} },
+  });
+  try {
+    const fits = row("fits", "a".repeat(160_000));
+    await outbox.enqueue(fits.command);
+    expect(JSON.parse(record).migrated ?? []).toEqual([]);
+    expect(await storage.load(scope)).toHaveLength(30);
+    await expect(outbox.enqueue(row("too-large", "b".repeat(40_000)).command)).rejects.toThrow();
+    expect(await storage.load(scope)).toHaveLength(30);
   } finally {
     outbox.dispose();
   }
@@ -683,6 +814,7 @@ describe("durable outbox interleavings", () => {
       },
     };
     let source = true;
+    let cleanupFails = true;
     const dispatch = vi.fn(async () => ({ messageId: "delivered" }));
     const options = {
       session,
@@ -692,7 +824,8 @@ describe("durable outbox interleavings", () => {
       legacy: {
         load: async () => (source ? [{ command: command("surviving-legacy") }] : []),
         remove: async () => {
-          throw new Error("legacy disk full");
+          if (cleanupFails) throw new Error("legacy disk full");
+          source = false;
         },
       },
     };
@@ -706,7 +839,12 @@ describe("durable outbox interleavings", () => {
       outbox = createMessageOutbox({ ...options, storage: createMessageOutboxStorage(port) });
       await vi.advanceTimersByTimeAsync(0);
       expect(outbox.getSnapshot().messages).toEqual([]);
-      source = false;
+      cleanupFails = false;
+      outbox.dispose();
+      outbox = createMessageOutbox({ ...options, storage: createMessageOutboxStorage(port) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(source).toBe(false);
+      expect(records.size).toBe(0);
     } finally {
       outbox.dispose();
     }

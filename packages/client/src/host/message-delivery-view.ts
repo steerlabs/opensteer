@@ -43,20 +43,22 @@ const noLocalMessages: readonly MessageEntry[] = [];
 export function splitLocalMessages(
   entries: readonly TranscriptEntry[],
   workTask: boolean,
+  hostQueue = false,
 ): {
   readonly transcript: readonly TranscriptEntry[];
   readonly afterQueue: readonly MessageEntry[];
 } {
   if (!workTask) return { transcript: entries, afterQueue: noLocalMessages };
-  const afterQueue = entries.filter(
-    (entry): entry is MessageEntry => entry.kind === "message" && entry.localDelivery !== undefined,
-  );
+  const hasWaiting =
+    hostQueue || entries.some((entry) => entry.kind === "message" && entry.queuePending);
+  const queued = (entry: TranscriptEntry): entry is MessageEntry =>
+    entry.kind === "message" &&
+    (entry.queuePending === true ||
+      (entry.localDelivery !== undefined && (hasWaiting || !entry.localDelivery.inTranscript)));
+  const afterQueue = entries.filter(queued);
   return afterQueue.length === 0
     ? { transcript: entries, afterQueue: noLocalMessages }
-    : {
-        transcript: entries.filter((entry) => entry.kind !== "message" || !entry.localDelivery),
-        afterQueue,
-      };
+    : { transcript: entries.filter((entry) => !queued(entry)), afterQueue };
 }
 
 export function waitingMessageRows(
@@ -73,18 +75,28 @@ export function waitingMessageRows(
       entry.kind === "message" && entry.clientSendKey ? [[entry.id, entry.clientSendKey]] : [],
     ),
   );
-  const rows = inputs.map((input) => ({
-    key: input.entry.clientSendKey ?? aliases.get(input.messageId) ?? input.messageId,
-    input,
-    entry: input.entry,
-  }));
+  const rows = inputs.map((input) => {
+    const alias = input.entry.clientSendKey ?? aliases.get(input.messageId);
+    return {
+      key: alias ?? input.messageId,
+      input,
+      entry:
+        alias && !input.entry.clientSendKey
+          ? { ...input.entry, clientSendKey: alias }
+          : input.entry,
+    };
+  });
   const admitted = new Set(rows.map(({ key }) => key));
+  const ids = new Set(inputs.map(({ messageId }) => messageId));
+  const remaining = local.flatMap((entry) => {
+    const key = entry.clientSendKey ?? entry.id;
+    return admitted.has(key) || ids.has(entry.id) ? [] : [{ key, input: null, entry }];
+  });
+  const hostPending = (entry: MessageEntry) => entry.queuePending && !entry.localDelivery;
   return [
     ...rows.filter(({ input }) => input.kind !== "ask"),
-    ...local.flatMap((entry) => {
-      const key = entry.clientSendKey ?? entry.id;
-      return admitted.has(key) ? [] : [{ key, input: null, entry }];
-    }),
+    ...remaining.filter(({ entry }) => hostPending(entry)),
     ...rows.filter(({ input }) => input.kind === "ask"),
+    ...remaining.filter(({ entry }) => !hostPending(entry)),
   ];
 }

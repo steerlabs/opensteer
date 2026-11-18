@@ -433,7 +433,7 @@ export class MobileClient {
       read: async (key) => {
         const bytes = await options.privateFiles.readFile(
           `${outboxDirectory}/${key}.json`,
-          10 * 1024 * 1024,
+          20 * 1024 * 1024,
         );
         return bytes === null ? null : new TextDecoder().decode(bytes);
       },
@@ -1920,8 +1920,8 @@ export class MobileClient {
           load: async (scope) => {
             const fallback = this.#priorOutboxScopes(hostClient, scope, attachment);
             const [drafts, ...pending] = await Promise.all([
-              this.drafts.legacyMessages.load(scope).catch(() => []),
-              ...fallback.map((prior) => this.#messageStorage.load(prior).catch(() => [])),
+              this.drafts.legacyMessages.load(scope),
+              ...fallback.map((prior) => this.#messageStorage.load(prior)),
             ]);
             return [...drafts, ...pending.flat()];
           },

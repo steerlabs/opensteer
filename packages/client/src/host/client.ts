@@ -275,7 +275,10 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  /** The stream has a queued input, while the full queue view may still be on its way. */
+  readonly queuePending?: true;
   readonly localDelivery?: {
+    readonly inTranscript?: true;
     readonly phase: "waiting" | "sending" | "rejected" | "restoring";
     readonly attempted: boolean;
     readonly issue?: import("../feedback/client-issue.js").ClientIssue;

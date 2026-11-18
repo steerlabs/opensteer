@@ -246,6 +246,22 @@ it("keeps the queued row and its bubble mounted as the Host takes over a local s
   ).toEqual(["Older held", "First local", "Second local"]);
 });
 
+it("draws older Host-held inputs before refused and waiting offline sends", () => {
+  const [older, refused, waiting] = inputsOf([
+    ask("ask-older", "Older Host input"),
+    item("refused", "First offline send"),
+    item("waiting", "Second offline send"),
+  ]);
+  const locals: MessageEntry[] = [
+    { ...refused!.entry, localDelivery: { phase: "rejected", attempted: true } },
+    { ...waiting!.entry, localDelivery: { phase: "waiting", attempted: false } },
+  ];
+  const container = mount(render({} as HostClient, [older!], { local: locals }));
+  expect(
+    [...container.querySelectorAll(".queued__item .message-fold")].map((node) => node.textContent),
+  ).toEqual(["Older Host input", "First offline send", "Second offline send"]);
+});
+
 describe("WaitingInputs", () => {
   it("keeps one image read when a queued message is taken before download finishes", async () => {
     const client = new HttpHostClient({ baseUrl: "http://127.0.0.1" });

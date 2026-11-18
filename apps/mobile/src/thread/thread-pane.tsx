@@ -534,9 +534,10 @@ function ThreadPaneForUser(
       ),
     [conversational, inputQueue, threadId, withOutbox],
   );
+  const hasQueuedInputs = Boolean(inputQueue?.items.length);
   const local = useMemo(
-    () => splitLocalMessages(visible, !conversational),
-    [conversational, visible],
+    () => splitLocalMessages(visible, !conversational, hasQueuedInputs),
+    [conversational, hasQueuedInputs, visible],
   );
   const conversation = local.transcript;
   // Messages still on this phone: which carry their status line, and what
