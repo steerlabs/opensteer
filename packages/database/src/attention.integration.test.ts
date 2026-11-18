@@ -1,7 +1,8 @@
 import { createId } from "@opensteer/core";
-import { sql } from "kysely";
 import { expect } from "vitest";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
+import { withPersonalSyncRead } from "./personal-sync-store.js";
+import { NotificationStateStore } from "./notification-state.js";
 
 describeStore("personal computer attention", (it) => {
   it("counts all pending Requests and finds unread published results outside the task page without mutation locks", async ({
@@ -74,17 +75,12 @@ describeStore("personal computer attention", (it) => {
       .execute();
     const page = await f.store.ownerThreadPageForOwner({ ownerId: task.userId, maxItems: 1 });
     expect(page.threads.map((thread) => thread.id)).not.toContain(task.thread.id);
-    await f.database
-      .transaction()
-      .setIsolationLevel("repeatable read")
-      .execute(async (tx) => {
-        await sql`set transaction read only`.execute(tx);
-        const { NotificationStateStore } = await import("./notification-state.js");
-        expect(await new NotificationStateStore(tx).attention(task.userId)).toEqual({
-          needsYou: 3,
-          unread: true,
-        });
+    await withPersonalSyncRead(f.database, async (tx) => {
+      expect(await new NotificationStateStore(tx).attention(task.userId)).toEqual({
+        needsYou: 3,
+        unread: true,
       });
+    });
     const completed = await f.database
       .selectFrom("runs")
       .select("completedAt")

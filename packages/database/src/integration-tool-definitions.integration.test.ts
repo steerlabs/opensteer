@@ -20,14 +20,13 @@ import {
   storedToolSchemaDigest,
 } from "@opensteer/integration-core/tool-schemas";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
-import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withDatabaseTransaction } from "./connection.js";
+import { type Kysely, sql } from "kysely";
+import { describe, expect, it } from "vitest";
+import { createDatabase, withDatabaseTransaction } from "./connection.js";
+import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { replaceServerToolsInTransaction } from "./integration-platform-stores.js";
-import { migrateToLatest } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { OpensteerStore } from "./store.js";
 import { jsonValue } from "./store-primitives.js";
@@ -37,44 +36,28 @@ const integration = databaseUrl ? describe : describe.skip;
 type Schema = Readonly<Record<string, unknown>>;
 
 integration.sequential("shared integration tool definitions E2E", () => {
-  const databaseName = `opensteer_tool_definitions_${randomUUID().replaceAll("-", "")}`;
   const queries: string[] = [];
-  let maintenance: Pool;
   let database: Kysely<DatabaseSchema>;
 
-  function urlFor(name: string): string {
-    const url = new URL(databaseUrl ?? "postgres://unconfigured");
-    url.pathname = `/${name}`;
-    return url.toString();
-  }
-
-  beforeAll(async () => {
-    maintenance = new Pool({ connectionString: urlFor("postgres") });
-    for (const name of [databaseName]) {
-      await maintenance.query(`create database ${name}`);
-    }
-    database = new Kysely<DatabaseSchema>({
-      dialect: new PostgresDialect({ pool: new Pool({ connectionString: urlFor(databaseName) }) }),
-      log: (event) => {
-        if (event.level === "query") queries.push(event.query.sql);
-      },
-      plugins: [new CamelCasePlugin({ maintainNestedObjectKeys: true })],
-    });
-    await migrateToLatest(database);
-  });
-
-  afterAll(async () => {
-    await database?.destroy();
-    for (const name of [databaseName]) {
-      await maintenance?.query(`drop database if exists ${name}`);
-    }
-    await maintenance?.end();
-  });
-
   it("stores shared provider catalogs with bounded reads and writes and removes documents", async () => {
+    const clone = await cloneTestDatabase("host");
+    const { fixtureDatabase } = await ownTestDatabaseProducer(clone.url, async () => {
+      const fixtureDatabase = createDatabase({ connectionString: clone.url });
+      return { fixtureDatabase, close: () => fixtureDatabase.destroy() };
+    });
+    const executor = fixtureDatabase.getExecutor();
+    database = fixtureDatabase.withPlugin({
+      transformQuery({ node, queryId }) {
+        queries.push(executor.compileQuery(node, queryId).sql);
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
+    });
     const store = new OpensteerStore(database);
     const platform = new IntegrationPlatformStore(database);
-    const personal = await personalFixtureOwner(database, urlFor(databaseName));
+    const personal = await personalFixtureOwner(fixtureDatabase, clone.url);
     const ownerUserId = personal.userId;
     const task = await createPersonalRunFixturePort(store).createTask({
       ownerId: ownerUserId,
