@@ -1,5 +1,6 @@
+import { clientScopeKey } from "@opensteer/client/connections";
+import { changedTaskDraft, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { hostMessageOutbox } from "@opensteer/client/host";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
@@ -11,7 +12,7 @@ import { EngineDotMark } from "./subagent-rows.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
-import { composerDraftKeyFor } from "./composer-drafts.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { personalReferenceCandidates } from "./composer-reference-picker.js";
 import {
   Composer,
@@ -149,11 +150,28 @@ export function InputSurface({
   );
   const sendMessage = async (
     body: string,
-    { attachments, places, idempotencyKey, quotedMessageId, compaction }: ComposerSubmission,
-  ): Promise<void> => {
+    {
+      attachments,
+      places,
+      idempotencyKey,
+      quotedMessageId,
+      compaction,
+      draftRevision,
+    }: ComposerSubmission,
+  ) => {
     if (!body.trim() && attachments.length === 0 && places.length === 0) return;
     if (!outbox) throw storageUnavailable();
-    await outbox.enqueue(
+    const scope = hostClient.connection.getSnapshot().scope;
+    if (!scope || !draftKey || !draftRevision) throw storageUnavailable();
+    const login = clientScopeKey(scope)!;
+    const assertCurrent = () => {
+      if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== login)
+        throw changedTaskDraft();
+      composerDrafts.bindReply(draftKey, login, draftRevision);
+    };
+    const id = await enqueueDraftReply(
+      outbox,
+      scope,
       sendMessageCommand(threadId, {
         attachments,
         ...(compaction ? { compaction } : {}),
@@ -162,7 +180,16 @@ export function InputSurface({
         idempotencyKey,
         ...(quotedMessageId ? { quotedMessageId } : {}),
       }),
+      { revision: draftRevision, assertCurrent },
     );
+    const cleared = await composerDrafts
+      .transaction((store) => {
+        if (store.durableDraft(draftKey)?.revision !== draftRevision) return false;
+        return store.clear(draftKey);
+      })
+      .catch(() => false);
+    if (cleared) void outbox.forgetHandoff(scope, id).catch(() => {});
+    return { replyCleared: cleared };
   };
 
   const dock = useRequestDock(threadId, requests ?? noRequests);

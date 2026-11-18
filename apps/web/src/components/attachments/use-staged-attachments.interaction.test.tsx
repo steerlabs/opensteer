@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import "fake-indexeddb/auto";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,7 +60,7 @@ async function reopen(getAttachment: HostClient["getAttachment"], connection = f
     name: "notes.txt",
     type: "artifact",
   };
-  composerDrafts.update(scope, {
+  await composerDrafts.update(scope, {
     files: [{ mediaType: "text/plain", name: "notes.txt", part: part as never, sizeBytes: 3 }],
   });
   const client = { connection, getAttachment } as unknown as HostClient;

@@ -5,6 +5,7 @@ import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostic
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
+  expectedMutationSessionHeader,
   TranscriptFileContentSchema,
   transcriptFileContentMaxBytes,
   hostApi,
@@ -269,6 +270,9 @@ async function request<Name extends keyof typeof hostApi>(
         headers: {
           ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
+          ...(call?.expectedSessionId
+            ? { [expectedMutationSessionHeader]: call.expectedSessionId }
+            : {}),
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
           ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),

@@ -1,5 +1,6 @@
+import { clientScopeKey } from "@opensteer/client/connections";
+import { changedTaskDraft, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { hostMessageOutbox } from "@opensteer/client/host";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine, useScreenAction } from "../ui/client-feedback.js";
@@ -56,10 +57,11 @@ import {
 import { AccessibilityInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { pageIdentity } from "../browser/surface-route.js";
-import type {
-  TaskStartRecord,
-  ThreadDraftQuote,
-  ThreadDraftStore,
+import {
+  threadDraftRevision,
+  type TaskStartRecord,
+  type ThreadDraftQuote,
+  type ThreadDraftStore,
 } from "../client/thread-drafts.js";
 import { Symbol } from "../ui/symbol.js";
 import {
@@ -80,7 +82,12 @@ import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { composerView } from "./composer-model.js";
 import { ComposerPills } from "./composer-pills.js";
 import { AttachmentStrip } from "./attachment-views.js";
-import { attachmentKey, draftAttachmentPart, useDraftAttachments } from "./draft-attachments.js";
+import {
+  attachmentKey,
+  draftAttachmentPart,
+  sameDraftAttachmentKeys,
+  useDraftAttachments,
+} from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
@@ -570,6 +577,20 @@ export function Composer(props: {
       return part === null ? [] : [part];
     });
     if (attachments.length !== carried.length) return;
+    const scope = hostClient.connection.getSnapshot().scope;
+    const source = await drafts.readSavedDraft(deploymentId, userId, threadId);
+    const revision = threadDraftRevision(source);
+    if (
+      !scope ||
+      !revision ||
+      source?.text.trim() !== sourceText.trim() ||
+      source?.quote?.messageId !== quote?.messageId ||
+      JSON.stringify(source?.page ?? null) !== JSON.stringify(draftPage) ||
+      !sameDraftAttachmentKeys(source?.attachments ?? [], carried)
+    ) {
+      setFailure(issueLine({ code: "draft-changed" }, `send:${Date.now()}`));
+      return;
+    }
     if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
     if (!mounted.current || inFlight.current || outbox === null) return;
     const claim = claimMessage();
@@ -584,8 +605,13 @@ export function Composer(props: {
       // per file and null for a file only the Host holds, so a relaunch can
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
-      if (!outbox) return;
-      await outbox.enqueue(
+      const assertCurrent = () => {
+        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== clientScopeKey(scope))
+          throw changedTaskDraft();
+      };
+      const id = await enqueueDraftReply(
+        outbox,
+        scope,
         {
           type: "thread.sendMessage",
           threadId,
@@ -599,12 +625,19 @@ export function Composer(props: {
           ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
           ...(quote ? { quotedMessageId: quote.messageId } : {}),
         },
-        { localAttachmentUris: carried.map((item) => item.localUri) },
+        {
+          revision,
+          assertCurrent,
+          bindDraft: () => drafts.bindReply(scope, threadId, revision),
+          localAttachmentUris: carried.map((item) => item.localUri),
+        },
       );
       void notifications.registration.afterSuccessfulSend();
-      const draftNow = drafts.readDraft(deploymentId, userId, threadId);
-      if (draftNow?.text === sourceText)
-        await drafts.writeDraft(deploymentId, userId, threadId, "");
+      const cleared = await drafts
+        .consumeReply(deploymentId, userId, threadId, revision)
+        .catch(() => false);
+      if (!cleared) return;
+      void outbox.forgetHandoff(scope, id).catch(() => {});
       // Felt as it is written down, which is when the transcript draws it.
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       if (choice === "keepFullHistory") compactionOffer.dismiss();
@@ -612,9 +645,16 @@ export function Composer(props: {
       // typed while it was being written. Read the store, not the render's copy,
       // which the claim may already have emptied.
       const left = drafts.readDraft(deploymentId, userId, threadId)?.text ?? "";
-      if (left === "" || left === sourceText) replaceText("");
-      changeQuote(null);
-      setDeclinedPage(null);
+      if (left === "") {
+        const editor = input.current;
+        editor?.restore({
+          composing: false,
+          generation: editor.readSnapshot().generation + 1,
+          selection: { start: 0, end: 0 },
+          text: "",
+        });
+        setDeclinedPage(null);
+      }
       staged.release(carried.map(attachmentKey));
     } catch (error) {
       const issue = clientIssue(error, { operation: "action", label: "save this message" });

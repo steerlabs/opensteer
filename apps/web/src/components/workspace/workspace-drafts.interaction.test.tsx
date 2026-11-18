@@ -9,7 +9,7 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema, createId } from "@opensteer/core";
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 /** The browser session this device was shown a page tab through. */
 function pageSession(tabId: string): string {
@@ -66,7 +66,7 @@ import { composerText, rewrite } from "../composer-editor.test-support.js";
 // These tests check what a Send carries, never the agent's reply to it.
 const sentOnly = { mock: { replies: "brief" } } as const;
 
-it("keeps another window's revised task draft and files after the earlier start completes", async () => {
+it("fences a started task's earlier revision and resumes with the saved revision and files", async () => {
   await mount(() => "/", sentOnly);
   const { deploymentId, user } = client.getSnapshot();
   const key = composerDraftKey(
@@ -86,43 +86,65 @@ it("keeps another window's revised task draft and files after the earlier start 
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce(), { timeout: 1000 });
     const startedGeneration = composerDrafts.read(key)?.startGeneration;
     expect(startedGeneration).toBeDefined();
+    const reserved = await client.createAttachment({
+      mediaType: "text/plain",
+      name: "revision.txt",
+      sizeBytes: 12,
+      idempotencyKey: "revision-file",
+    });
+    await client.uploadAttachment({
+      attachmentId: reserved.id,
+      source: new Blob(["saved draft!"]),
+    });
     const file = {
       mediaType: "text/plain",
       name: "revision.txt",
       sizeBytes: 12,
       part: {
         type: "artifact" as const,
-        artifactId: createId("attachment"),
+        artifactId: reserved.id,
         mediaType: "text/plain",
         name: "revision.txt",
         sizeBytes: 12,
       },
     };
     await act(async () => {
-      composerDrafts.update(key, { text: "Revised in another window", files: [file] });
+      await composerDrafts.update(key, { text: "Revised in another window", files: [file] });
       answer.resolve();
     });
-    await vi.waitFor(() => expect(sends(dispatch)).toHaveLength(1), { timeout: 1000 });
-    await act(async () => {
-      await sendResult(dispatch);
-    });
-    expect(sends(dispatch)[0]?.content).toContainEqual({
-      type: "text",
-      text: "Earlier first message",
-    });
-    await vi.waitFor(() => expect(history.at(-1)?.path).toMatch(/^\/tasks\//u), { timeout: 1000 });
-    await vi.waitFor(
+    const reload = await vi.waitFor(
       () => {
-        const revised = composerDrafts.read(key);
-        expect(revised).toMatchObject({
-          text: "Revised in another window",
-          files: [file],
-          startPending: false,
-        });
-        expect(revised?.startGeneration).not.toBe(startedGeneration);
+        const button = [...document.querySelectorAll("button")].find(
+          (el) => el.textContent?.trim() === "Reload draft",
+        );
+        expect(button).toBeDefined();
+        return button!;
       },
       { timeout: 1000 },
     );
+    expect(sends(dispatch)).toEqual([]);
+    expect(composerDrafts.read(key)).toMatchObject({
+      text: "Revised in another window",
+      files: [file],
+      startGeneration: startedGeneration,
+    });
+    await click(reload);
+    await vi.waitFor(() => expect(sendEnabled()).toBe(true), { timeout: 1000 });
+    await click(element(".composer__send"));
+    await vi.waitFor(
+      () =>
+        expect(
+          sends(dispatch),
+          document.querySelector(".composer__error")?.textContent ??
+            JSON.stringify(composerDrafts.read(key)),
+        ).toHaveLength(1),
+      { timeout: 1000 },
+    );
+    expect(create).toHaveBeenCalledOnce();
+    expect(sends(dispatch)[0]?.content).toEqual([
+      { type: "text", text: "Revised in another window" },
+      file.part,
+    ]);
   } finally {
     answer.resolve();
   }

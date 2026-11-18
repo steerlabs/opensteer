@@ -176,7 +176,7 @@ function NewTaskComposer({
   // A suggestion fills the draft; the person sends it.
   useEffect(() => {
     if (!suggestion || !draftKey) return;
-    composerDrafts.update(draftKey, { text: suggestion.text });
+    void composerDrafts.update(draftKey, { text: suggestion.text });
     inputRef.current?.focus();
   }, [draftKey, suggestion]);
 
@@ -187,8 +187,12 @@ function NewTaskComposer({
       attachments,
       places,
       idempotencyKey,
+      draftRevision,
       quotedMessageId,
-    }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey" | "quotedMessageId">,
+    }: Pick<
+      ComposerSubmission,
+      "attachments" | "places" | "idempotencyKey" | "quotedMessageId" | "draftRevision"
+    >,
   ) => {
     if (!canCreateThread || previousLogin)
       throw new ActionNotDone({ kind: "not-sent", issue: null });
@@ -212,6 +216,7 @@ function NewTaskComposer({
             accessMode,
             draftKey,
             legacyStart,
+            draftRevision,
           ),
       );
       if (!thread.preserveDraft) nav.openConversation(nav.threadPath(thread.id));
@@ -226,7 +231,7 @@ function NewTaskComposer({
       ) {
         const held = composerDrafts.read(draftKey);
         if (held?.startGeneration === expected && held.startScope === login)
-          composerDrafts.handBack(draftKey, { edit: (text) => text, reason });
+          void composerDrafts.handBack(draftKey, { edit: (text) => text, reason }).catch(() => {});
       }
       throw error;
     }
@@ -266,6 +271,10 @@ function NewTaskComposer({
           }
           inputRef={inputRef}
           key={`${editorVersion}/${suggestion?.key ?? 0}`}
+          onReloadDraft={() => {
+            if (draftKey) setAsideStagedFiles(draftKey).forget();
+            setEditorVersion((version) => version + 1);
+          }}
           onSend={startThread}
           placeContext={placeContext}
           placeholder={
@@ -282,13 +291,15 @@ function NewTaskComposer({
         <button
           className="btn btn--ghost btn--small"
           onClick={() => {
-            if (!composerDrafts.clear(draftKey)) {
-              setDiscardError("Couldn't discard this draft. Try again.");
-              return;
-            }
-            setDiscardError(null);
-            setAsideStagedFiles(draftKey).forget();
-            setEditorVersion((version) => version + 1);
+            void composerDrafts.clear(draftKey).then((cleared) => {
+              if (!cleared) {
+                setDiscardError("Couldn't discard this draft. Try again.");
+                return;
+              }
+              setDiscardError(null);
+              setAsideStagedFiles(draftKey).forget();
+              setEditorVersion((version) => version + 1);
+            });
           }}
           type="button"
         >

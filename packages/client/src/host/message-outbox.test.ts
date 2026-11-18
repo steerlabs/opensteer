@@ -683,7 +683,7 @@ it("delivers an older fallback head before draining a full current queue", async
   });
   try {
     await vi.advanceTimersByTimeAsync(0);
-    expect(dispatch).toHaveBeenCalledExactlyOnceWith(command("older"));
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(command("older"), scope);
   } finally {
     outbox.dispose();
     ack.resolve({ messageId: "delivered" });

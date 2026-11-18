@@ -4,7 +4,9 @@
  * Reopen or a lost creation reply replays the same creation. The Host's reply binds
  * the task ID. A definite first refusal releases the reservation. After a replay, the
  * keys stay bound until the person completes the handoff or discards the draft.
- * Until enqueue commits, Start can use revised words with that binding.
+ * Start checks the editor's revision at reservation and handoff. A writer or
+ * discard that commits first retires that revision. If the enqueue commits first,
+ * the outbox owns the submitted revision and the remaining draft can still change.
  * The outbox atomically appends the first message and records its receipt. A later
  * Start seeing that receipt finishes the handoff even if the window that sent it closed.
  * Matching words open the task. Revised words and files stay under a fresh generation.
@@ -92,7 +94,8 @@ export function draftTaskStart(
         return next === held ? raw : next ? JSON.stringify(next) : null;
       });
     } catch (error) {
-      if (classifyClientFailure(error).reason === "draft-changed") throw error;
+      if (["draft-changed", "draft-superseded"].includes(classifyClientFailure(error).reason))
+        throw error;
       throw storageUnavailable();
     }
     return result;
@@ -111,9 +114,8 @@ export function draftTaskStart(
         const record = { generation, start: SavedTaskStartSchema.parse(candidate()) };
         return [record, record];
       }),
-    created: (expected: TaskStart, threadId: string, assertCurrent: () => void) =>
+    created: (expected: TaskStart, threadId: string) =>
       edit<ActiveStart | CompletedStart>((held) => {
-        assertCurrent();
         if (held?.generation !== generation || "retiredMessageKey" in held)
           throw changedTaskDraft();
         if ("completedThreadId" in held) return [held, held];
@@ -182,7 +184,7 @@ export async function startTask(input: {
       if (failure.kind === "rejection" && !failure.retryable) await input.records.refuse(start);
       throw error;
     }
-    const created = await input.records.created(start, threadId, input.assertCurrent);
+    const created = await input.records.created(start, threadId);
     if ("completedThreadId" in created) return completed(created);
     threadId = created.start.threadId!;
   }

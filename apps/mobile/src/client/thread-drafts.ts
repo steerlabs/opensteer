@@ -1,6 +1,13 @@
 import { hostApi } from "@opensteer/protocol";
 import type { MessageOutboxOptions } from "@opensteer/client/host";
-import { messageDraftParts, type StoredMessage } from "@opensteer/client/host";
+import {
+  assertDraftReplyLogin,
+  changedTaskDraft,
+  draftReplySendKey,
+  messageDraftParts,
+  messageStorageFingerprint,
+  type StoredMessage,
+} from "@opensteer/client/host";
 import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
@@ -16,20 +23,10 @@ import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { z } from "zod";
 
 /**
- * What a person has typed and not yet sent, and what they have sent and not yet
- * heard back about.
- *
- * These are two different things and the phone keeps them apart. A draft is
- * editable: it is whatever is in the composer right now, and losing it costs a
- * few words. A pending command is not editable at all — it is the exact message
- * that was handed to the Host, with the idempotency key it was handed under —
- * because the whole point of a key is that a retry repeats one command. A
- * command is written to disk and the write is awaited before it is dispatched,
- * so a phone that is killed mid-flight comes back holding the same command
- * rather than a second message; it is cleared only when the Host acknowledges.
- *
- * Reads are synchronous because a composer mounts with the text already
- * showing; the file is loaded once at startup and written behind the reads.
+ * A first-message claim atomically consumes one draft revision and holds a
+ * frozen creation and message for its sign-in. After restart it replays those
+ * keys until the outbox owns the message, or restores after a definite refusal.
+ * A reply leaves its revision in the draft until the outbox records the send.
  */
 
 const maxTaskStartRecords = 48;
@@ -83,6 +80,8 @@ const BrowserPageSchema = ContentPartSchema.refine(
 // file written before them still parses, and an older release, which refuses
 // fields it does not know, loses the file only once a draft uses one.
 const DraftSchema = LegacyDraftSchema.extend({
+  revision: z.string().optional(),
+  replyScope: z.string().min(1).max(2048).optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
@@ -186,6 +185,9 @@ const SteeringDraftFileSchema = z.strictObject({
 
 export type ThreadDraft = z.infer<typeof DraftSchema>;
 export type ThreadDraftQuote = z.infer<typeof DraftQuoteSchema>;
+export function threadDraftRevision(draft: ThreadDraft | null): string | null {
+  return draft ? (draft.revision ?? messageStorageFingerprint(JSON.stringify(draft))) : null;
+}
 export type DraftAttachment = NonNullable<ThreadDraft["attachments"]>[number];
 export type TaskStartRecord = z.infer<typeof TaskStartRecordSchema>;
 export type TaskStartParameters = z.infer<typeof TaskStartParametersSchema>;
@@ -276,6 +278,7 @@ export interface ThreadDraftStore {
     userId: string,
     threadId: string,
     command: TaskStartInput,
+    expectedRevision?: string | null,
   ): Promise<void>;
   bindTaskStartLogin(
     deploymentId: string,
@@ -309,6 +312,18 @@ export interface ThreadDraftStore {
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
+  readSavedDraft(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+  ): Promise<ThreadDraft | null>;
+  bindReply(scope: ClientScope, threadId: string, revision: string): Promise<void>;
+  consumeReply(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+    revision: string,
+  ): Promise<boolean>;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
   readTaskStart(deploymentId: string, userId: string, threadId: string): TaskStartRecord | null;
   /** True while words, a quote or a page shown in this draft could not be written to disk. */
@@ -392,12 +407,32 @@ export function createThreadDraftStore(options: {
       text: textEdit?.text ?? entry?.text ?? "",
     };
     if (draftEmpty(fields)) return null;
+    if (
+      entry &&
+      JSON.stringify(fields) ===
+        JSON.stringify({
+          attachments: entry.attachments,
+          page: entry.page,
+          quote: entry.quote,
+          text: entry.text,
+        })
+    )
+      return entry;
     return DraftSchema.parse({
       ...fields,
       updatedAt: entry?.updatedAt ?? options.now().toISOString(),
       userId,
     });
   };
+
+  const draftIntent = (fields: DraftFields) =>
+    JSON.stringify([
+      fields.text,
+      fields.quote?.messageId,
+      fields.page,
+      (fields.attachments ?? []).map((item) => item.localUri ?? item.attachmentId),
+      fields.recoveredSendKeys ?? [],
+    ]);
 
   /** Saves a draft's fields, or forgets the draft once nothing is left in it. */
   const putDraft = (
@@ -407,15 +442,21 @@ export function createThreadDraftStore(options: {
     fields: DraftFields,
   ): void => {
     if (draftEmpty(fields) && !fields.recoveredSendKeys?.length) nextDrafts.delete(entryKey);
-    else
+    else {
+      const before = nextDrafts.get(entryKey);
+      const same = before && draftIntent(draftFields(before)) === draftIntent(fields);
+      const revision = same ? threadDraftRevision(before)! : globalThis.crypto.randomUUID();
       nextDrafts.set(
         entryKey,
         DraftSchema.parse({
           ...fields,
+          revision,
+          ...(same && before?.replyScope ? { replyScope: before.replyScope } : {}),
           updatedAt: options.now().toISOString(),
           userId,
         }),
       );
+    }
   };
 
   const mutate = (
@@ -460,7 +501,9 @@ export function createThreadDraftStore(options: {
     publish();
     for (let attempt = 0; ; attempt += 1) {
       try {
-        await mutate(change);
+        await mutate((nextDrafts) => {
+          if (edits.get(entryKey) === edit) change(nextDrafts);
+        });
         break;
       } catch (error) {
         // A newer edit carries the whole field; retrying this one could overwrite it.
@@ -601,6 +644,20 @@ export function createThreadDraftStore(options: {
           outcome = "restored";
           return;
         }
+        const recoveredSendKeys = [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40);
+        const revision = threadDraftRevision(held ?? null);
+        if (
+          held &&
+          revision &&
+          draftReplySendKey(scope, entry.command.threadId, revision) === entry.localId
+        ) {
+          putDraft(nextDrafts, entryKey, scope.viewerId, {
+            ...draftFields(held),
+            recoveredSendKeys,
+          });
+          outcome = "restored";
+          return;
+        }
         // The message goes above the words already there, with its files after
         // theirs; the draft's own quote and page stand, else the message's.
         const parts = messageDraftParts(entry.command.content);
@@ -642,14 +699,14 @@ export function createThreadDraftStore(options: {
                   excerpt: "",
                 }
               : undefined),
-          recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
+          recoveredSendKeys,
         });
         outcome = "restored";
       });
       return outcome;
     },
 
-    async claimTaskStart(deploymentId, userId, threadId, command): Promise<void> {
+    async claimTaskStart(deploymentId, userId, threadId, command, expectedRevision): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
       const claimedTextEdit = textEdits.get(entryKey);
       const claimedQuoteEdit = quoteEdits.get(entryKey);
@@ -696,6 +753,11 @@ export function createThreadDraftStore(options: {
             "Too many messages are awaiting acknowledgement. Retry those messages first.",
           );
         }
+        if (
+          expectedRevision !== undefined &&
+          threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !== expectedRevision
+        )
+          throw changedTaskDraft();
         nextPending.set(entryKey, entry);
         nextDrafts.delete(entryKey);
       });
@@ -838,6 +900,45 @@ export function createThreadDraftStore(options: {
 
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
       return readVisibleDraft(deploymentId, userId, threadId);
+    },
+
+    readSavedDraft(deploymentId, userId, threadId) {
+      return writes.run(async () => drafts.get(key(deploymentId, userId, threadId)) ?? null);
+    },
+
+    bindReply(scope, threadId, revision) {
+      const { deploymentId, viewerId } = scope;
+      const entryKey = key(deploymentId, viewerId, threadId);
+      const login = clientScopeKey(scope)!;
+      return mutate((nextDrafts) => {
+        const draft = nextDrafts.get(entryKey);
+        if (
+          !draft ||
+          threadDraftRevision(readVisibleDraft(deploymentId, viewerId, threadId)) !== revision
+        )
+          throw changedTaskDraft();
+        assertDraftReplyLogin(draft.replyScope, login);
+        nextDrafts.set(entryKey, { ...draft, revision, replyScope: login });
+      });
+    },
+
+    async consumeReply(deploymentId, userId, threadId, revision) {
+      const entryKey = key(deploymentId, userId, threadId);
+      const claimed = [textEdits.get(entryKey), quoteEdits.get(entryKey), pageEdits.get(entryKey)];
+      let consumed = false;
+      await mutate((nextDrafts) => {
+        if (threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !== revision)
+          return;
+        nextDrafts.delete(entryKey);
+        consumed = true;
+      });
+      if (consumed) {
+        if (textEdits.get(entryKey) === claimed[0]) textEdits.delete(entryKey);
+        if (quoteEdits.get(entryKey) === claimed[1]) quoteEdits.delete(entryKey);
+        if (pageEdits.get(entryKey) === claimed[2]) pageEdits.delete(entryKey);
+        publish();
+      }
+      return consumed;
     },
 
     readDraftSummary(deploymentId, userId): DraftSummary {

@@ -184,6 +184,7 @@ export const HostCapabilitySchema = z.enum([
   "thread-titles-v1",
   /** `thread.sendMessage` and `voice.start` accept the sender's `origin`. */
   "message-origin-v1",
+  "session-bound-mutations-v1",
 
   "task-marks-v1",
   /**

@@ -76,14 +76,21 @@ describe("the review's findings", () => {
     await settle(100);
     const answer = deferred<void>();
     const real = client.dispatch.bind(client);
-    vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
-      await answer.promise;
+    const started = Promise.withResolvers<void>();
+    vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+      if (args[0].type === "thread.sendMessage") {
+        started.resolve();
+        await answer.promise;
+      }
       return real(...args);
     });
-    const field = element<HTMLElement>("[data-composer-input]");
-    await write(field, "First");
+    await write(element<HTMLElement>("[data-composer-input]"), "First");
     await click(element(".composer__send"));
+    await vi.waitFor(() => expect(started.promise).resolves.toBeUndefined(), { timeout: 1_000 });
+    await vi.waitFor(() => expect(history.at(-1)!.path).toMatch(/^\/tasks\//u), { timeout: 1_000 });
+    await act(async () => goTo!(-1));
     await settle(100);
+    const field = element<HTMLElement>("[data-composer-input]");
     // The next draft is its own from the press: it follows the page, then freezes on typing.
     expect(element(".context-chip__title").textContent).toBe(place.title);
     await write(field, "Second draft typed before acknowledgement");
@@ -94,10 +101,7 @@ describe("the review's findings", () => {
     await click(element(".context-chip__remove"));
     await act(async () => answer.resolve());
     await settle(150);
-    // The answer opens the task it started; the second draft stays where it was written.
-    expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
-    await act(async () => goTo!(-1));
-    await settle(100);
+    expect(history.at(-1)!.path).toBe("/");
     expect(composerText(element("[data-composer-input]"))).toBe(
       "Second draft typed before acknowledgement",
     );

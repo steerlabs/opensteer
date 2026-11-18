@@ -5,6 +5,7 @@ import {
   type MessageDeliveryAction,
 } from "@opensteer/client/host";
 import {
+  presentClientIssue,
   presentDeliveryActions,
   presentMessageActionFailure,
   presentMessageDelivery,
@@ -2297,6 +2298,7 @@ function OwnMessage({
   const [since] = useState(() => Date.now());
   const labels = presentDeliveryActions();
   const unconfirmed = local?.issue?.code === "unconfirmed";
+  const toast = useToast();
   // Taking a message back touches only what this device keeps. Edit moves the
   // whole message into the draft, above any words there, before the bubble goes.
   const takeBack = useAction(
@@ -2310,6 +2312,17 @@ function OwnMessage({
         deliveryFeedback?.note(sendKey, null);
         let words: string | null;
         try {
+          if (action === "remove") {
+            await outbox.removeLocalCopy(sendKey);
+            if (unconfirmed)
+              toast.success(
+                presentClientIssue({
+                  code: "message-removed-locally",
+                  ...(computer ? { name: computer } : {}),
+                }).title,
+              );
+            return;
+          }
           words =
             action === "edit"
               ? presentMessageTakeBack(await outbox.restoreDraft(sendKey))
@@ -2317,9 +2330,7 @@ function OwnMessage({
                 ? (await outbox.retry(sendKey)) === "settled"
                   ? presentMessageTakeBack("sent")
                   : null
-                : action === "remove"
-                  ? (await outbox.removeLocalCopy(sendKey), null)
-                  : (await outbox.discard(sendKey), null);
+                : (await outbox.discard(sendKey), null);
         } catch (error) {
           words = presentMessageActionFailure(error);
         }

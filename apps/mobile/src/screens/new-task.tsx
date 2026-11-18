@@ -44,13 +44,18 @@ import type { ComposerEditorHandle } from "@opensteer/client/references";
 import * as Haptics from "expo-haptics";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import Animated, { useReducedMotion } from "react-native-reanimated";
-import { newTaskDraftKey, type TaskStartRecord } from "../client/thread-drafts.js";
+import {
+  newTaskDraftKey,
+  threadDraftRevision,
+  type TaskStartRecord,
+} from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import { color, space } from "../theme.js";
 import {
   attachmentKey,
   draftAttachmentPart,
   forgetDraftFiles,
+  sameDraftAttachmentKeys,
   useDraftAttachments,
   type DraftAttachments,
 } from "../thread/draft-attachments.js";
@@ -232,6 +237,18 @@ function NewTask(props: {
         if (flushed === null || flushed.composing) return;
         words = flushed.text.trim();
       }
+      const source =
+        existing === null ? await drafts.readSavedDraft(deploymentId, userId, draftKey) : null;
+      if (
+        existing === null &&
+        ((source?.text.trim() ?? "") !== words ||
+          JSON.stringify(source?.page ?? null) !== JSON.stringify(includedPage) ||
+          !sameDraftAttachmentKeys(source?.attachments ?? [], staged.items))
+      ) {
+        setLine(issueLine({ code: "draft-changed" }, `start:${Date.now()}`));
+        return;
+      }
+      const draftRevision = threadDraftRevision(source);
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
       if (!mounted.current || inFlight.current || !isCurrent()) return;
       inFlight.current = true;
@@ -290,6 +307,7 @@ function NewTask(props: {
             browserPage: includedPage,
             deploymentId,
             draftKey,
+            draftRevision,
             drafts,
             idempotencyKey,
             ownerScope,
@@ -308,11 +326,12 @@ function NewTask(props: {
             userId,
           }).catch((error: unknown) => {
             // Not written down, so not sent: the words are back in the field.
+            const current = drafts.readDraft(deploymentId, userId, draftKey)?.text ?? words;
             field?.restore({
               composing: false,
               generation: emptied + 1,
-              selection: { start: words.length, end: words.length },
-              text: words,
+              selection: { start: current.length, end: current.length },
+              text: current,
             });
             throw error;
           });
@@ -393,7 +412,18 @@ function NewTask(props: {
           const key = `start:${Date.now()}`;
           if (error instanceof NotStarted)
             setLine({ key, text: error.words, tone: "muted", haptic: "warning" });
-          else if (claimed === null) setLine(issueLine({ code: "storage-unavailable" }, key));
+          else if (claimed === null)
+            setLine(
+              issueLine(
+                {
+                  code:
+                    classifyClientFailure(error).reason === "draft-changed"
+                      ? "draft-changed"
+                      : "storage-unavailable",
+                },
+                key,
+              ),
+            );
           else if (created) {
             // The task exists; the message is held here until this phone can
             // queue it, under the same key, when the person asks again.

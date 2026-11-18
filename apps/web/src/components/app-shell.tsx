@@ -7,6 +7,7 @@ import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useVoiceCursor } from "./voice-cursor.js";
 import {
   hostMessageOutbox,
+  changedTaskDraft,
   startAccountSignIn,
   type AccountSignInFlow,
   handlePersonShow,
@@ -90,7 +91,11 @@ import {
   type PendingSubmission,
 } from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
-import { cleanTaskStartJournals, composerDrafts } from "./composer-drafts.js";
+import {
+  cleanTaskStartJournals,
+  composerDrafts,
+  reserveComposerTaskStart,
+} from "./composer-drafts.js";
 import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
@@ -150,6 +155,7 @@ export interface ShellContext {
     /** The draft the task starts from, which keeps the start across retries. */
     draftKey: string | null,
     confirmLegacy?: boolean,
+    draftRevision?: string,
   ) => Promise<{
     readonly id: string;
     readonly draftGeneration: string;
@@ -688,12 +694,14 @@ export function AppShell({
       accessMode: ThreadAccessMode,
       draftKey: string | null,
       confirmLegacy?: boolean,
+      draftRevision?: string,
     ) => {
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
       const outbox = hostMessageOutbox(hostClient);
       const scope = hostClient.connection.getSnapshot().scope;
       if (!outbox || !draftKey || !scope) throw storageUnavailable();
+      if (!draftRevision) throw changedTaskDraft();
       const scopeKey = clientScopeKey(scope)!;
       const assertLogin = () => {
         if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey)
@@ -707,14 +715,13 @@ export function AppShell({
         (await belongsToPreviousLogin(scopeKey, draftKey, held.startGeneration))
       )
         throw storageUnavailable();
-      assertLogin();
-      const generation = composerDrafts.taskStartGeneration(draftKey, scopeKey);
-      if (!generation) throw storageUnavailable();
-      const assertCurrent = () => {
-        assertLogin();
-        if (composerDrafts.durableTaskStartGeneration(draftKey) !== generation)
-          throw storageUnavailable();
-      };
+      const { generation, assertCurrent, beginCreation } = await reserveComposerTaskStart(
+        composerDrafts,
+        draftKey,
+        scopeKey,
+        draftRevision,
+        assertLogin,
+      );
       // A new generation can reuse the journal slot only after its predecessor's receipt is retired.
       await cleanTaskStartJournals(draftKey);
       const prepared = sendMessageCommand("", message);
@@ -738,7 +745,7 @@ export function AppShell({
         },
         creationKey: () => mutationIdempotencyKey("thread"),
         messageKey: message.idempotencyKey,
-        createThread: (creation) => hostClient.createThread(creation),
+        createThread: (creation) => beginCreation(() => hostClient.createThread(creation, scope)),
         enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
         hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });

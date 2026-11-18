@@ -3251,6 +3251,7 @@ export function advertisedCapabilities(
     "voice-run-v1",
     "thread-titles-v1",
     "message-origin-v1",
+    "session-bound-mutations-v1",
     "task-marks-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",

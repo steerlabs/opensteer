@@ -1,3 +1,4 @@
+import "fake-indexeddb/auto";
 import {
   initializeMessageOutbox,
   createMessageOutboxStorage,
@@ -107,8 +108,9 @@ beforeEach(() => {
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
-afterEach(() => {
+afterEach(async () => {
   act(() => root.unmount());
+  await composerDrafts.clearAll();
   disposeMessageOutbox(shell.hostClient as unknown as HostClient);
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
@@ -240,10 +242,12 @@ describe("request surface connectivity", () => {
     await act(async () => {
       node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
     });
-    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce(), {
+      timeout: 1_000,
+    });
     expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ threadId, type: "thread.sendMessage" }),
-      { preserveOrigin: true },
+      { preserveOrigin: true, expectedLogin: expect.objectContaining({ viewerId: "viewer" }) },
     );
     expect(
       [...node.querySelectorAll(".action-rows .action-row__label")].map((item) => item.textContent),
@@ -444,7 +448,7 @@ describe("answering a question", () => {
         </MemoryRouter>,
       ),
     );
-    expect(draft.closest("[hidden]")).toBeNull();
+    await vi.waitFor(() => expect(draft.closest("[hidden]")).toBeNull(), { timeout: 1_000 });
     expect(node.querySelector(".composer--answer")).toBeNull();
     const switchToAnswer = [...node.querySelectorAll("button")].find(
       (button) => button.textContent === "Type an answer",
@@ -455,8 +459,8 @@ describe("answering a question", () => {
     expect(draft.value).toBe("Also check Kyoto");
   });
 
-  it("leaves a draft holding only a quote in the message box too", () => {
-    composerDrafts.update(
+  it("leaves a draft holding only a quote in the message box too", async () => {
+    await composerDrafts.update(
       composerDraftKeyFor("deployment", "viewer", { kind: "thread", threadId: "thread" })!,
       {
         quote: { attribution: "Sam", excerpt: "the August numbers", messageId: "msg_quoted" },
@@ -488,7 +492,9 @@ describe("answering a question", () => {
         </MemoryRouter>,
       ),
     );
-    expect(node.querySelector(".composer--answer")).toBeNull();
+    await vi.waitFor(() => expect(node.querySelector(".composer--answer")).toBeNull(), {
+      timeout: 1_000,
+    });
     await act(async () => option(node, "Batches").click());
     await act(async () => option(node, "All at once").click());
     await act(async () => answerButton(node).click());

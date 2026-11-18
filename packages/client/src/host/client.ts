@@ -1,3 +1,4 @@
+import type { ClientScope } from "../connections/connection-controller.js";
 import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
@@ -1152,7 +1153,7 @@ export interface HostClient extends TabsClient {
   observeThread(threadId: string): () => void;
   watchNode(threadId: string, nodeId: string): import("./node-detail.js").NodeDetailSubscription;
   /** Starts a Thread and remembers its selection and access mode as the person's latest choice. */
-  createThread(input: CreateThreadInput): Promise<ThreadSummary>;
+  createThread(input: CreateThreadInput, expectedLogin?: ClientScope): Promise<ThreadSummary>;
   /**
    * Names a Thread for good; its engine never renames it afterwards. Only
    * while `threadRenameAvailable`.
@@ -1207,7 +1208,7 @@ export interface HostClient extends TabsClient {
 
   dispatch(
     command: ClientCommandInput,
-    options?: { readonly preserveOrigin?: boolean },
+    options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput>;
   /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;

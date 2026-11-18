@@ -67,6 +67,16 @@ export function attachmentKey(item: Pick<DraftAttachment, "attachmentId" | "loca
   return item.localUri ?? `host:${item.attachmentId ?? ""}`;
 }
 
+export function sameDraftAttachmentKeys(
+  saved: readonly DraftAttachment[],
+  shown: readonly DraftAttachment[],
+): boolean {
+  return (
+    saved.length === shown.length &&
+    saved.every((item, index) => attachmentKey(item) === attachmentKey(shown[index]!))
+  );
+}
+
 // A native stack may keep two copies of the same draft mounted. Only one copy
 // uploads a file at a time; when that copy leaves, the surviving one can take
 // over the same reservation instead of leaving it stuck as "uploading".

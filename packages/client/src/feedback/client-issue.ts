@@ -16,9 +16,11 @@ export type ClientIssueCode =
   | "refresh-failed"
   | "not-sent"
   | "unconfirmed"
+  | "message-removed-locally"
   | "rejected"
   | "login-storage-unavailable"
   | "draft-changed"
+  | "draft-previous-login"
   | "draft-unsaved"
   | "storage-unavailable"
   | "queue-full"
@@ -59,7 +61,10 @@ export function clientIssueFromFailure(
   if (failure.kind === "cancelled") return null;
   if (failure.reason === "login-storage-unavailable") return { code: "login-storage-unavailable" };
   if (failure.reason === "storage-unavailable") return { code: "storage-unavailable" };
-  if (failure.reason === "draft-changed") return { code: "draft-changed" };
+  if (failure.reason === "session-changed") return { code: "sign-in" };
+  if (failure.reason === "draft-changed" || failure.reason === "draft-superseded")
+    return { code: "draft-changed" };
+  if (failure.reason === "draft-previous-login") return { code: "draft-previous-login" };
   if (failure.reason === "queue-full") return { code: "queue-full" };
   if (failure.code === "unauthorized") return { code: "sign-in" };
   if (["client-too-old", "api-version-mismatch", "unsupported-version"].includes(failure.reason))
@@ -171,6 +176,8 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
         : result(
             `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
           );
+    case "message-removed-locally":
+      return result(`Removed here. If it already reached ${name}, it may still appear.`);
     case "unconfirmed":
       return result(`Couldn't confirm ${issue.happened ?? "this change"}.`, "check");
     case "rejected": {
@@ -194,6 +201,10 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
         "Couldn't save this draft on this device.",
         null,
         "It stays here until you close Opensteer.",
+      );
+    case "draft-previous-login":
+      return result(
+        "This reply belongs to a previous sign-in. Edit the draft to send a new reply.",
       );
     case "storage-unavailable":
       return result("Couldn't save this message on this device. Try again.", "retry");

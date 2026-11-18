@@ -101,6 +101,7 @@ class StagedFiles {
   readonly client: HostClient;
   readonly #scope: string;
   readonly #deploymentId: string;
+  #draftEditId: string | undefined;
   #state: State = noState;
   #unchecked: string[] = [];
   /** Its draft was discarded and may yet be taken back: uploads go on, the draft is left alone. */
@@ -114,7 +115,9 @@ class StagedFiles {
     this.client = target.client;
     this.#scope = target.scope;
     this.#deploymentId = target.deploymentId;
-    const saved = composerDrafts.read(target.scope)?.files ?? [];
+    const draft = composerDrafts.read(target.scope);
+    this.#draftEditId = draft?.editId;
+    const saved = draft?.files ?? [];
     if (saved.length > 0)
       this.#state = { items: saved.map((file) => this.#saved(file)), notice: null };
   }
@@ -249,14 +252,19 @@ class StagedFiles {
   }
 
   #saveFiles(): void {
-    composerDrafts.update(this.#scope, {
-      files: this.#state.items.map((item) => ({
-        mediaType: item.mediaType,
-        name: item.name,
-        part: item.part ?? this.#records.get(item.localId)?.part ?? null,
-        sizeBytes: item.sizeBytes,
-      })),
-    });
+    const files = this.#state.items.map((item) => ({
+      mediaType: item.mediaType,
+      name: item.name,
+      part: item.part ?? this.#records.get(item.localId)?.part ?? null,
+      sizeBytes: item.sizeBytes,
+    }));
+    void composerDrafts
+      .transaction((drafts) => {
+        if (this.#asideFromDraft || sessions.get(this.#scope) !== this) return;
+        if (drafts.update(this.#scope, { files }, this.#draftEditId))
+          this.#draftEditId = drafts.read(this.#scope)?.editId;
+      })
+      .catch(() => {});
   }
 
   #patch(localId: string, change: Partial<StagedAttachment>): void {

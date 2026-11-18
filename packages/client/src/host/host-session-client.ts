@@ -420,6 +420,8 @@ export interface HttpHostClientOptions {
   readonly presentation?: import("../connections/connection-controller.js").ConnectionPresentation;
   readonly connectionController?: ConnectionController;
   readonly clientScope?: () => ClientScope | null;
+  /** Browser and desktop credentials are selected outside the renderer. */
+  readonly bindMutationsToSession?: boolean;
   readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
@@ -465,6 +467,7 @@ export class HttpHostClient {
   readonly connection: ConnectionController;
   readonly #ownsConnection: boolean;
   readonly #clientScope: (() => ClientScope | null) | undefined;
+  readonly #bindMutationsToSession: boolean;
   #connectionPathRevision = 0;
   #connectionFailed: ((error: unknown) => void) | null = null;
   readonly browserPasskeys: BrowserPasskeys;
@@ -1045,6 +1048,7 @@ export class HttpHostClient {
       options.realtimeLiveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs,
     );
     this.#clientScope = options.clientScope;
+    this.#bindMutationsToSession = options.bindMutationsToSession ?? false;
     this.#ownsConnection = !options.connectionController;
     this.connection =
       options.connectionController ??
@@ -1200,7 +1204,7 @@ export class HttpHostClient {
 
   async dispatch(
     command: ClientCommandInput,
-    options?: { readonly preserveOrigin?: boolean },
+    options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
@@ -1238,7 +1242,31 @@ export class HttpHostClient {
       "deviceId" in parsedCommand.input
     )
       return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    return this.#dispatchCommand(hostApi["commands.dispatch"].payload.parse(parsedCommand));
+    const expectedSession = this.#bindMutationsToSession
+      ? options?.expectedLogin?.loginId
+      : undefined;
+    if (expectedSession && !this.#capabilities?.includes("session-bound-mutations-v1"))
+      throw new ClientOperationError("Update Opensteer to send saved messages.", "blocked", {
+        kind: "protocol",
+        reason: "host-too-old",
+        retryable: false,
+      });
+    try {
+      return await this.#dispatchCommand(
+        hostApi["commands.dispatch"].payload.parse(parsedCommand),
+        expectedSession,
+      );
+    } catch (error) {
+      if (
+        expectedSession &&
+        this.connection.getSnapshot().scope?.loginId === expectedSession &&
+        classifyClientFailure(error).reason === "session-changed"
+      ) {
+        this.connection.invalidateScope();
+        if (this.#ownsConnection) void this.reauthenticate().catch(() => {});
+      }
+      throw error;
+    }
   }
 
   /** The zone is read at send time: a phone that crossed zones says so on its next message. */
@@ -1254,7 +1282,10 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(parsedCommand: HostApiCommand): Promise<HostApiCommandOutput> {
+  async #dispatchCommand(
+    parsedCommand: HostApiCommand,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
     // Installation and server selection advance an integration access Request
     // without resolving it. Capture that fact before dispatch so an earlier
     // request.updated event cannot make the HTTP acknowledgement erase the
@@ -1272,7 +1303,7 @@ export class HttpHostClient {
             request.kind === "integration.access" &&
             request.status === "pending",
         );
-    const result = await this.#dispatch(parsedCommand);
+    const result = await this.#dispatch(parsedCommand, expectedSessionId);
     switch (result.type) {
       case "teams.ask.decide":
         if (commandIs(parsedCommand, result.type))
@@ -2793,18 +2824,24 @@ export class HttpHostClient {
     throw new Error("The browser view is not synchronized.");
   }
 
-  async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const result = await this.dispatch({
-      type: "thread.create",
-      accessMode: input.accessMode,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
-      modelSelection: input.modelSelection,
-      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.generateTitle ? { generateTitle: true } : {}),
-      title: input.title?.trim() || "New task",
-    });
+  async createThread(
+    input: CreateThreadInput,
+    expectedLogin?: ClientScope,
+  ): Promise<ThreadSummary> {
+    const result = await this.dispatch(
+      {
+        type: "thread.create",
+        accessMode: input.accessMode,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
+        modelSelection: input.modelSelection,
+        ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
+        ...(input.generateTitle ? { generateTitle: true } : {}),
+        title: input.title?.trim() || "New task",
+      },
+      expectedLogin ? { expectedLogin } : undefined,
+    );
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
     // Not waited for: the new Thread is what the person is waiting to see.
     void this.#rememberQuietly({
@@ -3294,8 +3331,16 @@ export class HttpHostClient {
     void this.loadThreadInputQueue(threadId).catch(() => undefined);
   }
 
-  async #dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    return unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+  async #dispatch(
+    command: HostApiCommandInput,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
+    return unwrapRpcResult(
+      await this.rpc["commands.dispatch"](
+        command,
+        expectedSessionId ? { expectedSessionId } : undefined,
+      ),
+    );
   }
 
   dispose(): void {

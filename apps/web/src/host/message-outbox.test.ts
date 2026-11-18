@@ -129,7 +129,9 @@ it("fences a paused dispatch in another window after a refusal is edited", async
     await expect(reader.enqueue(pending)).rejects.toThrow("removed");
     await reader.enqueue({ ...pending, idempotencyKey: "follows" });
     await vi.waitFor(() => expect(reader.getSnapshot().messages).toEqual([]), { timeout: 1000 });
-    expect(sentB.mock.calls).toEqual([[expect.objectContaining({ idempotencyKey: "follows" })]]);
+    expect(sentB.mock.calls).toEqual([
+      [expect.objectContaining({ idempotencyKey: "follows" }), b.connection.getSnapshot().scope],
+    ]);
   } finally {
     resume.resolve();
     acknowledgement.resolve(undefined as never);
@@ -338,7 +340,9 @@ it.each(["foreground", "recovery"] as const)(
       expect(reader.getSnapshot().messages).toEqual([]);
       if (wake === "foreground") session.change({ visibility: "foreground" });
       else session.change({ phase: "ready", readyRevision: 2 });
-      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(command), { timeout: 1000 });
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(command, scope), {
+        timeout: 1000,
+      });
     } finally {
       reader.dispose();
     }

@@ -228,6 +228,7 @@ export async function claimFirstMessage(input: {
   readonly browserPage?: BrowserPageContentPart | null;
   readonly deploymentId: string;
   readonly draftKey: string;
+  readonly draftRevision: string | null;
   readonly drafts: ThreadDraftStore;
   readonly idempotencyKey: string;
   readonly quote: ThreadDraftQuote | null;
@@ -245,20 +246,26 @@ export async function claimFirstMessage(input: {
   if (attachments.length !== carried.length) {
     throw new Error("Waiting for your files to finish uploading.");
   }
-  await input.drafts.claimTaskStart(input.deploymentId, input.userId, input.draftKey, {
-    ...(attachments.length > 0
-      ? { attachments, localUris: carried.map((item) => item.localUri) }
-      : {}),
-    ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
-    idempotencyKey: input.idempotencyKey,
-    ownerScope: input.ownerScope,
-    // Only the source id travels: the Host resolves the quoted update under
-    // this reader's authority, never from an excerpt.
-    ...(input.quote === null ? {} : { quotedMessageId: input.quote.messageId }),
-    ...(input.start === undefined ? {} : { start: input.start }),
-    text: input.text,
-    threadId: input.draftKey,
-  });
+  await input.drafts.claimTaskStart(
+    input.deploymentId,
+    input.userId,
+    input.draftKey,
+    {
+      ...(attachments.length > 0
+        ? { attachments, localUris: carried.map((item) => item.localUri) }
+        : {}),
+      ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
+      idempotencyKey: input.idempotencyKey,
+      ownerScope: input.ownerScope,
+      // Only the source id travels: the Host resolves the quoted update under
+      // this reader's authority, never from an excerpt.
+      ...(input.quote === null ? {} : { quotedMessageId: input.quote.messageId }),
+      ...(input.start === undefined ? {} : { start: input.start }),
+      text: input.text,
+      threadId: input.draftKey,
+    },
+    input.draftRevision,
+  );
   const claimed = input.drafts.readTaskStart(input.deploymentId, input.userId, input.draftKey);
   if (claimed === null) throw new Error("Your message was not saved on this phone.");
   input.staged.release(carried.map(attachmentKey));

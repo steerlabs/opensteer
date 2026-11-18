@@ -2,7 +2,7 @@ import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionNotDone, failureWords } from "./use-action.js";
 
 const isNotDone = (error: unknown) => error instanceof ActionNotDone;
-import { compactionOfferText } from "@opensteer/client/host";
+import { changedTaskDraft, compactionOfferText } from "@opensteer/client/host";
 import {
   dictationLabels,
   dictationView,
@@ -70,6 +70,7 @@ export interface ComposerSubmission {
   /** Uploaded files, in the order the person added them. */
   readonly attachments: readonly ArtifactContentPart[];
   readonly idempotencyKey: string;
+  readonly draftRevision?: string;
   /** The exact source message this one answers, when the reader quoted one. */
   readonly quotedMessageId?: string;
 }
@@ -138,6 +139,7 @@ interface ComposerProps {
   onHoldingChange?: ((holding: boolean) => void) | undefined;
   /** Invoked when the reader presses Escape in the textarea (e.g. to return focus to docked action options). */
   onEscape?: (() => void) | undefined;
+  onReloadDraft?: () => void;
   /**
    * Keeps or sends the message. A rejection from `act` is said in the
    * action owner's words; anything else as a message this device couldn't keep.
@@ -145,7 +147,11 @@ interface ComposerProps {
   onSend: (
     body: string,
     submission: ComposerSubmission,
-  ) => Promise<void | { readonly draftGeneration: string; readonly preserveDraft?: true }>;
+  ) => Promise<
+    | void
+    | { readonly draftGeneration: string; readonly preserveDraft?: true }
+    | { readonly replyCleared: boolean }
+  >;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -204,6 +210,7 @@ export function Composer({
   onHoldingChange,
   onEscape,
   onSend,
+  onReloadDraft,
   compactionOffer,
   onStop,
   placeholder,
@@ -216,6 +223,8 @@ export function Composer({
   stopping: runStopping = false,
 }: ComposerProps) {
   const [saved] = useState(() => (draftKey ? composerDrafts.read(draftKey) : null));
+  const editorDraft = useRef(saved);
+  const draftSave = useRef(Promise.resolve());
   const [draft, setDraft] = useState(saved?.text ?? "");
   const { controller: dictation, snapshot: speech } = useDictation();
   const onCall = useVoiceOn();
@@ -250,6 +259,7 @@ export function Composer({
   const [requestingStop, setRequestingStop] = useState(false);
   const stopping = requestingStop || runStopping;
   const [error, setError] = useState<string | null>(saved?.refusal ?? null);
+  const [staleDraft, setStaleDraft] = useState(false);
   const [draftUnsaved, setDraftUnsaved] = useState(false);
   const sending = nothingSending;
   const [dropping, setDropping] = useState(false);
@@ -317,10 +327,12 @@ export function Composer({
         // draft, and any written there since stay.
         if (!mounted.current) {
           if (draftKey)
-            composerDrafts.handBack(draftKey, {
-              edit: (current) =>
-                current === before || !current.trim() ? text : `${text}\n${current}`,
-            });
+            void composerDrafts
+              .handBack(draftKey, {
+                edit: (current) =>
+                  current === before || !current.trim() ? text : `${text}\n${current}`,
+              })
+              .catch(() => {});
           return;
         }
         if (currentOwner.current !== owner) return;
@@ -430,17 +442,19 @@ export function Composer({
   const followingPlace = context?.following ?? true;
   useEffect(() => {
     if (!draftKey) return;
-    const kept = composerDrafts.update(
-      draftKey,
-      keepDraft
-        ? {
-            quote,
-            text: draft,
-            ...(followingPlace || !context ? {} : { places: context.parts() }),
-          }
-        : { places: [], quote: null, text: "" },
-    );
-    setDraftUnsaved(!kept);
+    const change = keepDraft
+      ? { quote, text: draft, ...(followingPlace || !context ? {} : { places: context.parts() }) }
+      : { places: [], quote: null, text: "" };
+    draftSave.current = draftSave.current.then(async () => {
+      const kept = await composerDrafts
+        .transaction((store) => {
+          if (!store.update(draftKey, change, editorDraft.current?.editId)) return false;
+          editorDraft.current = store.read(draftKey);
+          return true;
+        })
+        .catch(() => false);
+      if (mounted.current) setDraftUnsaved((unsaved) => (unsaved === !kept ? unsaved : !kept));
+    });
   }, [chips, context, draft, draftKey, followingPlace, keepDraft, quote]);
 
   const submit = async (
@@ -455,7 +469,7 @@ export function Composer({
     const parts = carried.flatMap((item) => (item.part ? [item.part] : []));
     if (parts.length !== carried.length) return;
     const carriedQuote = quote;
-    const saved = draftKey?.includes(":task:") ? composerDrafts.read(draftKey) : undefined;
+    const isTaskDraft = draftKey?.includes(":task:") === true;
     const places = context?.parts() ?? [];
     const submission: PendingSubmission = {
       ...(choice || compactionOffer?.visible ? { compaction: choice ?? "compactFirst" } : {}),
@@ -469,26 +483,37 @@ export function Composer({
       submittingRef.current = true;
       setSubmitting(true);
       setError(null);
+      setStaleDraft(false);
       try {
+        await draftSave.current;
+        const source = draftKey
+          ? await composerDrafts.transaction((store) => store.durableDraft(draftKey))
+          : null;
+        if (
+          draftKey &&
+          (!source?.revision ||
+            (editorDraft.current?.editId && editorDraft.current.editId !== source.editId) ||
+            source.text.trim() !== body ||
+            source.quote?.messageId !== carriedQuote?.messageId ||
+            (source.places?.length
+              ? JSON.stringify(source.places) !== JSON.stringify(places)
+              : explicitPlaces) ||
+            JSON.stringify(source.files.map((file) => file.part?.artifactId)) !==
+              JSON.stringify(parts.map((part) => part.artifactId)))
+        )
+          throw changedTaskDraft();
         const result = await onSend(submission.body, {
           attachments: submission.attachments,
           places: submission.places ?? [],
           ...(submission.compaction ? { compaction: submission.compaction } : {}),
           idempotencyKey: submission.idempotencyKey,
+          ...(source?.revision ? { draftRevision: source.revision } : {}),
           ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
         });
-        if (draftKey && result) {
-          const submitted =
-            latestDraft.current === text &&
-            saved?.text.trim() === body &&
-            saved.quote?.messageId === carriedQuote?.messageId &&
-            (saved.places?.length
-              ? JSON.stringify(saved.places) === JSON.stringify(places)
-              : !explicitPlaces) &&
-            JSON.stringify(saved.files.map((file) => file.part)) === JSON.stringify(parts)
-              ? saved
-              : undefined;
-          const finished = composerDrafts.finishTaskStart(
+        if (result && "replyCleared" in result && !result.replyCleared) return;
+        if (draftKey && result && "draftGeneration" in result) {
+          const submitted = latestDraft.current === text ? (source ?? undefined) : undefined;
+          const finished = await composerDrafts.finishTaskStart(
             draftKey,
             result.draftGeneration,
             submitted,
@@ -504,29 +529,31 @@ export function Composer({
           }
           if (finished !== "cleared") return;
         }
+        editorDraft.current = draftKey ? composerDrafts.read(draftKey) : null;
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));
         if (JSON.stringify(context?.parts() ?? []) === JSON.stringify(places)) context?.reset();
         if (draftKey && !result && latestDraft.current.trim() === text.trim())
-          composerDrafts.update(draftKey, { text: "", places: [], quote: null });
+          await composerDrafts.update(draftKey, { text: "", places: [], quote: null });
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
         const issue = clientIssue(error, { operation: "action", label: "save this message" });
         const reason =
           failureWords(error) ??
           (issue && !isNotDone(error) ? presentClientIssue(issue).title : null);
-        if (mounted.current) setError(reason);
-        else if (draftKey && saved === undefined)
-          composerDrafts.handBack(draftKey, {
-            edit: (current) => {
-              if (!body || current.trim() === body) return current;
-              return current.trim() ? `${body}\n${current}` : body;
-            },
-            places,
-            quote: carriedQuote,
-            ...(reason ? { reason } : {}),
-          });
+        if (mounted.current) {
+          setError(reason);
+          setStaleDraft(
+            issue?.code === "draft-changed" ||
+              (error instanceof ActionNotDone &&
+                "issue" in error.outcome &&
+                error.outcome.issue?.code === "draft-changed"),
+          );
+        } else if (draftKey && !isTaskDraft && reason)
+          void composerDrafts
+            .handBack(draftKey, { edit: (current) => current, reason })
+            .catch(() => {});
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
@@ -967,6 +994,11 @@ export function Composer({
         <p aria-live="assertive" className="composer__error" role="alert">
           <Icon name="alert-circle" />
           <span>{error}</span>
+          {staleDraft && onReloadDraft ? (
+            <button className="btn btn--small btn--ghost" type="button" onClick={onReloadDraft}>
+              Reload draft
+            </button>
+          ) : null}
         </p>
       ) : null}
       {context && placeContext && chips.length > 0 ? (

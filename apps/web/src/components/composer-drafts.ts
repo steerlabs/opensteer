@@ -1,3 +1,9 @@
+import {
+  assertDraftReplyLogin,
+  changedTaskDraft,
+  messageStorageFingerprint,
+} from "@opensteer/client/host";
+import { mutateBrowserMessageRecord, storageUnavailable } from "../host/message-outbox-records.js";
 import { SavedTaskStartSchema, retireTaskStarts } from "./home/task-start.js";
 import { useCallback, useSyncExternalStore } from "react";
 import { z } from "zod";
@@ -42,6 +48,9 @@ const FileSchema = z.object({
  */
 const DraftSchema = z.object({
   files: z.array(FileSchema).catch([]),
+  editId: z.string().optional(),
+  revision: z.string().optional(),
+  replyScope: z.string().optional(),
   /** Absent while an untouched draft still follows the place in front. */
   places: z.array(PlaceContentPartSchema).optional().catch(undefined),
   quote: QuoteSchema.nullable().catch(null),
@@ -140,7 +149,7 @@ function holdsTaskStart(draft: ComposerDraft): boolean {
 
 /** Whether two drafts say the same thing; being looked at is not an edit. */
 function sameDraft(first: ComposerDraft, second: ComposerDraft): boolean {
-  const content = ({ updatedAt: _updatedAt, ...draft }: ComposerDraft) =>
+  const content = ({ updatedAt: _updatedAt, revision: _revision, ...draft }: ComposerDraft) =>
     JSON.stringify(Object.entries(draft).sort(([a], [b]) => a.localeCompare(b)));
   return content(first) === content(second);
 }
@@ -192,7 +201,9 @@ export function createComposerDraftStore(
     if (raw === null) return null;
     try {
       const result = DraftSchema.safeParse(JSON.parse(raw));
-      return result.success ? result.data : null;
+      if (!result.success) return null;
+      const revision = result.data.revision ?? messageStorageFingerprint(raw);
+      return { ...result.data, editId: result.data.editId ?? revision, revision };
     } catch {
       return null;
     }
@@ -235,11 +246,36 @@ export function createComposerDraftStore(
   };
 
   /** False when storage refused it: the draft then lasts only as long as this window. */
-  const write = (key: string, draft: ComposerDraft, keepUnsaved = true): boolean => {
+  const write = (
+    key: string,
+    draft: ComposerDraft,
+    keepUnsaved = true,
+    preserveRevision = false,
+  ): boolean => {
+    const previous = read(key);
+    const payload = (value: ComposerDraft) =>
+      JSON.stringify([
+        value.text,
+        value.quote?.messageId,
+        value.places ?? [],
+        value.files,
+        value.recoveredSendKeys ?? [],
+      ]);
+    const revision = preserveRevision
+      ? draft.revision
+      : previous && previous.editId === draft.editId && payload(previous) === payload(draft)
+        ? previous.revision
+        : undefined;
+    const revised = {
+      ...draft,
+      editId: draft.editId ?? globalThis.crypto.randomUUID(),
+      revision: revision ?? globalThis.crypto.randomUUID(),
+      replyScope: revision ? draft.replyScope : undefined,
+    };
     const value = JSON.stringify(
       key.includes(":task:") && !draft.startGeneration && holdsContent(draft)
-        ? { ...draft, startGeneration: globalThis.crypto.randomUUID(), startPending: false }
-        : draft,
+        ? { ...revised, startGeneration: globalThis.crypto.randomUUID(), startPending: false }
+        : revised,
     );
     try {
       const store = storage();
@@ -291,6 +327,7 @@ export function createComposerDraftStore(
   };
 
   const matches = (held: ComposerDraft, expected: ComposerDraft): boolean => {
+    if (expected.revision && expected.revision !== held.revision) return false;
     if (expected.startGeneration && expected.startGeneration !== held.startGeneration) return false;
     const revision = ({
       startGeneration: _generation,
@@ -301,8 +338,25 @@ export function createComposerDraftStore(
     return sameDraft(revision(held), revision(expected));
   };
 
+  const durableDraft = (key: string): ComposerDraft | null => {
+    const store = storage();
+    if (!store) throw storageUnavailable();
+    return parse(store.getItem(key));
+  };
+
   return {
     clear,
+    durableDraft,
+    bindReply(key: string, scope: string, revision: string): void {
+      const draft = durableDraft(key);
+      if (draft?.revision !== revision) throw changedTaskDraft();
+      assertDraftReplyLogin(draft.replyScope, scope);
+      if (
+        draft.replyScope === undefined &&
+        !write(key, { ...draft, replyScope: scope }, false, true)
+      )
+        throw storageUnavailable();
+    },
     durableTaskStartGeneration(key: string): string | undefined {
       const store = storage();
       if (!store) throw new Error("No draft storage.");
@@ -340,8 +394,10 @@ export function createComposerDraftStore(
       };
     },
 
-    taskStartGeneration(key: string, scope?: string): string | null {
-      const current = read(key) ?? blank();
+    taskStartGeneration(key: string, scope?: string, expectedRevision?: string): string | null {
+      const source = read(key);
+      if (expectedRevision !== undefined && source?.revision !== expectedRevision) return null;
+      const current = source ?? blank();
       if (current.startScope !== undefined && current.startScope !== scope) return null;
       if (
         current.startGeneration &&
@@ -354,7 +410,12 @@ export function createComposerDraftStore(
         current.startGeneration ??
         (current.updatedAt ? `legacy:${current.updatedAt}` : globalThis.crypto.randomUUID());
       if (
-        !write(key, { ...current, startGeneration, startPending: true, startScope: scope }, false)
+        !write(
+          key,
+          { ...current, startGeneration, startPending: true, startScope: scope },
+          false,
+          true,
+        )
       )
         return null;
       publish();
@@ -379,6 +440,7 @@ export function createComposerDraftStore(
           {
             ...draft,
             start: undefined,
+            editId: undefined,
             startGeneration: undefined,
             startPending: undefined,
             startScope: undefined,
@@ -399,7 +461,7 @@ export function createComposerDraftStore(
      * it holds, or else the whole draft, exactly as it was.
      */
     restore(key: string, draft: ComposerDraft, returned?: ReturnedToDraft): boolean {
-      const saved = write(key, draft, false);
+      const saved = write(key, draft, false, returned === undefined);
       if (saved)
         receivers.get(key)?.(
           returned ?? {
@@ -451,15 +513,20 @@ export function createComposerDraftStore(
      * An open draft is being read, so a refusal waiting on it is answered.
      * False when storage refused it.
      */
-    update(key: string, change: Partial<Omit<ComposerDraft, "refusal" | "updatedAt">>): boolean {
+    update(
+      key: string,
+      change: Partial<Omit<ComposerDraft, "refusal" | "updatedAt">>,
+      expectedEditId?: string,
+    ): boolean {
       const current = read(key);
+      if (expectedEditId !== undefined && current?.editId !== expectedEditId) return false;
       const open = opened.has(key);
       const { refusal, ...kept } = current ?? blank();
-      const draft: ComposerDraft = {
+      const draft = DraftSchema.parse({
         ...kept,
         ...(refusal !== undefined && !open ? { refusal } : {}),
         ...change,
-      };
+      });
       if (!holdsContent(draft)) {
         if (current === null) return true;
         const preserveStart = key.includes(":task:") && holdsTaskStart(draft);
@@ -485,13 +552,19 @@ export function createComposerDraftStore(
           saved = remove(key);
           if (!saved) unsaved.set(key, JSON.stringify(draft));
         }
-        if (!open || refusal !== undefined) publish();
+        if (!open || refusal !== undefined || (key.includes(":thread:") && holdsContent(current)))
+          publish();
         if (saved && !preserveStart && key.includes(":task:")) onRetire?.(key);
         return saved;
       }
       if (current !== null && sameDraft(draft, current) && !unsaved.has(key)) return true;
       const saved = write(key, { ...draft, updatedAt: now() });
-      if (!open || refusal !== undefined) publish();
+      if (
+        !open ||
+        refusal !== undefined ||
+        (key.includes(":thread:") && (!current || !holdsContent(current)))
+      )
+        publish();
       return saved;
     },
   };
@@ -501,11 +574,77 @@ function browserStorage(): DraftStorage | null {
   return typeof localStorage === "undefined" ? null : localStorage;
 }
 
-export const composerDrafts: ReturnType<typeof createComposerDraftStore> = createComposerDraftStore(
-  browserStorage,
-  Date.now,
-  (key) => void cleanTaskStartJournals(key).catch(() => {}),
+/** Draft writers hold the same IndexedDB write transaction as the outbox's revision check. */
+export function transactionalComposerDrafts(
+  drafts: ReturnType<typeof createComposerDraftStore>,
+  mutate: (
+    key: string,
+    edit: (raw: string | null) => string | null,
+  ) => Promise<unknown> = mutateBrowserMessageRecord,
+) {
+  const transaction = async <T>(edit: (store: typeof drafts) => T): Promise<T> => {
+    let result!: T;
+    await mutate("composer-draft-transaction", (raw) => {
+      result = edit(drafts);
+      return raw;
+    });
+    return result;
+  };
+  const write = (edit: (store: typeof drafts) => boolean) => transaction(edit).catch(() => false);
+  return {
+    ...drafts,
+    transaction,
+    update: (...args: Parameters<typeof drafts.update>) => write((store) => store.update(...args)),
+    clear: (...args: Parameters<typeof drafts.clear>) => write((store) => store.clear(...args)),
+    clearAll: () => transaction((store) => store.clearAll()),
+    restore: (...args: Parameters<typeof drafts.restore>) =>
+      write((store) => store.restore(...args)),
+    handBack: (...args: Parameters<typeof drafts.handBack>) =>
+      transaction((store) => store.handBack(...args)),
+    taskStartGeneration: (...args: Parameters<typeof drafts.taskStartGeneration>) =>
+      transaction((store) => store.taskStartGeneration(...args)),
+    finishTaskStart: (...args: Parameters<typeof drafts.finishTaskStart>) =>
+      transaction((store) => store.finishTaskStart(...args)),
+  };
+}
+
+export const composerDrafts = transactionalComposerDrafts(
+  createComposerDraftStore(
+    browserStorage,
+    Date.now,
+    (key) => void cleanTaskStartJournals(key).catch(() => {}),
+  ),
 );
+
+export async function reserveComposerTaskStart(
+  drafts: typeof composerDrafts,
+  key: string,
+  scope: string,
+  revision: string,
+  assertLogin: () => void,
+) {
+  const generation = await drafts.transaction((store) => {
+    assertLogin();
+    return store.taskStartGeneration(key, scope, revision);
+  });
+  if (!generation) throw changedTaskDraft("draft-superseded");
+  const assertCurrent = () => {
+    assertLogin();
+    const draft = drafts.durableDraft(key);
+    if (draft?.startGeneration !== generation || draft.revision !== revision)
+      throw changedTaskDraft("draft-superseded");
+  };
+  const beginCreation = async <T>(start: () => Promise<T>): Promise<T> => {
+    const launched = await drafts.transaction(() => {
+      assertCurrent();
+      const pending = start();
+      void pending.catch(() => {});
+      return { pending };
+    });
+    return launched.pending;
+  };
+  return { generation, assertCurrent, beginCreation };
+}
 
 export function cleanTaskStartJournals(onlyDraft?: string, discardedGeneration?: string) {
   return retireTaskStarts(

@@ -48,6 +48,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
           }
         : null;
     },
+    bindMutationsToSession: true,
     deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),

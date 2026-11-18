@@ -469,24 +469,33 @@ export function Sidebar({
       const draft = composerDrafts.read(key);
       if (!draft) return;
       const files = setAsideStagedFiles(key);
-      composerDrafts.clear(key, false);
-      const retired =
-        target.kind === "task"
-          ? cleanTaskStartJournals(key, draft.startGeneration).catch(() => undefined)
-          : Promise.resolve(undefined);
-      toast.success("Draft discarded", {
-        label: "Undo",
-        lapse: files.forget,
-        run: () => {
-          void retired.then((start) => {
-            if (composerDrafts.read(key)) return;
-            composerDrafts.restore(
-              key,
-              start ? { ...draft, start, startGeneration: undefined } : draft,
-            );
-            files.takeBack();
-          });
-        },
+      void composerDrafts.clear(key, false).then((cleared) => {
+        if (!cleared) {
+          files.takeBack();
+          return;
+        }
+        const retired =
+          target.kind === "task"
+            ? cleanTaskStartJournals(key, draft.startGeneration).catch(() => undefined)
+            : Promise.resolve(undefined);
+        toast.success("Draft discarded", {
+          label: "Undo",
+          lapse: files.forget,
+          run: () => {
+            void retired
+              .then(async (start) => {
+                await composerDrafts.transaction((store) => {
+                  if (store.read(key)) return;
+                  store.restore(
+                    key,
+                    start ? { ...draft, start, startGeneration: undefined } : draft,
+                  );
+                });
+                files.takeBack();
+              })
+              .catch(() => {});
+          },
+        });
       });
     },
     [deploymentId, toast, userId],

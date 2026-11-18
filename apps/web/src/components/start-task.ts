@@ -14,9 +14,10 @@ export function useStartTask(): (text: string) => void {
   return useCallback(
     (text: string) => {
       const key = composerDraftKeyFor(deploymentId, userId, { kind: "task", draftId: homeDraftId });
-      if (key) composerDrafts.update(key, { text });
-      if (nav) nav.openConversation("/");
-      else void navigate("/");
+      void (key ? composerDrafts.update(key, { text }) : Promise.resolve(true)).then(() => {
+        if (nav) nav.openConversation("/");
+        else void navigate("/");
+      });
     },
     [deploymentId, nav, navigate, userId],
   );

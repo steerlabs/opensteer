@@ -11,7 +11,9 @@
  * or the person can remove the queue entry and keep any draft already saved.
  * Migration copies before retiring the source. Unbound legacy rows wait for a person.
  * A failed write leaves the prior owner in place, and local settlement is retried.
- * Login changes stop new dispatches and hide old rows. Late results settle their own scope.
+ * Login changes stop new dispatches and hide old rows. Host admission checks the
+ * browser credential against the queued login. Late results settle their own scope.
+ * Reply handoffs bind the revision to its login and keep a receipt through draft cleanup.
  */
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { messageDraftParts } from "./pending-send.js";
@@ -48,7 +50,7 @@ export interface StoredMessage {
 }
 export interface MessageOutboxWrite {
   readonly migrated?: boolean;
-  readonly handoff?: boolean;
+  readonly handoff?: boolean | "resume";
   readonly append?: boolean;
   readonly sourceExists?: () => boolean;
   readonly assertCurrent?: () => void;
@@ -116,8 +118,10 @@ export interface MessageOutbox {
     command: PendingSendCommand,
     options?: {
       readonly localAttachmentUris?: readonly (string | null)[];
-      readonly handoff?: boolean;
+      readonly handoff?: boolean | "resume";
       readonly assertCurrent?: () => void;
+      /** Native draft ownership is committed in enqueue order, before the outbox write. */
+      readonly bindDraft?: () => Promise<void>;
     },
   ): Promise<string>;
   observe(messages: readonly { readonly id: string; readonly clientSendKey?: string }[]): void;
@@ -156,7 +160,10 @@ export interface MessageOutboxOptions {
   readonly session: ClientSession;
   readonly storage: MessageOutboxStorage;
   readonly drafts: MessageDraftRecovery;
-  readonly dispatch: (command: PendingSendCommand) => Promise<{ readonly messageId: string }>;
+  readonly dispatch: (
+    command: PendingSendCommand,
+    login: ClientScope,
+  ) => Promise<{ readonly messageId: string }>;
 }
 /** A refusal, or a message never tried: nothing of it can be on the computer. */
 function takeable(entry: StoredMessage): boolean {
@@ -454,9 +461,13 @@ class SessionMessageOutbox implements MessageOutbox {
           : {}),
       };
       try {
+        if (options?.bindDraft) {
+          if (!this.#current(scope, generation)) throw storageFailure();
+          await options.bindDraft();
+        }
         const saved = await this.#options.storage.put(scope, entry, {
           append: true,
-          ...(options?.handoff ? { handoff: true } : {}),
+          ...(options?.handoff ? { handoff: options.handoff } : {}),
           assertCurrent: () => {
             if (!this.#current(scope, generation)) throw storageFailure();
             options?.assertCurrent?.();
@@ -471,7 +482,12 @@ class SessionMessageOutbox implements MessageOutbox {
         }
       } catch (error) {
         const { reason } = classifyClientFailure(error);
-        if (this.#current(scope, generation) && reason !== "draft-changed") {
+        if (
+          this.#current(scope, generation) &&
+          reason !== "draft-changed" &&
+          reason !== "draft-superseded" &&
+          reason !== "draft-previous-login"
+        ) {
           if (reason === "queue-full") this.#publish({ issue: { code: "queue-full" } });
           else this.#storageFailed();
         }
@@ -741,10 +757,11 @@ class SessionMessageOutbox implements MessageOutbox {
   ): Promise<void> {
     let acknowledgement: { readonly messageId: string };
     try {
-      acknowledgement = await this.#options.dispatch(entry.command);
+      acknowledgement = await this.#options.dispatch(entry.command, scope);
     } catch (error) {
       const failure = classifyClientFailure(error);
-      const rejected = failure.kind === "rejection" && !failure.retryable;
+      const notStarted = failure.reason === "session-changed" || failure.reason === "host-too-old";
+      const rejected = !notStarted && failure.kind === "rejection" && !failure.retryable;
       if (!rejected && this.#current(scope, generation) && !this.#confirmed.has(entry.localId))
         this.#pause(entry.localId);
       const rejection: ClientIssue | undefined = rejected
@@ -754,7 +771,7 @@ class SessionMessageOutbox implements MessageOutbox {
         scope,
         generation,
         entry,
-        () => settle(rejection ?? "uncertain"),
+        () => settle(notStarted ? "not-started" : (rejection ?? "uncertain")),
         false,
         rejection,
       );
@@ -924,8 +941,8 @@ export function initializeMessageOutbox(
       const origin = client.messageOrigin?.();
       return command.origin || !origin ? command : { ...command, origin };
     },
-    dispatch: async (command) => {
-      const result = await client.dispatch(command, { preserveOrigin: true });
+    dispatch: async (command, expectedLogin) => {
+      const result = await client.dispatch(command, { preserveOrigin: true, expectedLogin });
       if (result.type !== "thread.sendMessage")
         throw new ClientOperationError("Message acknowledgement was invalid.", "blocked", {
           kind: "protocol",

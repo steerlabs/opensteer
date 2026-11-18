@@ -6,7 +6,7 @@ import {
 } from "@opensteer/client/host";
 import { presentMessageActionFailure, presentMessageTakeBack } from "@opensteer/client/feedback";
 import { useClientConnection, useOutboxTranscript } from "@opensteer/client/react";
-import { ActionLine } from "../ui/action-line.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine } from "../ui/client-feedback.js";
 import { useConnectionReady, useShowsLive } from "../ui/connection-live.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
@@ -559,6 +559,7 @@ function ThreadPaneForUser(
   const heldMessages = useRef(pendingKeys);
   heldMessages.current = pendingKeys;
   // What an action on one of them came to, beside that message, until the next one.
+  const [deliveryNotice, setDeliveryNotice] = useState<ActionLineValue | null>(null);
   const [deliveryNotes, setDeliveryNotes] = useState<ReadonlyMap<string, string>>(new Map());
   const noteDelivery = useCallback((key: string, note: string | null) => {
     setDeliveryNotes((current) => {
@@ -585,13 +586,28 @@ function ThreadPaneForUser(
           void outbox
             .restoreDraft(key)
             .then((outcome) => noteDelivery(key, presentMessageTakeBack(outcome)), failed);
-        else if (action === "remove") void outbox.removeLocalCopy(key).catch(failed);
-        else void outbox.discard(key).catch(failed);
+        else if (action === "remove") {
+          const uncertain =
+            heldMessages.current.get(key)?.entry.localDelivery?.issue?.code === "unconfirmed";
+          const name = hostClient.connection.getSnapshot().name;
+          void outbox.removeLocalCopy(key).then(() => {
+            if (uncertain)
+              setDeliveryNotice(
+                issueLine(
+                  {
+                    code: "message-removed-locally",
+                    ...(name ? { name } : {}),
+                  },
+                  `removed:${key}`,
+                ),
+              );
+          }, failed);
+        } else void outbox.discard(key).catch(failed);
       },
       note: (key: string) => deliveryNotes.get(key) ?? null,
       statusShown: (key: string) => heldMessages.current.get(key)?.shown ?? true,
     }),
-    [deliveryNotes, noteDelivery, outbox],
+    [deliveryNotes, hostClient, noteDelivery, outbox],
   );
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // What this client holds of the account is current only while it is live.
@@ -1457,6 +1473,9 @@ function ThreadPaneForUser(
           reachable={live}
           threadId={threadId}
         />
+      )}
+      {deliveryNotice === null ? null : (
+        <ActionLine line={deliveryNotice} onDismiss={() => setDeliveryNotice(null)} />
       )}
       {failure === null || !connectionReady ? null : (
         <ActionLine

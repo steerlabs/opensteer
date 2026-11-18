@@ -7,6 +7,7 @@ import { clientScopeKey, type ClientScope } from "../connections/connection-cont
 import {
   compareOutboxOrder,
   sameStoredMessage,
+  type MessageOutbox,
   type MessageOutboxStorage,
   type MessageOutboxWrite,
   type StoredMessage,
@@ -64,16 +65,57 @@ export interface MessageRecordStorage {
   mutate?(key: string, change: (raw: string | null) => string | null): Promise<void>;
   subscribe?(listener: () => void): () => void;
 }
-export function changedTaskDraft(): ClientOperationError {
-  return new ClientOperationError("The draft changed while the task was starting.", "blocked", {
+export function changedTaskDraft(
+  reason: "draft-changed" | "draft-superseded" = "draft-changed",
+): ClientOperationError {
+  return new ClientOperationError("The saved draft changed.", "blocked", {
     kind: "local",
-    reason: "draft-changed",
+    reason,
     retryable: false,
   });
 }
 
+export function assertDraftReplyLogin(owner: string | undefined, login: string): void {
+  if (owner !== undefined && owner !== login)
+    throw new ClientOperationError("This saved reply belongs to another sign-in.", "blocked", {
+      kind: "local",
+      reason: "draft-previous-login",
+      retryable: false,
+    });
+}
+
 export function messageStorageFingerprint(value: string): string {
   return bytesToHex(sha256(new TextEncoder().encode(value)));
+}
+
+export function draftReplySendKey(scope: ClientScope, threadId: string, revision: string): string {
+  const key = messageStorageFingerprint(
+    JSON.stringify([clientScopeKey(scope), threadId, revision]),
+  );
+  return `message:draft:${key}`;
+}
+
+/** A saved revision is the send intent. Its receipt survives until the editor consumes it. */
+export function enqueueDraftReply(
+  outbox: MessageOutbox,
+  scope: ClientScope,
+  command: StoredMessage["command"],
+  draft: {
+    readonly revision: string;
+    readonly assertCurrent: () => void;
+    readonly bindDraft?: () => Promise<void>;
+    readonly localAttachmentUris?: readonly (string | null)[];
+  },
+): Promise<string> {
+  return outbox.enqueue(
+    { ...command, idempotencyKey: draftReplySendKey(scope, command.threadId, draft.revision) },
+    {
+      handoff: "resume",
+      assertCurrent: draft.assertCurrent,
+      ...(draft.bindDraft ? { bindDraft: draft.bindDraft } : {}),
+      ...(draft.localAttachmentUris ? { localAttachmentUris: draft.localAttachmentUris } : {}),
+    },
+  );
 }
 
 export function createMessageOutboxStorage(records: MessageRecordStorage): MessageOutboxStorage {
@@ -190,7 +232,15 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       options?.assertCurrent?.();
       if (options?.sourceExists?.() === false) return false;
       if (options?.migrated && record.migrated?.includes(entry.localId)) return false;
-      if (options?.handoff && checkHandoff(record, entry.localId, entry.command)) return false;
+      if (
+        options?.handoff &&
+        checkHandoff(
+          record,
+          entry.localId,
+          options.handoff === "resume" ? undefined : entry.command,
+        )
+      )
+        return false;
       if (record.takenBack?.includes(messageStorageFingerprint(entry.localId))) {
         if (options?.append) throw new Error("This message was removed.");
         return false;
@@ -238,7 +288,7 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       if (options?.migrated) (record.migrated ??= []).push(entry.localId);
       if (options?.handoff)
         (record.handoffs ??= []).push([entry.localId, payloadHash(entry.command)]);
-      return saved !== existing || options?.migrated === true || options?.handoff === true;
+      return saved !== existing || options?.migrated === true || Boolean(options?.handoff);
     });
     return saved;
   };

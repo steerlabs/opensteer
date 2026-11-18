@@ -1,3 +1,4 @@
+import { composerDrafts } from "../composer-drafts.js";
 // @vitest-environment happy-dom
 import { act } from "react";
 
@@ -238,15 +239,19 @@ describe("what a person has written and not sent", () => {
     await settle();
     const search = () => place().search;
     await write(field(), "With a file");
-    const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"))!;
-    const saved = JSON.parse(localStorage.getItem(key)!) as Record<string, unknown>;
-    localStorage.setItem(
-      key,
-      JSON.stringify({
-        ...saved,
-        files: [{ mediaType: "text/plain", name: "lost.txt", part: null, sizeBytes: 4 }],
-      }),
+    const key = await vi.waitFor(
+      () => {
+        const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"));
+        expect(key && composerDrafts.read(key)?.text).toBe("With a file");
+        return key!;
+      },
+      { timeout: 1_000 },
     );
+    await act(async () => {
+      await composerDrafts.update(key, {
+        files: [{ mediaType: "text/plain", name: "lost.txt", part: null, sizeBytes: 4 }],
+      });
+    });
     await remount(`/${search()}`);
     await settle();
 

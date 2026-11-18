@@ -3,6 +3,7 @@ import { browserMessageRecords } from "./message-outbox-records.js";
 import { hostApi } from "@opensteer/protocol";
 import {
   createMessageOutboxStorage,
+  draftReplySendKey,
   initializeMessageOutbox,
   messageDraftParts,
   type HostClient,
@@ -42,7 +43,12 @@ export function initializeBrowserMessageOutbox(
           if (command.idempotencyKey === id) globalThis.localStorage.removeItem(key);
       },
     },
-    drafts: { restore: async (scope, entry) => restoreComposerDraft(composerDrafts, scope, entry) },
+    drafts: {
+      restore: (scope, entry, isCurrent) =>
+        composerDrafts.transaction((drafts) =>
+          isCurrent() ? restoreComposerDraft(drafts, scope, entry) : "occupied",
+        ),
+    },
   });
 }
 
@@ -85,6 +91,9 @@ export function restoreComposerDraft(
   );
   const held = drafts.read(key);
   if (held?.recoveredSendKeys?.includes(entry.localId)) return "restored";
+  const sameReply =
+    held?.revision &&
+    draftReplySendKey(scope, entry.command.threadId, held.revision) === entry.localId;
   if (
     held?.quote &&
     entry.command.quotedMessageId &&
@@ -92,9 +101,14 @@ export function restoreComposerDraft(
   )
     return "occupied";
   const parts = messageDraftParts(entry.command.content);
-  const above = (text: string) => (text.trim() ? `${parts.body}\n\n${text}` : parts.body);
+  const above = (text: string) =>
+    sameReply ? text : text.trim() ? `${parts.body}\n\n${text}` : parts.body;
+  const places = sameReply ? [] : parts.places;
   const files = parts.attachments
-    .filter((part) => !held?.files.some((file) => file.part?.artifactId === part.artifactId))
+    .filter(
+      (part) =>
+        !sameReply && !held?.files.some((file) => file.part?.artifactId === part.artifactId),
+    )
     .map((part) => ({
       part,
       mediaType: part.mediaType,
@@ -111,12 +125,13 @@ export function restoreComposerDraft(
     {
       text: above(held?.text ?? ""),
       files: [...files, ...(held?.files ?? [])],
-      places: [...parts.places, ...(held?.places ?? [])],
+      places: [...places, ...(held?.places ?? [])],
+      editId: held?.editId,
       quote,
       updatedAt: Date.now(),
       recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
     },
-    { edit: above, files, places: parts.places, quote: held?.quote ? null : quote },
+    { edit: above, files, places, quote: held?.quote ? null : quote },
   );
   if (!restored) throw new Error("The draft could not be saved.");
   return "restored";

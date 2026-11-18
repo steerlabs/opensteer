@@ -14,6 +14,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import {
@@ -43,6 +44,38 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it("preserves the renderer's expected session through the Host mutation route", async () => {
+    const deploymentRow = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = deploymentRow.authority.document.deploymentId;
+    const request = vi.fn(async (_input: HostNetworkRequest) => Response.json({ ok: true }));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([deploymentRow], id),
+      network: { openWebSocket: () => socket(), request },
+    });
+    try {
+      const rpc = createHttpHostApiClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: hostFetch(transport, id),
+        onAuthenticationRequired: () => {},
+      });
+      const expectedSessionId = "session-that-owned-the-draft";
+      await rpc["commands.dispatch"](
+        {
+          type: "thread.sendMessage",
+          threadId: createId("thread"),
+          content: [{ type: "text", text: "A persisted message" }],
+          idempotencyKey: "bound-message",
+        },
+        { expectedSessionId },
+      );
+      expect(request.mock.lastCall?.[0].request.headers.additional).toMatchObject({
+        [expectedMutationSessionHeader]: expectedSessionId,
+      });
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it("preserves a 401 through the renderer route when its body stalls", async () => {
     vi.useFakeTimers();
     const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");

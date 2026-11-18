@@ -163,8 +163,10 @@ export function SignOutDialog({
               void onConfirm()
                 .then(() => {
                   discardAllStagedFiles();
-                  composerDrafts.clearAll();
-                  void cleanTaskStartJournals().catch(() => {});
+                  void composerDrafts
+                    .clearAll()
+                    .then(() => cleanTaskStartJournals())
+                    .catch(() => {});
                   onClose();
                 })
                 .catch(() => {

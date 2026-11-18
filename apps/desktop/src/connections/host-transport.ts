@@ -1,3 +1,4 @@
+import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
@@ -371,6 +372,7 @@ export class DesktopHostTransport extends HostTransport {
       if (value !== null) headers[field] = value;
     }
     const teamUpload = request.headers.get("x-opensteer-team-upload");
+    const expectedSession = request.headers.get(expectedMutationSessionHeader);
     if (pathname === "/v1/rpc/bootstrap.get") this.#reportBootstrap(headers.bootstrapDiagnostics);
     const summary =
       request.method === "POST" &&
@@ -419,7 +421,12 @@ export class DesktopHostTransport extends HostTransport {
       admitted,
       headers: {
         ...headers,
-        ...(teamUpload ? { additional: { "x-opensteer-team-upload": teamUpload } } : {}),
+        additional: {
+          ...(teamUpload ? { "x-opensteer-team-upload": teamUpload } : {}),
+          ...(expectedSession && pathname === "/v1/rpc/commands.dispatch"
+            ? { [expectedMutationSessionHeader]: expectedSession }
+            : {}),
+        },
       },
       method: request.method,
       path,
