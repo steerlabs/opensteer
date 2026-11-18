@@ -25,7 +25,6 @@ function fixture(cache?: PersonalStreamCache) {
     capabilities: [],
     fetch: host.fetch,
     webSocketFactory: host.connect,
-    refreshIntervalMs: 0,
     ...(cache ? { streamCache: cache } : {}),
   });
   cleanups.push(() => {
@@ -97,7 +96,6 @@ it("restores a saved cut only for the same Deployment, viewer, served version an
     capabilities: [],
     fetch: f.host.fetch,
     webSocketFactory: f.host.connect,
-    refreshIntervalMs: 0,
     streamCache: cache,
   });
   cleanups.push(() => restored.dispose());
@@ -118,7 +116,6 @@ it("restores a saved cut only for the same Deployment, viewer, served version an
       capabilities: [],
       fetch: f.host.fetch,
       webSocketFactory: f.host.connect,
-      refreshIntervalMs: 0,
       streamCache: cache,
     });
     cleanups.push(() => client.dispose());

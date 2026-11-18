@@ -10,7 +10,7 @@ import {
   type PasswordsSetupOffer,
 } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { useHomeComputer } from "./devices/use-home-computer.js";
@@ -82,10 +82,15 @@ function OnThisMac({
           onClick={() => {
             setOpening(true);
             setError(null);
-            bridge
-              .passwordsOpen()
-              .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-              .finally(() => setOpening(false));
+            void runAction(null, {
+              label: "open Passwords",
+              done: "opened",
+              happened: "Passwords opened",
+              execute: () => bridge.passwordsOpen(),
+            }).then((outcome) => {
+              setError(outcomeWords(outcome));
+              setOpening(false);
+            });
           }}
           type="button"
         >

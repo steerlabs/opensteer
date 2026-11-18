@@ -1,13 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
-  createPluginAccount,
+  createPluginAccountAttempt,
   forgetPluginOAuthApp,
   linkPluginAccount,
   pluginAccountComplete,
   pluginAccountValues,
   pluginConsentLines,
-  pluginChangeAffects,
   pluginLinkableAccounts,
   pluginSignInRetryable,
   readPluginAccountReview,
@@ -21,7 +20,9 @@ import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { SettingsError } from "../settings/primitives.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { ActionLine } from "../action-line.js";
+import { useSettingsRead } from "../settings/use-settings-read.js";
+import { act, failureWords, useAction } from "../use-action.js";
 
 /**
  * Connecting an account to one plugin requirement: what the person agrees to
@@ -37,29 +38,16 @@ export function PluginConnectDialog({
   readonly target: PluginRequirementTarget;
 }) {
   const { hostClient } = useShell();
-  const [review, setReview] = useState<PluginAccountReviewView | null>(null);
-  const [loadError, setLoadError] = useState<unknown>(null);
   const [generation, setGeneration] = useState(0);
   const titleId = useId();
-  useEffect(() => {
-    let alive = true;
-    setLoadError(null);
-    // One round trip for the review; a sign-in is prepared only when it offers one.
-    // A change elsewhere re-reads it in place, keeping what the person entered.
-    const read = () =>
-      void readPluginAccountReview(hostClient, target).then(
-        (value) => alive && (setReview(value), setLoadError(null)),
-        (error: unknown) => alive && setLoadError(error),
-      );
-    read();
-    const unsubscribe = hostClient.subscribePluginsChanged((change) => {
-      if (pluginChangeAffects(change, [], target.pluginId)) read();
-    });
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, [hostClient, target, generation]);
+  const data = useSettingsRead(
+    () => readPluginAccountReview(hostClient, target),
+    `plugin-account:${target.pluginId}:${target.requirement}:${target.scope}:${generation}`,
+    false,
+    { pluginId: target.pluginId },
+    "what this plugin asks for",
+  );
+  const review = data.data;
   return (
     <Dialog
       labelledBy={titleId}
@@ -71,18 +59,19 @@ export function PluginConnectDialog({
       }
     >
       <div className="plugin-connect">
-        <SettingsError message={loadError ? actionErrorMessage(loadError) : null} />
+        <SettingsError message={data.error} />
         {review ? (
           <ConnectBody
-            onChanged={() => {
-              setReview(null);
-              setGeneration((value) => value + 1);
-            }}
+            onChanged={() => setGeneration((value) => value + 1)}
             onLinked={onLinked}
             review={review}
             target={target}
           />
-        ) : loadError ? null : (
+        ) : data.error ? (
+          <button className="btn" onClick={data.reload} type="button">
+            Try again
+          </button>
+        ) : (
           <LoadingRows label="Loading what this plugin asks for" rows={3} />
         )}
       </div>
@@ -103,7 +92,13 @@ function ConnectBody({
 }) {
   const { hostClient } = useShell();
   const [pending, setPending] = useState<string | null>(null);
-  const [error, setError] = useState<{ message: string; changed: boolean } | null>(null);
+  const attempt = useAction(hostClient, {
+    label: "connect the account",
+    done: "connected",
+    happened: "the account was connected",
+    execute: (operation: () => Promise<unknown>) => operation(),
+  });
+  const createAccount = useMemo(() => createPluginAccountAttempt(hostClient), [hostClient]);
   const [method, setMethod] = useState(review.methods[0]?.method ?? null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
@@ -112,19 +107,11 @@ function ConnectBody({
   const run = (key: string, action: () => Promise<unknown>) => {
     if (pending) return;
     setPending(key);
-    setError(null);
-    void action()
-      .then(onLinked)
-      .catch((reason: unknown) =>
-        setError({
-          message: actionErrorMessage(reason),
-          changed:
-            typeof reason === "object" &&
-            reason !== null &&
-            "reason" in reason &&
-            reason.reason === "plugin-consent-changed",
-        }),
-      )
+    void attempt
+      .run(action)
+      .then((outcome) => {
+        if (outcome.kind === "confirmed") onLinked();
+      })
       .finally(() => setPending(null));
   };
   return (
@@ -155,10 +142,11 @@ function ConnectBody({
           ))}
         </ul>
       </section>
-      {error ? (
+      {attempt.line ? (
         <div className="plugin-connect__error">
-          <SettingsError message={error.message} />
-          {error.changed ? (
+          <ActionLine line={attempt.line} wrap />
+          {attempt.outcome?.kind === "rejected" &&
+          attempt.outcome.issue?.reason === "plugin-consent-changed" ? (
             <button className="btn btn--small" onClick={onChanged} type="button">
               Review again
             </button>
@@ -230,7 +218,7 @@ function ConnectBody({
               event.preventDefault();
               if (!method || !pluginAccountComplete(fields, values)) return;
               run("create", () =>
-                createPluginAccount(hostClient, {
+                createAccount({
                   provider: review.requirement.provider,
                   method,
                   fields: pluginAccountValues(fields, values),
@@ -339,6 +327,7 @@ function SignInPart({
   const [clientSecret, setClientSecret] = useState("");
   const [remember, setRemember] = useState(true);
   const [forgetting, setForgetting] = useState<string | null>(null);
+  const [forgetError, setForgetError] = useState<string | null>(null);
   const linked = state.step === "ended" && state.end.kind === "completed";
   const reported = useRef(false);
   useEffect(() => {
@@ -399,6 +388,15 @@ function SignInPart({
             {state.cancelling ? "Cancelling…" : "Cancel sign-in"}
           </button>
         </div>
+        {state.issue ? <p role="status">{state.issue}</p> : null}
+        {state.statusFailed ? (
+          <>
+            <SettingsError message="Couldn't load authorization status." />
+            <button className="btn" onClick={() => flow.retryStatus()} type="button">
+              Try again
+            </button>
+          </>
+        ) : null}
       </section>
     );
   const busy = state.step === "starting";
@@ -428,8 +426,12 @@ function SignInPart({
                 onClick={() => {
                   const app = option.savedApp!;
                   setForgetting(app);
-                  void forgetPluginOAuthApp(hostClient, app)
+                  setForgetError(null);
+                  void act(hostClient, { label: "forget this app", done: "removed" }, () =>
+                    forgetPluginOAuthApp(hostClient, app),
+                  )
                     .then(() => flow.prepare())
+                    .catch((reason: unknown) => setForgetError(failureWords(reason)))
                     .finally(() => setForgetting(null));
                 }}
                 type="button"
@@ -448,6 +450,8 @@ function SignInPart({
       {choices.options[0]?.kind === "one-click" && choices.options[0].detail ? (
         <p className="settings-footnote">{choices.options[0].detail}</p>
       ) : null}
+      {state.step === "choosing" && state.issue ? <p role="status">{state.issue}</p> : null}
+      <SettingsError message={forgetError} />
       {choices.oneClickUnavailable ? (
         <p className="settings-footnote">{choices.oneClickUnavailable}</p>
       ) : null}

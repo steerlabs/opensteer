@@ -10,7 +10,7 @@ import {
   type TabTarget,
 } from "@opensteer/core";
 import type { TabOrganizeInput } from "@opensteer/protocol";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
 import { Popover } from "../popover.js";
@@ -57,7 +57,8 @@ export function TabMenu({
   const groups = layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
   const currentGroup = groups.find((group) => group.tabIds.includes(tabId));
   const otherGroups = groups.filter((group) => group.groupId !== currentGroup?.groupId);
-  const failed = (error: unknown) => toast.error(actionErrorMessage(error));
+  // The menu is gone by the answer, so only a toast is left to say it didn't happen.
+  const failed = toastFailure(toast);
   const ready = place.availability === "ready";
   const page = place.kind === "page" ? place.tab : null;
   const pageSession = viewer?.kind === "page" ? viewer.sessionId : null;
@@ -93,18 +94,25 @@ export function TabMenu({
           onSelect: () => {
             if (!url) return;
             const show = nav.beginPlaceOperation();
-            void hostClient
-              .openTab(
-                (page.profile
-                  ? { kind: "page", url, profileId: page.profile.profileId }
-                  : {
-                      kind: "page",
-                      url,
-                      guest: true,
-                      computerId: page.computer.computerId,
-                    }) as TabTarget,
-              )
-              .then((opened) => show({ kind: "tab", tabId: opened.tabId }), failed);
+            void act(
+              hostClient,
+              {
+                label: "duplicate this tab",
+                done: "duplicated",
+                happened: "this tab was duplicated",
+              },
+              () =>
+                hostClient.openTab(
+                  (page.profile
+                    ? { kind: "page", url, profileId: page.profile.profileId }
+                    : {
+                        kind: "page",
+                        url,
+                        guest: true,
+                        computerId: page.computer.computerId,
+                      }) as TabTarget,
+                ),
+            ).then((opened) => show({ kind: "tab", tabId: opened.tabId }), failed);
           },
         },
       ]
@@ -132,12 +140,19 @@ export function TabMenu({
           icon: "external-link",
           label: "Use on this Mac",
           onSelect: () =>
-            void useHere
-              .use(
-                { viewId: useHere.view.viewId, generation: useHere.view.generation },
-                useHere.app,
-              )
-              .catch(failed),
+            void act(
+              null,
+              {
+                label: "use this on this Mac",
+                done: "opened",
+                happened: "this opened on this Mac",
+              },
+              () =>
+                useHere.use(
+                  { viewId: useHere.view.viewId, generation: useHere.view.generation },
+                  useHere.app,
+                ),
+            ).catch(failed),
         },
       ]
     : [];
@@ -146,7 +161,11 @@ export function TabMenu({
     label: "Reopen closed tab",
     onSelect: () => {
       const show = nav.beginPlaceOperation();
-      void hostClient.reopenTab().then((tab) => show({ kind: "tab", tabId: tab.tabId }), failed);
+      void act(
+        hostClient,
+        { label: "reopen the tab", done: "reopened", happened: "the tab reopened" },
+        () => hostClient.reopenTab(),
+      ).then((tab) => show({ kind: "tab", tabId: tab.tabId }), failed);
     },
   };
   const closing: SurfaceMenuItem = {
@@ -171,7 +190,11 @@ export function TabMenu({
   const device = presentation ? deviceElsewhere(machines, presentation.computerId, hereId) : null;
   const organize = (group: TabOrganizeInput["group"]) => {
     onClose();
-    return hostClient.organizeTabs({ tabIds: [tabId], group });
+    return act(
+      hostClient,
+      { label: "move this tab", done: "moved", happened: "this tab moved" },
+      () => hostClient.organizeTabs({ tabIds: [tabId], group }),
+    );
   };
   return (
     <Popover

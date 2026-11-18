@@ -2,6 +2,7 @@ import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import {
   heldThread,
   reviewHostAction,
+  type ActionReview,
   sameTaskRow,
   taskAfter,
   taskDoneConfirmation,
@@ -13,6 +14,7 @@ import {
   type HostClient,
   type TaskRow,
 } from "@opensteer/client/host";
+import type { ActionOutcome } from "@opensteer/client/actions";
 import { memo, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
@@ -24,7 +26,6 @@ import {
   View,
   type AccessibilityActionEvent,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   controlFontScaleLimit,
@@ -38,6 +39,10 @@ import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { useReducedMotion } from "react-native-reanimated";
 import { Symbol } from "../ui/symbol.js";
+import { useShowsLive } from "../ui/connection-live.js";
+import { useSelectedHostClient } from "../ui/mobile-client-context.js";
+import { RowSubtitle, type ActionLineValue } from "../ui/action-line.js";
+import { screenAction, useScreenAction } from "../ui/client-feedback.js";
 
 /**
  * One of the reader's tasks, as the sidebar, search and Done
@@ -82,6 +87,9 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   // given the width the list gave the row.
   const [width, setWidth] = useState<number | null>(null);
   const inMenu = move !== null && width !== null;
+  // Done or Reopen from a menu or a swipe answers here, in the second line's place.
+  const line = useTaskDoneLine(row.threadId);
+  const subtitle = line === null ? (props.ask ?? null) : line;
 
   const content = (
     <Pressable
@@ -118,7 +126,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       ]}
     >
       <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
-      {props.ask == null ? (
+      {subtitle === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
@@ -137,14 +145,18 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           >
             {row.title}
           </AppText>
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={1}
-            role="caption"
-            style={styles.ask}
-          >
-            {props.ask}
-          </AppText>
+          {line === null ? (
+            <AppText
+              maxFontSizeMultiplier={controlFontScaleLimit}
+              numberOfLines={1}
+              role="caption"
+              style={styles.ask}
+            >
+              {props.ask}
+            </AppText>
+          ) : (
+            <RowSubtitle line={line} subtitle={null} />
+          )}
         </View>
       )}
       <TaskRowState drafted={props.drafted === true} row={row} shelf={props.shelf} time={time} />
@@ -189,11 +201,13 @@ export function TaskRowState(
   const { row, shelf, time } = props;
   const drafted = props.drafted === true;
   const reducedMotion = useReducedMotion();
+  // Once the pill says the connection is interrupted, "working" holds still.
+  const live = useShowsLive(useSelectedHostClient()?.connection ?? null);
   const tone =
     row.tone === "needs-you" ? (
       <NeedsYouTag />
     ) : row.tone === "working" ? (
-      reducedMotion ? (
+      reducedMotion || !live ? (
         <Symbol name="circle.dotted" size={16} tint={color.ember} />
       ) : (
         <ActivityIndicator color={color.ember} size="small" style={styles.spinner} />
@@ -284,10 +298,71 @@ function sameTaskRowProps(left: TaskRowProps, right: TaskRowProps): boolean {
   );
 }
 
+const taskDoneWords = {
+  done: {
+    label: "mark this task Done",
+    done: "marked Done",
+    happened: "this task was marked Done",
+  },
+  reopen: { label: "reopen this task", done: "reopened", happened: "this task was reopened" },
+} as const;
+
+function taskDoneSpec(done: boolean) {
+  return {
+    ...taskDoneWords[done ? "done" : "reopen"],
+    execute: (work: () => Promise<boolean>) => work(),
+  };
+}
+
+/** Ties Done or Reopen, run from any menu, to the task's row and its screen. */
+export function taskDoneKey(threadId: string, done: boolean): string {
+  return `task-done:${done ? "done" : "reopen"}:${threadId}`;
+}
+
+/** What the last Done or Reopen of this task came to, while it is worth saying. */
+export function useTaskDoneLine(threadId: string): ActionLineValue | null {
+  const hostClient = useSelectedHostClient();
+  const marking = useScreenAction(hostClient, taskDoneKey(threadId, true), taskDoneSpec(true));
+  const reopening = useScreenAction(hostClient, taskDoneKey(threadId, false), taskDoneSpec(false));
+  return marking.line ?? reopening.line;
+}
+
+/**
+ * Marks a task Done or reopens it under its review, as the task's one keyed
+ * action: confirmed true once it changed. Out of reach there is nothing to
+ * review, and the tap is answered as not sent.
+ */
+export function runTaskDone(
+  hostClient: HostClient,
+  threadId: string,
+  done: boolean,
+  review: ActionReview | null = reviewHostAction(hostClient, { kind: "task-done", threadId, done }),
+): Promise<ActionOutcome<boolean>> {
+  const action = screenAction(hostClient, taskDoneKey(threadId, done), taskDoneSpec(done));
+  if (review === null) return action.run(() => Promise.resolve(false));
+  // One change of a task at a time; the one already under way answers for both.
+  if (action.getSnapshot().running) {
+    review.cancel();
+    return Promise.resolve({ kind: "confirmed", value: false });
+  }
+  return action
+    .run(() => review.confirm())
+    .then((outcome) => {
+      if (outcome.kind === "not-sent") review.cancel();
+      return outcome;
+    });
+}
+
+/** A task's last Done or Reopen outcome, as a row's second line; nothing once it worked. */
+export function TaskDoneLine(props: { readonly threadId: string }): ReactNode {
+  const line = useTaskDoneLine(props.threadId);
+  return line === null ? null : <RowSubtitle line={line} subtitle={null} />;
+}
+
 /**
  * Sets a task aside in Done or brings it back, saying so to a screen reader,
- * whose row has just left from under it. The Host's answer moves the row; a
- * refusal is said where the reader is. Once it is Done, `advance` hears the
+ * whose row has just left from under it. The Host's answer moves the row; any
+ * other outcome is said in the row's second line and under the composer. Once it is Done, `advance` hears the
  * task that followed it in the list as it stood when confirmed.
  */
 export function setTaskDone(
@@ -297,19 +372,16 @@ export function setTaskDone(
   advance?: (next: string | null) => void,
 ): void {
   const review = reviewHostAction(hostClient, { kind: "task-done", threadId, done });
-  if (!review) return;
   const thread = heldThread(hostClient.getSnapshot(), threadId);
   const confirm = () => {
     const next = advance ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : null;
-    void review.confirm().then(
-      (changed) => {
-        if (!changed) return;
-        AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");
-        if (done) advance?.(next);
-      },
-      (error: unknown) => Alert.alert("Task not changed", operationDetail(error, "Try again.")),
-    );
+    void runTaskDone(hostClient, threadId, done, review).then((outcome) => {
+      if (outcome.kind !== "confirmed" || !outcome.value) return;
+      AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");
+      if (done) advance?.(next);
+    });
   };
+  if (review === null) return confirm();
   if (done && thread && taskUnderWay(thread)) {
     Alert.alert(
       "Stop and mark Done?",

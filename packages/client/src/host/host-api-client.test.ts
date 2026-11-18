@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
 import { HostCapacityError } from "../connections/host-transport-error.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
@@ -213,6 +214,26 @@ describe("bounded Host rpc requests", () => {
     });
   });
 
+  it("preserves a response size refusal as a protocol failure through RPC", async () => {
+    const client = createHttpHostApiClient({
+      baseUrl: new URL("https://opensteer.example"),
+      fetch: async () =>
+        new Response("{}", { headers: { "content-length": String(17 * 1024 * 1024) } }),
+      onAuthenticationRequired: vi.fn(),
+    });
+    const reply = await client["auth.config"]({});
+    try {
+      unwrapRpcResult(reply);
+    } catch (error) {
+      expect(classifyClientFailure(error)).toMatchObject({
+        kind: "protocol",
+        reason: "response-too-large",
+        retryable: false,
+      });
+    }
+    expect(reply.ok).toBe(false);
+  });
+
   it("preserves a Host operation refusal without treating it as network loss", async () => {
     const client = createHttpHostApiClient({
       baseUrl: new URL("https://opensteer.example"),
@@ -361,7 +382,7 @@ it("asks for sign-in as soon as a refusal's headers arrive, even if its body sta
     await vi.advanceTimersByTimeAsync(20_000);
     await expect(pending).resolves.toMatchObject({
       ok: false,
-      error: { reason: "transport-timed-out", retryable: true },
+      error: { code: "unauthorized", reason: "sign-in-required", retryable: false },
     });
   } finally {
     vi.useRealTimers();
@@ -452,4 +473,18 @@ it("bounds browser-open RPC headers independently of the generic response allowa
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("reports authentication refusal when the 401 body is plain text", async () => {
+  const onAuthenticationRequired = vi.fn();
+  const client = createHttpHostApiClient({
+    baseUrl: new URL("https://host.example"),
+    onAuthenticationRequired,
+    fetch: async () => new Response("Unauthorized", { status: 401 }),
+  });
+  await expect(client["auth.config"]({})).resolves.toMatchObject({
+    ok: false,
+    error: { code: "unauthorized", reason: "sign-in-required", retryable: false },
+  });
+  expect(onAuthenticationRequired).toHaveBeenCalledTimes(1);
 });

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { ClientSession } from "../connections/connection-controller.js";
 import type { KeysetPage } from "../team/paged-list.js";
 import { usePagedList } from "./use-paged-list.js";
 
@@ -12,9 +13,10 @@ export function usePluginSection<Item>(
   count: number,
   read: (cursor: string | null) => Promise<KeysetPage<Item>>,
   key: string,
+  session: ClientSession,
 ) {
   const [all, setAll] = useState(false);
-  const list = usePagedList(all ? read : null, key);
+  const list = usePagedList(all ? read : null, key, session);
   const loaded = all && list.first !== null;
   return {
     /** The detail's rows until the first page arrives, so expanding never blanks the section. */

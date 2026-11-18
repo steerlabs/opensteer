@@ -2,7 +2,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import type { MachineSummary } from "@opensteer/protocol";
 import { withDeviceSwitch } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import {
   capabilityLabel,
   deviceSwitchDetail,
@@ -14,7 +14,7 @@ const accessConflictNotice = "This changed on another device. The switches show 
 
 /** A stale revision means another device changed it first: nothing is written; the page reloads. */
 export function useAccessSwitch(
-  hostClient: Pick<HostClient, "refresh" | "updateMachineAccess">,
+  hostClient: Pick<HostClient, "connection" | "refresh" | "updateMachineAccess">,
   machine: MachineSummary,
 ) {
   const [pending, setPending] = useState<DeviceCapability | null>(null);
@@ -31,11 +31,13 @@ export function useAccessSwitch(
       setPending(capability);
       setNotice(null);
       try {
-        const result = await hostClient.updateMachineAccess({
-          expectedRevision: access.revision,
-          policy: withDeviceSwitch(access.policy, capability, on),
-          deviceId: machine.id,
-        });
+        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
+          hostClient.updateMachineAccess({
+            expectedRevision: access.revision,
+            policy: withDeviceSwitch(access.policy, capability, on),
+            deviceId: machine.id,
+          }),
+        );
         if (result.outcome === "conflict") {
           await hostClient.refresh();
           setNotice({ conflict: true, text: accessConflictNotice });
@@ -43,7 +45,7 @@ export function useAccessSwitch(
         }
         return true;
       } catch (reason) {
-        setNotice({ conflict: false, text: actionErrorMessage(reason) });
+        setNotice({ conflict: false, text: failureWords(reason) ?? "" });
         return false;
       } finally {
         busy.current = false;

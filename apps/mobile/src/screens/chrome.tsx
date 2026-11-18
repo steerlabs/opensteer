@@ -1,6 +1,5 @@
 import {
   browserSiteLabel,
-  canRespondToRequests,
   formatRelativeTime,
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -14,15 +13,16 @@ import type {
   BrowserSourcesState,
 } from "@opensteer/protocol/browser-sources";
 import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Alert, AppState, ScrollView, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { notDone, readLine, useScreenAction, useScreenRead } from "../ui/client-feedback.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import {
   AppText,
   Field,
-  Notice,
   RowGroup,
   SecondaryButton,
   SectionLabel,
@@ -46,7 +46,7 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
   const client = useMobileClient();
   const { rows, selection } = useMobileState();
   const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const hostClient =
     selection.deploymentId === deploymentId && row?.signIn === null ? selection.hostClient : null;
@@ -60,7 +60,7 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to manage its Chrome.`}
           </AppText>
-          {failure === null ? null : <Notice detail={failure} title="That did not open" />}
+          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -70,10 +70,8 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
                 setFailure(null);
                 void client
                   .openDeployment(deploymentId)
-                  .catch((error: unknown) =>
-                    setFailure(
-                      operationDetail(error, "That deployment still could not be opened."),
-                    ),
+                  .catch(() =>
+                    setFailure({ key: "open", text: `Couldn't open ${row.name}.`, tone: "muted" }),
                   )
                   .finally(() => setOpening(false));
               }}
@@ -95,11 +93,7 @@ function SignedInChrome(props: {
   if (userId === null) {
     return (
       <Screen>
-        <View style={styles.away}>
-          <AppText role="secondary" tone="muted">
-            Sign in to this deployment to manage its Chrome.
-          </AppText>
-        </View>
+        <PlaceholderRows />
       </Screen>
     );
   }
@@ -114,20 +108,23 @@ function ChromeSettings(props: {
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
-  const online = useHostSelector(hostClient, canRespondToRequests);
-  const [state, setState] = useState<BrowserSourcesState | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [foreground, setForeground] = useState(AppState.currentState === "active");
-
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      setState(unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({})));
-      setLoadError(null);
-    } catch (error) {
-      setLoadError(operationDetail(error, "Chrome could not be loaded."));
-    }
-  }, [hostClient]);
+  const watching = useRef(false);
+  watching.current = focused && foreground;
+  const read = useScreenRead(hostClient, {
+    key: "browser-sources",
+    label: "Chrome",
+    read: async () => unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({})),
+    // Whether each Chrome is online changes on its own; reread while this is in front.
+    subscribeInvalidation: (invalidate) => {
+      const timer = setInterval(() => {
+        if (watching.current) invalidate();
+      }, refreshEveryMs);
+      return () => clearInterval(timer);
+    },
+  });
+  const state: BrowserSourcesState | null = read.data;
+  const reload = read.refresh;
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) =>
@@ -136,17 +133,10 @@ function ChromeSettings(props: {
     return () => subscription.remove();
   }, []);
 
-  useEffect(() => {
-    if (!focused || !foreground || !online) return;
-    void load();
-    const timer = setInterval(() => void load(), refreshEveryMs);
-    return () => clearInterval(timer);
-  }, [focused, foreground, load, online]);
-
   const announce = (message: string) => {
-    setNotice(message);
     void AccessibilityInfo.announceForAccessibility(message);
   };
+  const missing = state === null ? readLine(read, reload) : null;
 
   const sources = state?.sources ?? [];
   const sites = [...(state?.sites ?? [])].sort((left, right) =>
@@ -162,28 +152,15 @@ function ChromeSettings(props: {
         <AppText role="secondary" tone="soft">
           Let agents use websites you’re already signed in to in Chrome. You approve each site once.
         </AppText>
-        {online ? null : (
-          <Notice
-            detail="Reconnect to see your Chrome or make changes."
-            title={`${deploymentName} is not connected`}
-            tone="neutral"
-          />
-        )}
-        {notice === null ? null : <Notice detail={notice} title="Done" tone="neutral" />}
-        {loadError === null ? null : (
-          <Notice
-            action={{ label: "Try again", onPress: () => void load() }}
-            detail={loadError}
-            title="Chrome could not be loaded"
-          />
-        )}
 
         <View style={styles.section}>
           <SectionLabel>Connected Chrome</SectionLabel>
           {state === null ? (
-            <AppText role="secondary" tone="muted">
-              {online ? "Loading…" : "Not loaded yet."}
-            </AppText>
+            missing === null ? (
+              <PlaceholderRows count={1} />
+            ) : (
+              <ActionLine line={missing} />
+            )
           ) : sources.length === 0 ? (
             <ConnectOnComputer deploymentName={deploymentName} />
           ) : (
@@ -195,9 +172,8 @@ function ChromeSettings(props: {
                     key={source.id}
                     onChanged={(message) => {
                       announce(message);
-                      void load();
+                      reload();
                     }}
-                    online={online}
                     source={source}
                   />
                 ))}
@@ -225,9 +201,8 @@ function ChromeSettings(props: {
                     key={grant.site}
                     onRemoved={(message) => {
                       announce(message);
-                      void load();
+                      reload();
                     }}
-                    online={online}
                   />
                 ))}
               </RowGroup>
@@ -263,21 +238,70 @@ function ConnectOnComputer(props: { readonly deploymentName: string }): ReactNod
   );
 }
 
+async function readSources(hostClient: HostClient): Promise<BrowserSourcesState> {
+  return unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({}));
+}
+
 function SourceRow(props: {
   readonly hostClient: HostClient;
   readonly onChanged: (message: string) => void;
-  readonly online: boolean;
   readonly source: BrowserSourceSummary;
 }): ReactNode {
-  const { source } = props;
+  const { hostClient, source } = props;
   const [draft, setDraft] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"rename" | "disconnect" | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
   const status = source.connected
     ? "Online"
     : source.lastSeenAt === null
       ? "Offline"
       : `Offline · seen ${formatRelativeTime(source.lastSeenAt)}`;
+  const renameSpec = {
+    label: `rename ${source.name}`,
+    done: "renamed",
+    happened: `${source.name} was renamed`,
+  } as const;
+  const renaming = useScreenAction<string, void>(hostClient, `chrome-rename:${source.id}`, {
+    ...renameSpec,
+    execute: async (name) => {
+      await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`browser-source-rename:${source.id}`),
+        name,
+        sourceId: source.id,
+        type: "browser.source.rename",
+      });
+      setDraft(null);
+      props.onChanged(`Renamed to ${name}.`);
+    },
+    reconcile: async (name) => {
+      const found = (await readSources(hostClient)).sources.find(({ id }) => id === source.id);
+      return found?.name === name
+        ? { kind: "confirmed", value: undefined }
+        : notDone(renameSpec.done);
+    },
+    retry: () => rename(),
+  });
+  const revokeSpec = {
+    label: `disconnect ${source.name}`,
+    done: "disconnected",
+    happened: `${source.name} was disconnected`,
+  } as const;
+  const revoking = useScreenAction<void, void>(hostClient, `chrome-revoke:${source.id}`, {
+    ...revokeSpec,
+    execute: async () => {
+      await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`browser-source-revoke:${source.id}`),
+        sourceId: source.id,
+        type: "browser.source.revoke",
+      });
+      props.onChanged(`${source.name} disconnected.`);
+    },
+    reconcile: async () =>
+      (await readSources(hostClient)).sources.some(({ id }) => id === source.id)
+        ? notDone(revokeSpec.done)
+        : { kind: "confirmed", value: undefined },
+    retry: () => void revoking.run(),
+  });
+  const busy = renaming.running ? "rename" : revoking.running ? "disconnect" : null;
+  const line = renaming.line ?? revoking.line;
 
   const rename = () => {
     const name = draft?.trim() ?? "";
@@ -286,21 +310,7 @@ function SourceRow(props: {
       setDraft(null);
       return;
     }
-    setBusy("rename");
-    setFailure(null);
-    void props.hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey(`browser-source-rename:${source.id}`),
-        name,
-        sourceId: source.id,
-        type: "browser.source.rename",
-      })
-      .then(() => {
-        setDraft(null);
-        props.onChanged(`Renamed to ${name}.`);
-      })
-      .catch((error: unknown) => setFailure(operationDetail(error, "The name did not change.")))
-      .finally(() => setBusy(null));
+    void renaming.run(name);
   };
 
   const disconnect = () => {
@@ -310,21 +320,7 @@ function SourceRow(props: {
       [
         { style: "cancel", text: "Cancel" },
         {
-          onPress: () => {
-            setBusy("disconnect");
-            setFailure(null);
-            void props.hostClient
-              .dispatch({
-                idempotencyKey: mutationIdempotencyKey(`browser-source-revoke:${source.id}`),
-                sourceId: source.id,
-                type: "browser.source.revoke",
-              })
-              .then(() => props.onChanged(`${source.name} disconnected.`))
-              .catch((error: unknown) =>
-                setFailure(operationDetail(error, `${source.name} is still connected. Try again.`)),
-              )
-              .finally(() => setBusy(null));
-          },
+          onPress: () => void revoking.run(),
           style: "destructive",
           text: "Disconnect",
         },
@@ -348,18 +344,18 @@ function SourceRow(props: {
           <SecondaryButton
             accessibilityLabel={`Rename ${source.name}`}
             compact
-            disabled={!props.online || busy !== null}
+            disabled={busy !== null}
             label="Rename"
             onPress={() => {
               setDraft(source.name);
-              setFailure(null);
+              renaming.dismiss();
             }}
           />
           <SecondaryButton
             accessibilityLabel={`Disconnect ${source.name}`}
             busy={busy === "disconnect"}
             compact
-            disabled={!props.online || busy !== null}
+            disabled={busy !== null}
             label="Disconnect"
             onPress={disconnect}
             tone="danger"
@@ -382,7 +378,7 @@ function SourceRow(props: {
             <SecondaryButton
               busy={busy === "rename"}
               compact
-              disabled={!props.online || draft.trim() === ""}
+              disabled={draft.trim() === ""}
               label="Save"
               onPress={rename}
             />
@@ -395,10 +391,12 @@ function SourceRow(props: {
           </View>
         </>
       )}
-      {failure === null ? null : (
-        <AppText role="caption" tone="danger">
-          {failure}
-        </AppText>
+      {line === null ? null : (
+        <ActionLine
+          line={line}
+          numberOfLines={2}
+          onDismiss={renaming.line ? renaming.dismiss : revoking.dismiss}
+        />
       )}
     </View>
   );
@@ -409,12 +407,30 @@ function SiteRow(props: {
   readonly grant: BrowserSiteGrant;
   readonly hostClient: HostClient;
   readonly onRemoved: (message: string) => void;
-  readonly online: boolean;
 }): ReactNode {
-  const { grant } = props;
+  const { grant, hostClient } = props;
   const domain = browserSiteLabel(grant.site);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const removeSpec = {
+    label: `remove ${domain}`,
+    done: "removed",
+    happened: `${domain} was removed`,
+  } as const;
+  const removal = useScreenAction<void, void>(hostClient, `chrome-site-remove:${grant.site}`, {
+    ...removeSpec,
+    execute: async () => {
+      await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
+        site: grant.site,
+        type: "browser.site.remove",
+      });
+      props.onRemoved(`${domain} removed. Your agent asks before using it again.`);
+    },
+    reconcile: async () =>
+      (await readSources(hostClient)).sites.some(({ site }) => site === grant.site)
+        ? notDone(removeSpec.done)
+        : { kind: "confirmed", value: undefined },
+    retry: () => void removal.run(),
+  });
   return (
     <View style={styles.siteRow}>
       <Symbol name="globe" size={17} tint={color.textSoft} />
@@ -427,35 +443,16 @@ function SiteRow(props: {
             ? "Not used yet"
             : `Last signed in ${formatRelativeTime(grant.lastSignedInAt)}`}
         </AppText>
-        {failure === null ? null : (
-          <AppText role="caption" tone="danger">
-            {failure}
-          </AppText>
+        {removal.line === null ? null : (
+          <ActionLine line={removal.line} numberOfLines={2} onDismiss={removal.dismiss} />
         )}
       </View>
       <SecondaryButton
         accessibilityLabel={`Remove ${domain}`}
-        busy={busy}
+        busy={removal.running}
         compact
-        disabled={!props.online}
         label="Remove"
-        onPress={() => {
-          setBusy(true);
-          setFailure(null);
-          void props.hostClient
-            .dispatch({
-              idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
-              site: grant.site,
-              type: "browser.site.remove",
-            })
-            .then(() =>
-              props.onRemoved(`${domain} removed. Your agent asks before using it again.`),
-            )
-            .catch((error: unknown) =>
-              setFailure(operationDetail(error, `${domain} is still allowed. Try again.`)),
-            )
-            .finally(() => setBusy(false));
-        }}
+        onPress={() => void removal.run()}
         tone="danger"
       />
     </View>

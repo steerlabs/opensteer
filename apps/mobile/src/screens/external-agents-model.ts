@@ -1,4 +1,4 @@
-import { HostClientRequestError } from "@opensteer/client/host";
+import { classifyClientFailure } from "@opensteer/client/connections";
 
 export const externalAgentsFootnote =
   "Agents reach your computer through Use from anywhere, while it’s on and awake.";
@@ -10,7 +10,5 @@ export const agentConnectionExpired =
 
 /** The words for a consent read or decision that failed. */
 export function agentConnectionFailure(error: unknown, fallback: string): string {
-  return error instanceof HostClientRequestError && error.code === "not_found"
-    ? agentConnectionExpired
-    : fallback;
+  return classifyClientFailure(error).code === "not_found" ? agentConnectionExpired : fallback;
 }

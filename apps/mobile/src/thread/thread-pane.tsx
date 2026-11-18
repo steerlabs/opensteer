@@ -1,3 +1,17 @@
+import {
+  hostMessageOutbox,
+  messageDeliveryStatusShown,
+  splitLocalMessages,
+  type MessageDeliveryAction,
+} from "@opensteer/client/host";
+import { presentMessageActionFailure, presentMessageTakeBack } from "@opensteer/client/feedback";
+import { useClientConnection, useOutboxTranscript } from "@opensteer/client/react";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
+import { useConnectionReady, useShowsLive } from "../ui/connection-live.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
+import { MessageDeliveryContext, type MessageDeliveryControls } from "./message-delivery.js";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { useThreadVisits } from "@opensteer/client/react";
@@ -18,6 +32,7 @@ import {
   threadComposerPlaceholder,
   threadStartHold,
   threadRequester,
+  threadStartsRunForMessage,
   threadStopTarget,
   transcriptVoice,
   turnFolds,
@@ -72,17 +87,16 @@ import {
   type ScrollViewProps,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { canRespondToRequests, failureNotice, showsHostLive } from "@opensteer/client/host";
+import { canRespondToRequests } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
-import { AppText, Notice } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -116,7 +130,9 @@ import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
 import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
+import { AnswerPill } from "./answer-pill.js";
 import { WaitingInputs } from "./waiting-inputs.js";
+import { pillRowClearance } from "../ui/pill-metrics.js";
 import {
   TranscriptComputersContext,
   computerLine,
@@ -135,9 +151,6 @@ import {
   transcriptSpacing,
 } from "./transcript.js";
 import { bubble } from "./bubble.js";
-import { OwedMessageStatus } from "./owed-message.js";
-import { isOwedMessage, owedMessageEntry, reconcileOwed } from "./owed-message-model.js";
-import { usePendingDeliveryPhase } from "./send-pending-message.js";
 import type { ThreadMutationOwner } from "./thread-mutation-gate.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -250,13 +263,6 @@ export interface PageCompanion {
   readonly showTab: ((tab: BrowserTabDestination) => void) | null;
 }
 
-/** Blames the connection only when the connection itself is down. */
-function lookupFailure(snapshot: Pick<HostSnapshot, "connection" | "network">): string {
-  if (snapshot.connection === "connected") return "Try again in a moment.";
-  const notice = failureNotice("unavailable", snapshot.network);
-  return `${notice.title}. ${notice.body}`;
-}
-
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
 function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
   return {
@@ -326,26 +332,19 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
       sameThreadPaneSelection(select(left), select(right)),
     [select],
   );
-  // Keep the shared hook's load/retry lifecycle, using its store equality support.
   const state = useHostSnapshot(props.hostClient, isEqual);
   const selection = useMemo(() => select(state.snapshot), [select, state.snapshot]);
   return (
     <ThreadPaneForUser
       {...props}
       key={`${props.deploymentId}:${state.snapshot.user?.id ?? "signed-out"}:${props.threadId}`}
-      loadError={state.loadError}
-      reload={state.reload}
       snapshot={selection}
     />
   );
 }
 
 function ThreadPaneForUser(
-  props: ThreadPaneProps & {
-    readonly loadError: string | null;
-    readonly reload: () => Promise<void>;
-    readonly snapshot: ThreadPaneSelection;
-  },
+  props: ThreadPaneProps & { readonly snapshot: ThreadPaneSelection },
 ): ReactNode {
   const client = useMobileClient();
   const navigation = useNavigation();
@@ -362,7 +361,7 @@ function ThreadPaneForUser(
   // native bar items and a transparent bar, and left the first message under
   // the bar.
   const headerHeight = useHeaderHeight();
-  const { loadError, reload, snapshot } = props;
+  const { snapshot } = props;
   const viewerUserId = snapshot.user?.id ?? null;
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   // Whether the list follows the newest entry, and where it stood when last read or moved.
@@ -411,12 +410,14 @@ function ThreadPaneForUser(
   const [historical, setHistorical] = useState(false);
   const [returning, setReturning] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const pendingMutationOwner = (): ThreadMutationOwner | null =>
-    viewerUserId !== null &&
-    client.drafts.readPending(props.deploymentId, viewerUserId, props.threadId) !== null
-      ? "message"
-      : null;
+  // A read the reader asked for that didn't come, with its own way to ask again.
+  // Said only while the connection is fine: otherwise the pill says why.
+  const [failure, setFailure] = useState<{
+    readonly key: number;
+    readonly resource: string;
+    readonly retry: () => void;
+  } | null>(null);
+  const pendingMutationOwner = (): ThreadMutationOwner | null => null;
   // One gate per Thread, shared with the settings sheet: it is a sibling route
   // in the native stack, so no context of this pane's can reach it, and an
   // execution change still in flight has to keep Send blocked all the same.
@@ -478,34 +479,54 @@ function ThreadPaneForUser(
     navigationFocused && inView && appForeground,
   );
   const askDecisions = useAskDecisions(hostClient);
-  // Words handed to the composer: an update to answer, or an edit the agent
-  // took first, on its way to being sent as a new message.
-  const [restoredDraft, setRestoredDraft] = useState<{
-    readonly attachments?: readonly ArtifactContentPart[];
-    readonly key: number;
-    readonly quote?: ThreadDraftQuote | null;
-    readonly text: string;
-  } | null>(null);
+  const [focusDraft, setFocusDraft] = useState(0);
+  const [replyEditMessage, setReplyEditMessage] = useState<string | null>(null);
+  const waitingEdit = editing.edit;
+  const editingReply = waitingEdit !== null && waitingEdit.messageId === replyEditMessage;
+  const drafts = client.drafts;
   const sendAsNew = useCallback(
-    (words: { readonly parts: readonly ContentPart[]; readonly text: string } | null) => {
-      if (words === null) return;
+    async (words: { readonly parts: readonly ContentPart[]; readonly text: string }) => {
+      if (viewerUserId === null) return false;
       // Files go with it by reference; a page or app it named was this edit's alone.
       const attachments = words.parts.filter(
         (part): part is ArtifactContentPart => part.type === "artifact",
       );
-      setRestoredDraft((current) => ({
-        attachments,
-        key: (current?.key ?? 0) + 1,
-        text: words.text,
-      }));
+      const complete = drafts.reserveEdit(deploymentId, viewerUserId, threadId);
+      const kept = await complete((draft) => {
+        const held = draft?.attachments ?? [];
+        return {
+          ...(words.text
+            ? { text: draft?.text.trim() ? `${words.text}\n${draft.text}` : words.text }
+            : {}),
+          attachments: [
+            ...attachments
+              .filter((part) => !held.some((file) => file.attachmentId === part.artifactId))
+              .map((part) => ({
+                attachmentId: part.artifactId,
+                localUri: null,
+                mediaType: part.mediaType,
+                name: part.name,
+                sizeBytes: part.sizeBytes ?? 0,
+                status: "staged" as const,
+              })),
+            ...held,
+          ],
+        };
+      });
+      if (kept) setFocusDraft((value) => value + 1);
+      return kept;
     },
-    [],
+    [deploymentId, drafts, threadId, viewerUserId],
   );
 
   const thread = snapshot.thread;
   const canRespond = canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const live = useShowsLive(props.hostClient.connection) && environment?.status === "connected";
+  const connectionReady = useConnectionReady(props.hostClient.connection);
+  // A failed read is asked again once the connection is back; it says nothing until then.
+  const { readyRevision } = useClientConnection(props.hostClient.connection);
+  useEffect(() => setFailure(null), [readyRevision]);
   const connectionLabel =
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
@@ -522,44 +543,88 @@ function ThreadPaneForUser(
   // which Run, if any, a Stop would reach.
   const activity =
     thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
-  // The message this phone owes the Host. Sent to a Thread at rest it starts
-  // the next turn, so it is drawn there at once and the Host's copy takes its
-  // place; sent behind a turn at work it waits, and the bar holds it as the
-  // tray will. Where it stands is decided once, so it never jumps between them.
-  useSyncExternalStore(client.drafts.subscribe, client.drafts.getVersion);
-  const owedCommand =
-    viewerUserId === null
-      ? null
-      : client.drafts.readPending(props.deploymentId, viewerUserId, threadId);
-  const owedPlace =
-    owedCommand === null || viewerUserId === null
-      ? null
-      : reconcileOwed(entries, owedCommand, viewerUserId, conversational || activity === "idle");
-  const owed = owedPlace?.drawn === true ? owedCommand : null;
-  const owedEntry = useMemo(
-    () => (owed === null || viewerUserId === null ? null : owedMessageEntry(owed, viewerUserId)),
-    [owed, viewerUserId],
-  );
-  const owedPhase = usePendingDeliveryPhase(
-    client.drafts,
-    props.deploymentId,
-    viewerUserId,
-    threadId,
-  );
-  const retryOwed = useRef<(() => void) | null>(null);
-  const retryPending = useCallback(() => retryOwed.current?.(), []);
-  // In work, a message waiting behind the current turn stands in the tray
-  // above the composer until a Run takes it. A conversation has no tray: what
-  // the reader just sent is drawn as sent.
-  const conversation = useMemo(
+  const outbox = hostMessageOutbox(props.hostClient);
+  const withOutbox = useOutboxTranscript(outbox, threadId, entries, viewerUserId);
+  const visible = useMemo(
     () =>
       withoutOwnAssignment(
-        visibleTranscript(owedEntry === null ? entries : [...entries, owedEntry], inputQueue, {
-          conversation: conversational,
-        }),
+        visibleTranscript(withOutbox, inputQueue, { conversation: conversational }),
         threadId,
       ),
-    [conversational, entries, inputQueue, owedEntry, threadId],
+    [conversational, inputQueue, threadId, withOutbox],
+  );
+  const hasQueuedInputs = Boolean(inputQueue?.items.length);
+  const startsRun =
+    thread !== null && threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
+  const local = useMemo(
+    () => splitLocalMessages(visible, !conversational, hasQueuedInputs, startsRun),
+    [conversational, hasQueuedInputs, startsRun, visible],
+  );
+  const conversation = local.transcript;
+  // Messages still on this phone: which carry their status line, and what
+  // Edit, Delete and Don't send do to them. Edit hands the words back to the
+  // composer above any draft there, once the message can no longer go.
+  const pendingKeys = useMemo(() => {
+    const held = visible.flatMap((entry) =>
+      entry.kind === "message" && entry.localDelivery !== undefined
+        ? [{ key: entry.clientSendKey ?? entry.id, entry }]
+        : [],
+    );
+    const shown = messageDeliveryStatusShown(held.map(({ entry }) => entry.localDelivery!.phase));
+    return new Map(held.map(({ key, entry }, index) => [key, { entry, shown: shown[index]! }]));
+  }, [visible]);
+  const heldMessages = useRef(pendingKeys);
+  heldMessages.current = pendingKeys;
+  // What an action on one of them came to, beside that message, until the next one.
+  const [deliveryNotice, setDeliveryNotice] = useState<ActionLineValue | null>(null);
+  const [deliveryNotes, setDeliveryNotes] = useState<ReadonlyMap<string, string>>(new Map());
+  const noteDelivery = useCallback((key: string, note: string | null) => {
+    setDeliveryNotes((current) => {
+      if ((current.get(key) ?? null) === note) return current;
+      const next = new Map(current);
+      if (note === null) next.delete(key);
+      else next.set(key, note);
+      return next;
+    });
+  }, []);
+  const deliveryControls = useMemo<MessageDeliveryControls>(
+    () => ({
+      act: (key: string, action: MessageDeliveryAction) => {
+        if (outbox === null || !heldMessages.current.has(key)) return;
+        noteDelivery(key, null);
+        const failed = (error: unknown) => noteDelivery(key, presentMessageActionFailure(error));
+        if (action === "retry")
+          void outbox.retry(key).then((result) => {
+            if (result === "settled") noteDelivery(key, presentMessageTakeBack("sent"));
+          }, failed);
+        // Edit moves the whole message, its files and quote too, into the draft
+        // above any words there; the queue lets go of it only once it is saved.
+        else if (action === "edit")
+          void outbox
+            .restoreDraft(key)
+            .then((outcome) => noteDelivery(key, presentMessageTakeBack(outcome)), failed);
+        else if (action === "remove") {
+          const uncertain =
+            heldMessages.current.get(key)?.entry.localDelivery?.issue?.code === "unconfirmed";
+          const name = hostClient.connection.getSnapshot().name;
+          void outbox.removeLocalCopy(key).then(() => {
+            if (uncertain)
+              setDeliveryNotice(
+                issueLine(
+                  {
+                    code: "message-removed-locally",
+                    ...(name ? { name } : {}),
+                  },
+                  `removed:${key}`,
+                ),
+              );
+          }, failed);
+        } else void outbox.discard(key).catch(failed);
+      },
+      note: (key: string) => deliveryNotes.get(key) ?? null,
+      statusShown: (key: string) => heldMessages.current.get(key)?.shown ?? true,
+    }),
+    [deliveryNotes, hostClient, noteDelivery, outbox],
   );
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // What this client holds of the account is current only while it is live.
@@ -646,9 +711,13 @@ function ThreadPaneForUser(
     anchored.current = anchorMessageId;
     setHistorical(true);
     follow(false);
-    void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
-      setFailure(operationDetail(error, "That update could not be opened."));
-    });
+    const open = (): void => {
+      setFailure(null);
+      void hostClient
+        .loadTranscriptAround(threadId, anchorMessageId)
+        .catch(() => setFailure({ key: Date.now(), resource: "that update", retry: open }));
+    };
+    open();
   }, [anchorMessageId, follow, hostClient, threadId]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
@@ -668,9 +737,9 @@ function ThreadPaneForUser(
         follow(true);
         scrollToLatest(false);
       })
-      .catch((error: unknown) => {
-        setFailure(operationDetail(error, "The latest activity could not be loaded."));
-      })
+      .catch(() =>
+        setFailure({ key: Date.now(), resource: "the latest messages", retry: returnToLatest }),
+      )
       .finally(() => setReturning(false));
   }, [follow, hostClient, props.onAnchorReleased, returning, scrollToLatest, threadId]);
   const anchor = useMemo(
@@ -716,9 +785,9 @@ function ThreadPaneForUser(
     setLoadingEarlier(true);
     void hostClient
       .loadEarlierTranscript(threadId)
-      .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Earlier activity could not be loaded."));
-      })
+      .catch(() =>
+        setFailure({ key: Date.now(), resource: "earlier messages", retry: loadEarlier }),
+      )
       .finally(() => {
         paging.current = false;
         setLoadingEarlier(false);
@@ -879,10 +948,18 @@ function ThreadPaneForUser(
     [hostClient, openSurface, surfaceTurns, threadId],
   );
   /** Quotes a reply into this conversation's own composer, unsent. */
-  const replyWith = useCallback((message: MessageEntry): void => {
-    const quote = draftQuoteFrom(message);
-    setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-  }, []);
+  const replyWith = useCallback(
+    (message: MessageEntry): void => {
+      if (viewerUserId === null) return;
+      void drafts
+        .writeDraftQuote(deploymentId, viewerUserId, threadId, draftQuoteFrom(message))
+        .then(
+          () => setFocusDraft((value) => value + 1),
+          () => setDeliveryNotice(issueLine({ code: "draft-unsaved" }, `quote:${Date.now()}`)),
+        );
+    },
+    [deploymentId, drafts, threadId, viewerUserId],
+  );
 
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, viewerUserId, conversational),
@@ -988,20 +1065,9 @@ function ThreadPaneForUser(
           {item.outcome === null ? null : (
             <TaskOutcomeLine onOpenThread={openSource} outcome={item.outcome} />
           )}
-          {item.group.kind === "message" && isOwedMessage(item.group.entry.id) && owed !== null ? (
-            <OwedMessageStatus
-              idempotencyKey={owed.idempotencyKey}
-              onRetry={canRespond ? retryPending : null}
-              state={!canRespond ? "offline" : (owedPhase ?? "idle")}
-            />
-          ) : null}
         </>
       ),
     [
-      canRespond,
-      owed,
-      owedPhase,
-      retryPending,
       anchorMessageId,
       conversational,
       hostClient,
@@ -1086,16 +1152,21 @@ function ThreadPaneForUser(
   const queueFooter = useMemo(
     () =>
       // An open edit stays drawn whatever the queue says, so its words are never lost.
-      thread !== null && !conversational && (waiting !== null || editing.edit !== null) ? (
+      thread !== null &&
+      !conversational &&
+      (waiting !== null || editing.edit !== null || local.afterQueue.length > 0) ? (
         <TranscriptHostClientContext value={hostClient}>
           <WaitingInputs
-            canRespond={canRespond}
-            editing={editing}
+            canRespond={canRespond && !editingReply}
+            editing={editingReply ? { ...editing, edit: null } : editing}
             hostClient={hostClient}
             items={waiting ?? noWaiting}
+            local={local.afterQueue}
+            onOpenThread={props.onOpenThread}
             paused={inputQueue?.paused ?? false}
             resumable={thread.status !== "archived"}
             threadId={threadId}
+            transcript={withOutbox}
             viewerUserId={viewerUserId}
           />
         </TranscriptHostClientContext>
@@ -1106,8 +1177,12 @@ function ThreadPaneForUser(
       inputQueue,
       waiting,
       editing,
+      editingReply,
       canRespond,
       hostClient,
+      local.afterQueue,
+      withOutbox,
+      props.onOpenThread,
       threadId,
       viewerUserId,
     ],
@@ -1189,33 +1264,27 @@ function ThreadPaneForUser(
   };
 
   if (thread === null) {
-    return (
+    // Gone is a fact about the task; anything else not loaded yet is the
+    // connection's to explain, and the gate does, or the read is under way.
+    if (snapshot.lookup === "missing") return <UnavailableState onBack={onGone} />;
+    if (!connectionReady)
+      return (
+        <ConnectionRouteGate
+          connection={hostClient.connection}
+          secondary={{ label: "Back", onPress: onGone }}
+        />
+      );
+    return snapshot.lookup === "failed" ? (
       <View style={[styles.centred, sides]}>
-        {loadError !== null ? (
-          <Notice
-            title="This thread could not be loaded"
-            detail={loadError}
-            action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
-          />
-        ) : snapshot.lookup === "failed" ? (
-          <Notice
-            title="This thread could not be loaded"
-            detail={lookupFailure(snapshot)}
-            action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-          />
-        ) : snapshot.lookup === "missing" ? (
-          <Notice
-            detail="It may have been deleted, or it belongs to another deployment."
-            title="This thread is not here"
-            tone="neutral"
-          />
-        ) : (
-          <AppText role="secondary" tone="muted">
-            Opening this thread…
-          </AppText>
-        )}
+        <ActionLine
+          line={issueLine({ code: "read-failed", resource: "this task" }, "lookup", {
+            label: "Try again",
+            onPress: () => hostClient.activateThread(threadId),
+          })}
+          numberOfLines={2}
+        />
       </View>
-    );
+    ) : null;
   }
 
   // Access capabilities follow the engine that will enforce them.
@@ -1265,87 +1334,93 @@ function ThreadPaneForUser(
         });
   const transcript = (clearance: number): ReactNode => (
     <View style={styles.body}>
-      <FlatList
-        automaticallyAdjustsScrollIndicatorInsets={false}
-        contentInsetAdjustmentBehavior="never"
-        contentContainerStyle={[
-          column,
-          {
-            ...sides,
-            paddingBottom: clearance + space[16],
-            paddingTop: headerClearance + pageInset + space[8],
-          },
-        ]}
-        data={items}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        keyExtractor={(item) => item.key}
-        ListFooterComponent={listFooter}
-        // Beside a page, before anything has been said, the page is the subject;
-        // a task holding only waiting words is not empty.
-        ListEmptyComponent={
-          companion === null && (snapshot.lookup === "loading" || !waiting?.length) ? (
-            <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
-          ) : undefined
-        }
-        ListHeaderComponent={
-          <ThreadHeader
-            earlier={canLoadEarlier}
-            loadingEarlier={loadingEarlier}
-            onLoadEarlier={loadEarlier}
-            onOpenRequester={openSource}
-            requester={requester}
-          />
-        }
-        // Paging upward inserts entries above what is being read; this is
-        // what keeps the reader's place instead of jumping them to the top.
-        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
-        onContentSizeChange={(_width, height) => {
-          extent.current.content = height;
-          keepPinned();
-        }}
-        onLayout={(event) => {
-          extent.current.viewport = event.nativeEvent.layout.height;
-          keepPinned();
-        }}
-        onMomentumScrollBegin={() => {
-          flinging.current = true;
-        }}
-        onMomentumScrollEnd={() => {
-          flinging.current = false;
-        }}
-        onScroll={handleScroll}
-        onScrollBeginDrag={() => {
-          dragging.current = true;
-        }}
-        onScrollEndDrag={() => {
-          dragging.current = false;
-        }}
-        // `scrollToIndex` needs somewhere to go before the row it names has
-        // been measured. FlatList hands back its own estimate for exactly
-        // this, and one more layout pass then lands on the row.
-        onScrollToIndexFailed={({ averageItemLength, index }) => {
-          listRef.current?.scrollToOffset({
-            animated: false,
-            offset: averageItemLength * index,
-          });
-          if (scrollAttempts.current < 3) {
-            scrollAttempts.current += 1;
-            if (scrollRetry.current !== null) clearTimeout(scrollRetry.current);
-            scrollRetry.current = setTimeout(
-              () => listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0.5 }),
-              150,
-            );
+      <MessageDeliveryContext value={deliveryControls}>
+        <FlatList
+          automaticallyAdjustsScrollIndicatorInsets={false}
+          contentInsetAdjustmentBehavior="never"
+          contentContainerStyle={[
+            column,
+            {
+              ...sides,
+              paddingBottom: clearance + space[16],
+              paddingTop:
+                headerClearance +
+                pageInset +
+                space[8] +
+                (companion === null ? pillRowClearance : 0),
+            },
+          ]}
+          data={items}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          keyExtractor={(item) => item.key}
+          ListFooterComponent={listFooter}
+          // Beside a page, before anything has been said, the page is the subject;
+          // a task holding only waiting words is not empty.
+          ListEmptyComponent={
+            companion === null && (snapshot.lookup === "loading" || !waiting?.length) ? (
+              <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
+            ) : undefined
           }
-        }}
-        ref={listRef}
-        renderItem={renderItem}
-        renderScrollComponent={renderScroll}
-        // The pill and the load-earlier trigger both read scroll position, so
-        // the list reports it every frame rather than every fourth one.
-        scrollEventThrottle={16}
-        scrollIndicatorInsets={{ bottom: clearance, top: headerClearance + pageInset }}
-      />
+          ListHeaderComponent={
+            <ThreadHeader
+              earlier={canLoadEarlier}
+              loadingEarlier={loadingEarlier}
+              onLoadEarlier={loadEarlier}
+              onOpenRequester={openSource}
+              requester={requester}
+            />
+          }
+          // Paging upward inserts entries above what is being read; this is
+          // what keeps the reader's place instead of jumping them to the top.
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          onContentSizeChange={(_width, height) => {
+            extent.current.content = height;
+            keepPinned();
+          }}
+          onLayout={(event) => {
+            extent.current.viewport = event.nativeEvent.layout.height;
+            keepPinned();
+          }}
+          onMomentumScrollBegin={() => {
+            flinging.current = true;
+          }}
+          onMomentumScrollEnd={() => {
+            flinging.current = false;
+          }}
+          onScroll={handleScroll}
+          onScrollBeginDrag={() => {
+            dragging.current = true;
+          }}
+          onScrollEndDrag={() => {
+            dragging.current = false;
+          }}
+          // `scrollToIndex` needs somewhere to go before the row it names has
+          // been measured. FlatList hands back its own estimate for exactly
+          // this, and one more layout pass then lands on the row.
+          onScrollToIndexFailed={({ averageItemLength, index }) => {
+            listRef.current?.scrollToOffset({
+              animated: false,
+              offset: averageItemLength * index,
+            });
+            if (scrollAttempts.current < 3) {
+              scrollAttempts.current += 1;
+              if (scrollRetry.current !== null) clearTimeout(scrollRetry.current);
+              scrollRetry.current = setTimeout(
+                () => listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0.5 }),
+                150,
+              );
+            }
+          }}
+          ref={listRef}
+          renderItem={renderItem}
+          renderScrollComponent={renderScroll}
+          // The pill and the load-earlier trigger both read scroll position, so
+          // the list reports it every frame rather than every fourth one.
+          scrollEventThrottle={16}
+          scrollIndicatorInsets={{ bottom: clearance, top: headerClearance + pageInset }}
+        />
+      </MessageDeliveryContext>
       {snapshot.user === null ? null : (
         <RunPageSlot
           active={focused}
@@ -1425,25 +1500,22 @@ function ThreadPaneForUser(
           threadId={threadId}
         />
       )}
-      {failure !== null ? (
-        <Notice
-          action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-          detail={failure}
-          title="Something did not work"
+      {deliveryNotice === null ? null : (
+        <ActionLine line={deliveryNotice} onDismiss={() => setDeliveryNotice(null)} />
+      )}
+      {failure === null || !connectionReady ? null : (
+        <ActionLine
+          line={issueLine(
+            { code: "read-failed", resource: failure.resource },
+            String(failure.key),
+            {
+              label: "Try again",
+              onPress: failure.retry,
+            },
+          )}
+          onDismiss={() => setFailure(null)}
         />
-      ) : loadError !== null && canRespond ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
-          detail={loadError}
-          title="This thread could not be loaded"
-        />
-      ) : snapshot.lookup === "failed" ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-          detail={lookupFailure(snapshot)}
-          title="Messages could not be loaded"
-        />
-      ) : null}
+      )}
       {snapshot.user === null ? null : (
         <>
           {(voiceThread && onCall) || editingInPlace ? null : (
@@ -1467,6 +1539,7 @@ function ThreadPaneForUser(
               <VoiceDock slot />
               {onCall ? null : (
                 <VoiceStartBar
+                  hostClient={hostClient}
                   modelHold={settingsDisabledReason({
                     canRespond,
                     hasRun: threadRuns.length > 0,
@@ -1482,14 +1555,26 @@ function ThreadPaneForUser(
             </>
           ) : (
             <>
-              {editingInPlace ? (
-                <WaitingEditBar
-                  canRespond={canRespond}
-                  decisions={askDecisions}
-                  editing={editing}
-                  item={editedItem}
-                  onSendAsNew={sendAsNew}
+              {waitingEdit?.replyFull ? (
+                <AnswerPill
+                  label={editingReply ? "Back to waiting edit" : "Edit reply draft"}
+                  onPress={() => {
+                    setReplyEditMessage(editingReply ? null : waitingEdit.messageId);
+                    if (!editingReply) setFocusDraft((value) => value + 1);
+                  }}
+                  tone="secondary"
                 />
+              ) : null}
+              {editingInPlace ? (
+                editingReply ? null : (
+                  <WaitingEditBar
+                    canRespond={canRespond}
+                    decisions={askDecisions}
+                    editing={editing}
+                    item={editedItem}
+                    onSendAsNew={sendAsNew}
+                  />
+                )
               ) : dockedAsk === null ? null : (
                 <Animated.View entering={enter} exiting={exit} key={dockedAsk.messageId}>
                   <WaitingAskDock
@@ -1500,7 +1585,7 @@ function ThreadPaneForUser(
                 </Animated.View>
               )}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
-              <View style={editingInPlace ? styles.hidden : undefined}>
+              <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
                   variant={conversational ? "conversation" : "work"}
                   voice={false}
@@ -1541,10 +1626,6 @@ function ThreadPaneForUser(
                   mutationGate={mutationGate}
                   // Once the Host's copy has taken its place, a send that then
                   // fails is the bar's to offer again, as for any held message.
-                  owedInline={
-                    owedPlace?.inline === true && (owed !== null || owedPhase === "sending")
-                  }
-                  retryRef={retryOwed}
                   conversationActions={actionsBesidePage}
                   page={companion?.page ?? null}
                   onChangeModel={openSettings}
@@ -1553,9 +1634,10 @@ function ThreadPaneForUser(
                       ? "Message your agent privately"
                       : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                   }
-                  requests={dockableRequests}
-                  restore={restoredDraft}
+                  requests={editingReply ? [] : dockableRequests}
+                  focusDraft={focusDraft}
                   running={stopTarget !== null}
+                  stopRunId={stopTarget?.id ?? null}
                   // A task card in a conversation stops its own task, and a task's
                   // title menu stops the task. In a conversation this ends only the
                   // reply under way; in a task it leaves the task paused.

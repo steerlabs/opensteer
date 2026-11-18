@@ -1,23 +1,18 @@
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
+import { StyleSheet, View } from "react-native";
 import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
 import { resetToDeployments } from "../navigation-ref.js";
 import { color, space } from "../theme.js";
+import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { useShellGate } from "../ui/shell-gate.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import {
-  AppText,
-  Notice,
-  PrimaryButton,
-  RowGroup,
-  SecondaryButton,
-  StatusDot,
-} from "../ui/primitives.js";
+import { AppText, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
-import { statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { deploymentUpdateRows } from "./deployment-update.js";
 import { useDeploymentUpdate } from "./use-deployment-update.js";
@@ -74,12 +69,31 @@ export function DeploymentGate(props: {
   const column = useReadingColumn();
   const { rows, selection } = useMobileState();
   const [working, setWorking] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // A door that didn't open says so in the gate's own words, until the next try.
+  const [refused, setRefused] = useState<string | null>(null);
   const { deploymentId } = props;
+  const act = (operation: () => Promise<void>, action = "open it"): void => {
+    setWorking(true);
+    setRefused(null);
+    void operation()
+      .catch((error: unknown) => {
+        const issue = clientIssue(error, { operation: "action", label: action });
+        if (issue !== null) setRefused(presentClientIssue(issue).title);
+      })
+      .finally(() => setWorking(false));
+  };
+  // Back on a route a person came to; Other computers where this is the root.
+  const away: ConnectionGateButton | null = navigation.canGoBack()
+    ? { label: "Back", onPress: () => navigation.goBack() }
+    : rows.length > 1
+      ? { label: "Other computers", onPress: () => navigation.navigate("DeploymentSwitcher") }
+      : null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const top = { paddingTop: props.paddingTop ?? 0 };
   const iphone = useOptionalIphoneApps();
   const removedFrom = useRemovedFrom(iphone);
+  // Every branch below explains this computer, so the pill would only repeat it.
+  useShellGate(true);
 
   // Removed by its Host: nothing signs back in until the person sets it up again.
   if (iphone !== null && removedFrom?.deploymentId === deploymentId) {
@@ -89,15 +103,9 @@ export function DeploymentGate(props: {
         <RemovedView
           {...copy}
           onNotNow={resetToDeployments}
-          onSetUpAgain={() => {
-            setFailure(null);
-            void iphone
-              .clearRemoved()
-              .then(() => client.signIn(deploymentId))
-              .catch((error: unknown) =>
-                setFailure(operationDetail(error, "Opensteer could not be opened.")),
-              );
-          }}
+          onSetUpAgain={() =>
+            act(() => iphone.clearRemoved().then(() => client.signIn(deploymentId)), "sign in")
+          }
         />
       </View>
     );
@@ -117,92 +125,73 @@ export function DeploymentGate(props: {
     );
   }
 
-  // Opening is what happens on every launch, and it needs nobody: it gets a
-  // quiet wait, and the name and the doors below are kept for a state that
-  // does need a person.
-  const opening =
-    failure === null &&
-    (row.status === "connecting" ||
-      row.status === "reconnecting" ||
-      (row.status === "signed-in" && selection.deploymentId === deploymentId));
-  if (opening) {
+  // A route that names another computer than the open one: opening it is the
+  // person's own choice, never the gate's.
+  if (selection.deploymentId !== deploymentId) {
+    return (
+      <View style={[styles.gate, top]}>
+        <ConnectionGate
+          detail={refused ?? deploymentStatusDetail(row) ?? deploymentStatusLabel(row.status)}
+          primary={{
+            busy: working,
+            label: `Open ${row.name}`,
+            onPress: () => act(() => client.openDeployment(deploymentId)),
+          }}
+          secondary={away}
+          stateKey="elsewhere"
+          symbol="computer"
+          title={row.name}
+        />
+      </View>
+    );
+  }
+
+  // The address answers as a different deployment, or is too old for this
+  // phone while a remote update may fix it: facts about the computer, with
+  // their own ways on.
+  if (row.status === "unverified" || row.verification === "host-too-old") {
     return (
       <Screen>
-        <View
-          accessibilityLiveRegion="polite"
-          style={[styles.content, styles.opening, column, top]}
-        >
-          <ActivityIndicator color={color.muted} />
+        <View style={[styles.content, column, top]}>
+          <AppText role="displaySmall">{row.name}</AppText>
           <AppText role="secondary" tone="muted">
-            {`Connecting to ${row.name}…`}
+            {refused ?? deploymentStatusDetail(row)}
           </AppText>
+          {row.verification === "host-too-old" ? (
+            <DeploymentUpdate deploymentId={row.deploymentId} name={row.name} />
+          ) : null}
+          <PrimaryButton
+            busy={working}
+            label="Try again"
+            onPress={() => act(() => client.retrySelection())}
+          />
+          {away === null ? null : <SecondaryButton label={away.label} onPress={away.onPress} />}
         </View>
       </Screen>
     );
   }
 
-  const signInAgain =
-    row.status === "needs-sign-in" && iphone?.owner.enrolledDeploymentId() === deploymentId;
-  const act = (): void => {
-    setWorking(true);
-    setFailure(null);
-    const operation =
-      selection.deploymentId !== deploymentId
-        ? // A person's own tap, so this is the interactive door: it may sign
-          // in rather than stopping at a second "Sign in" button.
-          client.openDeployment(deploymentId)
-        : row.signIn === null
-          ? client.retrySelection()
-          : runDeploymentRecovery(client, navigation, row);
-    void operation
-      .catch((error: unknown) => {
-        setFailure(operationDetail(error, "That deployment still could not be opened."));
-      })
-      .finally(() => setWorking(false));
-  };
-
   return (
-    <Screen>
-      <View style={[styles.content, column, top]}>
-        {failure === null ? null : <Notice detail={failure} title="That deployment did not open" />}
-        <AppText role="displaySmall">{row.name}</AppText>
-        <View style={styles.statusLine}>
-          <StatusDot
-            live={row.status === "connecting" || row.status === "reconnecting"}
-            tone={statusTone(row.status)}
-          />
-          <AppText role="secondary" tone="soft">
-            {signInAgain ? "Sign in again" : deploymentStatusLabel(row.status)}
-          </AppText>
-        </View>
-        <AppText role="secondary" tone="muted">
-          {deploymentStatusDetail(row) ?? "Opening this deployment…"}
-        </AppText>
-        {row.verification === "host-too-old" ? (
-          <DeploymentUpdate deploymentId={row.deploymentId} name={row.name} />
-        ) : null}
-        {/* The one thing that would fix it leads; switching is the way out. */}
-        {row.status === "connecting" || row.status === "reconnecting" ? null : (
-          <PrimaryButton
-            busy={working}
-            label={
-              signInAgain
-                ? "Sign in again"
-                : selection.deploymentId !== deploymentId
-                  ? `Open ${row.name}`
-                  : row.signIn === null
-                    ? "Try again"
-                    : deploymentRecoveryLabel(row)
-            }
-            onPress={act}
-          />
-        )}
-        <SecondaryButton
-          label="Switch deployment"
-          onPress={() => navigation.navigate("DeploymentSwitcher")}
-        />
-      </View>
-    </Screen>
+    <View style={[styles.gate, top]}>
+      <ConnectionRouteGate
+        connection={selection.session?.connection ?? null}
+        issue={
+          row.signIn !== null
+            ? { code: "sign-in", name: row.name }
+            : row.verification === "client-too-old"
+              ? { code: "update-app", name: row.name }
+              : null
+        }
+        line={refused}
+        name={row.name}
+        secondary={away}
+        signIn={{
+          busy: working,
+          label: deploymentRecoveryLabel(row),
+          onPress: () => act(() => runDeploymentRecovery(client, navigation, row), "sign in"),
+        }}
+      />
+    </View>
   );
 }
 
@@ -227,7 +216,6 @@ const noSubscription = () => () => undefined;
 
 const styles = StyleSheet.create({
   content: { flex: 1, gap: space[8], justifyContent: "center" },
-  opening: { alignItems: "center", gap: space[12] },
+  gate: { backgroundColor: color.background, flex: 1 },
   removed: { backgroundColor: color.background, flex: 1 },
-  statusLine: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[8] },
 });

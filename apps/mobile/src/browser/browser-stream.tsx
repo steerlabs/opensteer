@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
@@ -34,6 +35,9 @@ import {
 } from "react-native";
 import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
+import { dim, exit } from "../ui/motion.js";
+import { LastPictureChip } from "../ui/last-picture-chip.js";
+import Animated from "react-native-reanimated";
 import {
   browserFrameContentRect,
   browserFrameCornerRadii,
@@ -106,6 +110,8 @@ export interface BrowserStreamProps {
    * screen, so it scrolls the page by that much less at a larger zoom.
    */
   readonly zoom?: { readonly value: number };
+  /** Bumped when the page refused a control: the stale picture's chip acknowledges it. */
+  readonly stalePulse?: number;
 }
 
 interface FrameSlot {
@@ -155,6 +161,7 @@ export function BrowserStream(props: BrowserStreamProps) {
 
 function BrowserStreamView({
   active: requestedActive,
+  stalePulse = 0,
   hostClient,
   label,
   onPageSize,
@@ -216,13 +223,16 @@ function BrowserStreamView({
   // decoded is not tried again while the feed still holds it.
   const settledKey = useRef<string | null>(null);
   const feed = useBrowserFeedState(hostClient, session.id, tabId, interactive);
+  // Taps on a stale picture, which its chip acknowledges.
+  const [tapped, setTapped] = useState(0);
   const feedState =
     feed.status === "live"
       ? "synchronized"
       : feed.status === "connecting"
         ? "connecting"
         : "disconnected";
-  const feedError = feed.status === "unavailable" ? feed.error : null;
+  const feedError =
+    feed.status === "unavailable" && feed.error ? presentClientIssue(feed.error).title : null;
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
   const awake = useBrowserTabAwake(hostClient, tabId);
@@ -246,8 +256,8 @@ function BrowserStreamView({
           : undefined;
       setLeaseError(null);
       return release;
-    } catch (error) {
-      setLeaseError(error instanceof Error ? error.message : "This page can’t be shown.");
+    } catch {
+      setLeaseError("This page can’t be shown.");
       return;
     }
   }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
@@ -728,6 +738,10 @@ function BrowserStreamView({
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
   if (!requestedActive && !kept) return null;
+  // The page as it last was, while it isn't arriving: marked as such, and
+  // input waits for it to be readmitted. A tap there pulses the chip.
+  const stale = interactive && !sharedWatch && displayed !== null && feedState !== "synchronized";
+  const pulse = tapped + stalePulse;
   const words = sharedWatch
     ? null
     : (presentationError ??
@@ -737,7 +751,10 @@ function BrowserStreamView({
   return (
     <View
       accessibilityLabel={label}
-      onTouchStart={(event) => trackContacts(event.nativeEvent.touches.length)}
+      onTouchStart={(event) => {
+        trackContacts(event.nativeEvent.touches.length);
+        if (stale) setTapped((count) => count + 1);
+      }}
       onTouchEnd={(event) => trackContacts(event.nativeEvent.touches.length)}
       onTouchCancel={(event) => {
         touchGesture.cancel();
@@ -913,6 +930,11 @@ function BrowserStreamView({
           testID="browser-touch-contact"
           style={[styles.contact, { left: contact.x - 12, top: contact.y - 12 }]}
         />
+      ) : null}
+      {stale ? (
+        <Animated.View entering={dim} exiting={exit} pointerEvents="none" style={styles.stale}>
+          <LastPictureChip pulse={pulse} />
+        </Animated.View>
       ) : null}
       {words === null ? null : (
         <View pointerEvents="box-none" style={styles.status}>
@@ -1128,6 +1150,8 @@ const styles = StyleSheet.create({
     top: 0,
   },
   label: { ...textType.caption, color: color.muted, textAlign: "center" },
+  // Enough to read as "not now" on a bright page, never enough to hide it.
+  stale: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(8, 8, 8, 0.3)" },
   retry: {
     ...material.control,
     alignItems: "center",

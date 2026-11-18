@@ -76,7 +76,7 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
       <ToastProvider>
         <MemoryRouter initialEntries={[`/tasks/${thread.id}`]}>
           <Routes>
-            <Route element={<AppShell hostClient={hostClient} loadError={null} />}>
+            <Route element={<AppShell hostClient={hostClient} />}>
               <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>
           </Routes>

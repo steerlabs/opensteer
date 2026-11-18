@@ -12,7 +12,8 @@ import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
 } from "@opensteer/protocol/browser-sources";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
+import { useOptionalShell } from "../app-shell.js";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
 import { ConnectChrome } from "../chrome/connect-chrome.js";
 import { useChromeInspection } from "../chrome/use-chrome-inspection.js";
@@ -94,6 +95,7 @@ export function BrowserSignInPanel({
   readonly site: string;
   readonly url: string;
 }) {
+  const session = useOptionalShell()?.hostClient ?? null;
   const { error: checkError, inspection, refresh } = useChromeInspection(client, site, true);
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -152,14 +154,16 @@ export function BrowserSignInPanel({
         sourceId: chosen.sourceId,
       };
     }
-    void client
-      .dispatch({
-        idempotencyKey: attempt.current.key,
+    const idempotencyKey = attempt.current.key;
+    void act(session, { label: "sign in", done: "signed in", happened: "you were signed in" }, () =>
+      client.dispatch({
+        idempotencyKey,
         sessionId,
         sourceId: chosen.sourceId,
         type: "browser.session.sign-in",
         url,
-      })
+      }),
+    )
       .then((result) => {
         if (result.type !== "browser.session.sign-in") return;
         attempt.current = null;
@@ -170,7 +174,7 @@ export function BrowserSignInPanel({
         setFailed({ outcome: result.outcome, reading: null });
         refresh();
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setBusy(false));
   };
 

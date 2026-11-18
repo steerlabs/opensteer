@@ -1,7 +1,8 @@
+import { act, failureWords } from "../components/use-action.js";
+import { useClaimConnectionGate } from "../components/connection-shell.js";
 import { Fragment, useState, type ReactNode } from "react";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useTeamAttachment, useTeamSession, useTeams } from "./team-attachments.js";
-import { actionErrorMessage } from "../ui-utils.js";
 
 /** All team routes, including settings and knowledge, share the same recovery boundary. */
 export function TeamPaneGate({
@@ -27,7 +28,10 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
   const [error, setError] = useState<string | null>(null);
   const membership = teamEntryRefusalOutcome(snapshot?.refusalReason) === "membership";
   const ended = snapshot?.ended;
-  if (snapshot?.bootstrap && !ended && !membership) return <Fragment>{children}</Fragment>;
+  const open = Boolean(snapshot?.bootstrap && !ended && !membership);
+  // This screen is the team's one explanation; no other connection's pill speaks over it.
+  useClaimConnectionGate(!open);
+  if (open) return <Fragment>{children}</Fragment>;
   const state = membership || ended === "removed" ? "join" : ended ? "sign-in" : team?.failure;
   const name = team?.name ?? "this team";
   const pending = team && (!state || state === "pending");
@@ -48,14 +52,13 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
   const attempt = () => {
     setBusy(true);
     setError(null);
-    void (
-      surface === "team-web"
-        ? Promise.resolve(window.location.reload())
-        : enter
-          ? enter(teamId)
-          : reload()
+    void act(
+      null,
+      { label: "open this team", done: "opened", happened: "this team opened" },
+      async () =>
+        surface === "team-web" ? window.location.reload() : enter ? enter(teamId) : reload(),
     )
-      .catch((failure: unknown) => setError(actionErrorMessage(failure)))
+      .catch((failure: unknown) => setError(failureWords(failure)))
       .finally(() => setBusy(false));
   };
   return (

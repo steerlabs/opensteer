@@ -46,10 +46,14 @@ vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => true }));
 vi.mock("./confirm.js", () => ({
   confirmDestructive: (input: { readonly onConfirm: () => void }) => input.onConfirm(),
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { readonly children?: ReactNode }) => <main>{children}</main>,
   useListContentInsets: () => ({}),
@@ -234,9 +238,13 @@ describe("the Apps page", () => {
     );
     await press(button(container, "Start Ferry tracker"));
     await waitFor(
-      () => rowText(container, "Ferry tracker").includes("Port 51034 is in use"),
+      () =>
+        rowText(container, "Ferry tracker").includes(
+          "Couldn't confirm “Ferry tracker” was started.",
+        ),
       "the failure was shown",
     );
+    expect(container.textContent).not.toContain("Port 51034");
     expect(rowText(container, "Ferry tracker")).toContain("Server · Stopped");
   });
 
@@ -256,9 +264,10 @@ describe("the Apps page", () => {
     vi.spyOn(host, "deleteApp").mockRejectedValueOnce(new Error("The computer is offline."));
     await press(menuChoice(container, "Groceries actions", "Delete app"));
     await waitFor(
-      () => rowText(container, "Groceries").includes("The computer is offline."),
+      () => rowText(container, "Groceries").includes("Couldn't confirm “Groceries” was deleted."),
       "the failure was shown",
     );
+    expect(container.textContent).not.toContain("The computer is offline.");
     // The Host withdraws the app before it can say its server stopped.
     const withdraw = host.deleteApp;
     vi.spyOn(host, "deleteApp").mockImplementationOnce(async (appId) => {
@@ -267,13 +276,14 @@ describe("the Apps page", () => {
     });
     await press(menuChoice(container, "Groceries actions", "Delete app"));
     await waitFor(
-      () => container.textContent?.includes("Its computer did not confirm") === true,
+      () => container.textContent?.includes("Couldn't confirm “Groceries” was deleted.") === true,
       "the outcome was shown",
     );
     expect(() => button(container, "Open Groceries")).toThrow();
-    expect(container.textContent).toContain("“Groceries” could not be deleted");
+    expect(container.textContent).not.toContain("Its computer did not confirm");
     expect((await host.listApps()).map(({ name }) => name)).not.toContain("Groceries");
-    await press(button(container, "Dismiss"));
+    // Check rereads the list, which no longer has it.
+    await press(button(container, "Check"));
     expect(container.textContent).not.toContain("Groceries");
   });
 });

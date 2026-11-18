@@ -1,3 +1,6 @@
+import { clientScopeKey } from "@opensteer/client/connections";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { createClientRead } from "@opensteer/client/reads";
 import { Link } from "react-router";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -49,10 +52,10 @@ import {
   type ComputerUseViewer,
 } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
-import { useComputerUseStop } from "@opensteer/client/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useClientConnection, useClientRead, useComputerUseStop } from "@opensteer/client/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords, useDisposedWithView } from "../use-action.js";
 
 import { AppMark } from "./app-icons.js";
 
@@ -111,11 +114,11 @@ export function ComputerUseBlock({
     setBusy(key);
     setFailure(null);
     try {
-      await operation();
+      await act(hostClient, { label: "change this", done: "changed" }, operation);
       // A failed reload after a successful mutation does not undo the change.
       await onChanged().catch(() => undefined);
     } catch (reason) {
-      setFailure({ key, message: actionErrorMessage(reason) });
+      setFailure({ key, message: failureWords(reason) ?? "" });
     } finally {
       acting.current = false;
       setBusy(null);
@@ -491,14 +494,18 @@ function PermissionSteps({
   function setUp(actions: ComputerUseLocalActions) {
     const attempt = ++setupAttempt.current;
     setSetupFailure(null);
-    void actions.openPermissions().then(
+    void act(
+      null,
+      { label: "open System Settings", done: "opened", happened: "System Settings opened" },
+      () => actions.openPermissions(),
+    ).then(
       (result) => {
         if (attempt === setupAttempt.current) {
           setSetupFailure(result.opened ? null : unsignedBuildSentence);
         }
       },
       (reason: unknown) => {
-        if (attempt === setupAttempt.current) setSetupFailure(actionErrorMessage(reason));
+        if (attempt === setupAttempt.current) setSetupFailure(failureWords(reason));
       },
     );
   }
@@ -580,69 +587,92 @@ function AddAppDialog({
   readonly onDone: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
-  const [listing, setListing] = useState<{
+  const [heldListing, setListing] = useState<{
     readonly apps: readonly ComputerUseInstalledApp[];
     readonly query: string;
+    readonly scopeKey: string | null;
     readonly total: number;
   } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const scopeKey = clientScopeKey(useClientConnection(hostClient.connection).scope);
+  const [request, load] = useState({ search: "", offset: 0, scopeKey });
+
   const [asking, setAsking] = useState<{
     readonly access: IntegrationAccess;
     readonly bundleId: string;
   } | null>(null);
   const [askError, setAskError] = useState<Failure | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const generation = useRef(0);
-
-  const load = useCallback(
-    (search: string, offset: number) => {
-      const current = ++generation.current;
-      setLoading(true);
-      setLoadError(null);
-      hostClient.rpc["integration.computer.apps.installed"]({
-        icons: true,
-        limit: pickerPageSize,
-        offset,
-        query: search,
-        runnerId: machine.id,
-      })
-        .then(unwrapRpcResult)
-        .then((result) => {
-          if (current !== generation.current) return;
-          if (result.unavailableReason) {
-            setListing(null);
-            setLoadError(
-              result.unavailableReason === "offline"
-                ? `${machine.name} is offline.`
-                : `${machine.name} isn’t ready to list apps yet.`,
-            );
-            return;
-          }
-          setListing((previous) => ({
-            apps:
-              offset > 0 && previous?.query === search
-                ? [...previous.apps, ...result.apps]
-                : result.apps,
-            query: search,
-            total: result.total,
-          }));
-        })
-        .catch((reason: unknown) => {
-          if (current === generation.current) setLoadError(actionErrorMessage(reason));
-        })
-        .finally(() => {
-          if (current === generation.current) setLoading(false);
-        });
-    },
-    [hostClient, machine.id, machine.name],
+  const { search } = request;
+  const offset = request.scopeKey === scopeKey ? request.offset : 0;
+  const resource = useMemo(
+    () =>
+      createClientRead(hostClient, {
+        key: JSON.stringify(["computer-apps", machine.id, search, offset]),
+        label: "this computer's apps",
+        scopeKey,
+        read: async (signal) =>
+          unwrapRpcResult(
+            await hostClient.rpc["integration.computer.apps.installed"](
+              {
+                icons: true,
+                limit: pickerPageSize,
+                offset,
+                query: search,
+                runnerId: machine.id,
+              },
+              { signal },
+            ),
+          ),
+      }),
+    [hostClient, machine.id, scopeKey, search, offset],
   );
+  useDisposedWithView(resource);
+  const read = useClientRead(resource);
+  const result = read.data;
+  const denied = read.issue?.code === "access-lost";
+  const listing = !denied && heldListing?.scopeKey === scopeKey ? heldListing : null;
+  const loading =
+    read.status === "waiting" ||
+    read.status === "loading" ||
+    (read.status === "ready" && read.refreshing);
+  const loadError = read.issue
+    ? presentClientIssue(read.issue).title
+    : result?.unavailableReason
+      ? result.unavailableReason === "offline"
+        ? `${machine.name} is offline.`
+        : `${machine.name} isn’t ready to list apps yet.`
+      : null;
+
+  useEffect(() => {
+    if (denied) {
+      setListing(null);
+      return;
+    }
+    if (!result || query.trim() !== search) return;
+    if (result.unavailableReason) {
+      setListing(null);
+      return;
+    }
+    setListing((previous) => ({
+      apps:
+        offset > 0 && previous?.query === search && previous.scopeKey === scopeKey
+          ? [...previous.apps.slice(0, offset), ...result.apps]
+          : result.apps,
+      query: search,
+      scopeKey,
+      total: result.total,
+    }));
+  }, [denied, offset, query, result, scopeKey, search]);
 
   useEffect(() => {
     const search = query.trim();
-    const timer = globalThis.setTimeout(() => load(search, 0), search ? pickerSearchDelayMs : 0);
+    if (search === request.search) return;
+    const timer = globalThis.setTimeout(
+      () => load({ search, offset: 0, scopeKey }),
+      search ? pickerSearchDelayMs : 0,
+    );
     return () => globalThis.clearTimeout(timer);
-  }, [load, query]);
+  }, [query, request.search, scopeKey]);
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -658,10 +688,14 @@ function AddAppDialog({
     setAsking({ access, bundleId: app.identity.bundleId });
     setAskError(null);
     try {
-      await onApprove({ access, app: app.identity });
+      await act(
+        hostClient,
+        { label: "add this app", done: "added", happened: "this app was added" },
+        () => onApprove({ access, app: app.identity }),
+      );
       await onDone();
     } catch (reason) {
-      setAskError({ key: app.identity.bundleId, message: actionErrorMessage(reason) });
+      setAskError({ key: app.identity.bundleId, message: failureWords(reason) ?? "" });
       setAsking(null);
     }
   }
@@ -702,12 +736,22 @@ function AddAppDialog({
             value={query}
           />
         </label>
-        {loadError ? (
-          <p className="notice notice--error" role="alert">
-            {loadError}
-          </p>
-        ) : listing === null ? (
-          <p className="computer-use__fine">Asking {machine.name} for its apps…</p>
+        {listing === null ? (
+          loadError ? (
+            <p className="notice notice--error" role="alert">
+              {loadError}{" "}
+              <button
+                className="btn btn--small"
+                disabled={loading}
+                onClick={() => void resource.refresh()}
+                type="button"
+              >
+                Try again
+              </button>
+            </p>
+          ) : (
+            <p className="computer-use__fine">Asking {machine.name} for its apps…</p>
+          )
         ) : apps.length === 0 ? (
           <p className="computer-use__fine">
             {listing.query ? `No app matches “${listing.query}”.` : "No apps found on this Mac."}
@@ -768,11 +812,19 @@ function AddAppDialog({
             })}
           </ul>
         )}
-        {listing && apps.length < listing.total && !loadError ? (
+        {listing && loadError ? (
+          <p className="form-actions__error" role="alert">
+            {loadError}
+          </p>
+        ) : null}
+        {listing && apps.length < listing.total ? (
           <button
             className="btn btn--ghost btn--small computer-use__more"
             disabled={loading}
-            onClick={() => load(listing.query, apps.length)}
+            onClick={() => {
+              if (search === listing.query && offset === apps.length) void resource.refresh();
+              else load({ search: listing.query, offset: apps.length, scopeKey });
+            }}
             type="button"
           >
             {loading ? "Loading…" : "Show more"}

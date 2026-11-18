@@ -159,13 +159,13 @@ describe("ComputerAppAgentAccess", () => {
 
     expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
-      "The Host refused this grant.",
+      "Couldn't confirm agent access changed.",
     );
 
     host.list.mockRejectedValueOnce(new Error("Grants are unavailable."));
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Grants are unavailable.",
+      "Couldn't load app access.",
     );
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')).toBeNull();

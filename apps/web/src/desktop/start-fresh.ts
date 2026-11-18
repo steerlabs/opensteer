@@ -72,12 +72,9 @@ export function useStartFresh(
   const startFresh = useCallback(() => {
     if (!reset || state.phase !== "offer") return;
     dispatch({ type: "start" });
-    reset.startFresh().catch((reason: unknown) =>
-      dispatch({
-        type: "failed",
-        error: reason instanceof Error ? reason.message : "Opensteer couldn’t start fresh.",
-      }),
-    );
+    reset
+      .startFresh()
+      .catch(() => dispatch({ type: "failed", error: "Opensteer couldn’t start fresh." }));
   }, [reset, state.phase]);
   return { state, startFresh };
 }

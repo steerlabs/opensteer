@@ -1,3 +1,4 @@
+import { presentMessageRejection } from "../feedback/client-issue.js";
 import { OpensteerError } from "@opensteer/core";
 import type { TeamChannelSummary, TeamMember, TeamRemotePeopleSchema } from "@opensteer/protocol";
 import type { z } from "zod";
@@ -94,8 +95,19 @@ export function pendingSendView(
   send: { readonly failure: string | null },
   connected: boolean,
   retry: { readonly error: unknown; readonly teamName: string | undefined } | null,
+  teamName?: string,
 ): TeamPendingSendView {
-  if (send.failure !== null) return { kind: "failed", reason: send.failure };
+  // `failure` is the refusal's reason code; older records hold words, which word as unknown.
+  if (send.failure !== null)
+    return {
+      kind: "failed",
+      reason: presentMessageRejection({
+        code: "rejected",
+        reason: send.failure,
+        target: "team",
+        ...(teamName ? { name: teamName } : {}),
+      }),
+    };
   if (retry)
     return {
       kind: "retryable",

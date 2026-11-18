@@ -1,3 +1,15 @@
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import {
+  createMessageOutboxStorage,
+  disposeMessageOutbox,
+  initializeMessageOutbox,
+  type MessageOutboxStorage,
+} from "@opensteer/client/host";
+import {
+  createConnectionController,
+  type ConnectionController,
+  type ClientScope,
+} from "@opensteer/client/connections";
 import type { HostApiCommandInput, HostApiCommandOutput } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -29,7 +41,7 @@ import {
   HostAttachmentFence,
   HostTransportError,
   ClientOperationError,
-  clientPublicDetail,
+  CapabilityVerificationError,
   emptyDeploymentCatalog,
   resolveConnection,
   type AccountDeploymentDirectoryUnavailable,
@@ -99,6 +111,7 @@ import type {
  * not. `hostClient` is non-null exactly when `status` is `connected`.
  */
 export interface MobileSelection {
+  readonly session?: import("@opensteer/client/connections").ClientSession | null;
   readonly connection: DeploymentConnection | null;
   readonly deploymentId: DeploymentId | null;
   readonly hostClient: HostClient | null;
@@ -168,6 +181,11 @@ async function dispatchWithin(
 }
 
 export interface MobileClientOptions {
+  readonly afterMessageSent?: () => void;
+  readonly forgetMessageFiles?: (
+    scope: { readonly deploymentId: string; readonly userId: string; readonly threadId: string },
+    uris: readonly (string | null)[],
+  ) => void | Promise<void>;
   readonly notificationPreviews?: NotificationPreviews | null;
   readonly lifecycle?: ClientLifecycle;
   readonly savedViewStore?: SavedViewStore;
@@ -242,13 +260,14 @@ export class MobileClient {
   readonly usageNotices: UsageNoticeDismissals;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
+  readonly #messageStorage: MessageOutboxStorage;
   readonly oauth: NativeOAuthManager;
   readonly sessionExchange: HostSessionExchange;
   readonly sessions: PersonalSessionStore;
 
   readonly #savedViewCache: SavedViewCache;
   readonly #changingLogins = new Set<string>();
-  readonly #loginInitializedClients = new WeakSet<HostClient>();
+  readonly #savedViewAuthorizedClients = new WeakSet<HostClient>();
   #attachedViewLoginId: string | undefined;
   #cacheIdentityFailureAttempt: number | null = null;
   readonly #authStore: ProtectedAuthStore;
@@ -286,6 +305,7 @@ export class MobileClient {
   #attachedDeploymentId: DeploymentId | null = null;
   /** The fence generation the open attachment was made against. */
   #attachmentGeneration = -1;
+  #credentialRevision = 0;
   /**
    * Whether the attached Host refused this phone's credential. A credential
    * this device still holds is not a credential the Host still accepts — a
@@ -306,6 +326,10 @@ export class MobileClient {
   /** `undefined` is the one-time, first-launch auto-selection opportunity. */
   #selectionPreference: DeploymentId | null | undefined;
   #hostClient: HostClient | null = null;
+  #connection: ConnectionController | null = null;
+  get lifecycle(): ClientLifecycle | undefined {
+    return this.#lifecycle;
+  }
   #hostOrigin: string | null = null;
   #hostClientDetach: (() => void) | null = null;
   #storageFailure: string | null = null;
@@ -321,7 +345,11 @@ export class MobileClient {
     savedViewFailure: null,
   };
 
+  readonly #afterMessageSent: MobileClientOptions["afterMessageSent"];
+  readonly #forgetMessageFiles: MobileClientOptions["forgetMessageFiles"];
   constructor(options: MobileClientOptions) {
+    this.#afterMessageSent = options.afterMessageSent;
+    this.#forgetMessageFiles = options.forgetMessageFiles;
     this.portalOrigin = options.portalOrigin ?? null;
     this.#notificationPreviews = options.notificationPreviews ?? null;
     this.#savedViewCache = new SavedViewCache({
@@ -339,9 +367,6 @@ export class MobileClient {
         options.lifecycle.onBackground(() => {
           void this.savedViews.flush();
         }),
-        options.lifecycle.onNetworkChange((network) =>
-          this.savedViews.connection(network, this.#attachmentState === "offline"),
-        ),
       );
     this.#detach.push(
       this.#savedViewCache.subscribe(() => {
@@ -355,7 +380,7 @@ export class MobileClient {
           !this.#savedViewCache.isPending(id) &&
           !this.#changingLogins.has(id)
         )
-          void this.#initializeViewLoginIds(client).catch(noop);
+          void this.#authorizeSavedView(client).catch(noop);
         const failure = this.#savedViewCache.getFailure();
         if (failure === this.#state.savedViewFailure) return;
         this.#state = { ...this.#state, savedViewFailure: failure };
@@ -390,6 +415,23 @@ export class MobileClient {
         },
       },
     });
+    const outboxDirectory = `${options.draftsFilePath.slice(0, options.draftsFilePath.lastIndexOf("/"))}/message-outbox`;
+    this.#messageStorage = createMessageOutboxStorage({
+      read: async (key) => {
+        const bytes = await options.privateFiles.readFile(
+          `${outboxDirectory}/${key}.json`,
+          20 * 1024 * 1024,
+        );
+        return bytes === null ? null : new TextDecoder().decode(bytes);
+      },
+      write: async (key, value) => {
+        await options.privateFiles.ensureDirectory(outboxDirectory);
+        await options.privateFiles.writeFileAtomic(`${outboxDirectory}/${key}.json`, value);
+      },
+      remove: async (key) => {
+        await options.privateFiles.removeFile(`${outboxDirectory}/${key}.json`);
+      },
+    });
     this.drafts = createThreadDraftStore({
       filePath: options.draftsFilePath,
       ...(options.forgetDraftFiles ? { forgetDraftFiles: options.forgetDraftFiles } : {}),
@@ -401,6 +443,15 @@ export class MobileClient {
       beforeChange: async (id) => {
         await this.#notificationPreviews?.clear(id);
         await this.#invalidateSavedView(id);
+      },
+      willChange: (id, nextLoginId) => {
+        if (
+          id !== this.#attachedDeploymentId ||
+          (nextLoginId && nextLoginId === this.#attachedViewLoginId)
+        )
+          return;
+        this.#credentialRevision++;
+        if (this.#hostClient) this.#connection?.invalidateScope();
       },
       changed: (session) => {
         if (
@@ -887,10 +938,7 @@ export class MobileClient {
     void this.#notificationPreviews?.reconcile().catch(noop);
     await this.#savedViewCache.retryInvalidation();
     await this.directoryRefresh.request("app-focus");
-    const id = this.#state.selection.deploymentId;
-    if (id !== null && this.#hostClient === null && this.#attachmentState === "offline") {
-      await this.retrySelection();
-    }
+    this.#connection?.wake();
   }
 
   /**
@@ -1109,7 +1157,15 @@ export class MobileClient {
                       )
                         resolve();
                     };
-                    detach = client === null ? this.subscribe(ready) : client.subscribe(ready);
+                    if (client === null) detach = this.subscribe(ready);
+                    else {
+                      const releaseHost = client.subscribe(ready),
+                        releaseConnection = client.connection.subscribe(ready);
+                      detach = () => {
+                        releaseHost();
+                        releaseConnection();
+                      };
+                    }
                     ready();
                   }),
                   wait,
@@ -1388,22 +1444,99 @@ export class MobileClient {
     return this.#attachmentAttempt;
   }
 
-  /** Resolves and attaches one locally committed choice outside the mutation queue. */
   async #attachSelection(
+    id: DeploymentId,
+    selectionAttempt: number,
+    options: AttachmentOptions = {},
+  ): Promise<AttachmentOutcome> {
+    if (!this.#isCurrentSelection(id, selectionAttempt)) return { kind: "superseded" };
+    if (this.#connection) {
+      this.#connection.retry();
+      return this.#hostClient ? { kind: "attached" } : { kind: "unroutable" };
+    }
+    const initial = Promise.withResolvers<AttachmentOutcome>();
+    let unwatch = () => {};
+    const first = (outcome: AttachmentOutcome) => {
+      unwatch();
+      initial.resolve(outcome);
+    };
+    const selected = this.#state.catalog.deployments.find(
+      (row) => row.authority.document.deploymentId === id,
+    );
+    const connection = createConnectionController({
+      ...(this.#lifecycle ? { lifecycle: this.#lifecycle } : {}),
+      presentation: {
+        name: this.#state.rows.find((row) => row.deploymentId === id)?.name ?? null,
+        target: "computer",
+        route: selected?.source.kind === "manual" ? "private-network" : "connect",
+      },
+      driver: {
+        connect: async (attempt) => {
+          let outcome: AttachmentOutcome;
+          if (!this.#hostClient || this.#attachmentGeneration !== this.#fence.generation) {
+            this.#disposeHostClient();
+            try {
+              outcome = await this.#attachSelectionOnce(
+                id,
+                selectionAttempt,
+                options,
+                attempt.signal,
+              );
+            } catch (error) {
+              first({ kind: "session-failed", error });
+              throw error;
+            }
+          } else outcome = { kind: "attached" };
+          first(outcome);
+          attempt.signal.throwIfAborted();
+          if (outcome.kind === "verification-failed")
+            throw new CapabilityVerificationError(outcome.verification);
+          if (outcome.kind === "session-failed") throw outcome.error;
+          if (outcome.kind === "needs-credential")
+            throw new HostClientRequestError({
+              code: "unauthorized",
+              message: "Sign in to continue.",
+              retryable: false,
+              status: 401,
+            });
+          if (outcome.kind !== "attached" || !this.#hostClient)
+            throw new HostTransportError("unreachable");
+          return this.#hostClient.openConnection(attempt);
+        },
+      },
+    });
+    this.#connection = connection;
+    connection.subscribe(() => {
+      void this.#republish();
+    });
+    unwatch = connection.subscribe(() => {
+      const state = connection.getSnapshot();
+      if (!this.#isCurrentSelection(id, selectionAttempt)) first({ kind: "superseded" });
+      else if (state.network === "offline" || state.visibility === "background")
+        first({ kind: "unroutable" });
+    });
+    connection.start();
+    return initial.promise;
+  }
+
+  /** Resolves and attaches one locally committed choice outside the mutation queue. */
+  async #attachSelectionOnce(
     id: DeploymentId,
     attempt: number,
     options: AttachmentOptions = {},
+    signal?: AbortSignal,
   ): Promise<AttachmentOutcome> {
+    const current = () => !signal?.aborted && this.#isCurrentSelection(id, attempt);
     let catalog: DeploymentCatalog;
     // An external catalog writer can overtake either fence read. Reassert this
     // explicit selection and resolve again; a route and a credential from two
     // different Deployments must never become one attachment.
-    while (this.#isCurrentSelection(id, attempt)) {
+    while (current()) {
       let resolution = await this.#resolve(id);
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       if (resolution.kind === "superseded") {
         const restored = await this.#operations.run(async () => {
-          if (!this.#isCurrentSelection(id, attempt)) return false;
+          if (!current()) return false;
           catalog = await this.catalog.load();
           if (
             !catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)
@@ -1430,6 +1563,7 @@ export class MobileClient {
         generation,
         id,
         attempt,
+        current,
       );
       if (typeof verification === "string") {
         if (verification === "superseded") return { kind: "superseded" };
@@ -1447,9 +1581,9 @@ export class MobileClient {
         this.#signedOut.add(id);
         await this.#signedOutFile.write(this.#signedOutIds());
       }
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       resolution = await this.#resolve(id);
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       if (generation !== this.#fence.generation || resolution.kind === "superseded") continue;
       if (resolution.kind === "unroutable") {
         this.#attachmentGeneration = this.#fence.generation;
@@ -1473,17 +1607,17 @@ export class MobileClient {
             this.#authorizationEpoch,
           );
           if (!established) {
-            if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+            if (!current()) return { kind: "superseded" };
             if (generation !== this.#fence.generation) continue;
             await this.#republish();
             return { attempt, generation, kind: "needs-credential" };
           }
           this.#sessionFailures.delete(id);
           authorization = await this.#authorizationFor(selected.connection);
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation) continue;
           resolution = await this.#resolve(id);
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation || resolution.kind === "superseded") continue;
           if (resolution.kind === "unroutable") {
             this.#attachmentGeneration = this.#fence.generation;
@@ -1491,7 +1625,7 @@ export class MobileClient {
             return { kind: "unroutable" };
           }
         } catch (error) {
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation) continue;
           this.#sessionFailures.set(id, sessionFailureOf(error));
           await this.#republish();
@@ -1504,23 +1638,80 @@ export class MobileClient {
       }
       this.#sessionFailures.delete(id);
       const attachment = resolution.selected;
+      const credentialRevision = this.#credentialRevision;
+      const sameCredential = () =>
+        current() &&
+        generation === this.#fence.generation &&
+        credentialRevision === this.#credentialRevision;
+      let viewLoginId = await this.#viewLoginId(attachment.connection);
+      if (!viewLoginId && attachment.connection.kind === "personal" && sameCredential()) {
+        try {
+          viewLoginId = await this.sessions.initializeViewLoginId?.(id, sameCredential);
+        } catch {
+          this.#cacheIdentityFailureAttempt = attempt;
+        }
+      }
+      if (attachment.connection.source.kind === "account")
+        await this.oauth.initializeViewLoginIds(attachment.connection, sameCredential).catch(noop);
+      if (!sameCredential()) continue;
+      if (
+        (!viewLoginId && this.#host.credentials.viewLoginId) ||
+        (attachment.connection.source.kind === "account" && !this.oauth.accountViewLoginId())
+      ) {
+        this.#attachmentState = "offline";
+        this.#sessionFailures.set(id, "unavailable");
+        await this.#republish();
+        return {
+          kind: "session-failed",
+          error: new ClientOperationError("Could not save this phone's login.", "blocked", {
+            kind: "local",
+            provenance: "local",
+            reason: "login-storage-unavailable",
+            retryable: false,
+          }),
+        };
+      }
+      const loginId = viewLoginId;
+      const accountOwned = attachment.connection.source.kind === "account";
+      const accountLoginId = accountOwned ? this.oauth.accountViewLoginId() : undefined;
       const assertCurrentAttachment = (): void => {
-        if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation)
-          throw new Error("Host attachment changed during verification.");
+        if (
+          !this.#isCurrentSelection(id, attempt) ||
+          generation !== this.#fence.generation ||
+          credentialRevision !== this.#credentialRevision ||
+          (accountOwned && accountLoginId !== this.oauth.accountViewLoginId())
+        )
+          throw new HostTransportError("deployment-changed");
       };
       const attachmentAuthorization = createHostAuthorization(async () => {
         assertCurrentAttachment();
-        const value = await this.#authorizationFor(attachment.connection);
+        const value = await this.#authorizationFor(attachment.connection, loginId);
         assertCurrentAttachment();
         return value;
       });
-      // This evidence belongs only to this attempt and fence generation. A
-      // healthy poll cannot observe an upgrade; reconnects and refusals can.
       let evidence: typeof verification | null = verification;
       let verifying: Promise<readonly HostCapability[]> | null = null;
-      const viewLoginId = await this.#viewLoginId(attachment.connection);
-      if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
+        ...(this.#connection ? { connectionController: this.#connection } : {}),
+        clientScope: () => {
+          const viewer = this.#hostClient?.getSnapshot().user?.id;
+          if (
+            !viewer ||
+            !loginId ||
+            (attachment.connection.source.kind === "account" && !accountLoginId)
+          )
+            return null;
+          return {
+            authorityKey: JSON.stringify([
+              attachment.connection.authority.document.hostInstanceId,
+              hostKeyFingerprint(attachment.connection.authority.publicKey.spki),
+            ]),
+            deploymentId: id,
+            viewerId: viewer,
+            loginId,
+            ...(accountLoginId ? { accountLoginId } : {}),
+          };
+        },
         assetRoute: {
           current: () => this.#fence.current(),
           onAttachmentInvalidated: (listener) => this.#fence.onInvalidated(listener),
@@ -1538,8 +1729,7 @@ export class MobileClient {
           if (!evidence && !verifying) {
             verifying = (async () => {
               const agreement = await this.#checkProtocolEpoch(attachment, generation, id, attempt);
-              if (typeof agreement === "string")
-                throw new Error(`Host capability verification failed: ${agreement}`);
+              if (typeof agreement === "string") throw new CapabilityVerificationError(agreement);
               assertCurrentAttachment();
               evidence = agreement;
               return agreement.capabilities;
@@ -1554,13 +1744,47 @@ export class MobileClient {
         connection: attachment.connection,
         origin: attachment.resolved.origin,
       });
-      if (generation !== this.#fence.generation || !this.#isCurrentSelection(id, attempt)) {
+      if (generation !== this.#fence.generation || !current()) {
         hostClient.dispose();
         continue;
       }
-      this.#attachedViewLoginId = viewLoginId;
+      this.#attachedViewLoginId = loginId;
       this.#changingLogins.delete(id);
       this.#hostClient = hostClient;
+      initializeMessageOutbox(hostClient, {
+        storage: this.#messageStorage,
+        legacy: {
+          load: async (scope) => {
+            const fallback = this.#priorOutboxScopes(hostClient, scope, attachment);
+            const [drafts, ...pending] = await Promise.all([
+              this.drafts.legacyMessages.load(scope),
+              ...fallback.map((prior) => this.#messageStorage.load(prior)),
+            ]);
+            return [...drafts, ...pending.flat()];
+          },
+          remove: async (scope, key) => {
+            const fallback = this.#priorOutboxScopes(hostClient, scope, attachment);
+            await Promise.all([
+              ...fallback.map((prior) => this.#messageStorage.remove(prior, key)),
+              this.drafts.legacyMessages.remove(scope, key),
+            ]);
+          },
+        },
+        onConfirmed: () => this.#afterMessageSent?.(),
+        onDiscarded: (scope, entry) =>
+          this.#forgetMessageFiles?.(
+            {
+              deploymentId: scope.deploymentId,
+              threadId: entry.command.threadId,
+              userId: scope.viewerId,
+            },
+            entry.localAttachmentUris ?? [],
+          ),
+        drafts: {
+          restore: (scope, entry, isCurrent) => this.drafts.restoreMessage(scope, entry, isCurrent),
+        },
+        ...(this.#connection ? { session: { connection: this.#connection } } : {}),
+      });
       this.#hostOrigin = attachment.resolved.origin;
       this.#readAttachment(hostClient);
       let previewAuthenticated = false;
@@ -1592,10 +1816,14 @@ export class MobileClient {
       attachPreviews();
       let previewAccountLoginId = this.oauth.accountViewLoginId();
       const detachAccount = this.oauth.subscribe(() => {
-        const loginId = this.oauth.accountViewLoginId();
-        if (loginId === previewAccountLoginId) return;
-        previewAccountLoginId = loginId;
-        if (loginId !== undefined) attachPreviews();
+        const next = this.oauth.accountViewLoginId();
+        if (this.#hostClient !== hostClient || next === previewAccountLoginId) return;
+        previewAccountLoginId = next;
+        if (accountOwned) {
+          this.#credentialRevision++;
+          this.#connection?.invalidateScope();
+          void this.#replaceCredentialAttachment(id);
+        } else if (next !== undefined) attachPreviews();
       });
       this.#hostClientDetach = () => {
         detachHost();
@@ -1603,12 +1831,37 @@ export class MobileClient {
       };
       this.savedViews.attach(hostClient);
       await this.#republish();
-      if (this.#isCurrentSelection(id, attempt) && this.#hostClient === hostClient) {
-        void hostClient.load().catch(noop);
-      }
       return { kind: "attached" };
     }
     return { kind: "superseded" };
+  }
+
+  #priorOutboxScopes(
+    client: HostClient,
+    scope: ClientScope,
+    attachment: SelectedAttachment,
+  ): ClientScope[] {
+    const snapshot = client.getSnapshot();
+    if (
+      this.#hostClient !== client ||
+      snapshot.session !== "authenticated" ||
+      snapshot.deploymentId !== scope.deploymentId ||
+      snapshot.user?.id !== scope.viewerId ||
+      !snapshot.sessionId
+    )
+      return [];
+    const prior: ClientScope[] = [
+      {
+        authorityKey: new URL(attachment.resolved.origin).origin,
+        deploymentId: scope.deploymentId,
+        viewerId: scope.viewerId,
+        loginId: snapshot.sessionId,
+      },
+    ];
+    const accountLoginId = this.oauth.accountViewLoginId();
+    if (attachment.connection.source.kind === "manual" && accountLoginId)
+      prior.push({ ...scope, accountLoginId });
+    return prior;
   }
 
   async #deselectNow(): Promise<void> {
@@ -1858,6 +2111,7 @@ export class MobileClient {
     this.savedViews.detach();
     this.#hostClientDetach?.();
     this.#hostClientDetach = null;
+    if (this.#hostClient) disposeMessageOutbox(this.#hostClient);
     this.#hostClient?.dispose();
     this.#hostClient = null;
     this.#hostOrigin = null;
@@ -1869,6 +2123,8 @@ export class MobileClient {
 
   #releaseAttachment(): void {
     this.#attachmentAttempt += 1;
+    this.#connection?.dispose();
+    this.#connection = null;
     this.#disposeHostClient();
     this.#attachedDeploymentId = null;
   }
@@ -1903,10 +2159,10 @@ export class MobileClient {
     if (
       snapshot.session === "authenticated" &&
       snapshot.user !== null &&
-      !this.#loginInitializedClients.has(hostClient)
+      !this.#savedViewAuthorizedClients.has(hostClient)
     ) {
-      this.#loginInitializedClients.add(hostClient);
-      void this.#initializeViewLoginIds(hostClient).catch(noop);
+      this.#savedViewAuthorizedClients.add(hostClient);
+      void this.#authorizeSavedView(hostClient).catch(noop);
     }
     if (snapshot.connection === "connected") this.#attachmentConnected = true;
     const state: DeploymentAttachment =
@@ -2009,7 +2265,7 @@ export class MobileClient {
       .catch(noop);
   }
 
-  async #initializeViewLoginIds(client: HostClient): Promise<void> {
+  async #authorizeSavedView(client: HostClient): Promise<void> {
     const id = this.#attachedDeploymentId;
     if (id === null || this.#cacheIdentityFailureAttempt === this.#attachmentAttempt) return;
     const connection = this.#requireConnection(id);
@@ -2023,13 +2279,6 @@ export class MobileClient {
       !this.#changingLogins.has(id) &&
       !this.#savedViewCache.isPending(id) &&
       client.getSnapshot().session === "authenticated";
-    await this.oauth.initializeViewLoginIds(connection, isCurrent);
-    if (!isCurrent()) return;
-    if (connection.kind === "personal") await this.sessions.initializeViewLoginId?.(id, isCurrent);
-    if (!isCurrent()) return;
-    const loginId = await this.#viewLoginId(connection);
-    if (!isCurrent()) return;
-    this.#attachedViewLoginId = loginId;
     const scope = await this.#savedScope(connection);
     if (isCurrent() && scope) {
       this.#savedViewCache.confirm(id);
@@ -2306,14 +2555,17 @@ export class MobileClient {
   }
 
   /** The header this Deployment's requests carry, or null when it has none. */
-  async #authorizationFor(connection: DeploymentConnection): Promise<string | null> {
+  async #authorizationFor(
+    connection: DeploymentConnection,
+    expectedLoginId?: string,
+  ): Promise<string | null> {
     const deploymentId = connection.authority.document.deploymentId;
     if (
       this.#iphoneApps?.removedDeploymentId?.() === deploymentId ||
       this.#signedOut.has(deploymentId)
     )
       return null;
-    const authorization = await this.#host.credentials.authorization(connection);
+    const authorization = await this.#host.credentials.authorization(connection, expectedLoginId);
     if (authorization === null) this.#credentialed.delete(deploymentId);
     else this.#credentialed.add(deploymentId);
     return authorization;
@@ -2330,9 +2582,14 @@ export class MobileClient {
     generation: number,
     deploymentId: DeploymentId,
     attempt: number,
+    current?: () => boolean,
   ): Promise<ProtocolVerificationOutcome> {
     const agreement = await this.#host.verifyEpoch(selected.resolved, selected.connection);
-    if (!this.#isCurrentSelection(deploymentId, attempt) || generation !== this.#fence.generation) {
+    if (
+      current?.() === false ||
+      !this.#isCurrentSelection(deploymentId, attempt) ||
+      generation !== this.#fence.generation
+    ) {
       return "superseded";
     }
     if (agreement === "unreachable") {
@@ -2354,7 +2611,11 @@ export class MobileClient {
     }
     this.#verification.delete(deploymentId);
     await this.#republish();
-    if (!this.#isCurrentSelection(deploymentId, attempt) || generation !== this.#fence.generation) {
+    if (
+      current?.() === false ||
+      !this.#isCurrentSelection(deploymentId, attempt) ||
+      generation !== this.#fence.generation
+    ) {
       return "superseded";
     }
     return agreement;
@@ -2428,11 +2689,6 @@ export class MobileClient {
         : (catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === attachedId,
           ) ?? null);
-    const network =
-      this.#lifecycle?.getSnapshot().network ??
-      this.#hostClient?.getSnapshot().network ??
-      "unknown";
-    this.savedViews.connection(network, this.#attachmentState === "offline");
     this.#state = {
       pendingComputer: this.#pendingComputer,
       account,
@@ -2446,6 +2702,7 @@ export class MobileClient {
           signedIn: this.#credentialed.has(connection.authority.document.deploymentId),
         })),
       selection: {
+        session: this.#connection ? { connection: this.#connection } : null,
         connection,
         deploymentId: attachedId,
         hostClient:
@@ -2503,10 +2760,10 @@ export class MobileClient {
       }
       if (!this.#disposed && generation === this.#directoryGeneration) {
         this.#directoryState = {
-          detail: clientPublicDetail(
-            error,
-            "This phone could not refresh your Opensteer Account deployments.",
-          ),
+          detail: (() => {
+            const issue = clientIssue(error, { operation: "read", label: "your computers" });
+            return issue ? presentClientIssue(issue).title : null;
+          })(),
           status: "error",
           unavailable: [],
         };
@@ -2587,9 +2844,6 @@ function signedOutAccountState(): DesktopAccountAuthState {
 }
 
 /** The message a screen shows for a failed operation, with nothing leaked. */
-export function operationDetail(error: unknown, fallback: string): string {
-  return clientPublicDetail(error, fallback);
-}
 
 /**
  * A team is its own Host beside the person's Opensteer: it is listed in the

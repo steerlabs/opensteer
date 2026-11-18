@@ -59,11 +59,9 @@ import {
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
-const selfHostGuide = "https://github.com/steerlabs/opensteer/tree/main/deploy/team";
+import { teamFailureWords } from "./team-feedback.js";
 
-function failureText(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
+const selfHostGuide = "https://github.com/steerlabs/opensteer/tree/main/deploy/team";
 
 /** The computer whose agent a new or joined team connects: the one the phone is showing. */
 function usePersonalDeploymentId(): string | null {
@@ -402,7 +400,7 @@ export function TeamSetupScreen(
               () => navigation.goBack(),
               (error: unknown) => {
                 setBusy(null);
-                setFailure(failureText(error, "Setup couldn't be cancelled."));
+                setFailure(teamFailureWords(error, "Setup couldn't be cancelled."));
               },
             );
           },
@@ -471,7 +469,7 @@ export function TeamSetupScreen(
               void coordinator
                 .retryHostedTeam(id)
                 .catch((error: unknown) =>
-                  setFailure(failureText(error, "Setup couldn't restart.")),
+                  setFailure(teamFailureWords(error, "Setup couldn't restart.")),
                 )
                 .finally(() => setBusy(null));
             }}
@@ -618,7 +616,7 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
       .then(() => teams.forget(teamId))
       .catch((error: unknown) => {
         setBusy(false);
-        setFailure(failureText(error, "The team wasn't deleted."));
+        setFailure(teamFailureWords(error, "The team wasn't deleted."));
       });
   };
   return (
@@ -694,7 +692,7 @@ export function TransferTeamScreen(
       },
       (error: unknown) => {
         if (!controller.signal.aborted)
-          setFailure(failureText(error, "Couldn't ask the team who its owners are."));
+          setFailure(teamFailureWords(error, "Couldn't ask the team who its owners are."));
       },
     );
     return () => controller.abort();
@@ -708,7 +706,7 @@ export function TransferTeamScreen(
       () => navigation.goBack(),
       (error: unknown) => {
         setBusy(false);
-        setFailure(failureText(error, "The team wasn't transferred."));
+        setFailure(teamFailureWords(error, "The team wasn't transferred."));
       },
     );
   };

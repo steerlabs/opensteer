@@ -2,7 +2,7 @@ import type { AccountProfile } from "@opensteer/control-plane-protocol";
 import { normalizePersonName, type PersonName } from "@opensteer/core";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTeams } from "../../../team/team-attachments.js";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { act, failureWords } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { SettingsError, SettingsRow } from "../primitives.js";
 
@@ -105,6 +105,7 @@ function NameEditor(props: {
     version: string | null,
   ) => Promise<{ readonly applied: boolean; readonly version: string | null }>;
 }) {
+  const { hostClient } = useShell();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   // The version the person is editing, so a rename made elsewhere meanwhile is never overwritten.
@@ -133,8 +134,11 @@ function NameEditor(props: {
     }
     setPending(true);
     setMessage(null);
-    void props
-      .save(name, editedVersion)
+    void act(
+      hostClient,
+      { label: "save your name", done: "saved", happened: "your name was saved" },
+      () => props.save(name, editedVersion),
+    )
       .then(({ applied, version }) => {
         if (applied) setEditing(false);
         else {
@@ -142,7 +146,7 @@ function NameEditor(props: {
           setMessage(conflict);
         }
       })
-      .catch((reason: unknown) => setMessage(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setMessage(failureWords(reason)))
       .finally(() => setPending(false));
   };
 

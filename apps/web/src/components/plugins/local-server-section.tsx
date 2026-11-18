@@ -1,3 +1,4 @@
+import { act, failureWords } from "../use-action.js";
 import { useId, useState } from "react";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import {
@@ -8,7 +9,6 @@ import {
 } from "@opensteer/client/integrations";
 import { localServerRecord } from "@opensteer/client/plugins";
 import { fixDeviceDraftText } from "@opensteer/client/settings";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { LocalMcpSecretFields } from "../computer-apps/local-mcp-secret-fields.js";
 import { Dialog } from "../dialog.js";
@@ -48,34 +48,31 @@ export function LocalServerSection({
     ? (secrets.data?.find((server) => server.id === record.serverId) ?? null)
     : null;
   const remove = () => {
-    if (!record?.pluginId || pending) return;
+    const pluginId = record?.pluginId;
+    if (!pluginId || pending) return;
     setPending(true);
     setError(null);
-    void hostClient
-      .dispatch({
-        type: "plugin.remove",
-        pluginId: record.pluginId,
-        idempotencyKey: mutationIdempotencyKey("local-server-remove"),
-      })
+    void act(
+      hostClient,
+      { label: "remove this server", done: "removed", happened: "the server was removed" },
+      () =>
+        hostClient.dispatch({
+          type: "plugin.remove",
+          pluginId,
+          idempotencyKey: mutationIdempotencyKey("local-server-remove"),
+        }),
+    )
       .then(onRemoved)
       .catch((reason: unknown) => {
         setRemoving(false);
-        setError(actionErrorMessage(reason));
+        setError(failureWords(reason));
       })
       .finally(() => setPending(false));
   };
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Local server</h2>
-      <SettingsError
-        message={
-          platform.error
-            ? actionErrorMessage(platform.error)
-            : secrets.error
-              ? actionErrorMessage(secrets.error)
-              : error
-        }
-      />
+      <SettingsError message={error ?? platform.error ?? secrets.error} />
       {record ? (
         <div className="card">
           <SettingsRow
@@ -210,9 +207,13 @@ function ChangeSecrets(props: {
     }
     setPending(true);
     setError(null);
-    void setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets)
+    void act(
+      hostClient,
+      { label: "save these values", done: "saved", happened: "the values were saved" },
+      () => setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets),
+    )
       .then(props.onSaved)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
   return (

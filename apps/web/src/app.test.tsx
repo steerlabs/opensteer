@@ -75,12 +75,9 @@ vi.mock("react", async (importOriginal) => {
 
 let snapshot: HostSnapshot;
 
-vi.mock("@opensteer/client/react", () => ({
-  useHostSnapshot: () => ({
-    loadError: null,
-    reload: async () => undefined,
-    snapshot,
-  }),
+vi.mock("@opensteer/client/react", async (actual) => ({
+  ...(await actual<typeof import("@opensteer/client/react")>()),
+  useHostSnapshot: () => ({ snapshot }),
 }));
 
 import { App, startHostOidcSignIn } from "./app.js";
@@ -174,12 +171,15 @@ describe("App automatic OIDC sign-in", () => {
 
     expect(renderApp(client)).toContain("Signing you in…");
     await runEffectsTwice();
+    await vi.waitFor(
+      () => expect(renderApp(client), "manual sign-in never came back").toContain("Welcome back"),
+      { timeout: 1_000 },
+    );
     const markup = renderApp(client);
 
     expect(beginOidcSignIn).toHaveBeenCalledTimes(1);
     expect(browser.assign).not.toHaveBeenCalled();
-    expect(markup).toContain("Welcome back");
-    expect(markup).toContain("Account sign-in is unavailable.");
+    expect(markup).toContain("Couldn&#x27;t confirm you were signed in.");
     expect(browser.values.get("opensteer.oidc.auto-attempt")).toBeDefined();
   });
 });

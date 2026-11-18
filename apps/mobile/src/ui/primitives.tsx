@@ -142,6 +142,8 @@ export function PrimaryButton(props: {
   readonly onPress: () => void;
   /** The platform's large capsule, for the one action a whole screen leads to. */
   readonly prominent?: boolean;
+  /** Busy keeps the label: an attempt the screen itself reports, such as Try again. */
+  readonly quietBusy?: boolean;
 }): ReactNode {
   const disabled = props.disabled === true || props.busy === true;
   return (
@@ -159,7 +161,7 @@ export function PrimaryButton(props: {
         disabled && styles.buttonDisabled,
       ]}
     >
-      {props.busy === true ? (
+      {props.busy === true && props.quietBusy !== true ? (
         <ActivityIndicator color={color.inkOnEmber} />
       ) : (
         <Text
@@ -371,21 +373,35 @@ export function StatusDot(props: {
  * `inline` is the same dots at the size of the words they follow, for a line
  * of text that is still being worked on.
  */
-export function TypingDots(props: { readonly inline?: boolean }): ReactNode {
+/** `still` holds the dots at full colour: the work is said, not claimed as happening now. */
+export function TypingDots(props: {
+  readonly inline?: boolean;
+  readonly still?: boolean;
+}): ReactNode {
   const inline = props.inline === true;
+  const still = props.still === true;
   return (
     <View style={inline ? styles.typingDotsInline : styles.typingDots}>
-      <TypingDot delay={0} inline={inline} />
-      <TypingDot delay={150} inline={inline} />
-      <TypingDot delay={300} inline={inline} />
+      <TypingDot delay={0} inline={inline} still={still} />
+      <TypingDot delay={150} inline={inline} still={still} />
+      <TypingDot delay={300} inline={inline} still={still} />
     </View>
   );
 }
 
-function TypingDot(props: { readonly delay: number; readonly inline: boolean }): ReactNode {
+function TypingDot(props: {
+  readonly delay: number;
+  readonly inline: boolean;
+  readonly still: boolean;
+}): ReactNode {
   const reduceMotion = useReducedMotion();
-  const opacity = useSharedValue(reduceMotion ? 0.6 : 0.3);
+  const opacity = useSharedValue(props.still ? 1 : reduceMotion ? 0.6 : 0.3);
   useEffect(() => {
+    if (props.still) {
+      cancelAnimation(opacity);
+      opacity.value = 1;
+      return;
+    }
     if (reduceMotion) return;
     opacity.value = withDelay(
       props.delay,
@@ -398,7 +414,7 @@ function TypingDot(props: { readonly delay: number; readonly inline: boolean }):
       ),
     );
     return () => cancelAnimation(opacity);
-  }, [opacity, props.delay, reduceMotion]);
+  }, [opacity, props.delay, props.still, reduceMotion]);
   const animated = useAnimatedStyle(() => ({ opacity: opacity.value }));
   return (
     <Animated.View style={[props.inline ? styles.typingDotInline : styles.typingDot, animated]} />

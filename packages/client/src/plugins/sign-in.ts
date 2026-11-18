@@ -1,3 +1,11 @@
+import {
+  createClientAction,
+  type ClientActionSpec,
+  type ActionOutcome,
+} from "../actions/client-action.js";
+import { presentClientIssue } from "../feedback/client-issue.js";
+import { clientScopeKey } from "../connections/connection-controller.js";
+import { createClientRead, type ClientRead } from "../reads/client-read.js";
 import type { z } from "zod";
 import type {
   PluginOAuthClientChoiceSchema,
@@ -11,7 +19,7 @@ import {
   authorizationTerminalStatuses,
   waitForAuthorizationAttempt,
 } from "../host/authorization-attempt.js";
-import { HostClientRequestError, isHostRefusal, type HostClient } from "../host/client.js";
+import { isHostRefusal, type HostClient } from "../host/client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 
 /**
@@ -26,6 +34,7 @@ export type PluginOAuthStatus = z.infer<typeof PluginOAuthStatusSchema>;
 export type PluginOAuthStart = z.infer<typeof PluginOAuthStartSchema>;
 export type PluginOAuthClientChoice = z.infer<typeof PluginOAuthClientChoiceSchema>;
 export type PluginSignInHost = Pick<HostClient, "rpc" | "dispatch">;
+export type PluginSignInClient = PluginSignInHost & Pick<HostClient, "connection">;
 export type PluginAttemptId = PluginOAuthStatus["attemptId"];
 
 /* ---- What the person chooses from ---- */
@@ -291,9 +300,9 @@ export function pluginSignInEnd(status: PluginOAuthStatus): PluginSignInEnd {
 
 /** A refused prepare or begin, as what the person can do about it. */
 export function pluginSignInRefusal(
-  error: unknown,
+  reason: string | undefined,
+  fallback: string,
 ): Exclude<PluginSignInEnd, { kind: "completed" }> {
-  const reason = error instanceof HostClientRequestError ? error.reason : undefined;
   if (reason === "plugin-account-link-required")
     return {
       kind: "account-link-required",
@@ -309,7 +318,7 @@ export function pluginSignInRefusal(
     return { kind: "failed", message: pluginSignInFailure("account-link-mismatch") };
   return {
     kind: "error",
-    message: error instanceof Error && error.message ? error.message : "Sign-in couldn't start.",
+    message: fallback,
   };
 }
 
@@ -317,7 +326,7 @@ export function pluginSignInRefusal(
 
 export type PluginSignInState =
   | { readonly step: "preparing" }
-  | { readonly step: "choosing"; readonly choices: PluginSignInChoices }
+  | { readonly step: "choosing"; readonly choices: PluginSignInChoices; readonly issue?: string }
   | { readonly step: "starting"; readonly choices: PluginSignInChoices; readonly key: string }
   | {
       readonly step: "waiting";
@@ -326,6 +335,8 @@ export type PluginSignInState =
       readonly attemptId: PluginAttemptId;
       readonly expiresAt: string;
       readonly cancelling: boolean;
+      readonly issue?: string;
+      readonly statusFailed?: boolean;
     }
   | { readonly step: "ended"; readonly end: PluginSignInEnd };
 
@@ -341,19 +352,21 @@ export type PluginSignInPick =
     };
 
 export class PluginSignInFlow {
-  readonly #client: PluginSignInHost;
+  readonly #client: PluginSignInClient;
   readonly #surface: PluginSignInSurface;
   readonly #target: PluginRequirementTarget;
   readonly #providerName: string;
   readonly #pollIntervalMilliseconds: number | undefined;
   readonly #listeners = new Set<() => void>();
   #state: PluginSignInState = { step: "preparing" };
-  #waiting: AbortController | null = null;
+  #stopReading: (() => void) | null = null;
+  #statusRead: ClientRead<PluginOAuthStatus> | null = null;
   #closed = false;
   #generation = 0;
+  #scope: string | null = null;
 
   constructor(options: {
-    readonly client: PluginSignInHost;
+    readonly client: PluginSignInClient;
     readonly surface: PluginSignInSurface;
     readonly target: PluginRequirementTarget;
     readonly providerName: string;
@@ -379,35 +392,70 @@ export class PluginSignInFlow {
     for (const listener of this.#listeners) listener();
   }
 
+  #currentScope() {
+    return clientScopeKey(this.#client.connection.getSnapshot().scope);
+  }
+
+  #action<T>(words: Omit<ClientActionSpec<void, T>, "key">) {
+    return createClientAction(this.#client, { key: words.label, ...words });
+  }
+
   /** A fresh connection: every start and every refusal needs a new one. */
-  async prepare(): Promise<void> {
+  prepare(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    this.#stopReading?.();
     const generation = ++this.#generation;
     this.#set({ step: "preparing" }, generation);
-    try {
-      const result = await this.#client.dispatch({
-        type: "plugin.authorization.prepare",
-        idempotencyKey: mutationIdempotencyKey("plugin-auth-prepare"),
-        input: {
-          plugin: this.#target.pluginId,
-          requirement: this.#target.requirement,
-          scope: this.#target.scope,
-        },
+    const command = {
+      type: "plugin.authorization.prepare" as const,
+      idempotencyKey: mutationIdempotencyKey("plugin-auth-prepare"),
+      input: {
+        plugin: this.#target.pluginId,
+        requirement: this.#target.requirement,
+        scope: this.#target.scope,
+      },
+    };
+    const resource = createClientRead(this.#client, {
+      key: command.idempotencyKey,
+      label: "sign-in options",
+      read: async () => {
+        const result = await this.#client.dispatch(command);
+        if (result.type !== "plugin.authorization.prepare")
+          throw new Error("The Host answered a different command.");
+        return pluginSignInChoices(result, this.#providerName);
+      },
+    });
+    return new Promise<void>((resolve) => {
+      let unsubscribe: (() => void) | undefined;
+      const stop = () => {
+        unsubscribe?.();
+        resource.dispose();
+        if (this.#stopReading === stop) this.#stopReading = null;
+        resolve();
+      };
+      this.#stopReading = stop;
+      unsubscribe = resource.subscribe(() => {
+        const state = resource.getSnapshot();
+        if (state.status !== "ready" && state.status !== "failed") return;
+        stop();
+        this.#scope = clientScopeKey(this.#client.connection.getSnapshot().scope);
+        this.#set(
+          state.status === "ready"
+            ? { step: "choosing", choices: state.data }
+            : {
+                step: "ended",
+                end: pluginSignInRefusal(state.issue.reason, presentClientIssue(state.issue).title),
+              },
+          generation,
+        );
       });
-      if (result.type !== "plugin.authorization.prepare")
-        throw new Error("The Host answered a different command.");
-      this.#set(
-        { step: "choosing", choices: pluginSignInChoices(result, this.#providerName) },
-        generation,
-      );
-    } catch (error) {
-      this.#set({ step: "ended", end: pluginSignInRefusal(error) }, generation);
-    }
+    });
   }
 
   /** Call from the person's click: a browser surface opens its window before anything waits. */
   start(pick: PluginSignInPick): void {
     const state = this.#state;
-    if (state.step !== "choosing") return;
+    if (state.step !== "choosing" || this.#scope !== this.#currentScope()) return;
     const { choices } = state;
     const generation = this.#generation;
     const key = "option" in pick ? pick.option.key : "own-app";
@@ -425,98 +473,163 @@ export class PluginSignInFlow {
             ...(pick.ownApp.save ? { save: true } : {}),
           };
     let launch: PluginSignInLaunch;
+    const send = this.#action({
+      label: "start sign-in",
+      done: "started",
+      happened: "sign-in started",
+      execute: (_: void, signal) =>
+        this.#beginCommand({
+          choices,
+          method,
+          review,
+          client,
+          launch,
+          signal,
+        }),
+    });
+    const unavailable = send.preflight();
+    if (unavailable) {
+      send.dispose();
+      const issue = outcomeMessage(unavailable);
+      if (issue !== null) this.#set({ ...state, issue });
+      return;
+    }
     try {
       launch = this.#surface.open();
-    } catch (error) {
-      this.#set({ step: "ended", end: pluginSignInRefusal(error) });
+    } catch {
+      send.dispose();
+      this.#set({ ...state, issue: "Couldn't open the sign-in page." });
       return;
     }
     this.#set({ step: "starting", choices, key });
-    void this.#begin({ choices, key, method, review, client, launch, generation });
+    void send.run(undefined).then(async (outcome) => {
+      send.dispose();
+      if (this.#closed || generation !== this.#generation || this.#scope !== this.#currentScope()) {
+        launch.abandon();
+        return;
+      }
+      if (outcome.kind !== "confirmed") {
+        launch.abandon();
+        const issue = outcomeMessage(outcome);
+        if (outcome.kind === "not-sent") {
+          this.#set(issue ? { step: "choosing", choices, issue } : { step: "choosing", choices });
+          return;
+        }
+        this.#set({
+          step: "ended",
+          end: pluginSignInRefusal(outcome.issue?.reason, issue ?? "Couldn't start sign-in."),
+        });
+        return;
+      }
+      const started = outcome.value;
+      this.#set({
+        step: "waiting",
+        choices,
+        key,
+        attemptId: started.attemptId,
+        expiresAt: started.expiresAt,
+        cancelling: false,
+      });
+      try {
+        await launch.launch(started);
+      } catch (error) {
+        if (!this.#closed && generation === this.#generation)
+          await this.cancel(
+            error instanceof PluginSignInDismissed ? null : "Couldn't open the sign-in page.",
+          );
+      }
+      if (!this.#closed && generation === this.#generation && this.#state.step === "waiting")
+        this.#watchStatus(started, generation);
+    });
   }
 
-  async #begin(input: {
+  async #beginCommand(input: {
     readonly choices: PluginSignInChoices;
-    readonly key: string;
     readonly method: string;
     readonly review: string;
     readonly client: PluginOAuthClientChoice | null;
     readonly launch: PluginSignInLaunch;
-    readonly generation: number;
-  }) {
-    const { choices, launch, generation } = input;
-    let started: PluginOAuthStart;
-    try {
-      const route = await launch.route();
-      const command = {
-        type: "plugin.authorization.begin" as const,
-        idempotencyKey: mutationIdempotencyKey(`plugin-auth-begin:${choices.connection}`),
-        input: {
-          connection: choices.connection,
-          consent: choices.consent,
-          method: input.method,
-          review: input.review,
-          ...(input.client ? { client: input.client } : {}),
-          surface: this.#surface.surface,
-          returnPath: route.returnPath,
-          ...(route.finish ? { finish: route.finish } : {}),
-          ...(route.appReturnPort === undefined ? {} : { appReturnPort: route.appReturnPort }),
-        },
-      };
-      // An answer lost on a weak link is asked for again as the same command; the Host
-      // returns the attempt it already started.
-      const result = await this.#client
-        .dispatch(command)
-        .catch((error: unknown) =>
-          isHostRefusal(error) ? Promise.reject(error) : this.#client.dispatch(command),
-        );
-      if (result.type !== "plugin.authorization.begin")
-        throw new Error("The Host answered a different command.");
-      started = result;
-    } catch (error) {
-      launch.abandon();
-      this.#set({ step: "ended", end: pluginSignInRefusal(error) }, generation);
-      return;
-    }
-    const waiting = new AbortController();
-    this.#waiting = waiting;
-    this.#set(
-      {
-        step: "waiting",
-        choices,
-        key: input.key,
-        attemptId: started.attemptId,
-        expiresAt: started.expiresAt,
-        cancelling: false,
+    readonly signal: AbortSignal;
+  }): Promise<PluginOAuthStart> {
+    const { choices, launch, signal } = input;
+    const route = await launch.route();
+    signal.throwIfAborted();
+    if (this.#closed) throw new DOMException("The sign-in view closed.", "AbortError");
+    const command = {
+      type: "plugin.authorization.begin" as const,
+      idempotencyKey: mutationIdempotencyKey(`plugin-auth-begin:${choices.connection}`),
+      input: {
+        connection: choices.connection,
+        consent: choices.consent,
+        method: input.method,
+        review: input.review,
+        ...(input.client ? { client: input.client } : {}),
+        surface: this.#surface.surface,
+        returnPath: route.returnPath,
+        ...(route.finish ? { finish: route.finish } : {}),
+        ...(route.appReturnPort === undefined ? {} : { appReturnPort: route.appReturnPort }),
       },
-      generation,
-    );
-    try {
-      await launch.launch(started);
-    } catch (error) {
-      if (waiting.signal.aborted) return;
-      // Closing the system sheet, or failing to open the page at all, ends this sign-in.
-      await this.cancel(
-        error instanceof PluginSignInDismissed ? null : pluginSignInRefusal(error).message,
-      );
-      return;
-    }
-    try {
-      const status = await waitForPluginAuthorization({
-        client: this.#client,
-        attemptId: started.attemptId,
-        expiresAt: started.expiresAt,
-        signal: waiting.signal,
-        ...(this.#pollIntervalMilliseconds === undefined
-          ? {}
-          : { pollIntervalMilliseconds: this.#pollIntervalMilliseconds }),
-      });
-      if (!waiting.signal.aborted)
-        this.#set({ step: "ended", end: pluginSignInEnd(status) }, generation);
-    } catch (error) {
-      if (!waiting.signal.aborted)
-        this.#set({ step: "ended", end: pluginSignInRefusal(error) }, generation);
-    }
+    };
+    // On the same live connection, recover a lost answer under its original key.
+    const connection = this.#client.connection.getSnapshot();
+    const result = await this.#client.dispatch(command).catch((error: unknown) => {
+      const current = this.#client.connection.getSnapshot();
+      if (
+        isHostRefusal(error) ||
+        signal.aborted ||
+        this.#closed ||
+        current.epoch !== connection.epoch ||
+        current.phase !== "ready" ||
+        current.network === "offline"
+      )
+        throw error;
+      return this.#client.dispatch(command);
+    });
+    if (result.type !== "plugin.authorization.begin")
+      throw new Error("The Host answered a different command.");
+    return result;
+  }
+
+  #watchStatus(started: PluginOAuthStart, generation: number): void {
+    const resource = createClientRead(this.#client, {
+      key: `plugin-sign-in:${started.attemptId}`,
+      label: "authorization status",
+      scopeKey: this.#scope,
+      read: (signal) =>
+        waitForPluginAuthorization({
+          client: this.#client,
+          attemptId: started.attemptId,
+          expiresAt: started.expiresAt,
+          signal,
+          ...(this.#pollIntervalMilliseconds === undefined
+            ? {}
+            : { pollIntervalMilliseconds: this.#pollIntervalMilliseconds }),
+        }),
+    });
+    this.#statusRead = resource;
+    const unsubscribe = resource.subscribe(() => {
+      const status = resource.getSnapshot();
+      const state = this.#state;
+      if (state.step !== "waiting") return;
+      if (status.status === "ready") {
+        this.#stopReading?.();
+        this.#set({ step: "ended", end: pluginSignInEnd(status.data) }, generation);
+      } else {
+        const { statusFailed: _error, ...waiting } = state;
+        if (status.status === "failed") this.#set({ ...waiting, statusFailed: true }, generation);
+        else if (state.statusFailed) this.#set(waiting, generation);
+      }
+    });
+    this.#stopReading = () => {
+      unsubscribe();
+      resource.dispose();
+      this.#statusRead = null;
+      this.#stopReading = null;
+    };
+  }
+
+  retryStatus(): void {
+    void this.#statusRead?.refresh();
   }
 
   /**
@@ -525,52 +638,66 @@ export class PluginSignInFlow {
    */
   async cancel(reason: string | null = null): Promise<void> {
     const state = this.#state;
-    if (state.step !== "waiting" || state.cancelling) return;
+    if (state.step !== "waiting" || state.cancelling || this.#scope !== this.#currentScope())
+      return;
     const generation = this.#generation;
-    this.#waiting?.abort();
-    this.#set({ ...state, cancelling: true }, generation);
-    try {
-      const result = await this.#client.dispatch({
-        type: "plugin.authorization.cancel",
-        idempotencyKey: mutationIdempotencyKey(`plugin-auth-cancel:${state.attemptId}`),
-        attemptId: state.attemptId,
-      });
-      if (result.type !== "plugin.authorization.cancel")
-        throw new Error("The Host answered a different command.");
-      const end = pluginSignInEnd(result);
+    const { issue: _issue, ...clean } = state;
+    this.#set({ ...clean, cancelling: true }, generation);
+    const action = this.#action({
+      label: "cancel sign-in",
+      done: "cancelled",
+      happened: "sign-in was cancelled",
+      execute: async () => {
+        const result = await this.#client.dispatch({
+          type: "plugin.authorization.cancel",
+          idempotencyKey: `plugin-auth-cancel:${state.attemptId}`,
+          attemptId: state.attemptId,
+        });
+        if (
+          result.type !== "plugin.authorization.cancel" ||
+          !authorizationTerminalStatuses.has(result.status)
+        )
+          throw new Error("The Host didn't report how sign-in ended.");
+        return pluginSignInEnd(result);
+      },
+    });
+    const outcome = await action.run(undefined);
+    action.dispose();
+    const current = this.getState();
+    if (
+      current.step !== "waiting" ||
+      current.attemptId !== state.attemptId ||
+      this.#scope !== this.#currentScope()
+    )
+      return;
+    if (outcome.kind === "confirmed") {
+      this.#stopReading?.();
+      const end = outcome.value;
       this.#set(
         {
           step: "ended",
-          end:
-            reason && end.kind === "cancelled"
-              ? { kind: "error", message: reason }
-              : authorizationTerminalStatuses.has(result.status)
-                ? end
-                : { kind: "cancelled", message: "Sign-in was cancelled." },
+          end: reason && end.kind === "cancelled" ? { kind: "error", message: reason } : end,
         },
         generation,
       );
-    } catch {
-      this.#set(
-        {
-          step: "ended",
-          end: {
-            kind: "error",
-            message:
-              "Opensteer couldn't confirm the cancel. Check this plugin's accounts to see whether it finished.",
-          },
-        },
-        generation,
-      );
+      return;
     }
+    const issue = outcomeMessage(outcome);
+    this.#set({ ...current, cancelling: false, ...(issue === null ? {} : { issue }) }, generation);
   }
 
   /** Stops watching. The sign-in itself carries on at the Host. */
   close(): void {
     this.#closed = true;
-    this.#waiting?.abort();
+    this.#stopReading?.();
     this.#listeners.clear();
   }
+}
+
+function outcomeMessage(outcome: ActionOutcome<unknown>): string | null {
+  return outcome.kind !== "confirmed" && outcome.issue
+    ? presentClientIssue(outcome.issue).title
+    : null;
 }
 
 /** Forgets a saved OAuth app. What a preparation offers changes, so prepare again after. */

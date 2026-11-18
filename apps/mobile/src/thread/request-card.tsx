@@ -23,6 +23,7 @@ import {
   type,
 } from "../theme.js";
 import { AppText, monoFontFamily, StatusDot } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
@@ -108,9 +109,7 @@ function ConnectCard(props: RequestCardProps): ReactNode {
       <IntegrationConnectCard
         hostClient={props.hostClient}
         request={request}
-        disabled={
-          !props.canRespond || props.surface.denied !== null || request.status !== "pending"
-        }
+        disabled={props.surface.denied !== null || request.status !== "pending"}
         disabledReason={props.disabledReason ?? props.surface.denied}
         canStartResponse={props.canStartResponse}
         mutationGate={props.mutationGate}
@@ -204,7 +203,7 @@ function AnswerCard(props: RequestCardProps): ReactNode {
 
   // While this card's own answer is in flight the busy control already says so.
   const reason = session.pendingId === null ? props.disabledReason : null;
-  const locked = !props.canRespond || session.pendingId !== null;
+  const locked = session.pendingId !== null;
 
   const send = (choice: CardChoice): void => {
     if (!settled()) return;
@@ -278,18 +277,11 @@ function AnswerCard(props: RequestCardProps): ReactNode {
         </View>
         {overflows ? <View pointerEvents="none" style={styles.fade} /> : null}
       </View>
-      {reason === null && session.failure === null ? null : (
+      {reason === null ? null : (
         <View style={styles.status}>
-          {reason === null ? null : (
-            <AppText role="caption" tone="muted">
-              {reason}
-            </AppText>
-          )}
-          {session.failure === null ? null : (
-            <AppText role="caption" tone="danger">
-              {session.failure}
-            </AppText>
-          )}
+          <AppText role="caption" tone="muted">
+            {reason}
+          </AppText>
         </View>
       )}
       <CardAnswers
@@ -311,6 +303,11 @@ function AnswerCard(props: RequestCardProps): ReactNode {
           threadTakesDenialReason(props.hostClient.getSnapshot(), request.originatingThreadId)
         }
       />
+      {session.failure === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine line={session.failure} numberOfLines={2} />
+        </View>
+      )}
     </View>
   );
 }
@@ -542,6 +539,12 @@ const styles = StyleSheet.create({
     left: 0,
     position: "absolute",
     right: 0,
+  },
+  // Under the answers that asked, at their edge.
+  failure: {
+    alignItems: "flex-end",
+    paddingBottom: space[10] - 1,
+    paddingHorizontal: space[14] - controlBorderWidth,
   },
   head: { alignItems: "flex-start", flexDirection: "row", gap: space[6] },
   mono: { color: color.textSoft, fontFamily: monoFontFamily },

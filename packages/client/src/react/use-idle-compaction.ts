@@ -1,3 +1,4 @@
+import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
 import {
   compactionHintRevision,
   compactionOfferVisible,
@@ -50,7 +51,10 @@ export function useIdleCompactionSettings(client: HostClient | null) {
       setError(null);
       void client
         .setIdleCompactionPolicy(next)
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : "Could not save setting."))
+        .catch((e: unknown) => {
+          const issue = clientIssue(e, { operation: "action", label: "save this setting" });
+          setError(issue ? presentClientIssue(issue).title : null);
+        })
         .finally(() => setPending(false));
     },
   };

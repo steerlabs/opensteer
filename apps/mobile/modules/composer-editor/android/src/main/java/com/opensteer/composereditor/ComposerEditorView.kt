@@ -6,6 +6,8 @@ package com.opensteer.composereditor
 import android.content.Context
 import android.graphics.Color
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.InputType
 import android.text.Spanned
@@ -67,6 +69,7 @@ class ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(co
   private var lastContentHeight = -1
   private var colors = ChipColors(Color.WHITE, Color.LTGRAY, Color.DKGRAY, Color.GRAY, Color.GRAY, Color.WHITE)
   var maxBytes = 0L
+  var deliverDraftPaste: ((Map<String, Any>) -> Unit)? = null
 
   init {
     editor.setBackgroundColor(Color.TRANSPARENT)
@@ -336,7 +339,13 @@ class ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(co
     val split = payload.partition { item -> item.uri?.let { resolver.getType(it)?.startsWith("image/") } == true }
     val images = split.first ?: return split.second
     val uris = (0 until images.clip.itemCount).mapNotNull { images.clip.getItemAt(it).uri }
-    PastedImages.copy(context, uris, maxBytes, { post(it) }) { onComposerPasteImages(it) }
+    val delivery = deliverDraftPaste
+    if (delivery != null) {
+      val main = Handler(Looper.getMainLooper())
+      PastedImages.copy(context.applicationContext, uris, maxBytes, { main.post(it) }, delivery)
+    } else {
+      PastedImages.copy(context, uris, maxBytes, { post(it) }) { onComposerPasteImages(it) }
+    }
     return split.second
   }
 

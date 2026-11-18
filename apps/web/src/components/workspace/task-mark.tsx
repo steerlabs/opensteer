@@ -17,7 +17,7 @@ export type TaskMarkSize = 16 | 20 | 22;
  * the task's colour under its symbol, and a neutral tile when colour is missing.
  * Unnamed tasks show the default symbol.
  */
-export const TaskMark = memo(function TaskMark({
+function TaskMarkTile({
   mark,
   size,
   quiet = false,
@@ -38,7 +38,22 @@ export const TaskMark = memo(function TaskMark({
       <IconGlyph icon={mark.icon ?? defaultTaskSymbol} />
     </span>
   );
-});
+}
+
+export const TaskMark = memo(TaskMarkTile, sameTaskMarkProps);
+
+/** Rows build their mark afresh each render; what it draws is its icon and colour. */
+function sameTaskMarkProps(
+  left: Parameters<typeof TaskMarkTile>[0],
+  right: Parameters<typeof TaskMarkTile>[0],
+): boolean {
+  return (
+    left.size === right.size &&
+    left.quiet === right.quiet &&
+    left.mark.icon === right.mark.icon &&
+    left.mark.color === right.mark.color
+  );
+}
 
 export const AgentOrb = memo(function AgentOrb({ size }: { readonly size: TaskMarkSize | 28 }) {
   return (

@@ -1,3 +1,4 @@
+import { controlledClientSession } from "../test-support/client-connection.js";
 import { UserIdSchema } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -115,6 +116,7 @@ describe("Settings connected agents", () => {
       user: { id: row.userId },
     };
     const host = {
+      connection: controlledClientSession().connection,
       rpc: { "connections.list": list },
       dispatch: vi.fn(),
       subscribe: () => () => undefined,
@@ -152,7 +154,7 @@ describe("Settings connected agents", () => {
     const stop = resource.start();
     try {
       await vi.waitFor(() =>
-        expect(resource.getSnapshot().error).toBe("Connected agents could not be loaded."),
+        expect(resource.getSnapshot().issue).toMatchObject({ code: "read-failed" }),
       );
       expect(resource.getSnapshot().connections).toBeNull();
     } finally {
@@ -180,6 +182,9 @@ describe("Settings connected agents", () => {
     const resource = new ConnectedAgentsClient(host);
     const stop = resource.start();
     try {
+      await vi.waitFor(() =>
+        expect(resolve, "the admitted list read never started").toBeTypeOf("function"),
+      );
       await resource.revoke(row.id);
       resolve?.({ ok: true, data: { connections: [row] } });
       await resource.refresh();

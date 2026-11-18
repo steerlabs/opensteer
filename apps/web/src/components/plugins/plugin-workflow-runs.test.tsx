@@ -3,6 +3,7 @@
 import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { usePluginWorkflowRuns } from "@opensteer/client/react";
 import type { HostClient } from "@opensteer/client/host";
 import { rpcSuccess, type PluginChange, type PluginWorkflowRunView } from "@opensteer/protocol";
@@ -28,7 +29,9 @@ it("reads the live runs after StrictMode repeats the effect and unsubscribes on 
     .mockReturnValueOnce(initial.promise)
     .mockResolvedValueOnce(readResult([run]))
     .mockResolvedValueOnce(readResult([{ ...run, status: "terminated" }]));
+  const session = controlledClientSession();
   const host = {
+    connection: session.connection,
     rpc: { "plugins.workflow.runs": read },
     subscribePluginsChanged,
     subscribe: () => () => {},
@@ -52,6 +55,10 @@ it("reads the live runs after StrictMode repeats the effect and unsubscribes on 
     expect(changed.size).toBe(1);
     await act(async () => initial.resolve(readResult([])));
     expect(mount.textContent).toBe("running");
+    await act(async () => {
+      for (const listener of changed) listener({ pluginId: "fixture", categories: ["schedules"] });
+    });
+    expect(read).toHaveBeenCalledTimes(2);
     await act(async () => {
       for (const listener of changed)
         listener({ pluginId: "fixture", categories: ["workflowRuns"] });

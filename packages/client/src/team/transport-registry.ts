@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "../connections/operation-error.js";
 import { teamFileTransport } from "./files.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -166,7 +167,7 @@ export class TeamTransportRegistry {
     if (this.#disposed) throw new Error("Team registry disposed.");
     const held = this.#clients.get(key);
     if (held) {
-      if (this.#platform !== "mobile" || this.#selected === key) await held.load(false);
+      if (this.#platform !== "mobile" || this.#selected === key) held.connect();
       return held;
     }
     DeploymentIdSchema.parse(scope.teamDeploymentId);
@@ -174,6 +175,7 @@ export class TeamTransportRegistry {
     this.#clients.set(key, client);
     try {
       if (this.#platform !== "mobile" || this.#selected === key) {
+        client.connect();
         await client.load(false);
         if (
           this.#clients.get(key) === client &&
@@ -182,6 +184,7 @@ export class TeamTransportRegistry {
           client.connect();
       }
     } catch (error) {
+      if (classifyClientFailure(error).retryable) return client;
       if (this.#clients.get(key) === client) this.#clients.delete(key);
       client.dispose();
       throw error;
@@ -197,7 +200,11 @@ export class TeamTransportRegistry {
         client.disconnect();
         continue;
       }
-      if (!client.getSnapshot().bootstrap) await client.load(false);
+      client.connect();
+      if (!client.getSnapshot().bootstrap)
+        await client.load(false).catch((error) => {
+          if (!classifyClientFailure(error).retryable) throw error;
+        });
       if (generation !== this.#selectionGeneration || this.#disposed) return;
       if (this.#clients.get(key) === client) client.connect();
     }
@@ -208,12 +215,7 @@ export class TeamTransportRegistry {
     if (pending) return pending;
     const client = this.#clients.get(key);
     this.#clients.delete(key);
-    const operation =
-      client && client.getSnapshot().ended !== "sign-in"
-        ? client.remove()
-        : Promise.resolve(client?.remove("sign-in")).then(() =>
-            this.#create(scope).persistence.remove(scope),
-          );
+    const operation = client ? client.remove() : this.#create(scope).persistence.remove(scope);
     client?.dispose();
     this.#removing.set(key, operation);
     try {

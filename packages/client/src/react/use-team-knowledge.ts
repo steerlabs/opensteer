@@ -47,6 +47,7 @@ export function useKnowledgeTopics(session: TeamSessionClient | null) {
             }))
       : null,
     `knowledge-topics:${sessionKey(session)}`,
+    session,
   );
   const { error, loadingMore, more, nextCursor } = list;
   // `more` is new every render; the cursor names the page it reads.
@@ -95,6 +96,7 @@ export function useKnowledgeNotes(
             .then((page) => ({ items: page.notes, nextCursor: page.nextCursor }))
       : null,
     key,
+    session,
   );
   const settled = useRef<{
     readonly scope: string;

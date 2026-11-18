@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
+import type { HostApiCommand } from "@opensteer/protocol";
+import { controlledClientSession } from "../test-support/client-connection.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import {
@@ -9,6 +11,7 @@ import {
   confirmPluginWebhookRemoval,
   setPluginAccess,
   pluginAccountComplete,
+  createPluginAccountAttempt,
   pluginAccountValues,
   pluginCatalogReader,
   pluginInputContent,
@@ -523,4 +526,44 @@ it("shows a pending server launch as waiting for approval", () => {
       access: "all",
     }),
   ).toEqual({ label: "Waiting for approval", tone: "attention" });
+});
+
+it("uses the original account creation receipt to recover a lost answer", async () => {
+  const session = controlledClientSession();
+  const account = { id: "acc_key", provider: "linear", label: "Key" };
+  type CreateAccount = Extract<HostApiCommand, { type: "plugins.account.create" }>;
+  const dispatch = vi.fn(async (command: CreateAccount) => {
+    expect(command.type).toBe("plugins.account.create");
+    return { type: command.type, account };
+  });
+  const create = createPluginAccountAttempt({
+    ...session,
+    rpc: {} as never,
+    dispatch: dispatch as never,
+  });
+  const input = {
+    provider: "linear",
+    method: "key",
+    fields: { key: "fixture-key", token: "fixture-token" },
+  };
+  dispatch.mockRejectedValueOnce(new Error("The answer was lost"));
+  await expect(create(input)).rejects.toThrow("The answer was lost");
+  await expect(
+    create({ ...input, fields: { token: input.fields.token, key: input.fields.key } }),
+  ).resolves.toEqual(account);
+  expect(dispatch.mock.calls[1]?.[0]).toEqual(dispatch.mock.calls[0]?.[0]);
+  dispatch.mockRejectedValueOnce(new Error("The answer was lost"));
+  await expect(create(input)).rejects.toThrow("The answer was lost");
+  await create({ ...input, fields: { key: "edited-key" } });
+  expect(dispatch.mock.calls[3]?.[0].idempotencyKey).not.toBe(
+    dispatch.mock.calls[2]?.[0].idempotencyKey,
+  );
+  dispatch.mockRejectedValueOnce(new Error("The answer was lost"));
+  await expect(create(input)).rejects.toThrow("The answer was lost");
+  const scope = session.connection.getSnapshot().scope!;
+  session.change({ scope: { ...scope, loginId: "other-login" } });
+  await create(input);
+  expect(dispatch.mock.calls[5]?.[0].idempotencyKey).not.toBe(
+    dispatch.mock.calls[4]?.[0].idempotencyKey,
+  );
 });

@@ -71,12 +71,15 @@ describe("viewer clipboard gesture ownership", () => {
     expect(await armed.done).toBe(false);
     expect(errors).toEqual([]);
     Reflect.set(navigator.clipboard, "write", async () => {
-      throw new Error("Permission denied");
+      throw new DOMException("Write permission denied.", "NotAllowedError");
     });
     const denied = clipboard.arm("copy");
     denied.resolve([text("a")]);
     expect(await denied.done).toBe(false);
-    expect(errors).toEqual(["Permission denied"]);
+    // A refused permission is said in the app's words, never the browser's.
+    expect(errors).toEqual([
+      "Allow clipboard access for this page in your browser, then copy again.",
+    ]);
     clipboard.dispose();
   });
   it("matches the latest forwarded activation and writes later attributed data directly", async () => {

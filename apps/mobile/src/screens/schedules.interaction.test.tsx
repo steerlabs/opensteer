@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import {
   automationName,
@@ -132,10 +133,14 @@ vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p>No Host</p>,
   useAttachedHost: () => harness.host,
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/screen.js", () => ({
   Screen: (props: Children) => <main>{props.children}</main>,
   useListContentInsets: () => ({}),
@@ -209,6 +214,7 @@ function host(memoryPasses?: "active" | "off" | "waiting-for-model") {
       return () => listeners.delete(listener);
     },
   } as unknown as HostClient;
+  Object.assign(client, { connection: testHostConnection(client) });
   harness.host = client;
   return {
     dispatch,
@@ -352,7 +358,12 @@ describe("Schedules", () => {
   it("tells an old Host apart from an empty list", async () => {
     const f = host();
     f.list.mockRejectedValue(
-      new HostClientRequestError({ code: "not_found", message: "Unknown RPC", status: 404 }),
+      new HostClientRequestError({
+        code: "not_found",
+        message: "Unknown RPC",
+        reason: "unknown-method",
+        status: 404,
+      }),
     );
     const screen = listScreen();
     await vi.waitFor(
@@ -370,7 +381,7 @@ describe("Schedules", () => {
     const f = host();
     f.list.mockRejectedValueOnce(new Error("The Host stopped answering."));
     const screen = listScreen();
-    await shown(screen, "The Host stopped answering.", "the failure was never shown");
+    await shown(screen, "Couldn't load schedules.", "the failure was never shown");
     expect(screen.textContent).not.toContain("No automations yet");
     press(button(screen, "Try again"));
     await shown(screen, "Morning email summary", "Try again never read the list again");
@@ -382,7 +393,7 @@ describe("Schedules", () => {
     const screen = listScreen();
     await shown(screen, "Morning email summary", "the list never loaded");
     f.emit({ network: "offline" });
-    expect(screen.querySelector('[aria-label="Offline"]')).not.toBeNull();
+    expect(screen.querySelector('[aria-label="Offline"]')).toBeNull();
     expect(screen.textContent).toContain("Morning email summary");
   });
 
@@ -572,14 +583,14 @@ describe("One schedule", () => {
     expect(button(screen, "Pause").getAttribute("aria-busy")).toBe("true");
     expect(button(screen, "Run now").disabled).toBe(true);
     press(button(screen, "Pause"));
-    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(f.dispatch).toHaveBeenCalledTimes(1));
     expect(screen.textContent).not.toContain("Resume");
     release();
     await vi.waitFor(
       () => expect(f.get, "confirmation read never started").toHaveBeenCalledTimes(2),
       { timeout: 1000 },
     );
-    expect(button(screen, "Pause").getAttribute("aria-busy")).toBe("true");
+    expect(button(screen, "Pause").getAttribute("aria-busy")).toBe("false");
     expect(screen.textContent).not.toContain("Resume");
     const confirmed = await f.mock.rpc["triggers.get"]({ triggerId: summary.id });
     await act(async () => confirm(confirmed));
@@ -634,11 +645,22 @@ describe("One schedule", () => {
     press(button(screen, "Run now"));
     await shown(
       screen,
-      "Couldn't confirm the run started — check Recent runs",
+      "Couldn't confirm this schedule started.",
       "run uncertainty was never shown",
     );
     expect(f.dispatch).toHaveBeenCalledTimes(1);
-    expect(screen.querySelectorAll("button[aria-label]").length).toBe(before + 1);
+    // The run it started, and Check.
+    expect(screen.querySelectorAll("button[aria-label]").length).toBe(before + 2);
+    // Check asks again under the same key; the Host answers for the first run.
+    press(button(screen, "Check"));
+    await vi.waitFor(() => expect(f.dispatch, "check never asked").toHaveBeenCalledTimes(2), {
+      timeout: 2000,
+    });
+    await vi.waitFor(
+      () => expect(screen.textContent, "check never settled").not.toContain("Couldn't confirm"),
+      { timeout: 2000 },
+    );
+    expect(f.dispatch.mock.calls[1]![0]).toEqual(f.dispatch.mock.calls[0]![0]);
     expect(button(screen, "Run now").disabled).toBe(false);
   });
 
@@ -652,7 +674,7 @@ describe("One schedule", () => {
     press(button(screen, "Run now"));
     await shown(
       screen,
-      "Couldn't confirm the run started — check Recent runs",
+      "Couldn't confirm this schedule started.",
       "run uncertainty was never shown",
     );
     expect(f.dispatch).toHaveBeenCalledTimes(1);
@@ -667,7 +689,12 @@ describe("One schedule", () => {
       new HostClientRequestError({ code: "not_found", status: 404, message: "Trigger not found" }),
     );
     f.emit({ triggerRevision: 1 });
-    await shown(screen, "Trigger not found", "deleted detail was never removed");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector('[aria-label="This isn\'t available"]'),
+        "deleted detail was never removed",
+      ).not.toBeNull(),
+    );
     expect(screen.textContent).not.toContain("Update Opensteer");
     expect(screen.querySelector('[aria-label="Pause"]')).toBeNull();
   });
@@ -679,28 +706,27 @@ describe("One schedule", () => {
     await shown(screen, "Active", "the schedule never loaded");
     f.dispatch.mockRejectedValueOnce(new Error("The Host refused the change."));
     press(button(screen, "Pause"));
-    await shown(screen, "The Host refused the change.", "the refusal was never shown");
+    await shown(
+      screen,
+      "Couldn't confirm this schedule was paused.",
+      "the lost answer was never shown",
+    );
     expect(button(screen, "Pause").disabled).toBe(false);
     expect(screen.textContent).not.toContain("Resume");
   });
 
-  it("can't be changed offline, and says so", async () => {
+  it("answers a tap while disconnected beside the buttons, without sending it", async () => {
     const f = host();
     const summary = await named(f, "Nightly typecheck");
     const screen = detailScreen(summary.id);
     await shown(screen, "Active", "the schedule never loaded");
     f.emit({ connection: "offline" });
-    expect(screen.querySelector('[aria-label="Offline"]')).not.toBeNull();
-    expect(screen.textContent).toContain("Connect to the Host to change schedules.");
-    expect(button(screen, "Pause").disabled).toBe(true);
-    expect(button(screen, "Run now").disabled).toBe(true);
+    expect(screen.querySelector('[aria-label="Offline"]')).toBeNull();
+    expect(button(screen, "Run now").disabled).toBe(false);
     press(button(screen, "Run now"));
+    await shown(screen, "Not started.", "the unsent run was never answered");
     expect(f.dispatch).not.toHaveBeenCalled();
-    f.emit({ connection: "connected" });
-    await vi.waitFor(
-      () => expect(button(screen, "Pause").disabled, "reconnect never enabled changes").toBe(false),
-      { timeout: 2000 },
-    );
+    expect(screen.textContent).toContain("Active");
   });
 });
 

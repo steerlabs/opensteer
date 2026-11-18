@@ -193,6 +193,7 @@ describe("Home-intro attachment drafts", () => {
     const picked = await draftFiles.pickChatFile(intro);
     const localUri = picked!.localUri;
     const copied = await draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri);
+    if (copied === null) throw new Error("The picked file was not copied.");
     expect(copied).toContain(`/${threadId}/`);
     expect(draftFiles.openChatDraftFile(target, copied).size).toBe(sourceBytes.length);
     expect(await draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri)).toBe(
@@ -203,6 +204,9 @@ describe("Home-intro attachment drafts", () => {
     expect(() => draftFiles.openChatDraftFile(target, localUri)).toThrow();
 
     draftFiles.removeChatDraftFile(intro, localUri);
+    await expect(
+      draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri),
+    ).resolves.toBeNull();
     expect(() => draftFiles.openChatDraftFile(intro, localUri)).toThrow();
     expect(draftFiles.openChatDraftFile(target, copied).size).toBe(sourceBytes.length);
   });
@@ -224,6 +228,7 @@ describe("Home-intro attachment drafts", () => {
       ),
     ).rejects.toThrow();
     const copied = await draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri);
+    if (copied === null) throw new Error("The picked file was not copied.");
     expect(() =>
       draftFiles.openChatDraftFile({ ...target, threadId: otherThreadId }, copied),
     ).toThrow();
@@ -240,6 +245,7 @@ describe("Home-intro attachment drafts", () => {
       ).rejects.toThrow();
       expect(draftFiles.openChatDraftFile(intro, localUri).size).toBe(sourceBytes.length);
       const copied = await draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri);
+      if (copied === null) throw new Error("The picked file was not copied on retry.");
       expect(draftFiles.openChatDraftFile(target, copied).size).toBe(sourceBytes.length);
       expect(await draftFiles.copyFirstMessageDraftFileToThread(intro, target, localUri)).toBe(
         copied,

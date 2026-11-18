@@ -100,7 +100,7 @@ it("loads in parallel, replaces surfaces independently with fresh-empty and neve
   controller.dispose();
   f.dispose();
 });
-it("debounces projection changes for two seconds and distinguishes offline/unavailable labels without claiming health", async () => {
+it("debounces projection changes for two seconds", async () => {
   const f = await fixture(),
     store = createMemorySavedViews();
   await store.write(f.saved, () => true);
@@ -109,12 +109,7 @@ it("debounces projection changes for two seconds and distinguishes offline/unava
   controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
   controller.attach(f.client);
   await vi.waitFor(() => expect(controller.getSnapshot().tasks.source).toBe("saved"));
-  controller.connection("offline", false);
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Offline · Saved view" });
-  controller.connection("online", true);
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Unavailable · Saved view" });
-  controller.connection("online", false);
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
+  expect(controller.getSnapshot().tasks).toMatchObject({ userId: f.saved.userId });
   vi.useFakeTimers();
   f.publish({
     savedViewReadiness: { tasksReady: true },

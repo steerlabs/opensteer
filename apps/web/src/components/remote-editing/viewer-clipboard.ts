@@ -1,3 +1,4 @@
+import { Refusal } from "../use-action.js";
 import type { EditingClipboardPayloadItem } from "@opensteer/client/editing";
 
 export interface ClipboardArm {
@@ -38,7 +39,7 @@ export class ViewerClipboard {
       void html.catch(() => false);
       try {
         if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write)
-          throw new Error("This browser cannot write a remote clipboard from a gesture.");
+          throw new UnsupportedClipboard();
         write = navigator.clipboard.write([
           new ClipboardItem({ "text/plain": plain, "text/html": html }),
         ]);
@@ -49,10 +50,15 @@ export class ViewerClipboard {
     const done = write
       .then(
         () => true,
-        (error) => {
+        (error: unknown) => {
+          // Classified by kind, never said in the browser's own words.
           if (!canceled)
             this.#onError(
-              error instanceof Error ? error.message : "The local clipboard could not be written.",
+              error instanceof DOMException && error.name === "NotAllowedError"
+                ? "Allow clipboard access for this page in your browser, then copy again."
+                : error instanceof UnsupportedClipboard
+                  ? "This browser cannot write a remote clipboard from a gesture."
+                  : "The local clipboard could not be written.",
             );
           return false;
         },
@@ -122,16 +128,16 @@ export class ViewerClipboard {
   }
   async write(items: readonly EditingClipboardPayloadItem[]): Promise<void> {
     if (!items.some((item) => item.type === "text/plain" || item.type === "text/html"))
-      throw new Error("Copy Image from streamed pages is not supported. Copy text instead.");
+      throw new Refusal("Copy Image from streamed pages is not supported. Copy text instead.");
     if (this.#native) return this.#native(items);
     if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write)
-      throw new Error("This browser cannot write the remote clipboard.");
+      throw new Refusal("This browser cannot write the remote clipboard.");
     const representations: Record<string, Blob> = {};
     for (const item of items)
       if (item.type === "text/plain" || item.type === "text/html")
         representations[item.type] = new Blob([new Uint8Array(item.bytes)], { type: item.type });
     if (!Object.keys(representations).length)
-      throw new Error("The remote clipboard has no supported text representation.");
+      throw new Refusal("The remote clipboard has no supported text representation.");
     await navigator.clipboard.write([new ClipboardItem(representations)]);
   }
   dispose(): void {
@@ -140,3 +146,5 @@ export class ViewerClipboard {
     this.#arms.clear();
   }
 }
+
+class UnsupportedClipboard extends Error {}

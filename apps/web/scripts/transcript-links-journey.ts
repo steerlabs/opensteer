@@ -93,6 +93,8 @@ try {
       (await page.locator(".workspace--work").isVisible())
     ) {
       const hide = page.getByRole("button", { name: "Hide computer" });
+      // A resize settles into the phone sheet or the docked task; wait for whichever it becomes.
+      await hide.or(page.locator(".workspace--work .conv-header__menu")).first().waitFor();
       if (await hide.isVisible()) await hide.click();
       else {
         await page.locator(".workspace--work .conv-header__menu").click();

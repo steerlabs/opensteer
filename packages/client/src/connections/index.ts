@@ -14,3 +14,6 @@ export * from "./operation-error.js";
 export * from "./private-deployment-connection.js";
 export * from "./private-filesystem.js";
 export * from "./desktop-updates.js";
+export * from "./connection-controller.js";
+export * from "./connection-notice.js";
+export * from "../host/lifecycle.js";

@@ -1,14 +1,11 @@
 import {
   ClientOperationError,
+  classifyClientFailure,
+  hostUnanswered,
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
 } from "@opensteer/client/connections";
-import {
-  hostUnanswered,
-  PersonalTeamLinks,
-  unwrapRpcResult,
-  type HostClient,
-} from "@opensteer/client/host";
+import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import {
   previewTeamInvite,
   revokeOwnAgentLinks,
@@ -104,7 +101,7 @@ export function mobilePersonalTeamLinks(
       } catch (error) {
         // Out of reach for now, so their agent connects later. A refusal or a fault it
         // answers, even that it can't reach the team, is reported.
-        if (hostUnanswered(error)) return { kind: "offline" };
+        if (hostUnanswered(classifyClientFailure(error))) return { kind: "offline" };
         throw error;
       }
     },

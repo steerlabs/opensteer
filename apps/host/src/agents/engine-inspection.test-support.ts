@@ -51,7 +51,6 @@ await import(${JSON.stringify(fixture)});
 export function engineInspectionViewer(stack: VerticalStack): HttpHostClient {
   return new HttpHostClient({
     baseUrl: stack.hostOrigin,
-    refreshIntervalMs: 0,
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set("cookie", stack.sessionCookie);

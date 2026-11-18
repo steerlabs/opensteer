@@ -224,6 +224,25 @@ describe("Desktop Host renderer adapter", () => {
     });
   });
 
+  it("says the caller's own reason when main answers its cancel before fetch rejects", async () => {
+    const leaving = new AbortController();
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      "https://home.test",
+      deploymentId,
+      async () => {
+        leaving.abort(new Error("Viewer closed"));
+        return new Response(null, {
+          status: 502,
+          headers: { "x-opensteer-desktop-transport-error": "cancelled" },
+        });
+      },
+    );
+    await expect(
+      fetch("https://home.test/v1/rpc/file.content?input=%7B%7D", { signal: leaving.signal }),
+    ).rejects.toThrow("Viewer closed");
+  });
+
   it("adapts sockets through one bridge listener and rejects cross-Deployment targets", async () => {
     const connectionId = "desktop_host_socket_00000000-0000-4000-8000-000000000001";
     let receive: ((event: DesktopHostWebSocketEvent) => void) | null = null;

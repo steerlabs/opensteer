@@ -1,3 +1,5 @@
+import { useOutboxTranscript } from "@opensteer/client/react";
+import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
@@ -23,17 +25,15 @@ import {
   canRespondToRequests,
   conversationActivityTurn,
   conversationTurnRevealing,
-  describeHostConnection,
-  showsHostLive,
   groupTranscriptEntries,
   incomingTranscriptMessages,
   observedSequence,
-  operationFailure,
   placementAccountTitle,
   selectionForModel,
   threadActivity,
   threadComposerPlaceholder,
   threadStartHold,
+  threadStartsRunForMessage,
   threadStopTarget,
   taskWaitingReason,
   usageLimitReached,
@@ -50,7 +50,6 @@ import {
   type ThreadPlacementOption,
   type ThreadSummary,
   type HostClient,
-  type OperationFailure,
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
@@ -83,11 +82,11 @@ import { BesideSlot } from "./workspace/workspace-layout.js";
 import { UsageNotice } from "./usage-notice.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
-import type { ComposerQuote, ComposerRestore } from "./composer.js";
+import type { ComposerQuote } from "./composer.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
-import { usePendingSends } from "./pending-sends.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
@@ -104,7 +103,9 @@ import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
-import { useLinkedRequest } from "./references/linked-request.js";
+import { useConnectionGate, useConnectionLive } from "./connection-shell.js";
+import { Gated } from "./connection-gate.js";
+import { notFound, useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -130,70 +131,45 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
     else nav.openConversation("/", { replace: true });
   };
 
-  if (!thread) {
-    // A link to a task that was deleted, or that this reader may not see, says so.
-    if (missing)
-      return (
-        <div className="thread">
-          <Unavailable onBack={back} />
-        </div>
-      );
-    if (
-      threadId &&
-      snapshot.threadLookups[threadId] === "failed" &&
-      snapshot.connection !== "connected"
-    )
-      return (
-        <div className="thread">
-          <Unavailable
-            failure="unavailable"
-            network={snapshot.network}
-            onBack={back}
-            onRetry={() => hostClient.activateThread(threadId)}
-          />
-        </div>
-      );
-    if (threadId && snapshot.threadLookups[threadId] === "failed")
-      return (
-        <div className="thread">
-          <div className="hero" role="alert">
-            <p>This conversation could not be loaded.</p>
-            <button
-              className="btn"
-              onClick={() => hostClient.activateThread(threadId)}
-              type="button"
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      );
-    return (
-      <div className="thread">
-        <div className="hero" role="status" aria-label="Loading Thread">
-          <span className="spinner" />
-        </div>
-      </div>
-    );
-  }
+  // Until the task arrives the route has nothing to show: its connection, or
+  // its own read giving up, is the one thing said.
+  const gate = useConnectionGate(hostClient.connection, {
+    scope: "route",
+    ready: thread !== null || missing || threadId === null,
+    onBack: back,
+    failed:
+      threadId && snapshot.threadLookups[threadId] === "failed"
+        ? { resource: "this task", onRetry: () => hostClient.activateThread(threadId) }
+        : null,
+  });
+  // A link to a task that was deleted, or that this reader may not see, says so;
+  // otherwise its connection or its own read does, until the task arrives and
+  // renders in the same frame under the gate as it fades.
+  const gateView = thread ? null : (
+    <div className="thread">{missing ? <Unavailable onBack={back} /> : gate}</div>
+  );
   return (
-    <ThreadView
-      key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
-      requests={snapshot.requests[thread.id] ?? []}
-      canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
-      entries={snapshot.transcripts[thread.id] ?? []}
-      environmentStatus={
-        snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
-        "disconnected"
-      }
-      executionPlacements={placements.filter(
-        (placement) =>
-          placement.environmentId === thread.environmentId &&
-          // Only Codex carries a call, so this Thread can change account but not engine.
-          (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
-      )}
-      thread={thread}
-    />
+    <Gated gate={gateView}>
+      {thread ? (
+        <ThreadView
+          key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
+          requests={snapshot.requests[thread.id] ?? []}
+          canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
+          entries={snapshot.transcripts[thread.id] ?? []}
+          environmentStatus={
+            snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
+            "disconnected"
+          }
+          executionPlacements={placements.filter(
+            (placement) =>
+              placement.environmentId === thread.environmentId &&
+              // Only Codex carries a call, so this Thread can change account but not engine.
+              (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
+          )}
+          thread={thread}
+        />
+      ) : null}
+    </Gated>
   );
 }
 
@@ -282,7 +258,7 @@ function ThreadView({
   // A message a link named that this conversation no longer holds, or could not reach.
   const [missingMessage, setMissingMessage] = useState<{
     readonly id: string;
-    readonly failure: OperationFailure;
+    readonly unloaded: boolean;
   } | null>(null);
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
@@ -302,19 +278,11 @@ function ThreadView({
   const [activityOwnerAnchor, setActivityOwnerAnchor] = useState<HTMLElement | null>(null);
   const activityPanelId = useId();
   const headerTitleRef = useRef<HTMLHeadingElement | null>(null);
-  // A quoted reply on its way into the composer. It belongs to the composer
-  // of the conversation it came from, and to no other.
-  const [restoredDraft, setRestoredDraft] = useState<{
-    readonly composer: string;
-    readonly restore: ComposerRestore;
-  } | null>(null);
   // Each conversation, for each signed-in user of each deployment, has its own
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
   useEffect(() => {
-    // Handed over once; opening this conversation again starts from its own draft.
-    setRestoredDraft(null);
     setHistorical(false);
     setActivityView(null);
   }, [composerKey]);
@@ -327,11 +295,7 @@ function ThreadView({
     [snapshot.tabs, snapshot.browserProfiles, tabRevision],
   );
   // The composer's own record: words sent as new from an open edit are kept the same way.
-  const pendingSends = usePendingSends(
-    snapshot.deploymentId && snapshot.user?.id
-      ? { deploymentId: snapshot.deploymentId, threadId: thread.id, userId: snapshot.user.id }
-      : null,
-  );
+  const outbox = hostMessageOutbox(hostClient);
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -394,6 +358,29 @@ function ThreadView({
       ),
     [conversational, entries, inputQueue, thread.id],
   );
+  // The same answer every surface gives: what this Thread is doing, and
+  // which Run, if any, a Stop would reach.
+  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
+  // This device's waiting messages, drawn where they will stand once sent. They
+  // meet the Host's copies before the queue is taken out, so one the Host
+  // already holds in its queue is drawn once, there.
+  const projected = useOutboxTranscript(outbox, thread.id, entries, snapshot.user?.id ?? null);
+  const withOutbox = useMemo(
+    () =>
+      projected === entries
+        ? conversation
+        : withoutOwnAssignment(
+            visibleTranscript(projected, inputQueue, { conversation: conversational }),
+            thread.id,
+          ),
+    [conversation, conversational, entries, inputQueue, projected, thread.id],
+  );
+  const hasQueuedInputs = Boolean(inputQueue?.items.length);
+  const startsRun = threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
+  const local = useMemo(
+    () => splitLocalMessages(withOutbox, !conversational, hasQueuedInputs, startsRun),
+    [conversational, hasQueuedInputs, startsRun, withOutbox],
+  );
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, snapshot.user?.id ?? null, conversational),
     [conversation, conversational, snapshot.user?.id],
@@ -410,9 +397,6 @@ function ThreadView({
         .toSorted((left, right) => left.runOrdinal - right.runOrdinal),
     [snapshot.runQueue, thread.id],
   );
-  // The same answer every surface gives: what this Thread is doing, and
-  // which Run, if any, a Stop would reach.
-  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
   const stopTarget = threadStopTarget({ runQueue: snapshot.runQueue, thread });
 
   /**
@@ -707,22 +691,25 @@ function ThreadView({
     setHistorical(true);
     setFollows(false);
     setRevealMessage({ id: messageId });
-    const missing = async (failure: OperationFailure) => {
-      setMissingMessage({ id: messageId, failure });
+    const missing = async (unloaded: boolean) => {
+      setMissingMessage({
+        id: messageId,
+        unloaded,
+      });
       await returnToLatest().catch(() => undefined);
       return false;
     };
     try {
       await hostClient.loadTranscriptAround(thread.id, messageId);
     } catch (error) {
-      return missing(operationFailure(error));
+      return missing(!notFound(error));
     }
     if (
       !(hostClient.getSnapshot().transcripts[thread.id] ?? []).some(
         (entry) => entry.kind === "message" && entry.id === messageId,
       )
     )
-      return missing("gone");
+      return missing(false);
     requestAnimationFrame(() => {
       const target = currentScroller()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`,
@@ -852,16 +839,20 @@ function ThreadView({
   /** Quotes a message into this conversation's own composer, focused and unsent. */
   const replyWith = (message: MessageEntry) => {
     const quote = quoteFromMessage(message);
-    setRestoredDraft((current) => ({
-      composer: composerKey,
-      restore: { key: (current?.restore.key ?? 0) + 1, quote, text: "" },
-    }));
+    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
+      kind: "thread",
+      threadId: thread.id,
+    });
+    if (!key) return;
+    const editId = composerDrafts.read(key)?.editId;
+    void composerDrafts
+      .handBack(key, { edit: (text) => text, quote }, editId)
+      .catch(reportActionError);
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
 
   const canRespond = canRespondToRequests(snapshot);
-  const connection = describeHostConnection(snapshot);
-  const live = showsHostLive(snapshot) && environmentStatus === "connected";
+  const live = useConnectionLive(hostClient.connection) && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
@@ -871,40 +862,22 @@ function ThreadView({
     : threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
   const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
-  const connectionLabel =
-    connection.tone !== "green"
-      ? connection.label
-      : thread.status === "archived"
-        ? "Archived"
-        : environmentStatus === "disconnected"
-          ? `${thread.runnerLabel} offline`
-          : null;
-  const connectionStatus =
-    connectionLabel !== null ? (
+  // A fact about this task's own computer, never about this app's connection.
+  const taskLabel =
+    thread.status === "archived"
+      ? "Archived"
+      : environmentStatus === "disconnected"
+        ? `${thread.runnerLabel} offline`
+        : null;
+  const taskStatus =
+    taskLabel !== null ? (
       <span className="thread__connection" role="status">
-        <span className="thread__connection-label">{connectionLabel}</span>
-        {connection.action === "retry" ? (
-          <button
-            type="button"
-            onClick={() =>
-              void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
-            }
-          >
-            Retry
-          </button>
-        ) : null}
+        <span className="thread__connection-label">{taskLabel}</span>
       </span>
     ) : null;
   const historyState = snapshot.threadLookups[thread.id];
   const historyStatus =
-    historyState === "failed" ? (
-      <span className="thread__connection" role="alert">
-        <span className="thread__connection-label">Could not load messages</span>
-        <button type="button" onClick={() => hostClient.activateThread(thread.id)}>
-          Retry
-        </button>
-      </span>
-    ) : historyState === "loading" ? (
+    historyState === "loading" && live ? (
       <span className="thread__connection" role="status">
         Loading messages…
       </span>
@@ -959,7 +932,7 @@ function ThreadView({
       ? (blockingDetail(assignmentPresentation(assignment, snapshot))?.text ?? null)
       : null;
   }, [snapshot, thread.id]);
-  const cause = connectionStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
+  const cause = taskStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
 
   // On a phone with the conversation alone, its Run's page can stand above it.
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -1198,9 +1171,9 @@ function ThreadView({
                           </span>
                         </button>
                       ) : null}
-                      {conversation.length === 0 &&
-                      historyState === undefined &&
-                      !waiting?.length ? (
+                      {/* Gone with the first message, this device's waiting ones too, so
+                          their bubbles never jump when the Host takes them. */}
+                      {withOutbox.length === 0 && historyState === undefined && !waiting?.length ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
                       <AgentTranscript
@@ -1216,20 +1189,22 @@ function ThreadView({
                         conversation={conversational}
                         live={live}
                         computers={computers}
-                        entries={conversation}
+                        entries={local.transcript}
+                        afterQueue={local.afterQueue}
                         waitingRequests={snapshot.waitingRequests}
                         assignments={snapshot.assignments}
                         inputQueuePaused={thread.inputQueuePaused}
                         renderPasswordsSuggestion={renderPasswordsSuggestion}
                         queued={
-                          inputQueue && waiting && !conversational ? (
+                          !conversational && (waiting || local.afterQueue.length) ? (
                             <WaitingInputs
                               client={hostClient}
                               disabled={!canRespond}
-                              inputs={waiting}
+                              inputs={waiting ?? []}
+                              local={local.afterQueue}
+                              transcript={projected}
                               onError={reportActionError}
-                              paused={inputQueue.paused}
-                              pendingSends={pendingSends}
+                              paused={inputQueue?.paused ?? false}
                               resumable={thread.status !== "archived"}
                               threadId={thread.id}
                               viewerUserId={snapshot.user?.id ?? null}
@@ -1263,9 +1238,8 @@ function ThreadView({
                       {missingMessage ? (
                         <Unavailable
                           backLabel="Dismiss"
-                          failure={missingMessage.failure}
                           inline
-                          network={snapshot.network}
+                          unloaded={missingMessage.unloaded ? "this message" : null}
                           onBack={() => setMissingMessage(null)}
                           onRetry={() =>
                             void jumpToMessage(missingMessage.id).catch(reportActionError)
@@ -1330,9 +1304,10 @@ function ThreadView({
                   </div>
                 )}
                 <ThreadServerApprovals threadId={thread.id} />
+                {/* Requests stay enabled offline; an answer then says it wasn't sent. */}
                 <RequestStack
                   composer={!voiceThread}
-                  disabled={!canRespond}
+                  disabled={false}
                   folded={requestFolded && nowOpen && !historical}
                   items={dockItems}
                   onOpen={openRequest}
@@ -1391,7 +1366,7 @@ function ThreadView({
                     key={composerKey}
                     composerHidden={dock.composerHidden}
                     voiceHidden={phoneStage && !sheetOpen}
-                    disabled={!canRespond}
+                    disabled={false}
                     inputRef={composerInputRef}
                     onEscape={
                       dockedRequests.length > 0
@@ -1422,9 +1397,6 @@ function ThreadView({
                         : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
                           ? "Pause this task"
                           : "Stop the run"
-                    }
-                    restoredDraft={
-                      restoredDraft?.composer === composerKey ? restoredDraft.restore : null
                     }
                     running={stopTarget !== null}
                     stopping={activity === "stopping"}

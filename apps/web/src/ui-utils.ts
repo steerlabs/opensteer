@@ -16,10 +16,6 @@ export function fromLivePage(event: {
   );
 }
 
-export function actionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Opensteer couldn’t complete that action.";
-}
-
 /**
  * Whether this window is in front of the person: visible *and* holding focus.
  * A visible window behind another app or another window shows messages nobody

@@ -709,5 +709,22 @@
       "Fails intermittently since #638 (unified tabs, Browser Harness openPage and the reworked agent CDP bridge): on its branch at 03bdfdb28 (https://github.com/steerlabs/opensteer/actions/runs/43790574948), on main at 1a0d6b311 (https://github.com/steerlabs/opensteer/actions/runs/43922680655) and on a docs-only PR at a0d74d4a1 (https://github.com/steerlabs/opensteer/actions/runs/43925614504). Main passed on the runs between them.",
       "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge)."
     ]
+  },
+  {
+    "file": "apps/host/src/runtime/runtime.integration.test.ts",
+    "name": [
+      "Host vertical slice",
+      "converges after Runner invalidation's first catalog recapture fails"
+    ],
+    "area": "Agents",
+    "owner": "Agents maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-18T00:00:00Z",
+    "deadline": "2026-11-25T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "Recovery after the injected recapture failure waits for the Host's periodic catalog pass, so the test's duration depends on where that pass falls and sits at its 45 s poll limit. Measured: main CI 17 s (job 134653758870); main locally 44.8 s; PR #669 locally 35 s (4/4 passes); PR #669 CI overran twice (jobs 134758148340, 134763294091), then timed out in afterEach while runtime.close waited.",
+      "Acceptance: drive the recapture from an explicit trigger or fake timers instead of the periodic pass, so the test completes well inside its limits on every run without a longer timeout."
+    ]
   }
 ]

@@ -11,6 +11,7 @@ import type { HostClient } from "@opensteer/client/host";
 import { useId, useState } from "react";
 import { AppMark } from "./app-icons.js";
 import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
+import { presentFailure } from "../use-action.js";
 
 /** Details live only while this owner is reviewing; no native approval bridge. */
 export function useComputerAppApproval(hostClient: HostClient) {
@@ -161,7 +162,7 @@ export function ComputerSetupApprovals(props: {
       await approval.ask(id);
       await props.onChanged();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn't review this approval.");
+      setError(presentFailure(reason, "review this approval"));
     } finally {
       setBusy(null);
     }

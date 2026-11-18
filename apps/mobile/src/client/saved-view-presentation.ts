@@ -1,6 +1,6 @@
+import type { UserId } from "@opensteer/core";
 import type { SavedViewCache } from "./saved-view-cache.js";
 import {
-  describeHostConnection,
   projectSavedTasks,
   savedViewScopeKey,
   sameTaskListSource,
@@ -17,7 +17,8 @@ export type SavedSurface<T> =
       readonly source: "saved";
       readonly content: T;
       readonly capturedAt: string;
-      readonly label: string;
+      /** Whose view it is: the person a draft written over it belongs to. */
+      readonly userId: UserId;
     };
 export interface SavedPresentationState {
   readonly tasks: SavedSurface<readonly SavedTask[]>;
@@ -50,7 +51,6 @@ export class SavedViewPresentation {
   #userId: string | null = null;
   #savedUserId: string | null = null;
   #tasks: SavedTask[] | undefined;
-  #label = "Updating…";
 
   constructor(options: { readonly cache: SavedViewCache; readonly now?: () => Date }) {
     this.#cache = options.cache;
@@ -140,7 +140,7 @@ export class SavedViewPresentation {
                 source: "saved",
                 content: view.tasks,
                 capturedAt: view.capturedAt,
-                label: this.#label,
+                userId: view.userId,
               }
             : pending,
           failure: null,
@@ -186,24 +186,6 @@ export class SavedViewPresentation {
     this.#savedUserId = null;
     this.#userId = null;
     this.#publish({ tasks: blocked, failure: this.#state.failure });
-  }
-  connection(network: string, unavailable: boolean): void {
-    const label =
-      network === "offline"
-        ? "Offline · Saved view"
-        : unavailable
-          ? "Unavailable · Saved view"
-          : "Updating…";
-    if (label === this.#label) return;
-    this.#label = label;
-    this.#relabel();
-  }
-  #relabel(): void {
-    const tasks = this.#state.tasks;
-    this.#publish({
-      ...this.#state,
-      tasks: tasks.source === "saved" ? { ...tasks, label: this.#label } : tasks,
-    });
   }
   retryInvalidation(): Promise<void> {
     return this.#cache.retryInvalidation();
@@ -272,8 +254,6 @@ export class SavedViewPresentation {
     const client = this.#client;
     if (!client || this.#blocked || this.#disposed || !this.#lease()) return;
     const snapshot = client.getSnapshot();
-    const connection = describeHostConnection(snapshot);
-    this.connection(snapshot.network, connection.label === "Unavailable");
     if (snapshot.session === "authentication-required") {
       this.#invalidate();
       this.#detach?.();

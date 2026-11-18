@@ -27,7 +27,10 @@ import { AgentMarks } from "../browser/agent-marks.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { NeedsYouTag } from "../threads/task-row.js";
-import { AppText, Field, Notice, SecondaryButton } from "../ui/primitives.js";
+import { RowSubtitle } from "../ui/action-line.js";
+import { screenAction, useScreenAction } from "../ui/client-feedback.js";
+import { AppText, Field, SecondaryButton } from "../ui/primitives.js";
+import { closeTabs, tabActionKey, tabActionSpecs, type TabActionKind } from "./tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { TabPicture } from "../screens/tab-picture.js";
@@ -39,7 +42,7 @@ import {
   tabKindNoun,
   tabTitle,
 } from "./tab-entries.js";
-import { useOperation, useTabListSpans } from "./use-tabs.js";
+import { useTabListSpans } from "./use-tabs.js";
 
 /** Chrome's group tints, as the web draws them. */
 export const tabGroupTint: Record<TabGroupColor, string> = {
@@ -96,7 +99,12 @@ export function TabList(props: TabListProps): ReactNode {
   const layout = useTabLayout(hostClient);
   const spans = useTabListSpans(hostClient);
   const signIns = useHostSelector(hostClient, selectSignIns);
-  const operation = useOperation();
+  // Each tab's and group's own action: the row says how it went, after the menu is gone.
+  const act = useCallback(
+    (kind: TabActionKind, id: string, work: () => Promise<unknown>) =>
+      void screenAction(client, tabActionKey(kind, id), tabActionSpecs[kind]).run(work),
+    [client],
+  );
   const [moving, setMoving] = useState<Moving | null>(null);
   const [naming, setNaming] = useState<Naming | null>(null);
   const matches = props.matches ?? null;
@@ -108,12 +116,15 @@ export function TabList(props: TabListProps): ReactNode {
   const signInSet = useMemo(() => new Set(signIns.split("\n")), [signIns]);
 
   const organize = useCallback(
-    (input: TabOrganizeInput | null) => {
+    (input: TabOrganizeInput | null, groupId?: string) => {
       setMoving(null);
       if (input === null) return;
-      void operation.run(() => client.organizeTabs(input), "The tabs could not be moved.");
+      const work = () => client.organizeTabs(input);
+      const tabId = input.tabIds[0];
+      if (groupId !== undefined) act("changeGroup", groupId, work);
+      else if (tabId !== undefined) act("move", tabId, work);
     },
-    [client, operation],
+    [act, client],
   );
   const placeBefore = useCallback(
     (anchorId: TabId) => {
@@ -122,7 +133,7 @@ export function TabList(props: TabListProps): ReactNode {
         if (moving.tabId !== anchorId) organize(moveBefore(layout, moving.tabId, anchorId));
         return;
       }
-      organize(moveGroupBefore(moving.group, anchorId));
+      organize(moveGroupBefore(moving.group, anchorId), moving.group.groupId);
     },
     [layout, moving, organize],
   );
@@ -169,16 +180,12 @@ export function TabList(props: TabListProps): ReactNode {
             icon: "xmark.circle",
             id: "close",
             label: "Close tab",
-            onPress: () =>
-              void operation.run(
-                () => client.closeTabs([tab.tabId]),
-                "The tab could not be closed.",
-              ),
+            onPress: () => act("close", tab.tabId, () => closeTabs(client, [tab.tabId])),
           },
         ],
       ];
     },
-    [client, groups, layout, operation, organize],
+    [act, client, groups, layout, organize],
   );
   const groupActions = useCallback(
     (group: TabGroup): readonly (readonly NativeMenuOption[])[] => [
@@ -204,9 +211,8 @@ export function TabList(props: TabListProps): ReactNode {
         id: `color:${hue}`,
         label: hue[0]!.toUpperCase() + hue.slice(1),
         onPress: () =>
-          void operation.run(
-            () => client.updateTabGroup({ color: hue, groupId: group.groupId }),
-            "The group could not be changed.",
+          act("changeGroup", group.groupId, () =>
+            client.updateTabGroup({ color: hue, groupId: group.groupId }),
           ),
         selected: group.color === hue,
       })),
@@ -215,10 +221,7 @@ export function TabList(props: TabListProps): ReactNode {
           id: "ungroup",
           label: "Ungroup",
           onPress: () =>
-            void operation.run(
-              () => client.deleteTabGroup(group.groupId),
-              "The group could not be removed.",
-            ),
+            act("changeGroup", group.groupId, () => client.deleteTabGroup(group.groupId)),
         },
         ...(group.tabIds.length === 0
           ? []
@@ -229,23 +232,19 @@ export function TabList(props: TabListProps): ReactNode {
                 id: "close",
                 label: "Close tabs in group",
                 onPress: () =>
-                  void operation.run(
-                    () => client.closeTabs([...group.tabIds]),
-                    "The tabs could not be closed.",
-                  ),
+                  act("closeGroup", group.groupId, () => closeTabs(client, group.tabIds)),
               },
             ]),
       ],
     ],
-    [client, operation],
+    [act, client],
   );
   const toggle = useCallback(
     (group: TabGroup) =>
-      void operation.run(
-        () => client.updateTabGroup({ collapsed: !group.collapsed, groupId: group.groupId }),
-        "The group could not be changed.",
+      act("changeGroup", group.groupId, () =>
+        client.updateTabGroup({ collapsed: !group.collapsed, groupId: group.groupId }),
       ),
-    [client, operation],
+    [act, client],
   );
   const submitName = useCallback(
     (name: string) => {
@@ -253,9 +252,8 @@ export function TabList(props: TabListProps): ReactNode {
       setNaming(null);
       if (target === null || name.trim() === "") return;
       if (target.kind === "rename")
-        void operation.run(
-          () => client.updateTabGroup({ groupId: target.groupId, name: name.trim() }),
-          "The group could not be renamed.",
+        act("changeGroup", target.groupId, () =>
+          client.updateTabGroup({ groupId: target.groupId, name: name.trim() }),
         );
       else
         organize({
@@ -263,15 +261,15 @@ export function TabList(props: TabListProps): ReactNode {
           tabIds: [target.tabId],
         });
     },
-    [client, groups, naming, operation, organize],
+    [act, client, groups, naming, organize],
   );
 
   const renderItem = useCallback(
     ({ item }: { readonly item: TabEntry }) =>
       item.kind === "group" ? (
         <GroupHead
-          busy={operation.busy}
           group={item.group}
+          hostClient={hostClient}
           menu={groupActions(item.group)}
           moving={moving}
           naming={naming?.kind === "rename" && naming.groupId === item.group.groupId}
@@ -281,7 +279,6 @@ export function TabList(props: TabListProps): ReactNode {
         />
       ) : (
         <KeyedTabRow
-          busy={operation.busy}
           group={item.group}
           menu={tabActions}
           moving={moving}
@@ -303,7 +300,6 @@ export function TabList(props: TabListProps): ReactNode {
       hostClient,
       moving,
       naming,
-      operation.busy,
       placeBefore,
       props.onOpen,
       props.selectedTabId,
@@ -326,13 +322,6 @@ export function TabList(props: TabListProps): ReactNode {
       ListHeaderComponent={
         <View style={styles.notices}>
           {props.header ?? null}
-          {operation.failure === null ? null : (
-            <Notice
-              action={{ label: "Dismiss", onPress: operation.dismiss }}
-              detail={operation.failure}
-              title="That didn’t work"
-            />
-          )}
           {moving === null ? null : (
             <MoveBar
               moving={moving}
@@ -444,8 +433,8 @@ function NameField(props: {
 }
 
 const GroupHead = memo(function GroupHead(props: {
-  readonly busy: boolean;
   readonly group: TabGroup;
+  readonly hostClient: HostClient;
   readonly menu: readonly (readonly NativeMenuOption[])[];
   readonly moving: Moving | null;
   readonly naming: boolean;
@@ -455,6 +444,18 @@ const GroupHead = memo(function GroupHead(props: {
 }): ReactNode {
   const { group } = props;
   const count = group.tabIds.length;
+  const change = useScreenAction(
+    props.hostClient,
+    tabActionKey("changeGroup", group.groupId),
+    tabActionSpecs.changeGroup,
+  );
+  const closing = useScreenAction(
+    props.hostClient,
+    tabActionKey("closeGroup", group.groupId),
+    tabActionSpecs.closeGroup,
+  );
+  const busy = change.running || closing.running;
+  const line = change.line ?? closing.line;
   return (
     <View style={styles.groupHead}>
       <View style={styles.groupLine}>
@@ -462,8 +463,8 @@ const GroupHead = memo(function GroupHead(props: {
           accessibilityHint={group.collapsed ? "Shows its tabs" : "Hides its tabs"}
           accessibilityLabel={`${group.name}, group of ${count} ${count === 1 ? "tab" : "tabs"}`}
           accessibilityRole="button"
-          accessibilityState={{ disabled: props.busy, expanded: !group.collapsed }}
-          disabled={props.busy || props.moving !== null}
+          accessibilityState={{ disabled: busy, expanded: !group.collapsed }}
+          disabled={busy || props.moving !== null}
           onPress={() => props.onToggle(group)}
           style={styles.groupToggle}
         >
@@ -483,7 +484,7 @@ const GroupHead = memo(function GroupHead(props: {
         {props.moving === null ? (
           <NativeMenu
             accessibilityLabel={`${group.name} actions`}
-            disabledReason={props.busy ? "Wait for the last change to finish." : null}
+            disabledReason={busy ? "Wait for the last change to finish." : null}
             options={props.menu}
             style={styles.menu}
           >
@@ -491,6 +492,11 @@ const GroupHead = memo(function GroupHead(props: {
           </NativeMenu>
         ) : null}
       </View>
+      {line === null ? null : (
+        <View style={styles.groupLineNote}>
+          <RowSubtitle line={line} subtitle={null} />
+        </View>
+      )}
       {props.naming ? (
         <NameField
           initial={group.name}
@@ -504,7 +510,6 @@ const GroupHead = memo(function GroupHead(props: {
 });
 
 interface TabRowProps {
-  readonly busy: boolean;
   readonly group: TabGroup | null;
   readonly hostClient: HostClient;
   readonly menu: (place: PlaceItem) => readonly (readonly NativeMenuOption[])[];
@@ -544,6 +549,15 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
       ? props.moving.tabId === tab.tabId
       : props.moving.group.tabIds.includes(tab.tabId));
   const title = tabTitle(tab);
+  const closing = useScreenAction(
+    hostClient,
+    tabActionKey("close", tab.tabId),
+    tabActionSpecs.close,
+  );
+  const moved = useScreenAction(hostClient, tabActionKey("move", tab.tabId), tabActionSpecs.move);
+  const busy = closing.running || moved.running;
+  // An action on this tab answers in the subtitle's place, so the row keeps its height.
+  const line = closing.line ?? moved.line;
   return (
     <View>
       <View style={[styles.row, props.selected && styles.selected]}>
@@ -595,10 +609,8 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
             <AppText numberOfLines={1} role="bodyMedium" tone={unavailable ? "muted" : "default"}>
               {title}
             </AppText>
-            {detail.length === 0 ? null : (
-              <AppText numberOfLines={1} role="caption" tone="muted">
-                {detail.join(" · ")}
-              </AppText>
+            {detail.length === 0 && line === null ? null : (
+              <RowSubtitle line={line} subtitle={detail.join(" · ")} />
             )}
           </View>
           {props.needsYou ? <NeedsYouTag /> : null}
@@ -611,7 +623,7 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
         {props.moving === null ? (
           <NativeMenu
             accessibilityLabel={`${title} actions`}
-            disabledReason={props.busy ? "Wait for the last change to finish." : null}
+            disabledReason={busy ? "Wait for the last change to finish." : null}
             options={props.menu(place)}
             style={styles.menu}
           >
@@ -645,6 +657,7 @@ const styles = StyleSheet.create({
   groupDot: { borderRadius: 5, height: 10, width: 10 },
   groupHead: { gap: space[8], paddingTop: space[12] },
   groupLine: { alignItems: "center", flexDirection: "row" },
+  groupLineNote: { paddingHorizontal: space[12] },
   groupRail: { alignSelf: "stretch", borderRadius: 2, width: 3 },
   groupToggle: {
     alignItems: "center",

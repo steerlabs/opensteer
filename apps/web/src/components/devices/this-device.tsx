@@ -36,6 +36,7 @@ import {
   setDeviceNotifications,
   type DeviceSetupStep,
 } from "./device-preferences.js";
+import { presentFailure } from "../use-action.js";
 
 /** What another computer offers when it joins; the Host fixes the exact ceiling. */
 export const localEnrollmentModules = ["browser", "integrations", "messaging", "shell"] as const;
@@ -179,10 +180,7 @@ export function useThisDeviceLifecycle(input: {
       },
       (reason: unknown) => {
         if (deploymentId) rememberDeferredSetup(deploymentId, "bind");
-        setCause({
-          kind: "bind",
-          detail: reason instanceof Error ? reason.message : "",
-        });
+        setCause({ kind: "bind", detail: presentFailure(reason, "connect this Mac") });
       },
     );
   }, [bindThisDevice, deploymentId, devicesAvailable, hosting, machineId, membership.state]);
@@ -271,7 +269,7 @@ export function useThisDeviceLifecycle(input: {
       rememberDeferredSetup(deploymentId, null);
       setCause(null);
     } catch (reason) {
-      setCause({ kind: "bind", detail: reason instanceof Error ? reason.message : "" });
+      setCause({ kind: "bind", detail: presentFailure(reason, "connect this Mac") });
     }
   }, [bindThisDevice, deploymentId, record?.enrolled, goTo]);
 

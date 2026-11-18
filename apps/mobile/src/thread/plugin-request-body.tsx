@@ -12,6 +12,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { StyleSheet, TextInput, View } from "react-native";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
 import { AppText, monoFontFamily, SwitchRow } from "../ui/primitives.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import type { RequestResponder } from "./use-request-response.js";
@@ -41,12 +42,13 @@ export function PluginRequestBody(props: {
       </AppText>
     );
   const locked = !props.canRespond || session.pendingId !== null;
-  const status =
-    props.reason !== null || session.failure !== null ? (
-      <AppText role="caption" tone={session.failure === null ? "muted" : "danger"}>
-        {session.failure ?? props.reason}
-      </AppText>
-    ) : null;
+  const status = session.failure ? (
+    <ActionLine line={session.failure} />
+  ) : props.reason ? (
+    <AppText role="caption" tone="muted">
+      {props.reason}
+    </AppText>
+  ) : null;
   const who = (
     <AppText role="caption" tone="muted">
       {view.plugin.name} · {pluginAuthorText(view.plugin.author)}

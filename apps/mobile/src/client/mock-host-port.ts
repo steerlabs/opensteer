@@ -6,7 +6,7 @@ import {
   type MockPluginScenario,
   type MockSubagentScene,
 } from "@opensteer/client/mock";
-import type { MobileHostPortFactory } from "./host-port.js";
+import type { MobileHostPort, MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
 
 /**
@@ -33,17 +33,22 @@ export function createMockHostPort(
   const loginIds = new Map<string, string>();
   const signedIn = (connection: DeploymentConnection): boolean =>
     connection.authority.document.deploymentId !== mockSignedOutDeploymentId;
-  const attach = (connection: DeploymentConnection): HostClient => {
-    const hosts = options.hosts;
-    const scenario = {
+  const attach: MobileHostPort["attach"] = ({ connection, connectionController, clientScope }) => {
+    const hostOptions = {
+      ...(connectionController ? { connectionController } : {}),
+      ...(clientScope ? { clientScope } : {}),
       ...(options.subagents ? { subagents: options.subagents } : {}),
       ...(options.plugins ? { plugins: options.plugins } : {}),
     };
-    if (hosts === undefined) return new MockHostClient(scenario);
+    const hosts = options.hosts;
+    if (hosts === undefined) return new MockHostClient(hostOptions);
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      const created = new MockHostClient({ devices: "seeded", ...scenario });
+      const created = new MockHostClient({
+        devices: "seeded",
+        ...hostOptions,
+      });
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {
         const result = await dispatch(command);
@@ -52,7 +57,7 @@ export function createMockHostPort(
       };
       hosts.set(deploymentId, created);
       host = created;
-    }
+    } else if (connectionController) host.adoptConnection(connectionController, clientScope);
     // A kept Host outlives the attachment: releasing it must not stop it.
     return new Proxy(host, {
       get(target, property) {
@@ -80,7 +85,7 @@ export function createMockHostPort(
       authorization: async (connection) => (signedIn(connection) ? "Bearer mock" : null),
       held: async (connection) => signedIn(connection),
     },
-    attach: ({ connection }) => attach(connection),
+    attach,
     desktopUpdates: ({ deploymentId }) =>
       options.hosts?.get(deploymentId)?.desktopUpdates ?? new MockDesktopUpdates(),
     verifyEpoch: async () => ({ status: "compatible", capabilities: [] }),

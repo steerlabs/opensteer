@@ -131,6 +131,10 @@ vi.mock("../client/mobile-client.js", () => ({
     error instanceof Error ? error.message : fallback,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
 vi.mock("../ui/sheet-bar.js", () => ({ SheetBarButton: () => null }));
 vi.mock("@react-navigation/native", () => ({
   StackActions: { replace: vi.fn() },
@@ -439,14 +443,12 @@ describe("This iPhone's apps", () => {
     await vi.waitFor(() =>
       expect(rowLabels()[2]).toBe("Reminders, Can read · Change not verified"),
     );
-    expect(text()).toContain(
-      "Opensteer may or may not have Can read and change for Reminders. Checking reads it again; nothing is asked twice.",
-    );
+    expect(text()).toContain("Couldn't confirm access for Reminders was changed.");
     // While unverified it can still be turned off, but not asked for again.
     expect(levels("Reminders")).toEqual([]);
     expect(switchFor("Reminders").disabled).toBe(false);
     lost = false;
-    await click(button("Check status"));
+    await click(button("Check"));
     await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Can read"));
     expect(text()).toContain(
       "That request is no longer waiting. Review the current access before trying again.",

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
+import { act, failureWords } from "./use-action.js";
 
 type Created = Extract<
   Awaited<ReturnType<HostClient["dispatch"]>>,
@@ -48,19 +49,25 @@ export function ComputerChannelSetup({
     setPending(true);
     setError(null);
     try {
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey("channel-computer-connection"),
-        ownerHandles,
-        provider: provider.provider,
-        runnerId,
-        type: "channel.connection.computer.create",
-      });
+      const result = await act(
+        null,
+        { label: "set up this channel", done: "set up", happened: "this channel was set up" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey("channel-computer-connection"),
+            ownerHandles,
+            provider: provider.provider,
+            runnerId,
+            type: "channel.connection.computer.create",
+          }),
+      );
       if (result.type !== "channel.connection.computer.create") {
-        throw new Error("Channel command mismatch.");
+        setError("The channel could not be set up.");
+        return;
       }
       onCreated(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The channel could not be set up.");
+      setError(failureWords(reason) ?? "The channel could not be set up.");
     } finally {
       setPending(false);
     }

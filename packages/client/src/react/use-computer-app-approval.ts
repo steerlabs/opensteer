@@ -1,3 +1,4 @@
+import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HostClient } from "../host/index.js";
 import {
@@ -102,8 +103,10 @@ export function useComputerAppApproval(hostClient: HostClient) {
     } catch (reason) {
       answering.delete(id);
       reply(null);
-      if (shown.current === id)
-        setError(reason instanceof Error ? reason.message : "Couldn't record this answer.");
+      if (shown.current === id) {
+        const issue = clientIssue(reason, { operation: "action", label: "record this answer" });
+        setError(issue ? presentClientIssue(issue).title : null);
+      }
     } finally {
       setBusy(false);
     }

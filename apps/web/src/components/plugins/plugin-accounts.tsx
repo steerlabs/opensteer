@@ -1,4 +1,6 @@
-import { useId, useState } from "react";
+import { useAction } from "../use-action.js";
+import { ActionLine } from "../action-line.js";
+import { useEffect, useId, useState } from "react";
 import { Link } from "react-router";
 import {
   pluginAccountRemoval,
@@ -7,7 +9,6 @@ import {
   removePluginAccount,
   type PluginAccountView,
 } from "@opensteer/client/plugins";
-import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -24,7 +25,7 @@ import { EngineNotice, pluginPath, pluginsPath, usePluginEngine } from "./plugin
 export function PluginAccounts() {
   const { hostClient } = useShell();
   const accounts = useSettingsRead(() => readPluginAccounts(hostClient), "plugin-accounts");
-  const refused = accounts.data ? null : pluginEngineRefusal(accounts.error);
+  const refused = accounts.data ? null : pluginEngineRefusal(accounts.issue);
   const engine = usePluginEngine(refused);
   const [removing, setRemoving] = useState<PluginAccountView | null>(null);
   return (
@@ -38,9 +39,7 @@ export function PluginAccounts() {
         lead="Sign-ins and keys saved on this computer for your plugins. Unlinking one from a plugin keeps it here; removing it here takes it away from every plugin."
       />
       <EngineNotice engine={accounts.data ? null : engine} />
-      <SettingsError
-        message={accounts.error && !refused ? actionErrorMessage(accounts.error) : null}
-      />
+      <SettingsError message={!refused ? accounts.error : null} />
       {accounts.data ? (
         accounts.data.length === 0 ? (
           <p className="settings-footnote">
@@ -113,8 +112,29 @@ function RemoveAccount({
   readonly row: PluginAccountView;
 }) {
   const { hostClient } = useShell();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const action = useAction(
+    hostClient,
+    {
+      label: "remove this account",
+      done: "removed",
+      happened: "the account was removed",
+      execute: async () => {
+        await removePluginAccount(hostClient, row.id);
+      },
+      reconcile: async () => {
+        const accounts = await readPluginAccounts(hostClient);
+        return accounts.some((account) => account.id === row.id)
+          ? { kind: "not-sent", issue: { code: "not-sent", done: "removed" } }
+          : { kind: "confirmed", value: undefined };
+      },
+    },
+    `remove-plugin-account:${row.id}`,
+  );
+  const pending = action.running;
+  const outcome = action.outcome;
+  useEffect(() => {
+    if (outcome?.kind === "confirmed") onRemoved();
+  }, [outcome, onRemoved]);
   const titleId = useId();
   const text = pluginAccountRemoval(row);
   return (
@@ -131,14 +151,7 @@ function RemoveAccount({
           <button
             className="btn btn--danger"
             disabled={pending}
-            onClick={() => {
-              setPending(true);
-              setError(null);
-              void removePluginAccount(hostClient, row.id)
-                .then(onRemoved)
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-                .finally(() => setPending(false));
-            }}
+            onClick={() => void action.run(undefined)}
             type="button"
           >
             {pending ? "Removing…" : text.confirm}
@@ -147,7 +160,7 @@ function RemoveAccount({
       }
     >
       <p>{text.message}</p>
-      <SettingsError message={error} />
+      {action.line ? <ActionLine line={action.line} wrap /> : null}
     </Dialog>
   );
 }

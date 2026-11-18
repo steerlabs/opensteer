@@ -1,9 +1,17 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import { threadTitleMaxLength } from "@opensteer/core";
 import { useState, type ReactNode } from "react";
 import { KeyboardAvoidingView, Modal, Platform, StyleSheet, View } from "react-native";
 import { material, space } from "../theme.js";
+import { failureWords, unreadyIssue } from "../ui/client-feedback.js";
 import { AppText, Field, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+
+const renameWords = {
+  label: "rename this task",
+  done: "renamed",
+  happened: "this task was renamed",
+} as const;
 
 export function RenameTaskDialog(props: {
   readonly hostClient: HostClient;
@@ -21,13 +29,15 @@ export function RenameTaskDialog(props: {
       props.onClose();
       return;
     }
+    const unready = unreadyIssue(props.hostClient, "renamed");
+    if (unready !== null) return setError(presentClientIssue(unready).title);
     setSaving(true);
     setError(null);
     try {
       await props.hostClient.renameThread(props.threadId, title);
       props.onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The task could not be renamed.");
+      setError(failureWords(failure, renameWords));
       setSaving(false);
     }
   };

@@ -1,4 +1,4 @@
-import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 interface EngineInstallationRow {
   readonly driverKind: string;
@@ -12,7 +12,6 @@ interface SettingsHost {
   readonly deploymentShape: HostSnapshot["deploymentShape"];
   readonly engineInstallations: readonly EngineInstallationRow[];
   readonly harnessUpdateAvailable: boolean;
-  readonly hostConnected: boolean;
   readonly identityConfig: HostSnapshot["identityConfig"];
   readonly iphoneAppsAvailable: boolean;
   readonly machineRevision: number;
@@ -60,7 +59,6 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
       deploymentShape: snapshot.deploymentShape,
       engineInstallations,
       harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
-      hostConnected: canRespondToRequests(snapshot),
       identityConfig: snapshot.identityConfig,
       iphoneAppsAvailable: snapshot.iphoneAppsAvailable,
       machineRevision: snapshot.machineRevision,

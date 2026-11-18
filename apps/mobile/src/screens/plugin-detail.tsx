@@ -40,6 +40,7 @@ import {
   usePluginSection,
   usePluginWorkflowRuns,
 } from "@opensteer/client/react";
+import { presentClientIssue, type ClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
@@ -53,7 +54,7 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { pluginFormRows, type PluginFormAnswers } from "./plugin-form-rows.js";
 import { engineSection, pluginTone, usePluginAction } from "./plugins.js";
-import { useSettingsRead } from "./use-settings-read.js";
+import { usePluginRead } from "./use-plugin-read.js";
 
 type Workflow = NonNullable<InstalledPluginView["workflows"]>[number];
 const when = (value: string) =>
@@ -79,12 +80,18 @@ export function PluginDetailScreen({
 function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId: string }) {
   const { deploymentId, host, pluginId } = props;
   const navigation = useNavigation();
-  const detail = useSettingsRead(host, () => readPlugin(host, pluginId), pluginId, {
-    pluginId,
-    categories: ["schedules", "webhooks", "webhookSources"],
-  });
+  const detail = usePluginRead(
+    host,
+    () => readPlugin(host, pluginId),
+    `plugin:${pluginId}`,
+    "this plugin",
+    {
+      pluginId,
+      categories: ["schedules", "webhooks", "webhookSources"],
+    },
+  );
   const engine = usePluginEngine(host, null);
-  const action = usePluginAction(host);
+  const action = usePluginAction(host, `detail:${pluginId}`);
   const [access, setAccess] = useState<PluginAccess | null>(null);
   const [starting, setStarting] = useState<Workflow | null>(null);
   const [pageOpen, setPageOpen] = useState(false);
@@ -99,18 +106,21 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
     data?.toolCount ?? 0,
     pluginToolsReader(host, pluginId),
     `tools:${pluginId}:${version}`,
+    host,
   );
   const skills = usePluginSection(
     data?.skills ?? [],
     data?.skillCount ?? 0,
     pluginSkillsReader(host, pluginId),
     `skills:${pluginId}:${version}`,
+    host,
   );
   const versions = usePluginSection(
     data?.versions ?? [],
     data?.versionCount ?? 0,
     pluginVersionsReader(host, pluginId),
     `versions:${pluginId}:${version}`,
+    host,
   );
   const scheduleSection: NativeSettingsSection | null =
     data?.schedules.length || runs.pending.length || runs.recent.length || runs.error
@@ -313,7 +323,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             ]
           : []),
       ],
-      ...(action.error ? { footer: { text: action.error, tone: "danger" as const } } : {}),
+      ...(action.footer ? { footer: action.footer } : {}),
     },
     {
       key: "access",
@@ -606,7 +616,12 @@ function StartWorkflow(props: {
 }) {
   const form = pluginInputForm(props.workflow.inputSchema);
   const [answers, setAnswers] = useState<PluginFormAnswers>({});
-  const action = usePluginAction(props.host);
+  const action = usePluginAction(
+    props.host,
+    `workflow:${props.pluginId}:${props.workflow.name}`,
+    "start this workflow",
+    "started",
+  );
   const content = pluginInputContent(form, answers);
   return (
     <NativeSettingsPage
@@ -665,7 +680,7 @@ function sectionRows(
             kind: "status" as const,
             tone: "bad" as const,
             label: `Couldn't read all of its ${key}.`,
-            ...(section.error instanceof Error ? { detail: section.error.message } : {}),
+            detail: presentClientIssue({ ...section.error, resource: key }).title,
           },
           {
             key: `${key}:retry`,
@@ -699,7 +714,7 @@ function sectionRows(
 /** A run read's state as rows: loading, or a failure with a retry, never an empty list. */
 function runReadRows(
   key: string,
-  error: unknown,
+  error: ClientIssue | null,
   loaded: boolean,
   retry: () => void,
 ): NativeSettingsRow[] {
@@ -709,12 +724,7 @@ function runReadRows(
         key: `${key}:failed`,
         kind: "status",
         tone: "bad",
-        label: "Couldn't read these runs.",
-        ...(typeof error === "string"
-          ? { detail: error }
-          : error instanceof Error
-            ? { detail: error.message }
-            : {}),
+        label: presentClientIssue({ ...error, resource: "these runs" }).title,
       },
       { key: `${key}:retry`, kind: "button", label: "Try again", onPress: retry },
     ];
@@ -727,13 +737,14 @@ function WebhookSetup(props: {
   pluginId: string;
   webhookId: string;
 }) {
-  const setup = useSettingsRead(
+  const setup = usePluginRead(
     props.host,
     () => readPluginWebhookSetup(props.host, props.pluginId, props.webhookId),
-    props.webhookId,
+    `webhook-setup:${props.webhookId}`,
+    "webhook setup",
     { pluginId: props.pluginId, categories: ["webhooks", "webhookSources"] },
   );
-  const action = usePluginAction(props.host);
+  const action = usePluginAction(props.host, `webhook:${props.pluginId}:${props.webhookId}`);
   const [answers, setAnswers] = useState<PluginFormAnswers>({});
   const [secret, setSecret] = useState("");
   const [copied, setCopied] = useState<string | null>(null);

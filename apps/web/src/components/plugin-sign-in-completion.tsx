@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { HostClient } from "@opensteer/client/host";
 import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/client/integrations";
 import { pluginSignInEnd, waitForPluginAuthorization } from "@opensteer/client/plugins";
-import { actionErrorMessage } from "../ui-utils.js";
+import { runRead } from "./use-action.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 
 type CompletionState =
@@ -52,20 +52,22 @@ export function PluginSignInCompletion({
     const controller = new AbortController();
     setState({ kind: "checking" });
     // On the web this read also finishes the sign-in.
-    void waitForPluginAuthorization({ attemptId, client, signal: controller.signal })
-      .then((status) => {
-        const end = pluginSignInEnd(status);
-        return end.kind === "completed" ? null : end.message;
-      })
-      .then((error) => {
-        if (controller.signal.aborted) return;
-        setState(error ? { kind: "terminal-error", message: error } : { kind: "completed" });
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setState({ kind: "read-error", message: actionErrorMessage(reason) });
-        }
-      });
+    void runRead(null, {
+      resource: "authorization status",
+      read: () => waitForPluginAuthorization({ attemptId, client, signal: controller.signal }),
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      if (!result.ok) {
+        setState({ kind: "read-error", message: result.words ?? "" });
+        return;
+      }
+      const end = pluginSignInEnd(result.value);
+      setState(
+        end.kind === "completed"
+          ? { kind: "completed" }
+          : { kind: "terminal-error", message: end.message },
+      );
+    });
     return () => controller.abort();
   }, [attemptId, client, integrationAttempt, retry]);
 

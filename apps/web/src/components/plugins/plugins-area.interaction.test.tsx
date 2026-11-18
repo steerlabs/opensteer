@@ -3,7 +3,9 @@ import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { MockHostClient } from "@opensteer/client/mock";
+import type { ConnectionController } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import { PluginsArea } from "./plugins-area.js";
 
@@ -197,4 +199,28 @@ it("reaches every installed plugin past the first page", async () => {
   } finally {
     window.history.replaceState(null, "", "/");
   }
+});
+
+it("keeps saved accounts visible through an outage and says beside Remove that it was not sent", async () => {
+  const client = await host();
+  const session = controlledClientSession();
+  vi.spyOn(client, "connection", "get").mockReturnValue({
+    ...session.connection,
+    dispose: client.connection.dispose,
+  } as ConnectionController);
+  const remove = vi.spyOn(client, "dispatch");
+  await mount("/settings/plugins/accounts", client);
+  await until(() => text().includes("Live account"), "the saved accounts loaded");
+  await press("Remove Live account");
+  await act(async () => session.change({ phase: "recovering", network: "offline", epoch: 2 }));
+  expect(text()).toContain("Remove Live account?");
+  await press("Remove account");
+  expect(text()).toContain("Not removed. You're offline.");
+  expect(remove).not.toHaveBeenCalled();
+  await act(async () =>
+    session.change({ phase: "ready", network: "online", epoch: 3, readyRevision: 2 }),
+  );
+  await press("Remove account");
+  await until(() => !text().includes("Live account"), "the confirmed removal updated the list");
+  expect(remove).toHaveBeenCalledTimes(1);
 });

@@ -1,9 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { act, failureWords } from "../use-action.js";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useParams } from "react-router";
 import {
   conversationName,
   mutationIdempotencyKey,
-  unwrapRpcResult,
+  schedulesClient,
   type ThreadSummary,
   type TriggerDetail,
 } from "@opensteer/client/host";
@@ -16,7 +17,7 @@ import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
-import { actionErrorMessage, automationPath } from "../../ui-utils.js";
+import { automationPath } from "../../ui-utils.js";
 import { describeRepeating } from "@opensteer/client/host";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 
@@ -39,22 +40,14 @@ interface Draft {
 export function AutomationEditorPage() {
   const { triggerId = "" } = useParams();
   const { hostClient, openMobileNavigation } = useShell();
-  const [editing, setEditing] = useState<TriggerDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let current = true;
-    void hostClient.rpc["triggers.get"]({ triggerId })
-      .then((result) => {
-        if (current) setEditing(unwrapRpcResult(result));
-      })
-      .catch((reason: unknown) => {
-        if (current) setLoadError(actionErrorMessage(reason));
-      });
-    return () => {
-      current = false;
-    };
-  }, [hostClient, triggerId]);
+  // The automation page's own read: it waits through an outage and reloads on recovery.
+  const resource = useMemo(
+    () => schedulesClient(hostClient).detail(triggerId),
+    [hostClient, triggerId],
+  );
+  const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const editing = state.data?.definition ?? null;
+  const loadError = editing ? null : state.error;
 
   const back = (
     <AreaLink className="page__back" to={automationPath(triggerId)}>
@@ -71,6 +64,13 @@ export function AutomationEditorPage() {
           <p aria-live="assertive" className="notice notice--error" role="alert">
             <Icon name="alert-circle" />
             <span>{loadError}</span>
+            <button
+              className="btn btn--small"
+              onClick={() => void resource.refresh().catch(() => undefined)}
+              type="button"
+            >
+              Try again
+            </button>
           </p>
         ) : null}
         {!editing && !loadError ? (
@@ -114,20 +114,25 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
         source: draft.source,
         toolContractVersion: 5,
       };
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
-        input: {
-          expectedRevisionId: editing.revision.id,
-          name: draft.name.trim(),
-          program,
-          source: sourceFrom(draft, editing),
-        },
-        triggerId: editing.trigger.id,
-        type: "trigger.update",
-      });
+      await act(
+        hostClient,
+        { label: "save this automation", done: "saved", happened: "this automation was saved" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
+            input: {
+              expectedRevisionId: editing.revision.id,
+              name: draft.name.trim(),
+              program,
+              source: sourceFrom(draft, editing),
+            },
+            triggerId: editing.trigger.id,
+            type: "trigger.update",
+          }),
+      );
       void navigate(automationPath(editing.trigger.id));
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setPending(false);
     }
   };

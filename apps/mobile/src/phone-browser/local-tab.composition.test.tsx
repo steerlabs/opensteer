@@ -23,6 +23,10 @@ vi.mock("react-native", () => ({
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
 }));
 vi.mock("react-native-safe-area-context", () => ({}));
+// A stale page's cover and chip: none is drawn here, where the page stays live.
+vi.mock("react-native-reanimated", () => ({ default: { View: () => null } }));
+vi.mock("../ui/motion.js", () => ({ dim: undefined, exit: undefined }));
+vi.mock("../ui/last-picture-chip.js", () => ({ LastPictureChip: () => null }));
 vi.mock("expo", () => ({ requireNativeView: () => () => null }));
 vi.mock("./tab-host.js", () => ({
   PhoneBrowserTabHost: ({
@@ -160,7 +164,6 @@ test.each([false, true])(
     const client = new HttpHostClient({
       baseUrl: "http://composition.test",
       capabilities: ["browser-target-control-v1"],
-      refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         const socket = new Socket();
         sockets.push({ url, socket });

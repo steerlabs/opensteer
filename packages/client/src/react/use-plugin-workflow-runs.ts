@@ -1,45 +1,65 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { clientScopeKey } from "../connections/connection-controller.js";
 import type { HostClient } from "../host/client.js";
-import { canRespondToRequests } from "../host/host-connection.js";
 import { pluginChangeAffects, readPluginWorkflowRuns } from "../plugins/index.js";
 import { PluginWorkflowRuns } from "../plugins/runs.js";
+import { createClientRead } from "../reads/client-read.js";
+import { useClientRead } from "./use-client-read.js";
 
-/**
- * One plugin's workflow runs, read with the plugin's page and kept current:
- * again on `host.plugins-changed` and on reconnecting. It reads even when the
- * current version declares no workflows, since runs outlive declarations.
- */
+/** Live runs and the requested pages stay visible while their Host reconnects. */
 export function usePluginWorkflowRuns(
-  client: Pick<
-    HostClient,
-    "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribePluginsChanged"
-  >,
+  client: Pick<HostClient, "rpc" | "dispatch" | "connection" | "subscribePluginsChanged">,
   pluginId: string,
 ) {
-  const runs = useMemo(
-    () =>
-      new PluginWorkflowRuns((cursor, ids) =>
-        readPluginWorkflowRuns(client, pluginId, cursor ?? undefined, ids),
-      ),
-    [client, pluginId],
+  const readScope = useCallback(
+    () => clientScopeKey(client.connection.getSnapshot().scope),
+    [client],
   );
-  useEffect(() => {
-    void runs.refresh();
-    const unsubscribePlugins = client.subscribePluginsChanged((change) => {
-      if (pluginChangeAffects(change, ["workflowRuns"], pluginId)) void runs.refresh();
+  const scope = useSyncExternalStore(client.connection.subscribe, readScope, readScope);
+  const owner = useMemo(() => {
+    const runs = new PluginWorkflowRuns((cursor, ids) =>
+      readPluginWorkflowRuns(client, pluginId, cursor ?? undefined, ids),
+    );
+    let more = false;
+    const resource = createClientRead(client, {
+      key: `workflow-runs:${pluginId}`,
+      label: "this plugin's workflow runs",
+      scopeKey: scope,
+      read: async (signal) => {
+        const append = more;
+        more = false;
+        if (append) await runs.showMore(signal);
+        else await runs.refresh(signal);
+        signal.throwIfAborted();
+        const state = runs.getState();
+        if (state.error !== null) throw state.error;
+        return state;
+      },
+      subscribeInvalidation: (invalidate) =>
+        client.subscribePluginsChanged((change) => {
+          if (pluginChangeAffects(change, ["workflowRuns"], pluginId)) invalidate();
+        }),
     });
-    let connected = canRespondToRequests(client.getSnapshot());
-    const unsubscribe = client.subscribe(() => {
-      const next = canRespondToRequests(client.getSnapshot());
-      if (next && !connected) void runs.refresh();
-      connected = next;
-    });
-    return () => {
-      unsubscribePlugins();
-      unsubscribe();
-      runs.cancelRefresh();
+    return {
+      runs,
+      resource,
+      showMore: () => {
+        if (runs.getState().loadingMore) return;
+        more = true;
+        void resource.refresh();
+      },
     };
-  }, [client, pluginId, runs]);
-  const state = useSyncExternalStore(runs.subscribe, runs.getState, runs.getState);
-  return { ...state, showMore: () => void runs.showMore(), retry: () => void runs.refresh() };
+  }, [client, pluginId, scope]);
+  const view = useClientRead(owner.resource);
+  const state = useSyncExternalStore(
+    owner.runs.subscribe,
+    owner.runs.getState,
+    owner.runs.getState,
+  );
+  return {
+    ...state,
+    error: view.issue,
+    showMore: owner.showMore,
+    retry: view.refresh,
+  };
 }

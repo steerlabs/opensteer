@@ -5,11 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { failureNotice, type HostClient, type TranscriptFileState } from "@opensteer/client/host";
+import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { fileIcon, type FileOpenInput } from "@opensteer/client/references";
 import type { ThreadId } from "@opensteer/core";
@@ -21,6 +21,7 @@ import { openImageRead, useImageActions, type ImageActions } from "../image-acti
 import { Icon } from "../icon.js";
 import { NativeBrowserOverlay } from "../native-browser-overlays.js";
 import { referenceGlyphs } from "./reference-glyphs.js";
+import { Unavailable } from "./unavailable.js";
 
 /** Each line's height in the text view; lines are drawn only near the screen. */
 export const fileLineHeight = 20;
@@ -205,11 +206,6 @@ function FileBody({
   readonly state: TranscriptFileState | null;
   readonly threadId: ThreadId | null;
 }) {
-  const network = useSyncExternalStore(
-    client.subscribe,
-    () => client.getSnapshot().network,
-    () => client.getSnapshot().network,
-  );
   if (state === null)
     return (
       <div aria-label="Loading file" className="file-viewer__skeleton" role="status">
@@ -220,43 +216,21 @@ function FileBody({
     );
   switch (state.status) {
     case "unavailable":
-      return (
-        <ViewerState
-          body="It may have been moved or deleted, or it's outside what Opensteer can show."
-          icon="help-circle"
-          title="This isn't available"
-        />
-      );
+      return <Unavailable />;
     case "failed":
-      return (
-        <ViewerState
-          action={<RetryButton retry={retry} />}
-          body="Try again in a moment."
-          icon="alert-circle"
-          title="Couldn't open this file"
-        />
-      );
-    case "unreachable": {
-      const notice = failureNotice("unavailable", network);
-      const offline = notice.tone === "offline";
+      return <Unavailable unloaded="this file" onRetry={retry} />;
+    case "unreachable":
       return state.cached && state.cached.preview.kind === "text" ? (
         <>
           <p className="file-viewer__banner" role="status">
-            <Icon name={offline ? "cloud-off" : "alert-circle"} />
-            {notice.title}. This is the copy you opened before.
+            Showing the copy you opened before.
             <RetryButton retry={retry} />
           </p>
           <TextLines input={input} text={state.cached.preview.text} />
         </>
       ) : (
-        <ViewerState
-          action={<RetryButton retry={retry} />}
-          body={notice.body}
-          icon={offline ? "cloud-off" : "alert-circle"}
-          title={notice.title}
-        />
+        <Unavailable unloaded="this file" onRetry={retry} />
       );
-    }
     case "ok": {
       const { preview } = state;
       if (preview.kind === "text")
@@ -501,18 +475,17 @@ function DownloadButton({
         if (result.status !== "ok") {
           if (mounted.current)
             setError(
-              result.status === "unreachable"
-                ? `${failureNotice("unavailable", client.getSnapshot().network).title}.`
-                : result.status === "unavailable"
-                  ? "This file isn't available."
-                  : "Couldn't download this file.",
+              result.status === "unavailable"
+                ? presentClientIssue({ code: "access-lost" }).title
+                : presentClientIssue({ code: "rejected", action: "download this file" }).title,
             );
           return;
         }
         saveFile(result.bytes as Uint8Array<ArrayBuffer>, name);
       })
       .catch(() => {
-        if (mounted.current) setError("Couldn't download this file.");
+        if (mounted.current)
+          setError(presentClientIssue({ code: "rejected", action: "download this file" }).title);
       })
       .finally(() => {
         if (mounted.current) setPending(false);

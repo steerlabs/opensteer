@@ -1,3 +1,4 @@
+import { runRead } from "../use-action.js";
 import { useEffect, useState } from "react";
 import {
   automationGlyph,
@@ -23,7 +24,7 @@ import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageTopbar } from "../page-header.js";
-import { actionErrorMessage, automationPath, useMinuteClock } from "../../ui-utils.js";
+import { automationPath, useMinuteClock } from "../../ui-utils.js";
 import { AreaLink } from "../workspace/area-link.js";
 import { TaskMark } from "../workspace/task-mark.js";
 import { useStartTask } from "../start-task.js";
@@ -47,15 +48,14 @@ export function AutomationsPage() {
 
   useEffect(() => {
     let current = true;
-    void hostClient.rpc["triggers.list"]({})
-      .then((result) => {
-        if (!current) return;
-        setSummaries(unwrapRpcResult(result).triggers);
-        setError(null);
-      })
-      .catch((reason: unknown) => {
-        if (current) setError(actionErrorMessage(reason));
-      });
+    void runRead(hostClient, {
+      resource: "automations",
+      read: async () => unwrapRpcResult(await hostClient.rpc["triggers.list"]({})).triggers,
+    }).then((result) => {
+      if (!current) return;
+      if (result.ok) setSummaries(result.value);
+      setError(result.ok ? null : result.words);
+    });
     return () => {
       current = false;
     };

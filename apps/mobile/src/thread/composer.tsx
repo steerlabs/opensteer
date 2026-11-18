@@ -1,3 +1,11 @@
+import type { ClientScope } from "@opensteer/client/connections";
+import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
+import { useMobileNotifications } from "../ui/notifications-context.js";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { setStringAsync } from "expo-clipboard";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine, useScreenAction } from "../ui/client-feedback.js";
+import { useConnectionReady } from "../ui/connection-live.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
 import { ComposerEditor } from "../ui/composer-editor.js";
@@ -9,7 +17,7 @@ import {
   startReference,
 } from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
-import { compactionOfferText } from "@opensteer/client/host";
+import { compactionOfferText, type HostSnapshot } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -19,18 +27,16 @@ import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
 import { dictationLabels, dictationView } from "@opensteer/client/dictation";
-import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
   deriveSurface,
-  isHostRefusal,
   mutationIdempotencyKey,
+  runStopRequested,
   type HostClient,
   type UsageLimitNotice,
 } from "@opensteer/client/host";
 import {
   attachmentMaxBytes,
   attachmentMessageMaxCount,
-  type ArtifactContentPart,
   type AuthenticatedUser,
   type BrowserPageContentPart,
   type Request,
@@ -42,29 +48,20 @@ import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
-  type RefObject,
 } from "react";
-import {
-  AccessibilityInfo,
-  Alert,
-  Pressable,
-  StyleSheet,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { AccessibilityInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { pageIdentity } from "../browser/surface-route.js";
-import { operationDetail } from "../client/mobile-client.js";
-import type {
-  PendingCommand,
-  ThreadDraftQuote,
-  ThreadDraftStore,
+import {
+  threadDraftRevision,
+  type TaskStartRecord,
+  type ThreadDraftQuote,
+  type ThreadDraftStore,
 } from "../client/thread-drafts.js";
 import { Symbol } from "../ui/symbol.js";
 import {
@@ -88,30 +85,26 @@ import { AttachmentStrip } from "./attachment-views.js";
 import {
   attachmentKey,
   draftAttachmentPart,
-  forgetDraftFiles,
+  sameDraftAttachmentKeys,
   useDraftAttachments,
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
-import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
+import { setTaskDone, useTaskDoneLine } from "../threads/task-row.js";
 
 /**
  * The one surface at the bottom of a Thread: the composer, and whatever
  * Opensteer is currently waiting on, docked into it.
  *
- * Two pieces of text live here and they are deliberately different things. The
- * draft is what is being typed and is the person's to change. The pending
- * command is the message that was handed to the Host — its words and its
- * idempotency key, fixed together — and nothing changes it, because a retry
- * under a key the Host has already seen must be the same message or it is a
- * second one. It is written to the device and the write is awaited before the
- * command is dispatched; a write that fails stops the send and says so, because
- * a message sent under a key no relaunch can find is a message that can be sent
- * twice. Typing while one is in flight edits the draft and leaves the command
- * alone.
+ * The draft is what is being typed and is the person's to change. Send hands
+ * the message to the app's outbox, which writes it to this phone before
+ * anything goes out and delivers it when the connection is ready, so the bar
+ * stays usable offline. The transcript shows each message on its way, where
+ * it will stand; nothing about it waits in the bar. Only a failure to write it
+ * down here is said beside the bar, and the draft stays.
  */
 export function Composer(props: {
   readonly variant?: "conversation" | "work";
@@ -119,7 +112,10 @@ export function Composer(props: {
   readonly accessMode: ThreadAccessMode;
   /** The modes this Thread's engine can enforce, or null while it has not said. */
   readonly accessModes: readonly ThreadAccessMode[] | null;
-  /** False while the Host is unreachable: a decision is never queued. */
+  /**
+   * False while the Host is unreachable. A decision is never queued: its
+   * controls stay usable and a tap says it didn't go out.
+   */
   readonly canRespond: boolean;
   readonly deploymentId: string;
   /** What stops this Thread accepting anything, in words, or null. */
@@ -149,18 +145,10 @@ export function Composer(props: {
   readonly conversationActions: readonly NativeMenuOption[];
   readonly placeholder: string;
   readonly requests: readonly Request[];
-  /**
-   * Words handed back to the composer, such as a queued message taken back to
-   * be reworded. Each new value joins the draft once, ahead of what is there.
-   */
-  readonly restore?: {
-    readonly attachments?: readonly ArtifactContentPart[];
-    readonly key: number;
-    /** An update to answer; it becomes a removable chip, never draft text. */
-    readonly quote?: ThreadDraftQuote | null;
-    readonly text: string;
-  } | null;
+  /** Focus after a quote or an edit has been saved in this draft. */
+  readonly focusDraft?: number;
   readonly running: boolean;
+  readonly stopRunId: string | null;
   readonly runStopping: boolean;
   /** Names what Stop stops, where more than one thing on screen can be stopped. */
   readonly stopLabel?: string;
@@ -172,24 +160,19 @@ export function Composer(props: {
   readonly user: AuthenticatedUser;
   /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
-  /**
-   * The pane draws the message this Thread owes in its transcript, with its
-   * own way to send it again, so the bar does not repeat it.
-   */
-  readonly owedInline?: boolean;
-  /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
-  readonly retryRef?: RefObject<(() => void) | null>;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
     () => deriveSurface(props.requests, props.user, props.highlightRequestId),
     [props.highlightRequestId, props.requests, props.user],
   );
+  const outbox = hostMessageOutbox(props.hostClient);
   const notifications = useMobileNotifications();
   const { deploymentId, drafts, hostClient, threadId } = props;
   const userId = props.user.id;
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
+  const dictated = drafts.readDictatedText(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
   const dictation = useDictation();
   const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
@@ -217,11 +200,52 @@ export function Composer(props: {
     }, [dictation, inView, owner]),
   );
   const quote = draft?.quote ?? null;
-  const pending = drafts.readPending(deploymentId, userId, threadId);
   const [sending, setSending] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // What Send came to, beside the bar: a message that couldn't be written down here.
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
+  const stopAction = useScreenAction<string, void>(
+    props.hostClient,
+    `run-stop:${threadId}:${props.stopRunId ?? ""}`,
+    {
+      label: "stop this run",
+      done: "stopped",
+      execute: async (runId) => {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        await props.hostClient.stopRun(threadId, runId);
+      },
+      reconcile: async (runId) => {
+        const { runQueue, transcripts } = props.hostClient.getSnapshot();
+        const running = runQueue.some((run) => run.id === runId && run.threadId === threadId);
+        return !running || runStopRequested(transcripts[threadId] ?? [], runId)
+          ? { kind: "confirmed", value: undefined }
+          : null;
+      },
+    },
+  );
+  const stopping = stopAction.running;
+  // The fact that the run stopped can land just after the connection is back,
+  // after the ready revision's check: it settles the line as it arrives.
+  const { stopRunId } = props;
+  const stopEvidence = useHostSelector(
+    props.hostClient,
+    useCallback(
+      (snapshot: HostSnapshot) =>
+        stopRunId !== null &&
+        (!snapshot.runQueue.some((run) => run.id === stopRunId && run.threadId === threadId) ||
+          runStopRequested(snapshot.transcripts[threadId] ?? [], stopRunId)),
+      [stopRunId, threadId],
+    ),
+  );
+  const stopUnconfirmed = stopAction.state.outcome?.kind === "unconfirmed";
+  const { reconcile: reconcileStop } = stopAction;
+  useEffect(() => {
+    if (stopUnconfirmed && stopEvidence) void reconcileStop();
+  }, [reconcileStop, stopEvidence, stopUnconfirmed]);
+  const reopenLine = useTaskDoneLine(threadId);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
+  const draftNotice = drafts.readDraftUnsaved(deploymentId, userId, threadId)
+    ? "This draft could not be saved on this phone."
+    : draftFailure;
   const [focused, setFocused] = useState(false);
   const input = useRef<ComposerEditorHandle>(null);
   // Out of view, the field lets go of the keyboard: nothing is typed where it
@@ -242,15 +266,12 @@ export function Composer(props: {
    */
   const [presenting, setPresenting] = useState(false);
   const inFlight = useRef(false);
-  const stoppingRef = useRef(false);
   const draftText = useRef(text);
   draftText.current = text;
-  const draftWrite = useRef(0);
   /** The key already tried while this connection has been up, so a refusal is
    * not retried on a loop. A reconnection is what makes it worth trying again. */
-  const attempted = useRef<string | null>(null);
   /** A message the Host refused, on its way back into the draft. */
-  const [refused, setRefused] = useState<PendingCommand | null>(null);
+  const [refused, setRefused] = useState<TaskStartRecord | null>(null);
   /**
    * False once this bar is gone. A refusal that arrives after that leaves the
    * command on the phone, to be answered again and handed back to the draft
@@ -270,6 +291,9 @@ export function Composer(props: {
     files: { deploymentId, threadId, userId },
   });
   const attachmentsReady = staged.items.every((item) => draftAttachmentPart(item) !== null);
+  // Files still on their way hold Send; offline, the bar says why once.
+  const connectionReady = useConnectionReady(hostClient.connection);
+  const filesWait = !attachmentsReady && !connectionReady && !(props.readOnly ?? false);
 
   // The page this message includes. One Ask put on the draft is the person's
   // own choice and stays with the draft until it is sent or removed. Otherwise
@@ -291,7 +315,7 @@ export function Composer(props: {
       : null,
   );
   const readOnly = done === "closed" || (props.readOnly ?? false);
-  const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
+  const disabled = props.disabledReason !== null || outbox === null || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
   // A question the viewer can answer turns this bar into its answer field,
   // unless a message is already being written here: that draft keeps the bar
@@ -308,10 +332,10 @@ export function Composer(props: {
   const view = composerView({
     attachments: staged.items.length,
     attachmentsReady,
-    canRespond: props.canRespond,
+    canRespond: outbox !== null,
     disabledReason: props.disabledReason,
     focused,
-    pendingCommand: pending !== null,
+    pendingCommand: false,
     presenting,
     readOnly,
     running: props.running,
@@ -320,9 +344,7 @@ export function Composer(props: {
     textHidden,
     voice: voiceReady,
   });
-  const canSend =
-    view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
-  const requestBlocked = disabled || sending || pending !== null;
+  const canSend = view.canSend || (dictating && !disabled && !sending && attachmentsReady);
   // A typed `@` offers references to put in the words, until the caret leaves it.
   const referenceQuery =
     focused && !dictating && !disabled && !textHidden && !answering
@@ -335,17 +357,7 @@ export function Composer(props: {
       : personalReferenceSections(hostClient.getSnapshot(), referenceQuery.query, threadId);
   const changeText = (next: string): void => {
     draftText.current = next;
-    const write = ++draftWrite.current;
-    void drafts.writeDraft(deploymentId, userId, threadId, next).then(
-      () => {
-        if (draftWrite.current === write) setDraftFailure(null);
-      },
-      () => {
-        if (draftWrite.current === write) {
-          setDraftFailure("This draft could not be saved on this phone.");
-        }
-      },
-    );
+    void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => undefined);
   };
   /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
   const replaceText = (next: string): void => {
@@ -413,29 +425,27 @@ export function Composer(props: {
   }, [notice]);
   // While voice holds the microphone, dictation steps aside on every composer.
   const voiceOn = useVoiceOn();
+  const dictationSave = useRef<Promise<boolean> | null>(null);
   const startDictation = (): void => {
     if (voiceOn) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const target = drafts.captureEdit(deploymentId, userId, threadId);
+    dictationSave.current = null;
+    let readText = "";
     dictation.start({
       owner,
       read: () => {
         dictationBase.current = selection.current;
         return {
-          text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+          text: (readText = drafts.readDraft(deploymentId, userId, threadId)?.text ?? ""),
           selection: selection.current,
         };
       },
-      commit: (next, caret) => {
+      commit: (next, caret, transcript) => {
         selection.current = caret;
         if (mounted.current && currentOwner.current === owner)
           committedSelection.current = { text: next, ...caret };
-        void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => {
-          if (mounted.current && currentOwner.current === owner)
-            setDraftFailure("This draft could not be saved on this phone.");
-        });
-        if (mounted.current) {
-          draftText.current = next;
-        }
+        dictationSave.current = drafts.keepDictation(target, readText, next, transcript);
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       },
     });
@@ -448,15 +458,11 @@ export function Composer(props: {
   // The update this message answers. It lives with the draft, so it survives
   // leaving the screen and relaunching the app exactly as the words do.
   const changeQuote = (next: ThreadDraftQuote | null): void => {
-    void drafts.writeDraftQuote(deploymentId, userId, threadId, next).catch(() => {
-      setDraftFailure("This quote could not be saved on this phone.");
-    });
+    void drafts.writeDraftQuote(deploymentId, userId, threadId, next).catch(() => undefined);
   };
 
   const changePage = (next: BrowserPageContentPart | null): void => {
-    void drafts.writeDraftPage(deploymentId, userId, threadId, next).catch(() => {
-      setDraftFailure("This page could not be saved on this phone.");
-    });
+    void drafts.writeDraftPage(deploymentId, userId, threadId, next).catch(() => undefined);
   };
   /** Takes the shown page off this message, the page in front included. */
   const removePage = (): void => {
@@ -464,20 +470,9 @@ export function Composer(props: {
     setDeclinedPage(offeredKey);
   };
 
-  const restore = props.restore ?? null;
   useEffect(() => {
-    if (restore === null) return;
-    const current = draftText.current;
-    if (restore.text) replaceText(current.trim() ? `${restore.text}\n${current}` : restore.text);
-    // A restore without a quote leaves the one already standing; only an
-    // explicit null takes it away.
-    if (restore.quote !== undefined) changeQuote(restore.quote);
-    // Files already on the Host come back by reference; this phone has no copy.
-    const parts = restore.attachments ?? [];
-    if (parts.length > 0) staged.restore(parts.map((part) => ({ localUri: null, part })));
-    input.current?.focus();
-    // Only a new hand-back is applied; a re-render leaves the draft alone.
-  }, [restore]);
+    if (props.focusDraft) input.current?.focus();
+  }, [props.focusDraft]);
 
   useEffect(() => {
     if (refused === null) return;
@@ -522,109 +517,13 @@ export function Composer(props: {
    * this returns null.
    */
   const claimMessage = useCallback(
-    (): ThreadMutationClaim | null =>
-      props.mutationGate.resume("message") ?? props.mutationGate.acquire("message"),
+    (): ThreadMutationClaim | null => props.mutationGate.acquire("message"),
     [props.mutationGate],
   );
 
-  const deliver = useCallback(
-    async (command: PendingCommand): Promise<void> => {
-      const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
-      if (endDelivery === null) return;
-      let failed = false;
-      try {
-        if (
-          !(await sendPendingMessage(
-            hostClient,
-            command,
-            () => authorizeAiSharing(aiSharing, hostClient),
-            notifications.registration,
-          ))
-        ) {
-          // Not shared, so not sent: still owed, and offered again.
-          failed = true;
-          return;
-        }
-        // Acknowledged, and only now: until this line the command is still the
-        // one this phone owes the Host.
-        const cleared = await drafts.clearPending(
-          deploymentId,
-          userId,
-          threadId,
-          command.idempotencyKey,
-        );
-        // The Host holds the message and its files, so this phone's copies of
-        // them have done their job.
-        if (cleared) {
-          forgetDraftFiles({ deploymentId, threadId, userId }, command.localUris ?? []);
-        }
-      } catch (error) {
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        failed = true;
-        if (isHostRefusal(error) && mounted.current) {
-          // The Host answered no, so the message is no longer owed: its words
-          // and files go back to the draft to be changed, and the next send is
-          // a new message under a new key. The copies stay with the draft.
-          try {
-            if (await drafts.clearPending(deploymentId, userId, threadId, command.idempotencyKey)) {
-              setRefused(command);
-            }
-          } catch {
-            // Still held on this phone; Try again repeats the same refusal.
-          }
-        }
-        setFailure(operationDetail(error, "That message did not reach your deployment."));
-      } finally {
-        // Still owed after a failure, it says so where it is drawn until the next try.
-        endDelivery(
-          failed &&
-            drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ===
-              command.idempotencyKey
-            ? "failed"
-            : undefined,
-        );
-      }
-    },
-    [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
-  );
-
-  const deliverExclusively = useCallback(
-    async (command: PendingCommand): Promise<void> => {
-      if (inFlight.current) return;
-      const claim = claimMessage();
-      if (claim === null) return;
-      inFlight.current = true;
-      setSending(true);
-      setFailure(null);
-      try {
-        await deliver(command);
-      } finally {
-        inFlight.current = false;
-        setSending(false);
-        if (drafts.readPending(deploymentId, userId, threadId) === null) {
-          props.mutationGate.release(claim);
-        }
-      }
-    },
-    [claimMessage, deliver, deploymentId, drafts, props.mutationGate, threadId, userId],
-  );
-
-  useEffect(() => {
-    // A command the device came back holding, or one left over from a lost
-    // answer, is retried when there is a Host to retry it to — with the key and
-    // the words it was claimed under, never re-keyed.
-    if (!props.canRespond || readOnly) {
-      attempted.current = null;
-      return;
-    }
-    if (pending === null || attempted.current === pending.idempotencyKey) return;
-    attempted.current = pending.idempotencyKey;
-    void deliverExclusively(pending);
-  }, [deliverExclusively, pending, props.canRespond, readOnly]);
-
   const returnHint = useHostSelector(
     hostClient,
-    (snapshot) => snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+    (snapshot) => snapshot.threads.find((thread) => thread.id === threadId)?.returnHint,
   );
   const compactionOffer = useCompactionOffer(
     returnHint,
@@ -632,15 +531,11 @@ export function Composer(props: {
     useMobileClient().usageNotices,
   );
   const sendMessage = async (
+    scope: ClientScope,
     sourceText: string,
     choice?: import("@opensteer/core").CompactionSendChoice,
   ): Promise<void> => {
-    if (
-      !canSend ||
-      inFlight.current ||
-      drafts.readPending(deploymentId, userId, threadId) !== null ||
-      (sourceText.trim() === "" && staged.items.length === 0)
-    )
+    if (!canSend || inFlight.current || (sourceText.trim() === "" && staged.items.length === 0))
       return;
     // Every file is on the Host, or Send is not offered: words never go on
     // without the files meant to travel with them.
@@ -650,13 +545,20 @@ export function Composer(props: {
       return part === null ? [] : [part];
     });
     if (attachments.length !== carried.length) return;
-    if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
+    const source = await drafts.readSavedDraft(deploymentId, userId, threadId);
+    const revision = threadDraftRevision(source);
     if (
-      !mounted.current ||
-      inFlight.current ||
-      drafts.readPending(deploymentId, userId, threadId) !== null
-    )
+      !revision ||
+      source?.text.trim() !== sourceText.trim() ||
+      source?.quote?.messageId !== quote?.messageId ||
+      JSON.stringify(source?.page ?? null) !== JSON.stringify(draftPage) ||
+      !sameDraftAttachmentKeys(source?.attachments ?? [], carried)
+    ) {
+      setFailure(issueLine({ code: "draft-changed" }, `send:${Date.now()}`));
       return;
+    }
+    if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
+    if (!mounted.current || inFlight.current || outbox === null) return;
     const claim = claimMessage();
     if (claim === null) return;
     inFlight.current = true;
@@ -669,17 +571,37 @@ export function Composer(props: {
       // per file and null for a file only the Host holds, so a relaunch can
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
-      await drafts.claimPending(deploymentId, userId, threadId, {
-        ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
-        ...(attachments.length > 0
-          ? { attachments, localUris: carried.map((item) => item.localUri) }
-          : {}),
-        ...(includedPage === null ? {} : { browserPage: includedPage }),
-        idempotencyKey: mutationIdempotencyKey("message"),
-        ...(quote === null ? {} : { quotedMessageId: quote.messageId }),
-        text: sourceText.trim(),
-        threadId,
-      });
+      const assertCurrent = () =>
+        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+      const id = await enqueueDraftReply(
+        outbox,
+        scope,
+        {
+          type: "thread.sendMessage",
+          threadId,
+          content: [
+            ...(sourceText.trim() ? [{ type: "text" as const, text: sourceText.trim() }] : []),
+            ...(includedPage ? [includedPage] : []),
+            ...attachments,
+          ],
+          delivery: "queue",
+          idempotencyKey: mutationIdempotencyKey("message"),
+          ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
+          ...(quote ? { quotedMessageId: quote.messageId } : {}),
+        },
+        {
+          revision,
+          assertCurrent,
+          bindDraft: () => drafts.bindReply(scope, threadId, revision),
+          localAttachmentUris: carried.map((item) => item.localUri),
+        },
+      );
+      void notifications.registration.afterSuccessfulSend();
+      const cleared = await drafts
+        .consumeReply(deploymentId, userId, threadId, revision)
+        .catch(() => false);
+      if (!cleared) return;
+      void outbox.forgetHandoff(scope, id).catch(() => {});
       // Felt as it is written down, which is when the transcript draws it.
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       if (choice === "keepFullHistory") compactionOffer.dismiss();
@@ -687,27 +609,24 @@ export function Composer(props: {
       // typed while it was being written. Read the store, not the render's copy,
       // which the claim may already have emptied.
       const left = drafts.readDraft(deploymentId, userId, threadId)?.text ?? "";
-      if (left === "" || left === sourceText) replaceText("");
-      changeQuote(null);
-      setDeclinedPage(null);
-      const claimed = drafts.readPending(deploymentId, userId, threadId);
-      if (claimed === null) return;
-      // The message holds the files now; files picked meanwhile stay on the strip.
+      if (left === "") {
+        const editor = input.current;
+        editor?.restore({
+          composing: false,
+          generation: editor.readSnapshot().generation + 1,
+          selection: { start: 0, end: 0 },
+          text: "",
+        });
+        setDeclinedPage(null);
+      }
       staged.release(carried.map(attachmentKey));
-      attempted.current = claimed.idempotencyKey;
-      await deliver(claimed);
     } catch (error) {
-      setFailure(
-        drafts.readPending(deploymentId, userId, threadId) === null
-          ? "Couldn't save your message on this phone, so it wasn't sent. Try again."
-          : operationDetail(error, "That message did not reach your deployment."),
-      );
+      const issue = clientIssue(error, { operation: "action", label: "save this message" });
+      setFailure(issue === null ? null : issueLine(issue, `send:${Date.now()}`));
     } finally {
       inFlight.current = false;
       setSending(false);
-      if (drafts.readPending(deploymentId, userId, threadId) === null) {
-        props.mutationGate.release(claim);
-      }
+      props.mutationGate.release(claim);
     }
   };
 
@@ -716,11 +635,17 @@ export function Composer(props: {
   const finishingSend = useRef(false);
   const send = async (choice?: import("@opensteer/core").CompactionSendChoice): Promise<void> => {
     if (finishingSend.current) return;
+    const scope = hostClient.connection.getSnapshot().scope;
+    if (!scope) {
+      setFailure(issueLine({ code: "sign-in" }, `send:${Date.now()}`));
+      return;
+    }
     finishingSend.current = true;
     try {
       const generation = input.current?.readSnapshot().generation ?? null;
       const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
       if (result.kind === "failed" || result.kind === "aborted" || !mounted.current) return;
+      if (result.kind === "committed" && !(await dictationSave.current)) return;
       let words = result.kind === "committed" ? result.text : draftText.current;
       // The field's last keystroke, or an autocorrection the tap on Send accepted, can
       // still be on its way to React: read what the field holds now.
@@ -730,53 +655,26 @@ export function Composer(props: {
         words = flushed.text;
       }
       if (!mounted.current || !visible.current || !latestSend.current.canSend) return;
-      await latestSend.current.sendMessage(words, choice);
+      await latestSend.current.sendMessage(scope, words, choice);
     } finally {
       finishingSend.current = false;
     }
   };
 
-  const retry = (): void => {
-    if (!props.canRespond || readOnly || pending === null) return;
-    attempted.current = pending.idempotencyKey;
-    void deliverExclusively(pending);
-  };
-  const { retryRef } = props;
-  useLayoutEffect(() => {
-    if (retryRef === undefined) return;
-    retryRef.current = retry;
-    return () => {
-      retryRef.current = null;
-    };
-  });
-
   const stop = async (): Promise<void> => {
-    if (stoppingRef.current || props.runStopping || !props.canRespond) return;
-    stoppingRef.current = true;
-    setStopping(true);
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    try {
-      await props.hostClient.stopRun(props.threadId);
-    } catch (error) {
-      setFailure(operationDetail(error, "Opensteer could not be asked to stop."));
-    } finally {
-      stoppingRef.current = false;
-      setStopping(false);
-    }
+    if (stopping || props.runStopping || !props.stopRunId) return;
+    await stopAction.run(props.stopRunId);
   };
 
+  // Not the connection: offline, an answer is tapped and said not to have gone out.
   const canStartRequestResponse = (): boolean =>
-    props.canRespond &&
-    !readOnly &&
-    props.disabledReason === null &&
-    !inFlight.current &&
-    drafts.readPending(deploymentId, userId, threadId) === null;
+    !readOnly && props.disabledReason === null && !inFlight.current;
 
   const requestDisabledReason = readOnly
     ? "This thread is archived."
     : props.disabledReason !== null
       ? props.disabledReason
-      : sending || pending !== null
+      : sending
         ? "Finish sending your message before responding."
         : null;
 
@@ -828,22 +726,15 @@ export function Composer(props: {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Reopen"
-            accessibilityState={{ disabled: !props.canRespond }}
             style={styles.reopen}
-            disabled={!props.canRespond}
-            onPress={() =>
-              void hostClient
-                .setTaskDone(threadId, false)
-                .catch((error: unknown) =>
-                  Alert.alert("Task not reopened", operationDetail(error, "Try again.")),
-                )
-            }
+            onPress={() => setTaskDone(hostClient, threadId, false)}
           >
             <AppText role="secondary" style={type.secondaryMedium}>
               Reopen
             </AppText>
           </Pressable>
         </View>
+        {reopenLine === null ? null : <ActionLine line={reopenLine} numberOfLines={2} />}
       </View>
     );
   return (
@@ -851,7 +742,7 @@ export function Composer(props: {
       {surface === null ? null : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard
-            canRespond={props.canRespond && !requestBlocked}
+            canRespond={props.canRespond}
             canStartResponse={canStartRequestResponse}
             composer={answering ? "answer" : "message"}
             deploymentId={deploymentId}
@@ -871,7 +762,7 @@ export function Composer(props: {
       ) : (
         <Animated.View entering={appear}>
           <RequestCard
-            canRespond={props.canRespond && !requestBlocked}
+            canRespond={props.canRespond}
             deploymentId={deploymentId}
             highlighted={surface.request.id === props.highlightRequestId}
             onPresent={hold}
@@ -885,31 +776,67 @@ export function Composer(props: {
           />
         </Animated.View>
       )}
-      {pending === null || props.owedInline === true ? null : (
-        <Animated.View entering={enter} exiting={exit}>
-          <PendingMessage
-            attachments={pending.attachments ?? []}
-            canRetry={props.canRespond && !readOnly}
-            onRetry={retry}
-            pageTitle={pending.browserPage?.title ?? null}
-            sending={sending}
-            text={pending.text}
-          />
-        </Animated.View>
-      )}
       {failure === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
+        </View>
+      )}
+      {stopAction.line === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine line={stopAction.line} numberOfLines={2} onDismiss={stopAction.dismiss} />
+        </View>
+      )}
+      {filesWait ? (
+        <View style={styles.failure}>
+          <AppText role="caption" tone="muted">
+            {presentClientIssue({ code: "preparation-required" }).detail}
+          </AppText>
+        </View>
+      ) : null}
+      {draftNotice === null ? null : (
         <Animated.View entering={enter} exiting={exit} style={styles.failure}>
           <AppText role="secondary" tone="danger">
-            {failure}
+            {draftNotice}
           </AppText>
         </Animated.View>
       )}
-      {draftFailure === null ? null : (
-        <Animated.View entering={enter} exiting={exit} style={styles.failure}>
-          <AppText role="secondary" tone="danger">
-            {draftFailure}
-          </AppText>
-        </Animated.View>
+      {dictated === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine
+            line={{
+              ...issueLine(
+                { code: "dictation-recovered", ...(dictated.unsaved ? { reason: "unsaved" } : {}) },
+                `dictation:${threadId}`,
+              ),
+              link: {
+                label: "Copy",
+                accessibilityLabel: "Copy dictated text",
+                onPress: () => {
+                  setDraftFailure(null);
+                  void setStringAsync(dictated.text).catch(() =>
+                    setDraftFailure(
+                      presentClientIssue({ code: "rejected", action: "copy dictated text" }).title,
+                    ),
+                  );
+                },
+              },
+            }}
+            numberOfLines={2}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setDraftFailure(null);
+              void drafts
+                .discardDictatedText(deploymentId, userId, threadId)
+                .catch(() => setDraftFailure(presentClientIssue({ code: "draft-unsaved" }).title));
+            }}
+          >
+            <AppText role="caption" tone="soft">
+              Discard dictated text
+            </AppText>
+          </Pressable>
+        </View>
       )}
       {quote === null || view.readOnly || answering ? null : (
         <View accessibilityLabel="Quoted update" style={styles.quote}>
@@ -943,6 +870,7 @@ export function Composer(props: {
           notice={staged.notice}
           onRemove={staged.remove}
           onRetry={staged.retry}
+          waiting={staged.waiting}
         />
       )}
       {done === "reopens" ? (
@@ -989,7 +917,7 @@ export function Composer(props: {
       <VoiceDock />
       {answering ? (
         <AnswerBar
-          canRespond={props.canRespond && !requestBlocked}
+          canRespond={props.canRespond}
           canStartResponse={canStartRequestResponse}
           gate={props.mutationGate}
           hostClient={hostClient}
@@ -1071,6 +999,7 @@ export function Composer(props: {
                     settle();
                   }}
                   onPasteImages={(pasted) => void staged.paste(pasted)}
+                  draftPasteTarget={staged.pasteTarget}
                   onSelectionChange={(next) => {
                     selection.current = next;
                     setCaret(next.start);
@@ -1105,11 +1034,15 @@ export function Composer(props: {
                     {!dictating ? (
                       <View>
                         {view.action === "voice" ? (
-                          <VoiceMic disabled={readOnly || textHidden} face="disc" />
+                          <VoiceMic
+                            disabled={readOnly || textHidden}
+                            face="disc"
+                            onLine={setFailure}
+                          />
                         ) : view.action === "stop" ? (
                           <ComposerAction
                             busy={stopping || props.runStopping}
-                            disabled={stopping || props.runStopping || !props.canRespond}
+                            disabled={stopping || props.runStopping}
                             kind="stop"
                             label={props.stopLabel ?? "Stop this run"}
                             onPress={() => void stop()}
@@ -1181,60 +1114,6 @@ export function Composer(props: {
  * send that has not landed is visible rather than lost between the composer and
  * the transcript.
  */
-function PendingMessage(props: {
-  readonly attachments: readonly { readonly artifactId: string; readonly name: string }[];
-  readonly canRetry: boolean;
-  readonly onRetry: () => void;
-  /** The page the message includes, by the title it had when it was sent. */
-  readonly pageTitle: string | null;
-  readonly sending: boolean;
-  readonly text: string;
-}): ReactNode {
-  return (
-    <View style={styles.pending}>
-      {props.pageTitle === null ? null : (
-        <AppText numberOfLines={1} role="caption" tone="muted">
-          {props.pageTitle || "Page"}
-        </AppText>
-      )}
-      {props.text ? (
-        <AppText numberOfLines={3} role="secondary" tone="soft">
-          {props.text}
-        </AppText>
-      ) : null}
-      {props.attachments.map((part) => (
-        <AppText key={part.artifactId} numberOfLines={1} role="caption" tone="muted">
-          {part.name}
-        </AppText>
-      ))}
-      <View style={styles.pendingFoot}>
-        <AppText role="caption" tone="muted">
-          {props.sending ? "Sending…" : "Not sent yet."}
-        </AppText>
-        {props.sending ? null : (
-          <Pressable
-            accessibilityLabel="Send this message again"
-            accessibilityRole="button"
-            hitSlop={space[8]}
-            accessibilityState={{ disabled: !props.canRetry }}
-            disabled={!props.canRetry}
-            onPress={props.onRetry}
-            style={[styles.pendingRetry, !props.canRetry && styles.disabled]}
-          >
-            <AppText role="secondaryMedium" tone="ember">
-              Try again
-            </AppText>
-          </Pressable>
-        )}
-      </View>
-    </View>
-  );
-}
-
-/**
- * The page the next message includes, top-left in the box: its title, and ×
- * to leave it out of this message.
- */
 function IncludedPage(props: {
   readonly onRemove: () => void;
   readonly page: BrowserPageContentPart;
@@ -1304,15 +1183,6 @@ const styles = StyleSheet.create({
   leading: { flexDirection: "row" },
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
-  pending: {
-    ...material.plate,
-    borderRadius: radius.sm,
-    gap: space[4],
-    paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
-    paddingVertical: space[8] - (1 - StyleSheet.hairlineWidth),
-  },
-  pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
-  pendingRetry: { justifyContent: "center", minHeight: touchTarget },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
     ...material.control,

@@ -1,3 +1,6 @@
+import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { hostMessageOutbox } from "@opensteer/client/host";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useVoiceAvailable } from "../voice/use-voice-value.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
@@ -34,8 +37,8 @@ import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import type {
-  PendingCommand,
-  PendingThreadStart,
+  TaskStartRecord,
+  TaskStartParameters,
   ThreadDraftQuote,
   ThreadDraftStore,
 } from "../client/thread-drafts.js";
@@ -66,6 +69,7 @@ import {
   beginFirstMessagePickerAttempt,
   cancelFirstMessagePickerAttempt,
 } from "./first-message-picker-attempt.js";
+import { type ActionLineValue } from "../ui/action-line.js";
 
 /**
  * A first message: words written before the task they start exists.
@@ -159,15 +163,14 @@ export interface FirstMessageBlocker {
   readonly reason: string;
 }
 
+const filesWaitReason = presentClientIssue({ code: "preparation-required" }).detail ?? "";
+
 export function firstMessageBlocker(input: {
   readonly attachmentsReady: boolean;
-  /** Whether the Host is attached and has confirmed this reader. */
-  readonly connected: boolean;
   readonly execution: FirstMessageExecution;
 }): FirstMessageBlocker | null {
   const wait = (reason: string): FirstMessageBlocker => ({ choose: false, reason });
   const { blocked, blockedPlacement, placements, runnable, selection } = input.execution;
-  if (!input.connected) return wait("Reconnect to send. What you write here is kept.");
   if (runnable.length === 0) {
     // An account getting ready, as one does after its computer starts, is
     // only a wait: naming it keeps the person from hunting for a fault. Their
@@ -211,7 +214,7 @@ export function firstMessageBlocker(input: {
     };
   }
   if (input.execution.accessReason !== null) return wait(input.execution.accessReason);
-  if (!input.attachmentsReady) return wait("Waiting for your files to finish uploading.");
+  if (!input.attachmentsReady) return wait(filesWaitReason);
   return null;
 }
 
@@ -225,14 +228,16 @@ export async function claimFirstMessage(input: {
   readonly browserPage?: BrowserPageContentPart | null;
   readonly deploymentId: string;
   readonly draftKey: string;
+  readonly draftRevision: string | null;
   readonly drafts: ThreadDraftStore;
   readonly idempotencyKey: string;
   readonly quote: ThreadDraftQuote | null;
+  readonly ownerScope: string;
   readonly staged: DraftAttachments;
-  readonly start?: PendingThreadStart;
+  readonly start?: TaskStartParameters;
   readonly text: string;
   readonly userId: string;
-}): Promise<PendingCommand> {
+}): Promise<TaskStartRecord> {
   const carried = input.staged.items;
   const attachments = carried.flatMap((item) => {
     const part = draftAttachmentPart(item);
@@ -241,20 +246,27 @@ export async function claimFirstMessage(input: {
   if (attachments.length !== carried.length) {
     throw new Error("Waiting for your files to finish uploading.");
   }
-  await input.drafts.claimPending(input.deploymentId, input.userId, input.draftKey, {
-    ...(attachments.length > 0
-      ? { attachments, localUris: carried.map((item) => item.localUri) }
-      : {}),
-    ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
-    idempotencyKey: input.idempotencyKey,
-    // Only the source id travels: the Host resolves the quoted update under
-    // this reader's authority, never from an excerpt.
-    ...(input.quote === null ? {} : { quotedMessageId: input.quote.messageId }),
-    ...(input.start === undefined ? {} : { start: input.start }),
-    text: input.text,
-    threadId: input.draftKey,
-  });
-  const claimed = input.drafts.readPending(input.deploymentId, input.userId, input.draftKey);
+  await input.drafts.claimTaskStart(
+    input.deploymentId,
+    input.userId,
+    input.draftKey,
+    {
+      ...(attachments.length > 0
+        ? { attachments, localUris: carried.map((item) => item.localUri) }
+        : {}),
+      ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
+      idempotencyKey: input.idempotencyKey,
+      ownerScope: input.ownerScope,
+      // Only the source id travels: the Host resolves the quoted update under
+      // this reader's authority, never from an excerpt.
+      ...(input.quote === null ? {} : { quotedMessageId: input.quote.messageId }),
+      ...(input.start === undefined ? {} : { start: input.start }),
+      text: input.text,
+      threadId: input.draftKey,
+    },
+    input.draftRevision,
+  );
+  const claimed = input.drafts.readTaskStart(input.deploymentId, input.userId, input.draftKey);
   if (claimed === null) throw new Error("Your message was not saved on this phone.");
   input.staged.release(carried.map(attachmentKey));
   return claimed;
@@ -271,7 +283,9 @@ export async function claimFirstMessage(input: {
  * Thread now owes it.
  */
 export async function handOverFirstMessage(input: {
-  readonly claimed: PendingCommand;
+  readonly claimed: TaskStartRecord;
+  readonly scope: ClientScope;
+  readonly hostClient: HostClient;
   readonly deploymentId: string;
   readonly draftKey: string;
   readonly drafts: ThreadDraftStore;
@@ -285,34 +299,63 @@ export async function handOverFirstMessage(input: {
   readonly onReady: () => void | Promise<void>;
   readonly threadId: string;
   readonly userId: string;
-}): Promise<PendingCommand> {
-  const { claimed, deploymentId, drafts, threadId, userId } = input;
-  const threadFiles: AttachmentDraftScope = { deploymentId, threadId, userId };
+}): Promise<TaskStartRecord> {
+  const { claimed, deploymentId, drafts, scope, threadId, userId } = input;
+  const scopeKey = clientScopeKey(scope);
+  const assertCurrent = () => {
+    if (
+      claimed.ownerScope !== scopeKey ||
+      clientScopeKey(input.hostClient.connection.getSnapshot().scope) !== scopeKey ||
+      drafts.readTaskStart(deploymentId, userId, input.draftKey)?.idempotencyKey !==
+        claimed.idempotencyKey
+    )
+      throw new Error("This message belongs to another sign-in.");
+  };
+  const outbox = hostMessageOutbox(input.hostClient);
+  if (!outbox) throw new Error("Message storage is unavailable.");
+  assertCurrent();
   const firstUris = claimed.localUris;
-  const threadUris =
-    firstUris === undefined ? undefined : await copyFiles(input.files, threadFiles, firstUris);
-  await drafts.claimPending(deploymentId, userId, threadId, {
-    ...(claimed.attachments === undefined
-      ? {}
-      : { attachments: claimed.attachments, localUris: threadUris }),
-    ...(claimed.browserPage === undefined ? {} : { browserPage: claimed.browserPage }),
-    idempotencyKey: claimed.idempotencyKey,
-    ...(claimed.quotedMessageId === undefined ? {} : { quotedMessageId: claimed.quotedMessageId }),
-    text: claimed.text,
-    threadId,
-  });
-  // The Thread owes it now, so the first message's record has done its job,
-  // and only the Thread's copies of the files are referenced from here on.
-  const owed = drafts.readPending(deploymentId, userId, threadId);
-  if (owed === null) throw new Error("Your message was not saved on this phone.");
+  let threadUris: (string | null)[] | undefined;
+  if (!(await outbox.hasHandoff(scope, claimed.idempotencyKey))) {
+    assertCurrent();
+    const threadFiles: AttachmentDraftScope = { deploymentId, threadId, userId };
+    threadUris = firstUris && (await copyFiles(input.files, threadFiles, firstUris));
+    assertCurrent();
+    await outbox.enqueue(
+      {
+        type: "thread.sendMessage",
+        threadId,
+        delivery: claimed.delivery,
+        idempotencyKey: claimed.idempotencyKey,
+        content: [
+          ...(claimed.text ? [{ type: "text" as const, text: claimed.text }] : []),
+          ...(claimed.browserPage ? [claimed.browserPage] : []),
+          ...(claimed.attachments ?? []),
+        ],
+        ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
+        ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
+      },
+      {
+        assertCurrent,
+        expectedLogin: scope,
+        handoff: true,
+        ...(threadUris ? { localAttachmentUris: threadUris } : {}),
+      },
+    );
+  }
+  assertCurrent();
+  const owed = { ...claimed, threadId, ...(threadUris ? { localUris: threadUris } : {}) };
   await input.onReady();
-  const cleared = await drafts.clearPending(
+  const cleared = await drafts.clearTaskStart(
     deploymentId,
     userId,
     input.draftKey,
     claimed.idempotencyKey,
   );
-  if (cleared) forgetDraftFiles(input.files, firstUris ?? []);
+  if (cleared) {
+    forgetDraftFiles(input.files, firstUris ?? []);
+    await outbox.forgetHandoff(scope, claimed.idempotencyKey).catch(() => {});
+  }
   return owed;
 }
 
@@ -346,6 +389,8 @@ export interface FirstMessageExample {
  * the composer docked below, where every later message is written too.
  */
 export function FirstMessageComposer(props: {
+  /** Where a voice call that can't start says so. */
+  readonly onVoiceLine?: (line: ActionLineValue | null) => void;
   /** Opens the keyboard as it appears: set where writing is why it opened. */
   readonly autoFocus?: boolean;
   readonly blocker: FirstMessageBlocker | null;
@@ -353,8 +398,10 @@ export function FirstMessageComposer(props: {
   readonly children: ReactNode;
   readonly held: boolean;
   readonly execution: FirstMessageExecution;
-  /** Where the references an `@` offers come from. */
-  readonly hostClient: HostClient;
+  /** Where the references an `@` offers come from; none before the computer has answered. */
+  readonly hostClient: HostClient | null;
+  /** Whether files can be added: not while nothing can upload them. */
+  readonly attach?: boolean;
   readonly inputRef: RefObject<ComposerEditorHandle | null>;
   readonly onChangeText: (text: string) => void;
   readonly onChooseAI: (pickerAttemptId?: string, conversation?: boolean) => void;
@@ -524,20 +571,24 @@ export function FirstMessageComposer(props: {
     props.onChooseAI();
   };
   const menuOptions: readonly NativeMenuOption[] = [
-    {
-      disabled: held,
-      icon: "paperclip",
-      id: "attach-file",
-      label: "Attach file…",
-      onPress: () => void staged.pick("file"),
-    },
-    {
-      disabled: held,
-      icon: "photo",
-      id: "attach-photo",
-      label: "Attach photo…",
-      onPress: () => void staged.pick("photo"),
-    },
+    ...(props.attach === false
+      ? []
+      : ([
+          {
+            disabled: held,
+            icon: "paperclip",
+            id: "attach-file",
+            label: "Attach file…",
+            onPress: () => void staged.pick("file"),
+          },
+          {
+            disabled: held,
+            icon: "photo",
+            id: "attach-photo",
+            label: "Attach photo…",
+            onPress: () => void staged.pick("photo"),
+          },
+        ] as const)),
     { icon: "gearshape", id: "model", label: "Choose AI…", onPress: chooseManually },
   ];
   const fieldMaxHeight =
@@ -603,13 +654,14 @@ export function FirstMessageComposer(props: {
             notice={staged.notice}
             onRemove={staged.remove}
             onRetry={staged.retry}
+            waiting={staged.waiting}
           />
           {blocker === null ? null : (
             <AppText role="caption" style={styles.reason} tone="muted">
               {blocker.reason}
             </AppText>
           )}
-          {referenceQuery === null ? null : (
+          {referenceQuery === null || props.hostClient === null ? null : (
             <ComposerReferencePicker
               onPick={(row) =>
                 insertReference(props.inputRef.current, referenceQuery, caret, row.markdown)
@@ -648,7 +700,7 @@ export function FirstMessageComposer(props: {
               // With nothing typed the circle is voice where it exists, as in a
               // thread's own bar, rather than a Send that cannot be pressed.
               voiceReady && !written ? (
-                <VoiceMic disabled={held} face="disc" />
+                <VoiceMic disabled={held} face="disc" onLine={props.onVoiceLine} />
               ) : (
                 <ComposerAction
                   // What was sent already shows it is on its way; the circle does not repeat it.
@@ -681,6 +733,7 @@ export function FirstMessageComposer(props: {
                   onChangeText={changeText}
                   onFocus={() => setFieldFocused(true)}
                   onPasteImages={(pasted) => void staged.paste(pasted)}
+                  draftPasteTarget={staged.pasteTarget}
                   onSelectionChange={(next) => setCaret(next.start)}
                   paddingVertical={space[6]}
                   placeholder={page === null ? props.placeholder : "Ask about this page…"}

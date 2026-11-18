@@ -1,3 +1,4 @@
+import { toastError } from "../components/use-action.js";
 import { useEffect, useState } from "react";
 import { createId, KnowledgeTopicIdSchema, type KnowledgeTopicId } from "@opensteer/core";
 import type {
@@ -26,7 +27,6 @@ import { LoadingRows } from "../components/loading-rows.js";
 import { SegmentedControl } from "../components/segmented-control.js";
 import { PersonAvatar } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { useTeamRead, type TeamView } from "./team-view.js";
 import { person } from "./team-view-models.js";
 
@@ -92,7 +92,7 @@ export function NewTopicDialog({
         onClose();
         onCreated(id);
       })
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      .catch((error: unknown) => toastError(toast)(error))
       .finally(() => setSaving(false));
   };
   return (
@@ -190,7 +190,7 @@ export function EditTopicDialog({
     })
       .then(unwrapRpcResult)
       .then(onSaved)
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      .catch((error: unknown) => toastError(toast)(error))
       .finally(() => setSaving(false));
   };
   return (
@@ -315,7 +315,7 @@ export function TopicAccessDialog({
       .then(onSaved)
       .catch((error: unknown) => {
         if (isTopicAccessConflict(error)) setStale(true);
-        else toast.error(actionErrorMessage(error));
+        else toastError(toast)(error);
       })
       .finally(() => setSaving(false));
   };

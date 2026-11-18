@@ -1,9 +1,11 @@
+import { classifyClientFailure } from "../connections/operation-error.js";
 import { clientRpcSuccessSchema } from "./device-readers.js";
 import { clientCommandSchema } from "./device-commands.js";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
+  expectedMutationSessionHeader,
   TranscriptFileContentSchema,
   transcriptFileContentMaxBytes,
   hostApi,
@@ -58,19 +60,26 @@ export interface HttpHostApiClientOptions {
    */
   readonly pacedUploads?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
-  readonly onAuthenticationRequired: () => void;
+  readonly onAuthenticationRequired: (method: keyof typeof hostApi) => void;
   readonly onVersionMismatch?: () => void;
 }
 
 const maximumRpcPayloadBytes = 1 * 1_024 * 1_024;
 
+function authenticationRefusal<Declaration extends RpcDeclaration>(
+  reason = "sign-in-required",
+): RpcOutput<Declaration> {
+  return rpcError(reason, "Sign in to continue.", false, "unauthorized");
+}
+
 function rpcError<Declaration extends RpcDeclaration>(
   reason: string,
   message: string,
   retryable: boolean,
+  code: z.infer<typeof HostApiErrorSchema>["code"] = "internal",
 ): RpcOutput<Declaration> {
   return {
-    error: HostApiErrorSchema.parse({ code: "internal", message, reason, retryable }),
+    error: HostApiErrorSchema.parse({ code, message, reason, retryable }),
     ok: false,
   } as RpcOutput<Declaration>;
 }
@@ -114,8 +123,32 @@ function hostApiClientProxy(invoke: Invoke): HostApiClient {
   return client;
 }
 
+const authenticationObservers = new WeakMap<HostApiClient, Set<() => void>>();
+export function observeRpcAuthentication(client: HostApiClient, listener: () => void): () => void {
+  const observers = authenticationObservers.get(client);
+  observers?.add(listener);
+  return () => {
+    observers?.delete(listener);
+  };
+}
+export function forwardRpcAuthentication(source: HostApiClient, wrapper: HostApiClient): void {
+  const observers = authenticationObservers.get(source);
+  if (observers) authenticationObservers.set(wrapper, observers);
+}
 export function createHttpHostApiClient(options: HttpHostApiClientOptions): HostApiClient {
-  return hostApiClientProxy((name, input, call) => request(options, name, input, call));
+  const observers = new Set<() => void>();
+  const observedOptions = {
+    ...options,
+    onAuthenticationRequired: (method: keyof typeof hostApi) => {
+      options.onAuthenticationRequired(method);
+      observers.forEach((listener) => listener());
+    },
+  };
+  const client = hostApiClientProxy((name, input, call) =>
+    request(observedOptions, name, input, call),
+  );
+  authenticationObservers.set(client, observers);
+  return client;
 }
 
 export function createInMemoryHostApiClient(
@@ -216,8 +249,7 @@ async function request<Name extends keyof typeof hostApi>(
             )
         : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
-  // Losing the connection before the whole body arrives says the Host is out of
-  // reach; a complete body that can't be understood is a broken answer.
+  let authenticationRequired = false;
   let answered = false;
   try {
     call?.signal?.throwIfAborted();
@@ -238,6 +270,9 @@ async function request<Name extends keyof typeof hostApi>(
         headers: {
           ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
+          ...(call?.expectedSessionId
+            ? { [expectedMutationSessionHeader]: call.expectedSessionId }
+            : {}),
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
           ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
@@ -255,7 +290,10 @@ async function request<Name extends keyof typeof hostApi>(
     deadline.controller.signal.throwIfAborted();
     // The refusal is known from its status; a body that then stalls must not
     // turn a sign-in prompt into a transport error.
-    if (response.status === 401) options.onAuthenticationRequired();
+    if (response.status === 401) {
+      authenticationRequired = true;
+      options.onAuthenticationRequired(name);
+    }
     deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
     const bytes = await deadline.wait(
       readBoundedResponse(response, {
@@ -266,8 +304,6 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     answered = true;
-    options.assertResponseCurrent?.(response);
-    call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
       const metadata = TranscriptFileContentSchema.shape.metadata.parse({
@@ -277,6 +313,8 @@ async function request<Name extends keyof typeof hostApi>(
         sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
         truncated: false,
       });
+      options.assertResponseCurrent?.(response);
+      call?.signal?.throwIfAborted();
       return {
         data: declaration.success.parse({
           bytes,
@@ -292,9 +330,13 @@ async function request<Name extends keyof typeof hostApi>(
     } catch {
       // Neither decodes to an envelope; the status below says what kind of answer it was.
     }
-    options.assertResponseCurrent?.(response);
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
-    if (parsed.success) {
+    options.assertResponseCurrent?.(response);
+    call?.signal?.throwIfAborted();
+    if (
+      parsed.success &&
+      (!authenticationRequired || (!parsed.data.ok && parsed.data.error.code === "unauthorized"))
+    ) {
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")
@@ -302,13 +344,12 @@ async function request<Name extends keyof typeof hostApi>(
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }
+    if (authenticationRequired) return authenticationRefusal();
     if (isGatewayFailure(response.status)) {
       const failure = new HostTransportError("unreachable");
-      return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
+      return rpcError("transport-unreachable", failure.message, failure.retryable);
     }
-    // A Host from before this method answers its framework's plain 404;
-    // anything else, a server fault's page included, is a complete answer this
-    // client cannot read, which no retry will change.
+    // A Host from before this method answers its framework's plain 404.
     const missing = response.status === 404;
     return {
       error: HostApiErrorSchema.parse({
@@ -328,27 +369,48 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
-    // Nothing was sent: this client is at its own limit, which says nothing about the Host.
+    if (
+      authenticationRequired ||
+      (error instanceof HostTransportError && error.failure.code === "unauthorized")
+    ) {
+      if (!authenticationRequired) options.onAuthenticationRequired(name);
+      return authenticationRefusal(
+        error instanceof HostTransportError && error.failure.code === "unauthorized"
+          ? error.failure.reason
+          : undefined,
+      );
+    }
     if (error instanceof HostCapacityError)
-      return {
-        error: HostApiErrorSchema.parse({
-          code: "resource_exhausted",
-          message: error.message,
-          retryable: true,
-        }),
-        ok: false,
-      } as RpcOutput<(typeof hostApi)[Name]>;
+      return rpcError("resource-exhausted", error.message, true, "resource_exhausted");
+    if (
+      !(error instanceof HostTransportError) &&
+      !(error instanceof Error && error.name === "TimeoutError") &&
+      (answered || error instanceof z.ZodError || error instanceof RangeError)
+    ) {
+      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
+    }
     const failure =
       error instanceof HostTransportError
         ? error
-        : error instanceof Error && error.name === "TimeoutError"
-          ? new HostTransportError("timed-out", { cause: error })
-          : answered || error instanceof z.ZodError || error instanceof RangeError
-            ? null
-            : new HostTransportError("unreachable", { cause: error });
-    if (failure === null)
-      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
-    return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
+        : new HostTransportError(
+            error instanceof Error && error.name === "TimeoutError" ? "timed-out" : "unreachable",
+            { cause: error },
+          );
+    const observed = classifyClientFailure(failure);
+    const code = HostApiErrorSchema.shape.code.safeParse(observed.code);
+    return {
+      ok: false,
+      error: HostApiErrorSchema.parse({
+        code: code.success ? code.data : "internal",
+        message: failure.message,
+        reason:
+          observed.provenance === "transport" && !observed.reason.startsWith("transport-")
+            ? `transport-${observed.reason}`
+            : observed.reason,
+        retryable: observed.retryable,
+        provenance: observed.provenance,
+      }),
+    } as RpcOutput<(typeof hostApi)[Name]>;
   } finally {
     deadline.dispose();
   }

@@ -42,6 +42,9 @@ import {
 } from "./desktop-deployment-selection.js";
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
+import { disposeMessageOutbox } from "@opensteer/client/host";
+import { ConnectionGateView } from "../components/connection-shell.js";
+import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 
 const SignedInApp = lazy(async () => {
@@ -135,7 +138,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     };
   }, [bridge]);
   const [snapshot, setSnapshot] = useState<DeploymentAccessSnapshot | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // This app's own record of its places could not be read from Electron main.
+  const [accessUnreadable, setAccessUnreadable] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [screen, setScreen] = useState<BrowsingScreen>(null);
   const [chooserFor, setChooserFor] = useState<string | null>(null);
@@ -184,7 +188,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 
   useEffect(() => {
     let cancelled = false;
-    setLoadError(null);
+    setAccessUnreadable(false);
     // The one staleness policy in the app: a snapshot with a revision that is
     // not newer than the one on screen is dropped. Every surface below reads
     // this state, so no section can be shown a snapshot another section refused.
@@ -197,8 +201,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     void bridge
       .getDeploymentAccessSnapshot()
       .then(update)
-      .catch((reason: unknown) => {
-        if (!cancelled) setLoadError(errorDetail(reason, "Desktop access state is unavailable."));
+      .catch(() => {
+        if (!cancelled) setAccessUnreadable(true);
       });
     return () => {
       cancelled = true;
@@ -240,6 +244,18 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     if (!selected || passkeyMode === null) return null;
     return createBrowserHostClient({
       desktopMedia: true,
+      ...(selectedConnection?.authorityKey
+        ? { authorityKey: selectedConnection.authorityKey }
+        : {}),
+      presentation: {
+        name: selected.name,
+        target: "computer",
+        route: selected.onThisComputer
+          ? "same-computer"
+          : selected.access === "connect"
+            ? "connect"
+            : "private-network",
+      },
       passkeys: {
         mode: passkeyMode,
         present: async (requestId) => {
@@ -262,7 +278,16 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     });
   }, [bridge, hostTransportIdentity, passkeyMode]);
 
-  useEffect(() => () => hostClient?.dispose(), [hostClient]);
+  // Only whether this window's connection was ever ready; the surface never redraws per publish.
+  const everReady = useClientConnectionEverReady(hostClient?.connection ?? null);
+  useEffect(
+    () => () => {
+      if (!hostClient) return;
+      disposeMessageOutbox(hostClient);
+      hostClient.dispose();
+    },
+    [hostClient],
+  );
 
   const facts = useMemo(
     () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
@@ -324,20 +349,30 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       return;
     }
     requestedNotificationSelection.current = deploymentId;
-    void bridge.select({ deploymentId }).catch((reason: unknown) => {
-      setFormError(errorDetail(reason, "That place couldn’t be opened."));
+    void bridge.select({ deploymentId }).catch(() => {
+      setFormError("That place couldn’t be opened.");
     });
   }, [bridge, notificationTarget, snapshot]);
 
-  if (loadError) {
-    return <StartupFailure bare detail={loadError} onRetry={() => setLoadAttempt((n) => n + 1)} />;
+  if (accessUnreadable) {
+    return (
+      <StartupFailure
+        bare
+        detail="Opensteer couldn’t open its list of places."
+        onRetry={() => setLoadAttempt((n) => n + 1)}
+      />
+    );
   }
   if (!snapshot || !places) return <DesktopLoadingScreen />;
   return <DesktopPlacesProvider value={places}>{surface(snapshot, places)}</DesktopPlacesProvider>;
 
   function surface(snapshot: DeploymentAccessSnapshot, places: DesktopPlaces) {
     const choosing = chooserFor !== null && chooserFor === selected?.id;
-    const presentation = choosing ? "picker" : desktopAccessPresentationFromSnapshot(snapshot);
+    const presentation = choosing
+      ? "picker"
+      : everReady
+        ? "ready"
+        : desktopAccessPresentationFromSnapshot(snapshot);
     const activeScreen = screen;
     const busy =
       connectingPrivate ||
@@ -353,9 +388,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         ? snapshot.personalSetup.issue.detail
         : null;
     const runBridgeOperation = (operation: Promise<unknown>) => {
-      void operation.catch((reason: unknown) =>
-        setFormError(errorDetail(reason, "The desktop operation could not be completed.")),
-      );
+      void operation.catch(() => setFormError("That didn’t work. Try again."));
     };
 
     const fresh = startFresh.state;
@@ -475,6 +508,26 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
+    // A place this app couldn't reach yet keeps trying through its own
+    // connection, which explains itself on the shared clock; only a refusal is
+    // final enough for main's own words.
+    const otherComputers =
+      snapshot.deployments.length > 1
+        ? { label: "Other computers", onPress: () => selected && setChooserFor(selected.id) }
+        : null;
+    if (
+      presentation === "blocked" &&
+      selectedConnection?.failure?.retryable &&
+      hostClient &&
+      activeScreen === null
+    )
+      return (
+        <ConnectionGateView
+          connection={hostClient.connection}
+          scope="app"
+          secondary={otherComputers}
+        />
+      );
     if (presentation === "blocked" && selectedConnection?.failure) {
       const recovery = blockedConnectionRecovery(selectedConnection);
       return (
@@ -501,13 +554,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             setFormError(null);
             void bridge
               .connectPrivate(input)
-              .catch((reason: unknown) =>
-                setFormError(
-                  errorDetail(
-                    reason,
-                    "That couldn’t be connected. Check the address and try again.",
-                  ),
-                ),
+              .catch(() =>
+                setFormError("That couldn’t be connected. Check the address and try again."),
               )
               .finally(() => setConnectingPrivate(false));
           }}
@@ -555,8 +603,18 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     const opening = settingUpHere ? <SetupOpening /> : null;
-    if (selectedConnection?.status !== "connected" || !hostClient) {
+    if (!hostClient || (!everReady && selectedConnection?.status !== "connected")) {
       if (opening && !operationError) return opening;
+      // Main's own first attempt can still be cancelled; once it has
+      // answered, this window's connection explains itself on the shared clock.
+      if (hostClient && !operationError && selectedConnection?.status !== "connecting")
+        return (
+          <ConnectionGateView
+            connection={hostClient.connection}
+            scope="app"
+            secondary={otherComputers}
+          />
+        );
       return (
         <DesktopLoadingScreen
           error={operationError}
@@ -672,10 +730,6 @@ export function chooserNotice(
     };
   }
   return null;
-}
-
-function errorDetail(reason: unknown, fallback: string): string {
-  return reason instanceof Error && reason.message.trim() ? reason.message : fallback;
 }
 
 export function blockedConnectionRecovery(

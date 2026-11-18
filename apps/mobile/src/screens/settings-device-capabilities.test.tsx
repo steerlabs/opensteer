@@ -23,9 +23,8 @@ vi.mock("../ui/primitives.js", () => ({
   ),
 }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("./use-settings-read.js", () => ({
-  useSettingsLease: () => () => true,
-  useSettingsRead: () => ({ data: null, error: null, reload: async () => undefined }),
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { line: { text: string } }) => <p>{line.text}</p>,
 }));
 const { SettingsDeviceCapabilities } = await import("./settings-device-capabilities.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

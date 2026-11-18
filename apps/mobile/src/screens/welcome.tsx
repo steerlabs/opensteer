@@ -4,7 +4,6 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "reac
 import { color, space } from "../theme.js";
 import {
   AppText,
-  Notice,
   PrimaryButton,
   RowGroup,
   SecondaryButton,
@@ -45,7 +44,9 @@ export function Welcome(props: WelcomeProps): ReactNode {
           </AppText>
         </View>
         {view.failure === null ? null : (
-          <Notice detail={view.failure} title={welcomeCopy.failureTitle} />
+          <AppText role="secondary" style={styles.centred} tone="danger">
+            {view.failure}
+          </AppText>
         )}
         {view.macLink === null ? null : (
           <PrimaryButton

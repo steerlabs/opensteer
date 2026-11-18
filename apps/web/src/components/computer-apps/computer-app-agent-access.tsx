@@ -3,7 +3,7 @@ import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type { IntegrationGrant } from "@opensteer/integration-core/models";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords, runRead } from "../use-action.js";
 import { Icon } from "../icon.js";
 
 type AgentAccessLevel = "off" | IntegrationAccess;
@@ -69,21 +69,28 @@ export function ComputerAppAgentAccess({
         grants: sameScope(previous, scope) ? previous.grants : null,
         loading: true,
       }));
-      try {
-        const { grants } = unwrapRpcResult(await hostClient.rpc["integration.grants.list"]({}));
+      const read = await runRead(hostClient, {
+        resource: "app access",
+        read: async () => unwrapRpcResult(await hostClient.rpc["integration.grants.list"]({})),
+      });
+      if (read.ok) {
         if (generation !== loadGeneration.current) return;
-        setView({ ...scope, error: options.retainedError ?? null, grants, loading: false });
-      } catch (reason) {
-        if (generation === loadGeneration.current) {
-          setView((previous) => ({
-            ...scope,
-            error: options.retainedError ?? actionErrorMessage(reason),
-            grants: !options.clearOnFailure && sameScope(previous, scope) ? previous.grants : null,
-            loading: false,
-          }));
-        }
-        throw reason;
+        setView({
+          ...scope,
+          error: options.retainedError ?? null,
+          grants: read.value.grants,
+          loading: false,
+        });
+        return;
       }
+      if (generation === loadGeneration.current)
+        setView((previous) => ({
+          ...scope,
+          error: options.retainedError ?? read.words,
+          grants: !options.clearOnFailure && sameScope(previous, scope) ? previous.grants : null,
+          loading: false,
+        }));
+      throw new Error("Agent access could not be loaded.");
     },
     [connectionId, hostClient, installationId],
   );
@@ -123,39 +130,45 @@ export function ComputerAppAgentAccess({
     setBusyScope(scope);
     let failure: string | undefined;
     try {
-      if (next === "off") {
-        if (grant === null) return;
-        const result = await hostClient.dispatch({
-          grantId: grant.id,
-          idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${grant.id}`),
-          type: "integration.grant.revoke",
-        });
-        if (result.type !== "integration.grant.revoke") {
-          throw new Error("Agent access did not change.");
-        }
-      } else {
-        const result = await hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${connectionId}`),
-          input: {
-            access: next,
-            alias: grant?.alias ?? `${appName} on ${machineName}`.slice(0, 80),
-            connectionId,
-            installationId,
-            isDefault:
-              grant?.isDefault ??
-              !grants.some(
-                (candidate) =>
-                  candidate.status === "active" && candidate.installationId === installationId,
-              ),
-          },
-          type: "integration.grant.create",
-        });
-        if (result.type !== "integration.grant.create") {
-          throw new Error("Agent access did not change.");
-        }
-      }
+      await act(
+        hostClient,
+        { label: "change agent access", done: "changed", happened: "agent access changed" },
+        async () => {
+          if (next === "off") {
+            if (grant === null) return;
+            const result = await hostClient.dispatch({
+              grantId: grant.id,
+              idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${grant.id}`),
+              type: "integration.grant.revoke",
+            });
+            if (result.type !== "integration.grant.revoke") {
+              throw new Error("Agent access did not change.");
+            }
+          } else {
+            const result = await hostClient.dispatch({
+              idempotencyKey: mutationIdempotencyKey(`computer-app-grant:${connectionId}`),
+              input: {
+                access: next,
+                alias: grant?.alias ?? `${appName} on ${machineName}`.slice(0, 80),
+                connectionId,
+                installationId,
+                isDefault:
+                  grant?.isDefault ??
+                  !grants.some(
+                    (candidate) =>
+                      candidate.status === "active" && candidate.installationId === installationId,
+                  ),
+              },
+              type: "integration.grant.create",
+            });
+            if (result.type !== "integration.grant.create") {
+              throw new Error("Agent access did not change.");
+            }
+          }
+        },
+      );
     } catch (reason) {
-      failure = actionErrorMessage(reason);
+      failure = failureWords(reason) ?? undefined;
     }
 
     if (generation !== mutationGeneration.current) return;

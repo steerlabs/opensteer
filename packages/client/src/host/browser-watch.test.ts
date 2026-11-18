@@ -1,3 +1,4 @@
+import { presentClientIssue } from "../feedback/client-issue.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
@@ -62,6 +63,14 @@ it("keeps basic input refusals local to input, preserving the viewer and its pic
       expect(store.get(sessionId, surfaceId).inputError).toBeFalsy();
       expect(socket.closes).toEqual([]);
     }
+    // A refused input is said in the presenter's words, never the runtime's own text.
+    socket.receive({
+      type: "browser.error",
+      error: { code: "internal", message: "TypeError: router exploded", retryable: false },
+    });
+    const refused = store.get(sessionId, surfaceId).inputError;
+    expect(refused).toMatchObject({ code: "rejected" });
+    expect(presentClientIssue(refused!).title).toBe("Couldn't send that to the page.");
   } finally {
     release();
     store.dispose();
@@ -436,7 +445,7 @@ describe("BrowserWatchStore", () => {
     expect(store.get(sessionId, surfaceId).frame?.header.frameId).toBe(5);
     expect(store.status(sessionId, surfaceId)).toMatchObject({
       status: "unavailable",
-      error: "Too many browser capture targets.",
+      error: { code: "rejected", reason: "browser-capture-limit" },
     });
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
     socket.picture(6);
@@ -501,9 +510,10 @@ describe("BrowserWatchStore", () => {
     socket.receive({ type: "browser.dialog.changed", surfaceId: "page-a", dialog: null });
     expect(received).toEqual(["browser.snapshot", "browser.dialog.changed"]);
     socket.receive({ type: "browser.dialog.changed", surfaceId: "page-b", dialog: otherDialog });
-    expect(store.get(sessionId, "page-a").error).toBe(
-      "The dialog event does not match the controlled surface.",
-    );
+    expect(store.get(sessionId, "page-a").error).toEqual({
+      code: "open-failed",
+      resource: "this page",
+    });
     expect(socket.closes).toMatchObject([{ code: 4002 }]);
     release();
   });

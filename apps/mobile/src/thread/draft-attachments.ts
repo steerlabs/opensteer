@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   attachmentMaxBytes,
   attachmentMessageMaxBytes,
@@ -5,11 +6,17 @@ import {
   type ArtifactContentPart,
   type Attachment,
 } from "@opensteer/core";
-import { HostClientRequestError, stageAttachment, type HostClient } from "@opensteer/client/host";
+import { stageAttachment, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { operationDetail } from "../client/mobile-client.js";
-import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
+import { z } from "zod";
+import {
+  DraftEditTargetSchema,
+  type CompleteDraftEdit,
+  type DraftAttachment,
+  type ThreadDraftStore,
+} from "../client/thread-drafts.js";
 import type { PastedImages } from "../../modules/composer-editor/index.js";
+import type { DraftPaste } from "../../modules/composer-editor/paste-events.js";
 import {
   discardPastedImage,
   importPastedImage,
@@ -20,6 +27,8 @@ import {
   type LocalAttachmentDraftScope,
   type PickedAttachmentSource,
 } from "../platform/attachment-draft-files.js";
+import { failureWords } from "../ui/client-feedback.js";
+import { useConnectionReady } from "../ui/connection-live.js";
 
 /**
  * One file on the draft. `localUri` names this phone's private copy; it is
@@ -36,11 +45,14 @@ export interface ComposerAttachment extends DraftAttachment {
 
 export interface DraftAttachments {
   readonly items: readonly ComposerAttachment[];
+  /** Out of reach: files not yet uploaded wait, and go by themselves once it is back. */
+  readonly waiting: boolean;
   /** Why a file was not added, until the next pick. */
   readonly notice: string | null;
   pick(kind: "file" | "photo"): Promise<void>;
   /** Adds images pasted into the message field, as temporary files the paste wrote. */
   paste(pasted: PastedImages): Promise<void>;
+  readonly pasteTarget?: string | undefined;
   /** Takes files a claimed message now carries off the strip; nothing is discarded. */
   release(keys: readonly string[]): void;
   remove(key: string): void;
@@ -61,6 +73,133 @@ export interface RestoredAttachment {
 /** Identifies a file on the strip, with or without a copy on this phone. */
 export function attachmentKey(item: Pick<DraftAttachment, "attachmentId" | "localUri">): string {
   return item.localUri ?? `host:${item.attachmentId ?? ""}`;
+}
+
+export function sameDraftAttachmentKeys(
+  saved: readonly DraftAttachment[],
+  shown: readonly DraftAttachment[],
+): boolean {
+  return (
+    saved.length === shown.length &&
+    saved.every((item, index) => attachmentKey(item) === attachmentKey(shown[index]!))
+  );
+}
+
+const PasteTargetSchema = DraftEditTargetSchema.extend({ draftId: z.string().optional() });
+const nativePasteStores = new WeakSet<ThreadDraftStore>();
+const pasteNotices = new WeakMap<
+  ThreadDraftStore,
+  Set<(target: string, notice: string | null) => void>
+>();
+
+async function keepPickedAttachment(
+  files: LocalAttachmentDraftScope,
+  picked: PickedAttachmentSource,
+  complete: CompleteDraftEdit,
+): Promise<{ kept: boolean; notice: string | null }> {
+  const item: DraftAttachment = {
+    attachmentId: null,
+    localUri: picked.localUri,
+    mediaType: picked.mediaType,
+    name: picked.name,
+    sizeBytes: picked.sizeBytes,
+    status: "staged",
+  };
+  let notice: string | null = null;
+  try {
+    const kept = await complete((draft) => {
+      const attached = draft?.attachments ?? [];
+      if (attached.length >= attachmentMessageMaxCount)
+        notice = `A message holds at most ${attachmentMessageMaxCount} files.`;
+      else if (
+        attached.reduce((sum, file) => sum + file.sizeBytes, item.sizeBytes) >
+        attachmentMessageMaxBytes
+      )
+        notice = `${item.name} would take this message past ${attachmentMessageMaxBytes / 1_048_576} MB. Send what is here first.`;
+      return notice ? null : { attachments: [...attached, item] };
+    });
+    if (!kept) forgetCopy(files, picked.localUri);
+    return { kept, notice };
+  } catch {
+    return { kept: false, notice: "This file could not be saved on this phone." };
+  }
+}
+
+async function keepPastedImages(
+  drafts: ThreadDraftStore,
+  files: LocalAttachmentDraftScope,
+  draftKey: string,
+  pasted: PastedImages,
+  complete: CompleteDraftEdit,
+): Promise<string | null> {
+  const { deploymentId, userId } = files;
+  const waiting = [...pasted.images];
+  let problem: string | null = null;
+  for (let image = waiting.shift(); image !== undefined; image = waiting.shift()) {
+    if (
+      (drafts.readDraft(deploymentId, userId, draftKey)?.attachments?.length ?? 0) >=
+      attachmentMessageMaxCount
+    ) {
+      for (const rest of [image, ...waiting]) discardPastedImage(rest.uri);
+      return `A message holds at most ${attachmentMessageMaxCount} files.`;
+    }
+    let picked: PickedAttachmentSource;
+    try {
+      picked = await importPastedImage(files, image);
+    } catch (error) {
+      problem = failureWords(error, attachWords, "A pasted image could not be attached.");
+      continue;
+    }
+    const result = await keepPickedAttachment(files, picked, complete);
+    if (!result.kept) {
+      for (const rest of waiting) discardPastedImage(rest.uri);
+      return result.notice;
+    }
+  }
+  if (problem !== null) return problem;
+  if (pasted.tooLarge > 0)
+    return `A pasted image is over ${attachmentMaxBytes / 1_048_576} MB, which a message cannot carry.`;
+  if (pasted.failed === 1) return "A pasted image could not be read.";
+  if (pasted.failed > 1) return `${pasted.failed} pasted images could not be read.`;
+  return null;
+}
+
+/** The native loader can finish after its editor has left the view hierarchy. */
+export function receiveNativeDraftPastes(
+  drafts: ThreadDraftStore,
+  subscribe: (listener: (event: DraftPaste) => void) => () => void,
+): () => void {
+  nativePasteStores.add(drafts);
+  const unsubscribe = subscribe(({ target, pasted }) => {
+    let parsed: ReturnType<typeof PasteTargetSchema.safeParse>;
+    try {
+      parsed = PasteTargetSchema.safeParse(JSON.parse(target));
+    } catch {
+      for (const image of pasted.images) discardPastedImage(image.uri);
+      return;
+    }
+    if (!parsed.success) {
+      for (const image of pasted.images) discardPastedImage(image.uri);
+      return;
+    }
+    const { draftId, deploymentId, threadId, userId, editId } = parsed.data;
+    const files: LocalAttachmentDraftScope =
+      draftId === undefined
+        ? { deploymentId, threadId, userId }
+        : { kind: "new-task", deploymentId, draftId, userId };
+    void keepPastedImages(drafts, files, threadId, pasted, (change) =>
+      drafts.completeEdit({ deploymentId, threadId, userId, editId }, change),
+    ).then(
+      (notice) => {
+        for (const receive of pasteNotices.get(drafts) ?? []) receive(target, notice);
+      },
+      () => {},
+    );
+  });
+  return () => {
+    nativePasteStores.delete(drafts);
+    unsubscribe();
+  };
 }
 
 // A native stack may keep two copies of the same draft mounted. Only one copy
@@ -127,6 +266,14 @@ export function useDraftAttachments(options: {
 }): DraftAttachments {
   const { client, draftKey, drafts } = options;
   const { deploymentId, userId } = options.files;
+  // Out of reach, a file waits to upload rather than failing; it goes once the connection is back.
+  const ready = useConnectionReady(client.connection);
+  const readyNow = useRef(ready);
+  readyNow.current = ready;
+  const readyRevision = useSyncExternalStore(
+    client.connection.subscribe,
+    () => client.connection.getSnapshot().readyRevision,
+  );
   const draftVersion = useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   // The scope is held by its own parts so that a caller's fresh object each
   // render does not restart uploads. A local scope is never a Thread scope.
@@ -142,6 +289,13 @@ export function useDraftAttachments(options: {
           : { deploymentId, kind: "home-intro", userId },
     [deploymentId, fileThreadId, newTaskDraftId, userId],
   );
+  const pasteTarget =
+    nativePasteStores.has(drafts) && (fileThreadId !== null || newTaskDraftId !== null)
+      ? JSON.stringify({
+          ...drafts.captureEdit(deploymentId, userId, draftKey),
+          ...(newTaskDraftId === null ? {} : { draftId: newTaskDraftId }),
+        })
+      : undefined;
   const [items, setItems] = useState<readonly ComposerAttachment[]>(() =>
     (drafts.readDraft(deploymentId, userId, draftKey)?.attachments ?? []).map((item) => ({
       ...item,
@@ -150,12 +304,27 @@ export function useDraftAttachments(options: {
     })),
   );
   const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (pasteTarget === undefined) return;
+    const listeners = pasteNotices.get(drafts) ?? new Set();
+    pasteNotices.set(drafts, listeners);
+    const receive = (target: string, notice: string | null) => {
+      if (target === pasteTarget) setNotice(notice);
+    };
+    listeners.add(receive);
+    return () => {
+      listeners.delete(receive);
+    };
+  }, [drafts, pasteTarget]);
   const saved = useRef(items);
   const latest = useRef(items);
   const localDirty = useRef(false);
   const localRevision = useRef(0);
   const pendingWrites = useRef(0);
   const controllers = useRef(new Map<string, AbortController>());
+  // Files the connection interrupted, by the ready revision they failed under:
+  // they go again by themselves once the connection is back, not on a tap.
+  const interrupted = useRef(new Map<string, number>());
   const mounted = useRef(true);
   const ownerKey = useCallback(
     (attachment: string) => uploadScopeKey({ attachment, deploymentId, draftKey, userId }),
@@ -201,43 +370,84 @@ export function useDraftAttachments(options: {
     (item: ComposerAttachment) => {
       if (!mounted.current) return;
       const key = attachmentKey(item);
-      if (controllers.current.has(key)) return;
+      if (controllers.current.has(key) || !readyNow.current) return;
       const controller = new AbortController();
+      const revision = client.connection.getSnapshot().readyRevision;
       if (!acquireUpload(drafts, ownerKey(key), controller)) return;
       controllers.current.set(key, controller);
+      interrupted.current.delete(key);
       update(key, { error: null, status: "uploading" });
-      void stage(client, files, item, controller.signal, (attachmentId) =>
-        update(key, { attachmentId }),
-      ).then(
+      const complete = drafts.reserveEdit(deploymentId, userId, draftKey);
+      const remember = (change: Partial<DraftAttachment>) => {
+        void complete((draft) => {
+          const attachments = draft?.attachments;
+          if (!attachments?.some((file) => attachmentKey(file) === key)) return null;
+          return {
+            attachments: attachments.map((file) =>
+              attachmentKey(file) === key ? { ...file, ...change } : file,
+            ),
+          };
+        }).catch(() => {
+          if (mounted.current) setNotice("These attachments could not be saved on this phone.");
+        });
+      };
+      void stage(client, files, item, controller.signal, (attachmentId) => {
+        if (controller.signal.aborted) return;
+        remember({ attachmentId });
+        update(key, { attachmentId });
+      }).then(
         (attachment) => {
           if (controller.signal.aborted) return;
-          update(key, {
+          const ready = {
             attachmentId: attachment.id,
             mediaType: attachment.mediaType,
             name: attachment.name,
             sizeBytes: attachment.sizeBytes,
-            status: "ready",
-          });
+            status: "ready" as const,
+          };
+          remember(ready);
+          update(key, ready);
         },
         (error: unknown) => {
           if (controller.signal.aborted) return;
+          if (classifyClientFailure(error).kind === "transport") {
+            const connection = client.connection.getSnapshot();
+            interrupted.current.set(key, revision);
+            if (connection.phase !== "ready" || connection.readyRevision !== revision) {
+              // Back to waiting, holding its reservation; this copy no longer
+              // owns an upload, so the next ready connection starts one.
+              controllers.current.delete(key);
+              releaseUpload(drafts, ownerKey(key), controller, false);
+              update(key, { error: null, status: "staged" });
+              return;
+            }
+          }
           update(key, {
-            error: operationDetail(error, "This file could not be uploaded."),
+            error:
+              failureWords(error, uploadWords, "This file could not be uploaded.") ??
+              "This file could not be uploaded.",
             retryable: retryable(error),
             status: "error",
           });
         },
       );
     },
-    [client, drafts, files, ownerKey, update],
+    [client, deploymentId, draftKey, drafts, files, ownerKey, update, userId],
   );
 
   const resume = useCallback(() => {
     if (!mounted.current) return;
+    const revision = client.connection.getSnapshot().readyRevision;
     for (const item of latest.current) {
-      if (item.status === "staged" || item.status === "uploading") upload(item);
+      const failedUnder = interrupted.current.get(attachmentKey(item));
+      if (
+        item.status === "staged" ||
+        item.status === "uploading" ||
+        (item.status === "error" && failedUnder !== undefined && failedUnder < revision)
+      )
+        upload(item);
     }
-  }, [upload]);
+  }, [client, upload]);
 
   // What the strip holds is saved with the draft, so a relaunch shows it again.
   useEffect(() => {
@@ -296,8 +506,9 @@ export function useDraftAttachments(options: {
           localDirty.current = false;
           syncFromStore();
         }
+        resume();
       });
-  }, [deploymentId, draftKey, drafts, items, ownerKey, syncFromStore, userId]);
+  }, [deploymentId, draftKey, drafts, items, ownerKey, resume, syncFromStore, userId]);
 
   // Work the app was closed during picks up where the Host left it.
   useEffect(() => {
@@ -328,45 +539,7 @@ export function useDraftAttachments(options: {
 
   useEffect(() => {
     resume();
-  }, [items, resume]);
-
-  /** Adds one file a picker or a paste produced, unless the message is full. */
-  const add = (picked: PickedAttachmentSource): boolean => {
-    if (!mounted.current) {
-      forgetCopy(files, picked.localUri);
-      return false;
-    }
-    if (latest.current.length >= attachmentMessageMaxCount) {
-      forgetCopy(files, picked.localUri);
-      setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
-      return false;
-    }
-    const total = latest.current.reduce((sum, item) => sum + item.sizeBytes, 0);
-    if (total + picked.sizeBytes > attachmentMessageMaxBytes) {
-      forgetCopy(files, picked.localUri);
-      setNotice(
-        `${picked.name} would take this message past ${attachmentMessageMaxBytes / 1_048_576} MB. Send what is here first.`,
-      );
-      return false;
-    }
-    const item: ComposerAttachment = {
-      attachmentId: null,
-      error: null,
-      localUri: picked.localUri,
-      mediaType: picked.mediaType,
-      name: picked.name,
-      retryable: true,
-      sizeBytes: picked.sizeBytes,
-      status: "staged",
-    };
-    localDirty.current = true;
-    localRevision.current += 1;
-    // Kept current here too, so several files added in one go each see the others.
-    latest.current = [...latest.current, item];
-    setItems((current) => [...current, item]);
-    upload(item);
-    return true;
-  };
+  }, [items, ready, readyRevision, resume]);
 
   const pick = async (kind: "file" | "photo"): Promise<void> => {
     setNotice(null);
@@ -374,50 +547,32 @@ export function useDraftAttachments(options: {
       setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
       return;
     }
+    const complete = drafts.reserveEdit(deploymentId, userId, draftKey);
     let picked: PickedAttachmentSource | null;
     try {
       picked = kind === "photo" ? await pickChatPhoto(files) : await pickChatFile(files);
     } catch (error) {
-      if (mounted.current) setNotice(operationDetail(error, "That file could not be attached."));
+      if (mounted.current)
+        setNotice(failureWords(error, attachWords, "That file could not be attached."));
       return;
     }
-    if (picked !== null) add(picked);
+    if (picked !== null) {
+      const result = await keepPickedAttachment(files, picked, complete);
+      if (mounted.current) {
+        setNotice(result.notice);
+        if (result.kept) syncFromStore();
+      }
+    }
   };
 
   const paste = async (pasted: PastedImages): Promise<void> => {
     setNotice(null);
-    const waiting = [...pasted.images];
-    let problem: string | null = null;
-    for (let image = waiting.shift(); image !== undefined; image = waiting.shift()) {
-      let picked: PickedAttachmentSource | null = null;
-      if (mounted.current && latest.current.length < attachmentMessageMaxCount) {
-        try {
-          picked = await importPastedImage(files, image);
-        } catch (error) {
-          problem = operationDetail(error, "A pasted image could not be attached.");
-          continue;
-        }
-      } else discardPastedImage(image.uri);
-      // A refusal has said why; what is left of the paste is not attached either.
-      if (picked === null || !add(picked)) {
-        for (const rest of waiting) discardPastedImage(rest.uri);
-        if (picked === null && mounted.current)
-          setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
-        return;
-      }
+    const complete = drafts.reserveEdit(deploymentId, userId, draftKey);
+    const notice = await keepPastedImages(drafts, files, draftKey, pasted, complete);
+    if (mounted.current) {
+      setNotice(notice);
+      syncFromStore();
     }
-    if (!mounted.current) return;
-    if (problem !== null) setNotice(problem);
-    else if (pasted.tooLarge > 0)
-      setNotice(
-        `A pasted image is over ${attachmentMaxBytes / 1_048_576} MB, which a message cannot carry.`,
-      );
-    else if (pasted.failed > 0)
-      setNotice(
-        pasted.failed === 1
-          ? "A pasted image could not be read."
-          : `${pasted.failed} pasted images could not be read.`,
-      );
   };
 
   const remove = (key: string): void => {
@@ -467,7 +622,18 @@ export function useDraftAttachments(options: {
     for (const item of added) upload(item);
   };
 
-  return { items, notice, paste, pick, release, remove, restore, retry };
+  return {
+    items,
+    notice,
+    paste,
+    pasteTarget,
+    pick,
+    release,
+    remove,
+    restore,
+    retry,
+    waiting: !ready,
+  };
 }
 
 /** What a message carries for a file the Host holds, or null while it does not. */
@@ -536,9 +702,11 @@ function forgetCopy(scope: LocalAttachmentDraftScope, localUri: string): void {
   }
 }
 
+const uploadWords = { label: "upload this file", done: "uploaded" } as const;
+const attachWords = { label: "attach this file", done: "attached" } as const;
+
+/** Only a refusal of this very file stops it; anything else may go next time. */
 function retryable(error: unknown): boolean {
-  if (!(error instanceof HostClientRequestError)) return true;
-  return (
-    error.status >= 500 || error.status === 404 || error.status === 408 || error.status === 429
-  );
+  const failure = classifyClientFailure(error);
+  return failure.kind !== "rejection" || failure.code === "not_found";
 }

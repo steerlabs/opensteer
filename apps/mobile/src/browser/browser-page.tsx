@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
@@ -72,7 +73,6 @@ import {
 } from "../../modules/remote-text-input/src/editing-proxy.js";
 import { LegacyInput } from "../../modules/remote-text-input/src/legacy-input.js";
 import type { EditingTargetAbilities } from "@opensteer/client/editing";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
@@ -94,11 +94,11 @@ import { useContentInsets } from "../ui/pane.js";
 import type { PagePresence } from "../ui/page-presence.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 import { systemBrowserLabel } from "./system-browser.js";
+import { failureWords, refusal } from "../ui/client-feedback.js";
+import { tabActionSpecs } from "../tabs/tab-actions.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
-/** A command the page refused: its feed went away after the view last drew. */
-const refusedNotice = "The page is reconnecting. Try again in a moment.";
 /** How long a fill that did not happen is said, over a page the person is still using. */
 const fillNoticeMs = 5000;
 /** Where a page's bar moves from under it to over it, as Safari's does on iPad. */
@@ -440,9 +440,9 @@ export function BrowserPage(props: {
   );
   const picture = pictureBox(rested, aspect);
 
-  // A refusal belongs to the feed admission it met; the next admission has recovered.
-  const [refusedAdmission, setRefusedAdmission] = useState<string | null>(null);
-  const refused = refusedAdmission !== null && refusedAdmission === feed.admissionId;
+  // A control the page refused because its feed went away: the stale picture's
+  // chip acknowledges it, rather than any words about the connection.
+  const [refusals, setRefusals] = useState(0);
   const send = (command: BrowserCommand): boolean => {
     if (!ready) return false;
     if (command.type.startsWith("navigation.")) {
@@ -457,7 +457,7 @@ export function BrowserPage(props: {
       props.onSteer?.();
     const targeted = { ...command, surfaceId };
     const taken = submitBrowserCommand(hostClient, session.id, targeted);
-    if (!taken) setRefusedAdmission(feed.admissionId ?? null);
+    if (!taken) setRefusals((count) => count + 1);
     return taken;
   };
   latestSend.current = send;
@@ -498,11 +498,12 @@ export function BrowserPage(props: {
       .closeTabs([surfaceId])
       .then((result) => {
         const failed = result.failed.find((item) => item.tabId === surfaceId);
-        if (failed) setProblem(failed.error.message);
+        if (failed)
+          setProblem(
+            failureWords(refusal(failed.error.code, failed.error.message), tabActionSpecs.close),
+          );
       })
-      .catch((error: unknown) =>
-        setProblem(operationDetail(error, "This tab could not be closed.")),
-      );
+      .catch((error: unknown) => setProblem(failureWords(error, tabActionSpecs.close)));
   };
   const openTab = () => {
     props.onSteer?.();
@@ -1009,6 +1010,7 @@ export function BrowserPage(props: {
                     setMayType(true);
                   }}
                   session={session}
+                  stalePulse={refusals}
                 />
               </Animated.View>
             </Animated.View>
@@ -1064,7 +1066,6 @@ export function BrowserPage(props: {
               />
             ) : null}
             {pageProblem === null &&
-            !refused &&
             !feed.inputError &&
             !passkey &&
             !fillNotice &&
@@ -1075,16 +1076,12 @@ export function BrowserPage(props: {
                     <AppText role="secondary">{passkeyNotice}</AppText>
                   </View>
                 ) : null}
-                {pageProblem !== null || refused ? (
-                  <Notice
-                    detail={pageProblem ?? refusedNotice}
-                    title="Page unavailable"
-                    tone="neutral"
-                  />
+                {pageProblem !== null ? (
+                  <Notice detail={pageProblem} title="Page unavailable" tone="neutral" />
                 ) : feed.inputError ? (
                   // The page refused a touch or key, and says why; the next one clears it.
                   <Notice
-                    detail={feed.inputError}
+                    detail={presentClientIssue(feed.inputError).title}
                     title="That didn’t reach the page"
                     tone="neutral"
                   />

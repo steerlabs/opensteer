@@ -1,6 +1,7 @@
 import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import type { HostApiCommand } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { controlledClientSession } from "../test-support/client-connection.js";
 import { HostClientRequestError } from "../host/client.js";
 import {
   PluginSignInDismissed,
@@ -61,9 +62,10 @@ function host(script: {
   begin?: () => unknown;
   reads?: PluginOAuthStatus["status"][];
   read?: Partial<PluginOAuthStatus>;
-  cancel?: PluginOAuthStatus["status"];
+  cancel?: PluginOAuthStatus["status"] | (() => never);
   returned?: PluginOAuthStatus["status"];
 }) {
+  const session = controlledClientSession();
   const sent: HostApiCommand[] = [];
   const reads = [...(script.reads ?? ["launched"])];
   const dispatch = vi.fn(async (command: HostApiCommand) => {
@@ -83,6 +85,7 @@ function host(script: {
       case "plugin.authorization.return":
         return { type: command.type, ...status(script.returned ?? "completed") };
       case "plugin.authorization.cancel":
+        if (typeof script.cancel === "function") return script.cancel();
         return { type: command.type, ...status(script.cancel ?? "cancelled") };
       default:
         throw new Error(`unexpected ${command.type}`);
@@ -93,7 +96,12 @@ function host(script: {
     return { ok: true as const, data: status(next, script.read) };
   });
   return {
-    client: { dispatch, rpc: { "plugin.authorization.get": get } } as never,
+    client: {
+      connection: session.connection,
+      dispatch,
+      rpc: { "plugin.authorization.get": get },
+    } as never,
+    session,
     sent,
     get,
   };
@@ -345,4 +353,61 @@ describe("a plugin sign-in", () => {
     expect(await ended(flow)).toMatchObject({ kind: "cancelled" });
     expect(fake.sent.at(-1)).toMatchObject({ type: "plugin.authorization.cancel", attemptId });
   });
+});
+
+it("holds the chosen sign-in when offline and leaves the browser closed until a new tap", async () => {
+  const fake = host({ reads: ["completed"] });
+  const sign = surface();
+  const flow = flowOf(fake.client, sign);
+  const choice = { option: (await choosing(flow)).options[0]! };
+  fake.session.change({ phase: "recovering", network: "offline", epoch: 2 });
+  flow.start(choice);
+  expect(flow.getState()).toMatchObject({
+    step: "choosing",
+    issue: "Not started. You're offline.",
+  });
+  expect(sign.surface.open).not.toHaveBeenCalled();
+  expect(fake.sent.map(({ type }) => type)).toEqual(["plugin.authorization.prepare"]);
+  fake.session.change({ phase: "ready", network: "online", epoch: 3, readyRevision: 2 });
+  expect(sign.surface.open).not.toHaveBeenCalled();
+  flow.start(choice);
+  expect(await ended(flow)).toEqual({ kind: "completed", account: "acc_1" });
+});
+
+it("keeps an unconfirmed cancel on the original attempt and resolves it from the Host after recovery", async () => {
+  const failure = new HostClientRequestError({
+    code: "internal",
+    message: "private upstream failure",
+    reason: "transport-timed-out",
+    status: 500,
+  });
+  const fake = host({
+    cancel: () => {
+      throw failure;
+    },
+  });
+  const first = Promise.withResolvers<void>();
+  const pending = Promise.withResolvers<{ ok: true; data: PluginOAuthStatus }>();
+  fake.get
+    .mockImplementationOnce(() => {
+      first.resolve();
+      return pending.promise;
+    })
+    .mockResolvedValueOnce({ ok: true, data: status("completed") });
+  const flow = flowOf(fake.client, surface());
+  flow.start({ option: (await choosing(flow)).options[0]! });
+  await first.promise;
+  await flow.cancel();
+  expect(flow.getState()).toMatchObject({
+    step: "waiting",
+    attemptId,
+    issue: "Couldn't confirm sign-in was cancelled.",
+    cancelling: false,
+  });
+  fake.session.change({ phase: "recovering", network: "offline", epoch: 2 });
+  pending.resolve({ ok: true, data: status("cancelled") });
+  fake.session.change({ phase: "ready", network: "online", epoch: 3, readyRevision: 2 });
+  expect(await ended(flow)).toEqual({ kind: "completed", account: "acc_1" });
+  expect(fake.sent.filter(({ type }) => type === "plugin.authorization.cancel")).toHaveLength(1);
+  expect(fake.get).toHaveBeenCalledTimes(2);
 });

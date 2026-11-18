@@ -8,7 +8,7 @@ import {
 import { useComputerFacts } from "../../desktop/use-computer-facts.js";
 import { usePlaceChecks, type DesktopPlaces } from "../../desktop/places-context.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { Dialog } from "../dialog.js";
 import { Icon, type IconName } from "../icon.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
@@ -193,7 +193,9 @@ export function DesktopWelcome({
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
     setActionError(null);
-    void operation().catch((reason: unknown) => setActionError(actionErrorMessage(reason)));
+    void act(null, { label: "do this", done: "done" }, operation).catch((reason: unknown) =>
+      setActionError(failureWords(reason)),
+    );
   };
   const start = () => onSetUpHere?.(chosenName ?? undefined);
 
@@ -353,8 +355,8 @@ export function DesktopChooser({
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);
-    void operation()
-      .catch((reason: unknown) => setActionError(actionErrorMessage(reason)))
+    void act(null, { label: "do this", done: "done" }, operation)
+      .catch((reason: unknown) => setActionError(failureWords(reason)))
       .finally(() => setPending(false));
   };
   const account = snapshot.account;

@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
@@ -28,9 +29,14 @@ vi.mock("react-native", () => {
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: harness.navigate }),
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
 }));
@@ -75,13 +81,18 @@ function ask(
 function mount(entries: NeedsYouPage["entries"]) {
   const decideTeamAsk = vi.fn(async (_decision: object) => undefined);
   const snapshot = {
+    connection: "connected",
+    deploymentId,
     needsYou: { count: entries.length, entries, window: { hasMore: false } },
+    session: "authenticated",
+    user: { id: "usr_reader" },
   } as unknown as HostSnapshot;
   harness.client = {
     decideTeamAsk,
     getSnapshot: () => snapshot,
     subscribe: () => () => undefined,
   } as unknown as HostClient;
+  Object.assign(harness.client, { connection: testHostConnection(harness.client) });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

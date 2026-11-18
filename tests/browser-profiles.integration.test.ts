@@ -207,7 +207,6 @@ async function connectedPeople(stack: VerticalStack): Promise<HttpHostClient[]> 
   for (let index = 0; index < 2; index++) {
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
-      refreshIntervalMs: 0,
       fetch: (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set("cookie", stack.sessionCookie);

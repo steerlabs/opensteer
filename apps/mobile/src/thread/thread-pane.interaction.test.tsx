@@ -10,8 +10,13 @@ import {
   formatClockTime,
   HostClientRequestError,
   PlaceActivityStore,
+  initializeMessageOutbox,
+  disposeMessageOutbox,
+  createMessageOutboxStorage,
+  hostMessageOutbox,
   placeList,
   RunPlaceStore,
+  toMessageEntry,
   reconcileBrowserLastPictures,
   type HostClient,
   type HostSnapshot,
@@ -25,6 +30,7 @@ import {
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   conversationHistoryHost,
+  testHostConnection,
   MemoryPrivateFilesystem,
   tabFixture,
   tabStoreFixture,
@@ -521,6 +527,7 @@ vi.mock("../ui/notifications-context.js", () => ({
   useMobileNotifications: () => ({
     enterThread: () => () => undefined,
     intro: null,
+    registration: { afterSuccessfulSend: async () => {} },
     readingLatest: () => undefined,
   }),
   usePushRegistration: () => ({ status: "signed-out" }),
@@ -804,12 +811,16 @@ function WithNativeHeader(props: {
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
+const outboxClients = new Set<HostClient>();
+const persistedOutboxes = new WeakMap<HostClient, Map<string, string>>();
 afterEach(() => {
   composerEditorFake.composing = false;
   composerEditorFake.ahead = null;
   composerEditorFake.runningAhead = false;
   aiSharingTestPermission.allowed = true;
   for (const root of roots.splice(0)) act(() => root.unmount());
+  for (const client of outboxClients) disposeMessageOutbox(client);
+  outboxClients.clear();
   dictation.dispose();
   dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
   document.body.replaceChildren();
@@ -1253,7 +1264,7 @@ const idleDisplaySocket = () => ({
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
-  let snapshot = initial;
+  let snapshot = { ...initial, deploymentId };
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
@@ -1286,13 +1297,16 @@ function fakeHost(initial: HostSnapshot) {
     () => 60_000,
   );
   const watchRelease = vi.fn();
-  const dispatch = vi.fn(async (command: { readonly type: string }) => ({ type: command.type }));
+  const dispatch = vi.fn(async (command: { readonly type: string }) => ({
+    type: command.type,
+    message: { id: createId("message") },
+  }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
-    snapshot = earlierPage;
+    snapshot = { ...earlierPage, deploymentId };
     earlierPage = null;
     for (const listener of listeners) listener();
   });
@@ -1358,6 +1372,7 @@ function fakeHost(initial: HostSnapshot) {
     loadLatestTranscript: vi.fn(async () => undefined),
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
+    discardAttachment: vi.fn(async () => undefined),
     visitThread: vi.fn(async () => undefined),
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
@@ -1371,7 +1386,9 @@ function fakeHost(initial: HostSnapshot) {
     },
   };
   return {
-    client: client as unknown as HostClient,
+    client: Object.assign(client, {
+      connection: testHostConnection(client as unknown as HostClient),
+    }) as unknown as HostClient,
     decideTeamAsk: client.decideTeamAsk,
     dispatch,
     editWaitingMessage: client.editWaitingMessage,
@@ -1419,7 +1436,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadTranscriptAround,
     move(next: HostSnapshot) {
-      snapshot = next;
+      snapshot = { ...next, deploymentId };
       act(() => {
         for (const listener of listeners) listener();
       });
@@ -1435,6 +1452,27 @@ async function settle(): Promise<void> {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+  }
+}
+
+function connectFixtureOutbox(client: HostClient, drafts: ThreadDraftStore): void {
+  if (!outboxClients.has(client)) {
+    const records = persistedOutboxes.get(client) ?? new Map<string, string>();
+    persistedOutboxes.set(client, records);
+    initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: (scope, entry) => drafts.restoreMessage(scope, entry) },
+      legacy: drafts.legacyMessages,
+    });
+    outboxClients.add(client);
   }
 }
 
@@ -1463,6 +1501,7 @@ async function mount(
   if (options.draftPage !== undefined)
     await drafts.writeDraftPage(deploymentId, userId, threadId, options.draftPage);
   harness.drafts = drafts;
+  connectFixtureOutbox(host.client, drafts);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -1660,7 +1699,7 @@ describe("a conversation with a page", () => {
     );
 
   // Failure: the person is left on a page for a tab the Host never made.
-  it("opens an app's one tab, then shows it, and stays with why when the Host refuses", async () => {
+  it("opens an app's one tab, then shows it, and stays honest when its answer is lost", async () => {
     const appId = "app_11111111-1111-4111-8111-111111111111";
     const host = fakeHost(
       snapshotFor({
@@ -1693,7 +1732,7 @@ describe("a conversation with a page", () => {
     expect(harness.dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ name: "WorkspaceBrowser" }),
     );
-    expect(text(container)).toContain("This app could not open as a tab");
+    expect(text(container)).toContain("Couldn't confirm this app opened.");
     await press(container, "Open Budget");
     await act(async () => opened.resolve({ tabId: "tab_budget" }));
     expect(harness.dispatch).toHaveBeenLastCalledWith(
@@ -1789,7 +1828,7 @@ describe("a conversation with a page", () => {
     const words = `Explain this [Fix login](opensteer:${otherWorkId})`;
     composerEditorFake.ahead = words;
     await press(container, "Send message");
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.arrayContaining([included, { text: words, type: "text" }]),
@@ -1817,7 +1856,7 @@ describe("a conversation with a page", () => {
     await type(container, "Message", "Hang the mirror first, then the art");
     await act(async () => saved());
     await settle();
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: [{ text: "Hang the mirror first", type: "text" }],
@@ -1841,7 +1880,7 @@ describe("a conversation with a page", () => {
     ).toBe("未確定の入力");
     composerEditorFake.composing = false;
     await press(container, "Send message");
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.arrayContaining([{ text: "未確定の入力", type: "text" }]),
@@ -1920,7 +1959,7 @@ describe("a conversation with a page", () => {
     host.move({ ...host.client.getSnapshot(), browserSessions: [] });
     await type(second.container, "Message", "Explain the page I saw");
     await press(second.container, "Send message");
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.arrayContaining([included]),
@@ -1928,7 +1967,7 @@ describe("a conversation with a page", () => {
     );
   });
 
-  it("keeps an offline Ask editable without dispatching it", async () => {
+  it("queues an offline Ask and keeps the included page", async () => {
     const included = page();
     const host = fakeHost({
       ...snapshotFor({ entries: [], run: null, threadId: workId }),
@@ -1939,8 +1978,100 @@ describe("a conversation with a page", () => {
     expect(text(container)).toContain("Research page");
     expect(
       container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled,
-    ).toBe(true);
+    ).toBe(false);
+    await press(container, "Send message");
     expect(host.dispatch).not.toHaveBeenCalled();
+    expect(
+      hostMessageOutbox(host.client)?.getSnapshot().messages[0]?.command.content,
+    ).toContainEqual(included);
+    // The message stands in the transcript and says it waits; the bar says nothing.
+    await settle();
+    expect(text(container)).toContain("Waiting to send");
+    expect(text(container)).not.toContain("offline");
+  });
+
+  it("lets a refused message of files alone be deleted, which frees the message behind it", async () => {
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      network: "offline",
+    });
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "image/jpeg",
+      name: "photo.jpg",
+      sizeBytes: 10,
+      type: "artifact" as const,
+    };
+    const command = (idempotencyKey: string, content: readonly object[]) =>
+      ({
+        content,
+        delivery: "queue",
+        idempotencyKey,
+        threadId: workId,
+        type: "thread.sendMessage",
+      }) as never;
+    await act(async () => {
+      await outbox.enqueue(command("files-only", [file]));
+      await outbox.enqueue(command("behind", [{ text: "After the photo", type: "text" }]));
+    });
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    host.move({ ...host.client.getSnapshot(), network: "online" });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    expect(sent(host.dispatch)).toHaveLength(1);
+    await press(container, "Delete");
+    expect(host.dispatch.mock.calls.at(-1)?.[0]).toMatchObject({ idempotencyKey: "behind" });
+    expect(outbox.getSnapshot().messages).toEqual([]);
+  });
+
+  it("Edit puts a refused message back whole, above the draft already there", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container, drafts } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const quotedMessageId = createId("message");
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "application/pdf",
+      name: "agenda.pdf",
+      sizeBytes: 2048,
+      type: "artifact" as const,
+    };
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    await act(async () => {
+      await outbox.enqueue(
+        {
+          content: [{ text: "Refused words", type: "text" }, file],
+          delivery: "queue",
+          idempotencyKey: "refused",
+          quotedMessageId,
+          threadId: workId,
+          type: "thread.sendMessage",
+        },
+        { localAttachmentUris: ["file:///private/agenda.pdf"] },
+      );
+    });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    await type(container, "Message", "Newer draft");
+    await press(container, "Edit");
+    expect(outbox.getSnapshot().messages).toEqual([]);
+    const draft = drafts.readDraft(deploymentId, userId, workId);
+    expect(draft).toMatchObject({
+      attachments: [
+        { attachmentId: file.artifactId, localUri: "file:///private/agenda.pdf", status: "ready" },
+      ],
+      quote: { messageId: quotedMessageId },
+      text: "Refused words\n\nNewer draft",
+    });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Refused words\n\nNewer draft");
   });
 
   it("includes a page Ask handed to its own screen until the person removes it, for good", async () => {
@@ -1957,7 +2088,7 @@ describe("a conversation with a page", () => {
     await type(container, "Message", "Nothing attached");
     expect(pageChip(container)).toBeNull();
     await press(container, "Send message");
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.not.arrayContaining([included]),
@@ -2238,7 +2369,7 @@ describe("a voice conversation while Opensteer is replying", () => {
     const { container } = await mount(host, conversationId);
 
     await press(container, "Stop the reply");
-    expect(host.stopRun).toHaveBeenCalledWith(conversationId);
+    expect(host.stopRun).toHaveBeenCalledWith(conversationId, chat.runB);
 
     // The Host ends the reply and cancels what that exchange had not yet taken.
     host.move(
@@ -3065,7 +3196,7 @@ describe("a phone carrying a steering decision from the previous release", () =>
     return files;
   }
 
-  it("sends the held words once as a message, never answers the approval again, and is free to send", async () => {
+  it("keeps a previous release's steering words for review without repeating its approval", async () => {
     const chat = chatAtWork();
     // The decision was acknowledged before the upgrade: the Host refuses to take it again.
     const host = fakeHost(
@@ -3079,28 +3210,13 @@ describe("a phone carrying a steering decision from the previous release", () =>
           status: 409,
         });
       }
-      return { type: command.type };
+      return { type: command.type, message: { id: createId("message") } };
     });
     const { container, drafts } = await mount(host, conversationId, { files: previousRelease() });
 
-    expect(host.dispatch.mock.calls).toEqual([
-      [
-        {
-          content: [{ text: held.text, type: "text" }],
-          delivery: "queue",
-          idempotencyKey: held.messageIdempotencyKey,
-          threadId: conversationId,
-          type: "thread.sendMessage",
-        },
-      ],
-    ]);
-    expect(drafts.readPending(deploymentId, userId, conversationId)).toBeNull();
-    expect(text(container)).not.toContain("can no longer accept");
-    expect(text(container)).not.toContain("Not sent yet.");
-    expect(hasButton(container, "Restore message")).toBe(false);
-    expect(
-      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
-    ).toBe("");
+    expect(host.dispatch).not.toHaveBeenCalled();
+    expect(drafts.readTaskStart(deploymentId, userId, conversationId)).toBeNull();
+    expect(container.querySelector('[aria-label="Message"]')).not.toBeNull();
 
     await type(container, "Message", "One more thing");
     expect(button(container, "Send message").disabled).toBe(false);
@@ -3140,7 +3256,7 @@ describe("a phone carrying a steering decision from the previous release", () =>
 
     // Nothing leaves the phone by itself, and the draft is whole.
     expect(host.dispatch).not.toHaveBeenCalled();
-    expect(drafts.readPending(deploymentId, userId, conversationId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, conversationId)).toBeNull();
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
     ).toBe(held.draftText);
@@ -3150,25 +3266,23 @@ describe("a phone carrying a steering decision from the previous release", () =>
     expect(drafts.readDraft(deploymentId, userId, conversationId)?.attachments).toEqual([file]);
 
     await press(container, "Send message");
-    expect(host.dispatch.mock.calls).toEqual([
-      [
-        expect.objectContaining({
-          content: [
-            { text: held.text, type: "text" },
-            {
-              artifactId: file.attachmentId,
-              mediaType: file.mediaType,
-              name: file.name,
-              sizeBytes: file.sizeBytes,
-              type: "artifact",
-            },
-          ],
-          delivery: "queue",
-          quotedMessageId: quote.messageId,
-          threadId: conversationId,
-          type: "thread.sendMessage",
-        }),
-      ],
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toEqual([
+      expect.objectContaining({
+        content: [
+          { text: held.text, type: "text" },
+          {
+            artifactId: file.attachmentId,
+            mediaType: file.mediaType,
+            name: file.name,
+            sizeBytes: file.sizeBytes,
+            type: "artifact",
+          },
+        ],
+        delivery: "queue",
+        quotedMessageId: quote.messageId,
+        threadId: conversationId,
+        type: "thread.sendMessage",
+      }),
     ]);
   });
 
@@ -3210,7 +3324,7 @@ describe("a phone carrying a steering decision from the previous release", () =>
     );
     const { container } = await mount(host, conversationId, { files: previousRelease() });
 
-    expect(sent(host.dispatch)).toEqual(["thread.sendMessage"]);
+    expect(sent(host.dispatch)).toEqual([]);
     expect(container.querySelector('[aria-label="Docked request"]')).not.toBeNull();
   });
 });
@@ -3354,6 +3468,251 @@ describe("a task", () => {
     expect(button(container, "Stop this run").dataset["kind"]).toBe("stop");
     expect(hasButton(container, "Stop the reply")).toBe(false);
     expect(headers.at(-1)?.title).toBe(base.threads.find(({ id }) => id === workId)?.title);
+  });
+
+  it("says an offline Stop didn't go out beside it, and lets the line go with the run", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost({ ...running, network: "offline" });
+    const { container } = await mount(host, workId);
+
+    await press(container, "Stop this run");
+    expect(host.stopRun).not.toHaveBeenCalled();
+    expect(text(container)).toContain("Not stopped");
+
+    // Back online the line still says what that tap came to, until the run ends by itself.
+    host.move({ ...running, network: "online" });
+    await settle();
+    host.move(snapshotFor({ entries: task.entries, run: null, threadId: workId }));
+    await settle();
+    expect(hasButton(container, "Stop this run")).toBe(false);
+    expect(text(container)).not.toContain("Not stopped");
+  });
+
+  it("keeps a lost Stop reply uncertain while the original run is still active", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(running);
+    host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { container } = await mount(host, workId);
+    await press(container, "Stop this run");
+    expect(host.stopRun).toHaveBeenCalledWith(workId, task.runId);
+    expect(text(container)).toContain("Couldn't confirm");
+    host.move({ ...running, network: "offline" });
+    host.move(running);
+    await settle();
+    expect(text(container)).toContain("Couldn't confirm");
+    expect(text(container)).not.toContain("Not stopped");
+    // The stop fact lands after the reconnection's check: it settles the line by itself.
+    const [ask, , ...rest] = task.entries;
+    host.move(
+      snapshotFor({
+        entries: [ask!, ran(task.runId, { stopping: true }), ...rest],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    await settle();
+    expect(text(container)).not.toContain("Couldn't confirm");
+  });
+
+  it("settles an unconfirmed Stop for its original run when a different run starts", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(running);
+    host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { container } = await mount(host, workId);
+    await press(container, "Stop this run");
+    expect(text(container)).toContain("Couldn't confirm");
+    const next = snapshotFor({
+      entries: task.entries,
+      run: { id: createId("run"), status: "running" },
+      threadId: workId,
+    });
+    host.move({ ...running, network: "offline" });
+    host.move(next);
+    await settle();
+    expect(hasButton(container, "Stop this run")).toBe(true);
+    expect(text(container)).not.toContain("Not stopped");
+    expect(text(container)).not.toContain("Couldn't confirm");
+  });
+
+  it("keeps the same bubble when the Host queues a local message ahead of its pending sibling", async () => {
+    const task = taskAtWork();
+    const older = said("Older held bubble", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, older],
+      queue: [waitingInput(older, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost({ ...initial, network: "offline" });
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const enqueue = (idempotencyKey: string, words: string) =>
+      outbox.enqueue({
+        content: [{ text: words, type: "text" }],
+        delivery: "queue",
+        idempotencyKey,
+        threadId: workId,
+        type: "thread.sendMessage",
+      });
+    await act(async () => {
+      await enqueue("first-held", "First local bubble");
+      await enqueue("second-held", "Second local bubble");
+    });
+    const body = (words: string) =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === words,
+      );
+    const first = body("First local bubble");
+    const second = body("Second local bubble");
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    const confirmed = { ...said("First local bubble", null), clientSendKey: "first-held" };
+    const queue = [waitingInput(older, workId), waitingInput(confirmed, workId)];
+    const eventMessage = toMessageEntry(
+      { ...queue[1]!.message, clientSendKey: "first-held" },
+      "queue",
+      queue[1]!.input,
+    )!;
+    const state = snapshotFor({
+      entries: [...task.entries, older, eventMessage],
+      queue: [queue[0]!],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    host.move({ ...state, network: "offline" });
+    await settle();
+    expect(body("First local bubble")).toBe(first);
+    expect(text(container).indexOf("Older held bubble")).toBeLessThan(
+      text(container).indexOf("First local bubble"),
+    );
+    // The independent queue read carries the new row, even if its view has no alias.
+    host.move({
+      ...snapshotFor({
+        entries: [...task.entries, older, eventMessage],
+        queue,
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+      network: "offline",
+    });
+    await settle();
+    expect(body("First local bubble")).toBe(first);
+    expect(body("Second local bubble")).toBe(second);
+    expect(text(container).indexOf("Older held bubble")).toBeLessThan(
+      text(container).indexOf("First local bubble"),
+    );
+    expect(text(container).indexOf("First local bubble")).toBeLessThan(
+      text(container).indexOf("Second local bubble"),
+    );
+  });
+
+  it("keeps an idle task's first bubble mounted when a run takes it directly", async () => {
+    const initial = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost(initial);
+    const ack = Promise.withResolvers<Awaited<ReturnType<typeof host.dispatch>>>();
+    host.dispatch.mockReturnValueOnce(ack.promise);
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const body = () =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === "Launch the task",
+      );
+    try {
+      await act(async () => {
+        await outbox.enqueue({
+          content: [{ text: "Launch the task", type: "text" }],
+          delivery: "queue",
+          idempotencyKey: "starts-run",
+          threadId: workId,
+          type: "thread.sendMessage",
+        });
+      });
+      const bubble = body();
+      expect(bubble).toBeDefined();
+      const runId = createId("run");
+      const message = { ...said("Launch the task", runId), clientSendKey: "starts-run" };
+      host.move(
+        snapshotFor({
+          entries: [message],
+          run: { id: runId, status: "running" },
+          threadId: workId,
+        }),
+      );
+      await settle();
+      expect(body()).toBe(bubble);
+    } finally {
+      ack.resolve({ type: "thread.sendMessage", message: { id: createId("message") } });
+    }
+  });
+
+  it("keeps a waiting bubble mounted through direct admission when its busy task goes idle first", async () => {
+    const task = taskAtWork();
+    const busy = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const idle = snapshotFor({ entries: task.entries, run: null, threadId: workId });
+    const host = fakeHost({ ...busy, network: "offline" });
+    const ack = Promise.withResolvers<Awaited<ReturnType<typeof host.dispatch>>>();
+    host.dispatch.mockReturnValueOnce(ack.promise);
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const body = () =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === "Then file it",
+      );
+    try {
+      await act(async () => {
+        await outbox.enqueue({
+          content: [{ text: "Then file it", type: "text" }],
+          delivery: "queue",
+          idempotencyKey: "after-the-run",
+          threadId: workId,
+          type: "thread.sendMessage",
+        });
+      });
+      // The run ends while the phone still can't send: the message will start the next one.
+      host.move({ ...idle, network: "offline" });
+      await settle();
+      const bubble = body();
+      expect(bubble).toBeDefined();
+      host.move(idle);
+      await settle();
+      expect(host.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: "after-the-run" }),
+        expect.anything(),
+      );
+      expect(body()).toBe(bubble);
+      const runId = createId("run");
+      const message = { ...said("Then file it", runId), clientSendKey: "after-the-run" };
+      host.move(
+        snapshotFor({
+          entries: [...task.entries, message],
+          run: { id: runId, status: "running" },
+          threadId: workId,
+        }),
+      );
+      await settle();
+      expect(body()).toBe(bubble);
+    } finally {
+      ack.resolve({ type: "thread.sendMessage", message: { id: createId("message") } });
+    }
   });
 
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
@@ -3506,6 +3865,66 @@ describe("a task", () => {
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
     ).toBe("Include the card fees and the FX rate");
+  });
+
+  it("lets the reader make room in a full reply without dropping the waiting edit", async () => {
+    const waiting = said("Include the notes", null);
+    const item = waitingInput(waiting, workId);
+    const part = {
+      type: "artifact" as const,
+      artifactId: createId("attachment"),
+      name: "notes.txt",
+      mediaType: "text/plain",
+    };
+    const host = fakeHost(
+      snapshotFor({
+        entries: [waiting],
+        queue: [
+          { ...item, message: { ...item.message, content: [...item.message.content, part] } },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container, drafts } = await mount(host, workId);
+    await act(async () => {
+      await drafts.writeDraft(deploymentId, userId, workId, "Existing reply");
+      await drafts.writeDraftAttachments(
+        deploymentId,
+        userId,
+        workId,
+        Array.from({ length: 10 }, (_, index) => ({
+          attachmentId: createId("attachment"),
+          localUri: null,
+          mediaType: "text/plain",
+          name: `file-${index}.txt`,
+          sizeBytes: 1,
+          status: "ready" as const,
+        })),
+      );
+    });
+    const originalDraft = drafts.readDraft(deploymentId, userId, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Words returning from the waiting message");
+    await act(async () =>
+      host.move(snapshotFor({ entries: [waiting], queue: [], run: null, threadId: workId })),
+    );
+    await press(container, "Send as new message…");
+    expect(editField(container)?.value).toBe("Words returning from the waiting message");
+    expect(text(container)).toContain("Too many files");
+    expect(drafts.readDraft(deploymentId, userId, workId)).toEqual(originalDraft);
+    await press(container, "Edit reply draft");
+    await type(container, "Message", "Edited reply");
+    await press(container, "Remove file-9.txt");
+    await press(container, "Back to waiting edit");
+    expect(editField(container)?.value).toBe("Words returning from the waiting message");
+    await press(container, "Send as new message…");
+    const merged = drafts.readDraft(deploymentId, userId, workId);
+    expect(merged?.text).toBe("Words returning from the waiting message\nEdited reply");
+    expect(merged?.attachments?.map(({ name }) => name)).toEqual([
+      "notes.txt",
+      ...Array.from({ length: 9 }, (_, index) => `file-${index}.txt`),
+    ]);
   });
 
   it("shows a message another device is editing, and lets it go from here", async () => {
@@ -3705,7 +4124,7 @@ describe("a task", () => {
     );
     await settle();
     expect(editField(container)?.value).toBe("Words typed on a slow connection");
-    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(text(container)).toContain("This message can’t be edited right now.");
     expect(hasButton(container, "Discard")).toBe(true);
 
     await press(container, "Try again");
@@ -4118,7 +4537,9 @@ describe("renaming a task on a phone", () => {
         "A better name",
       );
       expect(text(container)).toContain("A better name");
-      rename.mockRejectedValueOnce(new Error("Rename refused"));
+      rename.mockRejectedValueOnce(
+        new HostClientRequestError({ code: "forbidden", status: 403, message: "Rename refused" }),
+      );
       await press(container, "Rename…");
       const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Task title"]')!;
       await act(async () => {
@@ -4129,7 +4550,9 @@ describe("renaming a task on a phone", () => {
         field.dispatchEvent(new Event("input", { bubbles: true }));
       });
       await press(container, "Save");
-      expect(text(container)).toContain("Rename refused");
+      // The refusal in the presenter's words; the Host's own text stays off the screen.
+      expect(text(container)).toContain("Not renamed. You don't have access.");
+      expect(text(container)).not.toContain("Rename refused");
       expect(client.getSnapshot().threads.find(({ id }) => id === workId)?.title).toBe(
         "A better name",
       );
@@ -4237,7 +4660,9 @@ describe("task marks on a phone", () => {
       dispatch.mockRejectedValueOnce(new Error("Icon refused"));
       await press(container, "Change icon…");
       await press(container, "Plane");
-      expect(text(container)).toContain("Icon refused");
+      // An unvalidated failure may have landed: it is never said as a refusal or in its own words.
+      expect(text(container)).toContain("Couldn't confirm the icon changed.");
+      expect(text(container)).not.toContain("Icon refused");
       expect(client.getSnapshot().threads.find(({ id }) => id === workId)?.icon).toBe("document");
       vi.mocked(focus).mockClear();
       await press(container, "Close");
@@ -4613,6 +5038,57 @@ it("hides an unsupported mic and disables it while another composer owns dictati
   );
   expect(button(container, "Start dictation (English)").disabled).toBe(true);
   await act(async () => dictation.cancel("another"));
+});
+
+it("clears a failed draft warning when dictation saves the typed words", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const files = new MemoryPrivateFilesystem();
+  const { container, drafts } = await mount(host, workId, { files });
+  const failure = new Error("The phone's storage is full.");
+  vi.spyOn(files, "writeFileAtomic")
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure);
+  await type(container, "Message", "Typed words");
+  const warning = "This draft could not be saved on this phone.";
+  await act(async () => {
+    await vi.waitFor(
+      () => expect(drafts.readDraftUnsaved(deploymentId, userId, workId)).toBe(true),
+      {
+        timeout: 1700,
+      },
+    );
+  });
+  expect(text(container)).toContain(warning);
+  await act(async () => composerEditorFake.select?.({ start: 11, end: 11 }));
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: ["and more"], volatile: [] });
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(drafts.readDraft(deploymentId, userId, workId)?.text).toBe("Typed words and more");
+  expect(text(container)).not.toContain(warning);
+});
+
+it("recovers dictation that finished after leaving a full reply draft", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const files = new MemoryPrivateFilesystem();
+  const { container } = await mount(host, workId, { files });
+  const saved = "x".repeat(15_990);
+  const dictated = "These words must all survive.";
+  await type(container, "Message", saved);
+  await act(async () => composerEditorFake.select?.({ start: saved.length, end: saved.length }));
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: [dictated], volatile: [] });
+  await act(async () => roots.pop()?.unmount());
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  const reopened = await mount(host, workId, { files });
+  expect(reopened.drafts.readDraft(deploymentId, userId, workId)?.text).toBe(saved);
+  await press(reopened.container, "Copy dictated text");
+  const { setStringAsync } = await import("expo-clipboard");
+  expect(setStringAsync).toHaveBeenCalledWith(dictated);
 });
 
 it("does not send an empty message when Send finishes a microphone with no speech", async () => {
@@ -5052,6 +5528,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   await drafts.writeDraft(deploymentId, userId, draftKey, "Research this question");
   await drafts.writeDraftPage(deploymentId, userId, draftKey, page);
   harness.drafts = drafts;
+  connectFixtureOutbox(host.client, drafts);
   harness.activeHost = host.client;
   const container = document.createElement("div");
   document.body.append(container);
@@ -5103,7 +5580,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
     expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
     expect(flashes).toEqual([]);
     await settle();
-    expect(host.dispatch).toHaveBeenCalledWith(
+    expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.arrayContaining([page]),
@@ -5160,61 +5637,6 @@ it("becomes the task as Send is pressed, before the Host has made it", async () 
   expect(occurrences(container, "Compare quotes")).toBe(0);
 });
 
-it("draws a sent message at once, and once, when the Host's copy outruns its answer", async () => {
-  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-  let answer!: () => void;
-  host.dispatch.mockImplementation(
-    (command: { readonly type: string }) =>
-      new Promise((resolve) => {
-        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
-        else answer = () => resolve({ type: command.type });
-      }),
-  );
-  const { container, drafts } = await mount(host, workId);
-  await type(container, "Message", "Compare the three quotes");
-  await press(container, "Send message");
-  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
-  expect(occurrences(container, "Compare the three quotes")).toBe(1);
-  // In the transcript, where the Host's copy will stand, not in a card over the bar.
-  expect(container.querySelector('[data-testid="composer-dock"]')?.textContent ?? "").not.toContain(
-    "Compare the three quotes",
-  );
-  expect(text(container)).not.toContain("Not sent yet");
-
-  // The event stream delivers the Host's copy before the command's answer.
-  host.move(
-    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
-  );
-  expect(occurrences(container, "Compare the three quotes")).toBe(1);
-
-  await act(async () => answer());
-  await settle();
-  expect(drafts.readPending(deploymentId, userId, workId)).toBeNull();
-  expect(occurrences(container, "Compare the three quotes")).toBe(1);
-});
-
-it("still offers to send again when the answer is lost after the Host's copy was shown", async () => {
-  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-  let lose!: () => void;
-  host.dispatch.mockImplementation(
-    (command: { readonly type: string }) =>
-      new Promise((resolve, reject) => {
-        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
-        else lose = () => reject(new Error("The connection was lost."));
-      }),
-  );
-  const { container, drafts } = await mount(host, workId);
-  await type(container, "Message", "Compare the three quotes");
-  await press(container, "Send message");
-  host.move(
-    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
-  );
-  await act(async () => lose());
-  await settle();
-  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
-  expect(hasButton(container, "Send this message again")).toBe(true);
-});
-
 it("never saves a moment holding neither the words sent nor the message they became", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
@@ -5243,13 +5665,13 @@ it("never saves a moment holding neither the words sent nor the message they bec
   const first = saved.findIndex((content) => content.includes("Compare quotes"));
   await press(container, "Send message");
   await settle();
-  expect(drafts.readPending(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
     "Compare quotes",
   );
   expect(saved.slice(first).every((content) => content.includes("Compare quotes"))).toBe(true);
 });
 
-it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
+it("resumes New task creation under the same keys when Ask is opened again after a lost answer", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
@@ -5274,20 +5696,223 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   await act(async () => root.render(draw()));
   await press(container, "Send message");
   expect(createThread).toHaveBeenCalledTimes(1);
-  const held = drafts.readPending(deploymentId, userId, newTaskDraftKey(newDraftId))!;
+  const held = drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))!;
   expect(held).not.toBeNull();
   await act(async () => root.render(<div />));
+  // Already handed over under its keys, it goes on by itself; nothing asks again.
   await act(async () => root.render(draw()));
-  expect(createThread).toHaveBeenCalledTimes(1);
-  await press(container, "Send this message again");
   expect(createThread).toHaveBeenCalledTimes(2);
   expect(createThread.mock.calls[1]).toEqual(createThread.mock.calls[0]);
-  expect(host.dispatch).toHaveBeenCalledWith(
+  expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
     expect.objectContaining({
       type: "thread.sendMessage",
       idempotencyKey: held.idempotencyKey,
       content: expect.arrayContaining([included]),
     }),
+  );
+});
+
+it("says beside the held message when this phone couldn't queue it, and Retry hands it over under the same key without making the task again", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const { ClientOperationError } = await import("@opensteer/client/connections");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  const createThread = vi.fn(async () => thread);
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  harness.activeHost = host.client;
+  const outbox = hostMessageOutbox(host.client)!;
+  const enqueue = vi.spyOn(outbox, "enqueue").mockRejectedValueOnce(
+    new ClientOperationError("Too many messages waiting.", "blocked", {
+      kind: "local",
+      reason: "queue-full",
+      retryable: false,
+    }),
+  );
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  const onStarted = vi.fn(() => true);
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />,
+    ),
+  );
+  await press(container, "Send message");
+  await settle();
+  const held = drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))!;
+  expect(held.startedThreadId).toBe(workId);
+  expect(text(container)).toContain("Too many messages waiting.");
+  expect(onStarted).not.toHaveBeenCalled();
+
+  await press(container, "Retry");
+  await settle();
+  expect(createThread).toHaveBeenCalledOnce();
+  expect(enqueue).toHaveBeenCalledTimes(2);
+  expect(enqueue.mock.calls[1]![0].idempotencyKey).toBe(held.idempotencyKey);
+  expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
+});
+
+it.each(["replacement login", "interrupted cleanup"] as const)(
+  "keeps the first-message handoff safe after %s",
+  async (scenario) => {
+    const { NewTaskPane } = await import("../screens/new-task.js");
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+    const createThread = vi.fn(async () => thread);
+    Object.assign(host.client, { createThread });
+    const { container, drafts, root } = await mount(host, workId);
+    harness.activeHost = host.client;
+    const outbox = hostMessageOutbox(host.client)!;
+    const enqueue = vi.spyOn(outbox, "enqueue");
+    if (scenario === "replacement login") enqueue.mockRejectedValueOnce(new Error("queue full"));
+    else vi.spyOn(drafts, "clearTaskStart").mockRejectedValueOnce(new Error("disk full"));
+    const draftKey = newTaskDraftKey(newDraftId);
+    await drafts.writeDraft(deploymentId, userId, draftKey, "Old login's first message");
+    const onStarted = vi.fn(() => true);
+    const draw = () => (
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />
+    );
+    await act(async () => root.render(draw()));
+    await press(container, "Send message");
+    await settle();
+    expect(drafts.readTaskStart(deploymentId, userId, draftKey)?.startedThreadId).toBe(workId);
+    expect(enqueue).toHaveBeenCalledOnce();
+    await act(async () => root.render(<div />));
+    let reopenedEnqueue: ReturnType<typeof vi.spyOn> | undefined;
+    if (scenario === "replacement login") {
+      host.move({ ...host.client.getSnapshot(), sessionId: createId("authSession") });
+    } else {
+      expect(outbox.getSnapshot().messages).toEqual([]);
+      disposeMessageOutbox(host.client);
+      outboxClients.delete(host.client);
+      connectFixtureOutbox(host.client, drafts);
+      reopenedEnqueue = vi.spyOn(hostMessageOutbox(host.client)!, "enqueue");
+    }
+    await act(async () => root.render(draw()));
+    await settle();
+    expect(createThread).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledOnce();
+    if (scenario === "replacement login") expect(onStarted).not.toHaveBeenCalled();
+    else {
+      expect(reopenedEnqueue).not.toHaveBeenCalled();
+      expect(drafts.readTaskStart(deploymentId, userId, draftKey)).toBeNull();
+      expect(sent(host.dispatch)).toHaveLength(1);
+    }
+  },
+);
+
+it("doesn't start a new task offline, says so above the composer and keeps the draft", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost({
+    ...snapshotFor({ entries: [], run: null, threadId: workId }),
+    network: "offline",
+  });
+  const createThread = vi.fn();
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Research this");
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => false}
+        underHeader={false}
+      />,
+    ),
+  );
+  await press(container, "Send message");
+  expect(text(container)).toContain("Not started. You're offline.");
+  expect(createThread).not.toHaveBeenCalled();
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
+  expect(drafts.readDraft(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Research this",
+  );
+});
+
+// A cold offline Home swallowed a refused save: the words stayed on screen
+// while a relaunch brought back only the older draft.
+it("says a refused Home draft isn't saved, before and after the computer answers", async () => {
+  const { HeldNewTaskPane, NewTaskPane } = await import("../screens/new-task.js");
+  class FullFilesystem extends MemoryPrivateFilesystem {
+    full = false;
+    override async writeFileAtomic(path: string, content: Uint8Array | string): Promise<void> {
+      if (this.full) throw new Error("This device has no space left.");
+      await super.writeFileAtomic(path, content);
+    }
+  }
+  const files = new FullFilesystem();
+  const drafts = createThreadDraftStore({
+    filePath: "/private/new-task.json",
+    now: () => new Date(at),
+    privateFiles: files,
+    saveRetryDelaysMs: [0],
+  });
+  await drafts.load();
+  harness.drafts = drafts;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () =>
+    root.render(
+      <HeldNewTaskPane
+        connection={null}
+        deploymentId={deploymentId}
+        name="Mac mini"
+        underHeader={false}
+        userId={userId}
+      />,
+    ),
+  );
+  await type(container, "Message", "Book the flights");
+  expect(text(container)).not.toContain("Couldn't save this draft");
+  files.full = true;
+  await type(container, "Message", "Book the flights for Friday");
+  expect(
+    container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+  ).toBe("Book the flights for Friday");
+  expect(text(container)).toContain("Couldn't save this draft on this device.");
+
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  harness.activeHost = host.client;
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => false}
+        underHeader={false}
+      />,
+    ),
+  );
+  await settle();
+  expect(text(container)).toContain("Couldn't save this draft on this device.");
+  files.full = false;
+  await type(container, "Message", "Book the flights for Friday morning");
+  expect(text(container)).not.toContain("Couldn't save this draft");
+  const relaunched = createThreadDraftStore({
+    filePath: "/private/new-task.json",
+    now: () => new Date(at),
+    privateFiles: files,
+  });
+  await relaunched.load();
+  expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Book the flights for Friday morning",
   );
 });
 
@@ -5364,7 +5989,7 @@ describe("a new task Ask started", () => {
     await press(container, "Send message");
     expect(createThread).toHaveBeenCalledOnce();
     await settle();
-    expect(drafts.readPending(deploymentId, userId, key)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, key)).toBeNull();
     expect(drafts.readDraft(deploymentId, userId, key)?.text).toBe("Refused words");
     expect(field(container)).toBe("Refused words");
   });
@@ -5742,7 +6367,7 @@ it("keeps a declined message's text, files and quote without claiming or dispatc
   const before = structuredClone(drafts.readDraft(deploymentId, userId, workId));
   await press(container, "Send message");
   expect(drafts.readDraft(deploymentId, userId, workId)).toEqual(before);
-  expect(drafts.readPending(deploymentId, userId, workId)).toBeNull();
+  expect(drafts.readTaskStart(deploymentId, userId, workId)).toBeNull();
   expect(host.dispatch).not.toHaveBeenCalledWith(
     expect.objectContaining({ type: "thread.sendMessage" }),
   );

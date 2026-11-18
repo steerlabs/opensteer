@@ -1,9 +1,23 @@
-import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { useMobileNotifications } from "../ui/notifications-context.js";
-import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";
 import {
-  canRespondToRequests,
+  classifyClientFailure,
+  clientScopeKey,
+  type ClientConnection,
+} from "@opensteer/client/connections";
+import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
+import { useClientConnection } from "@opensteer/client/react";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
+import { notSent, notSentIssue } from "../ui/connection-live.js";
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
+import {
+  emptyExecutionPreferences,
+  provisionalThreadTitle,
+  type BrowserPageContentPart,
+  type UserId,
+} from "@opensteer/core";
+import {
   accessModeConflict,
+  hostMessageOutbox,
   placementForSelection,
   isHostRefusal,
   mutationIdempotencyKey,
@@ -30,15 +44,20 @@ import type { ComposerEditorHandle } from "@opensteer/client/references";
 import * as Haptics from "expo-haptics";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import Animated, { useReducedMotion } from "react-native-reanimated";
-import { operationDetail } from "../client/mobile-client.js";
-import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
+import {
+  newTaskDraftKey,
+  threadDraftRevision,
+  type TaskStartRecord,
+} from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import { color, space } from "../theme.js";
 import {
   attachmentKey,
   draftAttachmentPart,
   forgetDraftFiles,
+  sameDraftAttachmentKeys,
   useDraftAttachments,
+  type DraftAttachments,
 } from "../thread/draft-attachments.js";
 import {
   claimFirstMessage,
@@ -51,7 +70,6 @@ import {
   handOverFirstMessage,
 } from "../thread/first-message.js";
 import { FirstMessageStarted, type FirstMessageSent } from "../thread/first-message-started.js";
-import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { bubbleSettleMs, exit } from "../ui/motion.js";
@@ -93,8 +111,10 @@ export function NewTaskPane(props: {
   readonly underHeader: boolean;
   /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
+  /** Whose saved view is on screen, until the Host has said who is signed in. */
+  readonly savedUserId?: UserId | null;
 }): ReactNode {
-  const userId = useHostSelector(props.hostClient, selectUserId);
+  const userId = useHostSelector(props.hostClient, selectUserId) ?? props.savedUserId ?? null;
   if (userId === null) {
     return (
       <View style={styles.waiting}>
@@ -115,7 +135,6 @@ function NewTask(props: {
   readonly voice?: boolean;
 }): ReactNode {
   const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
-  const notifications = useMobileNotifications();
   const client = useMobileClient();
   const drafts = client.drafts;
   const { snapshot } = useHostSnapshot(props.hostClient, sameNewTaskSnapshot);
@@ -126,7 +145,10 @@ function NewTask(props: {
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
   const agentHome = snapshot.personalSettings?.agentHome.path ?? null;
   const text = draft?.text ?? "";
-  const held = drafts.readPending(deploymentId, userId, draftKey);
+  const { scope, phase, readyRevision } = useClientConnection(hostClient.connection);
+  const scopeKey = clientScopeKey(scope);
+  const savedStart = drafts.readTaskStart(deploymentId, userId, draftKey);
+  const held = scopeKey && savedStart?.ownerScope === scopeKey ? savedStart : null;
   const input = useRef<ComposerEditorHandle>(null);
   const files = useMemo<FirstMessageAttachmentDraftScope>(
     () => ({ deploymentId, draftId, kind: "new-task", userId }),
@@ -143,9 +165,11 @@ function NewTask(props: {
   const sentAt = useRef(0);
   const keyboardDown = useRef<Promise<void>>(Promise.resolve());
   const reduceMotion = useReducedMotion();
-  const [failure, setFailure] = useState<string | null>(null);
-  const [draftFailure, setDraftFailure] = useState<string | null>(null);
+  // What Send came to when no task was started: said above the composer,
+  // with the draft kept, until the words change or Send is pressed again.
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const inFlight = useRef(false);
+  const resume = useRef<(record: TaskStartRecord) => Promise<void>>(async () => undefined);
   const mounted = useRef(true);
   useEffect(
     () => () => {
@@ -164,21 +188,16 @@ function NewTask(props: {
   const { placements, selection } = execution;
   const blocker = firstMessageBlocker({
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
-    connected: canRespondToRequests(snapshot),
     execution,
   });
 
   const changeText = (next: string): void => {
-    void drafts.writeDraft(deploymentId, userId, draftKey, next).then(
-      () => setDraftFailure(null),
-      () => setDraftFailure("This draft could not be saved on this phone."),
-    );
+    setLine(null);
+    // A refused save keeps the words on screen; the store says it is unsaved.
+    void drafts.writeDraft(deploymentId, userId, draftKey, next).catch(noop);
   };
   const changePage = (next: BrowserPageContentPart | null): void => {
-    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).then(
-      () => setDraftFailure(null),
-      () => setDraftFailure("This page could not be saved on this phone."),
-    );
+    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).catch(noop);
   };
 
   /**
@@ -192,10 +211,22 @@ function NewTask(props: {
   const aiSharing = useAiSharing();
   const send = useCallback(
     async (
-      existing: PendingCommand | null,
+      existing: TaskStartRecord | null,
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
+      const ownedScope = hostClient.connection.getSnapshot().scope;
+      const ownerScope = clientScopeKey(ownedScope);
+      if (!ownedScope || !ownerScope || (existing && existing.ownerScope !== ownerScope)) return;
+      const isCurrent = () =>
+        clientScopeKey(hostClient.connection.getSnapshot().scope) === ownerScope;
+      // Offline a new task isn't started: nothing is written down or sent,
+      // and the draft stays where it is.
+      const unsent = existing === null ? notSentIssue(hostClient, "started") : null;
+      if (unsent !== null) {
+        setLine(issueLine(unsent, `not-started:${Date.now()}`));
+        return;
+      }
       // The field's last keystroke can still be on its way to React: read what it holds now.
       const field = input.current;
       let words = text.trim();
@@ -206,12 +237,30 @@ function NewTask(props: {
         if (flushed === null || flushed.composing) return;
         words = flushed.text.trim();
       }
+      const source =
+        existing === null ? await drafts.readSavedDraft(deploymentId, userId, draftKey) : null;
+      if (
+        existing === null &&
+        ((source?.text.trim() ?? "") !== words ||
+          JSON.stringify(source?.page ?? null) !== JSON.stringify(includedPage) ||
+          !sameDraftAttachmentKeys(source?.attachments ?? [], staged.items))
+      ) {
+        setLine(issueLine({ code: "draft-changed" }, `start:${Date.now()}`));
+        return;
+      }
+      const draftRevision = threadDraftRevision(source);
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
-      if (!mounted.current || inFlight.current) return;
+      if (!mounted.current || inFlight.current || !isCurrent()) return;
       inFlight.current = true;
+      const assertCurrent = () => {
+        if (!isCurrent()) throw new NotStarted("This message belongs to another sign-in.");
+      };
+      const startRevision = hostClient.connection.getSnapshot().readyRevision;
       setSending(true);
-      setFailure(null);
+      setLine(null);
       let claimed = existing;
+      // Past this, what fails is this phone handing the message to the task.
+      let created = false;
       try {
         if (claimed === null) {
           const live = hostClient.getSnapshot();
@@ -220,13 +269,14 @@ function NewTask(props: {
             requestedSelection === null
               ? liveExecution.selection
               : resolveExecutionSelection(requestedSelection, liveExecution.placements);
-          if (chosen === null) throw new Error("Choose which AI runs this task before sending.");
+          if (chosen === null)
+            throw new NotStarted("Choose which AI runs this task before sending.");
           const placement = placementForSelection(liveExecution.placements, chosen);
           const accessReason =
             placement === null
               ? null
               : accessModeConflict(live.executionPreferences.accessMode, placement);
-          if (accessReason !== null) throw new Error(accessReason);
+          if (accessReason !== null) throw new NotStarted(accessReason);
           const idempotencyKey = mutationIdempotencyKey("message");
           const attachments = staged.items.flatMap((item) => {
             const part = draftAttachmentPart(item);
@@ -257,8 +307,10 @@ function NewTask(props: {
             browserPage: includedPage,
             deploymentId,
             draftKey,
+            draftRevision,
             drafts,
             idempotencyKey,
+            ownerScope,
             quote: null,
             staged,
             start: {
@@ -274,30 +326,50 @@ function NewTask(props: {
             userId,
           }).catch((error: unknown) => {
             // Not written down, so not sent: the words are back in the field.
+            const current = drafts.readDraft(deploymentId, userId, draftKey)?.text ?? words;
             field?.restore({
               composing: false,
               generation: emptied + 1,
-              selection: { start: words.length, end: words.length },
-              text: words,
+              selection: { start: current.length, end: current.length },
+              text: current,
             });
             throw error;
           });
-          changeText("");
         } else {
           sentAt.current = Date.now();
           keyboardDown.current = dismissKeyboard();
         }
-        const start = claimed.start;
-        if (start === undefined)
-          throw new Error("This message no longer says which task it starts.");
-        const { generateTitle, ...creation } = start;
-        const thread = await hostClient.createThread({
-          ...creation,
-          ...(generateTitle ? { generateTitle: true } : {}),
-        });
+        assertCurrent();
+        let threadId = claimed.startedThreadId;
+        if (threadId === undefined) {
+          if (
+            existing &&
+            !(await drafts.replayTaskStart(ownedScope, draftKey, claimed.idempotencyKey))
+          )
+            return;
+          assertCurrent();
+          const start = claimed.start;
+          if (start === undefined)
+            throw new NotStarted("This saved message is missing its task details.");
+          const { generateTitle, ...creation } = start;
+          const thread = await hostClient.createThread({
+            ...creation,
+            ...(generateTitle ? { generateTitle: true } : {}),
+          });
+          assertCurrent();
+          threadId = thread.id;
+          // Unrecorded, a retry asks again under the same key and gets the same task.
+          await drafts
+            .recordTaskStarted(deploymentId, userId, draftKey, claimed.idempotencyKey, threadId)
+            .catch(() => undefined);
+        }
+        created = true;
+        const startedId = threadId;
         let opened = false;
-        const owed = await handOverFirstMessage({
+        await handOverFirstMessage({
+          hostClient,
           claimed,
+          scope: ownedScope,
           deploymentId,
           draftKey,
           drafts,
@@ -308,81 +380,84 @@ function NewTask(props: {
             // is this one's last.
             const rising = reduceMotion ? 0 : sentAt.current + bubbleSettleMs - Date.now();
             await Promise.all([keyboardDown.current, rising > 0 ? delay(rising) : undefined]);
+            assertCurrent();
             const active = client.getSnapshot().selection;
-            const shown = drafts.readPending(deploymentId, userId, draftKey);
+            const shown = drafts.readTaskStart(deploymentId, userId, draftKey);
             opened =
               mounted.current &&
               active.deploymentId === deploymentId &&
               active.hostClient === hostClient &&
               hostClient.getSnapshot().user?.id === userId &&
-              onStarted(thread.id);
+              onStarted(startedId);
             if (opened && shown !== null) setHandedOff(shown);
           },
-          threadId: thread.id,
+          threadId: startedId,
           userId,
         });
-        if (opened) return;
-        // The reader left while the task was being made, so no composer is
-        // about to send this. It goes now, under the key it was claimed with;
-        // if it cannot, it stays owed and the task's composer sends it when
-        // the task is next opened.
-        const finishDelivery = beginPendingDelivery(drafts, deploymentId, userId, owed);
-        if (finishDelivery === null) return;
-        let outcome: "failed" | undefined;
-        try {
-          if (
-            !(await sendPendingMessage(
-              hostClient,
-              owed,
-              () => authorizeAiSharing(aiSharing, hostClient),
-              notifications.registration,
-            ))
-          )
-            return;
-          const cleared = await drafts.clearPending(
-            deploymentId,
-            userId,
-            thread.id,
-            owed.idempotencyKey,
-          );
-          if (cleared) {
-            forgetDraftFiles({ deploymentId, threadId: thread.id, userId }, owed.localUris ?? []);
-          }
-        } catch (error) {
-          // Still owed under its key; the task says so when it is opened.
-          outcome = "failed";
-          throw error;
-        } finally {
-          finishDelivery(outcome);
-        }
       } catch (error) {
-        // Only a screen still here can take the message back as a draft; one
-        // that has gone leaves it held, and the next visit shows it.
-        if (claimed !== null && isHostRefusal(error) && mounted.current) {
-          // The Host said no, so no task was made: the message goes back to
-          // being a draft, to be changed and sent anew under new keys.
-          const refused = claimed;
-          await drafts.clearPending(deploymentId, userId, draftKey, refused.idempotencyKey).then(
-            (cleared) => {
-              if (!cleared) return;
-              changeText(refused.text);
-              if (refused.browserPage !== undefined) changePage(refused.browserPage);
-              staged.restore(
-                (refused.attachments ?? []).map((part, index) => ({
-                  localUri: refused.localUris?.[index] ?? null,
-                  part,
-                })),
-              );
-            },
-            () => undefined,
-          );
+        if (
+          claimed !== null &&
+          !created &&
+          isHostRefusal(error) &&
+          !classifyClientFailure(error).retryable &&
+          isCurrent()
+        ) {
+          await drafts
+            .restoreRefusedTaskStart(ownedScope, draftKey, claimed.idempotencyKey, isCurrent)
+            .catch(() => undefined);
         }
-        setFailure(operationDetail(error, "The task could not be started."));
+        // A refusal or a reason of this screen's own is said; an answer that
+        // was lost leaves the message held, waiting to go once it can.
+        if (mounted.current) {
+          const key = `start:${Date.now()}`;
+          if (error instanceof NotStarted)
+            setLine({ key, text: error.words, tone: "muted", haptic: "warning" });
+          else if (claimed === null)
+            setLine(
+              issueLine(
+                {
+                  code:
+                    classifyClientFailure(error).reason === "draft-changed"
+                      ? "draft-changed"
+                      : "storage-unavailable",
+                },
+                key,
+              ),
+            );
+          else if (created) {
+            // The task exists; the message is held here until this phone can
+            // queue it, under the same key, when the person asks again.
+            const issue =
+              clientIssue(error, { operation: "action", label: "start this task" })?.code ===
+              "queue-full"
+                ? ({ code: "queue-full" } as const)
+                : ({ code: "storage-unavailable" } as const);
+            setLine(
+              issueLine(issue, key, {
+                label: clientIssueActions.retry,
+                onPress: () => {
+                  const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+                  if (record !== null) void resume.current(record);
+                },
+              }),
+            );
+          } else if (isHostRefusal(error)) {
+            const issue = clientIssue(error, { operation: "action", label: "start this task" });
+            if (issue !== null) setLine(issueLine({ ...issue, done: "started" }, key));
+          }
+        }
       } finally {
         inFlight.current = false;
         setSending(false);
         // Written down by now, or refused and back in the field.
         setStarting(null);
+        // The connection became ready again while this attempt ran, so the
+        // resume it would have started was skipped: go again for it.
+        const now = hostClient.connection.getSnapshot();
+        if (mounted.current && now.phase === "ready" && now.readyRevision !== startRevision) {
+          const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+          if (record?.ownerScope === ownerScope) queueMicrotask(() => void resume.current(record));
+        }
       }
     },
     [
@@ -394,7 +469,6 @@ function NewTask(props: {
       files,
       hostClient,
       includedPage,
-      notifications,
       onStarted,
       reduceMotion,
       staged,
@@ -402,6 +476,16 @@ function NewTask(props: {
       userId,
     ],
   );
+
+  // A message already handed over under its keys goes on by itself: on
+  // arrival, and each time the connection is ready again.
+  resume.current = send;
+  const heldKey = held?.idempotencyKey ?? null;
+  useEffect(() => {
+    if (heldKey === null || phase !== "ready") return;
+    const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+    if (record !== null && record.ownerScope === scopeKey) void resume.current(record);
+  }, [deploymentId, draftKey, drafts, heldKey, phase, readyRevision, scopeKey, userId]);
 
   // Once the task has faded in over this screen, it is Home again underneath.
   useEffect(() => {
@@ -415,6 +499,60 @@ function NewTask(props: {
     };
   }, [handedOff, navigation]);
 
+  const discardHeld = (record: TaskStartRecord) => {
+    if (inFlight.current) return;
+    void drafts.clearTaskStart(deploymentId, userId, draftKey, record.idempotencyKey).then(
+      (cleared) => {
+        if (cleared) {
+          forgetDraftFiles(files, record.localUris ?? []);
+          if (scope && record.ownerScope === scopeKey)
+            void hostMessageOutbox(hostClient)
+              ?.forgetHandoff(scope, record.idempotencyKey)
+              .catch(noop);
+          setLine(null);
+        }
+      },
+      () => setLine(issueLine({ code: "storage-unavailable" }, record.idempotencyKey)),
+    );
+  };
+  const otherStart = savedStart !== null && held === null ? savedStart : null;
+  const otherStartLine: ActionLineValue | null =
+    otherStart && scopeKey
+      ? {
+          key: otherStart.idempotencyKey,
+          text: otherStart.ownerScope
+            ? "A held message belongs to your previous sign-in."
+            : "A message from an earlier version is waiting. Send it with this sign-in?",
+          tone: "muted",
+          link: otherStart.ownerScope
+            ? {
+                label: "Remove",
+                onPress: () => discardHeld(otherStart),
+              }
+            : {
+                label: "Resume",
+                onPress: () => {
+                  void drafts
+                    .bindTaskStartLogin(
+                      deploymentId,
+                      userId,
+                      draftKey,
+                      otherStart.idempotencyKey,
+                      scopeKey,
+                    )
+                    .then(
+                      (record) => {
+                        if (record) void resume.current(record);
+                      },
+                      () =>
+                        setLine(
+                          issueLine({ code: "storage-unavailable" }, otherStart.idempotencyKey),
+                        ),
+                    );
+                },
+              },
+        }
+      : null;
   const sent = held ?? starting ?? handedOff;
   const empty = text.trim() === "" && sent === null && staged.items.length === 0;
 
@@ -423,7 +561,8 @@ function NewTask(props: {
       autoFocus={props.autoFocus}
       blocker={blocker}
       voice={props.voice === true}
-      held={held !== null}
+      onVoiceLine={setLine}
+      held={held !== null || otherStart !== null}
       execution={execution}
       hostClient={hostClient}
       inputRef={input}
@@ -455,20 +594,29 @@ function NewTask(props: {
       underHeader={props.underHeader}
     >
       {sent !== null ? (
-        <FirstMessageStarted
-          hostClient={hostClient}
-          key={sent.idempotencyKey}
-          message={sent}
-          onRetry={held === null || sending ? null : () => void send(held)}
-          state={
-            sending || held === null
-              ? "sending"
-              : canRespondToRequests(snapshot)
-                ? "failed"
-                : "offline"
-          }
-          userId={userId}
-        />
+        <View style={styles.invitation}>
+          <FirstMessageStarted
+            hostClient={hostClient}
+            key={sent.idempotencyKey}
+            message={sent}
+            phase={sending || held === null ? "sending" : "waiting"}
+            userId={userId}
+          />
+          {line === null || held === null ? null : (
+            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+          )}
+          {held && !sending ? (
+            <ActionLine
+              line={{
+                key: `remove:${held.idempotencyKey}`,
+                text: "This message is held on your phone.",
+                tone: "muted",
+                link: { label: "Remove from Home", onPress: () => discardHeld(held) },
+              }}
+              numberOfLines={2}
+            />
+          ) : null}
+        </View>
       ) : (
         <Animated.View exiting={exit} style={styles.invitation}>
           <FirstMessageInvitation
@@ -488,23 +636,131 @@ function NewTask(props: {
               }}
             />
           ) : null}
-          {failure === null ? null : (
-            <Notice
-              action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-              detail={failure}
-              title="The task was not started"
-            />
+          {line === null ? null : (
+            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
           )}
-          {draftFailure === null ? null : (
-            <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
-          )}
+          {otherStartLine ? <ActionLine line={otherStartLine} numberOfLines={2} /> : null}
+          {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
         </Animated.View>
       )}
     </FirstMessageComposer>
   );
 }
 
+/**
+ * Home over a saved view, before this computer has answered on this launch:
+ * the composer keeps the person's draft, and Send says why no task started.
+ * The live composer takes over, reading the same draft, once the Host is here.
+ */
+export function HeldNewTaskPane(props: {
+  readonly deploymentId: string;
+  /** Whose saved view this is, and so whose draft. */
+  readonly userId: UserId;
+  readonly connection: ClientConnection | null;
+  readonly name: string | null;
+  readonly underHeader: boolean;
+  readonly voice?: boolean;
+}): ReactNode {
+  const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
+  const { drafts } = useMobileClient();
+  const { connection, deploymentId, userId } = props;
+  const draftKey = newTaskDraftKey(homeDraftId);
+  useSyncExternalStore(drafts.subscribe, drafts.getVersion);
+  const text = drafts.readDraft(deploymentId, userId, draftKey)?.text ?? "";
+  const input = useRef<ComposerEditorHandle>(null);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
+  const changeText = (next: string): void => {
+    setLine(null);
+    void drafts.writeDraft(deploymentId, userId, draftKey, next).catch(noop);
+  };
+  const send = (): void => {
+    const state = connection?.getSnapshot() ?? null;
+    const issue = notSent("started", {
+      name: state?.name ?? props.name,
+      network: state?.network ?? "unknown",
+      target: "computer",
+    });
+    setLine(issueLine(issue, `not-started:${Date.now()}`));
+  };
+  return (
+    <FirstMessageComposer
+      attach={false}
+      blocker={null}
+      execution={heldExecution}
+      held={false}
+      hostClient={null}
+      inputRef={input}
+      onChangeText={changeText}
+      onChooseAI={() => navigation.navigate("NewThread", { deploymentId })}
+      onRemoveQuote={noop}
+      onSend={send}
+      onVoiceLine={setLine}
+      placeholder="Ask your agent to…"
+      quote={null}
+      savedAttachmentKeys={[]}
+      selectionLabel="Choose AI"
+      sending={false}
+      staged={noAttachments}
+      text={text}
+      underHeader={props.underHeader}
+      usageScope={{ deploymentId, userId }}
+      voice={props.voice === true}
+    >
+      <View style={styles.invitation}>
+        <FirstMessageInvitation
+          detail="Your agent works on this computer."
+          title="What should your agent do?"
+        />
+        {text.trim() === "" ? (
+          <FirstMessageExamples
+            examples={examples}
+            onPick={(example) => {
+              changeText(example);
+              input.current?.focus();
+            }}
+          />
+        ) : null}
+        {line === null ? null : (
+          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+        )}
+        {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
+      </View>
+    </FirstMessageComposer>
+  );
+}
+
+function DraftUnsaved(): ReactNode {
+  const { title, detail } = presentClientIssue({ code: "draft-unsaved" });
+  return <Notice detail={detail ?? ""} title={title} tone="neutral" />;
+}
+
+const heldExecution = firstMessageExecution({
+  environments: [],
+  executionPreferences: emptyExecutionPreferences,
+  harnesses: [],
+});
+const noAttachments: DraftAttachments = {
+  items: [],
+  notice: null,
+  waiting: false,
+  pick: async () => undefined,
+  paste: async () => undefined,
+  release: noop,
+  remove: noop,
+  restore: noop,
+  retry: noop,
+};
+
 function noop(): void {}
+
+/** A reason this screen itself has for not starting the task; nothing was written down. */
+class NotStarted extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.words = words;
+  }
+}
 
 /**
  * What a new task reads — Agent home, the AI it would start on and whether
