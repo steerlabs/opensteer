@@ -14,7 +14,7 @@
     "@opensteer/plugin-engine-sdk": "workspace:*",
     "@opensteer/plugin-engine-telemetry": "workspace:*",
     "effect": "4.1.4",
-    "isomorphic-git": "1.37.4",
+    "isomorphic-git": "1.38.6",
     "memfs": "4.57.7"
   },
   "scripts": {
