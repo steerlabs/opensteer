@@ -28,6 +28,7 @@ import {
   personalClientFrameMaxBytes,
   ScopedHostMessageSchema,
   type ScopedHostMessage,
+  type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -115,7 +116,13 @@ it("delivers a bound send key only to the sending login in live and retained vie
     const threadId = opened.data.thread.id;
     const recipient = await claimPrivateMachineOwner(host.runtime, host.config);
     const scope = { kind: "thread", threadId };
-    const attach = async (cookie: string) => {
+    const attach = async (
+      cookie: string,
+      resume?: Pick<
+        Extract<ScopedClientMessage, { type: "client.attach" }>,
+        "cursor" | "expectedSessionId"
+      >,
+    ) => {
       const peer = await connect(host.origin, cookie);
       sockets.push(peer.socket);
       peer.send({
@@ -125,6 +132,7 @@ it("delivers a bound send key only to the sending login in live and retained vie
         interests: [],
         installed: {},
         selected: { subscriptionId: "detail:0", generation: 1, scope },
+        ...resume,
       });
       await peer.read(
         (frame) => frame.type === "host.synchronized" && frame.scope.kind === "thread",
@@ -133,10 +141,34 @@ it("delivers a bound send key only to the sending login in live and retained vie
       return peer;
     };
     const sender = await attach(host.ownerHeaders.cookie!);
-    const viewer = await attach(recipient.cookie);
-    const shell = await host.api["personal.shell.get"]({});
-    if (!shell.ok || !shell.data.session) throw new Error("The sender session was absent");
-    const login = shell.data.session.sessionId;
+    const shell = sender.frames.find(
+      (frame) => frame.type === "host.snapshot" && frame.scope.kind === "shell",
+    );
+    if (
+      shell?.type !== "host.snapshot" ||
+      !("session" in shell.snapshot) ||
+      !shell.snapshot.session
+    )
+      throw new Error("The sender session was absent");
+    const { deploymentId, viewerId, epoch, session } = shell.snapshot;
+    const login = session.sessionId;
+    const viewer = await attach(recipient.cookie, {
+      cursor: {
+        deploymentId,
+        viewerId,
+        epoch,
+        scopeKey: "shell",
+        afterSequence: shell.throughSequence,
+      },
+      expectedSessionId: login,
+    });
+    const replacementShell = viewer.frames.find(
+      (frame) => frame.type === "host.snapshot" && frame.scope.kind === "shell",
+    );
+    expect(replacementShell).toMatchObject({
+      snapshot: { session: { sessionId: expect.any(String) } },
+    });
+    expect(replacementShell).not.toMatchObject({ snapshot: { session: { sessionId: login } } });
     const key = "private-client-send-key";
     const payload = {
       type: "thread.sendMessage",

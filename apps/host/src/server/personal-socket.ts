@@ -137,7 +137,14 @@ export function attachPersonalSocket(options: {
         attached = true;
         options.refreshOwner();
         if (message.interests.includes("machine")) options.probeMachines();
-        sync.attach(message);
+        if (message.expectedSessionId && message.expectedSessionId !== session.id) {
+          sync.attach({
+            ...message,
+            cursor: undefined,
+            installed: {},
+            ...(message.selected ? { selected: { ...message.selected, cursor: undefined } } : {}),
+          });
+        } else sync.attach(message);
         return;
       }
       if (!attached) throw new Error("Attach before subscribing");

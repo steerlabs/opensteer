@@ -157,7 +157,8 @@ export class MockPersonalHost {
   #receive(socket: MockPersonalSocket, state: SocketState, frame: ScopedClientMessage) {
     switch (frame.type) {
       case "client.attach": {
-        if (this.client.getSnapshot().session !== "authenticated") {
+        const viewer = this.client.getSnapshot();
+        if (viewer.session !== "authenticated") {
           socket.deliver({
             type: "host.error",
             error: { code: "forbidden", message: "Sign in required.", retryable: false },
@@ -165,6 +166,8 @@ export class MockPersonalHost {
           return;
         }
         state.interests = frame.interests;
+        const sameLogin =
+          frame.expectedSessionId === undefined || frame.expectedSessionId === viewer.sessionId;
         const selected = frame.selected;
         if (selected) state.selected = selected.scope.threadId;
         this.#receive(socket, state, {
@@ -172,9 +175,14 @@ export class MockPersonalHost {
           subscriptionId: "shell",
           generation: frame.generation,
           scope: { kind: "shell" },
-          ...(frame.cursor ? { cursor: frame.cursor } : {}),
+          ...(sameLogin && frame.cursor ? { cursor: frame.cursor } : {}),
         });
-        if (selected) this.#receive(socket, state, { type: "client.subscribe", ...selected });
+        if (selected)
+          this.#receive(socket, state, {
+            type: "client.subscribe",
+            ...selected,
+            ...(!sameLogin ? { cursor: undefined } : {}),
+          });
         break;
       }
       case "client.subscribe":

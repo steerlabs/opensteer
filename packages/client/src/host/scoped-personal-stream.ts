@@ -1,4 +1,4 @@
-import { utf8ByteLength } from "@opensteer/core";
+import { utf8ByteLength, type AuthSessionId } from "@opensteer/core";
 import {
   scopedPersonalApiVersion,
   ScopedHostMessageSchema,
@@ -71,7 +71,7 @@ export class ScopedPersonalStream {
   readonly #writes = new Map<string, () => Promise<void>>();
   #writing: Promise<void> | undefined;
   #identity: ScopedPersonalIdentity | undefined;
-  #sessionId: string | undefined;
+  #sessionId: AuthSessionId | undefined;
   #generation = 0;
   #authority = 0;
   #send: ((frame: ScopedClientMessage) => void) | undefined;
@@ -261,6 +261,7 @@ export class ScopedPersonalStream {
     send({
       type: "client.attach",
       apiVersion: scopedPersonalApiVersion,
+      ...(this.#sessionId ? { expectedSessionId: this.#sessionId } : {}),
       generation,
       ...this.resources.getInterests(),
       ...(cursor ? { cursor } : {}),

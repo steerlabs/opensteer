@@ -110,6 +110,7 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("client.attach"),
     apiVersion: z.literal(scopedPersonalApiVersion),
+    expectedSessionId: AuthSessionIdSchema.optional(),
     generation: address.generation,
     cursor: PersonalResumeCursorSchema.optional(),
     interests: PersonalResourceInterestsSchema,
