@@ -12,7 +12,6 @@ import {
 } from "@opensteer/client/feedback";
 import { useClientAction } from "@opensteer/client/react";
 import { useEffect, useMemo, useRef } from "react";
-import type { ActionLineValue } from "./action-line.js";
 
 /**
  * Work that never leaves this device or the Desktop app beside it (a local
@@ -41,6 +40,19 @@ export const localSession: ClientSession = {
     retry: () => {},
   },
 };
+
+/** One action's outcome, said beside the control that asked for it. */
+export interface ActionLineValue {
+  /** Changes for each new outcome: it is announced once per key. */
+  readonly key: string;
+  readonly text: string;
+  readonly tone: "muted" | "danger";
+  readonly link?: {
+    readonly label: string;
+    readonly accessibilityLabel?: string;
+    readonly onPress: () => void;
+  } | null;
+}
 
 export interface ActionSpec<I, O> {
   /** The whole verb phrase, for "Couldn't {label}." when refused without a reason: "close this tab". */
