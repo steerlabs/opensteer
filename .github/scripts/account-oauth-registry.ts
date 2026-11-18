@@ -1,5 +1,6 @@
-// Removes obsolete provider identity settings from the pinned Account runtime registry
-// and adds a new runtime secret version with the validated result.
+// Rebuilds the Account runtime secret's provider registry from deploy/account/oauth-providers.json,
+// keeping each provider's credentials from the pinned version, and adds the result as a new version.
+// Run it after every change to the template.
 // Usage: pnpm exec tsx .github/scripts/account-oauth-registry.ts [--dry-run]
 //
 // Secret values stay in this process: they are read from and written to gcloud through pipes,
@@ -78,16 +79,44 @@ function main(argv: string[]) {
   } catch {
     throw new Refusal(`${registryKey} is not JSON`);
   }
-  const entries = z
-    .array(z.looseObject({ oauth: z.looseObject({ identity: z.unknown().optional() }) }))
-    .min(1)
+  const held = z
+    .array(
+      z.looseObject({
+        provider: z.string(),
+        clientId: z.string(),
+        clientSecret: z.string(),
+        installationUrl: z.string().optional(),
+      }),
+    )
     .safeParse(previous);
-  if (!entries.success) throw new Refusal(`${registryKey} is not a nonempty provider registry`);
+  if (!held.success) throw new Refusal(`${registryKey} is not a provider registry`);
 
-  const registry = entries.data.map(({ oauth: { identity: _identity, ...oauth }, ...entry }) => ({
-    ...entry,
-    oauth,
-  }));
+  // The template is the whole entry except its credentials, which only the secret holds.
+  const template = JSON.parse(
+    readFileSync(new URL("deploy/account/oauth-providers.json", root), "utf8"),
+  ) as Array<Record<string, unknown> & { provider: string }>;
+  const unknown = held.data.filter(
+    ({ provider }) => !template.some((entry) => entry.provider === provider),
+  );
+  if (unknown.length > 0) {
+    throw new Refusal(
+      `The template has no entry for: ${unknown.map(({ provider }) => provider).join(", ")}`,
+    );
+  }
+  const skipped: string[] = [];
+  const registry = template.flatMap((entry) => {
+    if (["clientId", "clientSecret", "installationUrl"].some((field) => field in entry)) {
+      throw new Refusal(`The template's ${entry.provider} entry must not hold credentials`);
+    }
+    const credentials = held.data.find(({ provider }) => provider === entry.provider);
+    if (!credentials) {
+      skipped.push(entry.provider);
+      return [];
+    }
+    const { clientId, clientSecret, installationUrl } = credentials;
+    return [{ ...entry, clientId, clientSecret, ...(installationUrl ? { installationUrl } : {}) }];
+  });
+  if (registry.length === 0) throw new Refusal("No provider in the template has credentials");
   const validated = HostedOAuthProviderRegistrySchema.safeParse(registry);
   if (!validated.success) {
     // Only schema-authored messages are safe to show. Other issues may include input keys.
@@ -99,7 +128,8 @@ function main(argv: string[]) {
   }
 
   const next = { ...document, [registryKey]: JSON.stringify(registry) };
-  console.log(`Validated providers: ${validated.data.map(({ provider }) => provider).join(", ")}`);
+  console.log(`Included: ${validated.data.map(({ provider }) => provider).join(", ")}`);
+  console.log(`Skipped, no credentials: ${skipped.join(", ") || "none"}`);
   if (dryRun) {
     console.log("Dry run: no version added");
     return;

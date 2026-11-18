@@ -26,23 +26,22 @@ not fall back to plugin consent.
 **Production registry**: [deploy/account/oauth-providers.json](../../../../deploy/account/oauth-providers.json)
 holds every entry except credentials. Its `allowedScopes` and `placement.hosts` are the union of
 what the catalog plugins for that provider request and where they send tokens; change it only with
-that check, and remember a changed entry makes existing grants reconnect. The deployed runtime
-secret at version 11 already has a registry. Its obsolete `oauth.identity` fields must be removed
-before deploying the Account build that serves metadata v4, or registry validation stops startup.
-With gcloud signed in to the project:
+that check, and remember a changed entry makes existing grants reconnect. Credentials live only in
+the runtime secret's registry. After any change to the template, with gcloud signed in to the
+project:
 
 1. Run `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run`. It reads the version
-   `deploy/account/account.yaml` pins, removes `oauth.identity` from each provider entry, validates
-   the result and lists the providers.
-2. Run it again without `--dry-run`. It adds a runtime secret version and prints its number.
-   The rest of the registry and runtime settings carry over.
+   `deploy/account/account.yaml` pins, rebuilds the registry from the template with each provider's
+   held credentials, validates it and lists the providers included and skipped.
+2. Run it again without `--dry-run`. It adds a runtime secret version and prints its number; the
+   other runtime settings carry over. To add a provider, first put its `clientId` and
+   `clientSecret` in a registry entry of the secret by hand.
 3. Set that number in the `opensteer-account-runtime` `resourceName` line of
-   `deploy/account/account.yaml`. Give its SecretProviderClass and the Deployment's reference
-   a fresh name. The current class is already `account-runtime-v12`, so use a distinct name
-   such as `account-runtime-v<N>-plugin-oauth`. Deploy the new Account image and manifest together.
-   To roll back, restore the previous image and its matching secret pin and class.
+   `deploy/account/account.yaml`, and give its SecretProviderClass and the Deployment's reference
+   the next `account-runtime-v<N>` name. Deploy the Account image and manifest together. To roll
+   back, restore the previous image with its secret pin and class.
 4. Check `/v1/oauth-broker/metadata?version=4` lists each provider with its placement, then qualify
-   the sign-in and renewal flows with an updated Host.
+   sign-in and renewal with an updated Host.
 
 **Custom apps**: prepare the plugin account connection, review its sites, credential exposure and
 scopes, then save or select the owner's OAuth client. With an Account

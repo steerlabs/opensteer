@@ -35,7 +35,6 @@ const runtime = {
 const registryKey = "OPENSTEER_HOSTED_OAUTH_PROVIDERS";
 const registry = template.map((entry, index) => ({
   ...entry,
-  revision: entry.revision + index,
   clientId: `fake-${entry.provider}-id-${index}`,
   clientSecret: `fake-${entry.provider}-secret-${index}`,
   ...(entry.provider === "github"
@@ -132,7 +131,7 @@ function expandRuntimeSecrets(dir, added) {
   return (key) => readFileSync(path.join(out, "secrets", key), "utf8");
 }
 
-test("adds a version without the obsolete identity fields and preserves existing settings", () => {
+test("rebuilds the registry from the template with the held credentials and preserves other settings", () => {
   const document = legacyDocument(registry);
   const f = fixture(document);
   try {
@@ -140,7 +139,8 @@ test("adds a version without the obsolete identity fields and preserves existing
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       result.stdout,
-      "Validated providers: google, microsoft, slack, discord, github\n" +
+      "Included: google, microsoft, slack, discord, github\n" +
+        "Skipped, no credentials: none\n" +
         `Added opensteer-account-runtime version ${Number(version) + 1}\n`,
     );
     assert.equal(
@@ -166,13 +166,17 @@ test("adds a version without the obsolete identity fields and preserves existing
   }
 });
 
-test("a dry run names the validated providers and adds nothing", () => {
+test("a dry run names the included and skipped providers and adds nothing", () => {
   const document = legacyDocument(registry.slice(0, 1));
   const f = fixture(document);
   try {
     const result = f.run("--dry-run");
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "Validated providers: google\nDry run: no version added\n");
+    assert.equal(
+      result.stdout,
+      "Included: google\nSkipped, no credentials: microsoft, slack, discord, github\n" +
+        "Dry run: no version added\n",
+    );
     assert.doesNotMatch(result.calls, /versions add/);
     assert.equal(result.added, "");
     assertNoSecrets(result, document);
@@ -201,13 +205,17 @@ test("refuses a registry the service would reject, without adding or printing a 
   }
 });
 
-test("refuses a missing, malformed or incomplete source registry", () => {
+test("refuses a missing, malformed, incomplete or unknown source registry", () => {
   const { clientSecret: _clientSecret, ...incomplete } = registry[0];
   for (const [document, message] of [
     [runtime, /missing OPENSTEER_HOSTED_OAUTH_PROVIDERS/],
     [{ ...runtime, [registryKey]: "broken JSON" }, /is not JSON/],
-    [{ ...runtime, [registryKey]: "[]" }, /not a nonempty provider registry/],
-    [legacyDocument([incomplete]), /The registry is invalid:\n {2}entry 1: invalid_type/],
+    [{ ...runtime, [registryKey]: "[]" }, /No provider in the template has credentials/],
+    [legacyDocument([incomplete]), /is not a provider registry/],
+    [
+      legacyDocument([{ ...registry[0], provider: "elsewhere" }]),
+      /The template has no entry for: elsewhere/,
+    ],
   ]) {
     const f = fixture(document);
     try {

@@ -186,7 +186,10 @@
       "MailboxSettings.ReadWrite",
       "Calendars.ReadWrite",
       "Contacts.ReadWrite",
-      "Sites.ReadWrite.All"
+      "Sites.ReadWrite.All",
+      "openid",
+      "profile",
+      "email"
     ],
     "oauth": {
       "authorizationUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
