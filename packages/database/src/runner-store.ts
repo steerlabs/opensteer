@@ -1982,7 +1982,11 @@ export async function recordRunnerUpdateRequired(
       .where(sql<boolean>`update_required IS DISTINCT FROM ${input.reason}`)
       .returning("id")
       .executeTakeFirst(databaseOperationOptions());
-    if (result) mutation.bumpResource("machine");
+    if (result) {
+      mutation.bumpResource("machine");
+      // An outdated Runner's device apps become unavailable until it updates.
+      if (input.reason === "runner-outdated") mutation.bumpResource("plugin");
+    }
     return !!result;
   });
 }

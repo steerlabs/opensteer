@@ -1,4 +1,5 @@
 import {
+  opensteer_automation_list,
   opensteer_automation_read,
   opensteer_automation_create,
   opensteer_automation_update,
@@ -38,6 +39,7 @@ import {
 } from "@opensteer/orchestration";
 import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
+  TRIGGER_PROGRAM_UPDATE_REASON,
   TRIGGER_PROGRAM_VERSION_REFUSAL,
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -1892,9 +1894,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     },
   );
-  it("keeps a program from an older contract readable and replaceable, and refuses to run it", async () => {
+  it("refuses a previously queued occurrence whose revision uses an older contract", async () => {
     const f = await fixture(undefined, { rootAccessMode: "full-access" });
     const saved = await personCreate(f, f.root);
+    const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
     await database
       .updateTable("triggerRevisions")
       .set({ program: { ...program, toolContractVersion: 3 } })
@@ -1928,7 +1931,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         throw new Error("Unexpected team request");
       },
     });
-    const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
     const command = (await store.listPendingCommands()).find(
       ({ id }) => id === occurrence.commandId,
     );
@@ -1936,18 +1938,170 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toThrow(
       TRIGGER_PROGRAM_VERSION_REFUSAL,
     );
-    expect((await personDetail(f, saved.trigger.id)).revision.program.toolContractVersion).toBe(3);
-    const read = await agentDetail(f.rootToken, saved.trigger.id);
-    expect(read.revision?.program.toolContractVersion).toBe(3);
-    const replaced = createdSchema.parse(
+  });
+
+  it("blocks a flagged schedule until its agent replaces the program through MCP", async () => {
+    const f = await fixture(undefined, { rootAccessMode: "full-access" });
+    const saved = await personCreate(f, f.root);
+    const triggerId = saved.trigger.id;
+    const legacy = {
+      ...program,
+      source: 'export default ({ opensteer }) => opensteer.callTool("integration_list", {})',
+      toolContractVersion: 4,
+    };
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: legacy })
+      .where("id", "=", saved.revision.id)
+      .execute();
+    const pending = await store.listPendingCommands();
+    vi.setSystemTime(new Date(nextHour));
+    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    const blocked = {
+      status: "paused",
+      nextFireAt: null,
+      pauseReason: TRIGGER_PROGRAM_UPDATE_REASON,
+    };
+    const detail = await personDetail(f, triggerId);
+    expect(detail).toMatchObject({
+      trigger: blocked,
+      revision: { program: legacy },
+      occurrences: [],
+    });
+    const rpc = createTriggerRpcHandlers(triggers);
+    const context = { session: { user: { id: f.ownerId } } } as HostApiServerContext;
+    expect(await rpc["triggers.list"]({}, context)).toMatchObject({
+      ok: true,
+      data: { triggers: [blocked] },
+    });
+    for (const input of [
+      { operation: "run" },
+      { operation: "set_status", status: "active" },
+      { operation: "set_next_fire", nextFireAt: "2040-01-02T10:30:00.000Z" },
+    ]) {
+      await expect(manage(f, { ...input, triggerId }, null)).rejects.toThrow(
+        TRIGGER_PROGRAM_UPDATE_REASON,
+      );
+    }
+    expect(await store.listPendingCommands()).toEqual(pending);
+
+    const client = await connectMcp(await mcpEndpoint(), f.rootToken);
+    const listed = await client.callTool({ name: "opensteer_automation_list", arguments: {} });
+    expect(opensteer_automation_list.output.parse(listed.structuredContent)).toMatchObject({
+      automations: [{ ...blocked, id: triggerId }],
+    });
+    const read = await client.callTool({
+      name: "opensteer_automation_read",
+      arguments: { automationId: triggerId },
+    });
+    expect(opensteer_automation_read.output.parse(read.structuredContent)).toMatchObject({
+      automation: blocked,
+      revision: { id: saved.revision.id, program: legacy },
+    });
+    const changed = await client.callTool({
+      name: "opensteer_automation_update",
+      arguments: { automationId: triggerId, expectedRevisionId: saved.revision.id, program },
+    });
+    const repaired = opensteer_automation_update.output.parse(changed.structuredContent);
+    const next = "2040-01-02T10:00:00.000Z";
+    expect(repaired).toMatchObject({
+      automation: { status: "active", pauseReason: null, nextFireAt: next },
+      revision: { program },
+    });
+    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    expect((await triggerStore.claimDueSchedules(new Date(next))).occurrences).toEqual([
+      expect.objectContaining({ triggerId, revisionId: repaired.revision!.id }),
+    ]);
+  });
+
+  it("stops reconciling a flagged Watch and admits its replacement revision", async () => {
+    const f = await fixture(undefined, { rootAccessMode: "full-access" });
+    const saved = await personCreate(f, f.root, { kind: "watch" });
+    const triggerId = saved.trigger.id;
+    const reconcile = () =>
+      triggerStore.reconcileWatchesForRunner({
+        environmentId: f.environmentId,
+        leaseExpiresAt: new Date(nextHour),
+        runnerBootId: "authority-boot",
+        runnerConnectionGeneration: 1,
+        runnerId: f.runnerId,
+      });
+    const { activation } = (await reconcile()).activations[0]!;
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: { ...program, toolContractVersion: 4 } })
+      .where("id", "=", saved.revision.id)
+      .execute();
+    await expect(
+      triggerStore.assertActiveWatchBinding({
+        ...activation,
+        activationId: activation.id,
+      }),
+    ).rejects.toThrow("Watch activation is no longer active");
+    expect((await reconcile()).activations).toEqual([]);
+    expect(await personDetail(f, triggerId)).toMatchObject({
+      activation: { desired: "stopped", observed: "stopped", leaseExpiresAt: null },
+      trigger: { status: "paused", pauseReason: TRIGGER_PROGRAM_UPDATE_REASON },
+    });
+    const repaired = createdSchema.parse(
       await agentTrigger(f.rootToken, {
         operation: "update",
-        triggerId: saved.trigger.id,
+        triggerId,
         expectedRevisionId: saved.revision.id,
         program,
       }),
     );
-    expect(replaced.revision.program).toEqual(program);
+    expect(repaired.trigger.status).toBe("active");
+    expect((await reconcile()).activations).toEqual([
+      expect.objectContaining({
+        activation: expect.objectContaining({ revisionId: repaired.revision.id }),
+      }),
+    ]);
+  });
+
+  it("refuses a flagged webhook and keeps an owner's pause through repair", async () => {
+    const f = await fixture(undefined, { rootAccessMode: "full-access" });
+    const saved = await triggers.create(
+      {
+        ownerId: f.ownerId,
+        anchorThreadId: f.root.id,
+        idempotencyKey: randomUUID(),
+        name: "Flagged webhook",
+        program,
+        source: { kind: "webhook" },
+      },
+      null,
+    );
+    const triggerId = saved.trigger.id;
+    if (!saved.trigger.webhookRouteKey || !("webhook" in saved)) {
+      throw new Error("Expected the webhook route and credentials");
+    }
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: { ...program, toolContractVersion: 4 } })
+      .where("id", "=", saved.revision.id)
+      .execute();
+    const delivery = {
+      routeKey: saved.trigger.webhookRouteKey,
+      secret: saved.webhook.secret,
+      method: "POST",
+      headers: {},
+      payload: null,
+    };
+    await expect(triggers.acceptWebhook(delivery)).rejects.toThrow(TRIGGER_PROGRAM_UPDATE_REASON);
+    await manage(f, { operation: "set_status", triggerId, status: "paused" }, null);
+    const repaired = createdSchema.parse(
+      await manage(
+        f,
+        { operation: "update", triggerId, expectedRevisionId: saved.revision.id, program },
+        null,
+      ),
+    );
+    expect(repaired.trigger).toMatchObject({ status: "paused", pauseReason: null });
+    await manage(f, { operation: "set_status", triggerId, status: "active" }, null);
+    expect((await triggers.acceptWebhook(delivery)).occurrence.revisionId).toBe(
+      repaired.revision.id,
+    );
   });
   it.each([5] as const)(
     "reconciles Watch version %s against an old stored advertisement",

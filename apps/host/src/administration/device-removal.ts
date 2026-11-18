@@ -57,6 +57,7 @@ export async function finishDeviceRemoval(
       "tab",
     ] as const)
       mutation.bumpResource(kind);
+    if (removed.revokedComputerConnectionIds.length) mutation.bumpResource("plugin");
   });
 }
 function withRemovalAdmission<T>(

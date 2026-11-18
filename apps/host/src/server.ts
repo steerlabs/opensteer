@@ -3209,18 +3209,24 @@ function attachRunnerSocket(
       if (!runner) {
         const message = RunnerWireProofSchema.parse(frame);
         const refuse = async (error: unknown) => {
+          const reason = error instanceof OpensteerError ? error.reason : undefined;
           if (
             message.type === "runner.authenticate" &&
-            error instanceof OpensteerError &&
-            (error.reason === "agent-phone-outdated" || error.reason === "runner-outdated")
+            (reason === "agent-phone-outdated" ||
+              reason === "runner-outdated" ||
+              reason === "iphone-app-outdated")
           ) {
             const identity = await authenticator
               .authenticateUpdateRefusal(challenge, message)
               .catch(() => null);
-            if (identity) await recordUpdateRequired({ ...identity, reason: error.reason });
+            if (identity)
+              await recordUpdateRequired({
+                ...identity,
+                reason: reason === "iphone-app-outdated" ? "runner-outdated" : reason,
+              });
             log.warn(
               {
-                reason: error.reason,
+                reason,
                 runnerId: identity?.runnerId,
                 authenticated: identity !== null,
               },

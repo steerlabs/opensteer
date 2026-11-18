@@ -48,6 +48,9 @@ export const triggerProgramContract = [
 export const TRIGGER_PROGRAM_VERSION_REFUSAL =
   "Programs require toolContractVersion 5. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
 
+export const TRIGGER_PROGRAM_UPDATE_REASON =
+  "Needs an update because this program uses an unsupported tool contract. Ask your agent to update it.";
+
 /**
  * A revision's program as stored. Programs written for an older tool contract
  * stay readable so the owner's agent can replace them; only version 5 runs.

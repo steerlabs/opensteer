@@ -5,14 +5,14 @@ import {
   Column,
   DropdownMenu,
   DropdownMenuItem,
+  FilterChip,
+  FlowRow,
   Host,
   IconButton,
   LazyColumn,
   ListItem,
   OutlinedTextField,
   Row,
-  SegmentedButton,
-  SingleChoiceSegmentedButtonRow,
   Switch,
   Text,
   TextButton,
@@ -23,14 +23,19 @@ import {
   background,
   clickable,
   clip,
+  fillMaxSize,
   fillMaxWidth,
+  imePadding,
   padding,
   semantics,
+  selectableGroup,
   Shapes,
   size,
   toggleable,
+  weight,
 } from "@expo/ui/jetpack-compose/modifiers";
 import { useEffect, useState, type ReactNode } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color } from "../theme.js";
 import type { NativeSettingsStep, NativeSettingsTone } from "./native-settings-page.types.js";
 import type { SettingsActionModel } from "./settings-model.js";
@@ -86,12 +91,34 @@ export function SettingsHost(props: { readonly children: ReactNode }): ReactNode
 }
 
 /** The scrolling page every Settings screen is: lazy, so long lists stay smooth. */
-export function SettingsList(props: { readonly children: ReactNode }): ReactNode {
+export function SettingsList(props: {
+  readonly children: ReactNode;
+  readonly footer?: ReactNode;
+}): ReactNode {
+  if (!props.footer)
+    return (
+      <LazyColumn
+        contentPadding={{ top: 8, bottom: 40 }}
+        modifiers={[fillMaxWidth(), imePadding()]}
+      >
+        {props.children}
+      </LazyColumn>
+    );
+  // Move the viewport and footer together so Compose can scroll the focused
+  // field into the visible list when the keyboard resizes it.
   return (
-    <LazyColumn contentPadding={{ top: 8, bottom: 40 }} modifiers={[fillMaxWidth()]}>
-      {props.children}
-    </LazyColumn>
+    <Column modifiers={[fillMaxSize(), imePadding()]}>
+      <LazyColumn contentPadding={{ top: 8, bottom: 16 }} modifiers={[fillMaxWidth(), weight(1)]}>
+        {props.children}
+      </LazyColumn>
+      <SettingsListFooter>{props.footer}</SettingsListFooter>
+    </Column>
   );
+}
+
+function SettingsListFooter(props: { readonly children: ReactNode }): ReactNode {
+  const { bottom } = useSafeAreaInsets();
+  return <Box modifiers={[padding(0, 0, 0, bottom)]}>{props.children}</Box>;
 }
 
 export function Section(props: {
@@ -317,8 +344,8 @@ export function ToggleRow(props: {
 }
 
 /**
- * One of a few choices. Up to three sit side by side as segmented buttons; more
- * open as a menu from the row, which names the current choice.
+ * One of a few choices. Up to three fit to their labels and flow onto another
+ * line if needed. More open as a menu from the row naming the current choice.
  */
 export function ChoiceRow(props: {
   readonly choices: readonly { readonly value: string; readonly label: string }[];
@@ -333,19 +360,27 @@ export function ChoiceRow(props: {
         <Text color={color.text} modifiers={[padding(0, 0, 0, 8)]}>
           {props.title}
         </Text>
-        <SingleChoiceSegmentedButtonRow modifiers={[fillMaxWidth()]}>
+        <FlowRow
+          horizontalArrangement={{ spacedBy: 8 }}
+          modifiers={[fillMaxWidth(), selectableGroup()]}
+        >
           {props.choices.map((choice) => (
-            <SegmentedButton
+            <FilterChip
               key={choice.value}
               selected={choice.value === props.value}
               onClick={() => props.onChange(choice.value)}
             >
-              <SegmentedButton.Label>
-                <Text>{choice.label}</Text>
-              </SegmentedButton.Label>
-            </SegmentedButton>
+              {choice.value === props.value ? (
+                <FilterChip.LeadingIcon>
+                  <Text style={{ typography: "labelMedium" }}>✓</Text>
+                </FilterChip.LeadingIcon>
+              ) : null}
+              <FilterChip.Label>
+                <Text style={{ typography: "labelLarge" }}>{choice.label}</Text>
+              </FilterChip.Label>
+            </FilterChip>
           ))}
-        </SingleChoiceSegmentedButtonRow>
+        </FlowRow>
       </Column>
     );
   const current = props.choices.find((choice) => choice.value === props.value)?.label ?? "";

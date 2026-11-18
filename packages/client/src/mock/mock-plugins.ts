@@ -28,6 +28,7 @@ import {
   type pluginReads,
 } from "@opensteer/protocol";
 import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
+import { prepareAppHtml } from "@opensteer/shared/appFrame";
 import { HostClientRequestError } from "../host/client.js";
 import { mockNotesServer } from "./mock-integration-fixtures.js";
 import type { PluginOAuthMethods, PluginOAuthStatus } from "../plugins/sign-in.js";
@@ -1333,7 +1334,10 @@ export class MockPlugins {
         const plugin = this.#plugin(pluginId);
         if (!plugin.hasPage || plugin.access === "off")
           throw refusal("not_found", "Plugin page is unavailable");
-        const document = `<!doctype html><html style="color-scheme:${theme};font:16px system-ui;padding:24px"><title>Plugin page</title><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p><script>parent.postMessage({type:"opensteer-app:ready"},"*");</script></html>`;
+        const document = prepareAppHtml(
+          `<!doctype html><html style="font:16px system-ui;padding:24px"><head><title>Plugin page</title></head><body><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p></body></html>`,
+          theme,
+        );
         return rpcSuccess({
           path: "/mock-plugin-page",
           entryUrl: `data:text/html,${encodeURIComponent(document)}`,

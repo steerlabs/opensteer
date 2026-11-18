@@ -70,8 +70,6 @@ const methods = [
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 const apps = ["apple-calendar", "apple-contacts", "apple-reminders"];
 const mismatch = "runner-device-profile-mismatch";
-const offline = (name: string) =>
-  `${name} is an iPhone, and agents can use its apps only while Opensteer is open on it. Ask the person to open Opensteer on ${name}, then try again; don't retry in a loop.`;
 
 integration.sequential("iPhone integrations Host contract", () => {
   let database: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
@@ -130,6 +128,92 @@ integration.sequential("iPhone integrations Host contract", () => {
     closers.unshift(() => value.close());
     return value;
   };
+
+  it("distinguishes same-named iPhone setups, explains availability and removes only the chosen setup", async () => {
+    await start();
+    const addCalendar = async (key: string) => {
+      const phone = keep(await connectPhone(host, (await mint(host, key)).token));
+      const setup = await requestComputerAppSetup(
+        host,
+        phone.runnerId,
+        "read",
+        key,
+        "apple-calendar",
+      );
+      expect(await phone.answer(setup, { kind: "allow", setupRequestId: setup.id })).toEqual({
+        kind: "allowed",
+      });
+      return phone;
+    };
+    const earlier = await addCalendar("earlier-calendar");
+    const latest = await addCalendar("latest-calendar");
+    await earlier.close();
+    await waitForCondition(async () =>
+      (await machines(host)).some(
+        ({ id, status }) => id === earlier.runnerId && status === "offline",
+      ),
+    );
+    const local = async () =>
+      (await testRpcData(host.origin, "plugins.installed.list", {}, { headers: host.ownerHeaders }))
+        .local;
+    expect(await local()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Calendar on Test iPhone · Setup 1",
+          computer: { id: earlier.runnerId, name: "Test iPhone" },
+          unavailable: "Test iPhone is offline. Open Opensteer there, and update if prompted.",
+        }),
+        expect.objectContaining({
+          title: "Calendar on Test iPhone · Setup 2",
+          computer: { id: latest.runnerId, name: "Test iPhone" },
+          unavailable: "Agents need access. Request it from a task.",
+        }),
+      ]),
+    );
+    const outdated = {
+      ...earlier.descriptor,
+      modules: { integrations: { ...earlier.descriptor.modules.integrations, protocolVersion: 3 } },
+    };
+    const pluginNotices = async () =>
+      (
+        await host.store.database
+          .selectFrom("clientSyncState")
+          .select("resourceRevisions")
+          .executeTakeFirstOrThrow()
+      ).resourceRevisions.plugin;
+    const beforeRefusal = await pluginNotices();
+    expect(
+      (await refusal(host, outdated, { privateKey: earlier.primary.privateKey })).frames,
+    ).toContainEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({ reason: "iphone-app-outdated" }),
+      }),
+    );
+    await waitForCondition(async () => (await pluginNotices()) !== beforeRefusal);
+    const stale = (await local()).find(({ computer }) => computer?.id === earlier.runnerId)!;
+    expect(stale.unavailable).toBe("Update Opensteer on Test iPhone to use its apps.");
+
+    const earlierDevice = await host.store.requireSelfDeviceId(earlier.runnerId);
+    const beforeRemoval = await pluginNotices();
+    await revokeMachine(host, { runnerId: earlier.runnerId, key: "remove-earlier" });
+    await waitForCondition(async () => (await pluginNotices()) !== beforeRemoval);
+    expect(
+      (await local()).filter(({ title }) => title.startsWith("Calendar on Test iPhone")),
+    ).toEqual([
+      expect.objectContaining({
+        title: "Calendar on Test iPhone",
+        computer: { id: latest.runnerId, name: "Test iPhone" },
+      }),
+    ]);
+    expect(
+      await host.store.database
+        .selectFrom("integrationConnections")
+        .select("status")
+        .where("deviceId", "=", earlierDevice)
+        .where("integrationDefinitionId", "=", "apple-calendar")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "revoked" });
+  }, 120_000);
 
   it("admits new iPhone providers only after their authenticated status, without orphan approvals", async () => {
     await start();
@@ -793,7 +877,8 @@ integration.sequential("iPhone integrations Host contract", () => {
         {
           blocked: {
             code: "unavailable",
-            message: `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+            message:
+              "apple-calendar is unavailable: Apps aren’t connected. Reopen Opensteer on Test iPhone.",
             next: "Continue without it and tell the person what the message says.",
           },
         },
@@ -864,7 +949,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(macCalls).toHaveLength(0);
     await phone.disconnectStream();
     expect((await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).failure).toBe(
-      `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+      "apple-calendar is unavailable: Apps aren’t connected. Reopen Opensteer on Test iPhone.",
     );
     await phone.close();
     await waitForCondition(

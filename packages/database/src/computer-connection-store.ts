@@ -230,7 +230,13 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     if (!result) return null;
     const runnerId = await getDeviceSelfRunnerId(this.database, result.deviceId);
     if (!runnerId) return null;
-    const { deviceId: _deviceId, deviceName: _deviceName, ...rest } = result;
+    const {
+      deviceId: _deviceId,
+      deviceName: _deviceName,
+      deviceAddedAt: _added,
+      runnerUpdateRequired: _update,
+      ...rest
+    } = result;
     return {
       ...rest,
       runnerId,
@@ -784,9 +790,11 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly connection: IntegrationConnectionSummary;
     readonly deviceId: DeviceId;
     readonly deviceName: string;
+    readonly deviceAddedAt: Date;
     readonly runnerName: string;
     readonly deviceProfile: "iphone" | null;
     readonly runnerRevoked: boolean;
+    readonly runnerUpdateRequired: boolean;
   } | null> {
     const row = await this.database
       .selectFrom("integrationConnections")
@@ -802,7 +810,9 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       .select(computerConnectionDeviceId.as("deviceId"))
       .select([
         "devices.name as runnerName",
+        "devices.createdAt as deviceAddedAt",
         "runners.deviceProfile",
+        "runners.updateRequired",
         "devices.removedAt as runnerRevokedAt",
       ])
       .where("integrationConnections.id", "=", input.connectionId)
@@ -816,9 +826,11 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       connection: integrationConnectionFromRow(row),
       deviceId: row.deviceId,
       deviceName: row.runnerName,
+      deviceAddedAt: row.deviceAddedAt,
       runnerName: row.runnerName,
       deviceProfile: row.deviceProfile,
       runnerRevoked: row.runnerRevokedAt !== null,
+      runnerUpdateRequired: row.updateRequired !== null,
     };
   }
 }

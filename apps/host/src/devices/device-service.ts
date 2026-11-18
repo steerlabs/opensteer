@@ -408,7 +408,7 @@ export class DeviceService {
    */
   async withAvailability<Entry extends DiscoveryInventoryEntry>(
     inventory: readonly Entry[],
-    input: { readonly ownerUserId: UserId },
+    input: { readonly ownerUserId: UserId; readonly ownerView?: boolean },
     facts = this.localDiscoveryFacts(input.ownerUserId),
   ): Promise<Entry[]> {
     const { connectionFor, localServers } = facts;
@@ -451,8 +451,17 @@ export class DeviceService {
           readiness: (typeof entry.readiness.servers)[number],
           operation?: string,
         ) => {
-          // Availability must not erase an outstanding authorization requirement.
-          if (readiness.code !== "READY") return readiness;
+          // The owner can fix a disconnected device before agents request access.
+          // A task still sees its outstanding authorization requirement first.
+          if (
+            readiness.code !== "READY" &&
+            !(
+              input.ownerView &&
+              readiness.code === "ACCESS_GRANT_REQUIRED" &&
+              computerServers.has(readiness.serverId)
+            )
+          )
+            return readiness;
           const runnerId = runnerServers.get(readiness.serverId);
           if (runnerId) {
             const unavailable = await this.#localServers.availability(
@@ -494,7 +503,11 @@ export class DeviceService {
                 status: operationStatuses,
               })
             : connection.deviceProfile === "iphone" && (!runnerConnected || !attached)
-              ? iphoneAppsUnavailableDetail(connection.runnerName)
+              ? connection.runnerUpdateRequired
+                ? `Update Opensteer on ${connection.runnerName} to use its apps.`
+                : runnerConnected
+                  ? `Apps aren’t connected. Reopen Opensteer on ${connection.runnerName}.`
+                  : `${connection.runnerName} is offline. Open Opensteer there, and update if prompted.`
               : computerAppAvailabilityDetail({
                   // A Computer use account is one app, which is what comes back.
                   app: connection.connection.computer?.app?.displayName ?? entry.installation.title,

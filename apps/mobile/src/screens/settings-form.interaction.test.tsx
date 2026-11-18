@@ -16,6 +16,7 @@ import type { SettingsFormProps } from "./settings-form.types.js";
  */
 
 vi.mock("react-native", () => ({ Linking: { openURL: vi.fn() } }));
+vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
 vi.mock(
   "@expo/ui/jetpack-compose",

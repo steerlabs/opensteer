@@ -291,36 +291,52 @@ it.each([
   expect(result).toEqual({ kind: "mcp", result: mcp });
 });
 
-it("lists the owner’s tool metadata without loading tool schemas", async () => {
-  const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
-  const base = computerCallable("read", definition);
-  const server = { ...base.server, transport: { type: "runner", runnerId: "run_mac" } };
-  const tool = { ...base.tool, connectionId: null };
-  const readiness = { code: "READY", serverId: server.id };
-  const getToolSchemas = vi.fn(async () => null);
-  const providers = new LocalProviders({
-    store: {
-      listDiscoveryInventory: async () => [
-        {
-          installation: base.installation,
-          servers: [server],
-          accounts: [],
-          tools: [tool],
-          readiness: { servers: [readiness], tools: [{ toolId: tool.id, readiness }] },
-        },
-      ],
-      listCallableTools: async () => [
-        { ...base, server, tool, grant: { ...base.grant, connectionId: null } },
-      ],
-      getToolSchemas,
-    },
-    devices: {
-      withAvailability: async (entries: unknown) => entries,
-      localDiscoveryFacts: () => ({ localServers: async () => [] }),
-    },
-  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
-  expect(await providers.owned(createId("user"))).toMatchObject([
-    { id: `app_server_${server.id}`, tools: [{ name: tool.name, readOnly: true }] },
-  ]);
-  expect(getToolSchemas).not.toHaveBeenCalled();
-});
+it.each([
+  ["READY", null, null],
+  ["INTEGRATION_UNAVAILABLE", "Main computer is offline.", "Main computer is offline."],
+  ["ACCESS_GRANT_REQUIRED", null, "Agents need access. Request it from a task."],
+] as const)(
+  "lists the owner’s %s server without loading tool schemas",
+  async (code, detail, unavailable) => {
+    const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+    const base = computerCallable("read", definition);
+    const server = { ...base.server, transport: { type: "runner", runnerId: "run_mac" } };
+    const tool = { ...base.tool, connectionId: null };
+    const readiness = {
+      code,
+      detail,
+      requiredAccess: code === "ACCESS_GRANT_REQUIRED" ? "read" : null,
+      serverId: server.id,
+    };
+    const getToolSchemas = vi.fn(async () => null);
+    const providers = new LocalProviders({
+      store: {
+        listDiscoveryInventory: async () => [
+          {
+            installation: base.installation,
+            servers: [server],
+            accounts: [],
+            tools: [tool],
+            readiness: { servers: [readiness], tools: [{ toolId: tool.id, readiness }] },
+          },
+        ],
+        listCallableTools: async () => [
+          { ...base, server, tool, grant: { ...base.grant, connectionId: null } },
+        ],
+        getToolSchemas,
+      },
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({ localServers: async () => [] }),
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    expect(await providers.owned(createId("user"))).toMatchObject([
+      {
+        id: `app_server_${server.id}`,
+        unavailable,
+        tools: unavailable ? [] : [{ name: tool.name, readOnly: true }],
+      },
+    ]);
+    expect(getToolSchemas).not.toHaveBeenCalled();
+  },
+);
