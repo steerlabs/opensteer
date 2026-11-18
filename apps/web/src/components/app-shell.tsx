@@ -1155,15 +1155,16 @@ function ShellPill({
       ),
     [teams],
   );
+  // A team route is about that team even before its connection exists; its gate explains then.
   const teamId = /^\/teams\/([^/]+)/.exec(pathname)?.[1];
-  const current =
-    (teamId && teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`)) ||
-    personal;
+  const current = teamId
+    ? (teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`) ?? null)
+    : personal;
   const others = useMemo(
     () => [personal, ...teamSources].filter((source) => source !== current),
     [current, personal, teamSources],
   );
-  return <ShellConnectionPill current={current} others={others} />;
+  return current ? <ShellConnectionPill current={current} others={others} /> : null;
 }
 
 function failureWords(error: unknown, label = "complete this action"): string {

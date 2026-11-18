@@ -294,6 +294,12 @@ export function ConnectionGateScope({ children }: { readonly children: ReactNode
   return <GateContext value={value}>{children}</GateContext>;
 }
 
+/** While `active`, this route's own screen is the explanation, so the pill steps aside. */
+export function useClaimConnectionGate(active: boolean): void {
+  const claim = useContext(GateContext).claim;
+  useEffect(() => (active ? claim() : undefined), [active, claim]);
+}
+
 /**
  * The single explanation for a screen with nothing usable to show: its
  * connection's state, or, once connected, a quiet line while its first answer
@@ -315,12 +321,8 @@ export function useConnectionGate(
     readonly failed?: { readonly resource: string; readonly onRetry: () => void } | null;
   },
 ): ReactNode | null {
-  const claim = useContext(GateContext).claim;
   const gating = !options.ready;
-  useEffect(
-    () => (gating && options.scope === "route" ? claim() : undefined),
-    [claim, gating, options.scope],
-  );
+  useClaimConnectionGate(gating && options.scope === "route");
   // The caller doesn't redraw for the connection; only the gate it shows does.
   return gating ? <GateFor connection={connection} options={options} /> : null;
 }
