@@ -1903,3 +1903,197 @@ test("rejects a valid changes object padded past its encoded frame cap", () => {
   expect(stream.receive(JSON.parse(frame), personalChangesFrameMaxBytes)).toBe(true);
   expect(() => stream.receive(JSON.parse(padded), padded.length)).toThrow(/encoded limit/);
 });
+
+type Subscribe = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+type DetailAddress = Pick<Subscribe, "scope" | "subscriptionId" | "generation">;
+
+/** A Host that answers attach and subscribe with a cut, and lets a test push commits. */
+function scriptedHost(tasks: (typeof task)[] = [task], items: TranscriptItem[] = [item]) {
+  const sent: ScopedClientMessage[] = [];
+  let socket!: MockPersonalSocket;
+  let head = 1;
+  let shell = { subscriptionId: "shell" as const, scope: shellScope, generation: 0 };
+  const details = new Map<string, DetailAddress>();
+  const shellCut = () => {
+    socket.deliver({
+      ...shell,
+      type: "host.snapshot",
+      throughSequence: String(head),
+      snapshot: {
+        deploymentId,
+        viewerId,
+        epoch,
+        session,
+        tasks,
+        visits: [],
+        attention: [],
+        counts,
+        resourceRevisions: revisions("0"),
+      },
+    });
+    socket.deliver({ ...shell, type: "host.synchronized", throughSequence: String(head) });
+  };
+  const detailCut = ({ scope, subscriptionId, generation }: DetailAddress) => {
+    if (scope.kind !== "thread" || subscriptionId === "shell") return;
+    const address = { scope, subscriptionId, generation };
+    details.set(scope.threadId, address);
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      throughSequence: String(head),
+      snapshot: {
+        thread: tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId },
+        items,
+        activeItems: [],
+        pendingRequests: [],
+        orderRevision: "1",
+        inputQueueRevision: "1",
+        nextBefore: null,
+      },
+    });
+    socket.deliver({ ...address, type: "host.synchronized", throughSequence: String(head) });
+  };
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const frame = JSON.parse(raw) as ScopedClientMessage;
+      sent.push(frame);
+      if (frame.type === "client.attach") {
+        shell = { ...shell, generation: frame.generation };
+        queueMicrotask(() => {
+          shellCut();
+          if (frame.selected) detailCut(frame.selected);
+        });
+      }
+      if (frame.type === "client.subscribe")
+        queueMicrotask(() => {
+          if (frame.subscriptionId === "shell") {
+            shell = { ...shell, generation: frame.generation };
+            shellCut();
+          } else detailCut(frame);
+        });
+    }));
+  return {
+    connect,
+    sent,
+    socket: () => socket,
+    head: () => String(head),
+    details,
+    /** Delivers one commit to the shell and/or a detail scope. */
+    commit(
+      shellChanges: readonly unknown[],
+      detail?: { threadId: string; changes: readonly unknown[] },
+    ) {
+      const from = String(head++);
+      const through = String(head);
+      const rows = (changes: readonly unknown[]) =>
+        changes.map((change, ordinal) => ({
+          ...(change as object),
+          sequence: through,
+          ordinal,
+        }));
+      if (shellChanges.length)
+        socket.deliver({
+          ...shell,
+          type: "host.changes",
+          fromSequence: from,
+          throughSequence: through,
+          changes: rows(shellChanges),
+        } as never);
+      const address = detail && details.get(detail.threadId);
+      if (address)
+        socket.deliver({
+          ...address,
+          type: "host.changes",
+          fromSequence: from,
+          throughSequence: through,
+          changes: rows(detail.changes),
+        } as never);
+      return through;
+    },
+    live(threadId: string, itemId: string, text: string, offset = 0) {
+      const address = details.get(threadId)!;
+      socket.deliver({
+        ...address,
+        type: "host.live",
+        liveBootId: "00000000-0000-4000-8000-000000000001",
+        runId,
+        attemptId: createId("runAttempt"),
+        bindingGeneration: 1,
+        streamId: "reply",
+        itemId,
+        afterSequence: String(head),
+        update: { operation: "append", text, offset, totalLength: offset + text.length },
+      } as never);
+    },
+  };
+}
+
+function scriptedClient(host: ReturnType<typeof scriptedHost>, fetch?: typeof globalThis.fetch) {
+  return new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    webSocketFactory: host.connect,
+    capabilities: [],
+    fetch:
+      fetch ??
+      (async () =>
+        Response.json({
+          ok: false,
+          error: { code: "not_found", message: "Unavailable", retryable: false },
+        })),
+  });
+}
+
+test("a shell repair on an open socket keeps the connection, its reconnect work and live text", async () => {
+  const host = scriptedHost();
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const connections: string[] = [];
+    client.subscribe(() => connections.push(client.getSnapshot().connection));
+    const reads = fetch.mock.calls.length;
+    const repaired = client.refresh();
+    host.live(threadId, "live-reply", "Hello");
+    await repaired;
+    await vi.waitFor(() =>
+      expect(
+        host.sent.filter((frame) => frame.type === "client.subscribe"),
+        "the shell repair was never sent",
+      ).toHaveLength(1),
+    );
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(client.getThreadItemText(threadId)?.get("live-reply")?.text).toBe("Hello");
+    expect(connections.every((connection) => connection === "connected")).toBe(true);
+    expect(fetch.mock.calls.length).toBe(reads);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("an early detail past the buffer is set aside and resubscribed after the shell cut", () => {
+  const f = fixture();
+  f.stream.receive(f.detailSnapshot());
+  for (let sequence = 1; sequence <= 130; sequence++)
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(sequence),
+      throughSequence: String(sequence + 1),
+      changes: [],
+    });
+  expect(f.sent.filter((frame) => frame.type === "client.subscribe")).toHaveLength(0);
+  f.syncShell();
+  expect(f.sent.filter((frame) => frame.type === "client.subscribe")).toMatchObject([
+    { subscriptionId: f.address.subscriptionId, scope: threadScope },
+  ]);
+  expect(f.detail.transcript.getSnapshot().items.size).toBe(0);
+});

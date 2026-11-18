@@ -78,8 +78,10 @@ export class ScopedPersonalStream {
   #background = false;
   #shellReady = false;
   #earlyBytes = 0;
+  #attachment = 0;
   #watchPending = false;
   readonly #early: ScopedHostMessage[] = [];
+  readonly #deferred = new Set<ObservedDetail>();
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
@@ -247,9 +249,20 @@ export class ScopedPersonalStream {
     );
   }
 
+  /** Counts sockets; a scope repair on one socket keeps its attachment. */
+  get attachment() {
+    return this.#attachment;
+  }
+
+  /** The current socket has delivered its first shell cut. */
+  get ready() {
+    return this.#shellReady;
+  }
+
   attach(send: (message: ScopedClientMessage) => void) {
     this.disconnect();
     this.#send = send;
+    this.#attachment++;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
     this.resources.begin(generation);
@@ -277,6 +290,7 @@ export class ScopedPersonalStream {
     this.#shellReady = false;
     this.#early.length = 0;
     this.#earlyBytes = 0;
+    this.#deferred.clear();
     for (const detail of this.#slots.values()) this.#deactivate(detail);
     this.shell.begin(++this.#generation, true);
   }
@@ -354,16 +368,25 @@ export class ScopedPersonalStream {
       throw new Error("Personal scope frame exceeds its encoded limit.");
     if (!this.#send) return true;
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
-    else if (this.#shellReady) this.#receiveDetail(frame);
-    else {
-      if (frame.type === "host.live" || !this.#currentDetail(frame)) return true;
-      const size = wireBytes ?? bytes(frame);
-      if (this.#earlyBytes + size > 256 * 1024 || this.#early.length >= 128)
-        throw new Error("Detail arrived before its shell cut.");
+    else if (this.#shellReady || frame.type === "host.live") this.#receiveDetail(frame);
+    else this.#hold(frame, wireBytes ?? bytes(frame));
+    return true;
+  }
+
+  // Durable detail waits for the socket's first shell cut, which carries the viewer identity.
+  // Past the buffer cap the detail is set aside and resubscribed once the shell is ready.
+  #hold(frame: ScopedHostMessage, size: number) {
+    const detail = this.#currentDetail(frame);
+    if (!detail || this.#deferred.has(detail)) return;
+    if (this.#earlyBytes + size <= 256 * 1024 && this.#early.length < 128) {
       this.#earlyBytes += size;
       this.#early.push(frame);
+      return;
     }
-    return true;
+    this.#deferred.add(detail);
+    const kept = this.#early.filter((held) => this.#currentDetail(held) !== detail);
+    this.#early.splice(0, this.#early.length, ...kept);
+    this.#earlyBytes = kept.reduce((total, held) => total + bytes(held), 0);
   }
 
   repairDetail(scope: DetailScope) {
@@ -374,9 +397,6 @@ export class ScopedPersonalStream {
 
   repairShell(resetHistory = false) {
     if (!this.#send) return;
-    this.#shellReady = false;
-    this.#early.length = 0;
-    this.#earlyBytes = 0;
     const generation = ++this.#generation;
     this.shell.begin(generation, !resetHistory, resetHistory);
     this.resources.begin(generation);
@@ -427,6 +447,12 @@ export class ScopedPersonalStream {
       this.#sessionId = sessionId;
       this.resources.updateRevisions(frame.generation, resourceRevisions);
     }
+    // Readiness is set before the shell publishes its first synchronized cut on this socket.
+    const firstCut =
+      frame.type === "host.synchronized" &&
+      !this.#shellReady &&
+      frame.throughSequence === previous.through;
+    if (firstCut) this.#shellReady = true;
     if (frame.type === "host.snapshot-required" || !this.shell.apply(frame)) {
       if (frame.type === "host.snapshot-required") this.shell.apply(frame);
       this.repairShell();
@@ -450,11 +476,13 @@ export class ScopedPersonalStream {
     if (progress) this.resources.updateRevisions(frame.generation, progress.resourceRevisions);
     this.#ack(frame);
     this.#checkpoint(shellScope);
-    if (frame.type === "host.synchronized") {
-      this.#shellReady = true;
+    if (firstCut) {
       const early = this.#early.splice(0);
       this.#earlyBytes = 0;
       for (const pending of early) this.#receiveDetail(pending);
+      const deferred = [...this.#deferred];
+      this.#deferred.clear();
+      for (const detail of deferred) if (detail.slot) this.#subscribe(detail);
     }
   }
 

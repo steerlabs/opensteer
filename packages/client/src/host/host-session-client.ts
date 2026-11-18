@@ -320,6 +320,7 @@ export class HttpHostClient {
   readonly #threadReaders = new Map<string, () => void>();
   readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
+  #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
   readonly #assignmentReads = new Map<string, "read" | AbortController>();
@@ -1624,15 +1625,16 @@ export class HttpHostClient {
       this.#invalidateAttention();
       for (const { controller } of this.#resourceReads.values()) controller.abort();
       this.#resourceReads.clear();
-      this.#update(emptySnapshot(this.#tabs));
+      const { connection, connectionInterrupted, network } = this.#snapshot;
+      this.#update({ ...emptySnapshot(this.#tabs), connection, connectionInterrupted, network });
     }
     const shell = state.snapshot;
     if (!shell || this.#disposed) return;
-    const connection = state.synchronized
-      ? "connected"
-      : this.#snapshot.connection === "connected"
-        ? "connecting"
-        : this.#snapshot.connection;
+    // Only the socket moves the connection; a scope repair on an open socket leaves it alone.
+    const attachment = this.#stream.ready ? this.#stream.attachment : undefined;
+    const attached = attachment !== undefined && this.#syncedAttachment !== attachment;
+    if (attached) this.#syncedAttachment = attachment;
+    const connection = attached ? "connected" : this.#snapshot.connection;
     const session = shell.session;
     const tasksChanged =
       old?.tasks !== state.tasks ||
@@ -1749,7 +1751,7 @@ export class HttpHostClient {
         {
           ...this.#snapshot,
           connection,
-          connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
+          connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
           teamReplyRevision: state.teamReplyRevision,
           ...(attentionChanged
@@ -1770,7 +1772,7 @@ export class HttpHostClient {
         taskChanges,
       );
     }
-    if (state.synchronized && !old?.synchronized) {
+    if (attached) {
       this.#connectionAdmit?.();
       this.#finishLoad();
       this.references.reconnect();
@@ -1783,7 +1785,7 @@ export class HttpHostClient {
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
-      (!old?.synchronized || attentionChanged)
+      (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
   }
@@ -1930,7 +1932,7 @@ export class HttpHostClient {
     if (
       !installed ||
       !this.#stream.resources.isObserved(kind) ||
-      !this.#stream.shell.getSnapshot().synchronized ||
+      !this.#stream.ready ||
       BigInt(installed.revision) < BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0") ||
       this.#visibility === "background" ||
       this.#resourceReads.has(kind) ||
@@ -2373,7 +2375,7 @@ export class HttpHostClient {
       !this.#showsThread(threadId)
     )
       return;
-    if (!this.#stream.shell.getSnapshot().synchronized) return;
+    if (!this.#stream.ready) return;
     const pending = this.#browserUsageReads.get(threadId);
     if (pending) {
       if (mode === "full") pending.again = "full";
@@ -3910,14 +3912,14 @@ export class HttpHostClient {
           this.#clearAttachmentReads();
         }
         if (event.code === unsupportedVersionCloseCode) this.#socketFailed(updateRequired());
-        else if (!this.#stream.shell.getSnapshot().synchronized)
+        else if (!this.#stream.ready)
           void this.#diagnoseHandshake(attempt.signal);
         else this.#socketFailed();
       }
     });
     socket.addEventListener("error", () => {
       if (this.#socket !== socket) return;
-      if (this.#stream.shell.getSnapshot().synchronized) this.#socketFailed();
+      if (this.#stream.ready) this.#socketFailed();
       else void this.#diagnoseHandshake(attempt.signal);
     });
   }
