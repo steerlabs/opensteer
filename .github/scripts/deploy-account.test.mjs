@@ -34,6 +34,8 @@ function fixture({ rollout = 0 } = {}) {
 set -eu
 echo "$*" >> "$FAKE_DIR/calls"
 case "$*" in
+  *"get deployment account -o json"*) echo '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"account","namespace":"opensteer-system","labels":{},"annotations":{"kubectl.kubernetes.io/last-applied-configuration":"stale","deployment.kubernetes.io/revision":"7","kept":"yes"},"uid":"u"},"spec":{"replicas":2},"status":{}}' ;;
+  *"set-last-applied"*) cat > "$FAKE_DIR/recorded" ;;
   *"get deployment account"*) cat "$FAKE_DIR/live" 2>/dev/null || true ;;
   kustomize*) printf 'image: "@ACCOUNT_IMAGE@"\\nrevision: "@SOURCE_REVISION@"\\n' ;;
   "apply -f -") cat > "$FAKE_DIR/applied" ;;
@@ -55,6 +57,7 @@ esac
       status: result.status,
       stdout: result.stdout,
       applied: file("applied"),
+      recorded: file("recorded"),
       calls: file("calls"),
     };
   };
@@ -67,6 +70,19 @@ test("rolls a descendant of the live source out with the pinned image and its re
     const result = f.run(f.newer, { live: f.older });
     assert.equal(result.status, 0);
     assert.equal(result.applied, `image: "${image}"\nrevision: "${f.newer}"\n`);
+    // The live spec is recorded before the apply, without server-owned fields.
+    assert.deepEqual(JSON.parse(result.recorded), {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: "account",
+        namespace: "opensteer-system",
+        labels: {},
+        annotations: { kept: "yes" },
+      },
+      spec: { replicas: 2 },
+    });
+    assert.ok(result.calls.indexOf("set-last-applied") < result.calls.indexOf("apply -f -"));
     assert.doesNotMatch(result.calls, /rollout undo/);
   } finally {
     f.cleanup();
