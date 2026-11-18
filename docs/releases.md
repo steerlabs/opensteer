@@ -53,14 +53,22 @@ together.
 
 ## Public desktop releases
 
-Main pushes outside the workflow's path exclusions build an insider: a signed, notarized Beta
-prerelease, never Latest. Shipped notices and agent skills are build inputs, so never exclude all
-Markdown. Tags made with `GITHUB_TOKEN` do not retrigger. Preflight waits for the exact SHA's
-newest main push CI and `Check`; if a newer main push superseded a cancelled run, the release
-skips, and any other failure blocks. A push publishes its insider; a dispatch stops at the draft
-unless `publish=true`. Concurrency never cancels a build mid-notarization, so a coalesced stable
-dispatch may need redispatch. Never publish an older insider after a newer one: the updater takes
-the first eligible feed entry.
+When a main push's CI succeeds, an insider release starts: a signed, notarized Beta prerelease,
+never Latest. A red CI releases nothing, and rerunning it to green releases then. Insider runs,
+automatic or dispatched, run one at a time and nothing cancels a started one; GitHub keeps only the
+newest run waiting behind it, so the merges that land during a release ship together in the next
+one. An automatic run releases the newest first-parent main commit whose newest main push CI and
+`Check` are green, from the commit that started it up to main when it started (whose tooling drafts
+and publishes). It skips when a published insider already holds that commit or everything since is
+documentation or CI (`unreleasedPaths` in [release-plan.mjs](../.github/scripts/release-plan.mjs)).
+Shipped notices and agent skills are build inputs, so never exclude all Markdown. A CI completion
+that cannot release (red, not a main push, a fork) never takes a waiting run's place. An automatic
+release publishes its insider; a dispatch waits for its commit's CI, queues with automatic runs and
+stops at the draft unless `publish=true`, and a later run for that commit reuses its draft. A
+waiting dispatch and a waiting automatic run replace each other: a replaced dispatch needs
+redispatch, and a dispatch without `publish=true` that replaced an automatic run leaves its
+commit to the next merge's release. Never publish an older insider after a newer one: the updater takes the first eligible
+feed entry, discovery refuses a backfill and the publisher refuses one.
 
 Key files and the ephemeral keychain are private and always deleted; release caches never hold
 signing material, and CI needs no private checkout or signing JSON. A [launch
@@ -174,8 +182,8 @@ packages public once, after their first push.
 
 ## Account service
 
-The `account` job ships the Account service on every eligible main push, before that insider
-publishes; a failed rollout blocks the insider, and
+The `account` job ships the Account service on every automatic insider release, before that
+insider publishes; a failed rollout blocks the insider, and
 [deploy-account.sh](../.github/scripts/deploy-account.sh) never rolls live source back. Nobody
 deploys it by hand. A Host refuses, with an update instruction, an Account lacking a capability
 it needs, never falling back to a weaker path. A reasonless refusal stays retryable: an HTTP

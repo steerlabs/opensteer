@@ -26,6 +26,7 @@ import {
   publicFeedURL,
   publish,
   verifyInsiderProvenance,
+  requireNewerInsider,
   requireNewerStable,
 } from "../scripts/desktop-public-release.js";
 import type { runBounded } from "../scripts/command-runner.js";
@@ -286,9 +287,9 @@ function releaseApi(releases: FakeRelease | readonly FakeRelease[], args: readon
   const all = [releases].flat();
   if (args.includes("--paginate")) throw new Error("Listed every release");
   if (args[0] === "ls-remote") {
-    const prefix = args.at(-1)!.replace(/^refs\/tags\/|\*$/gu, "");
+    const glob = args.at(-1)!.replace(/^refs\/tags\//u, "");
     return all
-      .filter((release) => !release.draft && release.tag_name.startsWith(prefix))
+      .filter((release) => !release.draft && path.matchesGlob(release.tag_name, glob))
       .map((release) => `${sourceSha}\trefs/tags/${release.tag_name}`)
       .join("\n");
   }
@@ -560,6 +561,38 @@ it("beta drafts and publication never mark Latest", async () => {
   await publish("steerlabs/opensteer", manifest.tag, await withInsider(run), { channel: "beta" });
 });
 
+it("an insider never publishes after a newer insider, even from a draft that passed discovery", async () => {
+  const { dir, manifest, release } = await releaseFixture("beta");
+  const newer = { id: 789, draft: false, tag_name: "v0.1.221-insider" };
+  const older = { id: 790, draft: false, tag_name: "v0.1.219-insider" };
+  let published = [newer];
+  let patches = 0;
+  const run: typeof runBounded = async (exe, args) => {
+    if (args.includes("PATCH")) patches++;
+    else if (args[1] === "download") {
+      const output = args[args.indexOf("--dir") + 1]!;
+      for (const name of [...Object.keys(manifest.assets), "release.json"])
+        await writeFile(path.join(output, name), await readFile(path.join(dir, name)));
+    } else if (exe === "curl") {
+      const dest = args[args.indexOf("-o") + 1]!;
+      await writeFile(dest, await readFile(path.join(dir, path.basename(dest))));
+    } else return releaseApi([release, ...published], args);
+    return "";
+  };
+  await expect(
+    publish("steerlabs/opensteer", manifest.tag, run, { channel: "beta" }),
+  ).rejects.toThrow(/newer than every published insider/);
+  expect(patches).toBe(0);
+  published = [older];
+  await publish("steerlabs/opensteer", manifest.tag, run, { channel: "beta" });
+  expect(patches).toBe(1);
+  // A rerun after its own publication only repeats the anonymous check.
+  Object.assign(release, { draft: false });
+  published = [newer];
+  await publish("steerlabs/opensteer", manifest.tag, run, { channel: "beta" });
+  expect(patches).toBe(1);
+});
+
 it.skipIf(process.platform !== "darwin")("rejects a real ad-hoc-signed archive", async () => {
   const root = await scratch();
   const bundle = await fixtureBundle(root, "com.opensteer.opensteer", version);
@@ -768,6 +801,12 @@ it("refuses older/equal Stable, permits the first Stable and ignores concurrent 
   expect(() => requireNewerStable("0.1.219", [tag])).toThrow(/newer/);
   expect(() => requireNewerStable("0.1.221", [tag])).not.toThrow();
   expect(() => requireNewerStable(version, ["v99.0.0-insider"])).not.toThrow();
+  expect(() => requireNewerStable(version, ["desktop-vbroken"])).toThrow();
+  expect(() => requireNewerInsider(version, [])).not.toThrow();
+  expect(() => requireNewerInsider(version, [`v${version}-insider`])).toThrow(/newer/);
+  expect(() => requireNewerInsider("0.1.219", [`v${version}-insider`])).toThrow(/newer/);
+  expect(() => requireNewerInsider("0.1.221", [`v${version}-insider`])).not.toThrow();
+  expect(() => requireNewerInsider(version, ["desktop-v99.0.0"])).not.toThrow();
 });
 
 it("Stable refuses a draft, mutable or incomplete insider and mismatched source evidence", async () => {

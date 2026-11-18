@@ -1,27 +1,11 @@
 name: Desktop release
 on:
-  push:
+  # A main push releases when its CI succeeds, so a CI rerun to green releases it as well.
+  # release-plan.mjs skips commits that change only documentation and CI.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "README.md"
-      - "AGENTS.md"
-      - "CHANGELOG*.md"
-      - "CONTRIBUTING.md"
-      - "SECURITY.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/agent-context-budget.yml"
-      - ".github/actions/ci-browser/**"
-      - ".github/actions/ci-changes/**"
-      - ".github/actions/ci-setup/**"
-      - ".github/scripts/ci-*.mjs"
-      - ".github/scripts/ci-*.json"
-      - ".github/scripts/fork-safety.mjs"
-      - ".github/scripts/fork-safety.test.mjs"
-      - ".github/scripts/local-check.mjs"
-      - ".github/scripts/local-check.test.mjs"
   workflow_dispatch:
     inputs:
       channel:
@@ -39,15 +23,29 @@ on:
         default: false
 permissions:
   contents: read
+# One insider run at a time, automatic or dispatched, and never cancelled once started. GitHub
+# keeps only the newest run waiting behind it, which batches the merges that land meanwhile;
+# preflight then releases main's newest green commit. Stable dispatches have their own queue.
+# A CI completion that cannot release (red, not a main push, a fork) gets a group of its own,
+# so it never replaces a waiting release; preflight's condition below skips it.
 concurrency:
-  group: release-desktop-${{ inputs.channel || 'insider' }}
+  group: >-
+    release-desktop-${{ github.event_name == 'workflow_dispatch' && inputs.channel ||
+    github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+    github.event.workflow_run.head_branch == 'main' &&
+    github.event.workflow_run.head_repository.full_name == github.repository && 'insider' ||
+    format('ignored-{0}', github.run_id) }}
   cancel-in-progress: false
 defaults:
   run:
     shell: bash
 jobs:
   preflight:
-    if: github.repository == 'steerlabs/opensteer'
+    if: >-
+      github.repository == 'steerlabs/opensteer' && (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 70
     permissions:
@@ -75,6 +73,8 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           INSIDER_TAG: ${{ inputs.insider_tag }}
           EVENT: ${{ github.event_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN_SHA: ${{ github.sha }}
         run: node .github/scripts/release-plan.mjs preflight
       # An insider published before team images existed promotes without them.
       - id: team
@@ -473,7 +473,7 @@ jobs:
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
     needs: [preflight, discover, draft, account, team-images]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'workflow_run' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
