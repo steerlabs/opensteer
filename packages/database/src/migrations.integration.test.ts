@@ -1064,7 +1064,6 @@ describe("fresh personal/team lineage", () => {
       database,
     );
     await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
-    const triggers = new TriggerStore(database);
 
     expect(
       (
@@ -1135,6 +1134,8 @@ describe("fresh personal/team lineage", () => {
       { pluginId: "app_device_computer-connection", access: "off" },
       { pluginId: "app_server_local-server", access: "off" },
     ]);
+    await migrateToLatest(database);
+    const triggers = new TriggerStore(database);
     for (const saved of [savedSchedule, savedWatch]) {
       const detail = await triggers.getForOwner(saved.trigger.id, userId, 1);
       expect(detail?.revision.program).toEqual(saved.revision.program);
@@ -1166,7 +1167,6 @@ describe("fresh personal/team lineage", () => {
         values ('late-account', ${userId}, 'provider-account', 'google', 'computer', 'connected',
           'Late', '[]')`.execute(database),
     ).rejects.toThrow("integration_connections_connection_kind_check");
-    await migrateToLatest(database);
     expect(
       (await database.selectFrom("requests").select("id").execute()).map(({ id }) => id).sort(),
     ).toEqual(keptRequests.sort());

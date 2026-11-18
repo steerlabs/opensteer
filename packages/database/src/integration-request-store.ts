@@ -40,7 +40,7 @@ import {
   requestFromRow,
 } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
-import { jsonValue } from "./store-primitives.js";
+import { jsonValue, lockThreadRow } from "./store-primitives.js";
 import {
   enqueueContinuation,
   integrationAccessRequestInput,
@@ -143,6 +143,7 @@ export class IntegrationRequestStore {
             message: "Install the reviewed integration before granting access",
           });
         }
+        await lockThreadRow(transaction, observed.originatingThreadId);
         const pending = await transaction
           .selectFrom("requests")
           .innerJoin(
@@ -252,6 +253,28 @@ export class IntegrationRequestStore {
           requestedServerId: row.detailRequestedServerId,
         });
       }
+      await transaction
+        .selectFrom("threads")
+        .select("id")
+        .where(
+          "id",
+          "in",
+          transaction
+            .selectFrom("requests")
+            .innerJoin(
+              "integrationRequestDetails",
+              "integrationRequestDetails.requestId",
+              "requests.id",
+            )
+            .select("requests.originatingThreadId")
+            .where("requests.kind", "=", "integration.access")
+            .where("requests.status", "=", "pending")
+            .where("requests.requestedBy", "=", input.resolvedBy)
+            .where("integrationRequestDetails.installationId", "=", row.detailInstallationId),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const grant =
         decision.decision === "fulfilled"
           ? await createPersonalIntegrationGrantForRequest(transaction, {

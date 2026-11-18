@@ -701,10 +701,15 @@ integration("local servers as plugin tools", () => {
 });
 
 /** The person's form answer through the same command every client sends. */
-function respond(host: MachineAccessHost, requestId: RequestId, content: Record<string, unknown>) {
+async function respond(
+  host: MachineAccessHost,
+  requestId: RequestId,
+  content: Record<string, unknown>,
+) {
   return dispatch(host, {
     type: "request.respond",
     requestId,
+    expectedRevision: (await host.store.requests.revision(requestId))!,
     response: { kind: "external", value: { action: "accept", content } },
   });
 }

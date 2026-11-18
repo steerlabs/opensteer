@@ -374,6 +374,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
           {
             idempotencyKey: `iphone-agent-access:${randomUUID()}`,
             requestId: accessRequest.request.id,
+            expectedRevision: (await host.store.requests.revision(accessRequest.request.id))!,
             response: {
               kind: "external",
               value: {

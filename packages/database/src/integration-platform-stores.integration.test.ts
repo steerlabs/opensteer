@@ -1795,7 +1795,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database()
           and application_name = 'opensteer-computer-app-connections-test'
           and wait_event_type = 'Lock'
-          and query ilike '%deployment_event_state%'
+          and query ilike '%client_sync_state%'
       `.execute(database);
       expect(Number(blockedOnFence.rows[0]?.count)).toBeGreaterThanOrEqual(1);
       release();
@@ -2177,9 +2177,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /from "?client_sync_state"? .*for no key update/i.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -2429,9 +2427,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /from "?client_sync_state"? .*for no key update/i.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -2575,7 +2571,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             const node = JSON.stringify(args.node);
             if (
               args.node.kind === "RawNode" &&
-              node.includes("select deployment_id from deployment_event_state for no key update")
+              /from "?client_sync_state"? .*for no key update/i.test(node)
             )
               acquiring.resolve();
             return args.node;
@@ -2610,7 +2606,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
             ).rows.some(({ query }) =>
-              query.includes("from deployment_event_state for no key update"),
+              /from "?client_sync_state"? .*for no key update/i.test(query),
             ),
           )
           .toBe(true);

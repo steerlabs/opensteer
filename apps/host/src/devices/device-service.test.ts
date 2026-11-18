@@ -39,12 +39,7 @@ import {
   type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
 } from "@opensteer/database";
-import {
-  TabIdSchema,
-  WindowIdSchema,
-  createToolOutput,
-  createId,
-} from "@opensteer/core";
+import { TabIdSchema, WindowIdSchema, createToolOutput, createId } from "@opensteer/core";
 import {
   computerUseUpdateSentence,
   mintComputerUseSessionId,

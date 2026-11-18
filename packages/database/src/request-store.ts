@@ -457,7 +457,7 @@ export class RequestStore {
         });
       if (input.expectedRevision !== undefined) assertRequestRevision(row, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
-      await requirePersonalOwner(transaction, input.resolvedBy);
+      await lockThreadRow(transaction, row.originatingThreadId);
       const now = new Date();
       const resolved = await transaction
         .updateTable("requests")
@@ -485,9 +485,25 @@ export class RequestStore {
     requestIds: readonly RequestId[],
     reason: RequestCancellationReason,
   ): Promise<readonly RequestId[]> {
-    return commitPersonalMutation(this.#database, (tx) =>
-      cancelPending(tx, { requestIds, reason, resolvedAt: new Date() }),
-    );
+    if (!requestIds.length) return Promise.resolve([]);
+    return commitPersonalMutation(this.#database, async (tx) => {
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where(
+          "id",
+          "in",
+          tx
+            .selectFrom("requests")
+            .select("originatingThreadId")
+            .where("id", "in", [...requestIds])
+            .where("status", "=", "pending"),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      return cancelPending(tx, { requestIds, reason, resolvedAt: new Date() });
+    });
   }
   async endPluginExecutionRequest(
     requestId: RequestId,
@@ -539,6 +555,7 @@ export class RequestStore {
             }),
           )
           .execute();
+      await lockThreadRow(transaction, row.originatingThreadId);
       const updated = await transaction
         .updateTable("requests")
         .set({

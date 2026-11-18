@@ -1,4 +1,7 @@
-import { installPersonalMutationHooks, type PersonalCommitReaction } from "../packages/database/src/personal-mutation.js";
+import {
+  installPersonalMutationHooks,
+  type PersonalCommitReaction,
+} from "../packages/database/src/personal-mutation.js";
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile, readFile, rename, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -221,7 +224,11 @@ beforeAll(async () => {
     wake: () => {},
     onFailure: (error) => errors.push(error),
     react: (reaction) => {
-      if (reaction.type === "requestChanged" || reaction.type === "runChanged" || reaction.type === "runFinished") {
+      if (
+        reaction.type === "requestChanged" ||
+        reaction.type === "runChanged" ||
+        reaction.type === "runFinished"
+      ) {
         events.emit(reaction.type, reaction);
         executions.observe(reaction);
       }
@@ -1455,7 +1462,8 @@ test("engine interaction expiry ends both the execution and its Request with tha
   });
   const expired = Promise.withResolvers<void>();
   const listener = (reaction: Extract<PersonalCommitReaction, { type: "requestChanged" }>) => {
-    if (reaction.status === "cancelled" && reaction.requestId === pending.requestId) expired.resolve();
+    if (reaction.status === "cancelled" && reaction.requestId === pending.requestId)
+      expired.resolve();
   };
   events.on("requestChanged", listener);
   try {
