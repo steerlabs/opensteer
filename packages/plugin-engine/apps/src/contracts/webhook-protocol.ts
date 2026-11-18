@@ -1,4 +1,3 @@
-import * as __published from "../published-compat.ts";
 /** Private host protocol for webhook callbacks. Raw bytes are never parsed as JSON before verification. */
 import { Schema } from "effect";
 import { AccountId, HttpUrl, JsonObject, JsonValue } from "./schema.ts";
@@ -27,10 +26,12 @@ export const WebhookResponseData = Schema.Struct({
   headers: Schema.Record(Schema.String, Schema.String),
   body: Schema.String.check(Schema.isMaxLength(encodedBodyChars)),
 });
+/** The `signingSecret` of a manual setup whose secret the plugin engine generates. */
+export const engineSigningSecret = "plugin-engine";
 /** Manual instructions are text, never executable HTML. Signing secrets are exchanged only in the setup page. */
 export const ManualWebhookSetup = Schema.Struct({
   instructions: Schema.NonEmptyString,
-  signingSecret: Schema.Literals([__published.signingSecretSource, "provider"]),
+  signingSecret: Schema.Literals([engineSigningSecret, "provider"]),
 });
 export type ManualWebhookSetup = typeof ManualWebhookSetup.Type;
 /** The state schema describes the additional private fields collected during manual setup. */

@@ -1,0 +1,82 @@
+{
+  "$comment": "Data, not code: upstream's names and what they became. `identity` is what the name guard (scripts/plugin-engine/names.mjs) forbids; `rules` rewrite plugin source (packages/plugin-engine/catalog/src/implementation/upstream-source.ts, the catalog tooling and the Host's rebuild after upgrade). A rule applies only within its scope; see `scopes`. Matching is exact and case-sensitive unless a scope says otherwise.",
+  "identity": {
+    "everywhere": [
+      "executor.sh",
+      "executor.community",
+      "@executor-js",
+      "rhys sullivan",
+      "rhys-sullivan",
+      "rhyssullivan"
+    ],
+    "pluginCode": ["executor", "rhys", "sullivan", "fumadb"]
+  },
+  "scopes": {
+    "index-package": "The `package` field of each entry in a catalog index; `from` is a prefix.",
+    "document-package": "The `package` field of a catalog source document; `from` is a prefix.",
+    "manifest-name": "The `name` field of a plugin's package.json; `from` is a prefix.",
+    "manifest-key": "A top-level key of a plugin's package.json, renamed with its value kept.",
+    "route-path": "Code files: a reserved route path in a string.",
+    "header": "Code files: a header name, matched without regard to case.",
+    "element-id": "Code files: an element id the framework puts in an app's page.",
+    "event": "Code files: the window event the framework dispatches when a new version is active.",
+    "ui-marker": "Code files: the marker the framework puts in an app's page.",
+    "error-code": "Code files: an error code the Host returns to app code.",
+    "reserved-table": "Code files and migrations/*.sql: a table the framework keeps in an app's SQLite database. The only rule that applies to migrations, so the framework can recover a rewritten migration's original bytes and keep its applied history (packages/plugin-engine/apps/src/implementation/sql.ts).",
+    "signing-secret": "Code files: the value of a `signingSecret` property in a manual webhook setup.",
+    "readme-prose": "Markdown files: whole words of prose.",
+    "code-comment": "Code files other than migrations: whole words inside // and /* */ comments, and # comments in Python and shell scripts."
+  },
+  "rules": [
+    { "scope": "index-package", "from": "@executor.sh/", "to": "@plugin-engine/" },
+    { "scope": "document-package", "from": "@executor.sh/", "to": "@plugin-engine/" },
+    { "scope": "manifest-name", "from": "@executor.sh/", "to": "@plugin-engine/" },
+    { "scope": "manifest-key", "from": "executor", "to": "plugin-engine" },
+    { "scope": "route-path", "from": "/_executor/", "to": "/_plugin-engine/" },
+    { "scope": "header", "from": "x-executor-refused", "to": "x-plugin-engine-refused" },
+    { "scope": "header", "from": "x-executor-unreachable", "to": "x-plugin-engine-unreachable" },
+    { "scope": "header", "from": "x-executor-api-changing", "to": "x-plugin-engine-api-changing" },
+    { "scope": "element-id", "from": "executor-context", "to": "plugin-engine-context" },
+    {
+      "scope": "element-id",
+      "from": "executor-account-notice",
+      "to": "plugin-engine-account-notice"
+    },
+    {
+      "scope": "event",
+      "from": "executor:deployment-changed",
+      "to": "plugin-engine:deployment-changed"
+    },
+    { "scope": "ui-marker", "from": "<!--executor-ui-->", "to": "<!--plugin-engine-ui-->" },
+    { "scope": "error-code", "from": "EXECUTOR_API_CHANGING", "to": "PLUGIN_ENGINE_API_CHANGING" },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_migrations",
+      "to": "_plugin_engine_migrations"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_step_receipts",
+      "to": "_plugin_engine_step_receipts"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_step_events",
+      "to": "_plugin_engine_step_events"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_legacy_rows",
+      "to": "_plugin_engine_legacy_rows"
+    },
+    { "scope": "signing-secret", "from": "executor", "to": "plugin-engine" },
+    {
+      "scope": "readme-prose",
+      "from": "EXECUTOR_APPS_ALLOW_PRIVATE_FETCH",
+      "to": "PLUGIN_ENGINE_APPS_ALLOW_PRIVATE_FETCH"
+    },
+    { "scope": "readme-prose", "from": "Executor", "to": "Opensteer" },
+    { "scope": "code-comment", "from": "Executor", "to": "Opensteer" },
+    { "scope": "code-comment", "from": "executor", "to": "Opensteer" }
+  ]
+}

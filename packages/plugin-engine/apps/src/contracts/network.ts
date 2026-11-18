@@ -1,4 +1,3 @@
-import * as __published from "../published-compat.ts";
 /**
  * What app code sees when PluginEngine's app network refuses a request, and the fetch options the
  * app runtime accepts. A refusal is PluginEngine's decision, not the service's: the request never
@@ -95,7 +94,7 @@ export class NetworkRefused extends Schema.TaggedError<NetworkRefused>()("Networ
  * PluginEngine's app network sets the mark: it removes the header from a service's 421 response.
  */
 export const networkRefusalStatus = 421;
-export const networkRefusalHeader = __published.refusedHeader;
+export const networkRefusalHeader = "x-plugin-engine-refused";
 
 /** The header's value: the refusal as JSON, URI-encoded so any provider name fits in a header. */
 export const NetworkRefusedHeader = Schema.StringFromUriComponent.pipe(

@@ -16,14 +16,8 @@ import {
 } from "../packages/database/src/index.js";
 import { RunPluginsPlanSchema, type HostApiServerContext } from "../packages/protocol/src/index.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  queryPath,
-  mutatePath,
-  subscribePath,
-  versionPath,
-  assetsPath,
-  signingSecretSource,
-} from "apps/published-compat";
+import { engineSigningSecret } from "apps/contracts";
+import { queryPath, mutatePath, subscribePath, versionPath, assetsPath } from "apps/ui/contracts";
 import { pluginFixtureFiles, pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.js";
 import {
   cloneTestDatabase,
@@ -95,7 +89,7 @@ export default defineApp(requirements, { tools: router({ tick, reviewed,
   ticks: query({ input: object({}) }, async ctx => ctx.sql.exec("SELECT account, source FROM ticks ORDER BY id").toArray()),
 }), schedules: { tick: userInterval({ minutes: 1 }, tick, { source: "schedule" }), reviewed: userInterval({ minutes: 1 }, reviewed, { source: "reviewed" }) },
 workflows: { quick: workflow({ input: object({}) }, async () => "done"), hold: workflow({ input: object({}) }, async ctx => { await ctx.step.sleep("hold", "1 hour"); return "done"; }) },
-webhooks: { incoming: { account: { user: "service" }, config: object({}), state: object({}), setup: { instructions: "Paste the callback and signing secret at the provider.", signingSecret: ${JSON.stringify(signingSecretSource)} },
+webhooks: { incoming: { account: { user: "service" }, config: object({}), state: object({}), setup: { instructions: "Paste the callback and signing secret at the provider.", signingSecret: ${JSON.stringify(engineSigningSecret)} },
   handle: async (ctx, { request, secret }) => {
     const body = await request.text();
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);

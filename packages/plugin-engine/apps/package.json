@@ -26,8 +26,7 @@
     "./react": "./src/react.ts",
     "./storage/facet": "./src/facet.ts",
     "./skills": "./src/skills.ts",
-    "./skills/effect": "./src/implementation/skill-files.ts",
-    "./published-compat": "./src/published-compat.ts"
+    "./skills/effect": "./src/implementation/skill-files.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

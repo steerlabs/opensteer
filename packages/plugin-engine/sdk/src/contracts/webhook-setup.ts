@@ -1,5 +1,5 @@
-import * as __published from "apps/published-compat";
 /** Private setup operations. Products expose them only to authorized browser sessions, never management tokens. */
+import { engineSigningSecret } from "apps/contracts";
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { WebhookSubscription, WebhookTarget, WebhookErrors } from "./webhooks.ts";
@@ -15,7 +15,7 @@ export const WebhookSetupView = Schema.Union([
     stateSchema: JsonObject,
     signingSecret: Schema.Union([
       Schema.Struct({
-        source: Schema.Literal(__published.signingSecretSource),
+        source: Schema.Literal(engineSigningSecret),
         value: Schema.RedactedFromValue(Schema.NonEmptyString),
       }),
       Schema.Struct({ source: Schema.Literal("provider") }),

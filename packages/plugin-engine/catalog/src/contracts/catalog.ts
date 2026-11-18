@@ -1,4 +1,3 @@
-import * as __published from "../published-compat.ts";
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Config, Schema, SchemaGetter, type Effect } from "effect";
 import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
@@ -30,7 +29,7 @@ export type CatalogAuth = typeof CatalogAuth.Type;
  */
 export const CatalogEntry = Schema.Struct({
   id: Schema.NonEmptyString,
-  /** The app's package name, such as `@pluginEngine.sh/resend`. */
+  /** The app's package name, such as `@plugin-engine/resend`. */
   package: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   description: Schema.String,
@@ -89,7 +88,7 @@ export const PreparedApp = Schema.Struct({
 });
 export type PreparedApp = typeof PreparedApp.Type;
 /** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
-export const officialCatalogUrl = __published.feed;
+export const officialCatalogUrl = "https://catalog.opensteer.com/index.json";
 /**
  * `PLUGIN_ENGINE_CATALOG_URL`, as local and self-host read it: the feed's `index.json`, the official
  * feed when unset or empty, or `off` for no feed, for an instance without outbound internet.

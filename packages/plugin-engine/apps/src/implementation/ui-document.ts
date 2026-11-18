@@ -1,5 +1,5 @@
-import * as __published from "../published-compat.ts";
 /** Point a retained document's resources at its version while links keep the page's own URL. */
+import * as page from "../contracts/page-names.ts";
 import {
   isTokenAtKeyword,
   isTokenFunction,
@@ -129,7 +129,7 @@ const rewriteCss = (css: string, resolve: (url: string) => string) => {
  * instead of with `<base>`, leaves the document base as the page URL for links, history and forms.
  */
 export const versionDocument = (html: string, version: string) => {
-  const root = `${__published.assetsPath}${encodeURIComponent(version)}/`;
+  const root = `${page.assetsPath}${encodeURIComponent(version)}/`;
   const resolve = (url: string) => {
     if (!retained(url) || !URL.canParse(url, "https://deployment.invalid/")) return url;
     const resolved = new URL(url, "https://deployment.invalid/");

@@ -101,6 +101,6 @@ that service's answer. PluginEngine refuses only requests it must not send:
 
 `ctx.fetch` then rejects with `NetworkRefused`, whose `refusal.reason` and
 message name the host and the rule. The global `fetch` instead receives status
-421 with the refusal in an `x-pluginEngine-refused` header, as URI-encoded JSON, and
+421 with the refusal in an `x-plugin-engine-refused` header, as URI-encoded JSON, and
 in the body as JSON. A public name that resolves to a private address passes
 this URL check; the embedding service must also enforce network egress policy.

@@ -1,22 +1,22 @@
 /** SHA-256 of each file the PluginEngine app publishes as a skill, keyed by `<skill>/<file>`. */
 export const pluginEngineSkillDigests: Readonly<Record<string, string>> = {
-  "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
-  "app-authoring/accounts.md": "d2b361588f445bec226a97a0647f6f69ff443da8c60de9d7de0d9b4578cef475",
-  "app-authoring/deploy.md": "11d69a371903f8ba051ee6b844a890604c5d90c12a69340b4b5feb62d2c2e3f4",
-  "app-authoring/events.md": "421c322f147a6da7a0bdc5513367e25b96667cf34f74b71918c84fdbe91727d1",
+  "app-authoring/SKILL.md": "1159e3ab9c80b5a3e4075720280695bd1fb7ebab74ed0279954633222c862521",
+  "app-authoring/accounts.md": "3b9187c26858a9acc253083185875d56a163375c67d02bf16ecdc6f68f666c8d",
+  "app-authoring/deploy.md": "635f30b328324b056234e89c68231b43c890383a056bae0f4ca9ba243e9ca00f",
+  "app-authoring/events.md": "dce0ac0fc87a05b41f25f0b868be1f2bc2d4545a75712329a4cf3b4a7969e8aa",
   "app-authoring/integrations.md":
-    "1788ddee892c69a9d895a2d8c7bec63f1d41963ed5b00ed3e6f0b5c4a671d867",
-  "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
-  "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
-  "app-authoring/tools.md": "4989b66449f047bcd90acb4164d3969eee50371c54e0d3d78cf62535d650f597",
-  "app-authoring/ui.md": "2b6e53b38d05f11a8eef9c4f06f96f3a447f92e359d9e31d143670b51ea6a7b1",
+    "7c1000449d476974b37d99ba93ff44d2f8d75dd0a43a833a9f01552dc020142f",
+  "app-authoring/starter.md": "1cb300c2093e2c4fc99ae5685a1fd4c2de13b1de687ec031f0e3531e6f407567",
+  "app-authoring/storage.md": "bf244dc4daf37c605c989024fa14181e10bbedf6d2c3a30d2d949629319737c0",
+  "app-authoring/tools.md": "9e828854aa8377cbd2da63a67f8c5c2ff49d75a6bbcc86cec590e830c7850222",
+  "app-authoring/ui.md": "03849fa8f8ef7e857e0b478315be99162be8aac133f3fca877a5e9e793aac0d7",
   "app-authoring/upgrades/0.0.1-beta.38.md":
-    "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
+    "e4c22b95c63b37c036470a59019c5be4951b888605d11f1a79622e815ea3630d",
   "app-authoring/upgrades/0.0.1-beta.90.md":
     "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
-  "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",
-  "app-authoring/workflows.md": "96f6e59d62314916d8a06f7063e5966ba506340cfff82c2648166006d0058669",
-  "code-mode/SKILL.md": "475e60fbf70654c439ceb13aa8ff73c22d79ee26dcf2ceb7898025d8b5740a02",
-  "pluginEngine/SKILL.md": "3e3d4b7b620f67f88c7f8d4ead095af8f0f56f29dbdcd9beab6fb53d27866f95",
-  "pluginEngine/feedback.md": "11397bd260917e5a21e92897a19368d0426bf5944a7c081adc2c061d1ea797cd",
+  "app-authoring/webhooks.md": "4fbfeb7fedce86b420e1abaa7eb10e7cdb5fcd23aca9c25def44115eba21bed1",
+  "app-authoring/workflows.md": "03cc4b55f2d848c98b5ced7b059296264938866b2b0ac4bcab29b2fe80500703",
+  "code-mode/SKILL.md": "b2f573052f5e036eba303b78f500faeade1fa59426b76ea63f91a4cf4336f115",
+  "pluginEngine/SKILL.md": "7bebde8c56640b7799e27255e34c5a52d4415077a46872e8555f744542a8ac5d",
+  "pluginEngine/feedback.md": "bcf9e22920cadbc31c005fa346cff89c86b9797c3ce75a5078e87365be903898",
 };

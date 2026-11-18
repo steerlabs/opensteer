@@ -2,16 +2,20 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { compatibility, forbidden } from "./renames.mjs";
+const names = JSON.parse(
+  readFileSync(
+    new URL("../../packages/plugin-engine/upstream-names.json", import.meta.url),
+    "utf8",
+  ),
+);
+const forbidden = names.identity.pluginCode;
 
 export async function checkNames(root) {
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const [project, first, last] = forbidden.map(escape);
   const excluded = new Set([
     "THIRD_PARTY_NOTICES.md",
-    "scripts/plugin-engine/renames.mjs",
-    "packages/plugin-engine/apps/src/published-compat.ts",
-    "packages/plugin-engine/catalog/src/published-compat.ts",
+    "packages/plugin-engine/upstream-names.json",
   ]);
   const scopes = [
     [`@${project}(?:-js|[.])|${project}[.](?:sh|community)(?:/|["'])|${first}[ -]${last}`, [""]],
@@ -22,19 +26,6 @@ export async function checkNames(root) {
   ];
   const violations = [];
   const allNames = new RegExp(forbidden.map(escape).join("|"), "i");
-  for (const [file, values] of [
-    [
-      "packages/plugin-engine/apps/src/published-compat.ts",
-      { ...compatibility.apps, ...compatibility.sdk },
-    ],
-    ["packages/plugin-engine/catalog/src/published-compat.ts", compatibility.catalog],
-  ]) {
-    const remaining = Object.values(values).reduce(
-      (source, value) => source.replaceAll(JSON.stringify(value), '""'),
-      readFileSync(join(root, file), "utf8"),
-    );
-    if (allNames.test(remaining)) violations.push(file);
-  }
   // Tracked and unignored files, the set a search honouring .gitignore would visit.
   const listed = spawnSync(
     "git",

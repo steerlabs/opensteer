@@ -1,7 +1,7 @@
 /**
  * Build every document of a catalog copy against the Host's framework and report what passes.
  *
- *   pnpm qualify:plugin-catalog <catalog directory> <report directory> [--concurrency 4] [--timeout 180]
+ *   pnpm qualify:plugin-catalog <catalog directory> <report directory> [--concurrency 4] [--timeout 180] [--rewrite]
  *
  * The catalog directory holds `index.json` and the documents it lists (`{ package, files }`). Each
  * document is untrusted: it is built only through the engine's sandboxed build (`runtime.build`
@@ -9,7 +9,8 @@
  * the framework bundled with the Host, so the framework is never fetched; other declared packages
  * come from the npm registry as in a real install. Results append to `results.jsonl` in the report
  * directory, which must be outside this repository; a rerun skips documents already recorded.
- * `report.json` and `report.md` summarize them.
+ * `report.json` and `report.md` summarize them. `--rewrite` first rewrites each document with the
+ * rules in `packages/plugin-engine/upstream-names.json`, as the catalog will serve it.
  */
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
@@ -22,6 +23,7 @@ import {
   splitSource,
   toEffectRuntime,
 } from "@opensteer/plugin-engine-sdk/core";
+import { rewriteUpstreamSource } from "@opensteer/plugin-engine-catalog";
 import { startRuntimeCheck } from "./runtime-check.ts";
 
 const repository = resolve(import.meta.dirname, "../..");
@@ -38,6 +40,7 @@ const flag = (name: string, fallback: number) => {
   return value;
 };
 const concurrency = flag("concurrency", 4);
+const rewrite = flags.includes("--rewrite");
 const timeoutSeconds = flag("timeout", 180);
 const catalog = resolve(catalogArgument);
 const reportDirectory = resolve(reportArgument);
@@ -123,7 +126,11 @@ await Effect.runPromise(
             const document = yield* Effect.tryPromise(() =>
               readFile(join(catalog, source), "utf8"),
             ).pipe(Effect.map((text) => Schema.decodeUnknownSync(Document)(JSON.parse(text))));
-            const split = splitSource(document.files);
+            const split = splitSource(
+              rewrite
+                ? Schema.decodeUnknownSync(SourceFiles)(rewriteUpstreamSource(document.files).files)
+                : document.files,
+            );
             const manifest = split.code.find((file) => file.path === "package.json");
             const framework =
               (manifest === undefined
@@ -206,6 +213,7 @@ const report = {
   catalog,
   concurrency,
   timeoutSeconds,
+  rewrite,
   lastRunWallMs: wallMs,
   all: summarize(results),
   byFramework: Object.fromEntries(
@@ -240,7 +248,7 @@ await writeFile(
   [
     "# Catalog qualification against the Host's framework",
     "",
-    `Catalog: ${catalog}. Concurrency ${concurrency}, timeout ${timeoutSeconds} s. Last run's wall time: ${wallMs} ms.`,
+    `Catalog: ${catalog}${rewrite ? ", rewritten with upstream-names.json" : ""}. Concurrency ${concurrency}, timeout ${timeoutSeconds} s. Last run's wall time: ${wallMs} ms.`,
     "",
     section("All documents", report.all),
     ...versions.map((version) =>

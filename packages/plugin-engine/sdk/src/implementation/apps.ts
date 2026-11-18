@@ -517,7 +517,7 @@ export const makeApps = (
               : error.reason === "invalid-source"
                 ? Effect.fail(
                     invalidSource(
-                      "a ui/public/ file cannot be read: public paths may not be index.html or under _pluginEngine/, and stored files must name blobs of the app's repository.",
+                      "a ui/public/ file cannot be read: public paths may not be index.html or under _plugin-engine/, and stored files must name blobs of the app's repository.",
                     ),
                   )
                 : Effect.fail(new StorageError()),

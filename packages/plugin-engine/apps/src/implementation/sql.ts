@@ -20,6 +20,7 @@ import {
 } from "../contracts/sql.ts";
 import type { SkillFile } from "../contracts/skills.ts";
 import type { MigrateResult } from "../contracts/protocols/current.ts";
+import upstreamNames from "../../../upstream-names.json" with { type: "json" };
 
 /** The receipt table of workflow step mutations. */
 const receipts = `${reservedTablePrefix}step_receipts`;
@@ -33,6 +34,48 @@ const migrationsTable = `${reservedTablePrefix}migrations`;
  * migration that copies old rows out works for upgraded and fresh deployments alike.
  */
 const legacyRows = `${reservedTablePrefix}legacy_rows`;
+/**
+ * The reserved tables as a framework from before the rename named them (`from`), and their names
+ * now (`to`). The plugin source rewrite changes only these names in migrations, so a rewritten
+ * migration with them changed back is its applied bytes.
+ */
+const renamedTables = upstreamNames.rules.filter((rule) => rule.scope === "reserved-table");
+
+/**
+ * Give a database created by a framework from before the rename its reserved tables' current names,
+ * once. Its applied migrations are recorded by their bytes then; one rewritten since (see
+ * `renamedTables`) is recorded by its current bytes, so its history still matches. Returns nothing:
+ * after it the database reads as one this framework created.
+ */
+const renameReservedTables = (
+  storage: AppSqlStorage,
+  migrations: readonly Migration[],
+  appliedHashes: readonly string[],
+) => {
+  const kind = (name: string) =>
+    storage.sql.exec("SELECT type FROM sqlite_master WHERE name = ?", name).toArray()[0]?.type;
+  const migrationsTableRenamed = renamedTables.some(
+    ({ to }) => to === migrationsTable && kind(to) === undefined,
+  );
+  for (const { from, to } of renamedTables) {
+    const found = kind(from);
+    if (found === "view") storage.sql.exec(`DROP VIEW ${from}`);
+    else if (found === "table" && kind(to) === undefined)
+      storage.sql.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+  }
+  if (!migrationsTableRenamed || kind(migrationsTable) === undefined) return;
+  for (const [index, migration] of migrations.entries()) {
+    const applied = appliedHashes[index];
+    if (applied !== undefined && applied !== migration.hash)
+      storage.sql.exec(
+        `UPDATE ${migrationsTable} SET hash = ? WHERE id = ? AND path = ? AND hash = ?`,
+        migration.hash,
+        index + 1,
+        migration.path,
+        applied,
+      );
+  }
+};
 
 /** Rows already read, so budgets are counted when the statement runs. */
 const materialize = <Row extends SqlRow>(
@@ -491,11 +534,21 @@ const History = Schema.Array(
 export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
   Effect.gen(function* () {
     const migrations = yield* migrationsOf(files);
+    // Each migration's bytes with the reserved tables as an earlier framework named them.
+    const appliedHashes = yield* Effect.forEach(migrations, (migration) =>
+      sha256(
+        renamedTables.reduce(
+          (content, { from, to }) => content.replaceAll(to, from),
+          migration.content,
+        ),
+      ),
+    );
     // A migration may change connection settings while it runs, for example turning off foreign
     // keys to rebuild a table; whatever happens, they are PluginEngine's again afterwards.
     const baseline = readSettings(storage);
     return yield* Effect.sync(() =>
       storage.transactionSync(() => {
+        renameReservedTables(storage, migrations, appliedHashes);
         storage.sql.exec(
           `CREATE TABLE IF NOT EXISTS ${migrationsTable} (id INTEGER PRIMARY KEY, path TEXT NOT NULL, hash TEXT NOT NULL, applied_at TEXT NOT NULL)`,
         );

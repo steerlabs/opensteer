@@ -1,5 +1,5 @@
-import * as __published from "../published-compat.ts";
 /** Host-rendered account notices; no authored app code or provider responses enter them. */
+import * as page from "../contracts/page-names.ts";
 import type { UiAccountNotice, UiAccountProblem } from "../contracts/ui.ts";
 import { accountNoticeSource } from "./browser-scripts.gen.ts";
 
@@ -62,7 +62,7 @@ a.primary{background:#18181b;border-color:#18181b;color:#fff}
 
 /** Inline card for advisory problems; the app still loads underneath. */
 export const accountNoticeBootstrap = (notice: UiAccountNotice) =>
-  `<script type="application/json" id="${__published.accountNoticeElement}">${JSON.stringify({
+  `<script type="application/json" id="${page.accountNoticeElement}">${JSON.stringify({
     items: notice.problems.map(accountProblemText),
     fix: notice.fix,
   }).replaceAll("<", "\\u003c")}</script><script>${accountNoticeSource}</script>`;

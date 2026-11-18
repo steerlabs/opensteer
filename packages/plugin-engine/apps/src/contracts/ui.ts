@@ -1,5 +1,6 @@
-import * as __published from "../published-compat.ts";
 /** Browser-to-host operations bind identity and authentication outside authored app code. */
+export * from "./page-names.ts";
+import * as page from "./page-names.ts";
 import { Schema, type Effect, type Stream } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { withLegacyKeys } from "@opensteer/plugin-engine-utils/legacy-keys";
@@ -106,21 +107,21 @@ const errors = [UiUnauthorized, UiForbidden, UiVersionChanged, UiFailed] as cons
 export const AppUiApi = HttpApi.make("app-ui").add(
   HttpApiGroup.make("ui")
     .add(
-      HttpApiEndpoint.post("query", __published.queryPath, {
+      HttpApiEndpoint.post("query", page.queryPath, {
         payload: UiOperation,
         success: JsonValue,
         error: errors,
       }),
     )
     .add(
-      HttpApiEndpoint.post("mutate", __published.mutatePath, {
+      HttpApiEndpoint.post("mutate", page.mutatePath, {
         payload: UiOperation,
         success: JsonValue,
         error: errors,
       }),
     )
     .add(
-      HttpApiEndpoint.post("subscribe", __published.subscribePath, {
+      HttpApiEndpoint.post("subscribe", page.subscribePath, {
         payload: UiOperation,
         success: HttpApiSchema.StreamSse({ data: UiSnapshot, error: Schema.Union(errors) }),
         error: errors,
