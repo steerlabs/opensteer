@@ -1069,6 +1069,7 @@ export async function revokeRunner(
           profileIds,
           revokedAt,
         );
+        if (deletedBrowserProfiles.length) mutation.bumpResource("browser-profile");
 
         await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);

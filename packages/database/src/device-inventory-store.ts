@@ -4,7 +4,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { renameRunner } from "./runner-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import {
   DeviceIdSchema,
@@ -239,7 +239,7 @@ export async function renameDevice(
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > 120)
     throw new OpensteerError({ code: "bad_request", message: "Device name is invalid" });
-  await withPersonalTransaction(database, (transaction) =>
+  await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       if ((await deviceOwnershipIn(transaction, deviceId))?.effectiveOwner !== ownerId)
         throw new OpensteerError({ code: "not_found", message: "Device not found" });
@@ -271,6 +271,7 @@ export async function renameDevice(
         .where(computerConnectionDeviceId, "=", deviceId)
         .where("status", "!=", "revoked")
         .execute();
+      mutation.bumpResource("machine");
     }),
   );
 }

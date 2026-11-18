@@ -424,7 +424,7 @@ describeStore("MCP administration", (it) => {
         store: f.store,
         browser,
         browserSources: { removeSite: sources.removeGrant.bind(sources) },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -648,7 +648,7 @@ describeStore("MCP administration", (it) => {
       {
         store: f.store,
         channels: { service: channels },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -729,7 +729,7 @@ describeStore("MCP administration", (it) => {
       {
         store: f.store,
         integrations: { platform: { store: platform } },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -793,7 +793,7 @@ describeStore("MCP administration", (it) => {
       {
         store: f.store,
         integrations: { platform },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -934,7 +934,7 @@ describeStore("MCP administration", (it) => {
           service: integrations,
           platform: { store: new IntegrationPlatformStore(f.database) },
         },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -1046,7 +1046,7 @@ describeStore("MCP administration", (it) => {
       {
         store: f.store,
         integrations: { platform },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -1124,7 +1124,7 @@ describeStore("MCP administration", (it) => {
       {
         store: f.store,
         integrations: { platform: { store: platform, revokeGrant } },
-        realtime: { broadcast: vi.fn() },
+        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
     );

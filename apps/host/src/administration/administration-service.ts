@@ -550,9 +550,6 @@ export class AdministrationService {
           command.name,
           administration ? { administration } : {},
         );
-        await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) =>
-          mutation.bumpResource("machine"),
-        );
         return {
           type: command.type,
         };
