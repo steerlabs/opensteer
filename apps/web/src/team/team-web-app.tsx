@@ -236,7 +236,7 @@ function TeamSignIn({
         oauthQuery,
         providerId: "opensteer-account",
       });
-    } catch (failure) {
+    } catch {
       window.sessionStorage.removeItem(teamPageReturnKey);
       setBusy(false);
       setError(

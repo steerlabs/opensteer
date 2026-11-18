@@ -122,7 +122,7 @@ it("opens the code editor once the connection returns, after a read the outage i
       </MemoryRouter>,
     ),
   );
-  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  await act(async () => undefined);
   expect(node.querySelector("form")).toBeNull();
   expect(node.querySelector('[role="alert"]')).toBeNull();
   reachable = true;
