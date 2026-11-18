@@ -53,6 +53,7 @@
     "scripts/build-iphone-bridge.ts",
     "scripts/build-iphone-bridge.test.ts",
     "scripts/iphone-bridge-release.test.ts",
+    "scripts/codesign-requirement.test.ts",
     "scripts/prepare-release-resources.ts"
   ]
 }
