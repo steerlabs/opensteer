@@ -29,6 +29,7 @@ test("large tool, skill and version inventories cross IPC only as previews or pa
       irrelevant: "v".repeat(5000),
     })),
     links: [],
+    readiness: {},
     schedules: [],
     webhooks: [],
     workflows: [],
