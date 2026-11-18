@@ -27,6 +27,11 @@
   animation: connection-pill-in var(--duration-med) var(--ease-out) both;
 }
 
+.connection-pill--settled,
+.connection-pill__label--settled {
+  animation: none;
+}
+
 .connection-pill--leaving {
   animation: connection-pill-out 150ms var(--ease-out) both;
   pointer-events: none;
@@ -36,6 +41,10 @@
   .connection-pill {
     top: calc(52px + env(safe-area-inset-top, 0px) + var(--space-8));
   }
+}
+
+.connection-pill-host {
+  display: contents;
 }
 
 html.electron-shell .connection-pill {

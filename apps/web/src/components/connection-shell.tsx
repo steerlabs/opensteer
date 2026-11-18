@@ -224,18 +224,37 @@ export function ShellConnectionPill({
           ];
     }),
   );
-  const slot = useContext(PillSlotContext).slot;
+  const { host, slot } = useContext(PillSlotContext);
+  const [inline, setInline] = useState<HTMLElement | null>(null);
+  // One element holds the pill wherever it sits: moving it between a column and the main one
+  // keeps the pill, its open details and its live region, rather than drawing a new one.
+  useLayoutEffect(() => {
+    const parent = slot ?? inline;
+    if (host && parent && host.parentElement !== parent) parent.append(host);
+  }, [host, inline, slot]);
+  useLayoutEffect(() => () => host?.remove(), [host]);
   const pill = (
     <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />
   );
-  return slot ? createPortal(pill, slot) : pill;
+  if (!host) return pill;
+  return (
+    <>
+      <span className="connection-pill-host" ref={setInline} />
+      {createPortal(pill, host)}
+    </>
+  );
 }
 
 interface PillSlotValue {
+  readonly host: HTMLElement | null;
   readonly slot: HTMLElement | null;
   readonly place: (element: HTMLElement) => () => void;
 }
-const PillSlotContext = createContext<PillSlotValue>({ slot: null, place: () => () => {} });
+const PillSlotContext = createContext<PillSlotValue>({
+  host: null,
+  slot: null,
+  place: () => () => {},
+});
 
 /**
  * Hands the pill to the primary column of a layout with more than one (the
@@ -304,15 +323,22 @@ export function ConnectionGateScope({ children }: { readonly children: ReactNode
     [claims > 0],
   );
   const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const [host] = useState(() => {
+    if (typeof document === "undefined") return null;
+    const element = document.createElement("span");
+    element.className = "connection-pill-host";
+    return element;
+  });
   const pillSlot = useMemo<PillSlotValue>(
     () => ({
+      host,
       slot,
       place: (element) => {
         setSlot(element);
         return () => setSlot((current) => (current === element ? null : current));
       },
     }),
-    [slot],
+    [host, slot],
   );
   return (
     <GateContext value={value}>

@@ -74,6 +74,9 @@ export const ConnectionPill = memo(function ConnectionPill({
   const [open, setOpen] = useState(false);
   if (open && (current === null || details === null)) setOpen(false);
   const shown = current ?? drawn;
+  // Once in, the capsule and its words don't enter again when the shell moves them to another column.
+  const [settled, setSettled] = useState<string | null>(null);
+  if (shown === null && settled !== null) setSettled(null);
   return (
     <>
       <span aria-live="polite" className="visually-hidden">
@@ -81,9 +84,19 @@ export const ConnectionPill = memo(function ConnectionPill({
       </span>
       {shown === null ? null : (
         <div
-          className={leaving ? "connection-pill connection-pill--leaving" : "connection-pill"}
+          className={
+            leaving
+              ? "connection-pill connection-pill--leaving"
+              : settled === null
+                ? "connection-pill"
+                : "connection-pill connection-pill--settled"
+          }
           onAnimationEnd={(event) => {
-            if (leaving && event.target === event.currentTarget) setDrawn(null);
+            if (event.target === event.currentTarget) {
+              if (leaving) setDrawn(null);
+              else setSettled((value) => value ?? "");
+            } else if (event.target instanceof HTMLElement && event.target.dataset["label"])
+              setSettled(event.target.dataset["label"]);
           }}
         >
           <button
@@ -104,7 +117,15 @@ export const ConnectionPill = memo(function ConnectionPill({
                 .filter(Boolean)
                 .join(" ")}
             />
-            <span className="connection-pill__label" key={shown.key}>
+            <span
+              className={
+                settled === shown.key
+                  ? "connection-pill__label connection-pill__label--settled"
+                  : "connection-pill__label"
+              }
+              data-label={shown.key}
+              key={shown.key}
+            >
               {shown.label}
             </span>
           </button>
