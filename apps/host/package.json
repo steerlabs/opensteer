@@ -59,6 +59,7 @@
     "workerd": "1.20260918.1",
     "typescript-5": "npm:typescript@5.9.3",
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.13",
     "apps": "workspace:*"
   },
   "devDependencies": {
