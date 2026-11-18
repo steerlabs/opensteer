@@ -613,7 +613,8 @@ it("surfaces a full legacy queue and imports the remainder when a slot is freed"
     expect(outbox.getSnapshot()).toMatchObject({ loading: false, issue: null });
     expect(outbox.getSnapshot().messages).toHaveLength(48);
     expect(legacy.size).toBe(1);
-    await outbox.restoreDraft("legacy-0");
+    outbox.observe([{ id: "existing-message", clientSendKey: "legacy-0" }]);
+    session.change({ phase: "ready", readyRevision: 2 });
     await vi.advanceTimersByTimeAsync(0);
     expect(outbox.getSnapshot().messages).toHaveLength(48);
     expect(outbox.getSnapshot().messages.some((row) => row.localId === "legacy-48")).toBe(true);

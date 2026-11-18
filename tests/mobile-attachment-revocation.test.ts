@@ -221,7 +221,10 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         mock.dispose();
         for (const socket of sockets.clients) socket.terminate();
         await new Promise<void>((resolve) => sockets.close(() => resolve()));
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        });
       }
     },
   );
