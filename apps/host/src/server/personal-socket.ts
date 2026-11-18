@@ -5,8 +5,10 @@ import { PersonalSyncSocket, type RealtimeHub } from "@opensteer/orchestration";
 import {
   personalClientFrameMaxBytes,
   ScopedClientMessageSchema,
+  scopedPersonalApiVersion,
 } from "@opensteer/protocol/personal-sync";
-import type { HostToClientMessage } from "@opensteer/protocol";
+import { unsupportedVersionCloseCode, type HostToClientMessage } from "@opensteer/protocol";
+import { z } from "zod";
 import type { AuthenticatedHostSession } from "../identity/auth.js";
 import type { createPersonalReads } from "./personal-reads.js";
 import type { PersonalResources } from "./personal-resources.js";
@@ -14,6 +16,10 @@ import { installWebSocketLiveness, scheduleWebSocketExpiration } from "./websock
 
 const authorityCloseCode = 4003;
 const socketBudget = 512 * 1024;
+const attachVersion = z.object({
+  type: z.literal("client.attach"),
+  apiVersion: z.int().positive(),
+});
 
 export function attachPersonalSocket(options: {
   socket: WebSocket;
@@ -125,7 +131,17 @@ export function attachPersonalSocket(options: {
       const raw = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
       if (raw.byteLength > personalClientFrameMaxBytes)
         throw new Error("Maximum client frame exceeded");
-      const message = ScopedClientMessageSchema.parse(JSON.parse(raw.toString("utf8")));
+      const payload: unknown = JSON.parse(raw.toString("utf8"));
+      const parsed = ScopedClientMessageSchema.safeParse(payload);
+      if (!parsed.success) {
+        const version = attachVersion.safeParse(payload);
+        if (version.success && version.data.apiVersion !== scopedPersonalApiVersion) {
+          socket.close(unsupportedVersionCloseCode, "Update Opensteer to connect to this Host.");
+          return;
+        }
+        throw parsed.error;
+      }
+      const message = parsed.data;
       if (message.type === "client.ping") {
         void sink
           .send({ type: "host.pong", nonce: message.nonce })

@@ -1,4 +1,4 @@
-import { createPersonalStreamCache } from "@opensteer/client/host";
+import { createPersonalStreamCache, personalCacheFormat } from "@opensteer/client/host";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -320,7 +320,7 @@ function mobileClient(): MobileRoot {
         notifications.registration,
         port.signedInSubject,
       );
-  const checkpointDirectory = `${root}${storeName}/personal-stream-v63`;
+  const checkpointDirectory = `${root}${storeName}/personal-stream-v${personalCacheFormat}`;
   const checkpointPath = `${checkpointDirectory}/checkpoints.json`;
   const personalStreamCache = createPersonalStreamCache({
     exists: () => privateFiles.fileExists(checkpointPath),

@@ -69,7 +69,7 @@ function connect(
     async attach(withSelected = false) {
       sync.attach({
         type: "client.attach",
-        apiVersion: 63,
+        apiVersion: 64,
         generation: 1,
         interests: [],
         installed: {},

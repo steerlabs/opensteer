@@ -1,5 +1,11 @@
 import { createId } from "@opensteer/core";
-import { apiVersionHeaders, hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  apiVersionHeaders,
+  hostApiVersion,
+  hostApiCurrentHeader,
+  hostApiVersionHeader,
+} from "@opensteer/deployment-authority";
+import { unsupportedVersionCloseCode } from "@opensteer/protocol";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -49,12 +55,35 @@ const attach = {
 };
 
 describe("personal realtime negotiation", () => {
-  it("rejects an incompatible version before reading any Personal state", async () => {
+  it.each([63, 62])(
+    "instructs a v%i realtime caller to update before reading any Personal state",
+    async (version) => {
+      readCut.mockClear();
+      await using peer = await realtimeSocket();
+      const closed = once(peer.socket, "close");
+      peer.socket.send(JSON.stringify({ ...attach, apiVersion: version }));
+      const [code, reason] = await deadline(closed);
+      expect(code).toBe(unsupportedVersionCloseCode);
+      expect(String(reason)).toContain("Update Opensteer");
+      expect(readCut).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects main's v63 version headers before attaching", async () => {
     readCut.mockClear();
     await using peer = await realtimeSocket();
-    const closed = once(peer.socket, "close");
-    peer.socket.send(JSON.stringify({ ...attach, apiVersion: hostApiVersion - 1 }));
-    await expect(deadline(closed)).resolves.toEqual([1008, expect.any(Buffer)]);
+    const response = await peer.app.inject({
+      method: "GET",
+      url: "/v1/realtime",
+      headers: { [hostApiVersionHeader]: "63", [hostApiCurrentHeader]: "63" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        reason: "unsupported-version",
+        message: expect.stringContaining("Update Opensteer"),
+      },
+    });
     expect(readCut).not.toHaveBeenCalled();
   });
 
@@ -175,6 +204,7 @@ async function realtimeSocket() {
     throw error;
   }
   return {
+    app,
     socket,
     async [Symbol.asyncDispose]() {
       socket.terminate();

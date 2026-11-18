@@ -3,6 +3,7 @@ import type { ClientLifecycle, HttpHostClientOptions } from "@opensteer/client/h
 import {
   HttpHostClient,
   createPersonalStreamCache,
+  personalCacheFormat,
   type BrowserPreferencesStorage,
   type WebSocketClient,
 } from "@opensteer/client/host";
@@ -36,7 +37,7 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   const baseUrl = options.baseUrl ?? window.location.origin;
-  const key = `opensteer.personal-stream.v63:${new URL(baseUrl).origin}`;
+  const key = `opensteer.personal-stream.v${personalCacheFormat}:${new URL(baseUrl).origin}`;
   const streamCache = createPersonalStreamCache({
     exists: async () => window.sessionStorage.getItem(key) !== null,
     read: async () => window.sessionStorage.getItem(key),

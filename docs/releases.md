@@ -6,16 +6,18 @@ Tim performs every credential operation; agents never read or operate on key mat
 
 ## Fresh baseline and team servers
 
-This baseline refuses old databases. Desktop Start fresh renames personal data aside and creates
-a new Deployment identity; it never deletes the old data or touches `~/Opensteer`. Phones must
-pair again, and the old Account/Connect entry remains removable. Test reset only in disposable
-fixtures or a VM.
+Supported Personal databases upgrade in place. Migration 0035 converts Personal state after the
+plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
+identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
+only in disposable fixtures or a VM.
 
 Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. The Personal Host, apps and agent-enabled
-Runners update together at personal API version 63. Team keeps its own API compatibility window.
+and each tag's version names the images it runs. The Personal Host and apps update together at
+Personal API version 64. Version 64 introduces scoped sync and requires an update for clients
+on version 63 or older. Agent-enabled Runners update alongside the Host and negotiate
+`run-events-v2` separately. Team keeps its own API compatibility window.
 Hosted teams use the hosted release policy instead.
 
 ## Build inputs and local proof

@@ -53,9 +53,9 @@ export function checkStableApi(root = process.cwd()) {
           minimum: version(current, "minimumHostApiVersion"),
         };
   const scopedPersonalCutover =
-    personal?.minimum === 63 &&
-    version(current, "hostApiVersion") === 63 &&
-    personal.published < 63;
+    personal?.minimum === 64 &&
+    version(current, "hostApiVersion") === 64 &&
+    personal.published < 64;
   if (personal && personal.minimum > personal.published && !scopedPersonalCutover)
     throw new Error(
       `minimumHostApiVersion ${personal.minimum} excludes ${tag} (hostApiVersion ${personal.published}). Keep Stable Macs reachable.`,
@@ -69,7 +69,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   console.log(
     personal
       ? personal.minimum > personal.published
-        ? `Personal API 63 cuts over from ${tag} (personal API ${personal.published})`
+        ? `Personal API ${personal.minimum} cuts over from ${tag} (personal API ${personal.published})`
         : `Personal API minimum ${personal.minimum} admits ${tag} (personal API ${personal.published})`
       : `${tag} predates the personal API window; no personal floor applies`,
   );

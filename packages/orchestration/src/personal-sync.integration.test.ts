@@ -128,7 +128,7 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
     ] as const) {
       entry.socket.attach({
         type: "client.attach",
-        apiVersion: 63,
+        apiVersion: 64,
         generation,
         interests: ["settings"],
         installed: { settings: "0" },

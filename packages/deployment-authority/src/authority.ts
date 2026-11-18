@@ -43,8 +43,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
  * speak the lower of their two current versions.
  */
-export const hostApiVersion = 63;
-export const minimumHostApiVersion = 63;
+export const hostApiVersion = 64;
+export const minimumHostApiVersion = 64;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.

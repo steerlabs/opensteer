@@ -56,10 +56,12 @@ describe("DesktopHostTransport", () => {
     ["web", 61],
     ["web", 62],
     ["web", 63],
+    ["web", 64],
     ["desktop", 60],
     ["desktop", 61],
     ["desktop", 62],
     ["desktop", 63],
+    ["desktop", 64],
   ] as const)(
     "%s checks the Personal API %i before admitting sends and task creation",
     async (surface, version) => {

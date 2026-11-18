@@ -32,7 +32,7 @@ import {
   TranscriptOrderCursorSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 63;
+export const scopedPersonalApiVersion = 64;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 64 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;

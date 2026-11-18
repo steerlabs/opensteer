@@ -3,7 +3,7 @@ import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protoco
 import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
-export const personalCacheFormat = 63;
+export const personalCacheFormat = 64;
 
 export interface PersonalCacheScope {
   readonly deploymentId: string;

@@ -409,12 +409,13 @@ export function requireNegotiatedVersion(
     kind === "personal"
       ? `Opensteer protocol ${minimumHostApiVersion} through ${apiNegotiation(kind).apiVersion}`
       : `Opensteer protocol ${apiNegotiation(kind).apiVersion}`;
+  const detail =
+    typeof stated === "string"
+      ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
+      : `This deployment serves ${serves} and the caller stated none.`;
   throw new OpensteerError({
     code: "bad_request",
-    message:
-      typeof stated === "string"
-        ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
-        : `This deployment serves ${serves} and the caller stated none.`,
+    message: kind === "personal" ? `Update Opensteer to connect to this Host. ${detail}` : detail,
     reason: unsupportedVersionReason,
   });
 }
