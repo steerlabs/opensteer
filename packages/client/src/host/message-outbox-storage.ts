@@ -4,6 +4,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { z } from "zod";
 import { hostApi } from "@opensteer/protocol";
 import { clientScopeKey, type ClientScope } from "../connections/connection-controller.js";
+import type { ClientIssue } from "../feedback/client-issue.js";
 import {
   compareOutboxOrder,
   sameStoredMessage,
@@ -23,6 +24,7 @@ const entrySchema = z
     order: z.number().int().safe(),
     attempted: z.boolean(),
     attemptId: z.uuid().optional(),
+    inFlight: z.array(z.uuid()).optional(),
     migrated: z.literal(true).optional(),
     inTranscript: z.literal(true).optional(),
     phase: z.enum(["waiting", "sending", "rejected", "restoring"]),
@@ -198,13 +200,13 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
         });
       if (
         existing &&
-        options?.append &&
+        (options?.append || options?.handoff) &&
         JSON.stringify(existing.command) !== JSON.stringify(entry.command)
       )
         throw new Error("The message key is already in use.");
       saved = options?.append
         ? (existing ?? { ...entry, order: Math.max(0, ...entries.map((row) => row.order)) + 1 })
-        : options?.migrated && existing
+        : (options?.migrated || options?.handoff) && existing
           ? existing
           : entry;
       if (saved !== existing)
@@ -256,7 +258,9 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
         return true;
       }),
     async dispatchIfPending(scope, entry, claim, start) {
-      let dispatch = null;
+      const id = claim.attemptId;
+      if (!id) throw new Error("A dispatch must have an attempt ID.");
+      let claimed = false;
       await update(scope, (record) => {
         const index = record.entries.findIndex(
           (row) => row.command.threadId === entry.command.threadId,
@@ -267,21 +271,55 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
           record.takenBack?.includes(messageStorageFingerprint(entry.localId))
         )
           return false;
-        const answer = start();
-        if (!answer) return false;
-        // The dispatch starts at the transaction's fence, before another window can take back.
-        void answer.catch(() => {});
-        dispatch = { answer };
-        record.entries[index] = claim;
+        // Track each replay alongside earlier requests until their replies settle.
+        record.entries[index] = { ...claim, inFlight: [...(entry.inFlight ?? []), id] };
+        claimed = true;
         return true;
       });
-      return dispatch;
+      if (!claimed) return null;
+      const settle = async (rejection?: ClientIssue): Promise<StoredMessage | null> => {
+        let updated: StoredMessage | null = null;
+        await update(scope, (record) => {
+          const index = record.entries.findIndex((row) => row.localId === entry.localId);
+          const held = record.entries[index];
+          if (!held) return false;
+          updated = held;
+          if (!held.inFlight?.includes(id)) return false;
+          const inFlight = held.inFlight.filter((key) => key !== id);
+          updated = {
+            ...held,
+            inFlight: inFlight.length > 0 ? inFlight : undefined,
+            ...(rejection && inFlight.length === 0 ? { phase: "rejected", rejection } : {}),
+          };
+          record.entries[index] = updated;
+          return true;
+        });
+        return updated;
+      };
+      let answer: ReturnType<typeof start>;
+      try {
+        answer = start();
+      } catch (error) {
+        answer = Promise.reject(error);
+      }
+      if (answer) {
+        void answer.catch(() => {});
+        return { answer, settle };
+      }
+      await settle();
+      return null;
     },
     async replace(scope, previous, next, takeBack) {
       let replaced = false;
       await update(scope, (record) => {
         const index = record.entries.findIndex((row) => row.localId === previous.localId);
-        if (index === -1 || !sameStoredMessage(record.entries[index]!, previous)) return false;
+        const held = record.entries[index];
+        if (
+          !held ||
+          !sameStoredMessage(held, previous) ||
+          ((takeBack || next?.phase === "restoring") && held.inFlight?.length)
+        )
+          return false;
         if (next) record.entries[index] = next;
         else record.entries.splice(index, 1);
         if (takeBack) (record.takenBack ??= []).push(messageStorageFingerprint(previous.localId));

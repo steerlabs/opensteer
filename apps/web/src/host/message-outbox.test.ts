@@ -145,6 +145,84 @@ it("fences a paused dispatch in another window after a refusal is edited", async
   }
 });
 
+it("blocks take-back after one window gets refused while another send is unresolved", async () => {
+  vi.stubGlobal("navigator", {});
+  vi.stubGlobal("BroadcastChannel", undefined);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  vi.stubGlobal("window", new EventTarget());
+  const first = controlledClientSession();
+  const second = controlledClientSession();
+  const scope = { ...first.connection.getSnapshot().scope!, loginId: "outstanding-send" };
+  for (const session of [first, second]) session.change({ scope, phase: "recovering" });
+  const firstReply = Promise.withResolvers<{ messageId: string }>();
+  const secondReply = Promise.withResolvers<{ messageId: string }>();
+  const secondFinished = Promise.withResolvers<void>();
+  const sendA = vi.fn(() => firstReply.promise);
+  const sendB = vi.fn(() => secondReply.promise);
+  const restore = vi.fn(async () => "restored" as const);
+  const firstStorage = createMessageOutboxStorage(browserMessageRecords());
+  const otherStorage = createMessageOutboxStorage(browserMessageRecords());
+  const a = createMessageOutbox({
+    session: first,
+    dispatch: sendA,
+    drafts: { restore },
+    storage: firstStorage,
+  });
+  const b = createMessageOutbox({
+    session: second,
+    dispatch: sendB,
+    drafts: { restore },
+    storage: {
+      ...otherStorage,
+      // Another renderer has its own fallback lock.
+      delivery: (_scope, _threadId, work) => work().finally(() => secondFinished.resolve()),
+    },
+  });
+  const message = sendMessageCommand(createId("thread"), {
+    body: "Take this back",
+    attachments: [],
+    idempotencyKey: "outstanding-send",
+  });
+  const refusal = new HostClientRequestError({
+    code: "forbidden",
+    status: 403,
+    message: "Refused",
+    retryable: false,
+  });
+  try {
+    await a.enqueue(message);
+    await b.enqueue(message);
+    first.change({ phase: "ready", readyRevision: 2 });
+    await vi.waitFor(() => expect(sendA).toHaveBeenCalledOnce(), { timeout: 1000 });
+    second.change({ phase: "ready", readyRevision: 2 });
+    await vi.waitFor(() => expect(sendB).toHaveBeenCalledOnce(), { timeout: 1000 });
+    secondReply.reject(refusal);
+    await vi.waitFor(() => expect(secondFinished.promise).resolves.toBeUndefined(), {
+      timeout: 1000,
+    });
+    second.change({ phase: "recovering" });
+
+    await expect(b.restoreDraft(message.idempotencyKey)).resolves.toBe("sent");
+    await expect(b.discard(message.idempotencyKey)).rejects.toMatchObject({
+      failure: { reason: "message-unconfirmed" },
+    });
+    expect(restore).not.toHaveBeenCalled();
+    expect(await firstStorage.load(scope)).toHaveLength(1);
+
+    firstReply.reject(refusal);
+    await vi.waitFor(() => expect(a.getSnapshot().messages[0]?.phase).toBe("rejected"), {
+      timeout: 1000,
+    });
+    await expect(a.restoreDraft(message.idempotencyKey)).resolves.toBe("restored");
+    expect(await firstStorage.load(scope)).toEqual([]);
+  } finally {
+    firstReply.resolve({ messageId: "finished-a" });
+    secondReply.resolve({ messageId: "finished-b" });
+    a.dispose();
+    b.dispose();
+  }
+});
+
 it("keeps a shared take-back fenced when one window cannot restore its copy", async () => {
   vi.stubGlobal("navigator", {});
   vi.stubGlobal("BroadcastChannel", undefined);

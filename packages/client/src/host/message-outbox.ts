@@ -26,6 +26,7 @@ export interface StoredMessage {
   readonly migrated?: true | undefined;
   readonly inTranscript?: true | undefined;
   readonly attemptId?: string | undefined;
+  readonly inFlight?: readonly string[] | undefined;
   readonly localAttachmentUris?: readonly (string | null)[] | undefined;
   readonly rejection?: ClientIssue | undefined;
 }
@@ -55,7 +56,10 @@ export interface MessageOutboxStorage {
     entry: StoredMessage,
     claim: StoredMessage,
     start: () => Promise<T> | null,
-  ): Promise<{ readonly answer: Promise<T> } | null>;
+  ): Promise<{
+    readonly answer: Promise<T>;
+    settle(rejection?: ClientIssue): Promise<StoredMessage | null>;
+  } | null>;
   forgetMigrations?(scope: ClientScope, sourceExists: (id: string) => boolean): Promise<void>;
   hasHandoff?(
     scope: ClientScope,
@@ -135,10 +139,11 @@ export interface MessageOutboxOptions {
 /** A refusal, or a message never tried: nothing of it can be on the computer. */
 function takeable(entry: StoredMessage): boolean {
   return (
-    entry.phase === "restoring" ||
-    (entry.phase === "rejected"
-      ? entry.rejection?.code !== "unconfirmed"
-      : entry.phase === "waiting" && !entry.attempted)
+    !entry.inFlight?.length &&
+    (entry.phase === "restoring" ||
+      (entry.phase === "rejected"
+        ? entry.rejection?.code !== "unconfirmed"
+        : entry.phase === "waiting" && !entry.attempted))
   );
 }
 export function compareOutboxOrder(a: StoredMessage, b: StoredMessage): number {
@@ -155,6 +160,7 @@ export function sameStoredMessage(a: StoredMessage, b: StoredMessage): boolean {
     a.phase === b.phase &&
     a.attempted === b.attempted &&
     a.attemptId === b.attemptId &&
+    JSON.stringify(a.inFlight) === JSON.stringify(b.inFlight) &&
     a.createdAt === b.createdAt &&
     a.order === b.order &&
     a.migrated === b.migrated &&
@@ -196,7 +202,7 @@ class SessionMessageOutbox implements MessageOutbox {
   readonly #sending = new Map<string, string>();
   readonly #cancelled = new Set<string>();
   readonly #confirmed = new Set<string>();
-  readonly #unwrittenRefusals = new Map<string, { previous: StoredMessage; next: StoredMessage }>();
+  readonly #pendingSettlements = new Map<string, () => Promise<unknown>>();
   readonly #attempts = new Map<string, number>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   #storageRetry: ReturnType<typeof setTimeout> | null = null;
@@ -265,7 +271,7 @@ class SessionMessageOutbox implements MessageOutbox {
       this.#legacyPending = false;
       this.#legacyBlocked.clear();
       this.#confirmed.clear();
-      this.#unwrittenRefusals.clear();
+      this.#pendingSettlements.clear();
       this.#cancelled.clear();
       this.#sending.clear();
       this.#publish({
@@ -359,13 +365,14 @@ class SessionMessageOutbox implements MessageOutbox {
       if (!this.#current(scope, generation)) return;
       this.#legacyPending = remaining;
       this.#legacyBlocked = legacyBlocked;
-      for (const [id, { previous, next }] of this.#unwrittenRefusals) {
-        const index = entries.findIndex((row) => row.localId === id);
-        if (index !== -1 && (await this.#replace(scope, previous, next))) {
-          entries = entries.map((row, offset) => (offset === index ? next : row));
+      if (this.#pendingSettlements.size > 0) {
+        for (const [id, settle] of this.#pendingSettlements) {
+          await settle();
+          if (!this.#current(scope, generation)) return;
+          this.#pendingSettlements.delete(id);
         }
+        entries = await this.#options.storage.load(scope);
         if (!this.#current(scope, generation)) return;
-        this.#unwrittenRefusals.delete(id);
       }
       const heldRows = new Map(this.#state.messages.map((entry) => [entry.localId, entry]));
       const messages = entries
@@ -639,20 +646,19 @@ class SessionMessageOutbox implements MessageOutbox {
     const scope = this.#scope,
       generation = this.#generation,
       entry = this.#state.messages.find((value) => value.localId === localId);
-    if (!scope || !entry) return;
     const unconfirmed = () =>
       new ClientOperationError("Delivery is unconfirmed.", "blocked", {
         kind: "local",
         reason: "message-unconfirmed",
         retryable: false,
       });
-    if (!takeable(entry) || entry.phase === "restoring") throw unconfirmed();
+    if (!scope || !entry || !takeable(entry) || entry.phase === "restoring") throw unconfirmed();
     this.#cancelled.add(localId);
     const remove = async () => {
       const held = (await this.#options.storage.load(scope)).find(
         (value) => value.localId === localId,
       );
-      if (!this.#current(scope, generation)) return;
+      if (!this.#current(scope, generation)) throw unconfirmed();
       if (
         !held ||
         !takeable(held) ||
@@ -747,6 +753,7 @@ class SessionMessageOutbox implements MessageOutbox {
     }
     if (this.#cancelled.has(entry.localId)) return;
     let sending: StoredMessage = { ...entry, phase: "sending", attempted: true };
+    let settleDispatch: ((rejection?: ClientIssue) => Promise<StoredMessage | null>) | undefined;
     try {
       if (!(await this.#replace(scope, entry, sending))) {
         await this.#reload();
@@ -791,6 +798,7 @@ class SessionMessageOutbox implements MessageOutbox {
         );
         sending = claimed;
         answer = dispatch?.answer ?? null;
+        settleDispatch = dispatch?.settle;
       } else {
         const current = (await this.#options.storage.load(scope)).find(
           (row) => row.localId === entry.localId,
@@ -802,7 +810,10 @@ class SessionMessageOutbox implements MessageOutbox {
         return;
       }
       const acknowledgement = await answer;
-      if (!this.#current(scope, generation)) return;
+      if (!this.#current(scope, generation)) {
+        await settleDispatch?.();
+        return;
+      }
       this.#confirmed.add(entry.localId);
       const acknowledged = new Map(this.#state.acknowledged);
       acknowledged.set(acknowledgement.messageId, entry.localId);
@@ -814,49 +825,58 @@ class SessionMessageOutbox implements MessageOutbox {
       this.#housekeeping(this.#options.onConfirmed, scope, entry);
       this.#housekeeping(this.#options.onDiscarded, scope, entry);
     } catch (error) {
-      if (!this.#current(scope, generation)) return;
       const failure = classifyClientFailure(error);
-      if (failure.kind === "rejection" && !failure.retryable) {
-        const rejected: StoredMessage = {
-          ...sending,
-          phase: "rejected",
-          rejection: { code: "rejected", reason: failure.reason },
-        };
+      const rejection: ClientIssue | undefined =
+        failure.kind === "rejection" && !failure.retryable
+          ? { code: "rejected", reason: failure.reason }
+          : undefined;
+      const rejected: StoredMessage | null = rejection
+        ? { ...sending, phase: "rejected", rejection }
+        : null;
+      const settle = settleDispatch;
+      const write = settle
+        ? () => settle(rejection)
+        : rejected && this.#current(scope, generation)
+          ? async () => ((await this.#replace(scope, sending, rejected)) ? rejected : null)
+          : null;
+      if (write) {
         try {
-          if (!(await this.#replace(scope, sending, rejected))) {
+          const updated = await write();
+          if (!this.#current(scope, generation)) return;
+          if (!updated) {
             await this.#reload();
             return;
           }
+          sending = updated;
         } catch {
           if (!this.#current(scope, generation)) return;
-          this.#unwrittenRefusals.set(entry.localId, { previous: sending, next: rejected });
+          this.#pendingSettlements.set(entry.localId, write);
           this.#publish({
             issue: { code: "storage-unavailable" },
-            messages: this.#state.messages.map((value) =>
-              value.localId === entry.localId ? rejected : value,
-            ),
+            ...(!settleDispatch && rejected
+              ? {
+                  messages: this.#state.messages.map((value) =>
+                    value.localId === entry.localId ? rejected : value,
+                  ),
+                }
+              : {}),
           });
           this.#retryStorage();
           return;
         }
-        if (!this.#current(scope, generation)) return;
-        this.#publish({
-          messages: this.#state.messages.map((value) =>
-            value.localId === entry.localId ? rejected : value,
-          ),
-        });
-        // Rejection blocks the thread until the person edits or deletes this head.
-      } else {
-        this.#publish({
-          messages: this.#state.messages.map((value) =>
-            value.localId === entry.localId ? { ...sending, phase: "waiting" } : value,
-          ),
-          ...(failure.provenance === "local"
-            ? { issue: { code: "storage-unavailable" as const } }
-            : {}),
-        });
-        this.#pause(entry);
       }
+      if (!this.#current(scope, generation)) return;
+      const row: StoredMessage =
+        sending.phase === "rejected" ? sending : { ...sending, phase: "waiting" };
+      this.#publish({
+        messages: this.#state.messages.map((value) =>
+          value.localId === entry.localId ? row : value,
+        ),
+        ...(failure.provenance === "local"
+          ? { issue: { code: "storage-unavailable" as const } }
+          : {}),
+      });
+      if (row.phase !== "rejected") this.#pause(entry);
     }
   }
   #housekeeping(
