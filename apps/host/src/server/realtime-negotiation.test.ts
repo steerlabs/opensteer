@@ -96,7 +96,7 @@ describe("personal realtime negotiation", () => {
       await deadline(entered.promise);
       const closed = once(peer.socket, "close");
       peer.socket.send(JSON.stringify({ type: "client.ping", nonce: "x".repeat(32 * 1024) }));
-      await expect(deadline(closed)).resolves.toEqual([1008, expect.any(Buffer)]);
+      await expect(deadline(closed)).resolves.toEqual([1009, expect.any(Buffer)]);
     } finally {
       release.resolve();
     }
