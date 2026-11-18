@@ -26,8 +26,12 @@ import {
 
 export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const action = props.sections
+    .filter((section) => !section.collapsed || expanded.has(section.key))
+    .flatMap((section) => section.rows)
+    .find((row) => row.kind === "primary" && row.pinned);
   const list = (
-    <SettingsList>
+    <SettingsList footer={action ? <Row_ row={action} /> : null}>
       {props.search ? (
         <InputRow
           label={props.search.prompt ?? "Search plugins"}
@@ -57,7 +61,9 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
             />
           ) : null,
           ...(open
-            ? section.rows.map((row) => <Row_ key={`${section.key}:${row.key}`} row={row} />)
+            ? section.rows
+                .filter((row) => row !== action)
+                .map((row) => <Row_ key={`${section.key}:${row.key}`} row={row} />)
             : []),
           open && section.footer ? (
             <Footer

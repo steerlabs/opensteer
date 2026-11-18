@@ -2,7 +2,14 @@
 
 import type { WebViewProps } from "react-native-webview";
 import { AccessibilityInfo, Linking } from "react-native";
-import { act, useState, type ComponentProps, type ReactNode } from "react";
+import {
+  act,
+  useImperativeHandle,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { createId } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,16 +41,24 @@ import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
 import { AgentMemoryContext } from "./subagent-rows.js";
 import { TaskScopeContext } from "./task-line.js";
 import { AppCard } from "./app-card.js";
+import { AppFrame } from "./app-frame.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 
 // Exercise the actual native renderer's state and hierarchy with DOM hosts.
 // The platform controls and animation drivers are outside this regression.
-const appWebView = vi.hoisted(() => ({ props: null as WebViewProps | null }));
+const appWebView = vi.hoisted(() => ({
+  platform: "ios",
+  props: null as WebViewProps | null,
+  injectJavaScript: vi.fn<(script: string) => void>(),
+}));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
 vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native-webview", () => ({
-  WebView: (props: WebViewProps) => {
+  WebView: (
+    props: WebViewProps & { ref?: Ref<{ injectJavaScript: (script: string) => void }> },
+  ) => {
     appWebView.props = props;
+    useImperativeHandle(props.ref, () => ({ injectJavaScript: appWebView.injectJavaScript }), []);
     const {
       source,
       style,
@@ -82,7 +97,12 @@ vi.mock("react-native-webview", () => ({
 }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn() },
-  Platform: { OS: "ios", Version: "26" },
+  Platform: {
+    get OS() {
+      return appWebView.platform;
+    },
+    Version: "26",
+  },
   Linking: { openURL: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Loading app</span>,
   View: ({
@@ -1024,6 +1044,45 @@ describe("native page rail", () => {
       }
     },
   );
+});
+
+it("keeps the Android WebView mounted when load completion arrives before readiness", async () => {
+  const client = new MockHostClient();
+  const url = "https://host.test/v1/plugin-pages/plg_linear/dark/token/";
+  vi.spyOn(client, "viewPluginPage").mockResolvedValue({ title: "Linear", url });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  appWebView.platform = "android";
+  appWebView.injectJavaScript.mockClear();
+  try {
+    await act(async () =>
+      root.render(<AppFrame appId="plg_linear" client={client} kind="plugin" />),
+    );
+    const frame = appWebView.props!;
+    const load = () => frame.onLoad!({} as Parameters<NonNullable<WebViewProps["onLoad"]>>[0]);
+    const report = (type: string) =>
+      frame.onMessage!({
+        nativeEvent: { data: JSON.stringify({ type }) },
+      } as Parameters<NonNullable<WebViewProps["onMessage"]>>[0]);
+
+    await act(load);
+    expect(appWebView.injectJavaScript).toHaveBeenCalledOnce();
+    expect(container.querySelector("[data-app-webview]")?.getAttribute("data-uri")).toBe(url);
+    await act(() => report("opensteer-app:ready"));
+    expect(container.querySelector("[data-app-webview]")).not.toBeNull();
+
+    await act(() =>
+      frame.onLoadStart!({} as Parameters<NonNullable<WebViewProps["onLoadStart"]>>[0]),
+    );
+    await act(load);
+    await act(() => report("opensteer-app:unprepared"));
+    expect(container.textContent).toContain("Could not load this app");
+    expect(container.querySelector("[data-app-webview]")).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    appWebView.platform = "ios";
+    client.dispose();
+  }
 });
 
 it("renders published apps in isolated native WebViews, caps inline height and reloads already-mounted views on republish", async () => {

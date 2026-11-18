@@ -676,7 +676,7 @@ export function pluginLocalToolStatus(tool: PluginLocalToolSummaryView): {
 } {
   if (tool.access === "off") return { label: "Off for agents", tone: "muted" };
   if (tool.waitingForLaunchApproval) return { label: "Waiting for approval", tone: "attention" };
-  if (tool.unavailable) return { label: "Unavailable", tone: "attention" };
+  if (tool.unavailable) return { label: tool.unavailable, tone: "attention" };
   if (tool.access === "read-only") return { label: "Read-only", tone: "ok" };
   return { label: "On", tone: "ok" };
 }

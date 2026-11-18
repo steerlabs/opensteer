@@ -53,6 +53,7 @@ patchedDependencies:
   "@swagger-api/apidom-ns-openapi-3-1@1.11.6": patches/plugin-engine-@swagger-api__apidom-ns-openapi-3-1@1.11.6.patch
   "tailwindcss-iso@1.0.7": patches/plugin-engine-tailwindcss-iso@1.0.7.patch
   expo-notifications@58.1.6: patches/expo-notifications@58.1.6.patch
+  expo-symbols@58.0.4: patches/expo-symbols@58.0.4.patch
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
   react-native-screens@4.30.0: patches/react-native-screens@4.30.0.patch
   react-native-webrtc@155.0.1: patches/react-native-webrtc@155.0.1.patch

@@ -253,7 +253,7 @@ describe("adding this iPhone", () => {
     expect(host.commands).toEqual(["runner.enrollment.createPhone"]);
   });
 
-  it("J5: retires an expired enrollment, rotates the key and tries at most three times", async () => {
+  it("J5: retires an expired enrollment, rotates the issuance key and tries at most three times", async () => {
     const { controller, fake } = open();
     const host = fakeHost({
       dispatch: (command) => {
@@ -288,6 +288,35 @@ describe("adding this iPhone", () => {
       "enroll",
       "discardPendingEnrollment",
     ]);
+  });
+
+  it("keeps the pending identity when a refused enrollment already created a Runner", async () => {
+    const { controller, fake } = open();
+    const host = fakeHost({
+      dispatch: (command) => {
+        if (command.type === "runner.enrollment.createPhone") return mint(command);
+        if (command.type === "runner.enrollment.retire")
+          return { state: "consumed", type: "runner.enrollment.retire" };
+        return undefined;
+      },
+    });
+    fake.device.onEnroll(() => fake.device.raise("enrollment-refused"));
+    const input = {
+      deploymentId,
+      hostClient: host.client,
+      iphoneAppsAvailable: true,
+      name: "iPhone",
+    };
+
+    await expect(controller.add(input)).resolves.toMatchObject({ kind: "failed" });
+    const held = fake.bridge.getSnapshot().enrollment;
+    expect(held).toMatchObject({ state: "pending", runnerId: fake.device.runnerId() });
+    await expect(controller.add(input)).resolves.toMatchObject({ kind: "failed" });
+    expect(fake.bridge.getSnapshot().enrollment).toEqual(held);
+    expect(host.commands.filter((type) => type === "runner.enrollment.createPhone")).toHaveLength(
+      1,
+    );
+    expect(fake.device.calls).not.toContain("discardPendingEnrollment");
   });
 
   it("J5: keeps a refused enrollment's identity when the Host says it is still usable", async () => {
@@ -1618,6 +1647,41 @@ describe("leaving and binding", () => {
       timeout: 1_000,
     });
     expect(deliverLeave).toHaveBeenLastCalledWith(kept);
+  });
+
+  it("waits for an offline sign-out to remove the old device before adding a replacement", async () => {
+    let reachable = false;
+    const { controller, fake } = open({
+      autoConnect: true,
+      deliverLeave: async () => (reachable ? "removed" : "unreachable"),
+    });
+    fake.device.enrolledTo({ deploymentId, name: "iPhone" });
+    const oldRunner = fake.device.runnerId();
+    const stopped = controller.owner.stop();
+    expect(await controller.owner.tellHost(stopped!, null)).toBe("unconfirmed");
+    const host = fakeHost({
+      dispatch: (command) => {
+        expect(fake.bridge.getSnapshot().pendingLeave).toBeNull();
+        return mint(command);
+      },
+    });
+    const input = {
+      deploymentId,
+      hostClient: host.client,
+      iphoneAppsAvailable: true,
+      name: "iPhone",
+    };
+
+    await expect(controller.add(input)).resolves.toEqual({
+      failure: { kind: "host-unreachable" },
+      kind: "failed",
+    });
+    expect(host.commands).toEqual([]);
+    expect(fake.bridge.getSnapshot().pendingLeave?.runnerId).toBe(oldRunner);
+    reachable = true;
+    await expect(controller.add(input)).resolves.toMatchObject({ kind: "added" });
+    expect(fake.bridge.getSnapshot().enrollment?.runnerId).not.toBe(oldRunner);
+    expect(host.commands).toEqual(["runner.enrollment.createPhone"]);
   });
 
   it("remembers a removal across restarts until Set up again", async () => {

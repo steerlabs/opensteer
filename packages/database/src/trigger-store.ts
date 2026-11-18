@@ -29,12 +29,12 @@ import {
   MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
   TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD,
   TRIGGER_AUTO_PAUSE_REASON,
+  TRIGGER_PROGRAM_UPDATE_REASON,
   WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
   WATCH_AUTO_PAUSE_REASON,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
   TriggerProgramEventSchema,
-  StoredTriggerProgramSchema,
   TriggerProgramSchema,
   TriggerRevisionSchema,
   TriggerSchema,
@@ -42,6 +42,7 @@ import {
   TriggerSummarySchema,
   TriggerWatchActivationSchema,
   firstTriggerFireAt,
+  isExecutableTriggerProgram,
   nextTriggerFireAfter,
   triggerOccurrenceErrorMessage,
   triggerAccess,
@@ -76,6 +77,8 @@ type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
 const maxPostgresInteger = 2_147_483_647;
+const currentProgramVersion = TriggerProgramSchema.shape.toolContractVersion.value;
+const executableProgram = sql<boolean>`trigger_revisions.program->'toolContractVersion' = to_jsonb(${currentProgramVersion}::integer)`;
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
@@ -179,6 +182,7 @@ export async function assertActiveWatchBinding(
   const row = await database
     .selectFrom("triggerWatchActivations")
     .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+    .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
     .select([
       "triggerWatchActivations.anchorThreadId",
       "triggerWatchActivations.createdBy",
@@ -192,6 +196,7 @@ export async function assertActiveWatchBinding(
     .where("triggers.currentRevisionId", "=", input.revisionId)
     .where("triggers.status", "=", "active")
     .where("triggers.kind", "=", "watch")
+    .where(executableProgram)
     .executeTakeFirst();
   const admission = row
     ? await admitThreadExecution(database, row.anchorThreadId, row.createdBy)
@@ -259,9 +264,10 @@ export async function createTriggerInTransaction(
       .selectAll()
       .where("id", "=", trigger.currentRevisionId)
       .executeTakeFirstOrThrow();
+    const parsed = revisionFromRow(revision);
     return {
-      revision: revisionFromRow(revision),
-      trigger: triggerFromRow(trigger),
+      revision: parsed,
+      trigger: triggerFromRow(trigger, !isExecutableTriggerProgram(parsed.program)),
       wasDuplicate: true,
     };
   }
@@ -495,6 +501,7 @@ export class TriggerStore {
       const current = await transaction
         .selectFrom("triggerRevisions")
         .selectAll()
+        .select(executableProgram.as("executable"))
         .where("id", "=", trigger.currentRevisionId)
         .executeTakeFirstOrThrow();
       const source = TriggerSourceSchema.parse(input.source ?? current.source);
@@ -521,18 +528,19 @@ export class TriggerStore {
           triggerId: trigger.id,
         })
         .execute();
-      // Only a new source re-arms the clock, and it re-arms it the way a resume
-      // does: an elapsed one-shot stays elapsed. Editing a program or a name
-      // must never resurrect an instant that has already passed.
+      // A new source re-arms the clock the way a resume does: an elapsed
+      // one-shot stays elapsed. A repair also skips missed ticks, keeping
+      // a future next run (including a manual reschedule).
       const rearmed =
-        input.source === undefined
-          ? {}
-          : {
+        input.source !== undefined ||
+        (!current.executable && trigger.nextFireAt !== null && trigger.nextFireAt <= now)
+          ? {
               nextFireAt:
                 trigger.status === "active" && source.kind === "schedule"
                   ? resumedScheduleFireAt(source.schedule, now)
                   : null,
-            };
+            }
+          : {};
       const updated = await transaction
         .updateTable("triggers")
         .set({
@@ -597,25 +605,31 @@ export class TriggerStore {
       );
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (trigger.systemRole && input.status === "archived") throw conflict(MANAGED_MEMORY_REFUSAL);
-      // Repeating the current status is a no-op: an auto-paused Trigger keeps
-      // its reason and an active one keeps its failure count.
-      if (trigger.status === input.status) return triggerFromRow(trigger);
       if (trigger.status === "archived") {
+        if (input.status === "archived") return triggerFromRow(trigger);
         throw conflict("Archived automations cannot be reactivated");
       }
+      const revision =
+        input.status === "archived"
+          ? null
+          : await transaction
+              .selectFrom("triggerRevisions")
+              .select(["source", executableProgram.as("executable")])
+              .where("id", "=", trigger.currentRevisionId)
+              .executeTakeFirstOrThrow();
+      const needsUpdate = revision !== null && !revision.executable;
+      if (input.status === "active" && needsUpdate) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+      // Repeating the current status is a no-op: an auto-paused Trigger keeps
+      // its reason and an active one keeps its failure count.
+      if (trigger.status === input.status) return triggerFromRow(trigger, needsUpdate);
       if (input.status === "paused") {
-        return triggerFromRow(await pauseTriggerInTransaction(transaction, trigger));
+        return triggerFromRow(await pauseTriggerInTransaction(transaction, trigger), needsUpdate);
       }
       let nextFireAt = trigger.nextFireAt;
       if (trigger.kind === "schedule") {
-        if (input.status !== "active") {
+        if (!revision) {
           nextFireAt = null;
-        } else if (trigger.status !== "active") {
-          const revision = await transaction
-            .selectFrom("triggerRevisions")
-            .select("source")
-            .where("id", "=", trigger.currentRevisionId)
-            .executeTakeFirstOrThrow();
+        } else {
           const source = TriggerSourceSchema.parse(revision.source);
           if (source.kind !== "schedule") throw new Error("Schedule Trigger revision is invalid");
           nextFireAt = resumedScheduleFireAt(source.schedule, new Date());
@@ -686,9 +700,10 @@ export class TriggerStore {
       }
       const revision = await transaction
         .selectFrom("triggerRevisions")
-        .select("source")
+        .select(["source", executableProgram.as("executable")])
         .where("id", "=", trigger.currentRevisionId)
         .executeTakeFirstOrThrow();
+      if (!revision.executable) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
       const source = TriggerSourceSchema.parse(revision.source);
       if (source.kind !== "schedule" || source.schedule.kind !== "cron") {
         throw conflict("Only active cron schedule automations can reschedule their next run");
@@ -756,7 +771,7 @@ export class TriggerStore {
     const [revisions, occurrences, activations] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
-        .select(["id", "source"])
+        .select(["id", "source", executableProgram.as("executable")])
         .where(
           "id",
           "in",
@@ -782,15 +797,16 @@ export class TriggerStore {
         .orderBy("id", "desc")
         .execute(),
     ]);
-    const sources = new Map(revisions.map((revision) => [revision.id, revision.source]));
+    const currentRevisions = new Map(revisions.map((revision) => [revision.id, revision]));
     const latest = new Map(occurrences.map((occurrence) => [occurrence.triggerId, occurrence]));
     const watches = new Map(activations.map((activation) => [activation.triggerId, activation]));
     return rows.map((row) => {
       const occurrence = latest.get(row.id);
       const watch = row.kind === "watch" ? watches.get(row.id) : undefined;
       const { anchorThreadTitle, ...trigger } = row;
+      const revision = currentRevisions.get(row.currentRevisionId);
       return TriggerSummarySchema.parse({
-        ...triggerFromRow(trigger),
+        ...triggerFromRow(trigger, !revision?.executable),
         anchorThreadTitle,
         latestOccurrence: occurrence
           ? {
@@ -802,9 +818,7 @@ export class TriggerStore {
               status: occurrence.status,
             }
           : null,
-        source: withoutSchedulePayload(
-          TriggerSourceSchema.parse(sources.get(row.currentRevisionId)),
-        ),
+        source: withoutSchedulePayload(TriggerSourceSchema.parse(revision?.source)),
         watch: watch
           ? {
               lastError: watch.lastError,
@@ -845,7 +859,9 @@ export class TriggerStore {
       const rows = await transaction
         .selectFrom("triggerWatchActivations")
         .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+        .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
         .selectAll("triggerWatchActivations")
+        .select(executableProgram.as("executable"))
         .where("triggerWatchActivations.environmentId", "=", input.environmentId)
         .where("triggerWatchActivations.desired", "=", "active")
         .where("triggers.kind", "=", "watch")
@@ -867,6 +883,7 @@ export class TriggerStore {
         if (
           trigger.status !== "active" ||
           trigger.currentRevisionId !== row.revisionId ||
+          !row.executable ||
           !admission ||
           admission.environmentId !== row.environmentId
         ) {
@@ -912,15 +929,9 @@ export class TriggerStore {
           .where("id", "=", row.id)
           .returningAll()
           .executeTakeFirstOrThrow();
-        const revision = await transaction
-          .selectFrom("triggerRevisions")
-          .select("program")
-          .where("id", "=", row.revisionId)
-          .executeTakeFirstOrThrow();
         activations.push({
           activation: watchActivationFromRow(updated),
-          toolContractVersion: StoredTriggerProgramSchema.parse(revision.program)
-            .toolContractVersion,
+          toolContractVersion: currentProgramVersion,
           agentHome: (await personalSettings(transaction)).agentHome,
         });
       }
@@ -1203,6 +1214,7 @@ export class TriggerStore {
           .map((row) => [`${row.occurrenceId}:${row.id}`, row] as const),
       ).values(),
     ];
+    const parsed = revisionFromRow(revision);
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
       anchorThread: await getThreadForOwner(this.#database, trigger.anchorThreadId, ownerId),
@@ -1215,8 +1227,8 @@ export class TriggerStore {
       })),
       downstreamRunsTruncated: downstreamRunRows.length > 100,
       occurrences: occurrences.map(occurrenceFromRow),
-      revision: revisionFromRow(revision),
-      trigger: triggerFromRow(trigger),
+      revision: parsed,
+      trigger: triggerFromRow(trigger, !isExecutableTriggerProgram(parsed.program)),
     };
   }
   async webhookRoute(routeKey: string): Promise<{
@@ -1421,26 +1433,26 @@ export class TriggerStore {
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
   }> {
-    const candidate = await this.#database
-      .selectFrom("triggers")
-      .select("id")
-      .where("kind", "=", "schedule")
-      .where("status", "=", "active")
-      .where("nextFireAt", "<=", now)
+    const dueSchedules = (database: Kysely<DatabaseSchema>) =>
+      database
+        .selectFrom("triggers")
+        .innerJoin("triggerRevisions", "triggerRevisions.id", "triggers.currentRevisionId")
+        .where("triggers.kind", "=", "schedule")
+        .where("triggers.status", "=", "active")
+        .where("triggers.nextFireAt", "<=", now)
+        .where(executableProgram);
+    const candidate = await dueSchedules(this.#database)
+      .select("triggers.id")
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return { occurrences: [], changed: false };
     return withPersonalTransaction(this.#database, async (transaction) => {
-      const due = await transaction
-        .selectFrom("triggers")
-        .selectAll()
-        .where("kind", "=", "schedule")
-        .where("status", "=", "active")
-        .where("nextFireAt", "<=", now)
-        .orderBy("nextFireAt", "asc")
-        .orderBy("id", "asc")
+      const due = await dueSchedules(transaction)
+        .selectAll("triggers")
+        .orderBy("triggers.nextFireAt", "asc")
+        .orderBy("triggers.id", "asc")
         .limit(Math.min(Math.max(limit, 1), 256))
-        .forNoKeyUpdate()
+        .forNoKeyUpdate("triggers")
         .skipLocked()
         .execute();
       const occurrences: TriggerOccurrence[] = [];
@@ -1878,6 +1890,12 @@ async function enqueueOccurrence(
   readonly wasDuplicate: boolean;
 }> {
   await requireTriggerExecutionAuthority(transaction, trigger);
+  const revision = await transaction
+    .selectFrom("triggerRevisions")
+    .select(["id", executableProgram.as("executable")])
+    .where("id", "=", trigger.currentRevisionId)
+    .executeTakeFirstOrThrow();
+  if (!revision.executable) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
   const existing = await transaction
     .selectFrom("triggerOccurrences")
     .selectAll()
@@ -1904,11 +1922,6 @@ async function enqueueOccurrence(
     });
   }
   const admission = await requireTriggerExecutionAuthority(transaction, trigger);
-  const revision = await transaction
-    .selectFrom("triggerRevisions")
-    .select("id")
-    .where("id", "=", trigger.currentRevisionId)
-    .executeTakeFirstOrThrow();
   const occurrenceId = createId("triggerOccurrence");
   const commandId = createId("command");
   const now = new Date();
@@ -2219,9 +2232,11 @@ async function createWatchActivation(
     .executeTakeFirstOrThrow();
   const active = await transaction
     .selectFrom("triggerWatchActivations")
+    .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
     .select(({ fn }) => fn.countAll<string>().as("count"))
     .where("environmentId", "=", input.environmentId)
     .where("desired", "=", "active")
+    .where(executableProgram)
     .executeTakeFirstOrThrow();
   if (Number(active.count) >= MAX_ACTIVE_WATCHES_PER_ENVIRONMENT) {
     throw new OpensteerError({
@@ -2343,7 +2358,9 @@ function withoutSchedulePayload(source: TriggerSource): TriggerSource {
     schedule,
   };
 }
-function triggerFromRow(row: TriggerRow): Trigger {
+function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
+  // Version gates execution while the stored status preserves the owner's intent.
+  const blocked = needsProgramUpdate && row.status !== "archived";
   return TriggerSchema.parse({
     systemRole: row.systemRole,
     anchorThreadId: row.anchorThreadId,
@@ -2355,10 +2372,10 @@ function triggerFromRow(row: TriggerRow): Trigger {
     id: row.id,
     kind: row.kind,
     name: row.name,
-    nextFireAt: row.nextFireAt?.toISOString() ?? null,
-    pauseReason: row.pauseReason,
-    waitingReason: row.waitingReason,
-    status: row.status,
+    nextFireAt: blocked ? null : (row.nextFireAt?.toISOString() ?? null),
+    pauseReason: blocked ? TRIGGER_PROGRAM_UPDATE_REASON : row.pauseReason,
+    waitingReason: blocked ? null : row.waitingReason,
+    status: blocked ? "paused" : row.status,
     updatedAt: row.updatedAt.toISOString(),
     webhookRouteKey: row.webhookRouteKey,
   });
