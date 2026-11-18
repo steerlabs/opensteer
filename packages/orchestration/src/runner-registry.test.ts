@@ -195,6 +195,46 @@ describe("Runner connection registry", () => {
     });
     expect(hook).toHaveBeenLastCalledWith(registry.identityForRunner(original.runnerId), false);
   });
+  it("asks only a Mac Runner that understands it to recheck Full Disk Access", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(commitThrough) },
+    });
+    try {
+      const shell = {
+        hostPublicKey: "ssh-ed25519 AAAA",
+        platform: "darwin" as const,
+        fullDiskAccess: false,
+      };
+      const peers = await Promise.all(
+        [["filesystem"], ["filesystem", "full-disk-access-probe-v1"]].map(
+          async (capabilities, index) => {
+            const identity = hello(createId("runner"), createId("environment"), "boot-1");
+            const peer = new MemoryRunnerPeer(`mac-${index}`);
+            await registerAttached(
+              registry,
+              {
+                ...identity,
+                capabilities: capabilities as RunnerIdentity["capabilities"],
+                modules: { ...identity.modules, shell },
+              },
+              peer,
+            );
+            return peer;
+          },
+        ),
+      );
+      registry.probeFullDiskAccess();
+      const probes = peers.map(
+        (peer) =>
+          peer.messages.filter((message) => message.type === "host.shell.probe-full-disk-access")
+            .length,
+      );
+      // An older Mac would drop its connection on a frame it cannot parse.
+      expect(probes).toEqual([0, 1]);
+    } finally {
+      await registry.close();
+    }
+  });
   it.each(["missing", "linux"] as const)(
     "refuses full access reports from a %s shell",
     async (platform) => {

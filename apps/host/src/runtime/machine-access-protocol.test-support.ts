@@ -416,7 +416,7 @@ export interface TargetMachine {
    * Tries to come back and records everything the Host said, for the refusals
    * whose whole content is the close frame.
    */
-  observeRefusal(): Promise<RunnerRefusal>;
+  observeRefusal(options?: { readonly runsAgents?: boolean }): Promise<RunnerRefusal>;
   /** Replaces its SSH host key and comes back advertising the new one. */
   rotateHostKey(): Promise<void>;
   close(): Promise<void>;
@@ -539,8 +539,12 @@ export async function connectTargetMachine(
       return prepared.descriptor.hostPublicKey;
     },
     reported,
-    observeRefusal: async () =>
-      observeRunnerRefusal(host.hostPort, descriptorFor(false, environmentId), primary.privateKey),
+    observeRefusal: async (options) =>
+      observeRunnerRefusal(
+        host.hostPort,
+        descriptorFor(options?.runsAgents ?? false, environmentId),
+        primary.privateKey,
+      ),
     reconnect,
     rotateHostKey: async () => {
       await disconnect();

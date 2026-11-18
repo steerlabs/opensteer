@@ -1811,7 +1811,8 @@ export class RunnerRegistry {
       if (
         !connection.attached ||
         (runnerId && runnerId !== identity.runnerId) ||
-        identity.modules.shell?.platform !== "darwin"
+        identity.modules.shell?.platform !== "darwin" ||
+        !identity.capabilities.includes("full-disk-access-probe-v1")
       )
         continue;
       void connection.peer
