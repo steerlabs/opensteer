@@ -75,6 +75,7 @@ import { fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
 import { setAsideStagedFiles } from "./attachments/use-staged-attachments.js";
 import {
+  cleanTaskStartJournals,
   composerDraftKey,
   composerDrafts,
   useComposerDraftIndex,
@@ -468,13 +469,23 @@ export function Sidebar({
       const draft = composerDrafts.read(key);
       if (!draft) return;
       const files = setAsideStagedFiles(key);
-      composerDrafts.clear(key);
+      composerDrafts.clear(key, false);
+      const retired =
+        target.kind === "task"
+          ? cleanTaskStartJournals(key, draft.startGeneration).catch(() => undefined)
+          : Promise.resolve(undefined);
       toast.success("Draft discarded", {
         label: "Undo",
         lapse: files.forget,
         run: () => {
-          composerDrafts.restore(key, draft);
-          files.takeBack();
+          void retired.then((start) => {
+            if (composerDrafts.read(key)) return;
+            composerDrafts.restore(
+              key,
+              start ? { ...draft, start, startGeneration: undefined } : draft,
+            );
+            files.takeBack();
+          });
         },
       });
     },

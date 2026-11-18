@@ -93,6 +93,7 @@ function NewTaskComposer({
   const { deploymentId } = snapshot;
   const userId = snapshot.user?.id ?? null;
   const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "task", draftId });
+  const legacyStart = draftKey !== null && composerDrafts.read(draftKey)?.start !== undefined;
   const context = useComposerContext({ auto: true, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const canCreate = snapshot.can?.createTasks === true;
@@ -142,7 +143,8 @@ function NewTaskComposer({
       attachments,
       places,
       idempotencyKey,
-    }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey">,
+      quotedMessageId,
+    }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey" | "quotedMessageId">,
   ) => {
     // Send is off without a model; this keeps the draft if that ever races.
     if (!selection) throw new ActionNotDone({ kind: "not-sent", issue: null });
@@ -151,11 +153,12 @@ function NewTaskComposer({
       body,
       ...(places.length > 0 ? { places } : {}),
       idempotencyKey,
+      ...(quotedMessageId ? { quotedMessageId } : {}),
     };
     const thread = await act(
       hostClient,
       { label: "start this task", done: "started", happened: "this task started" },
-      () => createThreadAndSend(message, selection, accessMode, draftKey),
+      () => createThreadAndSend(message, selection, accessMode, draftKey, legacyStart),
     );
     nav.openConversation(nav.threadPath(thread.id));
   };
@@ -196,7 +199,7 @@ function NewTaskComposer({
         placeholder={placeholderFor(selection !== null, blockedPlacement, canCreate)}
         references={(query) => personalReferenceCandidates(hostClient, query)}
         sendBlocked={sendBlocked}
-        sendLabel="Start task"
+        sendLabel={legacyStart ? "Resume task" : "Start task"}
       />
       <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
     </>

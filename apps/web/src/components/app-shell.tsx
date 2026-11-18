@@ -90,7 +90,7 @@ import {
   type PendingSubmission,
 } from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
-import { composerDrafts } from "./composer-drafts.js";
+import { cleanTaskStartJournals, composerDrafts } from "./composer-drafts.js";
 import { draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
@@ -149,6 +149,7 @@ export interface ShellContext {
     accessMode: ThreadAccessMode,
     /** The draft the task starts from, which keeps the start across retries. */
     draftKey: string | null,
+    confirmLegacy?: boolean,
   ) => Promise<{ readonly id: string }>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
@@ -682,6 +683,7 @@ export function AppShell({
       selection: ExecutionSelection,
       accessMode: ThreadAccessMode,
       draftKey: string | null,
+      confirmLegacy?: boolean,
     ): Promise<{ readonly id: string }> => {
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
@@ -691,6 +693,13 @@ export function AppShell({
       const scopeKey = clientScopeKey(scope);
       const generation = composerDrafts.taskStartGeneration(draftKey);
       if (!generation) throw storageUnavailable();
+      const assertCurrent = () => {
+        if (
+          clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey ||
+          composerDrafts.read(draftKey)?.startGeneration !== generation
+        )
+          throw storageUnavailable();
+      };
       const prepared = sendMessageCommand("", message);
       return startTask({
         records: draftTaskStart(JSON.stringify([scopeKey, draftKey]), generation),
@@ -699,10 +708,9 @@ export function AppShell({
           ...(prepared.compaction ? { compaction: prepared.compaction } : {}),
           ...(prepared.quotedMessageId ? { quotedMessageId: prepared.quotedMessageId } : {}),
         },
-        assertCurrent: () => {
-          if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey)
-            throw storageUnavailable();
-        },
+        assertCurrent,
+        legacyStart: composerDrafts.read(draftKey)?.start,
+        confirmLegacy: confirmLegacy === true,
         creation: {
           accessMode,
           environmentId: selection.environmentId,
@@ -714,11 +722,16 @@ export function AppShell({
         creationKey: () => mutationIdempotencyKey("thread"),
         messageKey: message.idempotencyKey,
         createThread: (creation) => hostClient.createThread(creation),
-        enqueue: (command) => outbox.enqueue(command, { handoff: true }),
+        enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
+        hasHandoff: (key) => outbox.hasHandoff(scope, key),
       });
     },
     [hostClient],
   );
+
+  useEffect(() => {
+    void cleanTaskStartJournals().catch(() => {});
+  }, []);
 
   /* ---- Notifications ---- */
 

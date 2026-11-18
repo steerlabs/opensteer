@@ -9,7 +9,7 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import { BrowserSurfaceIdSchema, createId } from "@opensteer/core";
 
 /** The browser session this device was shown a page tab through. */
 function pageSession(tabId: string): string {
@@ -61,9 +61,62 @@ import {
   firstTaskId,
   setRoot,
 } from "./workspace.interaction.test-support.js";
+import { composerDraftKey, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";
 // These tests check what a Send carries, never the agent's reply to it.
 const sentOnly = { mock: { replies: "brief" } } as const;
+
+it("keeps another window's revised task draft and files after the earlier start completes", async () => {
+  await mount(() => "/", sentOnly);
+  const { deploymentId, user } = client.getSnapshot();
+  const key = composerDraftKey(
+    { deploymentId: deploymentId!, userId: user!.id },
+    { kind: "task", draftId: homeDraftId },
+  );
+  const answer = deferred<void>();
+  const actualCreate = client.createThread.bind(client);
+  const create = vi.spyOn(client, "createThread").mockImplementationOnce(async (input) => {
+    await answer.promise;
+    return actualCreate(input);
+  });
+  const dispatch = vi.spyOn(client, "dispatch");
+  try {
+    await write(element("[data-composer-input]"), "Earlier first message");
+    await click(element(".composer__send"));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce(), { timeout: 1000 });
+    const file = {
+      mediaType: "text/plain",
+      name: "revision.txt",
+      sizeBytes: 12,
+      part: {
+        type: "artifact" as const,
+        artifactId: createId("attachment"),
+        mediaType: "text/plain",
+        name: "revision.txt",
+        sizeBytes: 12,
+      },
+    };
+    await act(async () => {
+      composerDrafts.update(key, { text: "Revised in another window", files: [file] });
+      answer.resolve();
+    });
+    await vi.waitFor(() => expect(sends(dispatch)).toHaveLength(1), { timeout: 1000 });
+    await act(async () => {
+      await sendResult(dispatch);
+    });
+    expect(sends(dispatch)[0]?.content).toContainEqual({
+      type: "text",
+      text: "Earlier first message",
+    });
+    expect(composerDrafts.read(key)).toMatchObject({
+      text: "Revised in another window",
+      files: [file],
+    });
+    expect(history.at(-1)?.path).toMatch(/^\/tasks\//u);
+  } finally {
+    answer.resolve();
+  }
+});
 
 describe("the draft's places", () => {
   it("follows the sign-in form page and sends its automatic reference on the first press", async () => {
