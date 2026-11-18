@@ -116,7 +116,7 @@ window.browserStreamBench = {
     );
     const receipt = watch.subscribe(sessionId, surfaceId, () => {
       const state = watch.get(sessionId, surfaceId);
-      if (state.error) errors.push(state.error);
+      if (state.error) errors.push(JSON.stringify(state.error));
       if (state.frame && !received.has(state.frame.header.frameId))
         received.set(state.frame.header.frameId, performance.now());
       for (const check of waiters) check();

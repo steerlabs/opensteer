@@ -492,7 +492,7 @@ export class BrowserWatchStore {
     let socket: WebSocketClient;
     try {
       socket = this.connect(target.sessionId, target.surfaceId, target.asleepHolds > 0);
-    } catch (error) {
+    } catch {
       this.#set(target, { ...empty, error: openFailed });
       return;
     }
