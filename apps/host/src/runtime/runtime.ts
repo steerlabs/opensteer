@@ -7,7 +7,8 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { drainPersistedRunFinishes } from "@opensteer/database";
+import { createRunFinishDrain } from "@opensteer/database";
+import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { PersonalRetentionDeadline } from "@opensteer/orchestration";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
@@ -446,6 +447,7 @@ export interface TeamHostRuntime {
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
+  readonly onPersonalUpgradeHeartbeat?: () => void;
   readonly onPersonalUpgradeBatch?: NonNullable<
     Parameters<typeof migrateToLatest>[2]
   >["afterBatch"];
@@ -547,9 +549,10 @@ export async function createHostRuntime(
     if (!deploymentPolicy(config.deploymentShape).services.team)
       authorityLease = await acquireDeploymentAuthorityLease(database);
     // Conversion must finish before startup reads or creates a Deployment.
-    await migrateToLatest(database, undefined, {
-      afterBatch: options.onPersonalUpgradeBatch,
-    }).catch((error: unknown) => {
+    await withUpgradeHeartbeat(
+      () => migrateToLatest(database, undefined, { afterBatch: options.onPersonalUpgradeBatch }),
+      authorityLease ? options.onPersonalUpgradeHeartbeat : undefined,
+    ).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
     const deployment = await ensureDeployment(database, {
@@ -1675,10 +1678,10 @@ export async function createHostRuntime(
     finishLoop = new DeadlineDrain({
       onError: reportMutationFailure,
       ...(options.executionClock ? { clock: options.executionClock } : {}),
-      drain: async () => {
-        await drainPersistedRunFinishes(database, links);
-        return null;
-      },
+      drain: createRunFinishDrain(database, links, {
+        now: executionNow,
+        onError: reportMutationFailure,
+      }),
     });
     react = (reaction) => {
       switch (reaction.type) {
@@ -1747,6 +1750,8 @@ export async function createHostRuntime(
           }
           break;
         case "runFinished":
+          if (reaction.bindingGeneration !== null)
+            runnerRegistry?.retireRunBinding(reaction.runId, reaction.bindingGeneration);
           wakeExecutionCoordinator();
           executionLeaseLoop?.wake();
           liveText.finish(reaction, syncHead);
@@ -1935,6 +1940,8 @@ export async function createHostRuntime(
     await store.recoverRemovedAskTasks();
     await store.recoverThreadWorkQueues();
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
+    finishLoop.start();
+    await finishLoop.settled();
     // Runs outlive a Host restart on their leases and continue when their
     // Runners attach again; only the controls the last Host left in flight
     // need settling before this one dispatches anything.
@@ -3261,6 +3268,7 @@ export async function createHostRuntime(
     executionLeaseLoop = executionLeases;
     executionLeases.start();
     deadlines = new RequestDeadlines({
+      ...(options.executionClock ? { clock: options.executionClock } : {}),
       next: async () => {
         const [stored, local] = [
           await store.requests.nextDeadline(),

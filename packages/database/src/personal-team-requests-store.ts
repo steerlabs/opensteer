@@ -429,6 +429,7 @@ export class PersonalTeamRequestsStore {
             .set(clearInputLease)
             .where("messageId", "=", inbox.messageId)
             .execute();
+          mutation.react({ type: "deadlinesChanged" });
         }
       }
       const saved = await tx

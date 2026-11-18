@@ -33,11 +33,7 @@ import {
   returnRunToQueue,
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
-import {
-  drainPersistedRunFinishes,
-  endStoppedUnconfirmedRun,
-  finalizeRunTransaction,
-} from "./run-finalization.js";
+import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
 import { publishExecutionInput, updateExecutionThread } from "./execution-changes.js";
@@ -398,7 +394,6 @@ export async function recoverCommandsAfterHostRestart(
   links: ChannelLinks,
 ): Promise<void> {
   await drainAssignmentCancellation(database, links);
-  await drainPersistedRunFinishes(database, links);
 
   await commitPersonalMutation(database, async (tx) => {
     await tx
@@ -410,6 +405,17 @@ export async function recoverCommandsAfterHostRestart(
       })
       .where("status", "=", "dispatched")
       .where("type", "in", resendableControlCommandTypes)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("runs")
+              .select("id")
+              .whereRef("runs.id", "=", "commands.runId")
+              .where("finishIntent", "is not", null),
+          ),
+        ),
+      )
       .execute();
   });
   const steers = await database
@@ -417,6 +423,17 @@ export async function recoverCommandsAfterHostRestart(
     .select("id")
     .where("status", "=", "dispatched")
     .where("type", "=", "run.steer")
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("runs")
+            .select("id")
+            .whereRef("runs.id", "=", "commands.runId")
+            .where("finishIntent", "is not", null),
+        ),
+      ),
+    )
     .orderBy("id", "asc")
     .execute();
   for (const steer of steers) {
@@ -453,13 +470,14 @@ export async function recoverCommandsAfterHostRestart(
           "runs.id",
           "runs.providerSessionId",
           "runs.status",
+          "runs.finishIntent",
           "runs.threadId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
-      if (run?.status !== "starting") return null;
+      if (run?.status !== "starting" || run.finishIntent) return null;
       await lockThreadRow(transaction, run.threadId);
       const session = await lockThreadProviderSession(
         transaction,

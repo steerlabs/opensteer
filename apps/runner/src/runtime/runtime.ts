@@ -278,6 +278,7 @@ interface ActiveRun {
   assistantMessageId?: import("@opensteer/core").MessageId;
   nextOrdinal: number;
   readonly pendingRequestIds: Set<RequestId>;
+  requestAnswersRevoked?: true;
   /**
    * The Host already ended this Run without it. Nothing more is sent for it:
    * its outcome is durable there, and a late event would only be refused.
@@ -1634,7 +1635,7 @@ export class RunnerRuntime {
         case "run.interrupt":
           return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
         case "request.resolve":
-          return this.#resolveRequest(command.runId, command.requestId, command.response);
+          return this.#resolveRequest(command);
         case "run.steer":
           return this.#steer(command);
         case "harness.update":
@@ -1845,6 +1846,25 @@ export class RunnerRuntime {
       ]);
       this.#driverMaintenance.delete(driverKind);
     }
+  }
+
+  /** A received Stop fences answers while its ordered command is still waiting. */
+  fenceRequestAnswers(
+    runId: RunId,
+    interrupt?: Extract<RunnerCommand, { type: "run.interrupt" }>,
+  ): void {
+    const active = this.#runs.get(runId);
+    if (!active) return;
+    const context = active.command.context;
+    if (
+      interrupt &&
+      (interrupt.environmentId !== context.environmentId ||
+        interrupt.threadId !== context.threadId ||
+        (interrupt.bindingGeneration !== undefined &&
+          interrupt.bindingGeneration !== context.bindingGeneration))
+    )
+      return;
+    active.requestAnswersRevoked = true;
   }
 
   /**
@@ -3413,9 +3433,9 @@ export class RunnerRuntime {
     active.journal.events.set(pending.ordinal, { bytes, event: pending });
     active.journal.bytes += bytes;
     if (terminal) active.journal.terminal = true;
+    if (event.type === "request.opened") active.pendingRequestIds.add(event.data.request.id);
+    if (event.type === "request.cancelled") active.pendingRequestIds.delete(event.data.requestId);
     await this.#pumpJournal(active);
-    active.pendingRequestIds.clear();
-    for (const requestId of pendingAfter) active.pendingRequestIds.add(requestId);
   }
 
   async #stopNode(
@@ -3518,16 +3538,31 @@ export class RunnerRuntime {
   }
 
   async #resolveRequest(
-    runId: RunId,
-    requestId: Parameters<HarnessSession["resolveRequest"]>[0],
-    response: Parameters<HarnessSession["resolveRequest"]>[1],
+    command: Extract<RunnerCommand, { type: "request.resolve" }>,
   ): Promise<CommandDecision> {
+    const { runId, requestId, response, bindingGeneration } = command;
     const active = this.#runs.get(runId);
     const session = active?.session;
     if (!session) return reject("not_found", "Active run was not found", false);
-    // Answered before the engine hears it: an engine may act on the answer,
-    // and end its turn, before the call that delivered it returns.
-    active.pendingRequestIds.delete(requestId);
+    if (
+      (bindingGeneration !== undefined &&
+        active.command.context.bindingGeneration !== bindingGeneration) ||
+      !active.pendingRequestIds.has(requestId)
+    )
+      return reject("not_found", "Request is no longer live in this execution", false);
+    // Let ordered inbound controls run before handing off the answer.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (
+      this.#runs.get(runId) !== active ||
+      active.session !== session ||
+      active.requestAnswersRevoked ||
+      active.settling ||
+      active.abort.signal.aborted ||
+      !active.pendingRequestIds.delete(requestId)
+    ) {
+      return reject("not_found", "Request is no longer live in this execution", false);
+    }
+    // Once the Runner delivers the answer to the engine, a later Stop races an admitted effect.
     try {
       await session.resolveRequest(requestId, response);
       return { status: "accepted" };

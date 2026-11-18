@@ -279,6 +279,7 @@ integration.sequential("Run recovery acceptance", () => {
       readonly laterScenario?: string;
       readonly engineArguments?: readonly string[];
       readonly leaseMs?: number;
+      readonly maxConcurrentRuns?: number;
       readonly contained?: boolean;
       readonly filter?: (direction: "host" | "runner", frame: WireRecord) => boolean;
       readonly child?: boolean;
@@ -310,7 +311,7 @@ integration.sequential("Run recovery acceptance", () => {
         catalogTimeoutMs: 30_000,
         runTimeoutMs: 60_000,
         executionLeaseMs: options.leaseMs ?? 60_000,
-        maxConcurrentRuns: 2,
+        maxConcurrentRuns: options.maxConcurrentRuns ?? 2,
         runnerWire: {
           ...(options.contained === undefined
             ? {}
@@ -1880,6 +1881,7 @@ integration.sequential("Run recovery acceptance", () => {
     let suppressedHeartbeat: string | undefined;
     const current = await start({
       leaseMs: 12_000,
+      maxConcurrentRuns: 1,
       filter: (direction, frame) => {
         if (direction !== "runner" || !withholdLease) return true;
         if (frame.type === "runner.heartbeat") {
@@ -2140,6 +2142,64 @@ integration.sequential("Run recovery acceptance", () => {
       stored,
     });
   }, 120_000);
+
+  it("dispatches independent queued work after a Host-owned finish frees the only Runner slot", async () => {
+    let retiredRun: RunId | undefined;
+    const current = await start({
+      maxConcurrentRuns: 1,
+      filter(direction, frame) {
+        if (direction !== "runner" || frame.type !== "runner.event") return true;
+        const event = eventSchema.parse(frame.event);
+        return (
+          event.runId !== retiredRun ||
+          !["run.completed", "run.failed", "run.interrupted"].includes(event.type)
+        );
+      },
+    });
+    const { runId } = await held(current);
+    retiredRun = runId;
+    const wire = current.active.wire!;
+    const threadId = await current.active.createThread({
+      modelSelection: selection,
+      title: "Independent queued work",
+    });
+    const queued = await queue({ ...current, threadId });
+    expect(executeFrames(current.active)).toHaveLength(1);
+    const original = wire.frames.find(({ frame }) => frame.type === "runner.event")!.frame;
+    const fence = RunnerConnectionFenceSchema.pick({ bootId: true, runnerId: true })
+      .loose()
+      .parse(original);
+    const first = eventSchema.parse(original.event);
+    await current.release();
+    const before = wire.frames.length;
+    await waitFor(
+      async () =>
+        wire.frames
+          .slice(before)
+          .some(
+            ({ frame }) =>
+              frame.type === "runner.heartbeat" &&
+              !z.array(z.string()).parse(frame.activeRunIds).includes(runId),
+          ),
+      "Runner keeps heartbeating after its unreported outcome",
+    );
+    expect((await row(current.active, runId)).status).toBe("running");
+    expect(executeFrames(current.active)).toHaveLength(1);
+    await current.active.host.store.failRunForRefusedRunnerEvent({
+      bindingGeneration: first.bindingGeneration,
+      runId,
+      runnerBootId: fence.bootId,
+      runnerId: fence.runnerId,
+      message: "Host settled the missing outcome",
+    });
+    expect((await row(current.active, runId)).status).toBe("failed");
+    await finish(current, queued.runId);
+    expect(executeFrames(current.active).map(({ context }) => context.runId)).toEqual([
+      runId,
+      queued.runId,
+    ]);
+    expect(wire.frames.filter(({ frame }) => frame.type === "host.welcome")).toHaveLength(1);
+  }, 90_000);
 });
 async function waitFor(
   check: () => Promise<boolean>,

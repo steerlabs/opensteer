@@ -1,5 +1,3 @@
-import { publishThreadSummary } from "./thread-status.js";
-import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 import {
   OpensteerError,
   RequestSchema,
@@ -118,8 +116,6 @@ export function refreshRequestState(
     await refreshRequestAttention(tx, mutation, requestId);
     if (row.kind === "browser.password-sign-in" || row.kind === "computer.app.access")
       mutation.react({ type: "deadlinesChanged" });
-    await publishThreadSummary(tx, threadId);
-    await refreshAssignmentWorkerSummaries(tx, threadId);
     return request;
   });
 }

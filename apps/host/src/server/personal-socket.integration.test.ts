@@ -1,6 +1,6 @@
-import { HostToRunnerMessageSchema } from "@opensteer/protocol";
+import { HostToRunnerMessageSchema, PendingAgentEventV2Schema } from "@opensteer/protocol";
 import { sql, type KyselyPlugin } from "kysely";
-import { createId } from "@opensteer/core";
+import { createId, threadInputEditLeaseMs } from "@opensteer/core";
 import { OpensteerStore } from "@opensteer/database";
 import { PersonalSyncSocket, RealtimeHub } from "@opensteer/orchestration";
 import {
@@ -398,11 +398,11 @@ it("closes an over-limit fragmented Personal frame before receiving the final fr
   }
 });
 
-it("automatically retries a failed batch of a Host-owned finish intent", async () => {
+it("retries a failed Host-owned finish without blocking another intent or bypassing backoff", async () => {
   const database = await cloneTestDatabase("host");
   const clock = new ManualClock();
-  const retryScheduled = Promise.withResolvers<void>();
-  const finished = Promise.withResolvers<void>();
+  let retryScheduled = Promise.withResolvers<void>();
+  const finished = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   let host: PrivateMachineHost | undefined;
   try {
     host = await startPrivateMachineHost(database.url, {
@@ -416,66 +416,103 @@ it("automatically retries a failed batch of a Host-owned finish intent", async (
         },
       },
       onPersonalReaction: (notice) => {
-        if (notice.type === "runFinished") finished.resolve();
+        if (notice.type === "runFinished") finished.get(notice.runId)?.resolve();
       },
     });
     const tasks = createPersonalRunFixturePort(host.store);
-    const { threadId, thread } = await tasks.createTask({
-      ownerId: host.ownerId,
-      suffix: "host-retry-finish",
-    });
-    const { runId, runnerBootId, bindingGeneration } = await tasks.startTask(
-      threadId,
-      "Finish after a failed batch.",
-    );
+    const first = await tasks.createTask({ ownerId: host.ownerId, suffix: "host-retry-finish" });
+    const second = await tasks.createTask({ ownerId: host.ownerId, suffix: "host-other-finish" });
+    const taskRuns = [
+      { ...first, ...(await tasks.startTask(first.threadId, "Finish after a failed batch.")) },
+      {
+        ...second,
+        ...(await tasks.startTask(second.threadId, "Finish while another intent retries.")),
+      },
+    ].sort((left, right) => left.runId.localeCompare(right.runId));
+    const [failing, healthy] = taskRuns as [(typeof taskRuns)[number], (typeof taskRuns)[number]];
+    for (const task of taskRuns) finished.set(task.runId, Promise.withResolvers<void>());
     const db = host.store.database;
     await sql`
       create sequence fixture_finish_attempt;
-      create function fail_first_finish_batch() returns trigger language plpgsql as $$
+      create function fail_poison_finish_batch() returns trigger language plpgsql as $$
       begin
-        if nextval('fixture_finish_attempt') = 1 then raise exception 'fixture batch failed'; end if;
+        if old.id like 'poison-finish-%' then
+          perform nextval('fixture_finish_attempt');
+          raise exception 'fixture batch failed';
+        end if;
         return new;
       end;
       $$;
       create trigger fixture_fail_finish before update of status on tool_calls
-        for each statement execute function fail_first_finish_batch();
+        for each row execute function fail_poison_finish_batch();
     `.execute(db);
-    await sql`
-      insert into tool_calls(id,thread_id,run_id,call_id,origin,tool,arguments,status,started_at)
-      select 'finish-fixture-'||n,${threadId},${runId},'fixture-call-'||n,'host-harness',
-        '{"name":"read","namespace":"harness"}','{}','open',clock_timestamp()
-      from generate_series(1,130) n
-    `.execute(db);
-    const environment = await host.store.getEnvironment(thread.environmentId);
-    await host.store.failRunForRefusedRunnerEvent({
-      bindingGeneration,
-      runId,
-      runnerBootId,
-      runnerId: environment!.runnerId!,
-      message: "Fixture Host-owned failure",
-    });
-    await deadline(retryScheduled.promise, "Failed finish batch did not arm a retry");
-    const read = () =>
+    for (const { threadId, runId } of taskRuns) {
+      const prefix = runId === failing.runId ? "poison-finish-" : "healthy-finish-";
+      await sql`
+        insert into tool_calls(id,thread_id,run_id,call_id,origin,tool,arguments,status,started_at)
+        select ${prefix}||n,${threadId},${runId},'fixture-call-'||n,'host-harness',
+          '{"name":"read","namespace":"harness"}','{}','open',clock_timestamp()
+        from generate_series(1,130) n
+      `.execute(db);
+    }
+    const finish = async ({ thread, bindingGeneration, runnerBootId, runId }: typeof failing) => {
+      const environment = await host!.store.getEnvironment(thread.environmentId);
+      await host!.store.failRunForRefusedRunnerEvent({
+        bindingGeneration,
+        runId,
+        runnerBootId,
+        runnerId: environment!.runnerId!,
+        message: "Fixture Host-owned failure",
+      });
+    };
+    const read = (runId: typeof failing.runId) =>
       db
         .selectFrom("runs")
         .select(["finishIntent", "status"])
         .where("id", "=", runId)
         .executeTakeFirstOrThrow();
-    expect(await read()).toMatchObject({ finishIntent: { mode: "host" }, status: "running" });
+    const attempts = async () =>
+      (await sql<{ lastValue: string }>`select last_value from fixture_finish_attempt`.execute(db))
+        .rows[0]!.lastValue;
+    await finish(failing);
+    await deadline(retryScheduled.promise, "Failed finish batch did not arm a retry");
+    expect(await read(failing.runId)).toMatchObject({
+      finishIntent: { mode: "host" },
+      status: "running",
+    });
+    expect(await attempts()).toBe("1");
+    retryScheduled = Promise.withResolvers<void>();
+    await finish(healthy);
+    await deadline(
+      finished.get(healthy.runId)!.promise,
+      "Another intent was blocked by the failed Run",
+    );
+    await deadline(retryScheduled.promise, "The later finish lost the first Run's retry");
+    expect(await read(healthy.runId)).toEqual({ finishIntent: null, status: "failed" });
+    expect(await attempts()).toBe("1");
     await db
       .updateTable("providerSessions")
       .set({ leaseExpiresAt: new Date(clock.now() - 1) })
       .where("active", "=", true)
       .execute();
     expect(await host.store.nextExecutionDeadline()).toBeNull();
+    retryScheduled = Promise.withResolvers<void>();
     clock.advanceBy(5_000);
-    await deadline(finished.promise, "Finish retry did not settle the Run");
-    expect(await read()).toEqual({ finishIntent: null, status: "failed" });
+    await deadline(retryScheduled.promise, "A repeated failure did not re-arm its retry");
+    expect(await attempts()).toBe("2");
+    await sql`drop trigger fixture_fail_finish on tool_calls`.execute(db);
+    clock.advanceBy(5_000);
+    await deadline(finished.get(failing.runId)!.promise, "Finish retry did not settle the Run");
+    expect(await read(failing.runId)).toEqual({ finishIntent: null, status: "failed" });
     expect(
       await db
         .selectFrom("toolCalls")
         .select("id")
-        .where("runId", "=", runId)
+        .where(
+          "runId",
+          "in",
+          taskRuns.map(({ runId }) => runId),
+        )
         .where("status", "=", "open")
         .execute(),
     ).toEqual([]);
@@ -485,7 +522,240 @@ it("automatically retries a failed batch of a Host-owned finish intent", async (
   }
 });
 
-it("reads fifty task summaries in a constant number of statements within the page budget", async () => {
+it("publishes count-only approval changes to the subscribed task and shell", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  let socket: WebSocket | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, { logger: false });
+    const tasks = createPersonalRunFixturePort(host.store);
+    const { threadId } = await tasks.createTask({
+      ownerId: host.ownerId,
+      suffix: "approval-count",
+    });
+    await tasks.startTask(threadId, "Keep the task running");
+    const input = await host.store.enqueueThreadInput({
+      requestedBy: host.ownerId,
+      threadId,
+      content: [{ type: "text", text: "Approval-gated follow-up" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "approval-follow-up",
+    });
+    const db = host.store.database;
+    const changeApproval = (state: "awaiting-approval" | "cancelled") =>
+      commitPersonalMutation(db, async (tx) => {
+        await tx
+          .updateTable("threadInputs")
+          .set({
+            state,
+            ...(state === "cancelled" ? { cancelReason: "team-request-cancelled" } : {}),
+          })
+          .where("messageId", "=", input.message.id)
+          .execute();
+      });
+    await changeApproval("awaiting-approval");
+    const reader = await connect(host.origin, host.ownerHeaders.cookie!);
+    socket = reader.socket;
+    reader.send({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: [],
+      installed: {},
+      selected: { subscriptionId: "detail:0", generation: 1, scope: { kind: "thread", threadId } },
+    });
+    for (const scope of ["shell", "thread"])
+      await reader.read(
+        (frame) => frame.type === "host.synchronized" && frame.scope.kind === scope,
+        `The ${scope} did not synchronize`,
+      );
+    expect(await host.store.getThreadForOwner(threadId, host.ownerId)).toMatchObject({
+      pendingRequests: 1,
+      status: "running",
+    });
+    await changeApproval("cancelled");
+    const current = await host.store.getThreadForOwner(threadId, host.ownerId);
+    expect(current).toMatchObject({
+      pendingRequests: 0,
+      status: "running",
+    });
+    const { revision } = await db
+      .selectFrom("threads")
+      .select("revision")
+      .where("id", "=", threadId)
+      .executeTakeFirstOrThrow();
+    for (const entityKind of ["thread", "task"] as const) {
+      const frame = await reader.read(
+        (frame) =>
+          frame.type === "host.changes" &&
+          frame.changes.some(
+            (change) => change.entityKind === entityKind && change.entityId === threadId,
+          ),
+        `The ${entityKind} retained its old approval count`,
+      );
+      expect(frame).toMatchObject({
+        throughSequence: revision,
+        changes: expect.arrayContaining([
+          expect.objectContaining({
+            entityKind,
+            entityId: threadId,
+            value: expect.objectContaining({ pendingRequestCount: 0, status: "running" }),
+          }),
+        ]),
+      });
+    }
+  } finally {
+    socket?.terminate();
+    await host?.close();
+    await database.drop();
+  }
+});
+
+it("rejects moves of the task that owns a Request or waiting input", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  let runner: Awaited<ReturnType<typeof connectCallerMachine>> | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, { logger: false });
+    runner = await connectCallerMachine(host, {
+      name: "Count owner",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    const run = await dispatchCallerRun(host, runner, { key: "count-owner", title: "Count owner" });
+    const requestId = await run.openLiveRequest("harness.approval");
+    const target = await createPersonalRunFixturePort(host.store).createTask({
+      ownerId: host.ownerId,
+      suffix: "new-count-owner",
+    });
+    const db = host.store.database;
+    await expect(
+      db
+        .updateTable("requests")
+        .set({ originatingThreadId: target.threadId })
+        .where("id", "=", requestId)
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514", message: "Request task cannot change" });
+    const original = await db
+      .selectFrom("runs")
+      .select("seedInputId")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    await expect(
+      db
+        .updateTable("threadInputs")
+        .set({ threadId: target.threadId })
+        .where("messageId", "=", original.seedInputId!)
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514", message: "Input task cannot change" });
+  } finally {
+    await runner?.close();
+    await host?.close();
+    await database.drop();
+  }
+});
+
+it("arms an idle deadline owner for the edit lease holding a queued follow-up", async () => {
+  const database = await cloneTestDatabase("host");
+  const clock = new ManualClock();
+  let leaseAlarm = Promise.withResolvers<void>();
+  let advanced: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+  let host: PrivateMachineHost | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, {
+      logger: false,
+      executionClock: {
+        now: clock.now,
+        schedule(callback, delay) {
+          const cancel = clock.schedule(callback, delay);
+          if (delay === threadInputEditLeaseMs) leaseAlarm.resolve();
+          return cancel;
+        },
+      },
+      onPersonalReaction(notice) {
+        if (notice.type === "executionCommandsChanged") advanced?.resolve();
+      },
+    });
+    const tasks = createPersonalRunFixturePort(host.store);
+    const { thread } = await tasks.createTask({
+      ownerId: host.ownerId,
+      suffix: "edit-lease-expiry",
+    });
+    const predecessor = await tasks.startTask(thread.id, "Finish while the edit is held");
+    const queued = await host.store.enqueueThreadInput({
+      requestedBy: host.ownerId,
+      threadId: thread.id,
+      content: [{ type: "text", text: "The queued follow-up" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "edit-lease-follow-up",
+    });
+    expect(queued.run).toBeNull();
+    expect(await host.store.requests.nextDeadline()).toBeNull();
+    const edit = {
+      threadId: thread.id,
+      messageId: queued.message.id,
+      leaseId: crypto.randomUUID(),
+    };
+    expect(
+      await host.api["commands.dispatch"]({
+        ...edit,
+        type: "thread.input.lease.take",
+        takeOver: false,
+      }),
+    ).toMatchObject({ ok: true });
+    await deadline(leaseAlarm.promise, "Taking a lease did not arm the idle deadline owner");
+    clock.advanceBy(10_000);
+    leaseAlarm = Promise.withResolvers<void>();
+    expect(
+      await host.api["commands.dispatch"]({
+        ...edit,
+        type: "thread.input.lease.renew",
+      }),
+    ).toMatchObject({ ok: true });
+    await deadline(leaseAlarm.promise, "Renewing the lease did not move its alarm");
+    const environment = await host.store.getEnvironment(thread.environmentId);
+    await host.store.commitRunnerEvent({
+      environmentId: thread.environmentId,
+      runnerId: environment!.runnerId!,
+      runnerBootId: predecessor.runnerBootId,
+      event: PendingAgentEventV2Schema.parse({
+        type: "run.completed",
+        data: { status: "completed" },
+        bindingGeneration: predecessor.bindingGeneration,
+        environmentId: thread.environmentId,
+        emittedAt: new Date(clock.now()).toISOString(),
+        ordinal: 1,
+        runId: predecessor.runId,
+        threadId: thread.id,
+      }),
+    });
+    const read = () =>
+      host!.store.database
+        .selectFrom("runs")
+        .select(["seedInputId", "status"])
+        .where("threadId", "=", thread.id)
+        .orderBy("runOrdinal")
+        .execute();
+    expect(await read()).toEqual([
+      { seedInputId: predecessor.turn.message.id, status: "completed" },
+    ]);
+    clock.advanceBy(threadInputEditLeaseMs - 10_000);
+    expect(await read()).toHaveLength(1);
+    advanced = Promise.withResolvers<void>();
+    clock.advanceBy(10_000);
+    await deadline(advanced.promise, "The renewed edit lease did not release the follow-up");
+    expect(await read()).toEqual([
+      { seedInputId: predecessor.turn.message.id, status: "completed" },
+      { seedInputId: queued.message.id, status: "queued" },
+    ]);
+  } finally {
+    await host?.close();
+    await database.drop();
+  }
+});
+
+it("reads fifty tasks with their continuation and return details within a fixed query and byte budget", async () => {
   const database = await cloneTestDatabase("host");
   let host: PrivateMachineHost | undefined;
   try {
@@ -494,16 +764,42 @@ it("reads fifty task summaries in a constant number of statements within the pag
       ownerId: host.ownerId,
       suffix: "full-task-page",
     });
+    let pageTask = thread;
     for (let index = 0; index < 50; index++) {
-      await host.store.createThread({
+      ({ thread: pageTask } = await host.store.createThread({
         createdBy: host.ownerId,
         environmentId: thread.environmentId,
         harnessInstanceId: thread.harnessInstanceId,
         modelSelection: thread.modelSelection,
         idempotencyKey: `page-seed:${index}`,
         title: `Task number ${index}`,
-      });
+      }));
     }
+    const started = await createPersonalRunFixturePort(host.store).startTask(
+      pageTask.id,
+      "Open a session",
+    );
+    await host.store.database
+      .updateTable("providerSessions")
+      .set({
+        contextSnapshot: {
+          bindingGeneration: started.bindingGeneration,
+          measuredAt: Date.now(),
+          ordinal: 0,
+          promptCacheTtlMs: null,
+          requestStartedAt: null,
+          sourceRunId: started.runId,
+          usedTokens: 200_000,
+        },
+      })
+      .where("id", "=", started.run.providerSessionId!)
+      .execute();
+    const selected = await host.store.getThreadForOwner(pageTask.id, host.ownerId);
+    expect(selected).toMatchObject({
+      providerSessionId: started.run.providerSessionId,
+      continuationIdentity: expect.any(Object),
+      returnHint: { sourceRunId: started.runId },
+    });
     const statements: string[] = [];
     const plugin: KyselyPlugin = {
       transformQuery({ node }) {
@@ -526,7 +822,12 @@ it("reads fifty task summaries in a constant number of statements within the pag
     if (!page.ok) throw new Error("Task page did not succeed");
     expect(page.data.tasks).toHaveLength(50);
     expect(page.data.window).toMatchObject({ hasMore: true, nextBefore: expect.any(String) });
-    expect(statements).toEqual(["SelectQueryNode", "SelectQueryNode", "SelectQueryNode"]);
+    expect(page.data.tasks.find(({ thread }) => thread.id === pageTask.id)?.thread).toMatchObject({
+      providerSessionId: selected!.providerSessionId,
+      continuationIdentity: selected!.continuationIdentity,
+      returnHint: selected!.returnHint,
+    });
+    expect(statements).toEqual(Array.from({ length: 4 }, () => "SelectQueryNode"));
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(64 * 1024);
   } finally {
     await host?.close();
@@ -821,17 +1122,21 @@ it("does not deliver a prepared Request response to its Runner after Stop commit
     });
     const dispatch = host.store.dispatchRequestResponse.bind(host.store);
     vi.spyOn(host.store, "dispatchRequestResponse").mockImplementation((id, send) =>
-      dispatch(id, (ack, fence) =>
-        send(ack, async (enqueue) => {
-          prepared.resolve();
-          await deadline(release.promise, "Fixture did not release the prepared Request frame");
-          try {
-            await fence(enqueue);
-          } catch (error) {
-            refused.resolve(error);
-            throw error;
-          }
-        }),
+      dispatch(id, (ack, fence, generation) =>
+        send(
+          ack,
+          async (enqueue) => {
+            prepared.resolve();
+            await deadline(release.promise, "Fixture did not release the prepared Request frame");
+            try {
+              await fence(enqueue);
+            } catch (error) {
+              refused.resolve(error);
+              throw error;
+            }
+          },
+          generation,
+        ),
       ),
     );
     const response = await host.api["commands.dispatch"]({

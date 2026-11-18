@@ -1,6 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { personalUpgradeProgressLine } from "@opensteer/protocol/desktop";
+import {
+  personalUpgradeHeartbeatLine,
+  personalUpgradeProgressLine,
+} from "@opensteer/protocol/desktop";
 import { parseHostConfig } from "@opensteer/config";
 import { hostStopper } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
@@ -25,6 +28,9 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   let lastProgressAt = -Infinity;
   let lastStage: string | undefined;
   const runtime = await createHostRuntime(config, {
+    onPersonalUpgradeHeartbeat: () => {
+      process.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
+    },
     onPersonalUpgradeBatch: (stage) => {
       const now = performance.now();
       if (stage === lastStage && now - lastProgressAt < 1_000) return;

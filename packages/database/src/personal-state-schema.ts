@@ -312,28 +312,43 @@ const retainedStateDdl = `
     (case when state = 'awaiting-approval' then 1 else 0 end) stored;
 
   -- Offline conversion initializes the counts before setting ready.
+  alter table threads add column request_count_changed boolean not null default false;
+  create index threads_changed_request_counts on threads(id) where request_count_changed;
+
   create function opensteer_update_thread_request_count() returns trigger language plpgsql as $$
   declare
     task_id text;
     contribution integer;
   begin
     if TG_TABLE_NAME = 'requests' then
+      if TG_OP = 'UPDATE' and new.originating_thread_id is distinct from old.originating_thread_id then
+        raise check_violation using message = 'Request task cannot change';
+      end if;
       task_id := coalesce(new.originating_thread_id, old.originating_thread_id);
       contribution := (case when new.status = 'pending' then 1 else 0 end)
                     - (case when old.status = 'pending' then 1 else 0 end);
     else
+      if TG_OP = 'UPDATE' and new.thread_id is distinct from old.thread_id then
+        raise check_violation using message = 'Input task cannot change';
+      end if;
       task_id := coalesce(new.thread_id, old.thread_id);
       contribution := (case when new.state = 'awaiting-approval' then 1 else 0 end)
                     - (case when old.state = 'awaiting-approval' then 1 else 0 end);
     end if;
+    if TG_WHEN = 'BEFORE' then return new; end if;
     if contribution <> 0 and exists (select 1 from client_sync_state where ready) then
-      update threads set pending_request_count = pending_request_count + contribution
+      update threads
+      set pending_request_count = pending_request_count + contribution, request_count_changed = true
       where id = task_id;
     end if;
     return null;
   end;
   $$;
 
+  create trigger request_task_immutable before update of originating_thread_id on requests
+    for each row execute function opensteer_update_thread_request_count();
+  create trigger input_task_immutable before update of thread_id on thread_inputs
+    for each row execute function opensteer_update_thread_request_count();
   create trigger thread_request_count after insert or update of status or delete on requests
     for each row execute function opensteer_update_thread_request_count();
   create trigger thread_input_approval_count after insert or update of state or delete on thread_inputs

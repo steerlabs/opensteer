@@ -362,6 +362,7 @@ const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
 });
 
 const ResolveRequestSchema = runnerCommandBase.extend({
+  bindingGeneration: z.number().int().positive().optional(),
   type: z.literal("request.resolve"),
   requestId: RequestIdSchema,
   response: RequestResponseSchema,

@@ -49,6 +49,7 @@ describe("HostCommandDispatcher Request responses", () => {
         await send(
           async () => undefined,
           async () => undefined,
+          3,
         );
       },
     );
@@ -91,6 +92,7 @@ describe("HostCommandDispatcher Request responses", () => {
     expect(JSON.stringify(command.payload)).not.toContain("live-secret");
     expect(runnersDispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        bindingGeneration: 3,
         requestId,
         response,
         runId,

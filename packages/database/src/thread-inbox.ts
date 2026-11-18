@@ -3,7 +3,11 @@ import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { unreadTaskContribution } from "./personal-attention-store.js";
-import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeExecutionCommands,
+  wakeRequestDeadlines,
+} from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { executionDate } from "./personal-transaction.js";
@@ -1105,9 +1109,6 @@ export async function steerThreadInputInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   await wakeExecutionCommands(transaction);
-  if (row.editLeaseId) {
-    await refreshInputQueue(transaction, thread.id);
-  }
   const promoted = await transaction
     .updateTable("threadInputs")
     .set({
@@ -1120,6 +1121,7 @@ export async function steerThreadInputInTransaction(
     .where("messageId", "=", row.messageId)
     .returningAll()
     .executeTakeFirstOrThrow();
+  if (row.editLeaseExpiresAt) await wakeRequestDeadlines(transaction);
   await transaction
     .updateTable("messages")
     .set({
@@ -1364,6 +1366,7 @@ export async function cancelThreadInputInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   const input = threadInputFromRow(cancelled);
+  if (row.editLeaseExpiresAt) await wakeRequestDeadlines(transaction);
   await refreshInputQueue(transaction, thread.id, input.messageId);
   const advanced = await advanceThreadQueue(transaction, thread);
   return { ...advanced, input, wasDuplicate: false };

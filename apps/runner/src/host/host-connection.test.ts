@@ -138,6 +138,7 @@ describe("AgentsWorkSession", () => {
         send: async (message) => void messages.push(message),
       });
       const runtime = {
+        fenceRequestAnswers: vi.fn(),
         observeAgentHomeSkills: () => undefined,
         observeAgentHomeSettings: async () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
@@ -198,6 +199,10 @@ describe("AgentsWorkSession", () => {
               },
         );
         expect(calls).toEqual(["run.execute"]);
+        expect(runtime.fenceRequestAnswers).toHaveBeenCalledExactlyOnceWith(
+          ids.runId,
+          ...(stop === "interrupt" ? [interrupt] : []),
+        );
         expect(work.settled()).toBe(false);
         execution.resolve();
         await vi.waitFor(() =>

@@ -7,6 +7,7 @@ import type { DeploymentConnection } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId, type RunnerId } from "@opensteer/core";
 import {
+  personalUpgradeHeartbeatLine,
   personalUpgradeProgressLine,
   type DesktopPersonalDeploymentStatus,
 } from "@opensteer/protocol/desktop";
@@ -225,6 +226,35 @@ describe("PersonalDeploymentSupervisor", () => {
       finish.resolve();
       await expect(starting).resolves.toMatchObject({ state: "ready" });
     } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a long upgrade statement alive until the overall startup limit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow("The Personal database upgrade timed out.");
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      heartbeat = setInterval(() => host.stdout.write(`${personalUpgradeHeartbeatLine}\n`), 400);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      expect(fixture.processes.kills).toEqual([]);
+      await vi.advanceTimersByTimeAsync(30 * 60_000 - 60_001);
+      await rejected;
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
       await fixture.supervisor.stop();
       vi.useRealTimers();
     }

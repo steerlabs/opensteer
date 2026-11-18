@@ -1383,6 +1383,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
         return;
       case "host.command": {
         const command = message.command;
+        if (command.type === "run.interrupt")
+          this.#options.agents.runtime.fenceRequestAnswers(command.runId, command);
         void this.#inOrder(async () => {
           const response = this.#options.sink
             .applyCommand(command, () =>
@@ -1432,6 +1434,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
       // connection execute, so it must never overtake the execute it follows.
       case "host.runs.revoked": {
         const { revocations } = message;
+        for (const { runId } of revocations)
+          this.#options.agents.runtime.fenceRequestAnswers(runId);
         void this.#inOrder(async () => {
           this.#options.agents.runtime.revokeRuns(revocations);
         }).catch((error: unknown) =>

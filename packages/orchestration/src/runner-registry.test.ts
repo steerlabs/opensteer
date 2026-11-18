@@ -1160,6 +1160,61 @@ describe("Runner connection registry", () => {
       code: "conflict",
     });
   });
+
+  it("keeps the newer binding when a retired execute's rejection arrives late", async () => {
+    const environmentId = createId("environment");
+    const registry = new RunnerRegistry({
+      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(commitThrough) },
+    });
+    const peer = new MemoryRunnerPeer("runner");
+    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+    const first = executeCommand(environmentId);
+    const next = {
+      ...first,
+      commandId: createId("command"),
+      context: { ...first.context, bindingGeneration: first.context.bindingGeneration + 1 },
+    };
+    const send = (command: typeof first) =>
+      registry.dispatch(command, new AbortController().signal);
+    try {
+      const original = send(first);
+      const refused = expect(original).rejects.toMatchObject({ disposition: "retry" });
+      await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
+      const retire = (bindingGeneration: number) =>
+        registry.retireRunBinding(first.context.runId, bindingGeneration);
+      expect(registry.hasRunCapacity(environmentId, 1)).toBe(false);
+      retire(first.context.bindingGeneration);
+      expect(registry.hasRunCapacity(environmentId, 1)).toBe(true);
+      const replacement = send(next);
+      await waitFor(() =>
+        peer.messages.some(
+          (message) =>
+            message.type === "host.command" && message.command.commandId === next.commandId,
+        ),
+      );
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        type: "runner.command-accepted",
+        commandId: next.commandId,
+        correlationId: next.correlationId,
+      });
+      await replacement;
+      retire(first.context.bindingGeneration);
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        type: "runner.command-rejected",
+        commandId: first.commandId,
+        correlationId: first.correlationId,
+        error: { code: "conflict", message: "Old execution no longer exists", retryable: true },
+      });
+      await refused;
+      expect(registry.hasRunCapacity(environmentId, 1)).toBe(false);
+      retire(next.context.bindingGeneration);
+      expect(registry.hasRunCapacity(environmentId, 1)).toBe(true);
+    } finally {
+      await registry.close();
+    }
+  });
   it("refuses a Run announced for an environment the Runner does not serve", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),

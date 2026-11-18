@@ -356,21 +356,48 @@ async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: 
   return conversation?.personalContext === true;
 }
 
-export async function drainPersistedRunFinishes(
+export function createRunFinishDrain(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
+  options: { readonly now: () => number; readonly onError: (error: unknown) => void },
 ) {
-  for (;;) {
-    const pending = await database
-      .selectFrom("runs")
-      .select("id")
-      .where("finishIntent", "is not", null)
-      .orderBy("id")
-      .limit(1)
-      .executeTakeFirst();
-    if (!pending) return;
-    await drainRunFinish(database, links, pending.id);
-  }
+  let retries = new Map<RunId, number>();
+  return async (): Promise<Date | null> => {
+    const nextRetries = new Map<RunId, number>();
+    let nextDue = Infinity;
+    let after: RunId | undefined;
+    const pageSize = 64;
+    for (;;) {
+      const page = await database
+        .selectFrom("runs")
+        .select("id")
+        .where("finishIntent", "is not", null)
+        .$if(after !== undefined, (query) => query.where("id", ">", after!))
+        .orderBy("id")
+        .limit(pageSize)
+        .execute();
+      for (const { id } of page) {
+        let due = retries.get(id) ?? 0;
+        if (due <= options.now()) {
+          try {
+            await drainRunFinish(database, links, id);
+            retries.delete(id);
+            continue;
+          } catch (error) {
+            due = options.now() + 5_000;
+            retries.set(id, due);
+            options.onError(error);
+          }
+        }
+        nextRetries.set(id, due);
+        nextDue = Math.min(nextDue, due);
+      }
+      if (page.length < pageSize) break;
+      after = page.at(-1)!.id;
+    }
+    retries = nextRetries;
+    return Number.isFinite(nextDue) ? new Date(nextDue) : null;
+  };
 }
 
 export async function drainRunFinish(

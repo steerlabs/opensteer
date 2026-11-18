@@ -27,6 +27,8 @@ import type {
   PersonalScopeKey,
 } from "./personal-state-schema.js";
 import type { RevokedRunGrant } from "./run-grants.js";
+import { publishThreadSummary } from "./thread-status.js";
+import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
 const retainedRows = 4_096;
 const maxCommitRows = 128;
@@ -350,7 +352,7 @@ class Mutation {
   }
   react(reaction: PersonalCommitReaction) {
     if (
-      reaction.type === "executionCommandsChanged" &&
+      (reaction.type === "executionCommandsChanged" || reaction.type === "deadlinesChanged") &&
       this.#ownerReactions.some(({ type }) => type === reaction.type)
     )
       return;
@@ -551,6 +553,18 @@ export async function commitPersonalMutation<Result>(
     const mutation = new Mutation({ ...state, now: clock.now });
     active.set(tx, mutation);
     const result = await action(tx, mutation);
+    // The database counter covers both Requests and approval-gated inputs.
+    // Publish its dependent rows under the same commit fence as the change.
+    const changedCounts = await tx
+      .updateTable("threads")
+      .set({ requestCountChanged: false })
+      .where(sql<boolean>`request_count_changed`)
+      .returning("id")
+      .execute();
+    for (const { id } of changedCounts) {
+      await publishThreadSummary(tx, id);
+      await refreshAssignmentWorkerSummaries(tx, id);
+    }
     const notice = await mutation.write(tx);
     if (mutation.authorityScopes.size) {
       if (!listener?.suspend) throw new Error("Personal authority mutation has no dispatch fence");
@@ -585,5 +599,11 @@ export async function commitPersonalMutation<Result>(
 export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "executionCommandsChanged" });
+  });
+}
+
+export function wakeRequestDeadlines(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "deadlinesChanged" });
   });
 }

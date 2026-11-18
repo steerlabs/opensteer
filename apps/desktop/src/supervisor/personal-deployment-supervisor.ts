@@ -19,6 +19,7 @@ import {
 } from "@opensteer/integration-core";
 import {
   DesktopPersonalDeploymentStatusSchema,
+  personalUpgradeHeartbeatLine,
   personalUpgradeProgressLine,
   type DesktopPersonalComponentState,
   type DesktopPersonalDeploymentIssue,
@@ -100,6 +101,7 @@ import {
 } from "./personal-data-reset.js";
 
 const defaultStartupTimeoutMs = 60_000;
+const maximumHostStartupMs = 30 * 60_000;
 const defaultShutdownTimeoutMs = processStopTimeoutMs;
 const defaultRestartBackoffMs = 1_000;
 const defaultMaximumRestartBackoffMs = 30_000;
@@ -975,7 +977,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         await this.#personFullName(),
       ),
       (line) => {
-        if (line !== personalUpgradeProgressLine || !renewDeadline || signal.aborted) return;
+        if (
+          (line !== personalUpgradeProgressLine && line !== personalUpgradeHeartbeatLine) ||
+          !renewDeadline ||
+          signal.aborted
+        )
+          return;
         renewDeadline();
         if (this.#status.step === "starting-host") this.#setStatus({ step: "upgrading-database" });
       },
@@ -985,7 +992,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     const readinessSignal = AbortSignal.any([signal, readiness.signal]);
     const verifiedHost = await this.#raceChild(
       host,
-      this.#host.waitForHost(origin, manifest, readinessSignal),
+      withTimeout(
+        this.#host.waitForHost(origin, manifest, readinessSignal),
+        Math.max(this.#startupTimeoutMs, maximumHostStartupMs),
+        {
+          signal: readinessSignal,
+          timeoutError: () => new Error("The Personal database upgrade timed out."),
+        },
+      ),
       readinessSignal,
       "Host",
       (refresh) => {

@@ -1174,7 +1174,11 @@ export type RequestResponseSendFence = (
 export async function dispatchRequestResponse(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
-  send: (beforeAck: () => Promise<void>, fenceSend: RequestResponseSendFence) => Promise<void>,
+  send: (
+    beforeAck: () => Promise<void>,
+    fenceSend: RequestResponseSendFence,
+    bindingGeneration: number,
+  ) => Promise<void>,
 ): Promise<SucceededCommand> {
   const lockIntent = async (transaction: Transaction<DatabaseSchema>, receipt: boolean) => {
     const observed = await transaction
@@ -1326,6 +1330,7 @@ export async function dispatchRequestResponse(
           "non-retrying",
         );
       },
+      binding.bindingGeneration,
     );
   } catch (error) {
     if (!result) throw error;

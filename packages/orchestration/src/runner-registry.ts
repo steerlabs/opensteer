@@ -304,7 +304,7 @@ export interface RunnerRegistryHooks {
 interface PendingAck {
   readonly beforeAck?: () => Promise<void>;
   readonly commandType: RunnerCommand["type"];
-  readonly runId?: RunId;
+  readonly runBinding?: { readonly runId: RunId; readonly bindingGeneration: number };
   readonly triggerOccurrenceId?: TriggerOccurrenceId;
   readonly reject: (error: unknown) => void;
   readonly resolve: (result: RunnerCommandAccepted) => void;
@@ -1933,7 +1933,15 @@ export class RunnerRegistry {
         "failed",
       );
     }
-    const runId = command.type === "run.execute" ? command.context.runId : undefined;
+    const runBinding =
+      command.type === "run.execute"
+        ? { runId: command.context.runId, bindingGeneration: command.context.bindingGeneration }
+        : undefined;
+    const runId = runBinding?.runId;
+    const ownsBinding = () =>
+      !runBinding ||
+      connection.ownedRunBindings.get(runBinding.runId)?.bindingGeneration ===
+        runBinding.bindingGeneration;
     const occurrenceId =
       command.type === "trigger.execute" ? command.context.occurrenceId : undefined;
     const ack = deferred<RunnerCommandAccepted>();
@@ -1948,11 +1956,7 @@ export class RunnerRegistry {
             beforeAck,
           }
         : {}),
-      ...(runId
-        ? {
-            runId,
-          }
-        : {}),
+      ...(runBinding ? { runBinding } : {}),
       ...(occurrenceId
         ? {
             triggerOccurrenceId: occurrenceId,
@@ -1989,7 +1993,7 @@ export class RunnerRegistry {
       checked = true;
       // Never sent, so its Run is settled as one no Runner holds: requeued,
       // or ended if it was stopped.
-      if (runId && this.#canceledRuns.delete(runId)) {
+      if (runId && (!ownsBinding() || this.#canceledRuns.delete(runId))) {
         throw new CommandDispatchError("Run execution authority was revoked", "retry");
       }
       const frame = { ...connection.identity.fence, command, type: "host.command" as const };
@@ -2014,6 +2018,7 @@ export class RunnerRegistry {
           if (
             binding.runId !== command.runId ||
             binding.environmentId !== command.environmentId ||
+            command.bindingGeneration !== binding.bindingGeneration ||
             !owned ||
             owned.bindingGeneration !== binding.bindingGeneration ||
             owned.threadId !== binding.threadId ||
@@ -2040,11 +2045,7 @@ export class RunnerRegistry {
       if (completion && occurrenceId) connection.pendingTriggerPrograms.delete(occurrenceId);
       // A Run never sent was never this Runner's; a Run that may have arrived
       // stays held until the next attach says whether the Runner has it.
-      if (runId && !sent) {
-        connection.ownedRunIds.delete(runId);
-        connection.ownedRunBindings.delete(runId);
-        this.#deactivateRunCancellation(runId);
-      }
+      if (runBinding && !sent) this.#forgetUnadmittedRun(connection, runBinding);
       if (error instanceof CommandDispatchError) throw error;
       // The caller's own refusal: nothing was sent, so the command is retried,
       // and settles as unsent work under whatever authority stands by then.
@@ -2062,7 +2063,12 @@ export class RunnerRegistry {
       // longer establish execution ownership. Eject it so the exact owned set
       // enters disconnect recovery instead of leaving a starting Run stranded
       // behind an otherwise healthy heartbeat stream.
-      if (sent && !signal.aborted && this.#byPeer.get(connection.peer.id) === connection) {
+      if (
+        sent &&
+        ownsBinding() &&
+        !signal.aborted &&
+        this.#byPeer.get(connection.peer.id) === connection
+      ) {
         void this.#disconnect(
           connection,
           error instanceof Error
@@ -2264,11 +2270,7 @@ export class RunnerRegistry {
       case "runner.command-rejected":
         {
           const pending = connection.pendingAcks.get(message.commandId);
-          if (pending?.runId) {
-            connection.ownedRunIds.delete(pending.runId);
-            connection.ownedRunBindings.delete(pending.runId);
-            this.#deactivateRunCancellation(pending.runId);
-          }
+          if (pending?.runBinding) this.#forgetUnadmittedRun(connection, pending.runBinding);
           if (pending?.triggerOccurrenceId) {
             connection.ownedTriggerOccurrenceIds.delete(pending.triggerOccurrenceId);
             this.#deactivateTriggerCancellation(pending.triggerOccurrenceId);
@@ -2337,7 +2339,7 @@ export class RunnerRegistry {
           },
           terminal,
         );
-        if (terminal) this.#releaseRun(connection, event.runId);
+        if (terminal) this.#releaseRunBinding(connection, event.runId, event.bindingGeneration);
         break;
       }
       case "runner.live": {
@@ -2547,6 +2549,11 @@ export class RunnerRegistry {
     }
   }
 
+  retireRunBinding(runId: RunId, bindingGeneration: number): void {
+    for (const connection of this.#byRunner.values())
+      this.#releaseRunBinding(connection, runId, bindingGeneration);
+  }
+
   /** Tells this connection to stop Runs the Host has already ended. */
   async revokeRuns(
     runnerId: RunnerId,
@@ -2702,6 +2709,21 @@ export class RunnerRegistry {
   }
 
   /** Ends this connection's hold on a Run that is terminal or revoked. */
+  #releaseRunBinding(connection: RunnerConnection, runId: RunId, bindingGeneration: number): void {
+    if (connection.ownedRunBindings.get(runId)?.bindingGeneration === bindingGeneration)
+      this.#releaseRun(connection, runId);
+  }
+
+  #forgetUnadmittedRun(
+    connection: RunnerConnection,
+    { runId, bindingGeneration }: NonNullable<PendingAck["runBinding"]>,
+  ): void {
+    if (connection.ownedRunBindings.get(runId)?.bindingGeneration !== bindingGeneration) return;
+    connection.ownedRunIds.delete(runId);
+    connection.ownedRunBindings.delete(runId);
+    this.#deactivateRunCancellation(runId);
+  }
+
   #releaseRun(connection: RunnerConnection, runId: RunId): void {
     const released = connection.ownedRunIds.delete(runId);
     connection.ownedRunBindings.delete(runId);

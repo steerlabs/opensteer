@@ -969,11 +969,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           const encryptedResponse = command.encryptedRequestResponse;
           await this.#store.dispatchRequestResponse(
             command.id,
-            async (beforeAck, fenceRequestSend) => {
+            async (beforeAck, fenceRequestSend, bindingGeneration) => {
               const identity = this.#runners.identityForEnvironment(base.environmentId);
               if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
               const runnerCommand: RunnerCommand = {
                 ...base,
+                bindingGeneration,
                 requestId: responsePayload.requestId,
                 response: await openRequestResponse(this.#requestResponseVault, encryptedResponse, {
                   requestId: responsePayload.requestId,

@@ -314,6 +314,7 @@ export async function cancelTeamTaskRequest(
         .where("messageId", "=", inbox.messageId)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (inbox.editLeaseExpiresAt) mutation.react({ type: "deadlinesChanged" });
       if (run) {
         await transaction
           .updateTable("runs")
@@ -611,6 +612,7 @@ export function releaseTeamAsk(
       .where("messageId", "=", inbox.messageId)
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (inbox.editLeaseExpiresAt) mutation.react({ type: "deadlinesChanged" });
     thread = await transaction
       .updateTable("threads")
       .set({ nextMessageSequence: sql`next_message_sequence + 1`, doneAt: null, doneReason: null })

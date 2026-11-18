@@ -244,7 +244,7 @@ export function takeThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId: string; readonly takeOver: boolean },
 ) {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const { thread, row, message } = await editable(transaction, input);
     const live = liveInputLease(transaction, row);
     if (
@@ -270,6 +270,7 @@ export function takeThreadInputLease(
       })
       .where("messageId", "=", row.messageId)
       .execute();
+    mutation.react({ type: "deadlinesChanged" });
     await refreshInputQueue(transaction, thread.id);
     return { lease, revision: message.revision };
   });
@@ -279,7 +280,7 @@ export function renewThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId: string },
 ) {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const { thread, row } = await editable(transaction, input);
     if (!liveInputLease(transaction, row))
       throw new OpensteerError({ code: "conflict", message: "The edit lease expired." });
@@ -291,6 +292,7 @@ export function renewThreadInputLease(
       .where("messageId", "=", row.messageId)
       .returningAll()
       .executeTakeFirstOrThrow();
+    mutation.react({ type: "deadlinesChanged" });
     await refreshInputQueue(transaction, thread.id);
     return { lease: liveInputLease(transaction, saved)! };
   });
@@ -300,7 +302,7 @@ export function releaseThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId?: string },
 ) {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, input.requestedBy);
     const thread = await lockInputQueueProjection(transaction, input.threadId);
     const row = await transaction
@@ -321,6 +323,7 @@ export function releaseThreadInputLease(
       .set(clearInputLease)
       .where("messageId", "=", row.messageId)
       .execute();
+    mutation.react({ type: "deadlinesChanged" });
     await refreshInputQueue(transaction, thread.id);
     const advanced = await advanceThreadQueue(transaction, thread);
     return { ...advanced };
@@ -336,7 +339,7 @@ export function editThreadInput(
     readonly idempotencyKey: string;
   },
 ) {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, input.requestedBy);
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     const request = {
@@ -437,6 +440,7 @@ export function editThreadInput(
       .where("messageId", "=", message.id)
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (row.editLeaseExpiresAt) mutation.react({ type: "deadlinesChanged" });
     const view = messageViewFromRow(updated);
     const edit = view.edit!;
     await transaction

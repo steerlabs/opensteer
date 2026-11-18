@@ -4,8 +4,11 @@ import type { Thread, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
+import { compactionReturnHints } from "./compaction-eligibility.js";
 import {
+  threadContinuationIdentitySelection,
   threadPendingRequestsSelection,
+  threadProviderSessionSelection,
   threadsFromRows,
   threadVisitSelection,
 } from "./thread-row-mappers.js";
@@ -122,19 +125,25 @@ export async function readTaskPageThreads(
   const rows = await tx
     .selectFrom("threads")
     .selectAll("threads")
-    .select([threadPendingRequestsSelection, threadVisitSelection])
+    .select([
+      threadContinuationIdentitySelection,
+      threadPendingRequestsSelection,
+      threadProviderSessionSelection,
+      threadVisitSelection,
+    ])
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
     .where("threads.id", "in", ids)
     .execute();
+  const returnHints = await compactionReturnHints(
+    tx,
+    rows.filter((row) => row.providerSessionId !== null).map((row) => row.id),
+  );
   return new Map(
-    threadsFromRows(
-      rows.map((row) => ({
-        ...row,
-        providerSessionId: null,
-        continuationIdentity: null,
-      })),
-    ).map((thread) => [thread.id, thread]),
+    threadsFromRows(rows).map((thread) => [
+      thread.id,
+      { ...thread, returnHint: returnHints.get(thread.id) ?? null },
+    ]),
   );
 }
 
