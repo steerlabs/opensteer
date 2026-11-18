@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
+  pluginEmptyToolsText,
   activatePluginVersion,
   answerPluginScheduledRun,
   configurePluginSchedule,
@@ -173,6 +174,16 @@ function PluginContent({
         <p className="notice notice--warn" role="status">
           {pluginBackgroundNotice(data)}
         </p>
+      ) : null}
+      {data.importWarnings?.length ? (
+        <section className="notice notice--warn" aria-label="Operations left out">
+          <p>Some operations were left out of this import.</p>
+          <ul>
+            {data.importWarnings.map((warning, index) => (
+              <li key={index}>{warning}</li>
+            ))}
+          </ul>
+        </section>
       ) : null}
       {data.page ? (
         <div className="plugin-page__open">
@@ -414,6 +425,7 @@ function SectionPages({
 }
 
 function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
+  const emptyText = pluginEmptyToolsText(data);
   const { hostClient } = useShell();
   const id = data.plugin.id;
   const version = data.plugin.activeVersion;
@@ -436,14 +448,8 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
           Tools
           {data.toolCount ? <span className="plugin-page__count">{data.toolCount}</span> : null}
         </h2>
-        {data.tools === null ? (
-          <p className="settings-footnote">
-            {data.plugin.status === "not-built"
-              ? "Tools appear once a version builds."
-              : "Tools appear once its accounts are connected."}
-          </p>
-        ) : data.tools.length === 0 ? (
-          <p className="settings-footnote">This plugin has no tools.</p>
+        {emptyText ? (
+          <p className="settings-footnote">{emptyText}</p>
         ) : (
           <div className="card">
             {tools.items.map((tool) => (

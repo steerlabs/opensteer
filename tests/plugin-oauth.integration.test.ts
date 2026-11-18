@@ -991,6 +991,9 @@ test("custom apps and discovered MCP clients exchange on the Host after Account 
   expect(JSON.stringify(receipts.rows)).not.toContain("custom-secret");
   const started = await start(target, "app", { id: z.string().parse(app.id) });
   expect(started.prepared.redirectUri).toBe(issuer + "/v1/oauth-broker/callback/plugin");
+  expect(started.prepared.methods).toMatchObject([
+    { oneClick: false, setup: { oneClickUnavailable: "no-provider-app" } },
+  ]);
   const launched = await launch(started);
   const proof = await consent(launched);
   expect(await oauth.returned(started.attemptId, proof!, personal.userId)).toMatchObject({
@@ -1068,6 +1071,9 @@ test("without an Account link custom and MCP callbacks finish locally; remote st
   await database.deleteFrom("personalRemoteAccountLink").execute();
   const target = await install("custom");
   const prepared = await oauth.prepare(target, personal.userId);
+  expect(prepared.methods).toMatchObject([
+    { oneClick: false, setup: { oneClickUnavailable: "account-not-linked" } },
+  ]);
   const input = {
     connection: prepared.connection,
     consent: prepared.consent,

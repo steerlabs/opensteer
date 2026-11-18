@@ -370,7 +370,9 @@ function useSignInSections(input: {
       ],
       ...(choices.options[0]?.kind === "one-click" && choices.options[0].detail
         ? { footer: { text: choices.options[0].detail } }
-        : {}),
+        : choices.oneClickUnavailable
+          ? { footer: { text: choices.oneClickUnavailable } }
+          : {}),
     },
   ];
   if (form && ownApp) {

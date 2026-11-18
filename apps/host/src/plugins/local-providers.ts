@@ -57,6 +57,7 @@ type Located = PluginHostProvider & {
   readonly transport: "computer" | "runner";
   /** What app_access_request names this provider by: a data app's name or a server's. */
   readonly requestName: string;
+  readonly waitingForLaunchApproval?: true;
   readonly blocked?: Blocked;
   readonly toolBlockers: Readonly<Record<string, Blocked>>;
 };
@@ -90,6 +91,7 @@ export class LocalProviders {
         connectionId: _c,
         transport: _t,
         requestName: _r,
+        waitingForLaunchApproval: _approval,
         ...provider
       }) => ({
         ...provider,
@@ -242,6 +244,7 @@ export class LocalProviders {
       title: entry.name,
       computer: entry.computer,
       unavailable: entry.unavailable?.slice(0, 1000) ?? null,
+      ...(entry.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
       tools: entry.unavailable
         ? []
         : entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
@@ -462,6 +465,7 @@ export class LocalProviders {
           );
           const runnerId = server.transport.runnerId;
           const localServer = localServers.find(({ id }) => id === server.id);
+          const launchStatus = localServer ? localServerStatus(localServer) : undefined;
           located.push(
             provider({
               id: providerId,
@@ -479,8 +483,11 @@ export class LocalProviders {
               connectionId: null,
               transport: "runner",
               requestName: serverName(entry.installation),
+              ...(launchStatus?.state === "waiting"
+                ? { waitingForLaunchApproval: true as const }
+                : {}),
               blocked:
-                (localServer ? localServerStatus(localServer).blocked : undefined) ??
+                launchStatus?.blocked ??
                 localTargetBlocked(
                   state,
                   entry.installation.title,
@@ -556,6 +563,7 @@ function provider(input: {
   transport: "computer" | "runner";
   requestName: string;
   unavailable: string | undefined;
+  waitingForLaunchApproval?: true;
   blocked?: Blocked | undefined;
   tools: PluginHostProvider["tools"];
 }): Located {
@@ -578,6 +586,7 @@ function provider(input: {
     connectionId: input.connectionId,
     transport: input.transport,
     requestName: input.requestName,
+    ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
     ...(input.blocked
       ? {
           blocked: input.blocked,

@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
-import { presentPluginToolResult, projectDirectLocalTools } from "./local-tool-results.js";
+import { presentPluginToolResult, projectDirectPluginTools } from "./local-tool-results.js";
 
 it("reports a refused batch call as failed and retains its attachment", () => {
   const failedPath = 'tools["local-server"].write';
   const successPath = 'tools["local-server"].read';
   const image = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
-  const result = projectDirectLocalTools({
+  const result = projectDirectPluginTools({
     execution: {
       ok: true,
       value: [
@@ -37,4 +37,23 @@ it("reports a refused batch call as failed and retains its attachment", () => {
     { type: "text", text: JSON.stringify(response.structuredContent) },
     image,
   ]);
+});
+
+it("keeps a cloud plugin's blocked-shaped data as a regular result", () => {
+  const path = "tools.fixture.read";
+  const value = {
+    kind: "blocked",
+    blocked: { code: "unavailable", message: "Plugin data", next: "Plugin data" },
+  };
+  const result = projectDirectPluginTools({
+    execution: {
+      ok: true,
+      value: { path, ok: true, value: { kind: "value", value } },
+    },
+  });
+  const response = presentPluginToolResult({ result });
+  expect(response.structuredContent).toMatchObject({
+    result: { execution: { ok: true, value: { path, ok: true, value } } },
+  });
+  expect(response.isError).not.toBe(true);
 });

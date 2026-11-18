@@ -95,6 +95,8 @@ export interface ToolInvocationOptions {
 }
 /** How an in-process caller with its own wait bound reads a tool listing. Not an HTTP input. */
 export interface ToolListOptions extends CatalogReadOptions {
+  /** Read retained metadata without evaluating the plugin or resolving its credentials. */
+  readonly storedOnly?: true;
   /**
    * Report a listing that another request started at least this long ago, and that is still
    * running, as `ToolListingTimedOut` at once instead of waiting for it. A caller that gives up

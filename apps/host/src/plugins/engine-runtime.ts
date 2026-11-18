@@ -4,7 +4,7 @@ import {
   type PluginResourceCategory,
 } from "@opensteer/protocol";
 import { CurrentPluginRequest } from "./engine-authority.js";
-import { projectDirectLocalTools } from "./local-tool-results.js";
+import { projectDirectPluginTools } from "./local-tool-results.js";
 import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
@@ -85,8 +85,14 @@ import {
   deliverEvents,
 } from "@opensteer/plugin-engine-sdk/scheduling";
 import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
-import { graphqlAppSource, openapiAppSource } from "@opensteer/plugin-engine-app-templates";
-import { safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
+import { graphqlAppSource } from "@opensteer/plugin-engine-app-templates";
+import { DestinationRefused, safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
+import {
+  disallowedOpenapiAddress,
+  openapiImport,
+  openapiNotices,
+  openapiNoticesFile,
+} from "./openapi-import.js";
 import { defaultUrlPolicy, parseDestination } from "@opensteer/plugin-engine-utils/url-policy";
 import {
   makeExecutions,
@@ -101,7 +107,11 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, migrateEngineProduct } from "./engine-accounts.js";
-import { compositeBackend, withLocalBlockers, type EngineHostCallbacks } from "./engine-backend.js";
+import {
+  compositeBackend,
+  withCatalogBlockers,
+  type EngineHostCallbacks,
+} from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { enginePages } from "./engine-pages.js";
 import {
@@ -631,10 +641,24 @@ export async function startEngine(
     const completed = (
       record: { view: PluginExecution; direct: boolean },
       result: McpExecutionResult,
+      catalog: ReturnType<typeof backend>,
     ) =>
       Effect.gen(function* () {
         const pending = result.status === "approval-required" || result.status === "input-required";
-        const presented = record.direct && !pending ? projectDirectLocalTools(result) : result;
+        const projected =
+          "unavailableApps" in result
+            ? {
+                ...result,
+                unavailableApps: result.unavailableApps.map((app) => {
+                  const blocked = catalog.appBlockers.get(app.app);
+                  return blocked ? { ...app, blocked } : app;
+                }),
+              }
+            : result;
+        const presented =
+          record.direct && !pending
+            ? projectDirectPluginTools(projected, catalog.blockedNamespace)
+            : projected;
         const sizeLimit = pending
           ? interactionBytes
           : z.object({ hostPresentation: z.literal("mcp") }).safeParse(presented).success
@@ -760,6 +784,7 @@ export async function startEngine(
                 let files: Schema.Schema.Type<typeof SourceFiles>;
                 let name: string | undefined;
                 let app: AppId | undefined;
+                let warnings: string[] | undefined;
                 if (input.kind === "files") {
                   if (!Schema.is(SourceFiles)(input.files))
                     return {
@@ -789,24 +814,34 @@ export async function startEngine(
                   name = input.name;
                 } else {
                   // The client checks resolved names at connect time; a literal address skips that.
-                  if (parseDestination(input.url, defaultUrlPolicy) === undefined)
+                  const url = parseDestination(input.url, defaultUrlPolicy);
+                  if (!url)
                     return yield* Effect.fail(
-                      new PluginServiceError(
-                        "invalid",
-                        "This address cannot serve an API description",
-                      ),
+                      new PluginServiceError("invalid", disallowedOpenapiAddress),
                     );
                   const client = yield* safeHttpClient(defaultUrlPolicy);
-                  const response = yield* client.get(input.url);
-                  const document = yield* response.json;
-                  files = (yield* openapiAppSource({
-                    name: input.name,
-                    document: Schema.decodeUnknownSync(
-                      Schema.Record(Schema.String, Schema.Unknown),
-                    )(document),
-                    methods: {},
-                    allowedOrigins: [new URL(input.url).origin],
-                  })).files;
+                  const response = yield* client
+                    .get(url)
+                    .pipe(
+                      Effect.mapError((error) =>
+                        error.cause instanceof DestinationRefused
+                          ? new PluginServiceError("invalid", disallowedOpenapiAddress)
+                          : error,
+                      ),
+                    );
+                  const imported = yield* openapiImport(
+                    input.name,
+                    url.origin,
+                    yield* response.json,
+                    signal,
+                  );
+                  if ("error" in imported)
+                    return {
+                      status: "build-error" as const,
+                      error: { code: "invalid-openapi", message: imported.error },
+                    };
+                  files = imported.files;
+                  warnings = imported.warnings;
                   name = input.name;
                 }
                 const validSkills = yield* packagedSkills(files).pipe(Effect.result);
@@ -827,6 +862,7 @@ export async function startEngine(
                       plugin: result.app,
                       version: result.version,
                       origin: input.kind,
+                      ...(warnings ? { warnings } : {}),
                     })),
                     Effect.catchTags({
                       VersionBuildFailed: (error) =>
@@ -853,7 +889,22 @@ export async function startEngine(
             const selected = yield* accountAdapter.accounts(app).pipe(Effect.option);
             const read = <A, E>(effect: Effect.Effect<A, E>) =>
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
+            const { files } = yield* engine.apps.source({ app: plugin.id, owner });
+            const notices = files.find((file) => file.path === openapiNoticesFile);
+            const warnings =
+              notices &&
+              "content" in notices &&
+              z
+                .preprocess((value) => {
+                  try {
+                    return JSON.parse(String(value)) as unknown;
+                  } catch {
+                    return null;
+                  }
+                }, openapiNotices)
+                .safeParse(notices.content).data;
             return detailPreview({
+              ...(warnings && warnings.length ? { importWarnings: warnings } : {}),
               plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
               ...(yield* accountAdapter.metadata(plugin)),
               versions: yield* engine.apps.versions({ app, owner }),
@@ -877,9 +928,7 @@ export async function startEngine(
               skills: Option.isSome(selected)
                 ? yield* read(engine.skills.list({ app, accounts: selected.value }))
                 : null,
-              hasPage: (yield* engine.apps.source({ app: plugin.id, owner })).files.some(
-                (file) => file.path === "ui/index.html",
-              ),
+              hasPage: files.some((file) => file.path === "ui/index.html"),
             });
           }
           case "detailSection": {
@@ -1151,7 +1200,7 @@ export async function startEngine(
               operation === "search"
                 ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
                 : yield* describeCatalog(discovery, operations.describe.input.parse(raw));
-            return withLocalBlockers(result, yield* providers);
+            return withCatalogBlockers(result, discovery);
           }
           case "skills":
             return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
@@ -1207,13 +1256,14 @@ export async function startEngine(
                 operation === "call"
                   ? callTools(operations.call.input.parse(raw))
                   : executeProgram(operations.execute.input.parse(raw).code);
+              const catalog = backend(context, id, record.direct);
               const result = yield* Effect.tryPromise({
                 try: () =>
                   run(
                     manager
                       .execute(
                         context.caller,
-                        backend(context, id, record.direct),
+                        catalog,
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
@@ -1245,7 +1295,7 @@ export async function startEngine(
                   }),
                 ),
               );
-              return yield* completed(record, result);
+              return yield* completed(record, result, catalog);
             } finally {
               record.driving = false;
               signal.removeEventListener("abort", abort);
@@ -1318,13 +1368,14 @@ export async function startEngine(
             const abort = () => record.controller.abort();
             signal.addEventListener("abort", abort, { once: true });
             try {
+              const catalog = backend(context, record.view.id, record.direct);
               return yield* completed(
                 record,
                 yield* Effect.tryPromise({
                   try: () =>
                     run(
                       manager
-                        .resume(context.caller, backend(context, record.view.id, record.direct), {
+                        .resume(context.caller, catalog, {
                           requestId,
                           response,
                         })
@@ -1340,6 +1391,7 @@ export async function startEngine(
                   catch: (error) =>
                     error instanceof Error ? error : new Error("Plugin resume failed"),
                 }),
+                catalog,
               );
             } finally {
               record.driving = false;

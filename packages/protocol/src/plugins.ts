@@ -118,6 +118,7 @@ export const PluginLocalToolSummaryViewSchema = z.object({
   computer: z.object({ id: name, name }).nullable(),
   /** The Host's sentence when agents can't reach it now. */
   unavailable: text(1_000).nullable(),
+  waitingForLaunchApproval: z.literal(true).optional(),
   toolCount: z.number().int().nonnegative(),
   readOnlyToolCount: z.number().int().nonnegative(),
   access: PluginAccessSchema,
@@ -252,6 +253,7 @@ export type PluginWebhookView = z.infer<typeof PluginWebhookViewSchema>;
 export const InstalledPluginViewSchema = z.object({
   plugin: PluginSummaryViewSchema,
   requirements: z.array(PluginRequirementViewSchema).max(50),
+  importWarnings: z.array(text(1_000)).optional(),
   /**
    * The first tools by name, null until every required account is linked: a plugin lists its
    * tools with its accounts. `plugins.tools.list` pages all of them.
@@ -601,7 +603,12 @@ export const PluginCommandResultSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("plugins.install"),
     result: z.discriminatedUnion("status", [
-      z.object({ status: z.literal("installed"), pluginId: PluginIdSchema, versionId: name }),
+      z.object({
+        status: z.literal("installed"),
+        pluginId: PluginIdSchema,
+        versionId: name,
+        warnings: z.array(text(1_000)).optional(),
+      }),
       /** No version became active; the message says what to fix. */
       z.object({ status: z.literal("build-error"), message: text(4_000) }),
     ]),

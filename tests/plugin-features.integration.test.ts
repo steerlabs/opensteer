@@ -196,18 +196,75 @@ beforeEach(async (testContext) => {
   personal = await seedPersonalFixture(database, directory);
   records = new PluginAgentStore(database);
   registry = await pluginFixtureRegistry(directory, undefined, files(), (request, response) => {
-    if (request.url !== "/openapi.json") return false;
+    const requestUrl = new URL(request.url ?? "/", "http://localhost");
+    const secure = requestUrl.pathname === "/secure-openapi.json";
+    if (requestUrl.pathname === "/secured") {
+      const authenticated =
+        request.headers["x-fixture-key"] === "synthetic-header" &&
+        request.headers.authorization === "Bearer synthetic-bearer" &&
+        requestUrl.searchParams.get("key") === "synthetic-query";
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ authenticated }));
+      return true;
+    }
+    if (!secure && requestUrl.pathname !== "/openapi.json") return false;
     response.setHeader("content-type", "application/json");
     response.end(
       JSON.stringify({
         openapi: "3.0.3",
         info: { title: "Replay", version: "1" },
         servers: [{ url: registry.origin }],
-        paths: {
-          "/items": {
-            get: { operationId: "listItems", responses: { "200": { description: "Items" } } },
-          },
-        },
+        ...(secure
+          ? {
+              components: {
+                securitySchemes: {
+                  headerKey: { type: "apiKey", in: "header", name: "X-Fixture-Key" },
+                  queryKey: { type: "apiKey", in: "query", name: "key" },
+                  bearer: { type: "http", scheme: "bearer" },
+                  unsupported: {
+                    type: "openIdConnect",
+                    openIdConnectUrl: "https://id.example/.well-known/openid-configuration",
+                  },
+                },
+              },
+              security: [{ headerKey: [], queryKey: [], bearer: [] }],
+            }
+          : {}),
+        paths: secure
+          ? {
+              "/secured": {
+                get: {
+                  operationId: "readSecure",
+                  responses: {
+                    "200": {
+                      description: "Account works",
+                      content: {
+                        "application/json": {
+                          schema: {
+                            type: "object",
+                            properties: { authenticated: { type: "boolean" } },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              "/unsupported": {
+                get: {
+                  operationId: "readUnsupported",
+                  security: [{ unsupported: [] }],
+                  responses: {
+                    "200": { description: "Unsupported sign-in" },
+                  },
+                },
+              },
+            }
+          : {
+              "/items": {
+                get: { operationId: "listItems", responses: { "200": { description: "Items" } } },
+              },
+            },
       }),
     );
     return true;
@@ -227,7 +284,7 @@ beforeEach(async (testContext) => {
     webhookOrigin: async () => publicOrigin,
     npmRegistry: registry.origin,
     catalogUrl: registry.origin + "/catalog",
-    selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
+    selfOrigin: { origin: registry.origin, address: registry.address },
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
     authorize: (input, signal) => authority.authorize(input, signal),
@@ -334,7 +391,71 @@ test("an API description is never fetched from a private literal address", async
       { kind: "openapi", url: "https://169.254.169.254/openapi.json", name: "Private" },
       owner,
     ),
-  ).rejects.toMatchObject({ code: "invalid" });
+  ).rejects.toMatchObject({
+    code: "invalid",
+    message: expect.stringContaining("private or not allowed"),
+  });
+});
+
+test("OpenAPI keeps secured tools, links a sealed key and shows omitted operations after restart", async () => {
+  const installed = await freshOwnerApi().command(
+    {
+      type: "plugins.install",
+      source: {
+        kind: "openapi",
+        url: `${registry.origin}/secure-openapi.json`,
+        name: "Secure API",
+      },
+      idempotencyKey: randomUUID(),
+    },
+    context,
+  );
+  const warnings = ["GET /unsupported — Unsupported authentication: unsupported (openIdConnect)."];
+  expect(installed).toMatchObject({
+    type: "plugins.install",
+    result: { status: "installed", warnings },
+  });
+  if (installed.type !== "plugins.install" || installed.result.status !== "installed")
+    throw new Error(JSON.stringify(installed));
+  const pluginId = installed.result.pluginId;
+  const detail = await freshOwnerApi().detail(personal.userId, pluginId);
+  expect(detail).toMatchObject({
+    importWarnings: warnings,
+    requirements: [{ name: "service", scope: "user" }],
+  });
+  const target = { pluginId, requirement: "service", scope: "user" as const };
+  const review = await api.review(target, personal.userId);
+  expect(review).toMatchObject({
+    consent: { credential: "sealed" },
+    methods: [{ method: "apiKey" }],
+  });
+  const account = await api.command(
+    {
+      type: "plugins.account.create",
+      idempotencyKey: randomUUID(),
+      provider: review.requirement.provider,
+      method: "apiKey",
+      fields: { key1: "synthetic-bearer", key2: "synthetic-header", key3: "synthetic-query" },
+      link: { ...target, consent: review.consent },
+    },
+    context,
+  );
+  const search = await service.search({ namespace: detail.plugin.slug }, owner);
+  expect(search.items).toHaveLength(1);
+  const path = search.items[0]!.path;
+  if (account.type !== "plugins.account.create") throw new Error("No linked account");
+  const result = await service.call(
+    { calls: { path, input: { accountId: account.account.id, input: {} } } },
+    owner,
+  );
+  expect(result, JSON.stringify(result)).toMatchObject({
+    state: "completed",
+    result: { execution: { value: { ok: true, value: { authenticated: true } } } },
+  });
+  expect(await service.stopIfIdle()).toBe(true);
+  expect(await freshOwnerApi().detail(personal.userId, pluginId)).toMatchObject({
+    importWarnings: warnings,
+  });
 });
 
 test.each(["catalog", "url", "files"] as const)(

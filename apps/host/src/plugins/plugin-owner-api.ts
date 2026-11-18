@@ -477,6 +477,7 @@ export class PluginOwnerApi {
     const view: InstalledPluginView = {
       plugin: summary(plugin, detail, row),
       requirements: requirementViews,
+      ...(detail.importWarnings ? { importWarnings: detail.importWarnings } : {}),
       tools:
         tools && keysetPage(tools, nameKey, { scope: "", max: pluginDetailPreview.tools }).items,
       toolCount: detail.toolCount,
@@ -1058,7 +1059,12 @@ export class PluginOwnerApi {
         changed();
         return {
           type: command.type,
-          result: { status: "installed", pluginId: result.plugin.id, versionId: result.version.id },
+          result: {
+            status: "installed",
+            pluginId: result.plugin.id,
+            versionId: result.version.id,
+            ...(result.warnings ? { warnings: result.warnings } : {}),
+          },
         };
       }
       case "plugins.version.activate":

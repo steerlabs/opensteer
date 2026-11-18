@@ -37,7 +37,7 @@ export function usePluginWorkflowRuns(
     return () => {
       unsubscribePlugins();
       unsubscribe();
-      runs.dispose();
+      runs.cancelRefresh();
     };
   }, [client, pluginId, runs]);
   const state = useSyncExternalStore(runs.subscribe, runs.getState, runs.getState);

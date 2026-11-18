@@ -17,6 +17,7 @@ import { ServerInput } from "./server-input.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
+  expectPluginSettingRefusal,
   integrationGateway,
   pluginPath,
 } from "../runtime/computer-apps.test-support.js";
@@ -122,6 +123,16 @@ integration("local servers as plugin tools", () => {
     expect(servers).toMatchObject([{ runnerId: computer.runnerId }]);
     const [installed] = servers;
     if (!installed) throw new Error("Placement fixture did not install");
+    expect(
+      await testRpcData(
+        host.origin,
+        "plugins.local.get",
+        { id: `app_server_${installed.id}` },
+        {
+          headers: host.ownerHeaders,
+        },
+      ),
+    ).toMatchObject({ waitingForLaunchApproval: true });
 
     const hub = host.runtime.computerApps;
     const openingEntered = Promise.withResolvers<void>();
@@ -340,7 +351,7 @@ integration("local servers as plugin tools", () => {
       async () => {
         const row = await host.store.database
           .selectFrom("integrationServers")
-          .select(["installationId", "status"])
+          .select(["id", "installationId", "status"])
           .executeTakeFirst();
         expect(row?.status, "The approved server was not discovered").toBe("active");
         return row!;
@@ -415,6 +426,24 @@ integration("local servers as plugin tools", () => {
     expect(await pluginPath(gateway, "pair", "pair")).toBe(pair);
 
     const statusPath = pair.replace(/\.pair$/u, ".status");
+    const namespace = /"([^"]+)"/u.exec(pair)![1]!;
+    for (const [access, path, label] of [
+      ["read-only", pair, "Read-only"],
+      ["off", statusPath, "Off"],
+    ] as const) {
+      await dispatch(host, {
+        type: "plugins.access.set",
+        pluginId: `app_server_${installation.id}`,
+        access,
+      });
+      await expectPluginSettingRefusal(gateway, namespace, path, {}, label);
+    }
+    await dispatch(host, {
+      type: "plugins.access.set",
+      pluginId: `app_server_${installation.id}`,
+      access: "all",
+    });
+
     const statusResult = {
       content: [
         { type: "text", text: "TV status" },

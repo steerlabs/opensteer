@@ -19,6 +19,8 @@ import {
   readPluginAccounts,
   pluginConsentLines,
   pluginEngineNotice,
+  pluginEmptyToolsText,
+  pluginLocalToolStatus,
   pluginWebhookSetupCompletion,
   pluginWebhookSetupForm,
   PluginWorkflowRuns,
@@ -499,4 +501,26 @@ describe("words a person reads", () => {
       "Plugins aren't working on this computer right now.",
     );
   });
+});
+
+it("explains that tools are off even when accounts and tools are absent", () => {
+  const plugin = { access: "off", status: "needs-account" } as const;
+  expect(pluginEmptyToolsText({ plugin, tools: null })).toBe("Tools are off for agents.");
+});
+
+it("shows a pending server launch as waiting for approval", () => {
+  expect(
+    pluginLocalToolStatus({
+      id: "app_server_pending",
+      kind: "local-server",
+      name: "pending",
+      title: "Pending",
+      computer: { id: "fixture", name: "Test Mac" },
+      unavailable: "Approve the launch first.",
+      waitingForLaunchApproval: true,
+      toolCount: 0,
+      readOnlyToolCount: 0,
+      access: "all",
+    }),
+  ).toEqual({ label: "Waiting for approval", tone: "attention" });
 });

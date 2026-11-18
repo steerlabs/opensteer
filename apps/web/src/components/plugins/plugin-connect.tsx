@@ -448,6 +448,9 @@ function SignInPart({
       {choices.options[0]?.kind === "one-click" && choices.options[0].detail ? (
         <p className="settings-footnote">{choices.options[0].detail}</p>
       ) : null}
+      {choices.oneClickUnavailable ? (
+        <p className="settings-footnote">{choices.oneClickUnavailable}</p>
+      ) : null}
       {form && ownApp ? (
         <form
           className="plugins-form plugin-own-app"

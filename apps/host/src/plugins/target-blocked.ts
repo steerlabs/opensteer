@@ -39,3 +39,16 @@ export function pluginTargetBlocked(input: {
         next: "Continue without this plugin and tell the person what the message says. The person can check its setup in Plugins.",
       };
 }
+
+export function pluginAccessBlocked(
+  access: "all" | "off" | "read-only" | undefined,
+  write: boolean,
+): Blocked | undefined {
+  if (access !== "off" && !(access === "read-only" && write)) return undefined;
+  return {
+    code: "access_denied",
+    message:
+      access === "off" ? "This plugin is Off for agents." : "This plugin is set to Read-only.",
+    next: "The person can change this plugin’s access in Plugins. Continue with the tools you can use.",
+  };
+}

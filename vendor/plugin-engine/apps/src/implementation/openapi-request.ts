@@ -102,6 +102,7 @@ function responseError(status: number, json: Schema.Json, errors: readonly Decla
         });
       }
     }
+    return undefined;
   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 }
 
