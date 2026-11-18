@@ -2445,8 +2445,8 @@ importers:
         specifier: 'catalog:'
         version: 7.0.2
       undici:
-        specifier: 7.16.0
-        version: 7.16.0
+        specifier: 7.30.1
+        version: 7.30.1
 
   packages/plugin-engine/app-source:
     dependencies:
@@ -2866,7 +2866,7 @@ importers:
     dependencies:
       '@opensteer/plugin-engine-sdk':
         specifier: workspace:*
-        version: link:../../packages/plugin-engine/sdk
+        version: link:../plugin-engine/sdk
       effect:
         specifier: 4.1.4
         version: 4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)
@@ -2876,7 +2876,7 @@ importers:
     devDependencies:
       '@opensteer/plugin-engine-app-source':
         specifier: workspace:*
-        version: link:../../packages/plugin-engine/app-source
+        version: link:../plugin-engine/app-source
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0
@@ -5991,6 +5991,9 @@ packages:
   '@smithy/core@3.34.1':
     resolution: {integrity: sha512-dLcOUxz8YCv1RZUMKq6GbyUf95pLbrqh34bPvpCZ1+CByFF31BEAFewZjsGCnVsZTKdThNENfGyAgk2TJqVwSw==}
     engines: {node: '>=18.0.0'}
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -10581,10 +10584,6 @@ packages:
   undici@6.29.1:
     resolution: {integrity: sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==}
     engines: {node: '>=18.17'}
-
-  undici@7.16.0:
-    resolution: {integrity: sha512-QEg3HPMll0o3t2ourKwOeUAZ159Kn9mx5pnzHRQO8+Wixmh88YdZRiIwat0iNzNNXn0yoEtXJqFpyW7eM8BV7g==}
-    engines: {node: '>=20.18.1'}
 
   undici@7.28.0:
     resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
@@ -19801,12 +19800,9 @@ snapshots:
 
   undici@6.29.1: {}
 
-  undici@7.16.0: {}
-
   undici@7.28.0: {}
 
-  undici@7.30.1:
-    optional: true
+  undici@7.30.1: {}
 
   undici@8.12.2: {}
 
