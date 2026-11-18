@@ -692,6 +692,17 @@ it("tells an invite preview the team refused from one that never reached it", as
   const lost = await preview(async () => {
     throw new TypeError("Failed to fetch");
   });
-  for (const unreachable of [gateway, lost])
+  // Headers arrived, then the connection dropped before the body did.
+  const cut = await preview(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start: (controller) => controller.enqueue(new TextEncoder().encode('{"ok":')),
+          pull: (controller) => controller.error(new TypeError("network error")),
+        }),
+        { status: 500 },
+      ),
+  );
+  for (const unreachable of [gateway, lost, cut])
     expect(operationFailure(unreachable)).toBe("unavailable");
 });

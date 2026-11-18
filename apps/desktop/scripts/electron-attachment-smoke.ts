@@ -226,10 +226,9 @@ async function run(): Promise<object> {
       await window.webContents.executeJavaScript(`(async () => {
         const controller = new AbortController();
         const pending = hostFetch("${route}/v1/rpc/file.content?case=mid-body", { signal: controller.signal });
-        const reader = (await pending).body.getReader();
-        await reader.read();
-        controller.abort();
-        await reader.read().catch(() => undefined);
+        try {
+          for await (const _chunk of (await pending).body) controller.abort();
+        } catch {}
       })()`);
       await waitUntil(() => closed.has("mid-body"), "the mid-body Host request was not cancelled");
       return {

@@ -125,28 +125,14 @@ function releasedWhenSettled(response: Response, signal: AbortSignal, release: (
     release();
   };
   signal.addEventListener("abort", done, { once: true });
-  const reader = response.body.getReader();
-  return new Response(
-    new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const next = await reader.read();
-          if (next.done) {
-            done();
-            controller.close();
-          } else controller.enqueue(next.value);
-        } catch (error) {
-          done();
-          controller.error(error);
-        }
-      },
-      cancel(reason) {
-        done();
-        return reader.cancel(reason);
-      },
-    }),
-    { headers: response.headers, status: response.status, statusText: response.statusText },
-  );
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  // The pipe settles when the body ends, fails or is cancelled by its reader.
+  void response.body.pipeTo(writable).then(done, done);
+  return new Response(readable, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 export function createDesktopHostWebSocketFactory(

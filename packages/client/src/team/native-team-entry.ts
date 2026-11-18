@@ -1,3 +1,4 @@
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { DeploymentId, TeamInviteSecret } from "@opensteer/core";
 import {
@@ -63,6 +64,16 @@ export async function verifyTeamEndpoint(
   return verified;
 }
 
+const invitePreviewMaxBytes = 64 * 1024;
+
+function parsedJson(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** What an invite is for, before anyone joins with it. Consumes nothing. */
 export async function previewTeamInvite(
   origin: string,
@@ -84,7 +95,15 @@ export async function previewTeamInvite(
   }).catch((error: unknown) => {
     throw new HostTransportError("unreachable", { cause: error });
   });
-  const body: unknown = await response.json().catch(() => null);
+  // A body that stops arriving is a lost connection; one that arrives but isn't JSON is an answer.
+  const bytes = await readBoundedResponse(response, {
+    maximumBytes: invitePreviewMaxBytes,
+    sizeError: () => new HostTransportError("response-too-large"),
+  }).catch((error: unknown) => {
+    if (error instanceof HostTransportError) throw error;
+    throw new HostTransportError("unreachable", { cause: error });
+  });
+  const body: unknown = parsedJson(bytes);
   if (response.ok) return TeamInvitePreviewResponseSchema.parse(body);
   const error = z.object({ error: HostApiErrorSchema }).safeParse(body).data?.error;
   const reason = TeamEntryRefusalReasonSchema.safeParse(error?.reason).data;
