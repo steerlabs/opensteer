@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { createId } from "@opensteer/core";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import {
   computerAppMaxConcurrentInvokes,
@@ -2004,7 +2004,7 @@ function actFrame(requestId: string): ComputerUseInput {
 }
 
 function macosAppInvoke(requestId: string): InvokeInput {
-  const definition = getIntegrationDefinition("macos-app");
+  const definition = getDeviceDefinition("macos-app");
   if (!definition || !isComputerAppDefinition(definition)) {
     throw new Error("The computer use definition is missing");
   }

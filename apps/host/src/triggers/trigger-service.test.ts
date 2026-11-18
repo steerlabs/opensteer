@@ -95,13 +95,13 @@ describe("TriggerService", () => {
           program: {
             language: "javascript",
             source: "export default () => null",
-            toolContractVersion: 4,
+            toolContractVersion: 5,
           },
         },
         null,
       ),
     ).rejects.toMatchObject({
-      message: "Update this computer to run automation programs with tool contract version 4.",
+      message: "Update this computer to run automation programs with tool contract version 5.",
     });
     expect(create).not.toHaveBeenCalled();
   });
@@ -143,7 +143,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v4"],
+        runnerCapabilities: async () => ["trigger-program-v5"],
       },
       onOccurrenceQueued: vi.fn(),
       publicUrl: new URL("https://opensteer.example/base/"),
@@ -161,7 +161,7 @@ describe("TriggerService", () => {
         name: "Build events",
         ownerId,
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "typescript",
           source: "export default async () => null",
         },
@@ -206,7 +206,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v4"],
+        runnerCapabilities: async () => ["trigger-program-v5"],
       },
       onOccurrenceQueued,
       publicUrl: new URL("https://opensteer.example"),

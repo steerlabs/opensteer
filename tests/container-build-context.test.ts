@@ -373,3 +373,19 @@ it("lets Host app frame headers and streaming responses pass through the gateway
   expect(caddy).toContain("header @outside_apps {");
   expect(caddy).not.toMatch(/^\s*encode zstd gzip$/mu);
 });
+
+it("builds and stages the plugin child and native runtime for the container's own architecture", async () => {
+  const recipe = await readFile(resolve("deploy/container/Containerfile"), "utf8");
+  expect(recipe).toContain("COPY vendor/plugin-engine ./vendor/plugin-engine");
+  const build = recipe
+    .split(/^FROM /mu)
+    .find((stage) => stage.split("\n", 1)[0]?.endsWith(" AS host-build"));
+  expect(build).toContain("pnpm --filter apps build");
+  expect(build).toContain("pnpm --filter @opensteer/host build");
+  expect(build).toContain("scripts/plugin-engine/stage-container-host.ts /output/host");
+  expect(recipe).toContain("COPY --from=host-build --chown=10001:10001 /output/host ./");
+  const gateway = recipe
+    .split(/^FROM /mu)
+    .find((stage) => stage.split("\n", 1)[0]?.endsWith(" AS team-gateway"));
+  expect(gateway).not.toContain("host-build");
+});

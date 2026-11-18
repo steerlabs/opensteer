@@ -33,7 +33,7 @@ import { BrowserProfilesSection } from "./sections/browser-profiles.js";
 import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
-import { PluginsSection } from "./sections/plugins.js";
+import { PluginsArea } from "../plugins/plugins-area.js";
 import { TeamSettingsNavigation } from "../../team/team-settings-navigation.js";
 import { TeamSettingsRoute } from "../../team/team-settings-route.js";
 
@@ -281,7 +281,7 @@ export function SettingsSectionRoute({
       );
       break;
     case "plugins":
-      content = <PluginsSection view={view} />;
+      content = <PluginsArea />;
       break;
     case "messaging":
       content = <MessagingPage embedded />;

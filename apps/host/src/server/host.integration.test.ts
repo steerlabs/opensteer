@@ -39,7 +39,7 @@ import {
 } from "@opensteer/core";
 import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
 import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   machineAccessPolicyDefault,
   agentToolPayloadMaxSerializedBytes,
@@ -1710,65 +1710,7 @@ describe("rpc envelope", () => {
     }
   });
 
-  it.each(["provider", "mcp"] as const)(
-    "dispatches %s app returns to the owner service",
-    async (kind) => {
-      const session = testAuthenticatedSession(fixtureOwnerId);
-      const authenticator = new HostAuthenticator({
-        identity: {
-          ...testIdentity,
-          requireSession: async () => session,
-          userSessionProfile: async () => session.user,
-        } as never,
-        publicUrl: new URL("https://opensteer.example"),
-      });
-      const returnAuthorization = vi.fn(async () => ({
-        connectionId: null,
-        expiresAt: new Date("2030-01-01T00:00:00Z"),
-        failureCode: null,
-        status: "launched",
-      }));
-      const app = await createHostServer({
-        authenticator,
-        discovery: testDiscovery,
-        integrations: {
-          authAttempts: {} as never,
-          continuations: {} as never,
-          dashboard: {} as never,
-          service: (kind === "provider" ? { returnAuthorization } : {}) as never,
-          mcpOauth: (kind === "mcp" ? { returnAuthorization } : {}) as never,
-          platform: {} as never,
-          skills: {} as never,
-        },
-      });
-      const attemptId = createIntegrationId(
-        kind === "provider" ? "oauthAttempt" : "mcpOauthAttempt",
-      );
-      const command = {
-        type: "integration.authorization.return",
-        attemptId,
-        returnProof: "r".repeat(43),
-        idempotencyKey: "app-return",
-      };
-      try {
-        const response = await injectRpcRequest(app, "commands.dispatch", command, {
-          cookie: "opensteer.session=test",
-          origin: "https://opensteer.example",
-        });
-        expect(response.statusCode, response.body).toBe(200);
-        expect(rpcData(response)).toMatchObject({ type: command.type, status: "launched" });
-        expect(returnAuthorization).toHaveBeenCalledExactlyOnceWith({
-          attemptId,
-          ownerUserId: session.user.id,
-          returnProof: command.returnProof,
-        });
-      } finally {
-        await app.close();
-      }
-    },
-  );
-
-  it("allows header integration uninstall and protects cookie mutations", async () => {
+  it("allows header grant revocation and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(fixtureOwnerId);
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1787,35 +1729,34 @@ describe("rpc envelope", () => {
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
-    const uninstallIntegration = vi.fn(async () => ({
-      cancelledRequests: 1,
-      removedConnections: 2,
-    }));
+    const revokeGrant = vi.fn(async () => undefined);
     const app = await createHostServer(
       hostServerTestDependencies({
         authenticator,
         discovery: testDiscovery,
         integrations: {
+          access: {} as never,
           authAttempts: {} as never,
           continuations: {} as never,
-          dashboard: {} as never,
-          mcpOauth: {} as never,
-          platform: {
+          definitions: [],
+          devices: {
             store: {
               connections: new IntegrationConnectionAuthStore(personalFixture.database),
               settings: { affectedViewers: async () => [] },
             },
-            uninstallIntegration,
+            revokeGrant,
           } as never,
-          service: {} as never,
+          listConnections: async () => [],
+          localServers: {} as never,
+          localServerRegistry: {} as never,
           skills: {} as never,
         },
       }),
     );
     const command = {
-      idempotencyKey: "uninstall-an-integration",
-      installationId: createIntegrationId("installation"),
-      type: "integration.uninstall",
+      idempotencyKey: "revoke-a-grant",
+      grantId: createIntegrationId("grant"),
+      type: "integration.grant.revoke",
     };
     try {
       const bearer = await injectRpcRequest(app, "commands.dispatch", command, {
@@ -1827,23 +1768,17 @@ describe("rpc envelope", () => {
         origin: "https://hostile.example",
       });
       expect(hostile.statusCode).toBe(403);
-      expect(uninstallIntegration).toHaveBeenCalledOnce();
+      expect(revokeGrant).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
         origin: "https://opensteer.example",
       });
       expect(fromBrowser.statusCode, fromBrowser.body).toBe(200);
-      expect(rpcData(fromBrowser)).toEqual({
-        cancelledRequests: 1,
-        removedConnections: 2,
-        type: "integration.uninstall",
-      });
-      expect(uninstallIntegration).toHaveBeenCalledWith({
-        actorUserId: session.user.id,
-        installationId: command.installationId,
-        requestId: expect.any(String),
-      });
+      expect(rpcData(fromBrowser)).toEqual({ type: "integration.grant.revoke" });
+      expect(revokeGrant).toHaveBeenCalledWith(
+        expect.objectContaining({ grantId: command.grantId, ownerUserId: session.user.id }),
+      );
     } finally {
       await app.close();
     }
@@ -1859,29 +1794,29 @@ describe("rpc envelope", () => {
       },
       publicUrl: new URL("http://127.0.0.1:43101"),
     });
-    const uninstallIntegration = vi.fn(async () => ({
-      cancelledRequests: 0,
-      removedConnections: 0,
-    }));
+    const revokeGrant = vi.fn(async () => undefined);
     const disconnect = vi.fn(async () => ({ notice: null, revokedUpstream: true }));
     const app = await createHostServer(
       hostServerTestDependencies({
         authenticator,
         discovery: testDiscovery,
         integrations: {
+          access: {} as never,
           authAttempts: {} as never,
           continuations: {} as never,
-          dashboard: {} as never,
-          mcpOauth: {} as never,
-          platform: {
+          definitions: [],
+          devices: {
+            computerAppApprovals: { disconnectComputerConnection: disconnect },
+            revokeGrant,
             store: {
               connections: new IntegrationConnectionAuthStore(personalFixture.database),
-              getConnectionKind: async () => "oauth",
+              getConnectionKind: async () => "computer",
               settings: { affectedViewers: async () => [] },
             },
-            uninstallIntegration,
           } as never,
-          service: { disconnect } as never,
+          listConnections: async () => [],
+          localServers: {} as never,
+          localServerRegistry: {} as never,
           skills: {} as never,
         },
       }),
@@ -1897,16 +1832,16 @@ describe("rpc envelope", () => {
         app,
         "commands.dispatch",
         {
-          idempotencyKey: "remote-uninstall",
-          installationId: createIntegrationId("installation"),
-          type: "integration.uninstall",
+          idempotencyKey: "remote-revoke",
+          grantId: createIntegrationId("grant"),
+          type: "integration.grant.revoke",
         },
         remote,
       );
       expect(uninstall.statusCode, uninstall.body).toBe(200);
-      expect(uninstallIntegration).toHaveBeenCalledOnce();
+      expect(revokeGrant).toHaveBeenCalledOnce();
 
-      // Disconnecting an account only ever reduces what agents can reach, and
+      // Turning off a device app only ever reduces what agents can reach, and
       // the owner has to be able to do it from wherever they are.
       const connectionId = createIntegrationId("connection");
       const disconnected = await injectRpcRequest(

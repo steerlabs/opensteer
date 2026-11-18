@@ -28,10 +28,10 @@ no substitute for what the person said. A message from a team carries
 `teamSource`: keep its channel and audience beside every memory taken from it, and leave shared
 team facts to team knowledge. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
-it raised, what the person answered or dismissed. Read the connected mail, Messages and calendar
-(`integration_search` with a `query` such as "mail", "messages" or "calendar" and `limit` 20 or
-less, then `integration_call`) from where your last
-handoff stopped. Then read all of `memory/`.
+it raised, what the person answered or dismissed. Read the owner's mail plugins and device
+Messages, Calendar and Reminders from where your last handoff stopped. Find read tools with
+`plugin_search`, follow its `next` input when needed, and read with `plugin_call`. Record unavailable
+sources in the handoff. Then read all of `memory/`.
 
 ## Keep the record
 

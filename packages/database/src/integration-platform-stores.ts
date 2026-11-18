@@ -1,61 +1,30 @@
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
-  legacySelfConnection,
-  legacySelfSetupRequest,
-  legacySelfSessionReset,
-} from "./device-legacy-store.js";
-import {
-  getSelfDeviceId,
   getDeviceSelfRunnerId,
   requireSelfDeviceId,
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
-import { deviceOwnershipIn } from "./machine-ownership.js";
-import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
-import {
-  lockDeploymentEvents,
-  withPersonalReadTransaction,
-  withPersonalTransaction,
-} from "./personal-transaction.js";
+import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
+import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
-import { PluginStore } from "./plugin-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
-import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
-import {
-  checkIntegrationAccountBinding,
-  requireIntegrationAccountBinding,
-} from "./integration-account-binding.js";
-import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
-import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
+import { requestSettlementActor } from "./request-settlement.js";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import {
-  localMcpLaunchDigest,
-  authorizationDigest,
-  integrationDefinitionDigest,
-} from "@opensteer/integration-core/digest";
-import {
-  IntegrationAdapterSnapshotSchema,
-  type IntegrationAdapterSnapshot,
-} from "@opensteer/integration-core/adapter";
-import {
-  ApiKeyDisclosureSchema,
-  type ApiKeyDisclosure,
   type ComputerAppIdentity,
-  ComputerAppIdentitySchema,
-  type DeviceComputerAppSetupRequest as ComputerAppSetupRequest,
-  IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
   IntegrationDefinitionIdSchema,
-  IntegrationDefinitionSchema,
   IntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
@@ -64,29 +33,22 @@ import {
   IntegrationToolMaterialSchema,
   type IntegrationToolMaterial,
   type IntegrationToolCatalog,
-  createIntegrationId,
-  integrationApplicationSourcePinnedAndAvailable,
   resolveIntegrationReadiness,
   isIntegrationConnectionEligible,
   type IntegrationConnectionAuthority,
   type IntegrationConnectionId,
-  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationAccess,
   type IntegrationGrant,
-  type IntegrationDefinition,
-  type IntegrationDefinitionSummary,
   type IntegrationInstallation,
   type IntegrationInstallationId,
-  type IntegrationProviderAuthorization,
   type IntegrationServer,
   type IntegrationServerId,
   type IntegrationTool,
   type IntegrationToolId,
   type IntegrationReadiness,
-  computerAppIdentitiesEqual,
-  type McpOAuthAttemptId,
 } from "@opensteer/integration-core";
-import { integrationAccessCovers, integrationToolEffect } from "@opensteer/integration-core/effect";
+import { integrationAccessCovers } from "@opensteer/integration-core/access";
+import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import {
   materializeToolCatalog,
   storedToolSchemaDigest,
@@ -106,7 +68,6 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import { type Kysely, type Selectable, type Transaction, sql } from "kysely";
-import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import type {
   DatabaseSchema,
   IntegrationConnectionTable,
@@ -115,31 +76,9 @@ import type {
   IntegrationToolTable,
 } from "./schema.js";
 import { cancelPending } from "./request-cancellation.js";
-import {
-  fulfillPendingIntegrationAccessRequestsInTransaction,
-  pendingIntegrationAccessRequests,
-} from "./integration-request-fulfillment.js";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
-
-import { computerConnectionDeviceId, integrationConnectionFromRow } from "./integration-store.js";
-import {
-  computerAppScopeOf,
-  computerAppSetupRequestFromRow,
-  computerAppSetupRequestMatches,
-  deleteComputerAppSetupRequestsInTransaction,
-  insertComputerAppSetupRequestInTransaction,
-  lockComputerAppSetupRequestInTransaction,
-  type ComputerAppScope,
-} from "./computer-app-setup.js";
-import {
-  askForComputerAppApprovalInTransaction,
-  computerUsePolicyInTransaction,
-  declineComputerAppAccessRequestsInTransaction,
-  emptyComputerAppAccessSettlement,
-  lockComputerApprovalScopeInTransaction,
-  settleComputerAppApprovalInTransaction,
-  type ComputerAppAccessSettlement,
-} from "./computer-app-approvals.js";
+import { deleteComputerAppSetupRequestsInTransaction } from "./computer-app-setup.js";
+import { declineComputerAppAccessRequestsInTransaction } from "./computer-app-approvals.js";
 import {
   integrationGrantFromRow,
   writeIntegrationGrantInTransaction,
@@ -171,21 +110,6 @@ type IntegrationToolListingRow = Pick<
   | "title"
 >;
 
-/**
- * What one adapter call runs, with the generations that say whether it is
- * still what the caller was authorized for: a snapshot changes only with its
- * installation's revision, and a connection's tools only with their server's
- * tool generation.
- */
-export interface IntegrationToolInvocation {
-  readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
-  readonly installationRevision: number;
-  readonly schemaDigest: string;
-  readonly status: "active" | "disabled";
-  readonly target: Readonly<Record<string, unknown>> | null;
-  readonly toolGeneration: number;
-}
-
 export interface IntegrationToolSchemas {
   readonly definitions: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly inputSchema: Readonly<Record<string, unknown>>;
@@ -194,57 +118,30 @@ export interface IntegrationToolSchemas {
   readonly status: "active" | "disabled";
 }
 
-/** Integration authority names an owned task or a live approved connection. */
+/**
+ * Integration authority names an owned task or a live approved connection. Naming neither is the
+ * personal owner looking in Settings, under no task's or connection's ceiling.
+ */
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
 } & (
   | { readonly threadId: ThreadId; readonly connectionId?: never }
   | { readonly connectionId: string; readonly threadId?: undefined }
+  | { readonly threadId?: never; readonly connectionId?: never }
 );
+
+type IntegrationReadinessTarget = {
+  readonly access: IntegrationAccess;
+  readonly connectionId: IntegrationConnectionId | null;
+};
 
 /** Scope readiness to the account and access a resolved Request actually granted. */
 export type IntegrationDiscoveryRequester = IntegrationRequester & {
-  readonly target?: {
-    readonly access: IntegrationAccess;
-    readonly connectionId: IntegrationConnectionId | null;
-  };
+  readonly target?: IntegrationReadinessTarget;
+  readonly includeTargetReadiness?: true;
+  readonly provider?:
+    { readonly serverId: IntegrationServerId } | { readonly connectionId: IntegrationConnectionId };
 };
-
-export interface SetComputerConnectionInput {
-  readonly settlementSessionId?: string | undefined;
-  readonly setupRequestId?: string;
-  readonly definitionDigest: string;
-  readonly access: IntegrationAccess;
-  readonly actorUserId: UserId;
-  readonly app: ComputerAppIdentity | null;
-  readonly createIfMissing: boolean;
-  readonly definitionId: string;
-  readonly requestId: string;
-  readonly deviceId: DeviceId;
-  readonly tools: (connectionId: IntegrationConnectionId) => readonly IntegrationToolMaterial[];
-}
-
-export interface SetComputerConnectionResult {
-  readonly connection: IntegrationConnectionSummary;
-  readonly created: boolean;
-  readonly grants: readonly IntegrationGrant[];
-  readonly fulfilledRequestIds: readonly RequestId[];
-  /**
-   * A wider approval this change left waiting under a new id, which the Mac
-   * has to be asked about again.
-   */
-  readonly reissuedSetupRequestId: string | null;
-  readonly requestEvents: readonly AgentEvent[];
-  /**
-   * The live session this change ended, if any: the one holding this app on a
-   * Mac, or the one holding a phone's display. Null for a change that left
-   * every session's authority as it was.
-   */
-  readonly sessionReset:
-    | { readonly appKey: string; readonly kind: "app"; readonly deviceId: DeviceId }
-    | { readonly definitionId: string; readonly kind: "display"; readonly deviceId: DeviceId }
-    | null;
-}
 
 export interface DiscoveredIntegrationServer {
   readonly connectionRequirement: IntegrationServer["connectionRequirement"];
@@ -263,35 +160,6 @@ export interface CallableIntegrationTool {
   readonly tool: IntegrationTool;
 }
 
-/** A valid owner tried to create an app connection the computer is not offering live. */
-export class ComputerAppNotOfferedError extends Error {
-  readonly runnerName: string;
-
-  constructor(runnerName: string) {
-    super("Computer app is not offered by this Runner");
-    this.name = "ComputerAppNotOfferedError";
-    this.runnerName = runnerName;
-  }
-}
-
-export interface McpOAuthServerContext {
-  readonly installation: IntegrationInstallation;
-  readonly server: IntegrationServer;
-  readonly reconnect?: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly revision: number;
-  };
-}
-
-interface McpOAuthConnectionRecord extends McpOAuthServerContext {
-  readonly connectionId: IntegrationConnectionId;
-  readonly displayName: string;
-  readonly encryptedState: Buffer;
-  readonly encryptionKeyVersion: number;
-  readonly ownerUserId: UserId;
-  readonly revision: number;
-}
-
 interface StoredIntegrationConnectionAuthority extends IntegrationConnectionAuthority {
   readonly accountIdentifier: string | null;
   readonly computerAccess: IntegrationAccess | null;
@@ -300,44 +168,7 @@ interface StoredIntegrationConnectionAuthority extends IntegrationConnectionAuth
   readonly ownerUserId: UserId;
 }
 
-function integrationApplicationSourceAvailable(input: {
-  readonly application:
-    | {
-        readonly id: string;
-        readonly provider: string;
-        readonly revision: number;
-        readonly status: string;
-      }
-    | undefined;
-  readonly applicationSource: unknown;
-  readonly connectionKind: "channel" | "computer" | "mcp-oauth" | "provider-account";
-  readonly provider: string;
-  readonly providerAuthorization: IntegrationProviderAuthorization | null;
-}): boolean {
-  if (input.connectionKind !== "provider-account") return true;
-  const parsed = IntegrationApplicationSourceSchema.safeParse(input.applicationSource);
-  if (!parsed.success) return false;
-  const source = parsed.data;
-  if (
-    !integrationApplicationSourcePinnedAndAvailable({
-      applicationSource: source,
-      authorization: input.providerAuthorization,
-    })
-  ) {
-    return false;
-  }
-  if (source.kind === "deployment-oauth") {
-    return (
-      input.application?.id === source.providerApplicationId &&
-      input.application.provider === input.provider &&
-      input.application.revision === source.providerApplicationRevision &&
-      input.application.status === "active"
-    );
-  }
-  return true;
-}
-
-abstract class IntegrationPlatformStoreBase {
+export abstract class IntegrationPlatformStoreBase {
   protected readonly database: Kysely<DatabaseSchema>;
 
   constructor(database: Kysely<DatabaseSchema>) {
@@ -357,67 +188,39 @@ abstract class IntegrationPlatformStoreBase {
     await assertPersonalOwner(this.database, ownerId);
   }
 
-  protected async authoritySnapshot(
-    ownerUserId: UserId,
-    providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>,
-  ): Promise<{
+  protected async authoritySnapshot(ownerUserId: UserId): Promise<{
     readonly connections: readonly StoredIntegrationConnectionAuthority[];
   }> {
-    const [connectionRows, applicationRows] = await Promise.all([
-      this.database
-        .selectFrom("integrationConnections")
-        .select([
-          "accountIdentifier",
-          "applicationSource",
-          "connectionKind",
-          "computerAccess",
-          "displayName",
-          "id",
-          "integrationDefinitionId",
-          "integrationServerId",
-          "ownerUserId",
-          "provider",
-          "providerApplicationId",
-          "status",
-        ])
-        .where("ownerUserId", "=", ownerUserId)
-        .where("status", "!=", "revoked")
-        .orderBy("displayName", "asc")
-        .orderBy("id", "asc")
-        .execute(),
-      this.database
-        .selectFrom("integrationProviderApplications")
-        .select(["id", "provider", "revision", "status"])
-        .execute(),
-    ]);
-    const applicationById = new Map(
-      applicationRows.map((application) => [application.id, application]),
-    );
+    const connectionRows = await this.database
+      .selectFrom("integrationConnections")
+      .select([
+        "accountIdentifier",
+        "connectionKind",
+        "computerAccess",
+        "displayName",
+        "id",
+        "integrationDefinitionId",
+        "integrationServerId",
+        "ownerUserId",
+        "status",
+      ])
+      .where("ownerUserId", "=", ownerUserId)
+      .where("status", "!=", "revoked")
+      .orderBy("displayName", "asc")
+      .orderBy("id", "asc")
+      .execute();
     return {
-      connections: connectionRows.map((connection) => {
-        const application = connection.providerApplicationId
-          ? applicationById.get(connection.providerApplicationId)
-          : undefined;
-        return {
-          applicationSourceAvailable: integrationApplicationSourceAvailable({
-            application,
-            applicationSource: connection.applicationSource,
-            connectionKind: connection.connectionKind,
-            provider: connection.provider,
-            providerAuthorization: providerAuthorizations[connection.provider] ?? null,
-          }),
-          connectionKind: connection.connectionKind,
-          computerAccess: connection.computerAccess,
-          definitionId: connection.integrationDefinitionId,
-          accountIdentifier: connection.accountIdentifier,
-          displayName: connection.displayName,
-          id: connection.id,
-          integrationServerId: connection.integrationServerId,
-          ownerUserId: connection.ownerUserId,
-          provider: connection.provider,
-          status: connection.status,
-        };
-      }),
+      connections: connectionRows.map((connection) => ({
+        connectionKind: connection.connectionKind,
+        computerAccess: connection.computerAccess,
+        definitionId: connection.integrationDefinitionId,
+        accountIdentifier: connection.accountIdentifier,
+        displayName: connection.displayName,
+        id: connection.id,
+        integrationServerId: connection.integrationServerId,
+        ownerUserId: connection.ownerUserId,
+        status: connection.status,
+      })),
     };
   }
 
@@ -452,10 +255,6 @@ abstract class IntegrationPlatformStoreBase {
     return { connectionId, requestedBy: userId };
   }
 
-  protected async specialistTurnedOff(input: IntegrationRequester): Promise<boolean> {
-    return !(await resolveResourceAccess(this.database, input)).specialistAllowed;
-  }
-
   protected async installationInventory(): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")
@@ -484,7 +283,6 @@ export interface InstallIntegrationInput {
   ) => { carryApproval: boolean; secrets: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
-  readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
   readonly actorUserId: UserId | null;
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
   readonly requestId: string;
@@ -777,20 +575,8 @@ export async function revokeComputerConnectionsInTransaction(
 }
 
 /**
- * Uninstalling removes the installation outright rather than disabling it: a
- * disabled row keeps the deployment-unique name, so the same integration could
- * never be installed again.
- *
- * Accounts follow the definition, not the installation. A proposed integration's
- * definition exists nowhere but this row, so its connections (and the credentials
- * they point at) are removed with it; a catalog definition outlives the
- * installation, so its connections stay connected and a reinstall finds them.
- * MCP OAuth connections name a server of this installation directly, so they
- * cannot outlive it either.
- *
- * Resolved Requests keep their history: their detail rows are detached from the
- * installation rather than deleted, and only pending access Requests are
- * cancelled.
+ * Disabled rows retain their unique name, so uninstall deletes them to permit reinstalling.
+ * Resolved Request details detach to preserve their history; pending Requests are cancelled.
  */
 export async function uninstallIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
@@ -854,7 +640,7 @@ export async function uninstallIntegrationInTransaction(
         .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
         .execute();
   }
-  const uninstallIds = await uninstallConnectionIds(transaction, installation, serverIds);
+  const uninstallIds = await uninstallConnectionIds(transaction, serverIds);
   const revokedComputerConnections = await revokeComputerConnectionsInTransaction(transaction, {
     installationId: installation.id,
   });
@@ -956,10 +742,6 @@ export async function uninstallIntegrationInTransaction(
         .execute()
     ).flatMap(({ credentialId }) => (credentialId === null ? [] : [credentialId]));
     await transaction
-      .deleteFrom("mcpOAuthCredentials")
-      .where("connectionId", "in", [...removedConnectionIds])
-      .execute();
-    await transaction
       .deleteFrom("integrationConnections")
       .where("id", "in", [...removedConnectionIds])
       .execute();
@@ -1009,41 +791,18 @@ export async function uninstallIntegrationInTransaction(
 
 async function uninstallConnectionIds(
   transaction: Transaction<DatabaseSchema>,
-  installation: IntegrationInstallation,
   serverIds: readonly IntegrationServerId[],
 ): Promise<readonly IntegrationConnectionId[]> {
-  const definitionId =
-    installation.sourceKind === "proposed"
-      ? IntegrationDefinitionSummarySchema.parse(installation.manifest.definition).id
-      : null;
-  if (!serverIds.length && !definitionId) return [];
+  if (!serverIds.length) return [];
   return (
     (
       await transaction
         .selectFrom("integrationConnections")
         .select("id")
-        .where((eb) =>
-          eb.or([
-            ...(serverIds.length
-              ? [
-                  eb.and([
-                    eb("connectionKind", "in", ["computer", "mcp-oauth"]),
-                    eb("integrationServerId", "in", [...serverIds]),
-                  ]),
-                ]
-              : []),
-            ...(definitionId
-              ? [
-                  eb.and([
-                    eb("connectionKind", "=", "provider-account"),
-                    eb("integrationDefinitionId", "=", definitionId),
-                  ]),
-                ]
-              : []),
-          ]),
-        )
+        .where("connectionKind", "=", "computer")
+        .where("integrationServerId", "in", [...serverIds])
         .orderBy("id", "asc")
-        // FOR UPDATE: Uninstall deletes these server and proposed-definition connections.
+        // FOR UPDATE: Uninstall deletes these servers' computer connections.
         .forUpdate()
         .execute()
     ).map(({ id }) => id)
@@ -1084,7 +843,7 @@ export async function installIntegrationInTransaction(
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
   await lockDeploymentEvents(transaction);
-  const adapterSnapshot = validateAdapterInstallation(input);
+  validateInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction
     .selectFrom("integrationInstallations")
@@ -1131,7 +890,6 @@ export async function installIntegrationInTransaction(
     ? await transaction
         .updateTable("integrationInstallations")
         .set({
-          adapterSnapshot: adapterSnapshot === null ? null : jsonValue(adapterSnapshot),
           description: input.installation.description,
           manifest: jsonValue(input.installation.manifest),
           provenance: jsonValue(input.installation.provenance),
@@ -1152,7 +910,6 @@ export async function installIntegrationInTransaction(
     : await transaction
         .insertInto("integrationInstallations")
         .values({
-          adapterSnapshot: adapterSnapshot === null ? null : jsonValue(adapterSnapshot),
           createdBy: input.actorUserId,
           description: input.installation.description,
           id: input.installation.id,
@@ -1194,9 +951,6 @@ export async function installIntegrationInTransaction(
       );
     }
   }
-  // After servers and their secrets, as the lock order takes them.
-  if (input.installation.pluginId)
-    await new PluginStore(transaction).repinSpecialists(transaction, input.installation.pluginId);
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction
@@ -1363,281 +1117,12 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
-  /** Restore omitted managed qualification only under the original reviewed catalog contract. */
-  async backfillHostedOAuthMetadata(
-    definitions: readonly IntegrationDefinition[],
-  ): Promise<number> {
-    const qualified = new Map(
-      definitions
-        .filter((definition) => definition.hostedOAuth)
-        .map((definition) => [definition.id, definition]),
-    );
-    if (qualified.size === 0) return 0;
-    const missingMetadata = sql<boolean>`manifest -> 'definition' -> 'hostedOAuth' is null`;
-    const candidates = await this.database
-      .selectFrom("integrationInstallations")
-      .select("id")
-      .where("sourceKind", "=", "built-in")
-      .where(sql<string>`provenance ->> 'definitionId'`, "in", [...qualified.keys()])
-      .where(missingMetadata)
-      .orderBy("id", "asc")
-      .execute();
-    let repaired = 0;
-    for (const { id } of candidates) {
-      repaired += await withPersonalTransaction(this.database, async (transaction) => {
-        const row = await transaction
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("id", "=", id)
-          .where("sourceKind", "=", "built-in")
-          .where(missingMetadata)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!row) return 0;
-        const definitionId = exactCatalogDefinitionId(row);
-        const catalog = definitionId ? qualified.get(definitionId) : undefined;
-        if (!catalog || row.provenance.definitionDigest !== integrationDefinitionDigest(catalog))
-          return 0;
-        let installed: IntegrationDefinition;
-        try {
-          installed = installedIntegrationDefinition(row);
-        } catch {
-          return 0;
-        }
-        const correctedDigest = authorizationDigest({
-          ...installed,
-          hostedOAuth: catalog.hostedOAuth,
-        });
-        if (correctedDigest !== authorizationDigest(catalog)) return 0;
-        await transaction
-          .updateTable("integrationInstallations")
-          .set({
-            manifest: sql`jsonb_set(manifest, '{definition,hostedOAuth}', ${JSON.stringify(catalog.hostedOAuth)}::jsonb)`,
-          })
-          .where("id", "=", id)
-          .execute();
-        // Managed qualification does not change an own-app grant. Only translate the exact
-        // old contract; app/revision/callback pins and every connection state remain intact.
-        const connections = await transaction
-          .selectFrom("integrationConnections")
-          .select("id")
-          .where("integrationDefinitionId", "=", catalog.id)
-          .where("provider", "=", catalog.provider)
-          .where("connectionKind", "=", "provider-account")
-          .where("connectionMethod", "=", "managed-oauth")
-          .where("authorizationDigest", "=", authorizationDigest(installed))
-          .where(sql<boolean>`application_source ->> 'kind' = 'deployment-oauth'`)
-          .where("status", "!=", "revoked")
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute();
-        if (connections.length > 0)
-          await transaction
-            .updateTable("integrationConnections")
-            .set({ authorizationDigest: correctedDigest })
-            .where(
-              "id",
-              "in",
-              connections.map(({ id }) => id),
-            )
-            .execute();
-        return 1;
-      });
-    }
-    return repaired;
-  }
-
-  /** Fill additive public facts from the original snapshot without rematerializing its authority. */
-  async backfillApiKeyDisclosures(
-    disclose: (snapshot: IntegrationAdapterSnapshot) => ApiKeyDisclosure,
-  ): Promise<void> {
-    const missingDisclosure = sql<boolean>`
-      manifest -> 'definition' ->> 'apiKey' is null
-      and manifest -> 'definition' -> 'authMethods' @> '[{"kind":"api-key"}]'::jsonb
-    `;
-    const candidates = await this.database
-      .selectFrom("integrationInstallations")
-      .select("id")
-      .where(missingDisclosure)
-      .orderBy("id", "asc")
-      .execute();
-    for (const { id } of candidates) {
-      await withPersonalTransaction(this.database, async (transaction) => {
-        const row = await transaction
-          .selectFrom("integrationInstallations")
-          .select(["manifest", "adapterSnapshot"])
-          .where("id", "=", id)
-          .where(missingDisclosure)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!row) return;
-        let manifest;
-        try {
-          const summary = IntegrationDefinitionSummarySchema.parse(row.manifest.definition);
-          const snapshot = IntegrationAdapterSnapshotSchema.parse(row.adapterSnapshot);
-          const apiKey = ApiKeyDisclosureSchema.parse(disclose(snapshot));
-          manifest = jsonValue({ ...row.manifest, definition: { ...summary, apiKey } });
-        } catch {
-          await markNeedsAttentionInTransaction(
-            transaction,
-            id,
-            "Opensteer can’t tell where this integration sends its key. Remove it and install it again.",
-          );
-          return;
-        }
-        await transaction
-          .updateTable("integrationInstallations")
-          .set({ manifest })
-          .where("id", "=", id)
-          .execute();
-      });
-    }
-  }
-
-  /**
-   * Before a tool recorded the operation it runs, an OpenAPI call found it by
-   * planning names again from the stored document. Each server still holding
-   * such a tool binds it once by the names those calls planned, then takes the
-   * tools its snapshot plans now: a bound tool keeps its row under its new name,
-   * and one that no such name ran is disabled. A server that cannot be bound is
-   * left as it was and its integration unavailable, so its calls stay refused
-   * and nothing else waits on it; each start tries it again, and binding it
-   * clears only the reason binding gave. Returns what could not be bound.
-   */
-  async bindOpenApiTools(
-    plan: (snapshot: IntegrationAdapterSnapshot) => Promise<{
-      readonly catalog: IntegrationToolCatalog;
-      readonly legacyTargets: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
-    }>,
-  ): Promise<readonly { readonly error: unknown; readonly serverId: IntegrationServerId }[]> {
-    const candidates = await this.database
-      .selectFrom("integrationServers")
-      .innerJoin(
-        "integrationInstallations",
-        "integrationInstallations.id",
-        "integrationServers.installationId",
-      )
-      .select(["integrationServers.id", "integrationServers.installationId"])
-      .where(sql<boolean>`integration_installations.adapter_snapshot ->> 'adapter' = 'openapi'`)
-      .where(
-        sql<boolean>`exists (
-          select 1 from public.integration_tools tool
-          where tool.server_id = integration_servers.id
-            and tool.status = 'active' and tool.target is null
-        )`,
-      )
-      .orderBy("integrationServers.id", "asc")
-      .execute();
-    const failures: { error: unknown; serverId: IntegrationServerId }[] = [];
-    for (const { id, installationId } of candidates) {
-      try {
-        await withPersonalTransaction(this.database, async (transaction) => {
-          await transaction
-            .selectFrom("integrationInstallations")
-            .select("id")
-            .where("id", "=", installationId)
-            .forNoKeyUpdate()
-            .executeTakeFirstOrThrow();
-          const server = await transaction
-            .selectFrom("integrationServers")
-            .innerJoin(
-              "integrationInstallations",
-              "integrationInstallations.id",
-              "integrationServers.installationId",
-            )
-            .select([
-              "integrationInstallations.adapterSnapshot",
-              "integrationServers.toolGeneration",
-            ])
-            .where("integrationServers.id", "=", id)
-            .forNoKeyUpdate("integrationServers")
-            .executeTakeFirstOrThrow();
-          const tools = await transaction
-            .selectFrom("integrationTools")
-            .select(["id", "name", "status", "target"])
-            .where("serverId", "=", id)
-            .orderBy("id", "asc")
-            .forNoKeyUpdate()
-            .execute();
-          const { catalog, legacyTargets } = await plan(
-            IntegrationAdapterSnapshotSchema.parse(server.adapterSnapshot),
-          );
-          const now = new Date();
-          for (const tool of tools) {
-            const target = legacyTargets.get(tool.name);
-            if (tool.status !== "active" || tool.target !== null || !target) continue;
-            await transaction
-              .updateTable("integrationTools")
-              .set({ target: jsonValue(target) })
-              .where("id", "=", tool.id)
-              .execute();
-          }
-          await replaceServerToolsInTransaction(transaction, { catalog, now, serverId: id });
-          await transaction
-            .updateTable("integrationServers")
-            .set({ toolGeneration: server.toolGeneration + 1, updatedAt: now })
-            .where("id", "=", id)
-            .execute();
-          const cleared = await transaction
-            .updateTable("integrationServers")
-            .set({ status: "active", statusDetail: null, updatedAt: now })
-            .where("id", "=", id)
-            .where("statusDetail", "=", unboundOpenApiReason)
-            .executeTakeFirst();
-          if (cleared.numUpdatedRows === 0n) return;
-          await transaction
-            .updateTable("integrationInstallations")
-            .set({ status: "active", updatedAt: now })
-            .where("id", "=", installationId)
-            .where("status", "=", "needs-attention")
-            .where(
-              sql<boolean>`not exists (
-                select 1 from public.integration_servers other
-                where other.installation_id = ${installationId} and other.status = 'needs-attention'
-              )`,
-            )
-            .execute();
-        });
-      } catch (error) {
-        failures.push({ error, serverId: id });
-        // Only what nothing else holds unavailable, so clearing this reason restores exactly it.
-        await withPersonalTransaction(this.database, async (transaction) => {
-          const now = new Date();
-          await transaction
-            .updateTable("integrationInstallations")
-            .set({ status: "needs-attention", updatedAt: now })
-            .where("id", "=", installationId)
-            .where("status", "=", "active")
-            .execute();
-          await transaction
-            .updateTable("integrationServers")
-            .set({ status: "needs-attention", statusDetail: unboundOpenApiReason, updatedAt: now })
-            .where("id", "=", id)
-            .where("status", "=", "active")
-            .execute();
-        });
-      }
-    }
-    return failures;
-  }
-
-  /** Leaves an installation unavailable with a reason both its owner and an agent read. */
   async markNeedsAttention(
     installationId: IntegrationInstallationId,
     reason: string,
   ): Promise<void> {
     await withPersonalTransaction(this.database, (transaction) =>
       markNeedsAttentionInTransaction(transaction, installationId, reason),
-    );
-  }
-
-  async installedCatalogDefinitionIds(): Promise<readonly string[]> {
-    const rows = await this.database
-      .selectFrom("integrationInstallations")
-      .select("provenance")
-      .execute();
-    return rows.flatMap(({ provenance }) =>
-      typeof provenance.definitionId === "string" ? [provenance.definitionId] : [],
     );
   }
 
@@ -1695,65 +1180,23 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .where("deviceDrivers.runnerId", "is not", null)
       .orderBy("deviceDrivers.runnerId", "asc")
       .execute();
-    return rows.flatMap(({ runnerId }) => (runnerId === null ? [] : [runnerId]));
+    const servers = await this.database
+      .selectFrom("integrationServers")
+      .select("transport")
+      .where("installationId", "=", installationId)
+      .execute();
+    return [
+      ...new Set([
+        ...rows.flatMap(({ runnerId }) => (runnerId === null ? [] : [runnerId])),
+        ...servers.flatMap(({ transport }) => {
+          const parsed = IntegrationServerTransportSchema.parse(transport);
+          return parsed.type === "runner" && parsed.runnerId ? [parsed.runnerId] : [];
+        }),
+      ]),
+    ].sort();
   }
 
-  async reconcileProviderConnectionTools(input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly definitionId: string;
-    readonly ownerUserId: UserId;
-    readonly serverId: IntegrationServerId;
-    readonly catalog: IntegrationToolCatalog;
-  }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) => {
-      const server = await transaction
-        .selectFrom("integrationServers")
-        .selectAll()
-        .where("id", "=", input.serverId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      const connection = await transaction
-        .selectFrom("integrationConnections")
-        .select(["integrationDefinitionId", "ownerUserId", "status"])
-        .where("id", "=", input.connectionId)
-        .where("connectionKind", "=", "provider-account")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        !connection ||
-        connection.ownerUserId !== input.ownerUserId ||
-        connection.integrationDefinitionId !== input.definitionId ||
-        connection.status !== "connected"
-      ) {
-        throw forbidden("Integration connection is no longer authorized for tool discovery");
-      }
-      if (!server)
-        throw new OpensteerError({ code: "not_found", message: "Integration server not found" });
-      const transport = IntegrationServerSchema.shape.transport.parse(server.transport);
-      if (transport.type !== "adapter" || transport.definitionId !== input.definitionId) {
-        throw forbidden("Integration server does not belong to this connection definition");
-      }
-      await upsertConnectionTools(
-        transaction,
-        input.serverId,
-        input.connectionId,
-        input.catalog,
-        new Date(),
-      );
-      await transaction
-        .updateTable("integrationServers")
-        .set({ toolGeneration: server.toolGeneration + 1, updatedAt: new Date() })
-        .where("id", "=", server.id)
-        .where("toolGeneration", "=", server.toolGeneration)
-        .executeTakeFirstOrThrow();
-    });
-  }
-
-  async listDiscoveryInventory(
-    input: IntegrationDiscoveryRequester & {
-      readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    },
-  ): Promise<
+  async listDiscoveryInventory(input: IntegrationDiscoveryRequester): Promise<
     readonly {
       readonly accounts: readonly {
         readonly access: IntegrationAccess | null;
@@ -1763,6 +1206,10 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       }[];
       readonly installation: IntegrationInstallation;
       readonly readiness: {
+        readonly forTarget?: (
+          serverId: IntegrationServerId,
+          target: IntegrationReadinessTarget,
+        ) => IntegrationReadiness | undefined;
         readonly servers: readonly IntegrationReadiness[];
         readonly tools: readonly {
           readonly readiness: IntegrationReadiness;
@@ -1773,195 +1220,151 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       readonly tools: readonly IntegrationTool[];
     }[]
   > {
+    const provider = input.provider;
     const [installations, authority, grants] = await Promise.all([
       this.database
         .selectFrom("integrationInstallations")
         .selectAll()
+        .$if(provider !== undefined, (query) =>
+          query.where(({ exists, selectFrom }) => {
+            let server = selectFrom("integrationServers")
+              .select("integrationServers.id")
+              .whereRef("integrationServers.installationId", "=", "integrationInstallations.id");
+            if (provider && "serverId" in provider)
+              server = server.where("integrationServers.id", "=", provider.serverId);
+            else if (provider)
+              server = server.where("integrationServers.id", "=", (eb) =>
+                eb
+                  .selectFrom("integrationConnections")
+                  .select("integrationServerId")
+                  .where("id", "=", provider.connectionId)
+                  .where("ownerUserId", "=", input.ownerUserId),
+              );
+            return exists(server);
+          }),
+        )
         .orderBy("title", "asc")
         .limit(1_000)
         .execute(),
-      this.authoritySnapshot(input.ownerUserId, input.providerAuthorizations),
+      this.authoritySnapshot(input.ownerUserId),
       this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);
-    const policySettings = await this.database
-      .selectFrom("pluginOwnerSettings")
-      .selectAll()
-      .where("ownerUserId", "=", input.ownerUserId)
-      .execute();
-    const deniedSettings = policySettings.filter((s) => !s.enabled);
-    const deniedDefinitions = new Set(
-      deniedSettings.flatMap((s) =>
-        s.target.kind === "service" || s.target.kind === "device-app"
-          ? [s.target.definitionId]
-          : [],
-      ),
-    );
-    const deniedPlugins = new Set(
-      deniedSettings.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
-    );
     const activeGrants = grants.filter(({ status }) => status === "active");
-    let connections = authority.connections;
-    connections = connections.filter(
-      (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
-    );
+    const { connections } = authority;
     const requesterAccess = await resolveResourceAccess(this.database, input);
-    const specialistOff = !requesterAccess.specialistAllowed;
-    if (specialistOff) connections = [];
     return Promise.all(
-      installations
-        .filter(
-          (row) =>
-            (!row.pluginId || !deniedPlugins.has(row.pluginId)) &&
-            !deniedDefinitions.has(installationDefinitionId(row)),
-        )
-        .map(async (row) => {
-          const installation = installationFromRow(row);
-          const [servers, tools] = await Promise.all([
-            this.listServers(row.id),
-            this.listTools(row.id, input.ownerUserId),
-          ]);
-          const serverById = new Map(servers.map((server) => [server.id, server]));
-          const installationConnections = connections.filter((connection) =>
-            servers.some((server) => {
-              const requirement = server.connectionRequirement;
-              if (requirement.kind === "provider") {
-                return (
-                  connection.connectionKind === "provider-account" &&
-                  connection.definitionId === requirement.definitionId &&
-                  connection.provider === requirement.provider
-                );
-              }
-              if (requirement.kind === "computer") {
-                return (
-                  connection.connectionKind === "computer" &&
-                  connection.definitionId === requirement.definitionId &&
-                  connection.integrationServerId === server.id
-                );
-              }
-              return (
-                requirement.kind === "mcp-oauth" &&
-                connection.connectionKind === "mcp-oauth" &&
-                connection.integrationServerId === server.id
-              );
-            }),
-          );
-          const hasInstallationAccess = (
-            connectionId: IntegrationConnectionId | null,
-            requiredAccess: IntegrationAccess,
-          ) => {
-            if (
-              specialistOff ||
-              !integrationAccessCovers(requesterAccess.runAccess, requiredAccess)
-            )
-              return false;
-            const connection =
-              connectionId === null
-                ? null
-                : (installationConnections.find(({ id }) => id === connectionId) ?? null);
-            return activeGrants.some((grant) => {
-              const access = effectiveIntegrationAccess(grant.access, connection);
-              return (
-                grant.installationId === installation.id &&
-                grant.connectionId === connectionId &&
-                access !== null &&
-                integrationAccessCovers(access, requiredAccess)
-              );
-            });
-          };
-          const readinessFor = (
-            server: IntegrationServer,
-            tool: IntegrationTool | null,
-          ): IntegrationReadiness =>
-            resolveIntegrationReadiness({
-              connectionRequirement: server.connectionRequirement,
-              connections,
-              hasAccess: hasInstallationAccess,
-              runAccess: requesterAccess.runAccess,
-              installationStatus: installation.status,
-              providerAuthorization:
-                server.connectionRequirement.kind === "provider"
-                  ? (input.providerAuthorizations[server.connectionRequirement.provider] ?? null)
-                  : null,
-              requiredAccess:
-                input.target?.access ??
-                (tool === null || integrationToolEffect(tool.annotations) === "read"
-                  ? "read"
-                  : "read-write"),
-              requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
-              serverId: server.id,
-              serverStatus: server.status,
-              statusDetail: server.statusDetail,
-            });
-          return {
-            accounts: installationConnections.map((connection) => {
-              const grant = activeGrants.find(
-                (candidate) =>
-                  candidate.installationId === installation.id &&
-                  candidate.connectionId === connection.id,
-              );
-              return {
-                access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
-                account: integrationAccountLabel(connection),
-                connectionId: connection.id,
-                isDefault: grant?.isDefault ?? false,
-              };
-            }),
-            installation,
-            readiness: {
-              servers: servers.map((server) =>
-                resolveIntegrationReadiness({
-                  connectionRequirement: server.connectionRequirement,
-                  connections,
-                  hasAccess: hasInstallationAccess,
-                  runAccess: requesterAccess.runAccess,
-                  installationStatus: installation.status,
-                  providerAuthorization:
-                    server.connectionRequirement.kind === "provider"
-                      ? (input.providerAuthorizations[server.connectionRequirement.provider] ??
-                        null)
-                      : null,
-                  requiredAccess: input.target?.access ?? "read",
-                  requiredConnectionId: input.target?.connectionId ?? null,
-                  serverId: server.id,
-                  serverStatus: server.status,
-                  statusDetail: server.statusDetail,
-                }),
+      installations.map(async (row) => {
+        const installation = installationFromRow(row);
+        const [servers, tools] = await Promise.all([
+          this.listServers(row.id),
+          this.listTools(row.id, input.ownerUserId),
+        ]);
+        const serverById = new Map(servers.map((server) => [server.id, server]));
+        const installationConnections = connections.filter((connection) =>
+          servers.some((server) => {
+            const requirement = server.connectionRequirement;
+            return (
+              requirement.kind === "computer" &&
+              connection.connectionKind === "computer" &&
+              connection.definitionId === requirement.definitionId &&
+              connection.integrationServerId === server.id
+            );
+          }),
+        );
+        const hasInstallationAccess = (
+          connectionId: IntegrationConnectionId | null,
+          requiredAccess: IntegrationAccess,
+        ) => {
+          if (!integrationAccessCovers(requesterAccess.runAccess, requiredAccess)) return false;
+          const connection =
+            connectionId === null
+              ? null
+              : (installationConnections.find(({ id }) => id === connectionId) ?? null);
+          return activeGrants.some((grant) => {
+            const access = effectiveIntegrationAccess(grant.access, connection);
+            return (
+              grant.installationId === installation.id &&
+              grant.connectionId === connectionId &&
+              access !== null &&
+              integrationAccessCovers(access, requiredAccess)
+            );
+          });
+        };
+        const readinessFor = (
+          server: IntegrationServer,
+          requiredAccess: IntegrationAccess,
+          requiredConnectionId: IntegrationConnectionId | null,
+        ): IntegrationReadiness =>
+          resolveIntegrationReadiness({
+            connectionRequirement: server.connectionRequirement,
+            connections,
+            hasAccess: hasInstallationAccess,
+            runAccess: requesterAccess.runAccess,
+            installationStatus: installation.status,
+            requiredAccess,
+            requiredConnectionId,
+            serverId: server.id,
+            serverStatus: server.status,
+            statusDetail: server.statusDetail,
+          });
+        return {
+          accounts: installationConnections.map((connection) => {
+            const grant = activeGrants.find(
+              (candidate) =>
+                candidate.installationId === installation.id &&
+                candidate.connectionId === connection.id,
+            );
+            return {
+              access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
+              account: integrationAccountLabel(connection),
+              connectionId: connection.id,
+              isDefault: grant?.isDefault ?? false,
+            };
+          }),
+          installation,
+          readiness: {
+            ...(input.includeTargetReadiness
+              ? {
+                  forTarget: (
+                    serverId: IntegrationServerId,
+                    target: IntegrationReadinessTarget,
+                  ) => {
+                    const server = serverById.get(serverId);
+                    return server && readinessFor(server, target.access, target.connectionId);
+                  },
+                }
+              : {}),
+            servers: servers.map((server) =>
+              readinessFor(
+                server,
+                input.target?.access ?? "read",
+                input.target?.connectionId ?? null,
               ),
-              tools: tools.flatMap((tool) => {
-                const server = serverById.get(tool.serverId);
-                return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
-              }),
-            },
-            servers,
-            tools,
-          };
-        }),
+            ),
+            tools: tools.flatMap((tool) => {
+              const server = serverById.get(tool.serverId);
+              return server
+                ? [
+                    {
+                      readiness: readinessFor(
+                        server,
+                        input.target?.access ??
+                          (integrationToolEffect(tool.annotations) === "read"
+                            ? "read"
+                            : "read-write"),
+                        tool.connectionId ?? input.target?.connectionId ?? null,
+                      ),
+                      toolId: tool.id,
+                    },
+                  ]
+                : [];
+            }),
+          },
+          servers,
+          tools,
+        };
+      }),
     );
-  }
-
-  /**
-   * The connect paths resolve a definition the static catalog may never have carried — an
-   * administrator-approved proposal exists only as this row — so the installed definition is
-   * readable by definition id, not just by installation id.
-   */
-  async findInstalledDefinition(
-    definitionId: string,
-    options?: { readonly allowUnavailable: boolean },
-  ): Promise<IntegrationDefinition | null> {
-    const row = await this.database
-      .selectFrom("integrationInstallations")
-      .select(["adapterSnapshot", "manifest", "status"])
-      .where(sql<string>`manifest -> 'definition' ->> 'id'`, "=", definitionId)
-      .orderBy("name", "asc")
-      .limit(1)
-      .executeTakeFirst();
-    // An unavailable installation still owns its definition; it must never resolve to live catalog config.
-    if (row && row.status !== "active" && !options?.allowUnavailable)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Installed integration is unavailable",
-      });
-    return row ? installedIntegrationDefinition(row) : null;
   }
 
   async listServers(
@@ -2036,1214 +1439,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       .executeTakeFirst();
     return row?.connectionKind ?? null;
   }
-
-  /** Immutable enrollment facts; callers apply their resource's owner check first. */
-  async computerAppRunner(runnerId: RunnerId): Promise<{
-    readonly deviceProfile: "iphone" | null;
-    readonly publicKeyFingerprint: string;
-  } | null> {
-    return (
-      (await this.database
-        .selectFrom("runners")
-        .select(["deviceProfile", "publicKeyFingerprint"])
-        .where("id", "=", runnerId)
-        .where("revokedAt", "is", null)
-        .executeTakeFirst()) ?? null
-    );
-  }
-
-  async getComputerUsePolicy(
-    input: Omit<
-      Parameters<IntegrationConnectionAuthStore["getDeviceComputerUsePolicy"]>[0],
-      "deviceId"
-    > & { readonly runnerId: RunnerId },
-  ) {
-    return this.getDeviceComputerUsePolicy({
-      ...input,
-      deviceId: await this.requireSelfDeviceId(input.runnerId),
-    });
-  }
-  async setComputerUsePolicy(
-    input: {
-      readonly settlementSessionId?: string | undefined;
-      readonly runnerId: RunnerId;
-      readonly ownerUserId: UserId;
-      readonly requestId: string;
-    } & (
-      | { readonly appApproval: "ask" }
-      | {
-          readonly appApproval: "automatic";
-          readonly setupRequestId: string;
-          readonly definitionDigest: string;
-        }
-    ),
-  ) {
-    return this.setDeviceComputerUsePolicy({
-      ...input,
-      deviceId: await this.requireSelfDeviceId(input.runnerId),
-    });
-  }
-  async listComputerAppSetupRequests(owner: UserId) {
-    const result = [];
-    for (const request of await this.listDeviceComputerAppSetupRequests(owner)) {
-      if (!(await getDeviceSelfRunnerId(this.database, request.deviceId))) continue;
-      result.push(await legacySelfSetupRequest(this.database, request));
-    }
-    return result;
-  }
-  async getComputerAppSetupRequest(input: {
-    readonly runnerId?: RunnerId;
-    readonly setupRequestId: string;
-  }) {
-    const request = await this.getDeviceComputerAppSetupRequest({
-      setupRequestId: input.setupRequestId,
-      ...(input.runnerId ? { deviceId: await this.requireSelfDeviceId(input.runnerId) } : {}),
-    });
-    return request ? legacySelfSetupRequest(this.database, request) : null;
-  }
-  async requestComputerAppSetup(
-    input: {
-      readonly actorUserId: UserId;
-      readonly runnerId: RunnerId;
-      readonly definitionDigest: string;
-    } & (
-      | { readonly kind: "policy"; readonly appApproval: "automatic" }
-      | {
-          readonly kind?: "app";
-          readonly definitionId: string;
-          readonly access: IntegrationAccess;
-          readonly app: ComputerAppIdentity | null;
-          readonly requiresApp: boolean;
-        }
-    ),
-  ) {
-    const result = await this.requestDeviceComputerAppSetup({
-      ...input,
-      deviceId: await this.requireSelfDeviceId(input.runnerId),
-    });
-    return { ...result, request: await legacySelfSetupRequest(this.database, result.request) };
-  }
-  async cancelComputerAppSetup(
-    input: Parameters<IntegrationConnectionAuthStore["cancelDeviceComputerAppSetup"]>[0],
-  ) {
-    const result = await this.cancelDeviceComputerAppSetup(input);
-    const { deviceId, ...rest } = result;
-    return { ...rest, runnerId: deviceId ? await this.requireDeviceSelfRunnerId(deviceId) : null };
-  }
-  async expireComputerAppSetupRequests(now = new Date()) {
-    const result = await this.expireDeviceComputerAppSetupRequests(now);
-    const runnerIds = [];
-    for (const id of result.deviceIds) {
-      const runnerId = await getDeviceSelfRunnerId(this.database, id);
-      if (runnerId) runnerIds.push(runnerId);
-    }
-    const { deviceIds: _deviceIds, ...rest } = result;
-    return { ...rest, runnerIds };
-  }
-  async setComputerConnection(
-    input: Omit<SetComputerConnectionInput, "deviceId"> & { readonly runnerId: RunnerId },
-  ) {
-    const deviceId = await getSelfDeviceId(this.database, input.runnerId);
-    if (!deviceId) {
-      const runner = await this.database
-        .selectFrom("runners")
-        .select(["revokedAt", "ownerKind"])
-        .where("id", "=", input.runnerId)
-        .executeTakeFirst();
-      if (runner && !runner.revokedAt && runner.ownerKind === "deployment")
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only the person who added this computer can turn its apps on.",
-        });
-      throw new OpensteerError({ code: "not_found", message: "Computer not found" });
-    }
-    const result = await this.setDeviceComputerConnection({ ...input, deviceId });
-    return {
-      ...result,
-      connection: await legacySelfConnection(this.database, result.connection),
-      sessionReset: await legacySelfSessionReset(this.database, result.sessionReset),
-    };
-  }
-  async approveComputerAppAutomatically(
-    input: Omit<AutomaticComputerAppApprovalInput, "deviceId"> & { readonly runnerId: RunnerId },
-  ) {
-    const result = await this.approveDeviceComputerAppAutomatically({
-      ...input,
-      deviceId: await this.requireSelfDeviceId(input.runnerId),
-    });
-    return {
-      ...result,
-      connection: await legacySelfConnection(this.database, result.connection),
-      sessionReset: await legacySelfSessionReset(this.database, result.sessionReset),
-    };
-  }
-  async getComputerConnectionForCall(
-    input: Parameters<IntegrationConnectionAuthStore["getDeviceComputerConnectionForCall"]>[0],
-  ) {
-    const result = await this.getDeviceComputerConnectionForCall(input);
-    if (!result) return null;
-    const runnerId = await getDeviceSelfRunnerId(this.database, result.deviceId);
-    if (!runnerId) return null;
-    const { deviceId: _deviceId, deviceName: _deviceName, ...rest } = result;
-    return {
-      ...rest,
-      runnerId,
-      connection: await legacySelfConnection(this.database, result.connection),
-    };
-  }
-
-  async getDeviceComputerUsePolicy(input: {
-    readonly deviceId: DeviceId;
-    readonly ownerUserId: UserId;
-  }): Promise<{
-    readonly appApproval: "ask" | "automatic";
-    readonly revision: number;
-  }> {
-    return withPersonalReadTransaction(this.database, async (transaction) => {
-      await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId, false);
-      const policy = await computerUsePolicyInTransaction(
-        transaction,
-        input.deviceId,
-        input.ownerUserId,
-      );
-      return {
-        ...policy,
-      };
-    });
-  }
-
-  async #computerUsePolicyOwner(
-    transaction: Transaction<DatabaseSchema>,
-    deviceId: DeviceId,
-    ownerUserId: UserId,
-    lock = true,
-  ) {
-    const runner = await transaction
-      .selectFrom("devices")
-      .select(["id", "name", "removedAt"])
-      .where("id", "=", deviceId)
-      .$if(lock, (query) => query.forNoKeyUpdate())
-      .executeTakeFirst();
-    if (!runner || runner.removedAt !== null)
-      throw new OpensteerError({ code: "not_found", message: "Computer not found" });
-    const ownership = await deviceOwnershipIn(transaction, deviceId);
-    if (ownership?.effectiveOwner !== ownerUserId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only this computer’s owner can change app approvals.",
-      });
-    return runner;
-  }
-
-  async setDeviceComputerUsePolicy(
-    input: {
-      readonly settlementSessionId?: string | undefined;
-      readonly deviceId: DeviceId;
-      readonly ownerUserId: UserId;
-      readonly requestId: string;
-    } & (
-      | { readonly appApproval: "ask" }
-      | {
-          readonly appApproval: "automatic";
-          readonly setupRequestId: string;
-          readonly definitionDigest: string;
-        }
-    ),
-  ): Promise<{ readonly appApproval: "ask" | "automatic"; readonly revision: number }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId);
-      const now = new Date();
-      const deployment = await transaction
-        .selectFrom("deployments")
-        .select("id")
-        .where("singletonKey", "=", "primary")
-        .executeTakeFirstOrThrow();
-      if (input.appApproval === "automatic") {
-        const pending = await transaction
-          .selectFrom("computerAppSetupRequests")
-          .selectAll()
-          .where("id", "=", input.setupRequestId)
-          .where("deploymentId", "=", deployment.id)
-          .where("runnerId", "=", input.deviceId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("kind", "=", "policy")
-          .where("policyAppApproval", "=", "automatic")
-          .where("definitionDigest", "=", input.definitionDigest)
-          .where("expiresAt", ">", now)
-          // FOR UPDATE: Consuming the policy approval deletes this setup request.
-          .forUpdate()
-          .executeTakeFirst();
-        if (!pending)
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "This approval changed or is no longer waiting.",
-          });
-      }
-      const previous = await computerUsePolicyInTransaction(
-        transaction,
-        input.deviceId,
-        input.ownerUserId,
-      );
-      const revision = previous.revision + 1;
-      await transaction
-        .insertInto("computerUsePolicies")
-        .values({
-          deploymentId: deployment.id,
-          runnerId: input.deviceId,
-          ownerUserId: input.ownerUserId,
-          appApproval: input.appApproval,
-          revision,
-          updatedAt: now,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(["deploymentId", "runnerId", "ownerUserId"]).doUpdateSet({
-            appApproval: input.appApproval,
-            revision,
-            updatedAt: now,
-          }),
-        )
-        .execute();
-      await transaction
-        .deleteFrom("computerAppSetupRequests")
-        .where("runnerId", "=", input.deviceId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("kind", "=", "policy")
-        .execute();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "integration.computer-policy.updated",
-          actorSessionId: null,
-          actorUserId: input.ownerUserId,
-          id: createId("securityAudit"),
-          metadata: jsonValue({ appApproval: input.appApproval, revision }),
-          requestId: input.requestId,
-          targetId: input.deviceId,
-          targetType: "runner",
-        })
-        .execute();
-      await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
-      return { appApproval: input.appApproval, revision };
-    });
-  }
-
-  async listDeviceComputerAppSetupRequests(
-    ownerUserId: UserId,
-  ): Promise<readonly ComputerAppSetupRequest[]> {
-    const rows = await this.database
-      .selectFrom("computerAppSetupRequests")
-      .innerJoin("devices", "devices.id", "computerAppSetupRequests.runnerId")
-      .selectAll("computerAppSetupRequests")
-      .where("computerAppSetupRequests.ownerUserId", "=", ownerUserId)
-      .where("computerAppSetupRequests.expiresAt", ">", new Date())
-      .where("devices.removedAt", "is", null)
-      .orderBy("computerAppSetupRequests.createdAt", "asc")
-      .limit(1_000)
-      .execute();
-    return rows.map(computerAppSetupRequestFromRow);
-  }
-
-  /**
-   * Whether this person administers the Deployment, for an answer that arrives
-   * on a Mac's Runner stream rather than with a session that already says so.
-   */
-  async isPersonalOwner(userId: UserId): Promise<boolean> {
-    try {
-      await assertPersonalOwner(this.database, userId);
-      return true;
-    } catch (error) {
-      if (error instanceof OpensteerError) return false;
-      throw error;
-    }
-  }
-
-  /** One waiting approval on one Mac, which that Mac is answering. */
-  async getDeviceComputerAppSetupRequest(input: {
-    readonly deviceId?: DeviceId;
-    readonly setupRequestId: string;
-  }): Promise<ComputerAppSetupRequest | null> {
-    const row = await this.database
-      .selectFrom("computerAppSetupRequests")
-      .selectAll()
-      .where("id", "=", input.setupRequestId)
-      .$if(input.deviceId !== undefined, (query) => query.where("runnerId", "=", input.deviceId!))
-      .where("expiresAt", ">", new Date())
-      .executeTakeFirst();
-    return row ? computerAppSetupRequestFromRow(row) : null;
-  }
-
-  /**
-   * `app` is non-null exactly when the definition's connections name one app,
-   * which `requiresApp` states. It comes from the caller for the same reason
-   * `definitionDigest` does: the catalog is the Host's, not the store's, and
-   * one of the two facts would otherwise be read from a different source than
-   * the other.
-   *
-   * An app ask from the picker or an unblock is the same ask a task makes,
-   * without a task, so it joins or widens the one waiting approval for that
-   * app exactly as `askForComputerAppApprovalInTransaction` decides.
-   */
-  async requestDeviceComputerAppSetup(
-    requestInput: {
-      readonly actorUserId: UserId;
-      readonly deviceId: DeviceId;
-      readonly definitionDigest: string;
-    } & (
-      | {
-          readonly kind: "policy";
-          readonly appApproval: "automatic";
-        }
-      | {
-          readonly kind?: "app";
-          readonly definitionId: string;
-          readonly access: IntegrationAccess;
-          readonly app: ComputerAppIdentity | null;
-          readonly requiresApp: boolean;
-        }
-    ),
-  ): Promise<{
-    readonly request: ComputerAppSetupRequest;
-    readonly settlement: ComputerAppAccessSettlement;
-  }> {
-    const input =
-      requestInput.kind === "policy"
-        ? {
-            ...requestInput,
-            definitionId: "macos-app",
-            access: "read-write" as const,
-            app: null,
-            requiresApp: false,
-          }
-        : requestInput;
-    assertComputerAppPresence(input);
-    return withPersonalTransaction(this.database, async (transaction) => {
-      const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-        deviceId: input.deviceId,
-      });
-      const ownership =
-        runner.removedAt === null ? await deviceOwnershipIn(transaction, runner.id) : null;
-      if (ownership?.effectiveOwner !== input.actorUserId) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only this computer’s owner can request app setup.",
-        });
-      }
-      const now = new Date();
-      if (input.kind !== "policy") {
-        const { row, settlement } = await askForComputerAppApprovalInTransaction(transaction, {
-          access: input.access,
-          app: input.app,
-          definitionDigest: input.definitionDigest,
-          definitionId: input.definitionId,
-          now,
-          ownerUserId: input.actorUserId,
-          deviceId: input.deviceId,
-          task: null,
-        });
-        return { request: computerAppSetupRequestFromRow(row), settlement };
-      }
-      // The policy approval has no Requests waiting on it, so replacing it
-      // only has to mint the new id that invalidates older decisions.
-      const scope = computerAppScopeOf(input);
-      const existing = await lockComputerAppSetupRequestInTransaction(transaction, scope);
-      if (
-        existing &&
-        computerAppSetupRequestMatches(existing, {
-          access: input.access,
-          app: input.app,
-          definitionDigest: input.definitionDigest,
-          now,
-          ownerUserId: input.actorUserId,
-        })
-      ) {
-        return {
-          request: computerAppSetupRequestFromRow(existing),
-          settlement: emptyComputerAppAccessSettlement,
-        };
-      }
-      await deleteComputerAppSetupRequestsInTransaction(transaction, scope);
-      const row = await insertComputerAppSetupRequestInTransaction(transaction, {
-        kind: "policy",
-        policyAppApproval: "automatic",
-        access: input.access,
-        app: input.app,
-        definitionDigest: input.definitionDigest,
-        definitionId: input.definitionId,
-        now,
-        ownerUserId: input.actorUserId,
-        deviceId: input.deviceId,
-      });
-      return {
-        request: computerAppSetupRequestFromRow(row),
-        settlement: emptyComputerAppAccessSettlement,
-      };
-    });
-  }
-
-  /** The owner taking the ask back, which declines whatever Threads were waiting on it. */
-  async cancelDeviceComputerAppSetup(input: {
-    readonly settlementSessionId?: string | undefined;
-    readonly requestId: string;
-    readonly ownerUserId: UserId;
-  }): Promise<ComputerAppAccessSettlement & { readonly deviceId: DeviceId | null }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      const request = await transaction
-        .selectFrom("computerAppSetupRequests")
-        .select("runnerId as deviceId")
-        .where("id", "=", input.requestId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .executeTakeFirst();
-      if (!request) return { ...emptyComputerAppAccessSettlement, deviceId: null };
-      // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
-      await this.#computerUsePolicyOwner(transaction, request.deviceId, input.ownerUserId);
-      const settlementActor = await readRequestSettlementActor(
-        transaction,
-        input.ownerUserId,
-        input.settlementSessionId,
-      );
-      const removed = await transaction
-        .deleteFrom("computerAppSetupRequests")
-        .where("id", "=", input.requestId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .returning("id")
-        .execute();
-      const settlement = await declineComputerAppAccessRequestsInTransaction(transaction, {
-        setupRequestIds: removed.map(({ id }) => id),
-        settlementActor,
-      });
-      await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
-      return {
-        ...settlement,
-        deviceId: request.deviceId,
-      };
-    });
-  }
-
-  /**
-   * Sweeps approvals nobody answered inside their week.
-   *
-   * Reads already hide an expired row and `setComputerConnection` already
-   * refuses it, so the row itself is harmless. A `computer.app.access` Request
-   * linked to one is not — it would sit pending forever — so the Host's
-   * minute tick calls this, and every other path that removes a row settles
-   * its Requests too.
-   */
-  async expireDeviceComputerAppSetupRequests(
-    now = new Date(),
-  ): Promise<ComputerAppAccessSettlement & { readonly deviceIds: readonly DeviceId[] }> {
-    // One Mac per transaction, each under that Mac's approval scope, so the
-    // sweep takes its locks in the order every approval does.
-    const expiring = await this.database
-      .selectFrom("computerAppSetupRequests")
-      .select("runnerId as deviceId")
-      .distinct()
-      .where("expiresAt", "<=", now)
-      .orderBy("runnerId", "asc")
-      .execute();
-    const grants: IntegrationGrant[] = [];
-    const requestEvents: AgentEvent[] = [];
-    const requestIds: RequestId[] = [];
-    const deviceIds: DeviceId[] = [];
-    for (const { deviceId } of expiring) {
-      const settled = await withPersonalTransaction(this.database, async (transaction) => {
-        await lockComputerApprovalScopeInTransaction(transaction, { deviceId });
-        const expired = await transaction
-          .deleteFrom("computerAppSetupRequests")
-          .where("runnerId", "=", deviceId)
-          .where("expiresAt", "<=", now)
-          .returning("id")
-          .execute();
-        return declineComputerAppAccessRequestsInTransaction(transaction, {
-          setupRequestIds: expired.map(({ id }) => id),
-        });
-      });
-      grants.push(...settled.grants);
-      requestEvents.push(...settled.requestEvents);
-      requestIds.push(...settled.requestIds);
-      deviceIds.push(deviceId);
-    }
-    return { grants, requestEvents, requestIds, deviceIds };
-  }
-
-  /**
-   * The owner's change to a computer app's connection.
-   *
-   * With a setup request it consumes that request, which is how a
-   * Mac connection is created, widened or unblocked. Without one a Mac app can
-   * only keep or lower access. An owner can set phone access from any client.
-   *
-   * `app` names which app on the Mac, for a definition whose connections do.
-   * It is checked against the installed definition rather than trusted, so a
-   * caller that forgot it cannot write an app-less `macos-app` row and take
-   * the `(definitionId, deviceId, '')` slot every other app needs.
-   */
-  async setDeviceComputerConnection(
-    input: SetComputerConnectionInput,
-  ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      const runner = await lockComputerOwnerInTransaction(transaction, {
-        ...input,
-      });
-      const device = await transaction
-        .selectFrom("devices")
-        .select(["kind", "platform"])
-        .where("id", "=", input.deviceId)
-        .executeTakeFirstOrThrow();
-      const selfRunnerId = await getDeviceSelfRunnerId(transaction, input.deviceId);
-      const descriptor = selfRunnerId
-        ? await transaction
-            .selectFrom("runners")
-            .select(["device", "moduleDescriptors", "allowedModules", "kind"])
-            .where("id", "=", selfRunnerId)
-            .executeTakeFirst()
-        : undefined;
-      const phone = isPhoneDisplayDefinitionId(input.definitionId);
-      if (
-        phone &&
-        (input.app !== null ||
-          (input.definitionId === "iphone-screen"
-            ? device.kind !== "phone" || device.platform !== "ios" || selfRunnerId !== null
-            : !descriptor ||
-              descriptor.kind !== "local" ||
-              descriptor.device?.form !== "phone" ||
-              descriptor.device.platform !== "android" ||
-              !descriptor.allowedModules.includes("integrations") ||
-              descriptor.moduleDescriptors.integrations?.platform !== "android" ||
-              runnerIntegrationsCompatibilityReason(descriptor.moduleDescriptors.integrations) !==
-                null))
-      )
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This device is not eligible for this phone display.",
-        });
-      if (input.setupRequestId && phone)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Allow phone access from any Opensteer app.",
-        });
-      const target = await computerConnectionTargetInTransaction(transaction, input);
-      return input.setupRequestId
-        ? consumeComputerAppApprovalInTransaction(transaction, {
-            ...input,
-            setupRequestId: input.setupRequestId,
-            runner,
-            target,
-          })
-        : reviseComputerConnectionInTransaction(transaction, { ...input, runner, target });
-    });
-  }
-
-  /** A task's ask for a new app on a Mac whose owner allows any app automatically. */
-  async approveDeviceComputerAppAutomatically(
-    input: AutomaticComputerAppApprovalInput,
-  ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      const runner = await lockComputerOwnerInTransaction(transaction, {
-        ...input,
-      });
-      const policy = await computerUsePolicyInTransaction(
-        transaction,
-        input.deviceId,
-        input.actorUserId,
-      );
-      if (policy.appApproval !== "automatic") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Automatic app approval is not enabled on this Mac.",
-        });
-      }
-      return approveComputerAppAutomaticallyInTransaction(transaction, { ...input, runner });
-    });
-  }
-
-  async blockComputerApp(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-    readonly requestId: string;
-  }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
-      administrationCommand(transaction, input.administration, async () => {
-        const connection = await transaction
-          .selectFrom("integrationConnections")
-          .select([computerConnectionDeviceId.as("deviceId"), "computerApp"])
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("connectionKind", "=", "computer")
-          .where("status", "!=", "revoked")
-          .executeTakeFirst();
-        if (!connection?.deviceId || !connection.computerApp) {
-          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-        }
-        await lockComputerApprovalScopeInTransaction(transaction, {
-          deviceId: connection.deviceId,
-        });
-        const ownership = await deviceOwnershipIn(transaction, connection.deviceId);
-        if (ownership?.effectiveOwner !== input.ownerUserId) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only this computer’s owner can block its apps.",
-          });
-        }
-        const mutation = await revokeComputerConnectionsInTransaction(transaction, input);
-        const now = new Date();
-        await transaction
-          .updateTable("integrationConnections")
-          .set({ computerBlockedAt: now, status: "paused", updatedAt: now })
-          .where("id", "=", input.connectionId)
-          .execute();
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.computer-app.blocked",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({}),
-            requestId: input.requestId,
-            targetId: input.connectionId,
-            targetType: "integration-connection",
-          })
-          .execute();
-        return mutation;
-      }),
-    );
-  }
-
-  async revokeComputerConnection(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-    readonly requestId: string;
-  }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
-      administrationCommand(transaction, input.administration, async () => {
-        const named = await transaction
-          .selectFrom("integrationConnections")
-          .select(computerConnectionDeviceId.as("deviceId"))
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("connectionKind", "=", "computer")
-          .executeTakeFirst();
-        if (named?.deviceId) {
-          await lockComputerApprovalScopeInTransaction(transaction, { deviceId: named.deviceId });
-        }
-        const mutation = await revokeComputerConnectionsInTransaction(transaction, {
-          connectionId: input.connectionId,
-          ownerUserId: input.ownerUserId,
-        });
-        if (mutation.connectionIds.length === 0) {
-          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-        }
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.computer-connection.revoked",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({ cancelledRequests: mutation.cancelledRequestIds.length }),
-            requestId: input.requestId,
-            targetId: input.connectionId,
-            targetType: "integration-connection",
-          })
-          .executeTakeFirstOrThrow();
-        return mutation;
-      }),
-    );
-  }
-
-  async getDeviceComputerConnectionForCall(input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-  }): Promise<{
-    readonly access: IntegrationAccess;
-    readonly connection: IntegrationConnectionSummary;
-    readonly deviceId: DeviceId;
-    readonly deviceName: string;
-    readonly runnerName: string;
-    readonly deviceProfile: "iphone" | null;
-    readonly runnerRevoked: boolean;
-  } | null> {
-    const row = await this.database
-      .selectFrom("integrationConnections")
-      .innerJoin("devices", (join) => join.on("devices.id", "=", computerConnectionDeviceId))
-      .leftJoin("deviceDrivers", (join) =>
-        join
-          .onRef("deviceDrivers.deviceId", "=", "devices.id")
-          .on("deviceDrivers.role", "=", "self")
-          .on("deviceDrivers.detachedAt", "is", null),
-      )
-      .leftJoin("runners", "runners.id", "deviceDrivers.runnerId")
-      .selectAll("integrationConnections")
-      .select(computerConnectionDeviceId.as("deviceId"))
-      .select([
-        "devices.name as runnerName",
-        "runners.deviceProfile",
-        "devices.removedAt as runnerRevokedAt",
-      ])
-      .where("integrationConnections.id", "=", input.connectionId)
-      .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-      .where("integrationConnections.connectionKind", "=", "computer")
-      .where("integrationConnections.status", "!=", "revoked")
-      .executeTakeFirst();
-    if (!row?.deviceId || !row.computerAccess || row.computerBlockedAt !== null) return null;
-    return {
-      access: row.computerAccess,
-      connection: integrationConnectionFromRow(row),
-      deviceId: row.deviceId,
-      deviceName: row.runnerName,
-      runnerName: row.runnerName,
-      deviceProfile: row.deviceProfile,
-      runnerRevoked: row.runnerRevokedAt !== null,
-    };
-  }
-
-  async getMcpOAuthServer(input: {
-    readonly requestId: RequestId;
-    readonly ownerUserId: UserId;
-    readonly serverId: IntegrationServerId;
-  }): Promise<McpOAuthServerContext> {
-    const row = await this.database
-      .selectFrom("integrationServers")
-      .innerJoin(
-        "integrationInstallations",
-        "integrationInstallations.id",
-        "integrationServers.installationId",
-      )
-      .innerJoin(
-        "integrationRequestDetails",
-        "integrationRequestDetails.installationId",
-        "integrationInstallations.id",
-      )
-      .innerJoin("requests", "requests.id", "integrationRequestDetails.requestId")
-      .selectAll("integrationServers")
-      .select([
-        "integrationRequestDetails.requestedConnectionId as requestedConnectionId",
-        "integrationInstallations.createdAt as joinedCreatedAt",
-        "integrationInstallations.description as joinedDescription",
-        "integrationInstallations.id as joinedInstallationId",
-        "integrationInstallations.manifest as joinedManifest",
-        "integrationInstallations.name as joinedName",
-        "integrationInstallations.provenance as joinedProvenance",
-        "integrationInstallations.revision as joinedRevision",
-        "integrationInstallations.sourceKind as joinedSourceKind",
-        "integrationInstallations.status as joinedInstallationStatus",
-        "integrationInstallations.title as joinedTitle",
-        "integrationInstallations.trust as joinedTrust",
-        "integrationInstallations.updatedAt as joinedUpdatedAt",
-        "integrationInstallations.version as joinedVersion",
-      ])
-      .where("integrationServers.id", "=", input.serverId)
-      .where("requests.id", "=", input.requestId)
-      .where("requests.kind", "=", "integration.access")
-      .where("integrationRequestDetails.requestedServerId", "=", input.serverId)
-      .where("requests.requestedBy", "=", input.ownerUserId)
-      .where("requests.status", "=", "pending")
-      .where("integrationInstallations.status", "=", "active")
-      .executeTakeFirst();
-    if (
-      !row ||
-      IntegrationConnectionRequirementSchema.parse(row.connectionRequirement).kind !== "mcp-oauth"
-    ) {
-      throw new OpensteerError({ code: "not_found", message: "MCP OAuth server is unavailable" });
-    }
-    const server = serverFromJoinedRow(row);
-    if (server.transport.type !== "streamable-http") {
-      throw new OpensteerError({ code: "conflict", message: "MCP OAuth requires Streamable HTTP" });
-    }
-    if (!row.requestedConnectionId) return { installation: installationFromJoinedRow(row), server };
-    const reconnect = await this.database
-      .selectFrom("integrationConnections")
-      .innerJoin(
-        "mcpOAuthCredentials",
-        "mcpOAuthCredentials.connectionId",
-        "integrationConnections.id",
-      )
-      .select(["integrationConnections.id as connectionId", "mcpOAuthCredentials.revision"])
-      .where("integrationConnections.id", "=", row.requestedConnectionId)
-      .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-      .where("integrationConnections.integrationServerId", "=", input.serverId)
-      .where("integrationConnections.connectionKind", "=", "mcp-oauth")
-      .where("integrationConnections.status", "=", "needs-attention")
-      .executeTakeFirst();
-    if (!reconnect)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "MCP account is no longer available to reconnect",
-      });
-    return { installation: installationFromJoinedRow(row), server, reconnect };
-  }
-
-  async completeMcpOAuthAttempt(input: {
-    readonly accountBinding?: IntegrationOAuthAccountBinding;
-    readonly attemptId: McpOAuthAttemptId;
-    readonly connectionId: IntegrationConnectionId;
-    readonly displayName: string;
-    readonly encryptedState: Buffer;
-    readonly encryptionKeyVersion: number;
-    readonly ownerUserId: UserId;
-    readonly reconnect?: { readonly expectedRevision: number; readonly requestId: RequestId };
-    readonly serverId: IntegrationServerId;
-    readonly tools: readonly IntegrationToolMaterial[];
-  }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) => {
-      if (input.accountBinding)
-        await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
-      await transaction
-        .selectFrom("integrationServers")
-        .select("id")
-        .where("id", "=", input.serverId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      const attempt = await transaction
-        .selectFrom("integrationAuthAttempts")
-        .select("id")
-        .where("id", "=", input.attemptId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("flow", "=", "mcp-oauth")
-        .where("status", "=", "claimed")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!attempt) throw forbidden("MCP OAuth attempt is no longer active");
-      const now = new Date();
-      if (input.reconnect) {
-        const connection = await transaction
-          .selectFrom("integrationConnections")
-          .select("id")
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("integrationServerId", "=", input.serverId)
-          .where("connectionKind", "=", "mcp-oauth")
-          .where("status", "=", "needs-attention")
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        const request = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .select("requests.id")
-          .where("requests.id", "=", input.reconnect.requestId)
-          .where("requests.requestedBy", "=", input.ownerUserId)
-          .where("requests.status", "=", "pending")
-          .where("integrationRequestDetails.requestedConnectionId", "=", input.connectionId)
-          .where("integrationRequestDetails.requestedServerId", "=", input.serverId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        const credential = await transaction
-          .selectFrom("mcpOAuthCredentials")
-          .select("revision")
-          .where("connectionId", "=", input.connectionId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!connection || !request || credential?.revision !== input.reconnect.expectedRevision) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "MCP account changed while reconnecting",
-          });
-        }
-        await transaction
-          .updateTable("mcpOAuthCredentials")
-          .set({
-            encryptedState: input.encryptedState,
-            encryptionKeyVersion: input.encryptionKeyVersion,
-            revision: credential.revision + 1,
-            updatedAt: now,
-          })
-          .where("connectionId", "=", input.connectionId)
-          .executeTakeFirstOrThrow();
-        await transaction
-          .updateTable("integrationConnections")
-          .set({ status: "connected", statusDetail: null, updatedAt: now })
-          .where("id", "=", input.connectionId)
-          .executeTakeFirstOrThrow();
-      } else {
-        await transaction
-          .insertInto("integrationConnections")
-          .values({
-            accountIdentifier: null,
-            applicationSource: null,
-            authMethodId: null,
-            capabilities: jsonValue([]),
-            computerAccess: null,
-            runnerId: null,
-            connectionKind: "mcp-oauth",
-            connectionMethod: "managed-oauth",
-            credentialId: null,
-            displayName: input.displayName,
-            externalIdentityId: null,
-            externalTenantId: null,
-            grantedScopes: jsonValue([]),
-            id: input.connectionId,
-            integrationDefinitionId: null,
-            integrationServerId: input.serverId,
-            ownerUserId: input.ownerUserId,
-            provider: `mcp:${input.serverId}`,
-            providerApplicationId: null,
-            status: "connected",
-            statusDetail: null,
-            transportKind: null,
-            updatedAt: now,
-          })
-          .executeTakeFirstOrThrow();
-        await transaction
-          .insertInto("mcpOAuthCredentials")
-          .values({
-            connectionId: input.connectionId,
-            encryptedState: input.encryptedState,
-            encryptionKeyVersion: input.encryptionKeyVersion,
-            revision: 1,
-            updatedAt: now,
-          })
-          .executeTakeFirstOrThrow();
-      }
-      await upsertConnectionTools(
-        transaction,
-        input.serverId,
-        input.connectionId,
-        { definitions: {}, tools: input.tools },
-        now,
-      );
-      await transaction
-        .updateTable("integrationServers")
-        .set({ status: "active", statusDetail: null, updatedAt: now })
-        .where("id", "=", input.serverId)
-        .executeTakeFirstOrThrow();
-      await transaction
-        .updateTable("integrationAuthAttempts")
-        .set({
-          completedAt: now,
-          encryptedPayload: erasedIntegrationAuthAttemptPayload,
-          resultConnectionId: input.connectionId,
-          status: "completed",
-        })
-        .where("id", "=", input.attemptId)
-        .executeTakeFirstOrThrow();
-      if (input.accountBinding)
-        await requireIntegrationAccountBinding(
-          transaction,
-          input.ownerUserId,
-          input.accountBinding,
-        );
-    });
-  }
-
-  async getMcpOAuthConnection(input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-    readonly serverId: IntegrationServerId;
-  }): Promise<McpOAuthConnectionRecord | null> {
-    const row = await this.database
-      .selectFrom("integrationConnections")
-      .innerJoin(
-        "mcpOAuthCredentials",
-        "mcpOAuthCredentials.connectionId",
-        "integrationConnections.id",
-      )
-      .innerJoin(
-        "integrationServers",
-        "integrationServers.id",
-        "integrationConnections.integrationServerId",
-      )
-      .innerJoin(
-        "integrationInstallations",
-        "integrationInstallations.id",
-        "integrationServers.installationId",
-      )
-      .select([
-        "integrationConnections.displayName",
-        "integrationConnections.id as connectionId",
-        "integrationConnections.ownerUserId",
-        "mcpOAuthCredentials.encryptedState",
-        "mcpOAuthCredentials.encryptionKeyVersion",
-        "mcpOAuthCredentials.revision",
-      ])
-      .selectAll("integrationServers")
-      .select([
-        "integrationInstallations.createdAt as joinedCreatedAt",
-        "integrationInstallations.description as joinedDescription",
-        "integrationInstallations.id as joinedInstallationId",
-        "integrationInstallations.manifest as joinedManifest",
-        "integrationInstallations.name as joinedName",
-        "integrationInstallations.provenance as joinedProvenance",
-        "integrationInstallations.revision as joinedRevision",
-        "integrationInstallations.sourceKind as joinedSourceKind",
-        "integrationInstallations.status as joinedInstallationStatus",
-        "integrationInstallations.title as joinedTitle",
-        "integrationInstallations.trust as joinedTrust",
-        "integrationInstallations.updatedAt as joinedUpdatedAt",
-        "integrationInstallations.version as joinedVersion",
-      ])
-      .where("integrationConnections.id", "=", input.connectionId)
-      .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-      .where("integrationConnections.integrationServerId", "=", input.serverId)
-      .where("integrationConnections.connectionKind", "=", "mcp-oauth")
-      .where("integrationConnections.status", "=", "connected")
-      .executeTakeFirst();
-    return row
-      ? {
-          connectionId: row.connectionId,
-          displayName: row.displayName,
-          encryptedState: row.encryptedState,
-          encryptionKeyVersion: row.encryptionKeyVersion,
-          installation: installationFromJoinedRow(row),
-          ownerUserId: row.ownerUserId,
-          revision: row.revision,
-          server: serverFromJoinedRow(row),
-        }
-      : null;
-  }
-
-  async replaceMcpOAuthCredential(input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly encryptedState: Buffer;
-    readonly encryptionKeyVersion: number;
-    readonly expectedRevision: number;
-  }): Promise<boolean> {
-    const result = await this.database
-      .updateTable("mcpOAuthCredentials")
-      .set({
-        encryptedState: input.encryptedState,
-        encryptionKeyVersion: input.encryptionKeyVersion,
-        revision: input.expectedRevision + 1,
-        updatedAt: new Date(),
-      })
-      .where("connectionId", "=", input.connectionId)
-      .where("revision", "=", input.expectedRevision)
-      .executeTakeFirst();
-    return Number(result.numUpdatedRows) === 1;
-  }
-
-  async listMcpOAuthConnections(ownerUserId: UserId): Promise<
-    readonly {
-      readonly accountIdentifier: string | null;
-      readonly connectionId: IntegrationConnectionId;
-      readonly createdAt: string;
-      readonly displayName: string;
-      readonly installationId: IntegrationInstallationId;
-      readonly serverId: IntegrationServerId;
-      readonly status: "connected" | "needs-attention" | "revoked";
-      readonly updatedAt: string;
-    }[]
-  > {
-    const rows = await this.database
-      .selectFrom("integrationConnections")
-      .innerJoin(
-        "integrationServers",
-        "integrationServers.id",
-        "integrationConnections.integrationServerId",
-      )
-      .select([
-        "integrationConnections.accountIdentifier",
-        "integrationConnections.createdAt",
-        "integrationConnections.displayName",
-        "integrationConnections.id as connectionId",
-        "integrationConnections.status",
-        "integrationConnections.updatedAt",
-        "integrationServers.id as serverId",
-        "integrationServers.installationId",
-      ])
-      .where("integrationConnections.ownerUserId", "=", ownerUserId)
-      .where("integrationConnections.connectionKind", "=", "mcp-oauth")
-      .orderBy("integrationConnections.updatedAt", "desc")
-      .execute();
-    return rows.map((row) => ({
-      ...row,
-      createdAt: row.createdAt.toISOString(),
-      status: row.status === "paused" || row.status === "pending" ? "needs-attention" : row.status,
-      updatedAt: row.updatedAt.toISOString(),
-    }));
-  }
-
-  async revokeMcpOAuthConnection(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly connectionId: IntegrationConnectionId;
-    readonly ownerUserId: UserId;
-    readonly requestId: string;
-  }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) =>
-      administrationCommand(transaction, input.administration, async () => {
-        const now = new Date();
-        const connection = await transaction
-          .updateTable("integrationConnections")
-          .set({ status: "revoked", statusDetail: null, updatedAt: now })
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("connectionKind", "=", "mcp-oauth")
-          .where("status", "!=", "revoked")
-          .returning(["id", "integrationServerId"])
-          .executeTakeFirst();
-        if (!connection) {
-          throw new OpensteerError({ code: "not_found", message: "MCP account not found" });
-        }
-        await transaction
-          .updateTable("integrationTools")
-          .set({ status: "disabled", updatedAt: now })
-          .where("connectionId", "=", connection.id)
-          .execute();
-        await transaction
-          .updateTable("integrationGrants")
-          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
-          .where("connectionId", "=", connection.id)
-          .where("revokedAt", "is", null)
-          .execute();
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.mcp-connection.revoked",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({ serverId: connection.integrationServerId }),
-            requestId: input.requestId,
-            targetId: connection.id,
-            targetType: "integration-connection",
-          })
-          .executeTakeFirstOrThrow();
-      }),
-    );
-  }
-
-  async markMcpOAuthConnectionNeedsAttention(input: {
-    readonly connectionId: IntegrationConnectionId;
-    readonly expectedRevision: number;
-    readonly ownerUserId: UserId;
-    readonly statusDetail: string;
-  }): Promise<boolean> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      const current = await transaction
-        .selectFrom("integrationConnections")
-        .select("id")
-        .where("id", "=", input.connectionId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("connectionKind", "=", "mcp-oauth")
-        .where("status", "=", "connected")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!current) return false;
-      const credential = await transaction
-        .selectFrom("mcpOAuthCredentials")
-        .select("revision")
-        .where("connectionId", "=", input.connectionId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (credential?.revision !== input.expectedRevision) return false;
-      const now = new Date();
-      const connection = await transaction
-        .updateTable("integrationConnections")
-        .set({ status: "needs-attention", statusDetail: input.statusDetail, updatedAt: now })
-        .where("id", "=", input.connectionId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("connectionKind", "=", "mcp-oauth")
-        .where("status", "!=", "revoked")
-        .returning("id")
-        .executeTakeFirst();
-      return !!connection;
-    });
-  }
 }
 
 export type { CreateIntegrationGrantInput } from "./integration-grant-write.js";
@@ -3271,22 +1466,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         .orderBy("id", "asc")
         .forShare()
         .execute();
-      if (input.connectionId) {
-        const connection = await transaction
+      if (input.connectionId)
+        await transaction
           .selectFrom("integrationConnections")
-          .select("providerApplicationId")
+          .select("id")
           .where("id", "=", input.connectionId)
           .forShare()
           .executeTakeFirst();
-        if (connection?.providerApplicationId) {
-          await transaction
-            .selectFrom("integrationProviderApplications")
-            .select("id")
-            .where("id", "=", connection.providerApplicationId)
-            .forShare()
-            .execute();
-        }
-      }
       return this.createGrantInTransaction(transaction, input);
     });
   }
@@ -3315,12 +1501,11 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     readonly connectionId: IntegrationConnectionId;
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestedServerId: IntegrationServerId | null;
   }): Promise<boolean> {
     const requestedServerId = input.requestedServerId;
     const [{ connections }, servers] = await Promise.all([
-      this.authoritySnapshot(input.ownerUserId, input.providerAuthorizations),
+      this.authoritySnapshot(input.ownerUserId),
       this.database
         .selectFrom("integrationServers")
         .innerJoin(
@@ -3339,19 +1524,14 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     ]);
     const connection = connections.find(({ id }) => id === input.connectionId);
     if (!connection) return false;
-    return servers.some((server) => {
-      const connectionRequirement = IntegrationConnectionRequirementSchema.parse(
-        server.connectionRequirement,
-      );
-      return (
-        connectionRequirement.kind !== "none" &&
-        isIntegrationConnectionEligible({
-          connection,
-          connectionRequirement,
-          serverId: server.id,
-        })
-      );
-    });
+    return servers.some((server) =>
+      isIntegrationConnectionEligible({
+        connection,
+        connectionRequirement: IntegrationConnectionRequirementSchema.parse(
+          server.connectionRequirement,
+        ),
+      }),
+    );
   }
 
   async revokeGrant(input: {
@@ -3395,15 +1575,8 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   }
 
   async listCallableTools(
-    input: IntegrationRequester & {
-      readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    },
+    input: IntegrationRequester,
   ): Promise<readonly CallableIntegrationTool[]> {
-    const authorityFingerprint = JSON.stringify(
-      Object.entries(input.providerAuthorizations).sort(([left], [right]) =>
-        left.localeCompare(right),
-      ),
-    );
     const authority = await resolveResourceAccess(this.database, input);
     const permitted = (tools: readonly CallableIntegrationTool[]) =>
       tools.filter(
@@ -3411,42 +1584,17 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
           authority.runAccess === "read-write" ||
           integrationToolEffect(tool.tool.annotations) === "read",
       );
-    const scope = {
-      authorityFingerprint,
-      ownerUserId: input.ownerUserId,
-    };
+    const scope = { ownerUserId: input.ownerUserId };
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);
       const cached = this.#callableToolsCache.get({ ...scope, generation });
-      if (cached) return (await this.specialistTurnedOff(input)) ? [] : permitted(cached);
+      if (cached) return permitted(cached);
       const resolved = await this.resolveCallableTools(input);
       const verifiedGeneration = await this.authorityGeneration(input.ownerUserId);
       if (verifiedGeneration !== generation) continue;
       this.#callableToolsCache.set({ ...scope, generation }, resolved);
-      return (await this.specialistTurnedOff(input)) ? [] : permitted(resolved);
+      return permitted(resolved);
     }
-  }
-
-  async getToolInvocation(toolId: IntegrationToolId): Promise<IntegrationToolInvocation | null> {
-    const row = await this.database
-      .selectFrom("integrationTools")
-      .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
-      .innerJoin(
-        "integrationInstallations",
-        "integrationInstallations.id",
-        "integrationServers.installationId",
-      )
-      .select([
-        "integrationInstallations.adapterSnapshot",
-        "integrationInstallations.revision as installationRevision",
-        "integrationServers.toolGeneration",
-        "integrationTools.schemaDigest",
-        "integrationTools.status",
-        "integrationTools.target",
-      ])
-      .where("integrationTools.id", "=", toolId)
-      .executeTakeFirst();
-    return row ?? null;
   }
 
   async getToolSchemas(toolId: IntegrationToolId): Promise<IntegrationToolSchemas | null> {
@@ -3495,7 +1643,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
 
   private async resolveCallableTools(input: {
     readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
   }): Promise<readonly CallableIntegrationTool[]> {
     const grants = await this.listGrants(input);
     const activeGrants = grants.filter(({ status }) => status === "active");
@@ -3542,50 +1689,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       .orderBy("integrationServers.name", "asc")
       .orderBy("integrationTools.name", "asc")
       .execute();
-    const { connections } = await this.authoritySnapshot(
-      input.ownerUserId,
-      input.providerAuthorizations,
-    );
-    const settings = await this.database
-      .selectFrom("pluginOwnerSettings")
-      .selectAll()
-      .where("ownerUserId", "=", input.ownerUserId)
-      .execute();
-    const denied = settings.filter((s) => !s.enabled);
-    const blockedDefinitions = new Set(
-      denied.flatMap((s) =>
-        s.target.kind === "service" || s.target.kind === "device-app"
-          ? [s.target.definitionId]
-          : [],
-      ),
-    );
-    const blockedConnections = blockedDefinitions.size
-      ? await this.database
-          .selectFrom("integrationConnections")
-          .select("id")
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("integrationDefinitionId", "in", [...blockedDefinitions])
-          .execute()
-      : [];
-    const blockedConnectionIds = new Set(blockedConnections.map((c) => c.id));
-    const blockedPackages = new Set(
-      denied.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
-    );
-    const blockedInstallations = blockedPackages.size
-      ? await this.database
-          .selectFrom("integrationInstallations")
-          .select("id")
-          .where("pluginId", "in", [...blockedPackages])
-          .execute()
-      : [];
-    const blockedIds = new Set(blockedInstallations.map((i) => i.id));
-
+    const { connections } = await this.authoritySnapshot(input.ownerUserId);
     const byId = new Map(rows.map((row) => [row.id, row]));
     const installationById = new Map(
       rows.map((row) => [row.joinedInstallationId, installationFromCallableToolRow(row)]),
     );
     const resolved = resolveEffectiveGrants({
-      connections: connections.filter((c) => !blockedConnectionIds.has(c.id)),
+      connections,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
       storedGrants: grants,
@@ -3598,16 +1708,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         serverStatus: row.joinedServerStatus,
       })),
     });
-    return resolved.tools
-      .filter(({ tool }) => {
-        const installationId = byId.get(tool.id)!.joinedInstallationId;
-        const installation = installationById.get(installationId)!;
-        return (
-          !blockedIds.has(installationId) &&
-          !blockedDefinitions.has(installationDefinitionId(installation))
-        );
-      })
-      .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
+    return resolved.tools.map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
 }
 
@@ -3636,11 +1737,11 @@ type CallableToolJoinedRow = IntegrationToolListingRow & {
   readonly joinedTransport: unknown;
 };
 
-function validateAdapterInstallation(input: {
-  readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
+/** A computer app's installation names exactly one computer server for its own definition. */
+function validateInstallation(input: {
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
   readonly servers: readonly DiscoveredIntegrationServer[];
-}): IntegrationAdapterSnapshot | null {
+}): void {
   const computerServers = input.servers.filter(({ transport }) => transport.type === "computer");
   const computerRequirementServers = input.servers.filter(({ connectionRequirement }) => {
     const parsed = IntegrationConnectionRequirementSchema.safeParse(connectionRequirement);
@@ -3659,9 +1760,6 @@ function validateAdapterInstallation(input: {
         "A computer server requires one verified computer app definition",
       );
     }
-    if (input.adapterSnapshot !== null) {
-      throw invalidAdapterInstallation("A computer app cannot store an adapter snapshot");
-    }
     if (input.servers.length !== 1 || computerServers.length !== 1) {
       throw invalidAdapterInstallation("A computer app requires exactly one computer server");
     }
@@ -3678,55 +1776,7 @@ function validateAdapterInstallation(input: {
     if (server.catalog.tools.length !== 0) {
       throw invalidAdapterInstallation("A computer server cannot carry server-level tools");
     }
-    return null;
   }
-  const adapterServers = input.servers.filter(({ transport }) => transport.type === "adapter");
-  if (adapterServers.length === 0) {
-    if (input.adapterSnapshot !== null) {
-      throw invalidAdapterInstallation(
-        "A non-adapter installation cannot store an adapter snapshot",
-      );
-    }
-    return null;
-  }
-
-  let definition: IntegrationDefinitionSummary;
-  try {
-    definition = IntegrationDefinitionSummarySchema.parse(input.installation.manifest.definition);
-  } catch (cause) {
-    throw invalidAdapterInstallation(
-      "An adapter installation requires one verified public definition",
-      cause,
-    );
-  }
-  for (const server of adapterServers) {
-    if (
-      server.transport.type !== "adapter" ||
-      server.transport.adapter !== definition.adapter ||
-      server.transport.definitionId !== definition.id
-    ) {
-      throw invalidAdapterInstallation(
-        "Every adapter server must match its installation definition",
-      );
-    }
-  }
-
-  if (input.adapterSnapshot === null) {
-    if (adapterServers.some(({ status }) => status === "active")) {
-      throw invalidAdapterInstallation("An active adapter server requires a runtime snapshot");
-    }
-    return null;
-  }
-  let snapshot;
-  try {
-    snapshot = IntegrationAdapterSnapshotSchema.parse(input.adapterSnapshot);
-  } catch (cause) {
-    throw invalidAdapterInstallation("The adapter runtime snapshot is invalid", cause);
-  }
-  if (snapshot.adapter !== definition.adapter || snapshot.definitionId !== definition.id) {
-    throw invalidAdapterInstallation("The adapter runtime snapshot does not match its definition");
-  }
-  return snapshot;
 }
 
 function invalidAdapterInstallation(message: string, cause?: unknown): OpensteerError {
@@ -3779,38 +1829,6 @@ function installationFromCallableToolRow(row: CallableToolJoinedRow): Integratio
  * host-private snapshot supplies that half, and the two together are the same definition shape the
  * static catalog exposes.
  */
-export function installedIntegrationDefinition(row: {
-  readonly adapterSnapshot: unknown;
-  readonly manifest: Readonly<Record<string, unknown>>;
-}): IntegrationDefinition {
-  let summary: IntegrationDefinitionSummary;
-  try {
-    summary = IntegrationDefinitionSummarySchema.parse(row.manifest.definition);
-  } catch (cause) {
-    throw invalidAdapterInstallation(
-      "The installation stores no verified public definition",
-      cause,
-    );
-  }
-  if (row.adapterSnapshot === null || row.adapterSnapshot === undefined) {
-    throw invalidAdapterInstallation(
-      `Installed integration ${summary.id} stores no adapter configuration, so its definition cannot be resolved`,
-    );
-  }
-  let snapshot: IntegrationAdapterSnapshot;
-  try {
-    snapshot = IntegrationAdapterSnapshotSchema.parse(row.adapterSnapshot);
-  } catch (cause) {
-    throw invalidAdapterInstallation("The adapter runtime snapshot is invalid", cause);
-  }
-  if (snapshot.definitionId !== summary.id || snapshot.adapter !== summary.adapter) {
-    throw invalidAdapterInstallation("The adapter runtime snapshot does not match its definition");
-  }
-  const { apiKey, ...definition } = summary;
-  void apiKey;
-  return IntegrationDefinitionSchema.parse({ ...definition, config: snapshot.config });
-}
-
 function installationFromRow(
   row: Selectable<IntegrationInstallationTable>,
 ): IntegrationInstallation {
@@ -3858,642 +1876,6 @@ function toolFromRow(row: IntegrationToolListingRow): IntegrationTool {
     status: row.status,
     title: row.title,
   });
-}
-
-interface JoinedServerRow {
-  readonly connectionRequirement: Readonly<Record<string, unknown>>;
-  readonly createdAt: Date;
-  readonly id: IntegrationServerId;
-  readonly installationId: IntegrationInstallationId;
-  readonly joinedCreatedAt: Date;
-  readonly joinedDescription: string;
-  readonly joinedInstallationId: IntegrationInstallationId;
-  readonly joinedInstallationStatus: IntegrationInstallation["status"];
-  readonly joinedManifest: Readonly<Record<string, unknown>>;
-  readonly joinedName: string;
-  readonly joinedProvenance: Readonly<Record<string, unknown>>;
-  readonly joinedRevision: number;
-  readonly joinedSourceKind: IntegrationInstallation["sourceKind"];
-  readonly joinedTitle: string;
-  readonly joinedTrust: IntegrationInstallation["trust"];
-  readonly joinedUpdatedAt: Date;
-  readonly joinedVersion: string | null;
-  readonly name: string;
-  readonly status: IntegrationServer["status"];
-  readonly statusDetail: string | null;
-  readonly toolGeneration: number;
-  readonly transport: Readonly<Record<string, unknown>>;
-  readonly updatedAt: Date;
-}
-
-function installationFromJoinedRow(row: JoinedServerRow): IntegrationInstallation {
-  return IntegrationInstallationSchema.parse({
-    createdAt: row.joinedCreatedAt.toISOString(),
-    description: row.joinedDescription,
-    id: row.joinedInstallationId,
-    manifest: row.joinedManifest,
-    name: row.joinedName,
-    provenance: row.joinedProvenance,
-    revision: row.joinedRevision,
-    sourceKind: row.joinedSourceKind,
-    status: row.joinedInstallationStatus,
-    title: row.joinedTitle,
-    trust: row.joinedTrust,
-    updatedAt: row.joinedUpdatedAt.toISOString(),
-    version: row.joinedVersion,
-  });
-}
-
-function serverFromJoinedRow(row: JoinedServerRow): IntegrationServer {
-  return IntegrationServerSchema.parse({
-    connectionRequirement: row.connectionRequirement,
-    id: row.id,
-    installationId: row.installationId,
-    name: row.name,
-    status: row.status,
-    statusDetail: row.statusDetail,
-    toolGeneration: row.toolGeneration,
-    transport: row.transport,
-    updatedAt: row.updatedAt.toISOString(),
-  });
-}
-
-export type AutomaticComputerAppApprovalInput = Omit<
-  SetComputerConnectionInput,
-  "setupRequestId" | "createIfMissing"
-> & {};
-
-interface LockedComputer {
-  readonly id: DeviceId;
-  readonly name: string;
-}
-
-/** The computer's fence, taken after deployment events, and the owner check under it. */
-async function lockComputerOwnerInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly actorUserId: UserId;
-    readonly deviceId: DeviceId;
-  },
-): Promise<LockedComputer> {
-  const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-    deviceId: input.deviceId,
-  });
-  if (runner.removedAt !== null) {
-    throw new OpensteerError({ code: "not_found", message: "Computer not found" });
-  }
-  const ownership = await deviceOwnershipIn(transaction, runner.id);
-  if (ownership?.effectiveOwner !== input.actorUserId) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Only the person who added this computer can turn its apps on.",
-    });
-  }
-  return runner;
-}
-
-/** Where a computer app's connection lives, and the row it has now, locked. */
-interface ComputerConnectionTarget {
-  readonly current: Selectable<IntegrationConnectionTable> | undefined;
-  readonly definition: IntegrationDefinitionSummary;
-  readonly installed: {
-    readonly installationId: IntegrationInstallationId;
-    readonly serverId: IntegrationServerId;
-    readonly toolGeneration: number;
-  };
-  readonly scope: ComputerAppScope;
-}
-
-async function computerConnectionTargetInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly app: ComputerAppIdentity | null;
-    readonly definitionId: string;
-    readonly deviceId: DeviceId;
-  },
-): Promise<ComputerConnectionTarget> {
-  const installedRows = await transaction
-    .selectFrom("integrationInstallations")
-    .innerJoin(
-      "integrationServers",
-      "integrationServers.installationId",
-      "integrationInstallations.id",
-    )
-    .select([
-      "integrationInstallations.id as installationId",
-      "integrationInstallations.manifest",
-      "integrationInstallations.title",
-      "integrationServers.connectionRequirement",
-      "integrationServers.id as serverId",
-      "integrationServers.toolGeneration",
-      "integrationServers.transport",
-    ])
-    .where("integrationInstallations.status", "=", "active")
-    .where("integrationServers.status", "=", "active")
-    .where(
-      sql<boolean>`integration_installations.manifest -> 'definition' ->> 'id' = ${input.definitionId}`,
-    )
-    .orderBy("integrationServers.id", "asc")
-    .forNoKeyUpdate("integrationServers")
-    .execute();
-  const installed = installedRows.find((row) => {
-    const transport = IntegrationServerSchema.shape.transport.safeParse(row.transport);
-    const requirement = IntegrationConnectionRequirementSchema.safeParse(row.connectionRequirement);
-    return (
-      transport.success &&
-      transport.data.type === "computer" &&
-      transport.data.definitionId === input.definitionId &&
-      requirement.success &&
-      requirement.data.kind === "computer" &&
-      requirement.data.definitionId === input.definitionId
-    );
-  });
-  if (!installed) {
-    const known = await transaction
-      .selectFrom("integrationInstallations")
-      .select("title")
-      .where(
-        sql<boolean>`integration_installations.manifest -> 'definition' ->> 'id' = ${input.definitionId}`,
-      )
-      .orderBy("createdAt", "asc")
-      .executeTakeFirst();
-    throw new OpensteerError({
-      code: "not_found",
-      message: `${known?.title ?? input.definitionId} is not installed`,
-    });
-  }
-  const definition = IntegrationDefinitionSummarySchema.parse(installed.manifest.definition);
-  if (definition.adapter !== "computer") {
-    throw new OpensteerError({ code: "not_found", message: `${definition.name} is not installed` });
-  }
-  assertComputerAppPresence({
-    app: input.app,
-    requiresApp: definition.computerApp?.kind === "gui",
-  });
-  const device = await transaction
-    .selectFrom("devices")
-    .select("platform")
-    .where("id", "=", input.deviceId)
-    .executeTakeFirstOrThrow();
-  const selfRunnerId = await getDeviceSelfRunnerId(transaction, input.deviceId);
-  const runner = selfRunnerId
-    ? await transaction
-        .selectFrom("runners")
-        .select("moduleDescriptors")
-        .where("id", "=", selfRunnerId)
-        .executeTakeFirst()
-    : undefined;
-  const platform =
-    runner?.moduleDescriptors.integrations?.platform ??
-    (device.platform === "macos" ? "darwin" : device.platform);
-  if (
-    platform &&
-    !definition.computerApp?.platforms.includes(platform === "windows" ? "win32" : platform)
-  )
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "This app is not supported on this device.",
-    });
-  const scope = computerAppScopeOf(input);
-  const current = await transaction
-    .selectFrom("integrationConnections")
-    .selectAll()
-    .where("connectionKind", "=", "computer")
-    .where("integrationDefinitionId", "=", input.definitionId)
-    .where(computerConnectionDeviceId, "=", input.deviceId)
-    .where("computerAppKey", scope.appKey === null ? "is" : "=", scope.appKey)
-    .where("status", "!=", "revoked")
-    .forNoKeyUpdate()
-    .executeTakeFirst();
-  return {
-    current,
-    definition,
-    installed: {
-      installationId: installed.installationId,
-      serverId: installed.serverId,
-      toolGeneration: installed.toolGeneration,
-    },
-    scope,
-  };
-}
-
-function storedComputerApp(
-  row: Selectable<IntegrationConnectionTable> | undefined,
-): ComputerAppIdentity | null {
-  return row?.computerApp === null || row?.computerApp === undefined
-    ? null
-    : ComputerAppIdentitySchema.parse(row.computerApp);
-}
-
-/**
- * Consumes one owner-approved request: the only way a Mac connection is created, widened
- * or unblocked. The approval is one row, so consuming it invalidates every
- * other answer for this app — and only for this app: consuming Notes leaves
- * Calendar's approval, and the Thread waiting on it, where it was.
- */
-async function consumeComputerAppApprovalInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: SetComputerConnectionInput & {
-    readonly setupRequestId: string;
-    readonly runner: LockedComputer;
-    readonly target: ComputerConnectionTarget;
-  },
-): Promise<SetComputerConnectionResult> {
-  const { current, scope } = input.target;
-  if (!current && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
-  const widened = current?.computerAccess === "read" && input.access === "read-write";
-  if (widened && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
-  const now = new Date();
-  const pending = await transaction
-    .selectFrom("computerAppSetupRequests")
-    .selectAll()
-    .where("id", "=", input.setupRequestId)
-    .where("runnerId", "=", input.deviceId)
-    .where("ownerUserId", "=", input.actorUserId)
-    .where("definitionId", "=", input.definitionId)
-    .where("kind", "=", "app")
-    .where("access", "=", input.access)
-    .where("definitionDigest", "=", input.definitionDigest)
-    // One pending decision cannot authorize another app on the same computer.
-    .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey)
-    .where("expiresAt", ">", now)
-    // FOR UPDATE: Consuming the app approval deletes this setup request.
-    .forUpdate()
-    .executeTakeFirst();
-  const candidate = pending ? computerAppSetupRequestFromRow(pending) : null;
-  if (!candidate || !computerAppIdentitiesEqual(candidate.app, input.app)) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "This approval changed or is no longer waiting.",
-    });
-  }
-  const pendingRequest = candidate;
-  const row = await writeComputerConnectionInTransaction(transaction, {
-    access: input.access,
-    app: pendingRequest.app,
-    now,
-    ownerUserId: input.actorUserId,
-    runner: input.runner,
-    target: input.target,
-  });
-  const changed = await finishComputerConnectionChangeInTransaction(transaction, {
-    ...input,
-    actorSessionId: input.settlementSessionId,
-    recordProvenance: true,
-    connectionAccess: input.access,
-    consumedSetupRequestId: pendingRequest.id,
-    created: current === undefined,
-    now,
-    reissueWaiting: false,
-    row,
-    tools: input.tools(row.id),
-    widened,
-  });
-  return {
-    ...changed,
-    sessionReset: sessionResetFor(current, pendingRequest.app, input.access, input.target),
-  };
-}
-
-/**
- * The owner setting a phone's access, or keeping or lowering a Mac app's access.
- * A lower access leaves a wider waiting approval under a new id, so an answer
- * to the request before the reduction cannot widen the app back behind the owner's back.
- */
-async function reviseComputerConnectionInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: SetComputerConnectionInput & {
-    readonly runner: LockedComputer;
-    readonly target: ComputerConnectionTarget;
-  },
-): Promise<SetComputerConnectionResult> {
-  const { current } = input.target;
-  if (!current && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
-  const widened = current?.computerAccess === "read" && input.access === "read-write";
-  if (widened && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
-  if (
-    !isPhoneDisplayDefinitionId(input.definitionId) &&
-    (!current || widened || current.computerBlockedAt)
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Approve this access in Opensteer on the computer that provides the app.",
-    });
-  }
-  const now = new Date();
-  const app = storedComputerApp(current);
-  const row = await writeComputerConnectionInTransaction(transaction, {
-    access: input.access,
-    app,
-    now,
-    ownerUserId: input.actorUserId,
-    runner: input.runner,
-    target: input.target,
-  });
-  const changed = await finishComputerConnectionChangeInTransaction(transaction, {
-    ...input,
-    connectionAccess: input.access,
-    consumedSetupRequestId: null,
-    actorSessionId: input.settlementSessionId,
-    recordProvenance: !(current?.computerAccess === "read-write" && input.access === "read"),
-    created: current === undefined,
-    now,
-    reissueWaiting: current?.computerAccess === "read-write" && input.access === "read",
-    row,
-    tools: input.tools(row.id),
-    widened,
-  });
-  return { ...changed, sessionReset: sessionResetFor(current, app, input.access, input.target) };
-}
-
-/**
- * Approves an app under the owner's automatic policy: a new connection with
- * the asked access, or a grant on an existing one that already covers the
- * ask. It never widens or re-identifies an existing connection; that is
- * always a prompt on the Mac.
- *
- * The caller holds the Mac's row and has read the policy under that lock, so
- * the decision and this write are one.
- */
-export async function approveComputerAppAutomaticallyInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: AutomaticComputerAppApprovalInput & { readonly runner: LockedComputer },
-): Promise<SetComputerConnectionResult> {
-  const target = await computerConnectionTargetInTransaction(transaction, input);
-  const { current } = target;
-  const app = input.app;
-  if (app === null || target.definition.computerApp?.kind !== "gui") {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Automatic app approval is not enabled on this Mac.",
-    });
-  }
-  if (current?.computerBlockedAt) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: `${app.displayName} is blocked on ${input.runner.name}. The owner can unblock it from any Opensteer app.`,
-    });
-  }
-  const connectionAccess = current?.computerAccess ?? input.access;
-  if (
-    current &&
-    (!computerAppIdentitiesEqual(current.computerApp, app) ||
-      !integrationAccessCovers(connectionAccess, input.access))
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Approve this access in Opensteer on the computer that provides the app.",
-    });
-  }
-  await assertPersonalOwner(transaction, input.actorUserId);
-  const now = new Date();
-  const row = await writeComputerConnectionInTransaction(transaction, {
-    access: connectionAccess,
-    app,
-    now,
-    ownerUserId: input.actorUserId,
-    runner: input.runner,
-    target,
-  });
-  const changed = await finishComputerConnectionChangeInTransaction(transaction, {
-    ...input,
-    actorSessionId: undefined,
-    recordProvenance: false,
-    alsoGrant: { access: input.access },
-    connectionAccess,
-    consumedSetupRequestId: null,
-    created: current === undefined,
-    now,
-    reissueWaiting: false,
-    row,
-    target,
-    // An existing connection keeps the tools its own approval gave it.
-    tools: current ? null : input.tools(row.id),
-    widened: false,
-  });
-  return { ...changed, sessionReset: null };
-}
-
-async function writeComputerConnectionInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly access: IntegrationAccess;
-    readonly app: ComputerAppIdentity | null;
-    readonly now: Date;
-    readonly ownerUserId: UserId;
-    readonly runner: LockedComputer;
-    readonly target: ComputerConnectionTarget;
-  },
-): Promise<Selectable<IntegrationConnectionTable>> {
-  const { current, definition, installed, scope } = input.target;
-  const values = {
-    computerAccess: input.access,
-    computerApp: input.app === null ? null : jsonValue(input.app),
-    computerAppKey: scope.appKey,
-    computerBlockedAt: null,
-    displayName:
-      input.app === null ? input.runner.name : `${input.app.displayName} on ${input.runner.name}`,
-    integrationServerId: installed.serverId,
-    provider: definition.provider,
-    status: "connected" as const,
-    statusDetail: null,
-    updatedAt: input.now,
-  };
-  if (current) {
-    return transaction
-      .updateTable("integrationConnections")
-      .set(values)
-      .where("id", "=", current.id)
-      .where("connectionKind", "=", "computer")
-      .returningAll()
-      .executeTakeFirstOrThrow();
-  }
-  return transaction
-    .insertInto("integrationConnections")
-    .values({
-      ...values,
-      accountIdentifier: null,
-      applicationSource: null,
-      authMethodId: "computer",
-      authorizationDigest: null,
-      capabilities: jsonValue([]),
-      connectionKind: "computer",
-      connectionMethod: "computer",
-      credentialId: null,
-      externalIdentityId: null,
-      externalTenantId: null,
-      grantedScopes: jsonValue([]),
-      id: createIntegrationId("connection"),
-      integrationDefinitionId: scope.definitionId,
-      ownerUserId: input.ownerUserId,
-      providerApplicationId: null,
-      deviceId: scope.deviceId,
-      runnerId: await getDeviceSelfRunnerId(transaction, scope.deviceId),
-      transportKind: null,
-    })
-    .returningAll()
-    .executeTakeFirstOrThrow();
-}
-
-/**
- * Everything a connection change owes after its row is written: the tools
- * its access exposes, the generation bump that makes callers re-read them,
- * the personal Requests it satisfies, the `computer.app.access` Requests it
- * answers, and the audit record — one transaction, exactly as an
- * `integration.access` answer is.
- */
-async function finishComputerConnectionChangeInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly actorSessionId: string | undefined;
-    readonly recordProvenance: boolean;
-    readonly access: IntegrationAccess;
-    readonly actorUserId: UserId;
-    readonly alsoGrant?: { readonly access: IntegrationAccess };
-    readonly connectionAccess: IntegrationAccess;
-    readonly consumedSetupRequestId: string | null;
-    readonly created: boolean;
-    readonly definitionDigest: string;
-    readonly definitionId: string;
-    readonly now: Date;
-    readonly reissueWaiting: boolean;
-    readonly requestId: string;
-    readonly row: Selectable<IntegrationConnectionTable>;
-    readonly target: ComputerConnectionTarget;
-    /** Null keeps the tools the connection already has. */
-    readonly tools: readonly IntegrationToolMaterial[] | null;
-    readonly widened: boolean;
-  },
-): Promise<Omit<SetComputerConnectionResult, "sessionReset">> {
-  const actor = await readRequestSettlementActor(
-    transaction,
-    input.actorUserId,
-    input.actorSessionId,
-  );
-  const settlementActor = input.recordProvenance ? actor : null;
-  const { installed, scope } = input.target;
-  const connectionId = input.row.id;
-  await transaction
-    .updateTable("integrationServers")
-    .set({ toolGeneration: installed.toolGeneration + 1, updatedAt: input.now })
-    .where("id", "=", installed.serverId)
-    .where("toolGeneration", "=", installed.toolGeneration)
-    .executeTakeFirstOrThrow();
-  const app = storedComputerApp(input.row);
-  const pendingRequests =
-    input.created || input.widened
-      ? await pendingIntegrationAccessRequests(transaction, {
-          access: input.connectionAccess,
-          connectionId,
-          installationId: installed.installationId,
-          ownerUserId: input.actorUserId,
-          serverId: installed.serverId,
-        }).execute()
-      : [];
-  // Both Request kinds settle after the widest personal grant is written.
-  const pendingAccess = pendingRequests.some(
-    ({ requestedAccess }) => requestedAccess === "read-write",
-  )
-    ? "read-write"
-    : pendingRequests.length > 0
-      ? "read"
-      : null;
-  const grantAccess =
-    input.alsoGrant?.access === "read-write" || pendingAccess === "read-write"
-      ? "read-write"
-      : (input.alsoGrant?.access ?? pendingAccess);
-  const settlement = await settleComputerAppApprovalInTransaction(transaction, {
-    settlementActor,
-    additionalRequestIds: pendingRequests.map(({ id }) => id),
-    ...(grantAccess ? { alsoGrant: { access: grantAccess } } : {}),
-    connection: {
-      access: input.connectionAccess,
-      alias: app?.displayName ?? input.row.displayName,
-      app,
-      definitionDigest: input.definitionDigest,
-      connectionId,
-      installationId: installed.installationId,
-      ownerUserId: input.actorUserId,
-    },
-    consumedSetupRequestId: input.consumedSetupRequestId,
-    reissueWaiting: input.reissueWaiting,
-    scope,
-  });
-  const pendingRequestEvents =
-    input.created || input.widened
-      ? await fulfillPendingIntegrationAccessRequestsInTransaction(transaction, {
-          settlementActor,
-          access: input.connectionAccess,
-          connectionId,
-          displayName: input.row.displayName,
-          installationId: installed.installationId,
-          ownerUserId: input.actorUserId,
-          serverId: installed.serverId,
-        })
-      : [];
-  if (input.tools !== null) {
-    await upsertConnectionTools(
-      transaction,
-      installed.serverId,
-      connectionId,
-      { definitions: {}, tools: input.tools },
-      input.now,
-      "delete",
-    );
-  }
-  await transaction
-    .insertInto("securityAudit")
-    .values({
-      action: input.created
-        ? "integration.computer-connection.created"
-        : "integration.computer-connection.updated",
-      actorSessionId: null,
-      actorUserId: input.actorUserId,
-      id: createId("securityAudit"),
-      metadata: jsonValue({
-        access: input.access,
-        ...(scope.appKey === null ? {} : { appKey: scope.appKey }),
-        definitionId: input.definitionId,
-      }),
-      requestId: input.requestId,
-      targetId: connectionId,
-      targetType: "integration-connection",
-    })
-    .executeTakeFirstOrThrow();
-  await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
-  return {
-    connection: integrationConnectionFromRow(input.row),
-    created: input.created,
-    fulfilledRequestIds: settlement.requestIds,
-    grants: settlement.grants,
-    reissuedSetupRequestId: settlement.reissuedSetupRequestId,
-    requestEvents: [...pendingRequestEvents, ...settlement.requestEvents],
-  };
-}
-
-/**
- * A session keeps the access and identity it opened with, so a lower access —
- * or, for an app, a different app on the same key — ends it. A phone's
- * session holds its whole display, which a lower access ends the same way.
- * Every other computer app has no session at all.
- */
-function sessionResetFor(
-  current: Selectable<IntegrationConnectionTable> | undefined,
-  app: ComputerAppIdentity | null,
-  access: IntegrationAccess,
-  target: ComputerConnectionTarget,
-): SetComputerConnectionResult["sessionReset"] {
-  const { scope } = target;
-  if (!current) return null;
-  const lowered = current.computerAccess === "read-write" && access === "read";
-  if (scope.appKey === null) {
-    return lowered && target.definition.computerApp?.kind === "display"
-      ? { definitionId: scope.definitionId, kind: "display", deviceId: scope.deviceId }
-      : null;
-  }
-  return lowered || !computerAppIdentitiesEqual(storedComputerApp(current), app)
-    ? { appKey: scope.appKey, kind: "app", deviceId: scope.deviceId }
-    : null;
 }
 
 async function reconcileComputerConnectionToolsInTransaction(
@@ -4584,7 +1966,7 @@ async function reconcileComputerConnectionToolsInTransaction(
   }
 }
 
-async function upsertConnectionTools(
+export async function upsertConnectionTools(
   transaction: Transaction<DatabaseSchema>,
   serverId: IntegrationServerId,
   connectionId: IntegrationConnectionId,
@@ -4788,9 +2170,6 @@ async function writeToolDefinitionsInTransaction(
     .execute();
 }
 
-const unboundOpenApiReason =
-  "Opensteer couldn’t read this integration’s API document after an update and tries again each time it starts. To use it now, uninstall it and add it again.";
-
 async function markNeedsAttentionInTransaction(
   transaction: Transaction<DatabaseSchema>,
   installationId: IntegrationInstallationId,
@@ -4836,27 +2215,8 @@ function runnerOf(transport: unknown): string | null {
     : null;
 }
 
-function forbidden(message: string): OpensteerError {
+export function forbidden(message: string): OpensteerError {
   return new OpensteerError({ code: "forbidden", message });
-}
-
-/**
- * A `gui` definition's connection is one app; every other computer app's
- * connection is the definition on the Runner. Getting this wrong either way
- * would put a row in the wrong slot of the live unique index, so it is an
- * error rather than a default.
- */
-function assertComputerAppPresence(input: {
-  readonly app: ComputerAppIdentity | null;
-  readonly requiresApp: boolean;
-}): void {
-  if (input.requiresApp === (input.app !== null)) return;
-  throw new OpensteerError({
-    code: "bad_request",
-    message: input.requiresApp
-      ? "This computer app names one app on the computer, and none was given."
-      : "This computer app is the whole app, not one app on the computer.",
-  });
 }
 
 /**
@@ -4931,17 +2291,4 @@ export async function replaceServerToolsInTransaction(
     now: input.now,
     serverId: input.serverId,
   });
-}
-
-function installationDefinitionId(installation: {
-  name: string;
-  manifest: Record<string, unknown>;
-}): string {
-  const definition = installation.manifest.definition;
-  return typeof definition === "object" &&
-    definition !== null &&
-    "id" in definition &&
-    typeof definition.id === "string"
-    ? definition.id
-    : installation.name;
 }

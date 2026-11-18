@@ -1,39 +1,31 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { startHeldRequest } from "../integrations/held-request.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 
-import {
-  RunnerAuxiliaryStreamIdSchema,
-  type ComputerUseDataGrants,
-  type ComputerUseDataInvokeParams,
-} from "@opensteer/protocol";
+import { RunnerAuxiliaryStreamIdSchema } from "@opensteer/protocol";
 
 import {
   ComputerUseBridgeError,
   createHelperAppProvider,
   type ComputerAppProvider,
-  type ComputerAppValue,
-  type HelperDataPort,
 } from "@opensteer/runner";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { isComputerAppDefinition } from "@opensteer/integration-core";
-import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
-import type { IntegrationAccess } from "@opensteer/integration-core";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
-  operation,
-  operations,
+  pluginCall,
+  pluginPath,
   requestComputerAppSetup,
   setComputerApp,
-  toolText,
-  toolBlocked,
+  contractOf,
+  grantAccess,
+  scriptedHelper,
 } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
@@ -45,7 +37,6 @@ import {
   additionalOwnerSession,
   startMachineAccessWireHost,
   waitForCondition,
-  type MachineAccessHost,
 } from "./machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -220,13 +211,13 @@ integration("computer apps", () => {
     closers.unshift(() => gateway.close());
 
     const held = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Read recent conversations",
       }),
     );
-    const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
+    const [readRequest] = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     if (!readRequest) throw new Error("The read access Request was not created");
@@ -251,20 +242,18 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
-    const readSearch = await gateway.call("integration_search", { query: "Messages" });
-    const readOperation = operation(readSearch, "query_messages");
-    expect(readOperation).toMatchObject({
-      account: "Studio Mac",
-      connectionId: enabled.connection.id,
+    const messagesNamespace = localNamespace(
+      "messages-studio-mac",
+      `app_device_${enabled.connection.id}`,
+    );
+    const queryMessages = `tools[${JSON.stringify(messagesNamespace)}].query_messages`;
+    const sendMessage = `tools[${JSON.stringify(messagesNamespace)}].send_message`;
+    expect(await pluginPath(gateway, "query_messages", "query_messages")).toBe(queryMessages);
+    expect((await pluginCall(gateway, queryMessages, { sql: "SELECT 1" })).value).toMatchObject({
+      columns: ["guid"],
+      rows: [["chat-1"]],
+      truncated: false,
     });
-    expect(toolBlocked(readSearch, "query_messages")).toBeUndefined();
-    expect(operations(readSearch).some(({ name }) => name === "send_message")).toBe(false);
-    await expect(
-      gateway.call("integration_call", {
-        arguments: { sql: "SELECT 1" },
-        ...readOperation.address,
-      }),
-    ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
 
     const writeSetup = await requestComputerAppSetup(
       host,
@@ -274,13 +263,13 @@ integration("computer apps", () => {
     );
     await setComputerApp(host, computer, writeSetup, writeSetup.id);
     const writeHeld = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read-write",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Send a message",
       }),
     );
-    const writeRequests = await host.store.requests.listPendingIntegrationAccessRequests(
+    const writeRequests = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     const writeRequest = writeRequests.find(({ access }) => access === "read-write");
@@ -306,14 +295,14 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     await expect(writeHeld.result).resolves.toMatchObject({ status: "fulfilled" });
-    const writeSearch = await gateway.call("integration_search", { query: "Messages" });
-    const sendOperation = operation(writeSearch, "send_message");
-    await expect(
-      gateway.call("integration_call", {
-        arguments: { text: "hello", to: { address: "friend@example.test" } },
-        ...sendOperation.address,
-      }),
-    ).resolves.toEqual({ accepted: true });
+    expect(
+      (
+        await pluginCall(gateway, sendMessage, {
+          text: "hello",
+          to: { address: "friend@example.test" },
+        })
+      ).value,
+    ).toEqual({ accepted: true });
     expect(provider.sent).toEqual(["hello"]);
 
     await testRpcData(
@@ -332,17 +321,17 @@ integration("computer apps", () => {
       },
       { headers: host.ownerHeaders },
     );
-    const narrowed = await gateway.callRaw("integration_call", {
-      arguments: { text: "again", to: { address: "friend@example.test" } },
-      ...sendOperation.address,
+    const narrowed = await pluginCall(gateway, sendMessage, {
+      text: "again",
+      to: { address: "friend@example.test" },
     });
-    expect(narrowed).toMatchObject({
+    expect(narrowed.raw).toMatchObject({
       isError: true,
       structuredContent: {
         error: {
           code: "access_denied",
-          message:
-            'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
+          message: "Apple Messages on Studio Mac allows reading only.",
+          next: `To send_message, call app_access_request with dataApp "messages", computerId "${computer.runnerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
         },
       },
     });
@@ -354,14 +343,10 @@ integration("computer apps", () => {
       "messages-widen-again",
     );
     await setComputerApp(host, computer, widenSetup, widenSetup.id);
-    const currentSend = operation(
-      await gateway.call("integration_search", { query: "Messages" }),
-      "send_message",
-    );
     provider.holdNextWrite();
-    const appsOffWrite = gateway.callRaw("integration_call", {
-      arguments: { text: "apps off", to: { address: "friend@example.test" } },
-      ...currentSend.address,
+    const appsOffWrite = pluginCall(gateway, sendMessage, {
+      text: "apps off",
+      to: { address: "friend@example.test" },
     });
     await withTimeout(provider.writeStarted, 3000, {
       timeoutError: () => new Error("Apps-off write was not admitted"),
@@ -385,14 +370,14 @@ integration("computer apps", () => {
         { headers: host.ownerHeaders },
       );
     await updateSwitch(false, beforeSwitch.accessPolicyRevision, "apps-off-during-write");
-    expect(toolText(await appsOffWrite)).toBe(
+    expect((await appsOffWrite).failure).toBe(
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
-    const offRefusal = await gateway.callRaw("integration_call", {
-      arguments: { text: "not admitted", to: { address: "friend@example.test" } },
-      ...currentSend.address,
+    const offRefusal = await pluginCall(gateway, sendMessage, {
+      text: "not admitted",
+      to: { address: "friend@example.test" },
     });
-    expect(offRefusal).toMatchObject({
+    expect(offRefusal.raw).toMatchObject({
       isError: true,
       structuredContent: {
         error: {
@@ -410,27 +395,33 @@ integration("computer apps", () => {
     await updateSwitch(true, beforeSwitch.accessPolicyRevision + 1, "apps-on-after-write");
 
     provider.holdNextWrite();
-    const uncertain = gateway.callRaw("integration_call", {
-      arguments: { text: "uncertain", to: { address: "friend@example.test" } },
-      ...currentSend.address,
+    const uncertain = pluginCall(gateway, sendMessage, {
+      text: "uncertain",
+      to: { address: "friend@example.test" },
     });
     await provider.writeStarted;
     await computer.disconnectModule();
-    expect(toolText(await uncertain)).toBe(
+    expect((await uncertain).failure).toBe(
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
 
-    const offline = await gateway.call("integration_search", { query: "Messages" });
-    expect(toolBlocked(offline, "query_messages")).toMatchObject({
-      code: "unavailable",
-      message:
-        "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
-      next: "Continue without it and tell the person what the message says.",
+    // Unavailable, the provider says why instead of listing tools.
+    expect(await gateway.call("plugin_search", { namespace: messagesNamespace })).toMatchObject({
+      unavailableApps: [
+        {
+          blocked: {
+            code: "unavailable",
+            message:
+              "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
+            next: "Continue without it and tell the person what the message says.",
+          },
+        },
+      ],
     });
     await computer.reconnectModule();
     await waitForCondition(async () => {
-      const searched = await gateway.call("integration_search", { query: "Messages" });
-      return toolBlocked(searched, "query_messages") === undefined;
+      const searched = await gateway.call("plugin_search", { query: "query_messages" });
+      return JSON.stringify(searched.items).includes("messages-studio-mac");
     });
 
     await testRpcData(
@@ -450,13 +441,15 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     const pendingHeld = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read-write",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Send a follow-up",
       }),
     );
-    const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+    const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+      host.ownerId,
+    );
     expect(pending).toHaveLength(1);
     await revokeMachine(host, { key: "revoke-computer-app", runnerId: computer.runnerId });
     await expect(host.store.requests.get(pending[0]!.request.id)).resolves.toMatchObject({
@@ -592,13 +585,13 @@ integration("computer apps", () => {
     const gateway = await integrationGateway(run.integrationTools);
     closers.unshift(() => gateway.close());
     const held = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Read recent conversations",
       }),
     );
-    const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
+    const [readRequest] = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     if (!readRequest) throw new Error("The Personal read access Request was not created");
@@ -623,13 +616,13 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
-    const searched = await gateway.call("integration_search", { query: "Messages" });
-    const list = operation(searched, "query_messages");
-    expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
-    expect(toolBlocked(searched, "query_messages")).toBeUndefined();
-    await expect(
-      gateway.call("integration_call", { arguments: { sql: "SELECT 1" }, ...list.address }),
-    ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
+    const queryMessages = `tools[${JSON.stringify(localNamespace("messages-studio-mac", `app_device_${enabled.connection.id}`))}].query_messages`;
+    expect(await pluginPath(gateway, "query_messages", "query_messages")).toBe(queryMessages);
+    expect((await pluginCall(gateway, queryMessages, { sql: "SELECT 1" })).value).toMatchObject({
+      columns: ["guid"],
+      rows: [["chat-1"]],
+      truncated: false,
+    });
   }, 180_000);
   /**
    * Calendar and Reminders served by the signed helper, end to end on real
@@ -693,6 +686,10 @@ integration("computer apps", () => {
         "apple-calendar",
       );
       const calendar = await setComputerApp(host, computer, calendarSetup, calendarSetup.id);
+      const calendarSlug = localNamespace(
+        "calendar-studio-mac",
+        `app_device_${calendar.connection.id}`,
+      );
       const remindersSetup = await requestComputerAppSetup(
         host,
         computer.runnerId,
@@ -701,6 +698,10 @@ integration("computer apps", () => {
         "apple-reminders",
       );
       const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
+      const remindersSlug = localNamespace(
+        "reminders-studio-mac",
+        `app_device_${reminders.connection.id}`,
+      );
 
       const run = await dispatchCallerRun(host, caller, {
         key: "helper-apps-run",
@@ -720,50 +721,59 @@ integration("computer apps", () => {
         integration: "apple-reminders",
       });
 
-      // 1. Full access not yet allowed.
-      await waitForCondition(async () => {
-        const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolBlocked(searched, "list_events")?.code === "unavailable";
-      });
-      const blocked = toolBlocked(
-        await gateway.call("integration_search", { query: "Calendar" }),
-        "list_events",
+      // 1. Full access not yet allowed: the provider says so and lists no tools.
+      const calendarNamespace = () => gateway.call("plugin_search", { namespace: calendarSlug });
+      await waitForCondition(async () =>
+        JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
+      const blocked = await calendarNamespace();
       record("calendar before its grant", blocked);
-      expect(blocked).toEqual({
-        code: "unavailable",
-        message:
-          "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
-        next: "Continue without it and tell the person what the message says.",
+      expect(blocked.items).toEqual([]);
+      expect(blocked).toMatchObject({
+        unavailableApps: [
+          {
+            blocked: {
+              code: "unavailable",
+              message:
+                "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+              next: "Continue without it and tell the person what the message says.",
+            },
+          },
+        ],
       });
 
       // 2. The person allows it on the Mac.
       helper.grants.calendars = "granted";
       helper.grants.reminders = "granted";
-      await waitForCondition(async () => {
-        const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolBlocked(searched, "list_events") === undefined;
-      });
-      const calendarSearch = await gateway.call("integration_search", { query: "Calendar" });
-      record(
-        "calendar once allowed",
-        operations(calendarSearch).map(({ name, connectionId }) => ({ name, connectionId })),
+      await waitForCondition(
+        async () => ((await calendarNamespace()).items as unknown[]).length > 0,
       );
+      const calendarSearch = await calendarNamespace();
+      record("calendar once allowed", calendarSearch.items);
 
-      // 3. Read only offers no change.
-      expect(
-        operations(calendarSearch)
-          .map(({ name }) => name)
-          .sort(),
-      ).toEqual(["list_calendars", "list_events"]);
+      // 3. Read only refuses a change before it reaches the Mac.
+      const before3 = helper.invocations.length;
+      const change = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(calendarSlug)}].create_event`,
+        {
+          end: "2026-10-01T10:00",
+          start: "2026-10-01T09:00",
+          title: "Dentist",
+        },
+      );
+      expect(change.failure).toBe("Calendar on Studio Mac allows reading only.");
+      expect(helper.invocations).toHaveLength(before3);
 
       // 4. A read, carried whole.
       const page = { events: [], nextCursor: null };
       helper.answer = () => page;
-      const listed = await gateway.call("integration_call", {
-        arguments: { end: "2026-10-07", start: "2026-10-01" },
-        ...operation(calendarSearch, "list_events").address,
-      });
+      const listed = (
+        await pluginCall(gateway, `tools[${JSON.stringify(calendarSlug)}].list_events`, {
+          end: "2026-10-07",
+          start: "2026-10-01",
+        })
+      ).value;
       record("list_events", { answer: listed, reached: helper.invocations.at(-1) });
       expect(listed).toEqual(page);
       expect(helper.invocations.at(-1)).toEqual({
@@ -777,16 +787,19 @@ integration("computer apps", () => {
 
       // 5. A malformed date stops at the Host.
       const before = helper.invocations.length;
-      const malformed = await gateway.callRaw("integration_call", {
-        arguments: { end: "next week", start: "2026-10-01" },
-        ...operation(calendarSearch, "list_events").address,
-      });
-      record("list_events with a malformed date", toolText(malformed));
-      expect(malformed.isError).toBe(true);
+      const malformed = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(calendarSlug)}].list_events`,
+        {
+          end: "next week",
+          start: "2026-10-01",
+        },
+      );
+      record("list_events with a malformed date", malformed.failure);
+      expect(malformed.raw.isError).toBe(true);
       expect(helper.invocations).toHaveLength(before);
 
       // 6. A change, with write access and its contract.
-      const remindersSearch = await gateway.call("integration_search", { query: "Reminders" });
       const created = {
         reminder: {
           completed: false,
@@ -808,12 +821,15 @@ integration("computer apps", () => {
         priority: "high",
         title: "Renew passport",
       };
-      await expect(
-        gateway.call("integration_call", {
-          arguments: createArguments,
-          ...operation(remindersSearch, "create_reminder").address,
-        }),
-      ).resolves.toEqual(created);
+      expect(
+        (
+          await pluginCall(
+            gateway,
+            `tools[${JSON.stringify(remindersSlug)}].create_reminder`,
+            createArguments,
+          )
+        ).value,
+      ).toEqual(created);
       record("create_reminder", { answer: created, reached: helper.invocations.at(-1) });
       expect(helper.invocations.at(-1)).toEqual({
         access: "read-write",
@@ -832,12 +848,16 @@ integration("computer apps", () => {
         );
       };
       const sent = helper.invocations.length;
-      const lost = await gateway.callRaw("integration_call", {
-        arguments: { completed: true, id: "R1" },
-        ...operation(remindersSearch, "update_reminder").address,
-      });
-      record("update_reminder whose answer was lost", toolText(lost));
-      expect(toolText(lost)).toBe(
+      const lost = await pluginCall(
+        gateway,
+        `tools[${JSON.stringify(remindersSlug)}].update_reminder`,
+        {
+          completed: true,
+          id: "R1",
+        },
+      );
+      record("update_reminder whose answer was lost", lost.failure);
+      expect(lost.failure).toBe(
         "Studio Mac did not confirm this. Check whether it happened before trying again.",
       );
       expect(helper.invocations).toHaveLength(sent + 1);
@@ -915,98 +935,4 @@ function fakeMessagesProvider() {
     },
   };
   return provider;
-}
-
-/**
- * The signed helper as the Runner reaches it: the grants its person allowed,
- * and each call it was sent, answered by the step that is running.
- */
-function scriptedHelper() {
-  const grants: { -readonly [K in keyof ComputerUseDataGrants]: ComputerUseDataGrants[K] } = {
-    automation: "unknown",
-    calendars: "requestable",
-    contacts: "requestable",
-    "full-disk-access": "denied",
-    reminders: "requestable",
-  };
-  const invocations: ComputerUseDataInvokeParams[] = [];
-  const script: { answer: () => ComputerAppValue } = {
-    answer: () => {
-      throw new Error("No step expects a call to the helper now");
-    },
-  };
-  const port: HelperDataPort = {
-    dataGrants: async () => ({ ...grants }),
-    dataInvoke: async (params) => {
-      invocations.push(params);
-      return script.answer();
-    },
-  };
-  return {
-    grants,
-    invocations,
-    port,
-    /** How the helper answers the calls of the step that is running. */
-    set answer(answer: () => ComputerAppValue) {
-      script.answer = answer;
-    },
-  };
-}
-
-/** The agent asks for access, and the owner fulfils it with the Mac's connection. */
-async function grantAccess(
-  host: MachineAccessHost,
-  gateway: Awaited<ReturnType<typeof integrationGateway>>,
-  input: {
-    readonly access: IntegrationAccess;
-    readonly connectionId: string;
-    readonly integration: string;
-  },
-) {
-  const held = gateway.call("integration_request", {
-    access: input.access,
-    integration: input.integration,
-    reason: `Use ${input.integration}`,
-  });
-  const request = await vi.waitFor(
-    async () => {
-      const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
-      const row = pending.at(-1);
-      expect(row, "The access Request was not created").toBeDefined();
-      return row!;
-    },
-    { timeout: 10_000 },
-  );
-  if (!request) throw new Error(`The ${input.integration} access Request was not created`);
-  await testRpcData(
-    host.origin,
-    "commands.dispatch",
-    {
-      idempotencyKey: `${input.integration}-access`,
-      requestId: request.request.id,
-      response: {
-        kind: "external",
-        value: {
-          access: input.access,
-          alias: `${input.integration} on Studio Mac`,
-          connectionId: input.connectionId,
-          decision: "fulfilled",
-          isDefault: true,
-        },
-      },
-      type: "request.respond",
-    },
-    { headers: host.ownerHeaders },
-  );
-  await expect(held).resolves.toMatchObject({ status: "fulfilled" });
-}
-
-function contractOf(definitionId: string, name: string): string {
-  const definition = computerAppIntegrations.find(({ id }) => id === definitionId);
-  const found =
-    definition && isComputerAppDefinition(definition)
-      ? definition.config.operations.find((candidate) => candidate.name === name)
-      : undefined;
-  if (!found) throw new Error(`The catalog must define ${definitionId}.${name}`);
-  return computerAppOperationContract(found);
 }

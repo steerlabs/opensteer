@@ -43,8 +43,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
  * speak the lower of their two current versions.
  */
-export const hostApiVersion = 62;
-export const minimumHostApiVersion = 60;
+export const hostApiVersion = 63;
+export const minimumHostApiVersion = 63;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
@@ -168,7 +168,7 @@ export const HostCapabilitySchema = z.enum([
   "native-oauth",
   /**
    * Account-brokered consent started from an app may finish in that app: it
-   * returns the browser's one-use proof through `integration.authorization.return`
+   * returns the browser's one-use proof through `plugin.authorization.return`
    * instead of the browser signing into the Opensteer Account.
    */
   "integration-app-finish-v1",

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   startPrivateMachineHost,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "./test-host-api-request.js";
 
 let clone: TestDatabase;

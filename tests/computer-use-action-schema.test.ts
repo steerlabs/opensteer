@@ -1,8 +1,8 @@
-import { validateJsonSchema } from "../packages/integration-adapters/src/index.js";
+import { validateJsonSchema } from "../packages/shared/src/jsonSchemaValidation.js";
 import { LoginTextSchema } from "../packages/protocol/src/password-sign-in.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { describe, expect, it } from "vitest";
-import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
+import { getDeviceDefinition as getIntegrationDefinition } from "../packages/integration-catalog/src/devices.js";
 import { parseComputerAppConfig } from "../packages/integration-core/src/computer-app.js";
 import { AndroidPhoneActionSchema } from "../packages/protocol/src/android-phone.js";
 import { ComputerUseActionSchema } from "../packages/protocol/src/computer-use.js";
@@ -142,7 +142,7 @@ describe("computer use action schema", () => {
   });
 });
 
-// The published schema is the contract integration_describe gives to integration_call.
+// The native operation contract rejects actions the helper cannot execute.
 describe.each(["android-phone", "macos-app"] as const)("%s saved login contract", (id) => {
   const variants = catalogActionVariants(id);
   const textSchema = variants.get("type")!.properties.text;

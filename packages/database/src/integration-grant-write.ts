@@ -1,17 +1,16 @@
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
-  IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
   IntegrationGrantSchema,
-  createIntegrationId,
-  providerAuthorizationIncludesSource,
-  type IntegrationAccess,
-  type IntegrationConnectionId,
   type IntegrationGrant,
+} from "@opensteer/integration-core/models";
+import {
+  createIntegrationId,
+  type IntegrationConnectionId,
   type IntegrationInstallationId,
-  type IntegrationProviderAuthorization,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, IntegrationGrantTable } from "./schema.js";
 
@@ -23,7 +22,6 @@ export interface CreateIntegrationGrantInput {
   readonly installationId: IntegrationInstallationId;
   readonly isDefault: boolean;
   readonly ownerUserId: UserId;
-  readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
 }
 
 export function integrationGrantFromRow(row: Selectable<IntegrationGrantTable>): IntegrationGrant {
@@ -152,13 +150,10 @@ export async function validateIntegrationGrantInTransaction(
     const connection = await transaction
       .selectFrom("integrationConnections")
       .select([
-        "applicationSource",
         "connectionKind",
         "integrationDefinitionId",
         "integrationServerId",
         "ownerUserId",
-        "provider",
-        "providerApplicationId",
         "status",
       ])
       .where("id", "=", input.connectionId)
@@ -170,36 +165,15 @@ export async function validateIntegrationGrantInTransaction(
     ) {
       throw forbidden("The selected integration connection is unavailable");
     }
-    const providerApplicationSourceActive =
-      connection.connectionKind === "provider-account"
-        ? await providerConnectionApplicationSourceActive(
-            transaction,
-            connection,
-            input.providerAuthorizations[connection.provider] ?? null,
-          )
-        : false;
     const compatible = servers.some((server) => {
       const requirement = IntegrationConnectionRequirementSchema.parse(
         server.connectionRequirement,
       );
-      if (requirement.kind === "mcp-oauth") {
-        return (
-          connection.connectionKind === "mcp-oauth" && connection.integrationServerId === server.id
-        );
-      }
-      if (requirement.kind === "computer") {
-        return (
-          connection.connectionKind === "computer" &&
-          connection.integrationDefinitionId === requirement.definitionId &&
-          connection.integrationServerId === server.id
-        );
-      }
       return (
-        requirement.kind === "provider" &&
-        connection.connectionKind === "provider-account" &&
+        requirement.kind === "computer" &&
+        connection.connectionKind === "computer" &&
         connection.integrationDefinitionId === requirement.definitionId &&
-        connection.provider === requirement.provider &&
-        (!requirement.providerApplicationRequired || providerApplicationSourceActive)
+        connection.integrationServerId === server.id
       );
     });
     if (!compatible) {
@@ -229,38 +203,6 @@ export async function activeIntegrationGrantInTransaction(
     .where("revokedAt", "is", null)
     .forNoKeyUpdate()
     .executeTakeFirst();
-}
-
-async function providerConnectionApplicationSourceActive(
-  transaction: Transaction<DatabaseSchema>,
-  connection: {
-    readonly applicationSource: unknown;
-    readonly provider: string;
-    readonly providerApplicationId: string | null;
-  },
-  providerAuthorization: IntegrationProviderAuthorization | null,
-): Promise<boolean> {
-  const parsed = IntegrationApplicationSourceSchema.safeParse(connection.applicationSource);
-  if (!parsed.success) return false;
-  const source = parsed.data;
-  if (source.kind === "hosted-oauth") {
-    return (
-      connection.providerApplicationId === null &&
-      providerAuthorizationIncludesSource(providerAuthorization, source)
-    );
-  }
-  if (source.kind !== "deployment-oauth") return false;
-  if (!providerAuthorizationIncludesSource(providerAuthorization, source)) return false;
-  if (connection.providerApplicationId !== source.providerApplicationId) return false;
-  const application = await transaction
-    .selectFrom("integrationProviderApplications")
-    .select("id")
-    .where("id", "=", source.providerApplicationId)
-    .where("provider", "=", connection.provider)
-    .where("revision", "=", source.providerApplicationRevision)
-    .where("status", "=", "active")
-    .executeTakeFirst();
-  return application !== undefined;
 }
 
 function forbidden(message: string): OpensteerError {

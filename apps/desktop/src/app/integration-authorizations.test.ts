@@ -90,7 +90,11 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     await instance.register(started());
     expect(await post(port)).toBe(200);
     await vi.waitFor(() =>
-      expect(received).toHaveBeenCalledWith({ attemptId, deploymentId, returnProof }),
+      expect(received).toHaveBeenCalledWith({
+        attemptId,
+        deploymentId,
+        returnProof,
+      }),
     );
     expect(open).toHaveBeenCalledWith(deploymentId);
   });
@@ -127,7 +131,11 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     const received = vi.fn();
     instance.attach({ deploymentId, userId }, received);
     await vi.waitFor(() =>
-      expect(received).toHaveBeenCalledWith({ attemptId, deploymentId, returnProof }),
+      expect(received).toHaveBeenCalledWith({
+        attemptId,
+        deploymentId,
+        returnProof,
+      }),
     );
   });
 

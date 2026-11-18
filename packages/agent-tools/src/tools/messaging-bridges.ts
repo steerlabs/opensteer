@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IntegrationConnectionIdSchema } from "@opensteer/integration-core";
+import { IntegrationConnectionIdSchema } from "@opensteer/integration-core/ids";
 import { defineAgentTool } from "../registry.js";
 
 export const opensteer_messaging_bridge_list = defineAgentTool({

@@ -1,4 +1,9 @@
-import { mockSubagentScenes, type MockSubagentScene } from "@opensteer/client/mock";
+import {
+  mockPluginScenarios,
+  mockSubagentScenes,
+  type MockPluginScenario,
+  type MockSubagentScene,
+} from "@opensteer/client/mock";
 import { bareServiceOrigin } from "@opensteer/core";
 import { z } from "zod";
 
@@ -27,6 +32,7 @@ const MobileEnvironmentSchema = z.object({
     .optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(mockPhoneScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: z.enum(mockPluginScenarios).optional(),
 });
 
 export interface MobileConfiguration {
@@ -48,6 +54,8 @@ export interface MobileConfiguration {
   readonly mockPhone: (typeof mockPhoneScenes)[number] | null;
   /** One subagent scene of the design, as the web's `?mock-subagents=` seeds it; null for none. */
   readonly mockSubagents: MockSubagentScene | null;
+  /** The plugin side's state, as the web's `?mock-plugins=` picks it; null for the ordinary one. */
+  readonly mockPlugins: MockPluginScenario | null;
   /**
    * Why this build must not start, or null. It is a state rather than a throw
    * because the answer belongs on screen in a sentence: a build that was asked
@@ -110,6 +118,7 @@ export function readMobileConfiguration(
     mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
     mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
+    mockPlugins: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."

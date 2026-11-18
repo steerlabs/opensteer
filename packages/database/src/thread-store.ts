@@ -145,7 +145,6 @@ import {
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { projectThreadState } from "./thread-status.js";
 export interface CreateThreadInput {
-  readonly specialistId?: string;
   readonly expectedHarnessRevision?: number;
   readonly icon?: IconName;
   readonly authority?: ThreadCallerAuthority;
@@ -322,7 +321,6 @@ export interface MovedThreadInput {
   readonly wasDuplicate: boolean;
 }
 export interface DelegateThreadRequest {
-  readonly specialistId?: string;
   readonly expectedHarnessRevision?: number;
   readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
@@ -464,11 +462,6 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
   // refused instead of returning the Thread the first call created.
   const { nativeModelId: _nativeModelId, ...modelSelection } = input.modelSelection;
   return {
-    ...(input.specialistId
-      ? {
-          specialistId: input.specialistId,
-        }
-      : {}),
     ...(input.expectedHarnessRevision === undefined
       ? {}
       : {
@@ -1145,7 +1138,6 @@ export async function createThreadInTransaction(
   const purpose = input.purpose ?? "task";
   const thread = await insertThread({
     accessMode: resolvedInput.accessMode,
-    specialistId: input.specialistId ?? parent?.specialistId ?? null,
     createdByPrincipalId: actorPrincipalId,
     id,
     lineageRootThreadId: parent?.lineageRootThreadId ?? id,

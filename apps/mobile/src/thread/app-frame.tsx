@@ -36,12 +36,19 @@ export interface AppTabFrame {
  */
 export function AppFrame(props: {
   readonly appId: string;
+  readonly kind?: "app" | "plugin";
   readonly client: HostClient | null;
   readonly onTitle?: (title: string) => void;
   readonly tab?: AppTabFrame;
 }): ReactNode {
   const { onTitle, tab } = props;
-  const { view, failed, retry } = useAppView(props.client, props.appId, "dark");
+  const { view, failed, retry } = useAppView(
+    props.client,
+    props.appId,
+    "dark",
+    true,
+    props.kind ?? "app",
+  );
   useEffect(() => {
     if (view) onTitle?.(view.title);
   }, [view, onTitle]);

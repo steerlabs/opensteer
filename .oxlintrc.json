@@ -61,7 +61,14 @@
       }
     }
   ],
-  "ignorePatterns": ["apps/mobile/android/**", "apps/mobile/ios/**", "output/**", "**/.build/**"],
+  "ignorePatterns": [
+    "vendor/plugin-engine/**",
+    "scripts/plugin-engine/overlay/**",
+    "apps/mobile/android/**",
+    "apps/mobile/ios/**",
+    "output/**",
+    "**/.build/**"
+  ],
   "jsPlugins": [
     {
       "name": "opensteer",

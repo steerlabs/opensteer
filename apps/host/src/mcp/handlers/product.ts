@@ -45,7 +45,6 @@ import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
-import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   agentDelegationMaxDepth,
@@ -80,7 +79,6 @@ import {
   type Message,
   type ThreadId,
   type Thread,
-  type ThreadAccessMode,
   excludedBackgroundAccounts,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
@@ -94,10 +92,6 @@ import type { PlaceContextService } from "../../computer-use/place-context-servi
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
 
 import type { MachineFullDiskAccessService } from "../../shell/machine-full-disk-access-service.js";
-import {
-  specialistPlacement,
-  resolveDelegationSpecialist,
-} from "../../agents/specialist-placement.js";
 import { delegationPlacement } from "../../agents/delegation-placement.js";
 import { aiAccountDiscovery } from "../ai-accounts.js";
 
@@ -181,10 +175,6 @@ export class ProductToolHandlers {
     | "requestAccess"
   >;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
-  readonly #harnessAccessModes: (
-    environmentId: EnvironmentId,
-    driverKind: HarnessId,
-  ) => readonly ThreadAccessMode[] | undefined;
   readonly #commands: CommandService;
   readonly #requestResponseVault: RequestResponseVault | undefined;
   readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
@@ -220,11 +210,6 @@ export class ProductToolHandlers {
       | "requestAccess"
     >;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
-    /** The access modes an engine enforces on a computer; undefined when it cannot run there. */
-    readonly harnessAccessModes: (
-      environmentId: EnvironmentId,
-      driverKind: HarnessId,
-    ) => readonly ThreadAccessMode[] | undefined;
     readonly commands: CommandService;
     readonly requestResponseVault?: RequestResponseVault;
     readonly questionNotices?: Pick<TaskQuestionNotices, "wait">;
@@ -249,7 +234,6 @@ export class ProductToolHandlers {
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
     this.#browser = options.browser;
     this.#canRunHarness = options.canRunHarness;
-    this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
     this.#requestResponseVault = options.requestResponseVault;
     this.#questionNotices = options.questionNotices;
@@ -1115,34 +1099,16 @@ export class ProductToolHandlers {
       }
     }
     const environmentId = await this.#execution.environmentFor(claims.requestedBy);
-    const specialist = await resolveDelegationSpecialist(
-      this.#store,
-      claims.requestedBy,
-      input.specialist,
-      existingThread,
-    );
-    if (specialist && (input.model || input.aiAccountId))
-      throw badRequest("Specialist execution is selected by its registration");
     const environment = await this.#store.getEnvironment(environmentId);
     if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
-    const placement =
-      specialist && !existingThread
-        ? await this.#specialistPlacement({
-            userId: claims.requestedBy,
-            environmentId: environment.id,
-            accessMode: caller.accessMode,
-            specialist,
-            caller: currentThread,
-          })
-        : await delegationPlacement(this.#store, {
-            environment,
-            existingThread,
-            harnessInstanceId: input.aiAccountId,
-            model: input.model,
-            parent: currentThread,
-          });
-
-    return { existingThread, specialist, environment, placement };
+    const placement = await delegationPlacement(this.#store, {
+      environment,
+      existingThread,
+      harnessInstanceId: input.aiAccountId,
+      model: input.model,
+      parent: currentThread,
+    });
+    return { existingThread, environment, placement };
   }
   async authorizeDelegation(call: DelegationCall) {
     if (call.caller.kind !== "connection" && !call.input.create) await this.prepareDelegation(call);
@@ -1182,14 +1148,10 @@ export class ProductToolHandlers {
       ...(input.model === undefined ? {} : { modelSelection: input.model }),
       ...(input.title === undefined ? {} : { title: input.title }),
     };
-    const specialist = input.specialist
-      ? await resolveDelegationSpecialist(this.#store, caller.userId, input.specialist, null)
-      : null;
     if (
       prior.type !== "thread.create" ||
       !prior.threadId ||
-      Object.entries(asked).some(([field, value]) => !isDeepStrictEqual(requested[field], value)) ||
-      (specialist !== null && requested.specialistId !== specialist?.id)
+      Object.entries(asked).some(([field, value]) => !isDeepStrictEqual(requested[field], value))
     )
       throw new OpensteerError({
         code: "conflict",
@@ -1207,14 +1169,8 @@ export class ProductToolHandlers {
     input: DelegationCall["input"],
     requestId: string,
   ): Promise<StandaloneTask> {
-    const {
-      existing,
-      environmentId,
-      harnessInstanceId,
-      harnessRevision,
-      modelSelection,
-      specialist,
-    } = await this.#prepareConnectionDelegation(caller, input);
+    const { existing, environmentId, harnessInstanceId, harnessRevision, modelSelection } =
+      await this.#prepareConnectionDelegation(caller, input);
     if (existing) return { thread: existing };
     const expected =
       harnessRevision === undefined ? {} : { expectedHarnessRevision: harnessRevision };
@@ -1230,22 +1186,18 @@ export class ProductToolHandlers {
         ...(!input.title ? { generateTitle: true } : {}),
         idempotencyKey: idempotencyKey(caller, requestId, "create"),
       },
-      {
-        ...(specialist ? { specialistId: specialist.id } : {}),
-        ...expected,
-      },
+      expected,
     );
     return { thread, ...expected };
   }
   /** A Run or program's standalone task, placed as its own delegation would be. */
   async #createRunStandaloneTask(call: DelegationCall, requestId: string): Promise<StandaloneTask> {
     const { caller, input } = call;
-    const { specialist, environment, placement } = await this.prepareDelegation(call);
+    const { environment, placement } = await this.prepareDelegation(call);
     const expected =
       placement.harnessRevision === undefined
         ? {}
         : { expectedHarnessRevision: placement.harnessRevision };
-    const specialistId = specialist?.id ?? callerThread(caller).specialistId;
     const { thread } = await this.#threads.create(
       caller,
       {
@@ -1258,7 +1210,7 @@ export class ProductToolHandlers {
         ...(!input.title ? { generateTitle: true } : {}),
         idempotencyKey: idempotencyKey(caller, requestId, "create"),
       },
-      { ...(specialistId ? { specialistId } : {}), ...expected, placed: true },
+      { ...expected, placed: true },
     );
     return { thread, ...expected };
   }
@@ -1348,11 +1300,12 @@ export class ProductToolHandlers {
       claims.requestedBy,
       idempotencyKey(caller, requestId, "delegate"),
       async () => {
-        const { existingThread, specialist, environment, placement } = await this.prepareDelegation(
-          { caller, input, operationKey },
-        );
+        const { existingThread, environment, placement } = await this.prepareDelegation({
+          caller,
+          input,
+          operationKey,
+        });
         const delegateInput = {
-          ...(specialist ? { specialistId: specialist.id } : {}),
           ...(placement.harnessRevision === undefined
             ? {}
             : { expectedHarnessRevision: placement.harnessRevision }),
@@ -1570,11 +1523,6 @@ export class ProductToolHandlers {
     const thread = await this.#store.getThreadForOwner(destination, caller.userId);
     if (!thread) throw forbidden("task is unavailable to this user");
     assertMutableTarget(caller, thread);
-    if (thread.specialistId && input.delivery !== "report")
-      await new SpecialistStore(this.#store.database).assertRunnable(
-        thread.specialistId,
-        caller.userId,
-      );
     const memoryPass =
       caller.kind === "program" && caller.program.kind === "trigger"
         ? await this.#memoryPasses?.admissionSelection(caller.program.occurrenceId, thread)
@@ -1611,14 +1559,6 @@ export class ProductToolHandlers {
     const existing = input.taskId ? await this.#threads.assertTarget(caller, input.taskId) : null;
     if (existing && existing.purpose !== "task") throw badRequest("Choose a work task");
     const environmentId = await this.#execution.environmentFor(caller.userId);
-    const specialist = await resolveDelegationSpecialist(
-      this.#store,
-      caller.userId,
-      input.specialist,
-      existing,
-    );
-    if (specialist && (input.model || input.aiAccountId))
-      throw badRequest("Specialist execution is selected by its registration");
     if (existing) {
       const assignment = await this.#store.database
         .selectFrom("delegations")
@@ -1629,17 +1569,6 @@ export class ProductToolHandlers {
       if (assignment) throw conflict("task already has an open delegation");
     }
     const preferences = await this.#store.getExecutionPreferences(caller.userId);
-    if (specialist && !existing) {
-      const environment = await this.#store.getEnvironment(environmentId);
-      if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
-      const placement = await this.#specialistPlacement({
-        userId: caller.userId,
-        environmentId: environment.id,
-        accessMode: caller.accessMode,
-        specialist,
-      });
-      return { existing, environmentId, ...placement, specialist };
-    }
     const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
     const named = existing?.harnessInstanceId ?? input.aiAccountId ?? preferred?.harnessInstanceId;
     const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
@@ -1661,7 +1590,6 @@ export class ProductToolHandlers {
       harnessInstanceId,
       harnessRevision: undefined,
       modelSelection,
-      specialist,
     };
   }
   async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
@@ -1691,19 +1619,6 @@ export class ProductToolHandlers {
           modelSelection: chosen.modelSelection,
         }
       : null;
-  }
-  #specialistPlacement(request: Parameters<typeof specialistPlacement>[1]) {
-    return specialistPlacement(
-      {
-        store: this.#store,
-        runners: {
-          isAvailable: this.#isEnvironmentConnected,
-          canRunHarness: this.#canRunHarness,
-          harnessAccessModes: this.#harnessAccessModes,
-        },
-      },
-      request,
-    );
   }
   async opensteer_task_configure({
     caller,

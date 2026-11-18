@@ -1,12 +1,12 @@
 ---
 name: setup
-description: Use when enrolling a computer in an Opensteer Deployment or resolving its SSH, Full Disk Access and app access setup, registering an integration OAuth app or configuring managed or custom consent and testing an integration authorization flow, or setting up, adding or testing a messaging provider and its channel transport.
+description: Use when enrolling a computer in an Opensteer Deployment or resolving its SSH, Full Disk Access and app access setup, registering a plugin OAuth app or configuring managed or custom consent and testing a plugin account authorization flow, or setting up, adding or testing a messaging provider and its channel transport.
 ---
 
 # Setup
 
-Lending a computer, connecting integrations and wiring messaging.
-[Integration OAuth](../../../docs/integration-oauth.md) holds the integration authority rules.
+Lending a computer, connecting plugin accounts and wiring messaging.
+[Plugin account OAuth](../../../docs/plugin-accounts.md) holds the account authority rules.
 
 ## Safety rules
 
@@ -23,6 +23,6 @@ Lending a computer, connecting integrations and wiring messaging.
 ## Procedures
 
 - [Computers](references/computers.md): enrollment, app access, agent SSH.
-- [Integration OAuth](references/integration-oauth.md): managed and custom apps, checks.
+- [Plugin account OAuth](references/plugin-accounts.md): managed and custom apps, checks.
 - [Messaging](references/messaging.md): Slack, new providers, checks.
 - [Team server](../team-server/SKILL.md): Docker testing and first-owner setup renewal.

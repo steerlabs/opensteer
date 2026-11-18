@@ -277,7 +277,7 @@ integration.sequential("Shared task Done", () => {
       idempotencyKey: "child-trigger",
       name: "Child schedule",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "typescript",
         source: "export default async () => null;",
       },
@@ -338,7 +338,7 @@ integration.sequential("Shared task Done", () => {
       name: "Deal monitor",
       ownTask: true,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "typescript",
         source: "export default async () => null;",
       },
@@ -733,7 +733,7 @@ integration.sequential("Shared task Done", () => {
       idempotencyKey: "quiet-trigger",
       name: "Quiet schedule",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "typescript",
         source: "export default async () => null;",
       },

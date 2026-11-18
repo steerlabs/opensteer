@@ -9,6 +9,7 @@ export function useAppView(
   appId: string,
   theme: AppTheme,
   enabled = true,
+  kind: "app" | "plugin" = "app",
 ) {
   const readRevision = useCallback(() => {
     const snapshot = client?.getSnapshot();
@@ -21,7 +22,7 @@ export function useAppView(
   const [version, , session, viewer, deployment, sessionId] = revision.split(":");
   const key = useMemo(
     () => ({}),
-    [client, appId, enabled, version, session, viewer, deployment, sessionId, attempt],
+    [client, appId, enabled, version, session, viewer, deployment, sessionId, attempt, kind],
   );
   const [result, setResult] = useState<{
     key: object;
@@ -31,7 +32,11 @@ export function useAppView(
   useEffect(() => {
     if (!client || !enabled) return;
     const controller = new AbortController();
-    void client.viewApp(appId, themeForRead.current, controller.signal).then(
+    void (
+      kind === "plugin"
+        ? client.viewPluginPage(appId, themeForRead.current, controller.signal)
+        : client.viewApp(appId, themeForRead.current, controller.signal)
+    ).then(
       (view) => {
         if (!controller.signal.aborted)
           setResult((previous) => ({
@@ -54,7 +59,7 @@ export function useAppView(
       },
     );
     return () => controller.abort();
-  }, [client, appId, enabled, key, revision]);
+  }, [client, appId, enabled, key, revision, kind]);
   return {
     view: result?.key === key ? (result.view ?? null) : null,
     failed: result?.key === key && result.failed === true,

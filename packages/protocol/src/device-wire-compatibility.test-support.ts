@@ -63,11 +63,8 @@ export const screen = {
   allowedModules: [],
   name: "My iPhone",
 };
-export const connection = DeviceIntegrationConnectionSummarySchema.parse({
+const deviceConnection = DeviceIntegrationConnectionSummarySchema.parse({
   accountIdentifier: null,
-  applicationSource: null,
-  authMethodId: "computer",
-  authorizationDigest: null,
   computer: { access: "read", app: null, blockedAt: null, policyRevision: 1, deviceId: selfId },
   connectionMethod: "computer",
   createdAt: now,
@@ -75,15 +72,21 @@ export const connection = DeviceIntegrationConnectionSummarySchema.parse({
   displayName: "Phone",
   externalIdentityId: null,
   externalTenantId: null,
-  grantedScopes: [],
   id: `con_${crypto.randomUUID()}`,
   provider: "computer",
-  providerApplicationId: null,
   status: "connected",
   statusDetail: null,
   statusReason: null,
   updatedAt: now,
 });
+export const connection = {
+  ...deviceConnection,
+  applicationSource: null,
+  authMethodId: "computer",
+  authorizationDigest: null,
+  grantedScopes: [],
+  providerApplicationId: null,
+};
 export const screenConnection = {
   ...connection,
   definitionId: "iphone-screen",

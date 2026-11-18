@@ -6,12 +6,12 @@ description: Connect, use, fix or remove devices on the person's network that ca
 # Opensteer Devices
 
 A device that can't run Opensteer is reached from one of the person's computers on its network,
-through an Agent Plugin whose local MCP server talks to it. Settings › Devices lists the device once
-its plugin declares it. Set it up in this task yourself rather than delegating, so the person's
-approvals and its link to the device land here.
+through a local MCP server that talks to it. Settings › Devices lists the device once its server
+declares it. Set it up in this task yourself rather than delegating, so the person's approvals and
+its link to the device land here.
 
-First list plugins with `opensteer_plugin_list`. If one already covers this device, use or fix it instead of
-building another.
+First list servers with `local_server_list`. If one already covers this device, use or fix it
+instead of building another.
 
 1. **Find it** from a computer on the device's network. The hosting computer runs your commands; the other-computers
    note names the rest. Browse Bonjour (`dns-sd -B _services._dns-sd._udp`), read the router's device
@@ -23,22 +23,23 @@ building another.
    one unless the person asks for it and accepts that the maker may block their account.
 3. **Prove it from the shell:** a harmless read, then one reversible action the person would notice.
    Tell the person before installing tools on their computer, such as Python.
-4. **Package it** as opensteer:skills describes, with the shape in [plugin shape](references/plugin-shape.md):
-   a specific name, a skill that records the device's address, model and quirks, a server with one
-   tool per action, and the device declared in `plugin.json`. One plugin covers what the person would
-   remove together, such as a stereo pair. Keep state such as pairing credentials in `PLUGIN_DATA`.
-5. **Install** with `opensteer_plugin_install`, find its installation with `integration_search`, then ask for
-   access with `integration_request` naming that installation. The computer's owner approves the
-   server's launch from this task; its tools stay unavailable until then.
+4. **Package it** as [local server](references/local-server.md) describes: a folder in Agent home
+   with the server, one tool per action, and a skill that records the device's address, model and
+   quirks. One server covers what the person would remove together, such as a stereo pair. Keep
+   state such as pairing credentials in `PLUGIN_DATA`.
+5. **Register it** with `local_server_add`: a specific name, the computer that reaches the device,
+   the folder, the launch, secret names and the device. The person reviews the exact launch on that
+   computer; if its tools then say access is needed, ask with `app_access_request` and `server`. Its tools appear
+   in `plugin_search` under that name, such as `tools["office-light"].on`; call them with
+   `plugin_call` or `plugin_execute` by the exact path search returns.
 6. **Codes the device shows,** such as a TV's pairing code, never go through chat. A server tool asks
    the person with MCP elicitation; they type the code on a card and only the server receives it.
-7. **Verify** with the same reversible action through the installed tools. Then tell the person what
-   you connected, which computer runs it, and that removing it in Settings › Devices deletes its
-   pairing from that computer.
+7. **Verify** with the same reversible action through its tools. Then tell the person what you
+   connected, which computer runs it, and that removing it deletes its pairing from that computer.
 
-To fix a device, read its plugin's folder and skill, repair it there and call `opensteer_plugin_install` on
-the same folder. To remove one, use `opensteer_plugin_remove`. Shell access can still reach a device after its
-plugin is removed or its launch is refused; never use it to work around either.
+To fix a device, repair its folder and call `local_server_add` again with the same name. Remove it
+with `local_server_remove` only when the person asks; Settings › Devices removes it too. Shell access
+can still reach a device after removal or a refused launch; never use it to work around either.
 
 - Read [device notes](references/device-notes.md) before connecting an Apple TV, HomePod or WiZ light.
-- Read [plugin shape](references/plugin-shape.md) before writing the plugin.
+- Read [local server](references/local-server.md) before writing the server.

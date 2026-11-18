@@ -78,7 +78,7 @@ const nextHour = "2040-01-02T09:00:00.000Z";
 const program: TriggerProgram = {
   language: "javascript",
   source: "export default async () => ({ verified: true })",
-  toolContractVersion: 4,
+  toolContractVersion: 5,
 };
 const cron: TriggerSource = {
   kind: "schedule",
@@ -266,7 +266,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   it("filters anchored automations and refuses another owner", async () => {
     const f = await fixture();
     const root = await personCreate(f, f.root);
-    await personCreate(f, f.specialist);
+    await personCreate(f, f.otherRoot);
     const rpc = createTriggerRpcHandlers(triggers);
     const context: HostApiServerContext = {
       session: {
@@ -537,7 +537,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           if (response.type !== "thread.delegate.result")
             throw new Error("Expected local delegation");
           expect((await readToolRecords(store, response.result)).thread).toMatchObject({
-            lineageRootThreadId: f.specialist.id,
+            lineageRootThreadId: f.otherRoot.id,
             accessMode: "auto",
           });
           expect((await readToolRecords(store, response.result)).message!.content).toEqual([
@@ -733,7 +733,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     for (const request of [
       {
         type: "thread.read",
-        taskId: f.specialist.id,
+        taskId: f.otherRoot.id,
       },
       {
         type: "thread.delegate",
@@ -764,13 +764,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "A6 Root task defines in another task",
       f.root.id,
       "create",
-      "specialist anchor",
+      "other root anchor",
       async () => {
         const created = createdSchema.parse(
-          await programTrigger(token, createInput(f.specialist.id)),
+          await programTrigger(token, createInput(f.otherRoot.id)),
         );
         expect(created.trigger).toMatchObject({
-          anchorThreadId: f.specialist.id,
+          anchorThreadId: f.otherRoot.id,
           createdByThreadId: f.root.id,
         });
         return created;
@@ -788,7 +788,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       async () => {
         const response = await watches.handle(watchToken, {
           type: "thread.message",
-          threadId: f.specialist.id,
+          threadId: f.otherRoot.id,
           delivery: "queue",
           content: [
             {
@@ -1595,13 +1595,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const childClient = await connectMcp(endpoint, childProgram);
     const chatClient = await connectMcp(endpoint, chatProgram);
     const watchClient = await connectMcp(endpoint, watchToken);
-    for (const [label, actor, client] of [
-      ["delegated Trigger", f.fullChild, childClient],
-      ["Root task Trigger", f.root, chatClient],
-      ["delegated Watch", f.crossChild, watchClient],
+    for (const [label, kind, actor, client] of [
+      ["delegated Trigger", "trigger", f.fullChild, childClient],
+      ["Root task Trigger", "trigger", f.root, chatClient],
+      ["delegated Watch", "watch", f.crossChild, watchClient],
     ] as const) {
       const expectedNames = toolsFor({
         kind: "program",
+        program: { kind },
         accessMode: actor.accessMode,
       }).map((t) => t.name);
       await check(
@@ -1700,7 +1701,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
   });
-  it.each([4] as const)(
+  it.each([5] as const)(
     "dispatches only supported version %s after an anchor computer downgrade",
     async (version) => {
       const f = await fixture();
@@ -1754,7 +1755,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           .set({
             capabilities: sql<
               RunnerDescriptor["capabilities"]
-            >`${JSON.stringify(["filesystem", "trigger-program-v4"])}::jsonb`,
+            >`${JSON.stringify(["filesystem", "trigger-program-v5"])}::jsonb`,
           })
           .where("id", "=", f.runnerId)
           .execute();
@@ -1780,7 +1781,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           })
           .where("id", "=", f.runnerId)
           .execute();
-        if (version === 4) {
+        if (version === 5) {
           await expect(
             triggers.update(
               f.ownerId,
@@ -1793,7 +1794,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             ),
           ).rejects.toMatchObject({
             message:
-              "Update this computer to run automation programs with tool contract version 4.",
+              "Update this computer to run automation programs with tool contract version 5.",
           });
         }
         const occurrence =
@@ -1844,23 +1845,23 @@ integration.sequential("Trigger authority through real Host services and Postgre
             "Runner downgrade dispatch",
             ingress,
             `version ${version}`,
-            version === 4 ? "failed without send" : "unchanged send",
+            version === 5 ? "failed without send" : "unchanged send",
             async () => {
               dispatch.mockClear();
               coordinator.start();
               await vi.waitFor(async () => {
                 const detail = await personDetail(f, saved.trigger.id);
-                expect(detail.occurrences[0]?.status).toBe(version === 4 ? "failed" : "running");
+                expect(detail.occurrences[0]?.status).toBe(version === 5 ? "failed" : "running");
               });
               const detail = await personDetail(f, saved.trigger.id);
-              if (version === 4) {
+              if (version === 5) {
                 expect(dispatch).not.toHaveBeenCalled();
                 expect(detail.occurrences[0]?.error).toEqual({
                   code: "dispatch_failed",
                   status: "failed",
                   retryable: false,
                   message:
-                    "Update this computer to run automation programs with tool contract version 4.",
+                    "Update this computer to run automation programs with tool contract version 5.",
                 });
               } else {
                 expect(dispatch).toHaveBeenCalledOnce();
@@ -1891,7 +1892,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     },
   );
-  it("keeps a pre-version-4 program readable and replaceable, and refuses to run it", async () => {
+  it("keeps a program from an older contract readable and replaceable, and refuses to run it", async () => {
     const f = await fixture(undefined, { rootAccessMode: "full-access" });
     const saved = await personCreate(f, f.root);
     await database
@@ -1948,7 +1949,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     );
     expect(replaced.revision.program).toEqual(program);
   });
-  it.each([4] as const)(
+  it.each([5] as const)(
     "reconciles Watch version %s against an old stored advertisement",
     async (version) => {
       const f = await fixture();
@@ -2016,17 +2017,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
           "Runner downgrade Watch",
           "Host reconciliation",
           `version ${version}`,
-          version === 4 ? "backoff without activation" : "activation sent",
+          version === 5 ? "backoff without activation" : "activation sent",
           async () => {
             await service.reconcile(f.environmentId);
             const desired = reconcileWatches.mock.calls[0]?.[2];
             const detail = await personDetail(f, saved.trigger.id);
-            if (version === 4) {
+            if (version === 5) {
               expect(desired).toEqual([]);
               expect(detail.activation).toMatchObject({
                 observed: "backoff",
                 lastError:
-                  "Update this computer to run automation programs with tool contract version 4.",
+                  "Update this computer to run automation programs with tool contract version 5.",
               });
             } else {
               expect(desired).toEqual([
@@ -2047,7 +2048,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     },
   );
-  it("admits v3 create/update through both current MCP and person commands", async () => {
+  it("admits current-contract create/update through both current MCP and person commands", async () => {
     const f = await fixture(undefined, {
       rootAccessMode: "full-access",
     });
@@ -2060,14 +2061,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     } as unknown as HostApiServerContext;
     const code = {
       ...program,
-      toolContractVersion: 4 as const,
+      toolContractVersion: 5 as const,
     };
     const client = await connectMcp(await mcpEndpoint(), f.rootToken);
     await check(
       "v3 current Runner admission",
       "person and agent",
       "create/update",
-      "v3 retained",
+      "current contract retained",
       async () => {
         const person = createdSchema.parse(
           await handleTriggerCommand(
@@ -2077,7 +2078,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               idempotencyKey: randomUUID(),
               input: {
                 anchorThreadId: f.root.id,
-                name: "Current person v3",
+                name: "Current person",
                 program: code,
                 source: cron,
               },
@@ -2103,12 +2104,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
             context,
           ),
         );
-        expect(updated.revision.program.toolContractVersion).toBe(4);
+        expect(updated.revision.program.toolContractVersion).toBe(5);
         const mcp = await client.callTool({
           name: "opensteer_automation_create",
           arguments: {
             taskId: f.root.id,
-            name: "Current agent v3",
+            name: "Current agent",
             program: code,
             source: {
               kind: "schedule",
@@ -2134,7 +2135,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         expect(
           opensteer_automation_update.output.parse(changed.structuredContent).revision!.program
             .toolContractVersion,
-        ).toBe(4);
+        ).toBe(5);
         return {
           person: updated,
           agent: changed,
@@ -2150,7 +2151,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       capabilities: ["browser-profile-create-v1"],
     },
   ] as const)(
-    "refuses v3 admission for old stored advertisements %j through commands and MCP",
+    "refuses current-contract admission for old stored advertisements %j through commands and MCP",
     async ({ capabilities }) => {
       const f = await fixture([...capabilities], {
         rootAccessMode: "full-access",
@@ -2164,10 +2165,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
       } as unknown as HostApiServerContext;
       const code = {
         ...program,
-        toolContractVersion: 4 as const,
+        toolContractVersion: 5 as const,
       };
       const reason =
-        "Update this computer to run automation programs with tool contract version 4.";
+        "Update this computer to run automation programs with tool contract version 5.";
       const endpoint = await mcpEndpoint();
       const client = await connectMcp(endpoint, f.rootToken);
       await check(
@@ -2217,7 +2218,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             .set({
               capabilities: sql<
                 RunnerDescriptor["capabilities"]
-              >`${JSON.stringify(["trigger-program-v4"])}::jsonb`,
+              >`${JSON.stringify(["trigger-program-v5"])}::jsonb`,
             })
             .where("id", "=", f.runnerId)
             .execute();
@@ -2277,7 +2278,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     capabilities: RunnerDescriptor["capabilities"] = [
       "filesystem",
       "environment-list-v1",
-      "trigger-program-v4",
+      "trigger-program-v5",
     ],
     options: { readonly rootAccessMode?: Thread["accessMode"] } = {},
   ) {
@@ -2358,14 +2359,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const delegated = await child("Delegated worker", "auto");
     const sibling = await child("Sibling sibling", "auto");
     const crossChild = await child("Independent sibling", "auto");
-    const { thread: specialist } = await store.createThread({
+    const { thread: otherRoot } = await store.createThread({
       accessMode: "full-access",
       createdBy: ownerId,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
       modelSelection,
-      title: "Specialist root",
+      title: "Other root",
     });
     const { thread: unrelated } = await store.createThread({
       accessMode: "approval-required",
@@ -2378,12 +2379,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     const childExecution = await activate(base, delegated);
     const siblingExecution = await activate(base, sibling);
-    const specialistExecution = await activate(base, specialist);
+    const otherRootExecution = await activate(base, otherRoot);
     const fullChild = await child(
       "Full-access author",
       "full-access",
-      specialist,
-      specialistExecution.run.id,
+      otherRoot,
+      otherRootExecution.run.id,
     );
     const fullExecution = await activate(base, fullChild);
     const { thread: isolatedChild } = await store.delegateThread({
@@ -2395,8 +2396,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       modelSelection,
       origin: {
         kind: "run",
-        parentThreadId: specialist.id,
-        parentRunId: specialistExecution.run.id,
+        parentThreadId: otherRoot.id,
+        parentRunId: otherRootExecution.run.id,
       },
       task: [
         {
@@ -2404,11 +2405,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
           text: "Work outside Root task's delegation lineage",
         },
       ],
-      title: "Specialist's delegated worker",
+      title: "Other root's delegated worker",
       titleSource: "chosen",
     });
     expect(crossChild.lineageRootThreadId).toBe(root.id);
-    expect(isolatedChild.lineageRootThreadId).toBe(specialist.id);
+    expect(isolatedChild.lineageRootThreadId).toBe(otherRoot.id);
     expect(unrelated.lineageRootThreadId).not.toBe(root.id);
     return {
       ...base,
@@ -2418,13 +2419,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       sibling,
       crossChild,
       isolatedChild,
-      specialist,
+      otherRoot,
       unrelated,
       rootToken: rootExecution.token,
       childToken: childExecution.token,
       fullChildToken: fullExecution.token,
       siblingToken: siblingExecution.token,
-      specialistToken: specialistExecution.token,
+      otherRootToken: otherRootExecution.token,
     };
   }
   type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -2701,7 +2702,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       runnerBootId: "authority-boot",
       runnerId: f.runnerId,
       threadId: anchor.id,
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     });
     return token;
   }
@@ -2728,7 +2729,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       executionGeneration: active.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     });
     return token;
   }

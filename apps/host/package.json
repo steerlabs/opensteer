@@ -5,11 +5,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsup",
-    "dev": "tsx watch src/main.ts",
+    "build": "tsup && tsx ../../scripts/plugin-engine/prepare-host.ts dist/plugin-engine-bridge.json",
+    "dev": "tsx ../../scripts/plugin-engine/prepare-host.ts node_modules/.cache/plugin-engine-bridge.json && tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:plugin-bridge": "tsx ../../scripts/plugin-engine/prepare-host.ts node_modules/.cache/plugin-engine-bridge.json"
   },
   "dependencies": {
     "@fastify/compress": "catalog:",
@@ -30,8 +31,6 @@
     "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/harness": "workspace:*",
     "@opensteer/identity": "workspace:*",
-    "@opensteer/integration-adapters": "workspace:*",
-    "@opensteer/integration-auth": "workspace:*",
     "@opensteer/integration-catalog": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/orchestration": "workspace:*",
@@ -45,7 +44,22 @@
     "quickjs-emscripten-core": "0.32.0",
     "sharp": "catalog:",
     "ws": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-reactivity": "workspace:*",
+    "@opensteer/plugin-engine-mcp": "workspace:*",
+    "@opensteer/plugin-engine-mcp-auth": "workspace:*",
+    "@opensteer/plugin-engine-app-templates": "workspace:*",
+    "@opensteer/plugin-engine-catalog": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "@opensteer/plugin-source": "workspace:*",
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-pg": "4.1.4",
+    "effect": "4.1.4",
+    "workerd": "1.20260918.1",
+    "typescript-5": "npm:typescript@5.9.3",
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+    "apps": "workspace:*"
   },
   "devDependencies": {
     "@opensteer/agent-phone-setup": "workspace:*",

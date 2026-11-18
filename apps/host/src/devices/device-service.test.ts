@@ -1,0 +1,2545 @@
+import { DeviceIntegrationConnectionReaderSchema } from "@opensteer/integration-core";
+const deviceConnection = DeviceIntegrationConnectionReaderSchema.parse;
+import { DeviceIdSchema, RunnerIdSchema } from "@opensteer/core";
+import {
+  caller,
+  runCaller,
+  now,
+  computerDefinition,
+  computerStatus,
+  usePlatformFixtures,
+  platform,
+  computerConnectionSummary,
+  computerCallable,
+  integrationRequest,
+  listedTool,
+} from "./device-service.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { type DeviceServicesTestHarness } from "./device-services.test-support.js";
+import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
+import { createServer } from "node:http";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  createIntegrationId,
+  integrationDefinitionSummary,
+  isComputerAppDefinition,
+  type IntegrationConnectionSummary,
+  type IntegrationGrant,
+  type IntegrationInstallation,
+  type IntegrationServer,
+} from "@opensteer/integration-core";
+import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
+import {
+  ComputerAppNotOfferedError,
+  type CallableIntegrationTool,
+  type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
+  type IntegrationPlatformStore,
+} from "@opensteer/database";
+import {
+  TabIdSchema,
+  WindowIdSchema,
+  createToolOutput,
+  createId,
+  type AgentEvent,
+  type Request,
+} from "@opensteer/core";
+import {
+  computerUseUpdateSentence,
+  mintComputerUseSessionId,
+  type MachineAppStatus,
+} from "@opensteer/protocol";
+
+import { describe, expect, it, vi } from "vitest";
+import { IntegrationAuthorizationRequiredError } from "./integration-authorization-required.js";
+import type {
+  ComputerAppHub,
+  ComputerAppInvokeOutcome,
+} from "../computer-apps/computer-app-hub.js";
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
+import {
+  ComputerUseError,
+  ComputerUseService,
+  type ComputerUseServiceOptions,
+} from "../computer-use/computer-use-service.js";
+import type { ComputerUseGateway } from "../devices/device-service.js";
+import type { ToolCaller } from "../agents/tool-caller.js";
+
+/** A call with no Run behind it, as a Trigger occurrence makes. */
+
+usePlatformFixtures();
+
+describe("DeviceService computer connections", () => {
+  it("refuses an offline create but allows an offline access change", async () => {
+    const runnerId = createId("runner");
+    const installed = {
+      ...computerCallable().installation,
+      provenance: {
+        definitionDigest: integrationDefinitionDigest(computerDefinition),
+        definitionId: computerDefinition.id,
+      },
+    };
+    const connection = {
+      ...computerConnectionSummary("read-write"),
+      computer: {
+        blockedAt: null,
+        policyRevision: null,
+        access: "read-write" as const,
+        app: null,
+        runnerId,
+      },
+    };
+    let existing = false;
+    const setComputerConnection = vi.fn(
+      async (input: Parameters<IntegrationPlatformStore["setDeviceComputerConnection"]>[0]) => {
+        if (!existing && !input.createIfMissing) {
+          throw new ComputerAppNotOfferedError("Studio Mac");
+        }
+        return {
+          connection: deviceConnection(connection),
+          created: false,
+          fulfilledRequestIds: [],
+          grants: [],
+          requestEvents: [],
+          reissuedSetupRequestId: null,
+          sessionReset: null,
+        };
+      },
+    );
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => null),
+        attached: vi.fn(() => false),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(async (_runnerId, task) => task()),
+      },
+      definitions: [computerDefinition],
+      store: {
+        listInstallations: vi.fn(async () => [installed]),
+        setDeviceComputerConnection: setComputerConnection,
+      },
+    });
+    const input = {
+      kind: "app" as const,
+      app: null,
+      access: "read-write" as const,
+      actorUserId: createId("user"),
+      definitionId: computerDefinition.id,
+
+      requestId: "computer-change",
+      runnerId,
+    };
+
+    await expect(
+      service.devices.computerAppApprovals.setComputerConnection(input),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: `Studio Mac is offline. Turn ${computerDefinition.name} on when it is back.`,
+    });
+    existing = true;
+    await expect(
+      service.devices.computerAppApprovals.setComputerConnection(input),
+    ).resolves.toEqual(deviceConnection(connection));
+    expect(setComputerConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes a computer connection inside Runner admission and publishes cancellations", async () => {
+    const callable = computerCallable();
+    const runnerId = createId("runner");
+    const requestEvent = { type: "request.cancelled" } as AgentEvent;
+    let admitted = false;
+    const revokeComputerConnection = vi.fn(async () => {
+      expect(admitted).toBe(true);
+      return {
+        cancelledRequestIds: [createId("request")],
+        connectionIds: [callable.grant.connectionId!],
+        removedApps: [],
+        requestEvents: [requestEvent],
+      };
+    });
+    const onDeploymentEvent = vi.fn();
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(),
+        attached: vi.fn(),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(async (_runnerId, task) => {
+          admitted = true;
+          try {
+            return await task();
+          } finally {
+            admitted = false;
+          }
+        }),
+      },
+      onDeploymentEvent,
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: "read" as const,
+          connection: computerConnectionSummary("read"),
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: false,
+        })),
+        revokeComputerConnection,
+      },
+    });
+    await expect(
+      service.devices.computerAppApprovals.disconnectComputerConnection({
+        connectionId: callable.grant.connectionId!,
+        ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+        requestId: "disconnect-computer",
+      }),
+    ).resolves.toEqual({ notice: null, revokedUpstream: false });
+    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
+  });
+});
+
+describe("DeviceService computer invocation", () => {
+  function invocationFixture(input: {
+    readonly connectionAccess?: "read" | "read-write";
+    readonly grantAccess?: "read" | "read-write";
+    readonly moduleAttached?: boolean;
+    readonly outcome: ComputerAppInvokeOutcome | Promise<ComputerAppInvokeOutcome>;
+    readonly revoked?: boolean;
+    readonly runnerConnected?: boolean;
+    readonly stale?: boolean;
+  }) {
+    const baseCallable = computerCallable("write");
+    const callable: CallableIntegrationTool = {
+      ...baseCallable,
+      grant: {
+        ...baseCallable.grant,
+        access: input.grantAccess ?? "read-write",
+      } as IntegrationGrant,
+      installation: input.stale
+        ? {
+            ...baseCallable.installation,
+            provenance: {
+              ...baseCallable.installation.provenance,
+              definitionDigest: "x".repeat(43),
+            },
+          }
+        : baseCallable.installation,
+    };
+    const runnerId = createId("runner");
+    const connection = {
+      ...computerConnectionSummary(input.connectionAccess ?? "read-write"),
+      computer: {
+        blockedAt: null,
+        policyRevision: null,
+        access: input.connectionAccess ?? "read-write",
+        app: null,
+        runnerId,
+      },
+      id: callable.grant.connectionId!,
+    };
+    let admitted = false;
+    const send = vi.fn(async () => {
+      expect(admitted).toBe(true);
+      return { outcome: Promise.resolve(input.outcome) };
+    });
+    const listCallableTools = vi.fn(async () => [callable]);
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => null),
+        attached: vi.fn(() => input.moduleAttached ?? false),
+        send,
+        withRunnerAdmission: vi.fn(async (_runnerId, task) => {
+          admitted = true;
+          try {
+            return await task();
+          } finally {
+            admitted = false;
+          }
+        }),
+      },
+      definitions: [computerDefinition],
+      isRunnerConnected: vi.fn(() => input.runnerConnected ?? false),
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: input.connectionAccess ?? "read-write",
+          connection,
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: input.revoked ?? false,
+        })),
+        listCallableTools,
+      },
+    });
+    return { callable, listCallableTools, send, service };
+  }
+
+  it.each([
+    ["offline", "Studio Mac is offline. Apple Messages will work again when it is back."],
+    [
+      "permission-required",
+      "Allow Opensteer to control Messages in System Settings › Privacy & Security › Automation on Studio Mac.",
+    ],
+    ["unsupported", "Update Opensteer on Studio Mac to use Send message."],
+    [
+      "outcome-unknown",
+      "Studio Mac did not confirm this. Check whether it happened before trying again.",
+    ],
+    ["lost", "Studio Mac did not answer. Try again."],
+    ["busy", "Studio Mac is busy with other requests. Try again in a moment."],
+    ["invalid-arguments", "Recipient is invalid."],
+    ["failed", "Messages failed safely."],
+  ] as const)("maps %s to its agent-facing sentence", async (code, expected) => {
+    const { callable, service } = invocationFixture({
+      outcome: {
+        code,
+        kind: "error",
+        message:
+          code === "permission-required"
+            ? "Allow Opensteer to control Messages in System Settings › Privacy & Security › Automation."
+            : code === "invalid-arguments" || code === "failed"
+              ? expected
+              : "runner detail",
+        retryable: code === "busy" || code === "lost" || code === "offline",
+      },
+    });
+    const result = await service.callTool(
+      callable,
+      {
+        text: "hello",
+        to: { address: "a@example.test" },
+      },
+      caller,
+    );
+    expect(result).toMatchObject({ content: [{ text: expected, type: "text" }], isError: true });
+  });
+
+  it("does not call an online computer offline when its integrations stream drops", async () => {
+    const { callable, service } = invocationFixture({
+      outcome: {
+        code: "offline",
+        kind: "error",
+        message: "The integrations stream is not attached.",
+        retryable: true,
+      },
+      runnerConnected: true,
+    });
+
+    await expect(
+      service.callTool(callable, { text: "hello", to: { address: "a@example.test" } }, caller),
+    ).resolves.toMatchObject({
+      content: [
+        {
+          text: "Opensteer's integrations service is unavailable on Studio Mac.",
+          type: "text",
+        },
+      ],
+      isError: true,
+    });
+  });
+
+  it.each([
+    ["read" as const, "read-write" as const],
+    ["read-write" as const, "read" as const],
+  ])(
+    "requires both the connection and grant to cover writes",
+    async (connectionAccess, grantAccess) => {
+      const { callable, send, service } = invocationFixture({
+        connectionAccess,
+        grantAccess,
+        outcome: { kind: "ok", value: {} },
+      });
+      await expect(
+        service.callTool(callable, { text: "hello", to: { address: "a@example.test" } }, caller),
+      ).rejects.toBeInstanceOf(IntegrationAuthorizationRequiredError);
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["revoked", "downgraded", "narrowed"] as const)(
+    "re-resolves %s authority inside admission before sending",
+    async (label) => {
+      const { callable, listCallableTools, send, service } = invocationFixture({
+        outcome: { kind: "ok", value: {} },
+      });
+      const authority: CallableIntegrationTool[] =
+        label === "revoked"
+          ? []
+          : label === "downgraded"
+            ? [
+                {
+                  ...callable,
+                  grant: { ...callable.grant, access: "read" } as IntegrationGrant,
+                },
+              ]
+            : [{ ...callable, tool: { ...callable.tool, schemaDigest: "z".repeat(43) } }];
+      listCallableTools.mockResolvedValue(authority);
+
+      await expect(
+        service.callTool(callable, { text: "hello", to: { address: "a@example.test" } }, caller),
+      ).rejects.toBeInstanceOf(IntegrationAuthorizationRequiredError);
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a revoked Runner and a stale installed definition before sending", async () => {
+    const revoked = invocationFixture({ outcome: { kind: "ok", value: {} }, revoked: true });
+    await expect(
+      revoked.service.callTool(
+        revoked.callable,
+        {
+          text: "hello",
+          to: { address: "a@example.test" },
+        },
+        caller,
+      ),
+    ).rejects.toBeInstanceOf(IntegrationAuthorizationRequiredError);
+    expect(revoked.send).not.toHaveBeenCalled();
+
+    const stale = invocationFixture({ outcome: { kind: "ok", value: {} }, stale: true });
+    await expect(
+      stale.service.callTool(
+        stale.callable,
+        {
+          text: "hello",
+          to: { address: "a@example.test" },
+        },
+        caller,
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("being updated"),
+    });
+    expect(stale.send).not.toHaveBeenCalled();
+  });
+
+  it("releases admission before awaiting the computer's answer", async () => {
+    let resolve!: (outcome: ComputerAppInvokeOutcome) => void;
+    const outcome = new Promise<ComputerAppInvokeOutcome>((settle) => {
+      resolve = settle;
+    });
+    const { callable, service } = invocationFixture({ outcome });
+    const call = service.callTool(
+      callable,
+      {
+        text: "hello",
+        to: { address: "a@example.test" },
+      },
+      caller,
+    );
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    resolve({ kind: "ok", value: { accepted: true } });
+    await expect(call).resolves.toMatchObject({ structuredContent: { accepted: true } });
+  });
+
+  it.each(["revoke", "downgrade", "narrow", "disconnect", "uninstall"] as const)(
+    "does not send a resolved write when %s wins before admission",
+    async (mutation) => {
+      const callable = computerCallable("write");
+      const runnerId = createId("runner");
+      const connection = {
+        ...computerConnectionSummary("read-write"),
+        computer: {
+          blockedAt: null,
+          policyRevision: null,
+          access: "read-write" as const,
+          app: null,
+          runnerId,
+        },
+        id: callable.grant.connectionId!,
+      };
+      let authority: CallableIntegrationTool[] = [callable];
+      let connectionAccess: "read" | "read-write" = "read-write";
+      let connected = true;
+      let releaseLookup!: () => void;
+      let markLookupStarted!: () => void;
+      const lookupGate = new Promise<void>((resolve) => {
+        releaseLookup = resolve;
+      });
+      const lookupStarted = new Promise<void>((resolve) => {
+        markLookupStarted = resolve;
+      });
+      let connectionReads = 0;
+      const getComputerConnectionForCall = vi.fn(async () => {
+        connectionReads += 1;
+        const result = connected
+          ? {
+              access: connectionAccess,
+              connection: {
+                ...connection,
+                computer: {
+                  blockedAt: null,
+                  policyRevision: null,
+                  access: connectionAccess,
+                  app: null,
+                  runnerId,
+                },
+              },
+              runnerId,
+              runnerName: "Studio Mac",
+              deviceProfile: null,
+              runnerRevoked: false,
+            }
+          : null;
+        if (connectionReads === 1) {
+          markLookupStarted();
+          await lookupGate;
+        }
+        return result;
+      });
+      let tail = Promise.resolve<unknown>(undefined);
+      const admissionCalls: ReturnType<typeof createId<"runner">>[] = [];
+      const withRunnerAdmission = <Result>(
+        admittedRunnerId: ReturnType<typeof createId<"runner">>,
+        task: () => Promise<Result> | Result,
+      ): Promise<Result> => {
+        admissionCalls.push(admittedRunnerId);
+        const turn = tail.then(task, task);
+        tail = turn.then(
+          () => undefined,
+          () => undefined,
+        );
+        return turn;
+      };
+      const send = vi.fn();
+      const store = {
+        createGrant: vi.fn(async () => {
+          authority = [
+            {
+              ...callable,
+              grant: { ...callable.grant, access: "read" } as IntegrationGrant,
+            },
+          ];
+          return authority[0]!.grant as IntegrationGrant;
+        }),
+        getComputerConnectionForCall,
+        listCallableTools: vi.fn(async () => authority),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
+        localMcp: {
+          list: vi.fn(async () => []),
+        } as unknown as IntegrationPlatformStore["localMcp"],
+        listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
+        listInstallations: vi.fn(async () => [callable.installation]),
+        revokeComputerConnection: vi.fn(async () => {
+          connected = false;
+          authority = [];
+          return {
+            cancelledRequestIds: [],
+            connectionIds: [connection.id],
+            removedApps: [],
+            requestEvents: [],
+            reissuedSetupRequestId: null,
+            sessionReset: null,
+          };
+        }),
+        revokeGrant: vi.fn(async () => {
+          authority = [];
+        }),
+        setDeviceComputerConnection: vi.fn(async () => {
+          connectionAccess = "read";
+          authority = [];
+          return {
+            connection: deviceConnection(connection),
+            created: false,
+            fulfilledRequestIds: [],
+            grants: [],
+            requestEvents: [],
+            reissuedSetupRequestId: null,
+            sessionReset: null,
+          };
+        }),
+        uninstall: vi.fn(async () => {
+          connected = false;
+          authority = [];
+          return {
+            cancelledRequestIds: [],
+            installation: callable.installation,
+            removedConnectionIds: [connection.id],
+            removedApps: [],
+            removedServerIds: [callable.server.id],
+            requestEvents: [],
+          };
+        }),
+      };
+      const service = platform({
+        computerApps: {
+          appStatus: vi.fn(() => computerStatus()),
+          attached: vi.fn(() => true),
+          send,
+          withRunnerAdmission,
+        },
+        definitions: [computerDefinition],
+        store,
+      });
+      const call = service.callTool(
+        callable,
+        {
+          text: "hello",
+          to: { address: "a@example.test" },
+        },
+        caller,
+      );
+      await withTimeout(lookupStarted, 5_000, {
+        timeoutError: () => new Error("The computer app call never looked up its connection"),
+      });
+      if (mutation === "revoke") {
+        await service.devices.revokeGrant({
+          grantId: callable.grant.id,
+          ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          requestId: "revoke-race",
+        });
+      } else if (mutation === "downgrade") {
+        await service.devices.createGrant({
+          access: "read",
+          alias: callable.grant.alias,
+          connectionId: callable.grant.connectionId,
+          createdBy: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          installationId: callable.installation.id,
+          isDefault: true,
+          ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+        });
+      } else if (mutation === "narrow") {
+        await service.devices.computerAppApprovals.setComputerConnection({
+          kind: "app",
+          app: null,
+          access: "read",
+          actorUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          definitionId: computerDefinition.id,
+
+          requestId: "narrow-race",
+          runnerId,
+        });
+      } else if (mutation === "disconnect") {
+        await service.devices.computerAppApprovals.disconnectComputerConnection({
+          connectionId: callable.grant.connectionId!,
+          ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          requestId: "disconnect-race",
+        });
+      } else {
+        await service.uninstallIntegration({
+          actorUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          installationId: callable.installation.id,
+          requestId: "uninstall-race",
+        });
+      }
+      releaseLookup();
+
+      await expect(call).rejects.toBeInstanceOf(IntegrationAuthorizationRequiredError);
+      expect(send).not.toHaveBeenCalled();
+      expect(admissionCalls).toContain(runnerId);
+    },
+  );
+});
+
+describe("DeviceService computer discovery", () => {
+  it.each([
+    [
+      false,
+      false,
+      null,
+      "INTEGRATION_UNAVAILABLE",
+      "Studio Mac is offline. Apple Messages will work again when it is back.",
+    ],
+    [
+      true,
+      false,
+      null,
+      "INTEGRATION_UNAVAILABLE",
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    ],
+    [
+      true,
+      true,
+      computerStatus({
+        detail: "Messages needs Full access.",
+        remedy: "full-disk-access",
+        state: "permission-required",
+      }),
+      "INTEGRATION_UNAVAILABLE",
+      "Messages needs Full access on Studio Mac.",
+    ],
+    [true, true, computerStatus(), "READY", null],
+  ] as const)(
+    "overlays connected=%s attached=%s status=%o without removing tools",
+    async (runnerConnected, attached, status, expectedCode, expectedDetail) => {
+      const callable = computerCallable("read");
+      const runnerId = createId("runner");
+      const connectionId = callable.grant.connectionId!;
+      const readiness = {
+        code: "READY" as const,
+        connectionId,
+        detail: null,
+        provider: null,
+        requiredAccess: null,
+        serverId: callable.server.id,
+      };
+      const inventory = [
+        {
+          accounts: [
+            { access: "read" as const, account: "Studio Mac", connectionId, isDefault: true },
+          ],
+          installation: callable.installation,
+          readiness: {
+            servers: [readiness],
+            tools: [{ readiness, toolId: callable.tool.id }],
+          },
+          servers: [callable.server],
+          tools: [callable.tool],
+        },
+      ];
+      const service = platform({
+        isRunnerConnected: vi.fn(() => runnerConnected),
+        computerApps: {
+          appStatus: vi.fn(() => status),
+          attached: vi.fn(() => attached),
+          send: vi.fn(),
+          withRunnerAdmission: vi.fn(),
+        },
+        store: {
+          getComputerConnectionForCall: vi.fn(async () => ({
+            access: "read" as const,
+            connection: {
+              ...computerConnectionSummary("read"),
+              computer: {
+                blockedAt: null,
+                policyRevision: null,
+                access: "read" as const,
+                app: null,
+                runnerId,
+              },
+              id: connectionId,
+            },
+            runnerId,
+            runnerName: "Studio Mac",
+            deviceProfile: null,
+            runnerRevoked: false,
+          })),
+          listDiscoveryInventory: vi.fn(async () => inventory),
+        },
+      });
+
+      const [entry] = await service.listDiscoveryInventory({
+        ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+        threadId: createId("thread"),
+      });
+      expect(entry?.readiness.servers[0]).toMatchObject({
+        code: expectedCode,
+        detail: expectedDetail,
+      });
+      expect(entry?.readiness.tools[0]?.readiness).toMatchObject({
+        code: expectedCode,
+        detail: expectedDetail,
+      });
+      expect(entry?.tools).toEqual([callable.tool]);
+      expect(entry?.accounts[0]?.account).toBe("Studio Mac");
+    },
+  );
+
+  it("keeps send ready when reading needs permission and keeps the server ready", async () => {
+    const callable = computerCallable("read");
+    const connectionId = callable.grant.connectionId!;
+    const runnerId = createId("runner");
+    if (!isComputerAppDefinition(computerDefinition))
+      throw new Error("Computer definition invalid");
+    const sendTool = listedTool(
+      computerAppTools(computerDefinition, "read-write", connectionId).find(
+        ({ name }) => name === "send_message",
+      )!,
+    );
+    const readiness = {
+      code: "READY" as const,
+      connectionId,
+      detail: null,
+      provider: null,
+      requiredAccess: null,
+      serverId: callable.server.id,
+    };
+    const readBlocked = computerStatus({
+      detail: "Messages needs Full access.",
+      remedy: "full-disk-access",
+      state: "permission-required",
+    });
+    const mixedStatus: MachineAppStatus = {
+      ...readBlocked,
+      operations: readBlocked.operations.map((operation) =>
+        operation.operation === "send_message"
+          ? { detail: null, operation: operation.operation, remedy: null, state: "ready" }
+          : operation,
+      ),
+    };
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => mixedStatus),
+        attached: vi.fn(() => true),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(),
+      },
+      definitions: [computerDefinition],
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: "read-write" as const,
+          connection: {
+            ...computerConnectionSummary("read-write"),
+            computer: {
+              blockedAt: null,
+              policyRevision: null,
+              access: "read-write" as const,
+              app: null,
+              runnerId,
+            },
+            id: connectionId,
+          },
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: false,
+        })),
+        listDiscoveryInventory: vi.fn(async () => [
+          {
+            accounts: [
+              {
+                access: "read-write" as const,
+                account: "Studio Mac",
+                connectionId,
+                isDefault: true,
+              },
+            ],
+            installation: callable.installation,
+            readiness: {
+              servers: [readiness],
+              tools: [
+                { readiness, toolId: callable.tool.id },
+                { readiness, toolId: sendTool.id },
+              ],
+            },
+            servers: [callable.server],
+            tools: [callable.tool, { ...sendTool, serverId: callable.server.id }],
+          },
+        ]),
+      },
+    });
+
+    const [entry] = await service.listDiscoveryInventory({
+      ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+      threadId: createId("thread"),
+    });
+    expect(entry?.readiness.servers[0]?.code).toBe("READY");
+    expect(entry?.readiness.tools).toEqual([
+      {
+        readiness: expect.objectContaining({
+          code: "INTEGRATION_UNAVAILABLE",
+          detail: "Messages needs Full access on Studio Mac.",
+        }),
+        toolId: callable.tool.id,
+      },
+      { readiness, toolId: sendTool.id },
+    ]);
+  });
+
+  it("keeps send unavailable when the attached computer does not report the app", async () => {
+    const callable = computerCallable("write");
+    const connectionId = callable.grant.connectionId!;
+    const runnerId = createId("runner");
+    const readiness = {
+      code: "READY" as const,
+      connectionId,
+      detail: null,
+      provider: null,
+      requiredAccess: null,
+      serverId: callable.server.id,
+    };
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => null),
+        attached: vi.fn(() => true),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(),
+      },
+      definitions: [computerDefinition],
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: "read-write" as const,
+          connection: {
+            ...computerConnectionSummary("read-write"),
+            computer: {
+              blockedAt: null,
+              policyRevision: null,
+              access: "read-write" as const,
+              app: null,
+              runnerId,
+            },
+            id: connectionId,
+          },
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: false,
+        })),
+        listDiscoveryInventory: vi.fn(async () => [
+          {
+            accounts: [
+              {
+                access: "read-write" as const,
+                account: "Studio Mac",
+                connectionId,
+                isDefault: true,
+              },
+            ],
+            installation: callable.installation,
+            readiness: {
+              servers: [readiness],
+              tools: [{ readiness, toolId: callable.tool.id }],
+            },
+            servers: [callable.server],
+            tools: [callable.tool],
+          },
+        ]),
+      },
+    });
+
+    const [entry] = await service.listDiscoveryInventory({
+      ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+      threadId: createId("thread"),
+    });
+    expect(entry?.readiness.servers[0]).toMatchObject({
+      code: "INTEGRATION_UNAVAILABLE",
+      detail: "Apple Messages is unavailable on Studio Mac.",
+    });
+    expect(entry?.readiness.tools[0]?.readiness).toMatchObject({
+      code: "INTEGRATION_UNAVAILABLE",
+      detail: "Apple Messages is unavailable on Studio Mac.",
+    });
+  });
+
+  /*
+   * A phone's readiness is said from its state, in a sentence about the phone:
+   * never the phone's own "Paused on the phone" with " on Pixel 7" bolted on,
+   * and never as an app that will work again on a computer.
+   */
+
+  it("preserves an access requirement while the computer is offline", async () => {
+    const callable = computerCallable("write");
+    const connectionId = callable.grant.connectionId!;
+    const readiness = {
+      code: "ACCESS_GRANT_REQUIRED" as const,
+      connectionId,
+      detail: null,
+      provider: null,
+      requiredAccess: "read-write" as const,
+      serverId: callable.server.id,
+    };
+    const getComputerConnectionForCall = vi.fn();
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => null),
+        attached: vi.fn(() => false),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(),
+      },
+      store: {
+        getComputerConnectionForCall,
+        listDiscoveryInventory: vi.fn(async () => [
+          {
+            accounts: [
+              {
+                access: "read-write" as const,
+                account: "Studio Mac",
+                connectionId,
+                isDefault: true,
+              },
+            ],
+            installation: callable.installation,
+            readiness: {
+              servers: [readiness],
+              tools: [{ readiness, toolId: callable.tool.id }],
+            },
+            servers: [callable.server],
+            tools: [callable.tool],
+          },
+        ]),
+      },
+    });
+
+    const [entry] = await service.listDiscoveryInventory({
+      ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+      threadId: createId("thread"),
+    });
+    expect(entry?.readiness.servers).toEqual([readiness]);
+    expect(entry?.readiness.tools).toEqual([{ readiness, toolId: callable.tool.id }]);
+    expect(getComputerConnectionForCall).not.toHaveBeenCalled();
+  });
+
+  it("makes an operation unavailable when the Runner omits its readiness", async () => {
+    const callable = computerCallable("write");
+    const connectionId = callable.grant.connectionId!;
+    const runnerId = createId("runner");
+    const readiness = {
+      code: "READY" as const,
+      connectionId,
+      detail: null,
+      provider: null,
+      requiredAccess: null,
+      serverId: callable.server.id,
+    };
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() => computerStatus(undefined, ["query_messages", "export_attachment"])),
+        attached: vi.fn(() => true),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(),
+      },
+      definitions: [computerDefinition],
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: "read-write" as const,
+          connection: {
+            ...computerConnectionSummary("read-write"),
+            computer: {
+              blockedAt: null,
+              policyRevision: null,
+              access: "read-write" as const,
+              app: null,
+              runnerId,
+            },
+            id: connectionId,
+          },
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: false,
+        })),
+        listDiscoveryInventory: vi.fn(async () => [
+          {
+            accounts: [
+              {
+                access: "read-write" as const,
+                account: "Studio Mac",
+                connectionId,
+                isDefault: true,
+              },
+            ],
+            installation: callable.installation,
+            readiness: {
+              servers: [readiness],
+              tools: [{ readiness, toolId: callable.tool.id }],
+            },
+            servers: [callable.server],
+            tools: [callable.tool],
+          },
+        ]),
+      },
+    });
+
+    const [entry] = await service.listDiscoveryInventory({
+      ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+      threadId: createId("thread"),
+    });
+    expect(entry?.readiness.servers[0]?.code).toBe("INTEGRATION_UNAVAILABLE");
+    expect(entry?.readiness.tools[0]?.readiness.code).toBe("INTEGRATION_UNAVAILABLE");
+  });
+
+  it("does not make a read-only connection ready from an unexposed send operation", async () => {
+    const callable = computerCallable("read");
+    const connectionId = callable.grant.connectionId!;
+    const runnerId = createId("runner");
+    const readiness = {
+      code: "READY" as const,
+      connectionId,
+      detail: null,
+      provider: null,
+      requiredAccess: null,
+      serverId: callable.server.id,
+    };
+    const service = platform({
+      computerApps: {
+        appStatus: vi.fn(() =>
+          computerStatus({
+            detail: "Messages needs Full access.",
+            remedy: "full-disk-access",
+            state: "permission-required",
+          }),
+        ),
+        attached: vi.fn(() => true),
+        send: vi.fn(),
+        withRunnerAdmission: vi.fn(),
+      },
+      definitions: [computerDefinition],
+      store: {
+        getComputerConnectionForCall: vi.fn(async () => ({
+          access: "read" as const,
+          connection: {
+            ...computerConnectionSummary("read"),
+            computer: {
+              blockedAt: null,
+              policyRevision: null,
+              access: "read" as const,
+              app: null,
+              runnerId,
+            },
+            id: connectionId,
+          },
+          runnerId,
+          runnerName: "Studio Mac",
+          deviceProfile: null,
+          runnerRevoked: false,
+        })),
+        listDiscoveryInventory: vi.fn(async () => [
+          {
+            accounts: [
+              { access: "read" as const, account: "Studio Mac", connectionId, isDefault: true },
+            ],
+            installation: callable.installation,
+            readiness: {
+              servers: [readiness],
+              tools: [{ readiness, toolId: callable.tool.id }],
+            },
+            servers: [callable.server],
+            tools: [callable.tool],
+          },
+        ]),
+      },
+    });
+
+    const [entry] = await service.listDiscoveryInventory({
+      ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+      threadId: createId("thread"),
+    });
+    expect(entry?.readiness.servers[0]).toMatchObject({
+      code: "INTEGRATION_UNAVAILABLE",
+      detail: "Messages needs Full access on Studio Mac.",
+    });
+    expect(entry?.readiness.tools[0]?.readiness).toMatchObject({
+      code: "INTEGRATION_UNAVAILABLE",
+      detail: "Messages needs Full access on Studio Mac.",
+    });
+  });
+});
+
+describe("DeviceService computer app setup expiry", () => {
+  it("publishes replacement and opened events with one continuation wake", async () => {
+    const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
+    if (!guiDefinitionCandidate || !isComputerAppDefinition(guiDefinitionCandidate)) {
+      throw new Error("The macos-app definition is missing from the catalog.");
+    }
+    const ownerUserId = createId("user");
+    const runnerId = createId("runner");
+    const threadId = createId("thread");
+
+    const runId = createId("run");
+    const requestId = createId("request");
+    const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+    const request = {
+      callId: "computer-app-live-event",
+      cancellationReason: null,
+      createdAt: now,
+      id: requestId,
+      kind: "computer.app.access",
+      mode: "durable",
+      originatingOccurrenceId: null,
+      originatingRunId: runId,
+      originatingThreadId: threadId,
+
+      payload: {
+        access: "read",
+        app: notes,
+        definitionId: "macos-app",
+        kind: "computer.app.access",
+        deviceId: DeviceIdSchema.parse(runnerId),
+        setupRequestId: "setup-request",
+      },
+      presentation: {
+        kind: "external",
+        subject: { id: "setup-request", kind: "computer-app-setup" },
+        title: "Wants to use Notes",
+      },
+      requestedBy: ownerUserId,
+      requiredActor: "requester",
+      resolvedAt: null,
+      resolvedBy: null,
+      response: null,
+      status: "pending",
+    } as Request;
+    const openedEvent = {
+      createdAt: now,
+      data: { request },
+      id: createId("event"),
+      runId,
+      threadId,
+      type: "request.opened",
+    } as unknown as AgentEvent;
+    const replacementEvent = {
+      createdAt: now,
+      data: { requestId: createId("request") },
+      id: createId("event"),
+      runId,
+      threadId,
+      type: "request.resolved",
+    } as unknown as AgentEvent;
+    const onDeploymentEvent = vi.fn();
+    const onRequestsChanged = vi.fn();
+    const requestComputerAppAccess = vi.fn(async (): Promise<ComputerAppAccessDecision> => ({
+      kind: "computer",
+      replayed: false,
+      request,
+      requestEvents: [replacementEvent, openedEvent],
+      setupRequest: {} as never,
+    }));
+    const service = platform({
+      computerApps: {
+        attached: () => true,
+        withRunnerAdmission: async (_id, task) => task(),
+        appStatus: () => null,
+        send: vi.fn(),
+      },
+      computerUse: {
+        eligibleMachines: async (_owner: unknown, definitionId: string) =>
+          definitionId === "macos-app"
+            ? [{ runnerId, name: "Alex's Mac", state: "ready", ready: true }]
+            : [],
+        threadTitle: async () => "Read my notes",
+        resolveApp: vi.fn(async () => ({
+          allowed: true,
+          identity: notes,
+          path: "/System/Applications/Notes.app",
+          reason: null,
+          risk: "standard",
+          running: false,
+        })),
+      } as unknown as ComputerUseGateway,
+      definitions: [guiDefinitionCandidate],
+      onRequestsChanged,
+      onDeploymentEvent,
+      store: {
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+        getDeviceComputerUsePolicy: async () => ({
+          appApproval: "ask",
+          approvalKeyId: null,
+          revision: 0,
+        }),
+      },
+    });
+
+    await service.devices.computerAppApprovals.requestComputerAppAccess({
+      reason: "Read my notes",
+      access: "read",
+      app: "Notes",
+      originatingRunId: runId,
+      ownerUserId,
+      runnerId,
+      threadId,
+    });
+
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, openedEvent);
+    expect(onRequestsChanged).toHaveBeenCalledOnce();
+
+    requestComputerAppAccess.mockResolvedValueOnce({
+      kind: "computer",
+      replayed: true,
+      request,
+      requestEvents: [],
+      setupRequest: {} as never,
+    });
+    await service.devices.computerAppApprovals.requestComputerAppAccess({
+      reason: "Read my notes",
+      access: "read",
+      app: "Notes",
+      originatingRunId: runId,
+      ownerUserId,
+      runnerId,
+      threadId,
+    });
+    expect(onDeploymentEvent).toHaveBeenCalledTimes(2);
+    expect(onRequestsChanged).toHaveBeenCalledOnce();
+  });
+
+  it.each(["offline", "connecting", "absent", "reported"] as const)(
+    "only asks an iPhone for an app it reports: %s",
+    async (availability) => {
+      const definition = computerAppIntegrations.find(({ id }) => id === "apple-calendar")!;
+      const runnerId = createId("runner");
+      const requestComputerAppSetup = vi.fn(async () => ({
+        request: { id: "setup-request", runnerId } as never,
+        settlement: { grants: [], requestEvents: [], requestIds: [] },
+      }));
+      let insideAdmission = false;
+      const reportsApp = vi.fn(() => {
+        expect(insideAdmission).toBe(true);
+        return availability;
+      });
+      const service = platform({
+        definitions: [definition],
+        computerApps: {
+          appStatus: () => null,
+          attached: () => availability !== "offline",
+          reportsApp,
+          send: vi.fn(),
+          withRunnerAdmission: async (_runnerId, task) => {
+            insideAdmission = true;
+            try {
+              return await task();
+            } finally {
+              insideAdmission = false;
+            }
+          },
+        },
+        store: {
+          computerAppRunner: async () => ({
+            deviceProfile: "iphone",
+            publicKeyFingerprint: "phone-key",
+          }),
+          requestDeviceComputerAppSetup: requestComputerAppSetup,
+        },
+      });
+      const asking = service.devices.computerAppApprovals.requestComputerAppSetup({
+        kind: "app",
+        app: null,
+        access: "read",
+        actorUserId: createId("user"),
+        definitionId: definition.id,
+        runnerId,
+      });
+      if (availability === "reported") {
+        await expect(asking).resolves.toMatchObject({ id: "setup-request" });
+        expect(requestComputerAppSetup).toHaveBeenCalledOnce();
+      } else {
+        const messages = {
+          offline: "Open Opensteer on this iPhone and keep it open, then try again.",
+          connecting: "Opensteer on this iPhone is still connecting. Try again in a moment.",
+          absent:
+            "This version of Opensteer on this iPhone doesn't offer Calendar. Update Opensteer on this iPhone.",
+        };
+        await expect(asking).rejects.toMatchObject({
+          code: "conflict",
+          message: messages[availability],
+        });
+        expect(requestComputerAppSetup).not.toHaveBeenCalled();
+      }
+      expect(reportsApp).toHaveBeenCalledWith(runnerId, definition.id);
+    },
+  );
+
+  it("publishes request settlements produced by setup replacement and cancellation", async () => {
+    const replacementEvent = { type: "request.resolved" } as AgentEvent;
+    const cancellationEvent = { type: "request.resolved" } as AgentEvent;
+    const requestComputerAppSetup = vi.fn(async () => ({
+      request: { id: "setup-request" } as never,
+      settlement: {
+        grants: [],
+        requestEvents: [replacementEvent],
+        requestIds: [createId("request")],
+      },
+    }));
+    const cancelComputerAppSetup = vi.fn(async () => ({
+      grants: [],
+      requestEvents: [cancellationEvent],
+      requestIds: [createId("request")],
+      deviceId: null,
+    }));
+    const onDeploymentEvent = vi.fn();
+    const onRequestsChanged = vi.fn();
+    const service = platform({
+      definitions: [computerDefinition],
+      onRequestsChanged,
+      onDeploymentEvent,
+      store: {
+        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
+        requestDeviceComputerAppSetup: requestComputerAppSetup,
+      },
+    });
+
+    await service.devices.computerAppApprovals.requestComputerAppSetup({
+      kind: "app",
+      app: null,
+      access: "read",
+      actorUserId: createId("user"),
+      definitionId: computerDefinition.id,
+      runnerId: createId("runner"),
+    });
+    await service.devices.computerAppApprovals.cancelComputerAppSetup({
+      ownerUserId: createId("user"),
+      requestId: "setup-request",
+    });
+
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, cancellationEvent);
+    expect(onRequestsChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it("declines the Requests of approvals nobody answered and delivers their continuations", async () => {
+    const requestEvent = {
+      createdAt: now,
+      data: { requestId: createId("request") },
+      id: createId("event"),
+      type: "request.declined",
+    } as unknown as AgentEvent;
+    const expireComputerAppSetupRequests = vi.fn(async () => ({
+      grants: [],
+      requestEvents: [requestEvent],
+      requestIds: [createId("request")],
+      deviceIds: [],
+    }));
+    const onDeploymentEvent = vi.fn();
+    const onRequestsChanged = vi.fn();
+    const onConnectionsChanged = vi.fn();
+    const service = platform({
+      onConnectionsChanged,
+      onRequestsChanged,
+      onDeploymentEvent,
+      store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
+    });
+
+    await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
+
+    expect(expireComputerAppSetupRequests).toHaveBeenCalledOnce();
+    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
+    // The same two a cancel fires: the Thread hears, and the list is stale.
+    expect(onRequestsChanged).toHaveBeenCalledOnce();
+    expect(onConnectionsChanged).toHaveBeenCalledOnce();
+  });
+
+  it("says nothing when no approval had expired", async () => {
+    const onRequestsChanged = vi.fn();
+    const service = platform({
+      onRequestsChanged,
+      store: {
+        expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
+          grants: [],
+          requestEvents: [],
+          requestIds: [],
+          deviceIds: [],
+        })),
+      },
+    });
+
+    await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
+
+    expect(onRequestsChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe("DeviceService computer use gateway", () => {
+  const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
+  if (!guiDefinitionCandidate || !isComputerAppDefinition(guiDefinitionCandidate)) {
+    throw new Error("The macos-app definition is missing from the catalog.");
+  }
+  const guiDefinition = guiDefinitionCandidate;
+  const phoneDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "android-phone");
+  if (!phoneDefinitionCandidate || !isComputerAppDefinition(phoneDefinitionCandidate)) {
+    throw new Error("The android-phone definition is missing from the catalog.");
+  }
+  const phoneDefinition = phoneDefinitionCandidate;
+  const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+  const baseCallable = computerCallable("read");
+
+  function observation(overrides: Record<string, unknown> = {}) {
+    return {
+      app: notes,
+      capturedAt: now,
+      elementCount: 2,
+      focusChanged: false,
+      geometry: { width: 800, height: 600 },
+      snapshot: "obs-1",
+      windows: [],
+      blockedBy: [],
+      alone: false,
+      screenshot: {
+        base64: "AAAA",
+        height: 300,
+        mime: "image/jpeg" as const,
+        width: 400,
+      },
+      tree: '[0] window "Notes" (0,0 800x600)',
+      truncated: false,
+      window: {
+        ref: "window-1",
+        windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        frame: { height: 600, width: 800, x: 0, y: 0 },
+        scale: 2,
+        title: "Shopping",
+      },
+      ...overrides,
+    };
+  }
+
+  function guiFixture(
+    input: {
+      readonly connectionAccess?: "read" | "read-write";
+      readonly grantAccess?: "read" | "read-write";
+      readonly beforeSend?: () => Promise<void>;
+      readonly mcpImageContent?: boolean;
+      readonly observation?: Record<string, unknown> | null;
+      readonly operation?: "act" | "observe";
+      /** The whole Android phone "Pixel 7" rather than Notes on "Alex's Mac". */
+      readonly phone?: boolean;
+      readonly passwords?: ComputerUseServiceOptions["passwords"];
+      readonly revoke?: () => void;
+      readonly resultError?: ComputerUseError;
+      readonly performed?: readonly string[];
+      readonly refusal?: ComputerUseError;
+      readonly revoked?: () => boolean;
+      readonly runnerConnected?: boolean;
+      readonly settleRefusal?: ComputerUseError;
+    } = {},
+  ) {
+    const runnerId = createId("runner");
+    const definition = input.phone ? phoneDefinition : guiDefinition;
+    const installation: IntegrationInstallation = {
+      ...baseCallable.installation,
+      manifest: {
+        ...baseCallable.installation.manifest,
+        definition: integrationDefinitionSummary(definition),
+      },
+      provenance: {
+        artifactDigest: null,
+        definitionDigest: integrationDefinitionDigest(definition),
+        definitionId: definition.id,
+        kind: "catalog",
+      },
+      title: "Computer use",
+    };
+    const operationName = input.operation ?? "observe";
+    const readToolId = createIntegrationId("tool");
+    const tool = computerAppTools(definition, "read-write", baseCallable.grant.connectionId!).find(
+      ({ name }) => name === operationName,
+    );
+    if (!tool) throw new Error("The gui definition has no such tool.");
+    const callable: CallableIntegrationTool = {
+      ...baseCallable,
+      grant: {
+        ...baseCallable.grant,
+        access: input.grantAccess ?? "read-write",
+      } as IntegrationGrant,
+      installation,
+      server: {
+        ...baseCallable.server,
+        connectionRequirement: { definitionId: definition.id, kind: "computer" },
+        transport: { definitionId: definition.id, type: "computer" },
+      } as IntegrationServer,
+      tool: {
+        ...baseCallable.tool,
+        ...listedTool(tool),
+        id: baseCallable.tool.id,
+        serverId: baseCallable.server.id,
+      },
+    };
+    const connection = {
+      ...computerConnectionSummary(input.connectionAccess ?? "read-write"),
+      computer: {
+        blockedAt: null,
+        policyRevision: null,
+        access: input.connectionAccess ?? "read-write",
+        app: input.phone ? null : notes,
+        runnerId,
+      },
+      definitionId: definition.id,
+      id: callable.grant.connectionId!,
+    };
+    let admitted = false;
+    const prepared: boolean[] = [];
+    const dispatch = async () => {
+      // The frame has to leave inside the turn that re-read the authority.
+      expect(admitted).toBe(true);
+      if (input.refusal) throw input.refusal;
+      return {
+        sessionId: mintComputerUseSessionId(),
+        settle: async () => {
+          if (input.settleRefusal) throw input.settleRefusal;
+          return {
+            error: input.resultError ?? null,
+            kind: input.phone ? ("display" as const) : ("app" as const),
+            observation:
+              operationName === "act" && !input.phone
+                ? null
+                : input.observation === null
+                  ? null
+                  : input.phone
+                    ? {
+                        capturedAt: now,
+                        elementCount: 2,
+                        foreground: null,
+                        geometry: { width: 400, height: 300 },
+                        locked: false,
+                        observationId: "obs-1",
+                        rotation: 0,
+                        screen: "on" as const,
+                        screenshot: null,
+                        screenshotUnavailable: "failed" as const,
+                        secureLock: false,
+                        tree: "phone",
+                        truncated: false,
+                      }
+                    : observation(input.observation ?? {}),
+            performed: operationName === "act" ? (input.performed ?? []) : null,
+          };
+        },
+      };
+    };
+    const lease = { sessionId: mintComputerUseSessionId() };
+    const mockedComputerUse = {
+      eligibleInventory: async () => ({ machines: [], phones: [] }),
+      closeForConnection: vi.fn(),
+      eligibleMachines: vi.fn(async () => []),
+      installedApps: vi.fn(async () => []),
+      // The Thread's name and the Run's state are read here, so this has to
+      // happen before the Mac's admission turn, never inside it.
+      prepare: vi.fn(async () => {
+        prepared.push(admitted);
+        return lease;
+      }),
+      release: vi.fn(),
+      resolveApp: vi.fn(),
+      sendAct: vi.fn(async (...[, , , , , admit]: Parameters<ComputerUseGateway["sendAct"]>) =>
+        admit ? admit(dispatch) : dispatch(),
+      ),
+      sendObserve: vi.fn(dispatch),
+      sendWindowOperation: vi.fn(async (_lease, _target, operation) =>
+        operation === "bind"
+          ? {
+              sessionId: lease.sessionId,
+              settle: async () => ({
+                kind: "app" as const,
+                error: null,
+                observation: null,
+                performed: null,
+                window: {
+                  ref: "window-1",
+                  windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                  title: "Shopping",
+                  focused: true,
+                  main: true,
+                  minimized: false,
+                  onScreen: true,
+                  modal: false,
+                  current: true,
+                  frame: { x: 0, y: 0, width: 800, height: 600 },
+                },
+              }),
+            }
+          : {
+              sessionId: lease.sessionId,
+              settle: async () => {
+                if (input.settleRefusal) throw input.settleRefusal;
+                return {
+                  kind: "app" as const,
+                  error: null,
+                  observation: observation(input.observation ?? {}),
+                  performed: null,
+                };
+              },
+            },
+      ),
+      stop: vi.fn(),
+    } as unknown as ComputerUseGateway;
+    const queue = new MutationQueue();
+    const sent: unknown[] = [];
+    const computerApps = {
+      appStatus: vi.fn(() => null),
+      attached: vi.fn(() => true),
+      send: vi.fn(async () => {
+        throw new Error("A gui tool never reaches the invoke path.");
+      }),
+      withRunnerAdmission: async <Result>(
+        _runnerId: Parameters<ComputerAppHub["withRunnerAdmission"]>[0],
+        task: () => Promise<Result> | Result,
+      ): Promise<Result> =>
+        queue.run(async () => {
+          admitted = true;
+          try {
+            await input.beforeSend?.();
+            return await task();
+          } finally {
+            admitted = false;
+          }
+        }),
+    };
+    const liveComputerUse = input.passwords
+      ? new ComputerUseService({
+          deploymentId: createId("deployment"),
+          passwords: input.passwords,
+          loginReceiver: () => ({
+            version: 1,
+            connectionId: "receiver-1",
+            connectionGeneration: 1,
+            publicKey: "B" + "A".repeat(86),
+          }),
+          hub: {
+            ...computerApps,
+            acknowledgeComputerUseStop: async () => true,
+            machinesFor: () => [],
+            sendComputerUse: async (frame) => {
+              expect(admitted).toBe(true);
+              sent.push(frame);
+              return {
+                outcome: Promise.resolve({
+                  kind: "ok",
+                  value: {
+                    error: null,
+                    ...(input.phone
+                      ? {
+                          observation: {
+                            capturedAt: now,
+                            elementCount: 2,
+                            foreground: null,
+                            geometry: { width: 400, height: 300 },
+                            locked: false,
+                            observationId: "obs-1",
+                            rotation: 0,
+                            screen: "on",
+                            screenshot: null,
+                            screenshotUnavailable: "failed",
+                            secureLock: false,
+                            tree: "phone",
+                            truncated: false,
+                          },
+                        }
+                      : {}),
+                    performed: [],
+                  },
+                }),
+              };
+            },
+          },
+          authorizer: { assertActiveGrant: async () => undefined },
+          listMachines: async () => [],
+          machineOwners: async () => new Map(),
+          onSessionsChanged: () => undefined,
+          stops: { initial: [], record: async () => undefined, clear: async () => undefined },
+          threadTitle: async () => "Saved login",
+        })
+      : null;
+    const computerUse = liveComputerUse ?? mockedComputerUse;
+    const service = platform({
+      nativeTabs: {
+        acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")),
+        captureMembership: vi.fn(async () => 0),
+      },
+      computerApps,
+      computerUse,
+      definitions: [definition],
+      isRunnerConnected: vi.fn(() => input.runnerConnected ?? true),
+      mcpImageContent: vi.fn(async () => input.mcpImageContent ?? true),
+      store: {
+        getComputerConnectionForCall: vi.fn(async () =>
+          input.revoked?.()
+            ? null
+            : {
+                access: input.connectionAccess ?? "read-write",
+                connection,
+                runnerId,
+                runnerName: input.phone ? "Pixel 7" : "Alex's Mac",
+                deviceProfile: null,
+                runnerRevoked: false,
+              },
+        ),
+        listCallableTools: vi.fn(async () => {
+          if (input.revoked?.()) return [];
+          if (operationName === "observe") return [callable];
+          const read = computerAppTools(
+            definition,
+            "read-write",
+            callable.grant.connectionId!,
+          ).find((tool) => tool.name === "observe")!;
+          return [
+            callable,
+            {
+              ...callable,
+              tool: { ...callable.tool, ...listedTool(read), id: readToolId },
+            },
+          ];
+        }),
+        computerOperations: {
+          start: async (
+            input: Parameters<IntegrationPlatformStore["computerOperations"]["start"]>[0],
+          ) => ({
+            ...input.context,
+            createdAt: now,
+            eventId: createId("event"),
+            sequence: "1",
+            type: "tool.started",
+            data: {
+              callId: "computer:test",
+              tool: { namespace: "opensteer.integrations", name: `computer.${input.operation}` },
+              arguments: {},
+              integration: input.subject,
+            },
+          }),
+          complete: async () => undefined,
+        } as unknown as IntegrationPlatformStore["computerOperations"],
+        listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
+        revokeGrant: vi.fn(async () => {
+          input.revoke?.();
+        }),
+      },
+    });
+    vi.spyOn(service.devices.computerAppApprovals, "computerUseInventory").mockImplementation(
+      async () => ({
+        machines:
+          input.phone || input.revoked?.()
+            ? []
+            : [
+                {
+                  name: "Alex's Mac",
+                  deviceId: DeviceIdSchema.parse(runnerId),
+                  definitionId: "macos-app",
+                  ready: true,
+                  state: "ready",
+                  appApproval: "ask",
+                  apps: [
+                    {
+                      name: notes.displayName,
+                      bundleId: notes.bundleId,
+                      connectionId: connection.id,
+                      access: input.connectionAccess ?? "read-write",
+                      status: "approved",
+                    },
+                  ],
+                },
+              ],
+        phones:
+          !input.phone || input.revoked?.()
+            ? []
+            : [
+                {
+                  name: "Pixel 7",
+                  deviceId: DeviceIdSchema.parse(runnerId),
+                  definitionId: "android-phone",
+                  ready: true,
+                  state: "ready",
+                  blockedByOwner: false,
+                  connection: {
+                    connectionId: connection.id,
+                    access: input.connectionAccess ?? "read-write",
+                  },
+                },
+              ],
+      }),
+    );
+    vi.spyOn(service.devices.computerAppApprovals, "computerAppHolders").mockResolvedValue(
+      new Map(),
+    );
+    return {
+      callable,
+      runnerId,
+      computerUse,
+      lease,
+      prepared,
+      service,
+      sent,
+      liveComputerUse,
+      inputSchema: tool.inputSchema,
+    };
+  }
+
+  function operate(
+    service: DeviceServicesTestHarness,
+    callable: CallableIntegrationTool,
+    args: Readonly<Record<string, unknown>>,
+    who: ToolCaller,
+    signal?: AbortSignal,
+  ) {
+    const phone =
+      callable.server.transport.type === "computer" &&
+      callable.server.transport.definitionId === "android-phone";
+    const { observationId, ...rest } = args;
+    const params =
+      callable.tool.name === "act"
+        ? phone
+          ? args
+          : { window: "window-1", snapshot: observationId ?? "obs-1", ...rest }
+        : phone
+          ? {}
+          : { window: "window-1", includeScreenshot: true };
+    return service.devices.callComputerOperation(
+      who,
+      callable.grant.connectionId!,
+      callable.tool.name,
+      params,
+      signal,
+    );
+  }
+
+  const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const who = runCaller(context);
+    const tools = vi.spyOn(f.service.devices, "listCallableTools").mockResolvedValue([]);
+    try {
+      const access = await f.service.devices.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.appEntries(access.machines[0]!)[0]!;
+      tools.mockClear();
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        code: "forbidden",
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+      expect(tools).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("preserves the owner blocker when a phone's bound connection becomes unusable", async () => {
+    const f = guiFixture({ phone: true, operation: "observe" });
+    const who = runCaller(context);
+    const inventory = await f.service.devices.computerAppApprovals.computerUseInventory(
+      who.run!.requestedBy,
+    );
+    vi.spyOn(f.service.devices, "listCallableTools").mockResolvedValue([]);
+    vi.spyOn(f.service.devices.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+      ...inventory,
+      phones: inventory.phones.map((phone) => ({
+        ...phone,
+        connectionId: f.callable.grant.connectionId!,
+        connection: null,
+        blockedByOwner: true,
+      })),
+    });
+    try {
+      const access = await f.service.devices.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.phone(access.phones[0]!);
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it.each([false, true])(
+    "uses the listing blocker when a granted target goes offline (phone=%s)",
+    async (phone) => {
+      const f = guiFixture({
+        phone,
+        settleRefusal: new ComputerUseError("offline", "Disconnected"),
+      });
+      const who = runCaller(context);
+      const inventory = await f.service.devices.computerAppApprovals.computerUseInventory(
+        who.run!.requestedBy,
+      );
+      vi.spyOn(f.service.devices.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+        machines: inventory.machines.map((machine) => ({
+          ...machine,
+          state: "offline",
+          ready: false,
+        })),
+        phones: inventory.phones.map((entry) => ({ ...entry, state: "offline", ready: false })),
+      });
+      try {
+        const access = await f.service.devices.computerAccess(
+          { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+          who.run!,
+        );
+        const state = phone
+          ? access.phone(access.phones[0]!)
+          : access.appEntries(access.machines[0]!)[0]!;
+        await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+          reason: state.blocked!.code,
+          message: state.blocked!.message,
+          next: state.blocked!.next,
+        });
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+
+  it("authorizes callable operations without gathering discovery facts", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const access = vi
+      .spyOn(f.service.devices, "computerAccess")
+      .mockRejectedValue(new Error("Unexpected discovery"));
+    try {
+      await operate(f.service, f.callable, {}, runCaller(context));
+      expect(access).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it.each([false, true])(
+    "revokes during a slow saved-login seal without dispatch (phone=%s)",
+    async (phone) => {
+      let revoked = false;
+      const held =
+        Promise.withResolvers<
+          Awaited<ReturnType<NonNullable<ComputerUseServiceOptions["passwords"]>["seal"]>>
+        >();
+      const passwords = {
+        validateLease: () => true,
+        seal: vi.fn<NonNullable<ComputerUseServiceOptions["passwords"]>["seal"]>(
+          () => held.promise,
+        ),
+      };
+      const f = guiFixture({
+        operation: "act",
+        phone,
+        passwords,
+        revoked: () => revoked,
+        revoke: () => {
+          revoked = true;
+        },
+      });
+      const who = runCaller(context);
+      let call: Promise<unknown> | undefined;
+      try {
+        call = operate(
+          f.service,
+          f.callable,
+          {
+            observationId: "obs-1",
+            actions: [
+              { type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } },
+            ],
+          },
+          who,
+        );
+        const settled = vi.fn();
+        void call.then(settled, settled);
+        await vi.waitFor(() => expect(passwords.seal).toHaveBeenCalledTimes(1));
+        const revoke = f.service.devices.revokeGrant({
+          grantId: f.callable.grant.id,
+          ownerUserId: who.run!.requestedBy,
+          requestId: "revoke-during-seal",
+        });
+        let revokedBeforeRelease = false;
+        void revoke.then(() => {
+          revokedBeforeRelease = true;
+        });
+        await vi.waitFor(() => expect(revokedBeforeRelease).toBe(true), { timeout: 500 });
+        // Cancellation must settle the waiting call before the vault answers.
+        await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(1), { timeout: 500 });
+        const sealing = passwords.seal.mock.calls[0]![0];
+        held.resolve({
+          type: "login.seal.result",
+          status: "sealed",
+          envelope: {
+            binding: sealing.binding,
+            senderPublicKey: sealing.receiver.publicKey,
+            salt: "A".repeat(43),
+            nonce: "A".repeat(16),
+            ciphertext: "",
+            tag: "A".repeat(22),
+          },
+        });
+        await expect(call).rejects.toMatchObject({ code: "failed" });
+        await revoke;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(f.sent).toEqual([]);
+      } finally {
+        held.resolve({ type: "login.seal.result", status: "expired" });
+        await call?.catch(() => undefined);
+        await f.liveComputerUse?.shutdown();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "admits computer saved-login arguments from the published schema (phone=%s)",
+    async (phone) => {
+      const f = guiFixture({ operation: "act", phone });
+      const subjects = vi.spyOn(f.service.store.computerOperations, "start");
+      const args = {
+        ...(phone ? { observationId: "obs-1" } : { window: "window-1", snapshot: "obs-1" }),
+        actions: [{ type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } }],
+      };
+      expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
+      const who = runCaller(context);
+      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
+      const server = createServer((request, response) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body: unknown = chunks.length
+            ? JSON.parse(Buffer.concat(chunks).toString("utf8"))
+            : undefined;
+          await mcp!.handle(request, response, body, "run-token");
+        })().catch((error: unknown) =>
+          response.destroy(error instanceof Error ? error : new Error("MCP test request failed")),
+        );
+      });
+      const client = new Client({ name: "saved-login-contract", version: "1" });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", resolve);
+        });
+        const address = server.address();
+        if (!address || typeof address === "string")
+          throw new Error("MCP test server did not bind");
+        const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
+        mcp = createIntegrationMcpFixture({
+          runTokens: {
+            authenticate: async () => who.run!,
+          },
+          triggerTokens: {
+            authenticate: async () => {
+              throw new Error("Not a trigger token");
+            },
+          },
+          platform: f.service,
+          publicUrl: url,
+        });
+        await client.connect(new StreamableHTTPClientTransport(url) as unknown as Transport);
+        const result = await client.callTool({
+          name: "computer_use",
+          arguments: {
+            code: phone
+              ? `const p=await phone("Pixel 7");await p.observe();await p.type(${JSON.stringify(args.actions[0]!.text)})`
+              : `const a=await app("Notes");const w=await a.window();await w.observe();await w.type(${JSON.stringify(args.actions[0]!.text)})`,
+          },
+        });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        if (phone)
+          expect(subjects).toHaveBeenCalledWith(
+            expect.objectContaining({
+              subject: expect.objectContaining({
+                computerApp: null,
+                phone: { computer: "Pixel 7", runnerId: DeviceIdSchema.parse(f.runnerId) },
+              }),
+            }),
+          );
+      } finally {
+        await client.close();
+        await mcp?.close();
+        await f.service.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(f.computerUse.sendAct).toHaveBeenCalledWith(
+        f.lease,
+        expect.any(Object),
+        args,
+        phone,
+        expect.any(AbortSignal),
+        expect.any(Function),
+        expect.any(Number),
+      );
+    },
+  );
+
+  it("says a row the catalog has moved past is being updated, before judging its arguments", async () => {
+    const { callable, computerUse, service } = guiFixture({ operation: "act" });
+    Object.assign(callable.tool, { schemaDigest: "an-older-digest" });
+    const stale = callable;
+
+    await expect(
+      operate(
+        service,
+        stale,
+        { actions: [{ target: { index: 1 }, text: "milk", type: "type" }], observationId: "obs-1" },
+        runCaller(context),
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Computer use is being updated; search again",
+    });
+    expect(computerUse.prepare).not.toHaveBeenCalled();
+  });
+
+  it("keeps the live tree complete while the existing durable-output contract stays below 64 KiB", async () => {
+    const tree = "界".repeat(50_000);
+    const { callable, service } = guiFixture({ observation: { tree }, mcpImageContent: false });
+    const result = await operate(service, callable, {}, runCaller(context));
+    const text = `Looked at Notes\nObservation obs-1 of Notes (Shopping) — 2 elements. Screenshot 800×600 px; all coordinates are screenshot pixels.\n${tree}\nScreenshot unavailable in this engine.`;
+    expect(result.content).toEqual([{ type: "text", text }]);
+    expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(64 * 1024);
+    const stored = createToolOutput(text);
+    expect(Buffer.byteLength(stored.text, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(stored.truncation?.originalBytes).toBe(Buffer.byteLength(text, "utf8"));
+  });
+
+  it("tells a failed capture apart from an engine that shows no images", async () => {
+    const { callable, service } = guiFixture({ observation: { screenshot: null } });
+
+    const result = await operate(service, callable, {}, runCaller(context));
+
+    expect(result.content).toEqual([
+      {
+        text: 'Looked at Notes\nObservation obs-1 of Notes (Shopping) — 2 elements. Screenshot 800×600 px; all coordinates are screenshot pixels.\n[0] window "Notes" (0,0 800x600)\nNo screenshot could be captured this time; the tree and its coordinates still apply.',
+        type: "text",
+      },
+    ]);
+  });
+
+  it("says so when the app brought itself to the front", async () => {
+    const { callable, service } = guiFixture({ observation: { focusChanged: true } });
+
+    const result = await operate(service, callable, {}, runCaller(context));
+
+    expect(result.content).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining(
+          "The app came to the front on its own; tell the person if they did not expect it.",
+        ),
+      }),
+      expect.objectContaining({ type: "image" }),
+    ]);
+  });
+
+  it("turns a refusal into a tool error with the Mac's own sentence", async () => {
+    const { callable, service } = guiFixture({
+      settleRefusal: new ComputerUseError(
+        "unsupported",
+        "The Mac is locked; ask the person to unlock it.",
+      ),
+    });
+
+    await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
+      code: "unsupported",
+      message: "The Mac is locked; ask the person to unlock it.",
+    });
+  });
+
+  it.each([
+    ["a paused phone", "This phone is paused. Resume it in the Opensteer Agent Phone app."],
+    ["a task that may only look", "This task may look at the phone but not operate it."],
+  ])("normalizes a phone permission failure for %s", async (_name, sentence) => {
+    const { callable, service } = guiFixture({
+      phone: true,
+      settleRefusal: new ComputerUseError("permission-required", sentence),
+    });
+
+    await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Pixel 7 needs computer-use permissions.",
+      next: expect.any(String),
+    });
+  });
+
+  it("normalizes an app permission failure with the Mac identity", async () => {
+    const { callable, service } = guiFixture({
+      settleRefusal: new ComputerUseError(
+        "permission-required",
+        "Notes needs Accessibility permission.",
+      ),
+    });
+
+    await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Alex's Mac needs computer-use permissions.",
+      next: expect.any(String),
+    });
+  });
+
+  it("names the Mac whose Opensteer is too old for window-addressed computer use", async () => {
+    const { callable, service } = guiFixture({
+      settleRefusal: new ComputerUseError("incompatible-version", computerUseUpdateSentence),
+    });
+
+    await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "update_required",
+      message: "Alex's Mac needs an Opensteer update.",
+      next: expect.any(String),
+    });
+  });
+
+  it("warns the model not to repeat an action whose answer was lost", async () => {
+    const { callable, service } = guiFixture({
+      operation: "act",
+      settleRefusal: new ComputerUseError(
+        "outcome-unknown",
+        "Computer use lost its connection to this Mac's helper.",
+      ),
+    });
+
+    await expect(
+      operate(
+        service,
+        callable,
+        { actions: [{ keys: "Escape", type: "key" }], observationId: "obs-1" },
+        runCaller(context),
+      ),
+    ).rejects.toMatchObject({
+      code: "outcome-unknown",
+      message:
+        "Computer use lost its connection to this Mac's helper. The actions may already have taken effect. Do not repeat them. Observe the app before deciding the next action.",
+    });
+  });
+
+  it("refuses act when the connection or the grant allows reading only", async () => {
+    for (const fixture of [
+      guiFixture({ connectionAccess: "read", operation: "act" }),
+      guiFixture({ grantAccess: "read", operation: "act" }),
+    ]) {
+      await expect(
+        operate(
+          fixture.service,
+          fixture.callable,
+          { actions: [{ keys: "Escape", type: "key" }], observationId: "obs-1" },
+          runCaller(context),
+        ),
+      ).rejects.toBeInstanceOf(IntegrationAuthorizationRequiredError);
+      expect(fixture.computerUse.sendAct).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not send when a removal wins before the frame leaves its admission turn", async () => {
+    let removed = false;
+    const { callable, computerUse, service } = guiFixture({
+      // The removal commits inside the turn, before the authority is re-read,
+      // which is the window a second turn for the send would have opened.
+      beforeSend: async () => {
+        removed = true;
+      },
+      revoked: () => removed,
+    });
+
+    await expect(operate(service, callable, {}, runCaller(context))).rejects.toBeInstanceOf(
+      IntegrationAuthorizationRequiredError,
+    );
+    expect(computerUse.sendObserve).not.toHaveBeenCalled();
+    // The lease a refused call never spent goes back, so its session does
+    // not linger as if a call were still coming.
+    expect(computerUse.release).toHaveBeenCalledOnce();
+  });
+
+  it("answers a batch the protocol schema refuses as a tool error, not a throw", async () => {
+    // The published JSON schema bounds less than the protocol one does — an
+    // element index past the elements one observation may name gets through it
+    // — so the refusal happens inside the admission turn, with the send.
+    const { callable, service } = guiFixture({
+      operation: "act",
+      refusal: new ComputerUseError("failed", "Those actions are not usable: index too large."),
+    });
+
+    await expect(
+      operate(
+        service,
+        callable,
+        { actions: [{ target: { index: 5_000 }, type: "click" }], observationId: "obs-1" },
+        runCaller(context),
+      ),
+    ).rejects.toMatchObject({
+      code: "failed",
+      message: "Those actions are not usable: index too large.",
+    });
+  });
+
+  it("returns exact partial progress without observing a Mac after input stops", async () => {
+    const { callable, service } = guiFixture({
+      performed: ["Pressed Escape"],
+      operation: "act",
+      resultError: new ComputerUseError("failed", "The second action could not be performed."),
+    });
+    await expect(
+      operate(
+        service,
+        callable,
+        {
+          actions: [
+            { type: "key", keys: "Escape" },
+            { type: "key", keys: "Escape" },
+          ],
+          observationId: "obs-1",
+        },
+        runCaller(context),
+      ),
+    ).rejects.toMatchObject({
+      code: "failed",
+      performed: ["Pressed Escape"],
+      value: { observation: null, performed: ["Pressed Escape"] },
+    });
+  });
+});
+describe("computer app request matrix", () => {
+  const definition = computerAppIntegrations.find(({ id }) => id === "macos-app")!;
+  const identity = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+  function fixture(
+    options: {
+      connectionAccess?: "read" | "read-write";
+      callableAccess?: "read" | "read-write";
+      blocked?: boolean;
+      offline?: boolean;
+      allowed?: boolean;
+      /** What the store decided under the Mac's lock. */
+      decision?: "approved" | "computer" | "personal-grant";
+    } = {},
+  ) {
+    const runnerId = createId("runner");
+    const connectionId = createIntegrationId("connection");
+    const grantId = createIntegrationId("grant");
+    const connection = {
+      ...computerConnectionSummary(options.connectionAccess ?? "read-write"),
+      id: connectionId,
+      definitionId: "macos-app",
+      computer: {
+        access: options.connectionAccess ?? "read-write",
+        app: identity,
+        runnerId,
+        blockedAt: options.blocked ? now : null,
+        policyRevision: null,
+      },
+    } satisfies IntegrationConnectionSummary;
+    let available = options.callableAccess;
+    const refs = (access: "read" | "read-write" | undefined): CallableIntegrationTool[] =>
+      !access
+        ? []
+        : (access === "read" ? ["observe"] : ["observe", "act"]).map(
+            (name) =>
+              ({
+                grant: { id: grantId, connectionId },
+                tool: {
+                  name,
+                  id: name === "observe" ? "observe-id" : "act-id",
+                  schemaDigest: "digest",
+                },
+              }) as unknown as CallableIntegrationTool,
+          );
+    const request = integrationRequest("integration.access", "pending");
+    const setupRequest = { id: crypto.randomUUID(), runnerId };
+    let admitted = false;
+    const threadReadInsideAdmission: boolean[] = [];
+    const requestComputerAppAccess = vi.fn(
+      async (
+        input: Parameters<IntegrationPlatformStore["requestDeviceComputerAppAccess"]>[0],
+      ): Promise<ComputerAppAccessDecision> => {
+        switch (options.decision ?? "computer") {
+          case "approved":
+            available = input.access;
+            return {
+              connection: deviceConnection(connection),
+              kind: "approved",
+              requestEvents: [],
+            };
+          case "personal-grant":
+            return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
+          case "computer":
+            return {
+              kind: "computer",
+              replayed: false,
+              request,
+              requestEvents: [],
+              setupRequest: setupRequest as never,
+            };
+        }
+      },
+    );
+    // The Mac hears of its approvals as the whole list, on its own stream.
+    const pushed = vi.fn(async () => true);
+    const resolveApp = vi.fn(async () => ({
+      allowed: options.allowed !== false,
+      identity,
+      reason: options.allowed === false ? "This app is off limits." : null,
+      risk: "standard" as const,
+      running: true,
+      path: "/System/Applications/Notes.app",
+    }));
+    const service = platform({
+      definitions: [definition],
+      listConnections: async () => (options.connectionAccess ? [connection] : []),
+      computerApps: {
+        attached: () => !options.offline,
+        appStatus: () => null,
+        send: vi.fn(),
+        withRunnerAdmission: async (_id, task) => {
+          admitted = true;
+          try {
+            return await task();
+          } finally {
+            admitted = false;
+          }
+        },
+      },
+      computerUse: {
+        eligibleInventory: async () => ({
+          machines: [
+            {
+              name: "Alex's Mac",
+              runnerId,
+              state: options.offline ? ("offline" as const) : ("ready" as const),
+              ready: !options.offline,
+            },
+          ],
+          phones: [],
+        }),
+        // Only a Mac is set up here: asked for its phones, the person has none.
+        eligibleMachines: async (_owner, definitionId) =>
+          definitionId === "macos-app"
+            ? [
+                {
+                  name: "Alex's Mac",
+                  runnerId,
+                  state: options.offline ? "offline" : "ready",
+                  ready: !options.offline,
+                },
+              ]
+            : [],
+        resolveApp,
+        holders: () => new Map(),
+        threadTitle: async () => {
+          threadReadInsideAdmission.push(admitted);
+          return "Shopping list";
+        },
+        closeForConnection: vi.fn(),
+        installedApps: vi.fn(),
+        prepare: vi.fn(),
+        release: vi.fn(),
+        releaseSession: vi.fn(),
+        sendAct: vi.fn(),
+        sendObserve: vi.fn(),
+        sendWindowOperation: vi.fn(),
+        stop: vi.fn(),
+      },
+      store: {
+        requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
+        listCallableTools: async () => refs(available),
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+      },
+    });
+    const input = {
+      access: "read-write" as const,
+      app: "Notes",
+      reason: "Add groceries",
+      callId: "call-1",
+      ownerUserId: createId("user"),
+      originatingRunId: createId("run"),
+      runnerId,
+      threadId: createId("thread"),
+    };
+    return {
+      service,
+      input,
+      pushed,
+      requestComputerAppAccess,
+      resolveApp,
+      threadReadInsideAdmission,
+    };
+  }
+
+  it("reads the Thread's name before the Mac's admission turn", async () => {
+    const test = fixture();
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
+    expect(test.threadReadInsideAdmission).toEqual([false]);
+  });
+  it("returns the resolved target when the requested access is callable", async () => {
+    const test = fixture({ connectionAccess: "read-write", callableAccess: "read-write" });
+    expect(
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
+    ).toMatchObject({
+      status: "fulfilled",
+      app: { displayName: expect.any(String), bundleId: expect.any(String) },
+      computerId: expect.any(String),
+    });
+    expect(test.requestComputerAppAccess).not.toHaveBeenCalled();
+  });
+});

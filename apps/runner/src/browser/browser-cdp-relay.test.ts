@@ -1366,7 +1366,7 @@ it("relays tool content and caller deadlines with the current Run token, and abo
   const deadline = String(Date.now() + 120_000);
   const payload = {
     callId: crypto.randomUUID(),
-    name: "integration_call",
+    name: "plugin_call",
     input: { query: "mail" },
   };
   const content = {

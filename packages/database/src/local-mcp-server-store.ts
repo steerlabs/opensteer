@@ -2,15 +2,16 @@ import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
-import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
+import { OpensteerError, type DeviceId, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
-  localMcpLaunchSecrets,
+  type IntegrationToolMaterial,
+} from "@opensteer/integration-core/models";
+import { localMcpLaunchSecrets, type LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
+import {
   type IntegrationInstallationId,
   type IntegrationServerId,
-  type IntegrationToolMaterial,
-  type LocalMcpLaunch,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type { Kysely, Transaction } from "kysely";
 import {
@@ -32,9 +33,12 @@ export interface LocalMcpServerRecord {
   readonly launchDigest: string;
   readonly name: string;
   readonly runnerId: RunnerId | null;
+  readonly deviceId: DeviceId | null;
   /** What the computer is called, or null when none runs it or it was removed. */
   readonly runnerName: string | null;
   readonly status: "active" | "disabled" | "needs-attention";
+  readonly statusDetail: string | null;
+  readonly declined: boolean;
 }
 
 /**
@@ -47,11 +51,11 @@ export type LocalMcpSecretsUpdate = (current: Buffer | null) => Promise<Buffer |
 const waitingSentence = "Waiting for approval on the computer that runs it.";
 const startingSentence = "Starting on the computer that runs it.";
 const declinedSentence =
-  "The computer's owner declined running it there. Install the plugin again to ask again.";
+  "The computer's owner declined running it there. Register it again with local_server_add to ask again.";
 const noOwnerSentence =
-  "Nobody can approve it on that computer: it has no owner to ask. Install the plugin again, choosing a Mac of yours.";
+  "Nobody can approve it on that computer: it has no owner to ask. Register it again with local_server_add, choosing a Mac of yours.";
 const removedSentence =
-  "The computer that ran it was removed. Install the plugin again, choosing another computer.";
+  "The computer that ran it was removed. Register it again with local_server_add, choosing another computer.";
 
 /**
  * The MCP servers a computer runs for its Deployment, and the approval each
@@ -70,8 +74,8 @@ export class LocalMcpServerStore {
     this.#database = database;
   }
 
-  async list(): Promise<readonly LocalMcpServerRecord[]> {
-    return records(this.#database, await serverRows(this.#database));
+  async list(installationId?: IntegrationInstallationId): Promise<readonly LocalMcpServerRecord[]> {
+    return records(this.#database, await serverRows(this.#database, undefined, installationId));
   }
 
   /** Where a plugin's servers run when its installer names no computer: the Main one. */
@@ -391,6 +395,7 @@ type ServerRow = Awaited<ReturnType<typeof serverRows>>[number];
 async function serverRows(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   serverId?: IntegrationServerId,
+  installationId?: IntegrationInstallationId,
 ) {
   let query = database
     .selectFrom("integrationServers")
@@ -406,12 +411,15 @@ async function serverRows(
       "integrationServers.installationId",
       "integrationServers.name",
       "integrationServers.status",
+      "integrationServers.statusDetail",
       "integrationServers.toolGeneration",
       "integrationServers.transport",
     ])
     .where(({ ref }) => ref("integrationServers.transport", "->>").key("type"), "=", "runner")
     .orderBy("integrationServers.id", "asc");
   if (serverId !== undefined) query = query.where("integrationServers.id", "=", serverId);
+  if (installationId !== undefined)
+    query = query.where("integrationServers.installationId", "=", installationId);
   return query.execute();
 }
 
@@ -428,17 +436,22 @@ async function records(
       servers.flatMap(({ transport }) => (transport.runnerId ? [transport.runnerId] : [])),
     ),
   ];
-  const names = new Map(
+  const computers = new Map(
     runnerIds.length === 0
       ? []
       : (
           await database
             .selectFrom("runners")
-            .select(["id", "name"])
-            .where("id", "in", runnerIds)
-            .where("revokedAt", "is", null)
+            .innerJoin("deviceDrivers", "deviceDrivers.runnerId", "runners.id")
+            .innerJoin("devices", "devices.id", "deviceDrivers.deviceId")
+            .select(["runners.id", "devices.id as deviceId", "devices.name"])
+            .where("runners.id", "in", runnerIds)
+            .where("runners.revokedAt", "is", null)
+            .where("deviceDrivers.role", "=", "self")
+            .where("deviceDrivers.detachedAt", "is", null)
+            .where("devices.removedAt", "is", null)
             .execute()
-        ).map(({ id, name }) => [id, name] as const),
+        ).map((row) => [row.id, row] as const),
   );
   return servers.map(({ row, transport }) => ({
     approvedLaunchDigest: row.approvedLaunchDigest,
@@ -449,8 +462,11 @@ async function records(
     launchDigest: localMcpLaunchDigest(transport.launch),
     name: row.name,
     runnerId: transport.runnerId,
-    runnerName: transport.runnerId ? (names.get(transport.runnerId) ?? null) : null,
+    deviceId: transport.runnerId ? (computers.get(transport.runnerId)?.deviceId ?? null) : null,
+    runnerName: transport.runnerId ? (computers.get(transport.runnerId)?.name ?? null) : null,
     status: row.status,
+    statusDetail: row.statusDetail,
+    declined: row.status === "disabled" && row.statusDetail === declinedSentence,
   }));
 }
 

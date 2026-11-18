@@ -18,7 +18,6 @@
     "@opensteer/agent-tools": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
-    "@opensteer/integration-core": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
   },

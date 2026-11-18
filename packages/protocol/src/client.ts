@@ -10,6 +10,7 @@ import { TabBootstrapSchema } from "./tabs.js";
 import { HostTabsSchema } from "./tabs.js";
 import { HostAppsChangedSchema } from "./apps.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
+import { PluginChangeSchema, PluginEngineStateViewSchema } from "./plugins.js";
 
 import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
 
@@ -350,7 +351,20 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.machines.changed"),
   }),
-  z.object({ ...clientMessageBase, type: z.literal("host.plugins-changed") }),
+  // A plugin was installed, removed, changed version, access or accounts. It
+  // names nothing: a client rereads the plugins it shows.
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.plugins-changed"),
+    ...PluginChangeSchema.shape,
+  }),
+  // The plugin engine started, stopped or became unavailable. Sent to the
+  // owner; a client shows it without rereading anything.
+  z.object({
+    ...clientMessageBase,
+    engine: PluginEngineStateViewSchema,
+    type: z.literal("host.plugin-engine"),
+  }),
   // A pending Request opened, changed or ended somewhere on this Host. It names
   // nothing: clients reread the deployment Needs-you page.
 

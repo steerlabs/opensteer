@@ -1,4 +1,6 @@
-import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import { dataAppName } from "../devices/access-requests.js";
+import { localTargetBlocked } from "../devices/target-blocked.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
@@ -17,8 +19,8 @@ import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
-import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
+import type { DeviceService } from "../devices/device-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
 const triggerOriginatedContinuationReason =
@@ -36,7 +38,7 @@ type ThreadInputDisposition = Awaited<
  * outbox reads the installed state rather than assuming the approval worked.
  */
 export type IntegrationInventorySource = Pick<
-  IntegrationPlatformService,
+  DeviceService,
   "listDiscoveryInventory" | "listCallableTools" | "computerAccess"
 > &
   Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
@@ -124,6 +126,8 @@ export class ContinuationService {
       request.status === "withdrawn" ||
       (request.status === "cancelled" &&
         request.cancellationReason !== "resource-deleted" &&
+        request.cancellationReason !== "plugin-interrupted" &&
+        request.cancellationReason !== "plugin-expired" &&
         request.cancellationReason !== "authority-revoked")
         ? `Request ${request.id} ended as ${request.status}.`
         : await continuationMessage(request, this.#integrations, loginRef);
@@ -269,38 +273,20 @@ const IntegrationAccessAccountSchema = z.strictObject({
   displayName: z.string().trim().min(1),
 });
 
-/**
- * The public projection stored on the Request payload. It is read back loosely
- * because only the identity fields that locate the resulting installation
- * matter here.
- */
-const InstallManifestSummarySchema = z.discriminatedUnion("kind", [
-  z.object({
-    definition: z.object({
-      id: z.string().min(1),
-      name: z.string().min(1),
-    }),
-    kind: z.literal("catalog"),
-  }),
-  z.object({
-    kind: z.literal("proposal"),
-    proposal: z.object({
-      digest: z.string().min(1),
-    }),
-  }),
-]);
-type InstallManifestSummary = z.infer<typeof InstallManifestSummarySchema>;
 const CatalogProvenanceSchema = z.object({
   definitionId: z.string().min(1),
-});
-const ProposalProvenanceSchema = z.object({
-  artifactDigest: z.string().min(1),
 });
 export async function continuationMessage(
   request: Request,
   integrations: IntegrationInventorySource,
   loginRef?: string,
 ): Promise<string> {
+  if (request.payload.kind === "plugin.approval" || request.payload.kind === "plugin.input") {
+    const execution = request.payload.executionId;
+    if (request.status === "cancelled")
+      return `Plugin execution ${execution} was ${request.cancellationReason === "plugin-expired" ? "expired" : "interrupted"}. Earlier calls may have taken effect. Check current state with a safe read; never rerun the program blindly.`;
+    return `The person ${request.status === "fulfilled" ? "answered" : "declined"} plugin Request ${request.id}. Call plugin_resume({executionId:${JSON.stringify(execution)}}) to collect the execution's result. Do not repeat the call or program; earlier effects are not rolled back.`;
+  }
   if (request.mode === "durable" && request.status === "cancelled") {
     return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
@@ -318,6 +304,13 @@ export async function continuationMessage(
       ...(request.originatingRunId ? { runId: request.originatingRunId } : {}),
     }));
   switch (request.kind) {
+    case "plugin.account":
+      return request.status === "fulfilled"
+        ? `Plugin account Request ${request.id} was fulfilled. Discover the plugin's current tools with plugin_search and continue.`
+        : `The person declined plugin account Request ${request.id}. Continue without this account; do not request it again unless asked.`;
+    case "plugin.approval":
+    case "plugin.input":
+      throw new Error("Plugin execution continuation needs its execution payload");
     case "device.access": {
       if (request.payload.kind !== "device.access")
         throw new Error("Device access Request payload is invalid");
@@ -326,8 +319,6 @@ export async function continuationMessage(
         ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds computer routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
         : `Request ${request.id} was declined (Not now). Continue without ${access} on ${machineName} (${machineId}); do not request it again in this task.`;
     }
-    case "integration.input":
-      throw new Error("Device input returns inside its tool call and cannot have a continuation");
     case "person.question":
       return personQuestionContinuation(request);
     case "machine.full-disk-access": {
@@ -483,32 +474,6 @@ export async function continuationMessage(
           return `${receipt} ${state.detail} ${state.remedy}`;
       }
     }
-    case "integration.install": {
-      if (request.status === "declined") {
-        return `Request ${request.id} was declined by the user. Continue the task without this integration and do not propose it again unless the user asks.`;
-      }
-      const manifest = InstallManifestSummarySchema.safeParse(
-        request.payload.kind === "integration.install" ? request.payload.manifest : undefined,
-      );
-      if (!manifest.success) {
-        return `Request ${request.id} was approved, but the approved manifest cannot be read back, so the result is unverified. Call integration_search now to see what is actually installed and continue from there.`;
-      }
-      const entry = (await inventoryFor(request, integrations)).find((candidate) =>
-        installedFromManifest(candidate, manifest.data),
-      );
-      if (!entry) {
-        return `Request ${request.id} was approved, but ${manifestName(manifest.data)} is not present in the current integration inventory. Call integration_search now to see what is actually installed and continue from there.`;
-      }
-      const state = integrationState(entry);
-      switch (state.disposition) {
-        case "ready":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and ready. Call integration_search now to pick up its tools and continue the task.`;
-        case "needs-grant":
-        case "needs-account":
-        case "blocked":
-          return `Request ${request.id} was fulfilled. ${state.detail} ${state.remedy}`;
-      }
-    }
     case "computer.app.access": {
       if (request.payload.kind !== "computer.app.access")
         throw new Error("Computer app access Request payload is invalid");
@@ -556,7 +521,7 @@ async function computerAppContinuation(
       machine.apps.some((entry) => entry.connectionId === app?.connectionId),
   );
   if (!machine || !app)
-    return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use integration_search {query:"Computer use"} to find current targets.`;
+    return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use computer_apps to find current targets.`;
   const result = access.app(machine, { displayName: app.name, bundleId: app.bundleId });
   return `Request ${request.id} was fulfilled. ${
     result.blocked
@@ -573,7 +538,7 @@ async function phoneContinuation(
   const result = current ? access.phone(current) : null;
   return `Request ${request.id} was fulfilled. ${
     !result
-      ? `${phone.name} is unavailable. Use integration_search {query:"Phone display"} to find current targets.`
+      ? `${phone.name} is unavailable. Use computer_apps to find current targets.`
       : result.blocked
         ? `${result.blocked.message} ${result.blocked.next}`
         : `${phone.name} is ready. Use phone(${JSON.stringify(phone.deviceId)}) in computer_use.`
@@ -594,31 +559,6 @@ function inventoryFor(
     ownerUserId: request.requestedBy,
     threadId: request.originatingThreadId,
   });
-}
-function manifestName(manifest: InstallManifestSummary): string {
-  return manifest.kind === "catalog" ? manifest.definition.name : "the proposed integration";
-}
-
-/**
- * An installation records where it came from rather than which Request created
- * it, so a catalog install is located by its definition and a proposal by the
- * digest of the artifact that was approved.
- */
-function installedFromManifest(
-  entry: IntegrationInventoryEntry,
-  manifest: InstallManifestSummary,
-): boolean {
-  const { provenance, sourceKind } = entry.installation;
-  if (manifest.kind === "catalog") {
-    return (
-      sourceKind === "built-in" &&
-      CatalogProvenanceSchema.safeParse(provenance).data?.definitionId === manifest.definition.id
-    );
-  }
-  return (
-    sourceKind === "proposed" &&
-    ProposalProvenanceSchema.safeParse(provenance).data?.artifactDigest === manifest.proposal.digest
-  );
 }
 type IntegrationState = {
   readonly detail: string | null;
@@ -650,7 +590,25 @@ function integrationState(
         !server || (server.connectionRequirement.kind === "none") === (target.connectionId === null)
       );
     })
-    .map((readiness) => readinessState(readiness, entry.installation.name));
+    .map((readiness) => {
+      const transport = entry.servers.find((server) => server.id === readiness.serverId)?.transport;
+      const definition =
+        transport?.type === "computer"
+          ? deviceDefinitions.find((definition) => definition.id === transport.definitionId)
+          : undefined;
+      return readinessState(
+        readiness,
+        entry.installation.name,
+        definition
+          ? { dataApp: dataAppName(definition) }
+          : {
+              server:
+                typeof entry.installation.manifest.name === "string"
+                  ? entry.installation.manifest.name
+                  : entry.installation.name,
+            },
+      );
+    });
   return (
     states.find(({ disposition }) => disposition === "ready") ??
     states.find(({ disposition }) => disposition === "needs-grant") ??
@@ -663,8 +621,12 @@ function integrationState(
     }
   );
 }
-function readinessState(readiness: IntegrationReadiness, integration: string): IntegrationState {
-  const blocked = integrationBlocked(readiness, integration);
+function readinessState(
+  readiness: IntegrationReadiness,
+  integration: string,
+  target: Parameters<typeof localTargetBlocked>[2],
+): IntegrationState {
+  const blocked = localTargetBlocked(readiness, integration, target);
   return blocked
     ? {
         disposition:

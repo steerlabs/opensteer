@@ -1,10 +1,11 @@
+import type { PluginChange } from "@opensteer/protocol";
 import type { ClientScope } from "../connections/connection-controller.js";
 import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -1141,6 +1142,11 @@ export interface HostClient extends TabsClient {
     theme: "light" | "dark",
     signal?: AbortSignal,
   ): Promise<{ readonly title: string; readonly url: string }>;
+  viewPluginPage(
+    pluginId: string,
+    theme: "light" | "dark",
+    signal?: AbortSignal,
+  ): Promise<{ readonly title: string; readonly url: string }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;
@@ -1177,8 +1183,10 @@ export interface HostClient extends TabsClient {
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
   /** Invalidates remote administration on Host changes and stream recovery. */
   subscribePluginsChanged(
-    listener: (message: { type: "host.plugins-changed" }) => void,
+    listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void;
+  /** The plugin engine's state as the Host reports it; nothing to reread. */
+  subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void;
   subscribePersonalRemoteAccess(listener: () => void): () => void;
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;

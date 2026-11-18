@@ -582,12 +582,6 @@ export class NativePersonalRemoteHostControl {
     await this.#accountUnlinkStep(runtimeInput, "remove-link");
   }
 
-  async repairHostedOAuthConnectionsForUnlink(
-    runtimeInput: PersonalHostRuntimeRecord,
-  ): Promise<void> {
-    await this.#accountUnlinkStep(runtimeInput, "repair-hosted-oauth");
-  }
-
   async publishConnectProjection(
     runtimeInput: PersonalHostRuntimeRecord,
     input: PublishPersonalConnectProjectionRequest,
@@ -629,7 +623,7 @@ export class NativePersonalRemoteHostControl {
 
   async #accountUnlinkStep(
     runtimeInput: PersonalHostRuntimeRecord,
-    step: "remove-link" | "repair-hosted-oauth" | "revoke-sessions",
+    step: "remove-link" | "revoke-sessions",
   ): Promise<void> {
     const runtime = PersonalHostRuntimeRecordSchema.parse(runtimeInput);
     const response = await this.#request(

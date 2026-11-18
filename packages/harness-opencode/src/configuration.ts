@@ -7,29 +7,16 @@ import {
 import { compatibleEndpointHost, opensteerToolIdentity } from "@opensteer/harness";
 import { opencodeCompatibleProviderId, opencodeCompatibleSourceId } from "./sources.js";
 
-/** The current server and the historical server name retained for transcript rendering. */
 export const opencodeAgentToolsServer = "opensteer";
-export const opencodeIntegrationToolsServer = "opensteer_integrations";
 
 /** OpenCode's own tool ids, reported under the engine's namespace. */
 const opencodeToolNamespace = "opencode";
 
-/**
- * OpenCode flattens an MCP tool to `<server>_<tool>` — verified live:
- * a server named `opensteer` offering `opensteer_task_read` reaches the model as
- * `opensteer_opensteer_task_read`. Splitting on the first `_` would read
- * `opensteer_integrations_integration_call` as server `opensteer`, so the two
- * server names are matched longest first. That is unambiguous for exactly these
- * two names, because no agent tool name begins with `integrations_`; the test
- * asserts that over the real tool lists rather than trusting the claim.
- */
+/** OpenCode flattens MCP names as <server>_<tool>; tool names can themselves contain underscores. */
 export function opencodeToolIdentity(flatToolId: string): ToolIdentity {
-  for (const server of [opencodeIntegrationToolsServer, opencodeAgentToolsServer]) {
-    const prefix = `${server}_`;
-    if (flatToolId.startsWith(prefix) && flatToolId.length > prefix.length) {
-      return opensteerToolIdentity(server, flatToolId.slice(prefix.length));
-    }
-  }
+  const prefix = `${opencodeAgentToolsServer}_`;
+  if (flatToolId.startsWith(prefix) && flatToolId.length > prefix.length)
+    return opensteerToolIdentity(opencodeAgentToolsServer, flatToolId.slice(prefix.length));
   return {
     name: flatToolId === "experimental_image_generate" ? imageGenerationToolName : flatToolId,
     namespace: opencodeToolNamespace,

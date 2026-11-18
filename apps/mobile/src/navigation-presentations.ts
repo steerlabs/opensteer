@@ -29,6 +29,7 @@ export const screenPresentations = {
   BrowserProfiles: "modal",
   ConnectedApps: "modal",
   Plugins: "modal",
+  PluginConnect: "modal",
   Computer: "modal",
   DeploymentSwitcher: "modal",
   AgentAuthorization: "modal",
@@ -107,6 +108,21 @@ export function presentedFrom(state: {
   return state.routes.findIndex(
     (route, index) => index <= state.index && modalKinds.has(presentations[route.name]),
   );
+}
+
+/**
+ * Whether the route `key` is a page pushed inside a presented flow, such as a
+ * Settings page. iOS presents it as one more sheet, which has no back chevron
+ * of its own, so its bar must carry one.
+ */
+export function pushedInPresentation(
+  state: { readonly routes: readonly { readonly key: string; readonly name: string }[] },
+  key: string,
+): boolean {
+  const index = state.routes.findIndex((route) => route.key === key);
+  const route = state.routes[index];
+  if (route === undefined || presentations[route.name] !== undefined) return false;
+  return state.routes.slice(0, index).some((below) => modalKinds.has(presentations[below.name]));
 }
 
 /** Sheets and modals leave the screen beneath them in charge of the surrounding layout. */

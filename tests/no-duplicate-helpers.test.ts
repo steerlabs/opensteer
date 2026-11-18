@@ -11,7 +11,12 @@ const sourceFiles = execFileSync(
 )
   .trim()
   .split("\n")
-  .filter(Boolean)
+  .filter(
+    (file) =>
+      Boolean(file) &&
+      !file.startsWith("vendor/plugin-engine/") &&
+      !file.startsWith("scripts/plugin-engine/overlay/"),
+  )
   // The index still names files deleted in the working tree, and a file that is
   // gone declares nothing, so the guard reads what is actually on disk.
   .filter((file) => existsSync(path.join(repositoryRoot, file)));
@@ -61,7 +66,7 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
    * helper that can evolve underneath already-sealed payloads.
    */
   canonicalJson: [
-    "packages/integration-auth/src/broker-sealing.ts",
+    "packages/control-plane-protocol/src/broker-sealing.ts",
     "packages/shared/src/canonicalJson.ts",
   ],
   /**
@@ -159,7 +164,7 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   HarnessSessionRegistry: "packages/harness/src/session-registry.ts",
   MutationQueue: "packages/shared/src/mutationQueue.ts",
   digestSecret: "packages/shared/src/secretDigest.ts",
-  hostedOAuthDeploymentAuthorityDigest: "packages/integration-auth/src/broker-sealing.ts",
+  hostedOAuthDeploymentAuthorityDigest: "packages/control-plane-protocol/src/broker-sealing.ts",
   equalSecretDigests: "packages/shared/src/secretDigest.ts",
   noFollowFlag: "packages/shared/src/privateFiles.ts",
   opensteerToolIdentity: "packages/harness/src/tool-identity.ts",

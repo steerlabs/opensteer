@@ -159,10 +159,6 @@ export const RunExecutionContextSchema = z.strictObject({
   attachments: RunAttachmentPlanSchema.optional(),
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
-  specialistId: z
-    .string()
-    .regex(/^[a-zA-Z0-9-]+$/u)
-    .optional(),
   plugins: RunPluginsPlanSchema,
   bindingGeneration: z.number().int().positive(),
   egress: RunEgressPlanSchema,

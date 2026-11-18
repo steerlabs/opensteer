@@ -45,6 +45,12 @@ export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";
 export * from "./use-reference.js";
+export * from "./use-plugin-engine.js";
+export * from "./use-plugin-section.js";
+export * from "./use-plugin-sign-in.js";
+export * from "./use-plugin-workflow-runs.js";
+export * from "./use-plugin-schedule-runs.js";
+export * from "./use-debounced-value.js";
 export * from "./use-client-connection.js";
 export * from "./use-client-read.js";
 export * from "./use-client-action.js";

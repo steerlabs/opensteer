@@ -1,6 +1,6 @@
 import { useTeamSideBack } from "./side-back.js";
 import { TeamScreenLayout } from "./team/team-screen-gate.js";
-import { screenPresentations } from "./navigation-presentations.js";
+import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
 import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
@@ -53,7 +53,16 @@ import {
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
-import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
+import {
+  PluginCatalogScreen,
+  PluginLocalToolScreen,
+  PluginSkillsScreen,
+  PluginsScreen,
+} from "./screens/plugins.js";
+import { PluginAccountsScreen } from "./screens/plugin-accounts.js";
+import { OtherDeviceScreen } from "./screens/other-device.js";
+import { PluginDetailScreen } from "./screens/plugin-detail.js";
+import { PluginConnectScreen } from "./screens/plugin-connect.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { AppsScreen } from "./screens/apps.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
@@ -194,11 +203,21 @@ const RootStack = createNativeStackNavigator({
     </ScreenLayout>
   ),
   // Recomputed as the stack changes, so a top-level screen's transition is in
-  // force as it is pushed, and its pop fades the same way back to Home.
-  screenOptions: ({ navigation, route }) =>
-    isTopLevel(navigation.getState(), route.key)
+  // force as it is pushed, and its pop fades the same way back to Home. A page
+  // pushed inside a sheet, as every Settings page is, carries its own Back: iOS
+  // shows it as another sheet with no chevron. A screen's own left action wins.
+  screenOptions: ({ navigation, route }) => {
+    const state = navigation.getState();
+    const options = isTopLevel(state, route.key)
       ? { ...stackScreenOptions, ...topLevelScreenOptions }
-      : stackScreenOptions,
+      : stackScreenOptions;
+    return Platform.OS === "ios" && pushedInPresentation(state, route.key)
+      ? {
+          ...options,
+          ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
+        }
+      : options;
+  },
   screens: {
     Deployments: {
       screen: DeploymentsScreen,
@@ -567,12 +586,29 @@ const RootStack = createNativeStackNavigator({
       options: { title: "External agents" },
     },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
-    SettingsPlugins: {
-      screen: SettingsPluginsScreen,
-      options: { title: "Plugins", headerShown: Platform.OS !== "ios" },
+    SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
+    PluginSkills: { screen: PluginSkillsScreen, options: { title: "Skills" } },
+    PluginAccounts: { screen: PluginAccountsScreen, options: { title: "Connected accounts" } },
+    PluginCatalog: {
+      screen: PluginCatalogScreen,
+      options: { title: "Catalog", headerShown: Platform.OS !== "ios" },
     },
-    SettingsPluginDetail: { screen: SettingsPluginsScreen, options: { title: "Plugin" } },
+    PluginDetail: { screen: PluginDetailScreen, options: { title: "Plugin" } },
+    PluginLocalTool: { screen: PluginLocalToolScreen, options: { title: "On your device" } },
+    // A sheet over the plugin or the Request that asked: a sign-in returns to it.
+    PluginConnect: {
+      screen: PluginConnectScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
+        }),
+        presentation: screenPresentations.PluginConnect,
+        title: "Connect an account",
+      }),
+    },
     SettingsDeviceDetail: { screen: DevicePageScreen, options: { title: "Device" } },
+    // A device reached through a local server on one of the computers.
+    SettingsOtherDevice: { screen: OtherDeviceScreen, options: { title: "Device" } },
     SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,
@@ -614,7 +650,7 @@ const RootStack = createNativeStackNavigator({
     // The accounts agents use, a modal over Settings like Chrome: a sign-in it
     // starts finishes in the system browser sheet and returns here.
     ConnectedApps: {
-      screen: SettingsPluginsScreen,
+      screen: PluginsScreen,
       options: ({ navigation }) => ({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
@@ -626,13 +662,12 @@ const RootStack = createNativeStackNavigator({
     },
     // Plugins, a modal over Settings like Connections.
     Plugins: {
-      screen: SettingsPluginsScreen,
+      screen: PluginsScreen,
       options: ({ navigation }) => ({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
         presentation: screenPresentations.Plugins,
-        headerShown: Platform.OS !== "ios",
         title: "Plugins",
       }),
     },
@@ -819,11 +854,19 @@ type OpensteerRootParamList = {
   readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
-  readonly SettingsPluginDetail: {
+  readonly PluginSkills: { readonly deploymentId: string };
+  readonly PluginAccounts: { readonly deploymentId: string };
+  readonly PluginCatalog: { readonly deploymentId: string };
+  readonly PluginDetail: { readonly deploymentId: string; readonly pluginId: string };
+  readonly PluginLocalTool: { readonly deploymentId: string; readonly id: string };
+  readonly PluginConnect: {
     readonly deploymentId: string;
-    readonly target: import("@opensteer/protocol").PluginTarget;
+    readonly pluginId: string;
+    readonly requirement: string;
+    readonly scope: "app" | "user";
   };
   readonly SettingsDeviceDetail: { readonly deploymentId: string; readonly machineId: string };
+  readonly SettingsOtherDevice: { readonly deploymentId: string; readonly pluginId: string };
   readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Plugins: { readonly deploymentId: string };

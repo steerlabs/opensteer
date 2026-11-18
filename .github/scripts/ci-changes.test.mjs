@@ -14,7 +14,7 @@ import {
   parseDiff,
   readGraph,
 } from "./ci-changes.mjs";
-import { darwinOnlyTests, realBrowserTests } from "./ci-test-files.mjs";
+import { darwinOnlyTests, realBrowserTests, testExtraInputs } from "./ci-test-files.mjs";
 
 // A small repository: core <- protocol <- host, web; leaf stands alone.
 const fixtureGraph = [
@@ -327,6 +327,15 @@ const realRepo = {
 const real = (files, event = "pull_request") =>
   decide(files, realGraph, realGraph, { event, repo: realRepo });
 test("real graph includes every workspace dependency kind", () => {
+  assert.equal(
+    realGraph.find((entry) => entry.name === "@opensteer/plugin-engine-sdk")?.dir,
+    "vendor/plugin-engine/sdk",
+  );
+  assert.ok(
+    real(["vendor/plugin-engine/sdk/src/index.ts"]).typecheck.includes(
+      "@opensteer/plugin-engine-sdk",
+    ),
+  );
   assert.ok(realGraph.length > 40);
   assert.ok(realGraph.find((p) => p.name === "@opensteer/host").deps.length);
 });
@@ -687,4 +696,19 @@ test("Check needs every lane, and the changes job and action publish the plan", 
     assert.ok(action.outputs[output], output);
   }
   assert.equal(workflow.jobs["native-windows"]["runs-on"], "windows-2025");
+});
+
+void test("plugin built-artifact tests select on resource and build inputs outside their imports", () => {
+  for (const input of [
+    "scripts/plugin-engine/prepare-host.ts",
+    "vendor/plugin-engine/apps/src/index.ts",
+    "apps/host/tsup.config.ts",
+  ]) {
+    const plan = real([input]);
+    for (const file of Object.keys(testExtraInputs))
+      assert.ok(plan.files.integration.includes(file), `${input} must select ${file}`);
+  }
+  const universe = laneUniverse(realFiles);
+  for (const file of Object.keys(testExtraInputs))
+    assert.ok(universe.integration.includes(file), file);
 });

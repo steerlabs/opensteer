@@ -86,11 +86,10 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
             store: f.store,
             runners: { isRunnerConnected: () => true, moduleReadiness: () => "ready" },
             computerApps: { status: () => [], attached: () => false, deviceStatus: () => null },
-            integrations: { platform: { deviceConnections: async () => [] } },
+            integrations: { devices: { deviceConnections: async () => [] } },
           } as unknown as AdministrationDependencies,
           vi.fn(),
         ),
-        async () => [],
         () => true,
       );
       const caller = {

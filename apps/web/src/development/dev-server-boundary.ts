@@ -33,7 +33,19 @@ export const localHostProxyRoutes = {
   "/internal/v1/trigger-cdp": { target: localHostProxyTarget, ws: true },
   "/media": { target: localHostProxyTarget },
   "/v1": { target: localHostProxyTarget, ws: true },
+  // Isolated App and plugin page origins serve their entry, assets and API at the root.
+  // Keep the browser's Host header so the gateway can identify the origin.
+  "/": {
+    target: localHostProxyTarget,
+    ws: true,
+    bypass: (request: IncomingMessage) =>
+      isLocalAppOrigin(request) ? undefined : (request.url ?? "/"),
+  },
 } as const;
+
+function isLocalAppOrigin(request: IncomingMessage) {
+  return /^[a-z2-7]{26}\.localhost(?::\d+)?$/iu.test(request.headers.host ?? "");
+}
 
 const setupRedirectTimeoutMs = 1_500;
 
@@ -59,6 +71,7 @@ export async function redirectUnclaimedLocalHost(
   const url = new URL(request.url ?? "/", "http://localhost");
   const acceptsHtml = String(request.headers.accept ?? "").includes("text/html");
   if (
+    isLocalAppOrigin(request) ||
     request.method !== "GET" ||
     url.pathname !== "/" ||
     !acceptsHtml ||

@@ -54,14 +54,14 @@ describe("trajectory grading failure modes", () => {
     expect(checks.every((c) => c.pass)).toBe(false);
     expect(checks.filter((c) => !c.pass)).toHaveLength(3);
   });
-  it("matches source checkpoints in integration argument objects", () => {
+  it("matches source checkpoints in plugin call inputs", () => {
     const c = parseCases(
       line({
         expect: {
           callsArgMatch: [
             {
-              tool: "integration_call",
-              path: ["arguments"],
+              tool: "plugin_call",
+              path: ["calls", "input"],
               pattern: "msg-X|2026-11-16T14:30",
             },
           ],
@@ -72,14 +72,14 @@ describe("trajectory grading failure modes", () => {
       expect(
         grade(
           c.expect,
-          [{ tool: "integration_call", args: { arguments: args }, valid: true }],
+          [{ tool: "plugin_call", args: { calls: { input: args } }, valid: true }],
           "",
         ).every((c) => c.pass),
       ).toBe(true);
     expect(
       grade(
         c.expect,
-        [{ tool: "integration_call", args: { arguments: { since: "yesterday" } }, valid: true }],
+        [{ tool: "plugin_call", args: { calls: { input: { since: "yesterday" } } }, valid: true }],
         "",
       ).every((c) => c.pass),
     ).toBe(false);

@@ -20,6 +20,7 @@ export async function cancelPending(
     readonly reason: RequestCancellationReason;
     readonly resolvedAt: Date;
     readonly runId?: RunId;
+    readonly cancelHandedOffPlugins?: boolean;
     readonly originatingThreadId?: ThreadId;
     readonly requestIds?: readonly RequestId[];
     readonly requestedBy?: UserId;
@@ -34,7 +35,25 @@ export async function cancelPending(
   if (input.runId)
     pending = pending
       .where("originatingRunId", "=", input.runId)
-      .where((eb) => eb.or([eb("mode", "=", "live"), eb("kind", "=", "integration.input")]));
+      .where((eb) =>
+        eb.or([
+          eb("mode", "=", "live"),
+          eb.and([
+            eb("kind", "in", ["plugin.approval", "plugin.input"]),
+            input.cancelHandedOffPlugins
+              ? eb.val(true)
+              : eb.not(
+                  eb.exists(
+                    eb
+                      .selectFrom("pluginExecutions")
+                      .select("id")
+                      .whereRef("pluginExecutions.requestId", "=", "requests.id")
+                      .where("handoff", "=", true),
+                  ),
+                ),
+          ]),
+        ]),
+      );
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
@@ -79,9 +98,13 @@ export async function cancelPending(
   const events = await Promise.all(
     rows.map((row) => cancellationEvent(transaction, requestFromRow(row))),
   );
-  if (input.reason === "resource-deleted" || input.reason === "authority-revoked") {
+  if (
+    ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
+      input.reason,
+    )
+  ) {
     for (const row of rows) {
-      if (row.mode !== "durable" || row.kind === "integration.input") continue;
+      if (row.mode !== "durable") continue;
       await transaction
         .insertInto("requestContinuations")
         .values({

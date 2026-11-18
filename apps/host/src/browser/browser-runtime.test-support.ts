@@ -26,7 +26,7 @@ import {
   closed,
   connectPrimary,
   type PrimaryConnection,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 /**
  * One enrolled computer whose only module is a browser.

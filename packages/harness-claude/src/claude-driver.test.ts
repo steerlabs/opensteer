@@ -1039,7 +1039,7 @@ describe("Claude Agent SDK harness", () => {
             content_block: {
               id: "tool-gateway",
               input: {},
-              name: "mcp__opensteer_integrations__integration_call",
+              name: "mcp__opensteer__plugin_call",
               type: "tool_use",
             },
             index: 0,
@@ -1065,7 +1065,7 @@ describe("Claude Agent SDK harness", () => {
           {
             id: "tool-gateway",
             input: { arguments: {}, toolRef },
-            name: "mcp__opensteer_integrations__integration_call",
+            name: "mcp__opensteer__plugin_call",
             type: "tool_use",
           },
         ]),
@@ -1092,12 +1092,12 @@ describe("Claude Agent SDK harness", () => {
       {
         arguments: {},
         callId: "tool-gateway",
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
       },
       {
         arguments: { arguments: {}, toolRef },
         callId: "tool-gateway",
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
       },
     ]);
     await adapter.close();
@@ -2814,7 +2814,7 @@ describe("Claude Agent SDK harness", () => {
     },
     {
       expected: "tools outside",
-      overrides: { tools: ["Read", "mcp__opensteer_integrations__integration_call"] },
+      overrides: { tools: ["Read", "mcp__unapproved__write"] },
     },
     {
       // Addressing an agent resumes it in the background, which no turn owns.

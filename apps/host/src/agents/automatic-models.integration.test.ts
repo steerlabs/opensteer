@@ -3,13 +3,10 @@ import {
   createId,
   HarnessIdSchema,
   ModelSelectionSchema,
-  SpecialistManifestSchema,
   type AgentHomeSettings,
   type EnvironmentId,
-  type SpecialistManifest,
   type Thread,
   type ThreadAccessMode,
-  type UserId,
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import {
@@ -19,11 +16,11 @@ import {
 } from "@opensteer/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  personalExecution,
   readAutomaticModelPreview,
   resolveAutomaticModels,
   type AutomaticModelDependencies,
 } from "./automatic-models.js";
-import { specialistPlacement } from "./specialist-placement.js";
 const userId = createId("user");
 let main = createId("environment");
 const laptop = createId("environment");
@@ -158,8 +155,9 @@ function world(
       identityForEnvironment: () => ({ capabilities: ["background-text-v1"] }),
     },
   } as unknown as AutomaticModelDependencies &
-    Parameters<typeof readAutomaticModelPreview>[0] &
-    Parameters<typeof specialistPlacement>[0];
+    Parameters<typeof readAutomaticModelPreview>[0] & {
+      readonly runners: Parameters<typeof personalExecution>[0];
+    };
   return {
     dependencies,
     harnesses,
@@ -243,6 +241,30 @@ describe("automatic model resolution on the Host", () => {
       [harnesses[0]!.id, "claude-sonnet-5-5", true],
     ]);
     expect(candidates.at(-1)?.original).toBe(true);
+  });
+  it("runs a memory pass only on the task's computer, on an engine that enforces its access mode", async () => {
+    const resolve = async (offered: ReturnType<typeof world>) => {
+      const { candidates, skipped } = await resolveAutomaticModels(offered.dependencies, {
+        userId,
+        wants: (current) => backgroundModelWants(current, "light"),
+        canRun: personalExecution(offered.dependencies.runners, {
+          environmentId: main,
+          accessMode: "full-access",
+        }),
+      });
+      return { candidates: candidates.length, reasons: skipped.map((skip) => skip.reason) };
+    };
+    expect(await resolve(world([{ models: [haiku], environmentId: laptop }]))).toMatchObject({
+      candidates: 0,
+      reasons: expect.arrayContaining(["wrong-computer"]),
+    });
+    expect(
+      await resolve(world([{ models: [haiku] }], { accessModes: ["approval-required"] })),
+    ).toMatchObject({
+      candidates: 0,
+      reasons: expect.arrayContaining(["unsupported-access-mode"]),
+    });
+    expect((await resolve(world([{ models: [haiku] }]))).candidates).toBe(1);
   });
   it("drops the task's own model when the person excluded its account", async () => {
     const { dependencies, harnesses } = world(
@@ -375,267 +397,5 @@ describe("Settings preview under concurrent account changes", () => {
     expect(listHarnessInstances).toHaveBeenCalledTimes(1);
     expect(getAgentHomeSettings).toHaveBeenCalledTimes(1);
     expect(view.naming?.harnessInstanceId).toBe(harnesses[0]!.id);
-  });
-});
-describe("specialist placement", () => {
-  const exact = (modelId: string, options?: Record<string, string>) => ({
-    engine: HarnessIdSchema.parse("claude"),
-    model: ModelSelectionSchema.shape.modelId.parse(modelId),
-    ...(options
-      ? {
-          options,
-        }
-      : {}),
-  });
-  const place = (
-    dependencies: Parameters<typeof specialistPlacement>[0],
-    specialist: Pick<SpecialistManifest, "models" | "fallback">,
-    extra: {
-      caller?: Thread;
-      accessMode?: ThreadAccessMode;
-    } = {},
-  ) =>
-    specialistPlacement(dependencies, {
-      userId: userId as UserId,
-      environmentId: main,
-      accessMode: extra.accessMode ?? "full-access",
-      specialist,
-      caller: extra.caller,
-    });
-  const light = (modelId: string): AgentHomeSettings => ({
-    backgroundModels: {
-      light: [{ engine: HarnessIdSchema.parse("claude"), model: exact(modelId).model }],
-    },
-  });
-  it("expands a role in place between exact entries, from the caller's own settings", async () => {
-    const models = [
-      exact("claude-opus-5-5"),
-      {
-        role: "light" as const,
-      },
-      exact("claude-sonnet-5-5"),
-    ];
-    const offered = world(
-      [
-        {
-          models: [haiku, sonnet],
-        },
-      ],
-      {
-        settings: light("claude-haiku-5-5"),
-      },
-    );
-    await expect(
-      place(offered.dependencies, {
-        models,
-        fallback: "none",
-      }),
-    ).resolves.toMatchObject({
-      harnessRevision: 1,
-      modelSelection: {
-        modelId: "claude-haiku-5-5",
-      },
-    });
-    // Neither the role's model nor the recommended order is offered: the next exact entry follows.
-    const missing = world(
-      [
-        {
-          models: [sonnet],
-        },
-      ],
-      {
-        settings: light("claude-haiku-5-5"),
-      },
-    );
-    await expect(
-      place(missing.dependencies, {
-        models,
-        fallback: "none",
-      }),
-    ).resolves.toMatchObject({
-      modelSelection: {
-        modelId: "claude-sonnet-5-5",
-      },
-    });
-  });
-  it("expands an engine-only preference to that account's own small model", async () => {
-    const { dependencies } = world(
-      [
-        {
-          models: [haiku, sonnet],
-          light: sonnet,
-        },
-      ],
-      {
-        settings: { backgroundModels: { light: [{ engine: HarnessIdSchema.parse("claude") }] } },
-      },
-    );
-    await expect(
-      place(dependencies, {
-        models: [
-          {
-            role: "light",
-          },
-        ],
-        fallback: "none",
-      }),
-    ).resolves.toMatchObject({
-      modelSelection: {
-        modelId: "claude-sonnet-5-5",
-      },
-    });
-  });
-  it("never appends the maintained ranking to an exact-only list", async () => {
-    // Haiku leads the maintained light ranking and is offered, yet the manifest never asked for it.
-    const { dependencies } = world([
-      {
-        models: [haiku],
-      },
-    ]);
-    await expect(
-      place(dependencies, {
-        models: [exact("claude-opus-5-5")],
-        fallback: "none",
-      }),
-    ).rejects.toThrow(/No specialist model can run: claude\/claude-opus-5-5: model-unavailable/);
-  });
-  it("can neither bind an account nor use one the caller excluded", async () => {
-    expect(
-      SpecialistManifestSchema.safeParse({
-        version: 1,
-        models: [
-          {
-            ...exact("claude-haiku-5-5"),
-            account: createId("harnessInstance"),
-          },
-        ],
-      }).success,
-    ).toBe(false);
-    const { dependencies } = world(
-      [
-        {
-          models: [haiku],
-        },
-      ],
-      {
-        exclude: [0],
-      },
-    );
-    await expect(
-      place(dependencies, {
-        models: [exact("claude-haiku-5-5")],
-        fallback: "none",
-      }),
-    ).rejects.toThrow(/excluded/);
-  });
-  it("stores only the options asked for, with the target catalog's native id", async () => {
-    const { dependencies, harnesses } = world([
-      {
-        models: [haiku],
-      },
-    ]);
-    await expect(
-      place(dependencies, {
-        models: [exact("claude-haiku-5-5")],
-        fallback: "none",
-      }),
-    ).resolves.toEqual({
-      harnessInstanceId: harnesses[0]!.id,
-      harnessRevision: 1,
-      modelSelection: {
-        providerId: "anthropic",
-        modelId: "claude-haiku-5-5",
-        nativeModelId: "native/claude-haiku-5-5",
-        options: {},
-      },
-    });
-    await expect(
-      place(dependencies, {
-        models: [
-          exact("claude-haiku-5-5", {
-            effort: "low",
-          }),
-        ],
-        fallback: "none",
-      }),
-    ).resolves.toMatchObject({
-      modelSelection: {
-        options: {
-          effort: "low",
-        },
-      },
-    });
-  });
-  it("runs only on the task's computer, on an engine that enforces its access mode", async () => {
-    const elsewhere = world([
-      {
-        models: [haiku],
-        environmentId: laptop,
-      },
-    ]);
-    await expect(
-      place(elsewhere.dependencies, {
-        models: [exact("claude-haiku-5-5")],
-        fallback: "none",
-      }),
-    ).rejects.toThrow(/wrong-computer/);
-    const unsupported = world(
-      [
-        {
-          models: [haiku],
-        },
-      ],
-      {
-        accessModes: ["approval-required"],
-      },
-    );
-    await expect(
-      place(unsupported.dependencies, {
-        models: [exact("claude-haiku-5-5")],
-        fallback: "none",
-      }),
-    ).rejects.toThrow(/unsupported-access-mode/);
-  });
-  it("ends with the caller's model only for fallback: caller", async () => {
-    const { dependencies, harnesses } = world([
-      {
-        models: [sonnet],
-      },
-    ]);
-    const caller = {
-      environmentId: main,
-      harnessInstanceId: harnesses[0]!.id,
-      modelSelection: selection("claude-sonnet-5-5"),
-    } as Thread;
-    const models = [exact("claude-opus-5-5")];
-    await expect(
-      place(
-        dependencies,
-        {
-          models,
-          fallback: "none",
-        },
-        {
-          caller,
-        },
-      ),
-    ).rejects.toThrow("No specialist model can run");
-    await expect(
-      place(
-        dependencies,
-        {
-          models,
-          fallback: "caller",
-        },
-        {
-          caller,
-        },
-      ),
-    ).resolves.toMatchObject({
-      harnessInstanceId: harnesses[0]!.id,
-      modelSelection: {
-        modelId: "claude-sonnet-5-5",
-      },
-    });
   });
 });

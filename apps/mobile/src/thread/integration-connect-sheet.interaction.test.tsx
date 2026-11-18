@@ -1,20 +1,4 @@
-// @vitest-environment happy-dom
-
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { requestAgentProposedDetail } from "@opensteer/core";
-import { mainAccessDetail } from "@opensteer/client/integrations";
-import { mockTmdbProposal } from "@opensteer/client/mock";
 import { controlledClientSession } from "@opensteer/client/test-support";
-
-vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate }) }));
-vi.mock("expo-haptics", () => ({
-  impactAsync: vi.fn(async () => {}),
-  ImpactFeedbackStyle: { Light: "light" },
-  selectionAsync: vi.fn(async () => {}),
-}));
-vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/placeholder.js", () => ({
   PlaceholderRows: () => <div aria-label="Not loaded yet" />,
 }));
@@ -30,7 +14,18 @@ vi.mock("../ui/action-line.js", () => ({
     </p>
   ),
 }));
-const navigate = vi.hoisted(() => vi.fn());
+// @vitest-environment happy-dom
+
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("expo-haptics", () => ({
+  impactAsync: vi.fn(async () => {}),
+  ImpactFeedbackStyle: { Light: "light" },
+  selectionAsync: vi.fn(async () => {}),
+}));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 const cardRenders = vi.hoisted(() => vi.fn());
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -185,16 +180,6 @@ vi.mock("../ui/integration-icon.js", () => ({
   },
 }));
 
-const {
-  IntegrationAuthorizationCancelUnconfirmedError,
-  integrationAuthorizationCancelUnknownDetail,
-} = await import("@opensteer/client/integrations");
-const beginIntegrationAuthorization = vi.fn();
-const beginMcpIntegrationAuthorization = vi.fn();
-vi.mock("../ui/mobile-client-context.js", () => ({
-  useMobileClient: () => ({ beginIntegrationAuthorization, beginMcpIntegrationAuthorization }),
-}));
-
 const { IntegrationConnectCard } = await import("./integration-connect-sheet.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -204,279 +189,25 @@ afterEach(() => {
   document.body.replaceChildren();
   openURL.mockClear();
   vi.restoreAllMocks();
-  beginIntegrationAuthorization.mockReset();
-  beginMcpIntegrationAuthorization.mockReset();
 });
-
-const hosted = {
-  brokerIssuer: "https://oauth.opensteer.test",
-  kind: "hosted-oauth" as const,
-  providerApplicationRevision: 1,
-};
-const personalAppId = "ipa_00000000-0000-4000-8000-000000000001";
-const personalSource = {
-  callbackUrl: "https://deployment.test/v1/integrations/oauth/callback/slack",
-  kind: "deployment-oauth" as const,
-  providerApplicationId: personalAppId,
-  providerApplicationRevision: 3,
-};
-
-const mainConnectAllows = mainAccessDetail("Alex’s Opensteer", "Slack");
 
 describe("IntegrationConnectCard", () => {
   it("does not render for streaming updates in an unrelated thread", async () => {
-    const client = fakeClient({ sources: [hosted] });
+    const client = fakeClient({});
     await render(client);
     const before = cardRenders.mock.calls.length;
     await act(async () => client.streamUnrelatedThread());
     expect(cardRenders.mock.calls.length).toBe(before);
   });
-  describe("Cancel while a sign-in waits", () => {
-    const waits =
-      (settle: (reject: (reason: Error) => void, resolve: (value: unknown) => void) => void) =>
-      ({ signal }: { readonly signal: AbortSignal }) =>
-        new Promise((resolve, reject) => {
-          signal.addEventListener("abort", () => settle(reject, resolve));
-        });
-    const cancelled = (reject: (reason: Error) => void) =>
-      reject(new Error("Integration authorization was cancelled."));
-
-    it("ends a provider sign-in and offers it again", async () => {
-      beginIntegrationAuthorization.mockImplementation(waits(cancelled));
-      await render(fakeClient({ sources: [hosted], selected: hosted }));
-      await press("Connect");
-      expect(text()).toContain("Finish signing in");
-      await press("Cancel");
-      expect(beginIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
-      expect(text()).not.toContain("Finish signing in");
-      expect(buttons()).not.toContain("Cancel");
-    });
-
-    it("ends an MCP sign-in", async () => {
-      beginMcpIntegrationAuthorization.mockImplementation(waits(cancelled));
-      await render(fakeClient({ requirementKind: "mcp-oauth", sources: [] }));
-      await press("Connect");
-      await press("Cancel");
-      expect(beginMcpIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
-      expect(text()).not.toContain("Finish signing in");
-    });
-
-    describe("when the Host has not answered the Cancel", () => {
-      const unconfirmed = (reconciled: Promise<unknown>) =>
-        waits((reject) =>
-          reject(
-            new IntegrationAuthorizationCancelUnconfirmedError(
-              "ioa_00000000-0000-4000-8000-000000000001",
-              reconciled as never,
-            ),
-          ),
-        );
-
-      it("says so instead of Cancelled, then shows the completion that won", async () => {
-        const client = fakeClient({ sources: [hosted], selected: hosted });
-        const id = "con_00000000-0000-4000-8000-0000000000ce";
-        let settle = (_status: unknown) => {};
-        beginIntegrationAuthorization.mockImplementation(
-          unconfirmed(new Promise((resolve) => (settle = resolve))),
-        );
-        await render(client);
-        await press("Connect");
-        await press("Cancel");
-        expect(text()).toContain("Checking whether this was cancelled");
-        expect(text()).not.toMatch(/was cancelled\./u);
-        expect(buttons()).not.toContain("Cancel");
-        client.setConnections([connection(id)]);
-        client.settleRequest();
-        await act(async () => settle(completed(id)));
-        expect(text()).toContain("Slack connected · oversteer.slack.com");
-      });
-
-      it("reports the cancel once the Host confirms it", async () => {
-        let settle = (_status: unknown) => {};
-        beginIntegrationAuthorization.mockImplementation(
-          unconfirmed(new Promise((resolve) => (settle = resolve))),
-        );
-        await render(fakeClient({ sources: [hosted], selected: hosted }));
-        await press("Connect");
-        await press("Cancel");
-        await act(async () =>
-          settle({
-            connectionId: null,
-            expiresAt: "2099-01-01T00:00:00Z",
-            failureCode: null,
-            status: "cancelled",
-          }),
-        );
-        expect(text()).toContain("Authorization was cancelled.");
-        expect(text()).not.toContain("Checking whether");
-      });
-
-      it("says it could not tell when the Host can no longer answer", async () => {
-        beginIntegrationAuthorization.mockImplementation(unconfirmed(Promise.resolve(null)));
-        await render(fakeClient({ sources: [hosted], selected: hosted }));
-        await press("Connect");
-        await press("Cancel");
-        expect(text()).toContain(integrationAuthorizationCancelUnknownDetail);
-      });
-    });
-
-    it("shows the connection when it finished before Cancel reached the Host", async () => {
-      const client = fakeClient({ sources: [hosted], selected: hosted });
-      const id = "con_00000000-0000-4000-8000-0000000000cd";
-      beginIntegrationAuthorization.mockImplementation(
-        waits((_reject, resolve) => {
-          client.setConnections([connection(id)]);
-          client.settleRequest();
-          resolve(completed(id));
-        }),
-      );
-      await render(client);
-      await press("Connect");
-      await press("Cancel");
-      expect(text()).toContain("Slack connected · oversteer.slack.com");
-    });
-  });
-
-  it.each(["settled by the Host", "still pending"] as const)(
-    "connects from one tap and shows the committed result in place (%s)",
-    async (requestState) => {
-      const client = fakeClient({ sources: [hosted], selected: hosted });
-      const id = "con_00000000-0000-4000-8000-0000000000cc";
-      beginIntegrationAuthorization.mockImplementation(async () => {
-        client.setConnections([connection(id)]);
-        if (requestState === "settled by the Host") client.settleRequest();
-        return completed(id);
-      });
-      await render(client);
-      expect(document.querySelector("h1")).toBeNull();
-      await press("Connect");
-      expect(beginIntegrationAuthorization).toHaveBeenCalledExactlyOnceWith({
-        applicationSource: hosted,
-        definitionId: "slack",
-        signal: expect.any(AbortSignal),
-      });
-      expect(text()).toContain("Slack connected · oversteer.slack.com");
-      expect(text()).not.toMatch(/Back to the request|Account connected|Review connection/u);
-      const grants = client.dispatch.mock.calls.filter(
-        ([command]) => command.type === "request.respond",
-      );
-      expect(grants).toHaveLength(requestState === "settled by the Host" ? 0 : 1);
-      if (requestState === "still pending")
-        expect(grants[0]?.[0]).toMatchObject({
-          response: { value: { access: "read-write", connectionId: id, decision: "fulfilled" } },
-        });
-    },
-  );
-
-  it.each(["denied", "cancelled"] as const)(
-    "keeps the old mobile selection pending after consent is %s",
-    async (status) => {
-      const client = fakeClient({
-        sources: [hosted],
-        connections: [connection("old")],
-      });
-      beginIntegrationAuthorization.mockResolvedValue({
-        ...completed("old"),
-        connectionId: null,
-        status,
-      });
-      const onResponded = vi.fn();
-      await render(client, request(), { onResponded });
-      await click("oversteer.slack.com");
-      await click("Add another account");
-      expect(text()).toContain(
-        status === "denied" ? "Access was not approved." : "Authorization was cancelled.",
-      );
-      expect(client.dispatch).not.toHaveBeenCalled();
-      expect(onResponded).not.toHaveBeenCalled();
-      // Try again repeats the sign-in for another account, never approval of the old one.
-      await click("Try again");
-      expect(beginIntegrationAuthorization).toHaveBeenCalledTimes(2);
-      expect(client.dispatch).not.toHaveBeenCalled();
-      expect(onResponded).not.toHaveBeenCalled();
-    },
-  );
-
-  // Dismissing a sheet abandons the operation it belongs to, so the account list
-  // must not open over a sign-in the card is still waiting on.
-  it("keeps the full account list closed while a sign-in is out", async () => {
-    const client = fakeClient({
-      connections: ["a", "b", "c", "d"].map((id) => connection(id)),
-      selected: hosted,
-      sources: [hosted],
-    });
-    beginIntegrationAuthorization.mockImplementation(() => new Promise(() => {}));
-    await render(client);
-    await click("Add another account");
-    expect(text()).toContain("Finish signing in");
-
-    await click("See all 4 accounts");
-
-    expect(document.querySelector("h1")).toBeNull();
-  });
-
-  it("does not grant a different mobile request when consent finishes", async () => {
-    const client = fakeClient({ sources: [hosted] });
-    let complete!: (value: ReturnType<typeof completed>) => void;
-    beginIntegrationAuthorization.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          complete = resolve;
-        }),
-    );
-    const onResponded = vi.fn();
-    await render(client, request(), { onResponded });
-    await press("Connect");
-    await act(async () =>
-      roots.at(-1)!.render(
-        <IntegrationConnectCard
-          hostClient={client as never}
-          onResponded={onResponded}
-          request={
-            {
-              ...(request("read-write") as object),
-              id: "req_00000000-0000-4000-8000-000000000002",
-            } as never
-          }
-        />,
-      ),
-    );
-    await act(async () => {
-      client.setConnections([connection("new")]);
-      complete(completed("new"));
-    });
-    expect(client.dispatch).not.toHaveBeenCalled();
-    expect(onResponded).not.toHaveBeenCalled();
-    expect(text()).not.toContain("connected ·");
-  });
-
-  it("discloses access before catalog Connect without expanding details", async () => {
-    const client = fakeClient({ isAdministrator: true, sources: [] });
-    const catalogRequest = preinstallRequest();
-    await render(
-      client,
-      {
-        ...(catalogRequest as object),
-        payload: {
-          ...(catalogRequest as unknown as { payload: object }).payload,
-          access: "read-write",
-        },
-      } as never,
-      {},
-      false,
-    );
-    expect(text()).toContain("All your tasks");
-    expect(buttons()).toContain("Connect");
-  });
 
   it("installs from the access sheet without resolving the request", async () => {
-    const client = fakeClient({ isAdministrator: true, sources: [] });
+    const client = fakeClient({ isAdministrator: true });
     await render(client, preinstallRequest());
 
     expect(text()).toContain("Test Calendar");
     expect(text()).toContain("Scheduling for the test suite.");
-    expect(buttons()).toContain("Connect");
-    await press("Connect");
+    expect(buttons()).toContain("Continue");
+    await press("Continue");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -489,362 +220,8 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
-  // The ways it could fail: the phone naming a proposal by its document's
-  // title while the browser names the service, or leaving out what the agent
-  // said it does; saying where the key goes, or
-  // that it is checked, differently from the browser card; an operation count
-  // the access step will contradict.
-  it("reviews an agent's proposal in the browser card's words", async () => {
-    const client = fakeClient({ isAdministrator: true, sources: [] });
-    await render(client, {
-      ...(preinstallRequest() as unknown as { payload: object }),
-      payload: {
-        ...(preinstallRequest() as unknown as { payload: object }).payload,
-        manifest: mockTmdbProposal.manifest,
-      },
-    } as never);
-
-    for (const line of [
-      "TMDB",
-      requestAgentProposedDetail,
-      "Movie and TV show details, search and ratings.",
-      "Researched from developer.themoviedb.org.",
-      "Your key is stored encrypted by your Opensteer and sent to api.themoviedb.org when used.",
-      "Opensteer checks the key with TMDB before saving it.",
-    ]) {
-      expect(text()).toContain(line);
-    }
-    expect(text()).not.toMatch(/tmdb-api|operations|Agent proposal/u);
-  });
-
-  it("starts MCP authorization on the phone for the exact requested server", async () => {
-    beginMcpIntegrationAuthorization.mockResolvedValue({
-      connectionId: "con_00000000-0000-4000-8000-0000000000bb",
-      expiresAt: "2026-09-17T00:10:00.000Z",
-      failureCode: null,
-      status: "completed",
-    });
-    const client = fakeClient({ requirementKind: "mcp-oauth", sources: [] });
-    await render(client);
-
-    await press("Connect");
-
-    expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith({
-      signal: expect.any(AbortSignal),
-      displayName: "Slack account",
-      requestId: "req_00000000-0000-4000-8000-000000000001",
-      serverId: "isv_00000000-0000-4000-8000-000000000001",
-    });
-  });
-
-  it("starts MCP sign-in from a remote device", async () => {
-    await render(fakeClient({ remote: true, requirementKind: "mcp-oauth", sources: [] }));
-    await press("Connect");
-    expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: "req_00000000-0000-4000-8000-000000000001",
-      }),
-    );
-  });
-
-  // The ways it could fail, as on the web card: connecting also answers the
-  // request with nothing said first, or said only on the review, so the key
-  // form, the browser sign-in, or a key repair that opens straight on its key
-  // connects in silence; or it promises only the access the request asked for,
-  // when the person's tasks use every operation of every account it connects.
-  it("connects an API key without leaving the access sheet", async () => {
-    const client = fakeClient({ requirementKind: "api-key", sources: [] });
-    await render(client);
-
-    expect(text()).toContain("Read and write · 2 operations");
-    expect(text()).toContain(mainConnectAllows);
-    await press("Connect");
-    expect(text()).toContain(mainConnectAllows);
-    expect(text()).toContain("Get your API token in your Slack account, then paste it here.");
-    typeInto("API token", "secret-token");
-    await click("Connect Slack");
-
-    expect(client.dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        input: expect.objectContaining({
-          authMethodId: "api-key",
-          definitionId: "slack",
-          values: { apiKey: "secret-token" },
-        }),
-        type: "integration.apiKey.connect",
-      }),
-    );
-  });
-
-  it.each([
-    {
-      returnsConnectionId: true,
-      behavior: "fulfills a request with API-key account A when account B sorts first",
-    },
-    {
-      returnsConnectionId: false,
-      behavior: "waits for explicit Use on an older Host before granting access",
-    },
-  ])("$behavior", async ({ returnsConnectionId }) => {
-    const client = fakeClient({
-      requirementKind: "api-key",
-      sources: [],
-    });
-    const accountA = keyConnection(
-      "con_00000000-0000-4000-8000-0000000000a1",
-      "2026-09-17T09:12:00.000Z",
-    );
-    accountA.displayName = "Account A";
-    const accountB = {
-      ...accountA,
-      id: "con_00000000-0000-4000-8000-0000000000b1",
-      displayName: "Account B",
-    };
-    const dispatch = client.dispatch.getMockImplementation()!;
-    client.dispatch.mockImplementation(async (command) => {
-      if (command.type === "integration.apiKey.connect") {
-        client.setConnections([accountB, accountA]);
-        return {
-          type: command.type,
-          ...(returnsConnectionId ? { connectionId: accountA.id } : {}),
-        };
-      }
-      return dispatch(command);
-    });
-    const getDashboard = client.rpc["integrations.get"];
-    const dashboard = vi.spyOn(client.rpc, "integrations.get").mockImplementation(async () => {
-      const result = await getDashboard();
-      return { ...result, data: { ...result.data, connections: [...result.data.connections] } };
-    });
-    const onResponded = vi.fn();
-    await render(client, request(), { onResponded });
-    await press("Connect");
-    typeInto("API token", "test-api-key");
-    await click("Connect Slack");
-    if (!returnsConnectionId) {
-      expect(dashboard).toHaveBeenCalledTimes(2);
-      expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
-      expect(onResponded).not.toHaveBeenCalled();
-      expect(text()).not.toContain("Slack connected");
-      // The key sheet closes so the saved account's Use is in front.
-      expect(text()).not.toContain("API token");
-      await press("Allow");
-    }
-    expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
-      [
-        expect.objectContaining({
-          requestId,
-          response: {
-            kind: "external",
-            value: {
-              access: "read-write",
-              alias: `Account ${returnsConnectionId ? "A" : "B"}`,
-              isDefault: false,
-              connectionId: returnsConnectionId ? accountA.id : accountB.id,
-              decision: "fulfilled",
-            },
-          },
-        }),
-      ],
-    ]);
-    expect(onResponded).toHaveBeenCalledOnce();
-    expect(text()).toContain(`Slack connected · Account ${returnsConnectionId ? "A" : "B"}`);
-  });
-
-  // Instruction failures: a proposed label loses its case, the method title
-  // replaces the input label, several inputs name only the first, or an unsafe
-  // setup URL becomes a link instead of naming the service account.
-  it.each([
-    {
-      label: "TMDB API Read Access Token",
-      setupUrl: "https://www.themoviedb.org/settings/api",
-      extra: false,
-    },
-    { label: "Bot token", setupUrl: "https://www.themoviedb.org/settings/api", extra: false },
-    { label: "Account SID", setupUrl: "https://www.themoviedb.org/settings/api", extra: true },
-    { label: "Bot token", setupUrl: undefined, extra: false },
-    { label: "Bot token", setupUrl: "http://www.themoviedb.org/settings/api", extra: false },
-    { label: "Bot token", setupUrl: "https://name@www.themoviedb.org/settings/api", extra: false },
-    {
-      label: "Bot token",
-      setupUrl: "https://:secret@www.themoviedb.org/settings/api",
-      extra: false,
-    },
-  ])(
-    "names $label with setup $setupUrl (multiple inputs: $extra)",
-    async ({ label, setupUrl, extra }) => {
-      const client = fakeClient({ requirementKind: "api-key", sources: [] });
-      const installed = platform("api-key");
-      const definition = installed.installations[0]!.installation.manifest.definition;
-      definition.name = "TMDB";
-      Object.assign(definition, setupUrl === undefined ? {} : { setupUrl });
-      definition.authMethods = [
-        {
-          id: "api-key",
-          inputs: [
-            { label, secret: true, variable: "apiKey" },
-            ...(extra ? [{ label: "Auth token", secret: true, variable: "authToken" }] : []),
-          ],
-          kind: "api-key",
-          label: "Service credentials",
-          placements: [{ carrier: "header", name: "Authorization", variable: "apiKey" }],
-        },
-      ];
-      vi.spyOn(client.rpc, "integration.platform.get").mockResolvedValue({
-        ok: true,
-        data: installed,
-      });
-      await render(client);
-      await press("Connect");
-
-      const noun = extra ? "key" : label;
-      const safe = setupUrl?.startsWith("https://www.") === true;
-      const location = safe ? "at www.themoviedb.org" : "in your TMDB account";
-      expect(text()).toContain(`Get your ${noun} ${location}, then paste it here.`);
-      expect(document.querySelectorAll('[role="link"]')).toHaveLength(safe ? 1 : 0);
-      if (safe) {
-        await click(`Get your ${noun}`);
-        expect(openURL).toHaveBeenCalledWith(setupUrl);
-      }
-      typeInto(label, "credential-value");
-      if (extra) typeInto("Auth token", "second-value");
-      await click("Connect TMDB");
-      expect(client.dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({
-          input: expect.objectContaining({
-            values: {
-              apiKey: "credential-value",
-              ...(extra ? { authToken: "second-value" } : {}),
-            },
-          }),
-          type: "integration.apiKey.connect",
-        }),
-      );
-    },
-  );
-
-  // The way it could fail: a tap before the key appears; no reason; nothing
-  // saying an agent proposed the integration the key is for, since the
-  // review that says so is skipped; the twin account of the same name
-  // repaired, or a new account made; the agent's request answered, or another
-  // account offered, on the person's behalf.
-  it.each([false, true])(
-    "dismisses a key form without changing accounts or the request (reconnect: %s)",
-    async (reconnecting) => {
-      const connectionId = "con_00000000-0000-4000-8000-0000000000a1";
-      const client = fakeClient({
-        connections: reconnecting
-          ? [
-              keyConnection(connectionId, "2026-09-17T09:12:00.000Z", {
-                status: "needs-attention",
-                statusDetail: "Slack rejected the saved sign-in",
-              }),
-            ]
-          : [],
-        requirementKind: "api-key",
-        sources: [],
-      });
-      const onClose = vi.fn();
-      const onResponded = vi.fn();
-      await render(client, request("read", reconnecting ? connectionId : undefined), {
-        onClose,
-        onResponded,
-      });
-      await (reconnecting ? click("Reconnect Slack") : press("Connect"));
-      typeInto("API token", "discard-this-key");
-      await click("Dismiss sheet");
-      expect(onClose).toHaveBeenCalledOnce();
-      expect(onResponded).not.toHaveBeenCalled();
-      expect(client.dispatch).not.toHaveBeenCalled();
-      expect(beginIntegrationAuthorization).not.toHaveBeenCalled();
-    },
-  );
-
-  it("reconnects the exact key account a request names, straight from its key", async () => {
-    const requestedId = "con_00000000-0000-4000-8000-0000000000a1";
-    const twinId = "con_00000000-0000-4000-8000-0000000000a2";
-    const client = fakeClient({
-      connections: [
-        keyConnection(requestedId, "2026-09-17T09:12:00.000Z", {
-          status: "needs-attention",
-          statusDetail: "Slack rejected the saved sign-in",
-        }),
-        keyConnection(twinId, "2026-09-17T09:40:00.000Z"),
-      ],
-      requirementKind: "api-key",
-      sources: [],
-    });
-    await render(client, {
-      ...(request("read", requestedId) as object),
-      presentation: { agentProposed: true, kind: "external", title: "Slack access" },
-    } as never);
-
-    await click("Reconnect Slack");
-    expect(document.querySelector("h1")?.textContent).toBe("Reconnect Slack");
-    expect(text()).toContain("Proposed by an agent");
-    expect(text()).toContain("Slack rejected the saved sign-in");
-    expect(text()).toContain(mainConnectAllows);
-    // The name is shared, so the time it was added is what says which one.
-    expect(text()).toMatch(/Added Sep 17, \d{1,2}:\d{2}\s?[AP]M · Needs attention/u);
-    expect(
-      document.querySelector<HTMLInputElement>('input[aria-label="Account label (optional)"]')
-        ?.value,
-    ).toBe("Slack");
-    expect(text()).not.toContain("Add another account");
-
-    typeInto("API token", "replacement-token");
-    await click("Reconnect Slack");
-
-    expect(client.dispatch).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        input: expect.objectContaining({
-          connectionId: requestedId,
-          displayName: "Slack",
-          values: { apiKey: "replacement-token" },
-        }),
-        type: "integration.apiKey.connect",
-      }),
-    );
-  });
-
-  // The ways it could fail: a key form for an account that no longer exists;
-  // the action named "Dismiss", as if it only hid the sheet, when it declines;
-  // words that differ from the browser's for the same request.
-  it("says plainly when the account a request names is gone, and lets it be declined", async () => {
-    const onResponded = vi.fn();
-    const client = fakeClient({
-      connections: [
-        keyConnection("con_00000000-0000-4000-8000-0000000000a2", "2026-09-17T09:40:00.000Z"),
-      ],
-      requirementKind: "api-key",
-      sources: [],
-    });
-    await render(client, request("read", "con_00000000-0000-4000-8000-0000000000a1"), {
-      onResponded,
-    });
-
-    expect(text()).toContain("This account is no longer available");
-    expect(text()).toContain(
-      "This account is no longer available. Decline this request, then ask the agent again when you want to reconnect.",
-    );
-    expect(text()).not.toContain("Dismiss request");
-    expect(text()).not.toContain("Reconnect oversteer.slack.com");
-    expect(text()).not.toContain("Add another account");
-    expect(buttons()).not.toContain("Allow");
-
-    await click("Not now");
-
-    expect(client.dispatch).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        response: { kind: "external", value: { decision: "declined" } },
-        type: "request.respond",
-      }),
-    );
-    expect(onResponded).toHaveBeenCalledOnce();
-  });
-
   it("pins a singleton server before showing account or access controls", async () => {
-    const client = fakeClient({ sources: [] });
+    const client = fakeClient({});
     await render(client, unpinnedRequest());
 
     expect(text()).toContain("Choose server");
@@ -863,183 +240,12 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
-  it("sends the exact app the person chose to the Host", async () => {
-    beginIntegrationAuthorization.mockResolvedValue({
-      connectionId: null,
-      expiresAt: "2026-09-17T00:10:00.000Z",
-      failureCode: null,
-      status: "denied",
-    });
-    const client = fakeClient({ selected: personalSource, sources: [hosted, personalSource] });
-    await render(client);
-
-    await press("Connect");
-    expect(text()).toContain(mainConnectAllows);
-    expect(text()).not.toContain(personalSource.callbackUrl);
-
-    expect(beginIntegrationAuthorization).toHaveBeenCalledWith(
-      expect.objectContaining({ applicationSource: personalSource }),
-    );
-    // A refusal is a refusal, on a phone as anywhere else.
-    expect(text()).toContain("Access was not approved.");
-    expect(text()).not.toContain("is connected as");
-  });
-
-  it("refuses to report a connection the Host did not record", async () => {
-    beginIntegrationAuthorization.mockResolvedValue({
-      connectionId: "con_00000000-0000-4000-8000-0000000000ff",
-      expiresAt: "2026-09-17T00:10:00.000Z",
-      failureCode: null,
-      status: "completed",
-    });
-    const client = fakeClient({ selected: hosted, sources: [hosted] });
-    await render(client);
-
-    await press("Connect");
-
-    expect(text()).toContain("no connected account is recorded here");
-    expect(text()).not.toContain("is connected as");
-  });
-
-  it("shows the Host-recorded account in place and fulfills the request", async () => {
-    const connectionId = "con_00000000-0000-4000-8000-0000000000aa";
-    beginIntegrationAuthorization.mockResolvedValue({
-      connectionId,
-      expiresAt: "2026-09-17T00:10:00.000Z",
-      failureCode: null,
-      status: "completed",
-    });
-    const client = fakeClient({
-      connections: [connection(connectionId)],
-      selected: hosted,
-      sources: [hosted],
-    });
-    await render(client);
-
-    await click("Add another account");
-
-    expect(text()).toContain("Slack connected · oversteer.slack.com");
-    expect(client.dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "request.respond" }),
-    );
-  });
-
-  // GitHub's 401 makes the Host record a sign-in-required account; checking
-  // that credential again can only be refused again.
-  it("returns to sign-in when GitHub rejects the sign-in at the first check", async () => {
-    const account = githubConnection(githubConnectionId);
-    const client = fakeClient({
-      connections: [account],
-      provider: "github",
-      selected: hosted,
-      sources: [hosted],
-    });
-    client.rpc["integration.repositoryAccess.check"].mockImplementationOnce(async () =>
-      rejectSignIn(account),
-    );
-    beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
-    await render(client);
-
-    await press("Connect");
-
-    expect(text()).toContain(rejectedSignIn);
-    expect(buttons()).toContain("Try again");
-    expect(buttons()).not.toContain("Recheck repository access");
-
-    await click("Try again");
-    expect(beginIntegrationAuthorization).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns to sign-in when GitHub rejects the sign-in on a recheck", async () => {
-    const account = githubConnection(githubConnectionId);
-    const client = fakeClient({
-      connections: [account],
-      provider: "github",
-      selected: hosted,
-      sources: [hosted],
-    });
-    beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
-    await render(client);
-    await press("Connect");
-    expect(text()).toContain("Repository access is still required");
-
-    client.rpc["integration.repositoryAccess.check"].mockImplementationOnce(async () =>
-      rejectSignIn(account),
-    );
-    await click("Recheck repository access");
-
-    expect(text()).toContain(rejectedSignIn);
-    expect(buttons()).toContain("Try again");
-    expect(buttons()).not.toContain("Recheck repository access");
-  });
-
-  it("keeps the repository step when GitHub fails a recheck without rejecting the sign-in", async () => {
-    const unavailable = "GitHub repository access could not be checked. Try again.";
-    const client = fakeClient({
-      connections: [githubConnection(githubConnectionId)],
-      provider: "github",
-      selected: hosted,
-      sources: [hosted],
-    });
-    const reload = vi.spyOn(client.rpc, "integrations.get");
-    beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
-    await render(client);
-    await press("Connect");
-    const reloads = reload.mock.calls.length;
-
-    // A 5xx changes nothing at the Host: the account still waits for repositories.
-    client.rpc["integration.repositoryAccess.check"].mockResolvedValueOnce({
-      error: { code: "internal", message: "upstream 503 from api.github.com", retryable: true },
-      ok: false,
-    });
-    await click("Recheck repository access");
-
-    expect(reload).toHaveBeenCalledTimes(reloads + 1);
-    expect(text()).toContain(unavailable);
-    expect(text()).not.toContain("upstream 503");
-    expect(text()).toContain("Repository access is still required");
-    expect(buttons()).toContain("Recheck repository access");
-    expect(buttons()).not.toContain("Continue in browser");
-  });
-
-  it("sends missing sign-in setup to Settings without connecting", async () => {
-    const client = fakeClient({ sources: [] });
-    await render(client);
-    await click("Open integration settings");
-    expect(navigate).toHaveBeenCalledWith("SettingsPlugins", expect.any(Object));
-    expect(beginIntegrationAuthorization).not.toHaveBeenCalled();
-    expect(text()).not.toContain("Client Secret");
-  });
-
-  it("keeps requested read-write access required when write operations are discovered", async () => {
-    const connectionId = "con_00000000-0000-4000-8000-0000000000aa";
-    const client = fakeClient({
-      connections: [connection(connectionId)],
-      selected: hosted,
-      sources: [hosted],
-    });
-    await render(client, request("read-write"));
-
-    expect(text()).toContain("Read and write");
-    expect(text()).not.toContain("Allow changes");
-    await press("Allow");
-
-    expect(client.dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response: expect.objectContaining({
-          value: expect.objectContaining({ access: "read-write", connectionId }),
-        }),
-        type: "request.respond",
-      }),
-    );
-  });
-
   /**
    * The phone is not the Mac, and it does not have to be: turning an app on is
    * a write about a computer, so the request it answers can be finished here.
    */
   it("requests local approval without granting access or finishing the agent request", async () => {
-    const client = fakeClient({ machines: [mac()], requirementKind: "computer", sources: [] });
+    const client = fakeClient({ machines: [mac()], requirementKind: "computer" });
     await render(client);
 
     expect(text()).toContain("Choose a computer");
@@ -1064,7 +270,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac({ apps: [messagesNeedsFullDiskAccess()] })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1111,7 +316,6 @@ describe("IntegrationConnectCard", () => {
         }),
       ],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1152,7 +356,6 @@ describe("IntegrationConnectCard", () => {
         }),
       ],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1168,7 +371,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("keeps a Mac-only app's desktop-app steps once no Mac offers it", async () => {
-    const client = fakeClient({ machines: [mac()], requirementKind: "computer", sources: [] });
+    const client = fakeClient({ machines: [mac()], requirementKind: "computer" });
     await render(client);
 
     await click("Choose a computer");
@@ -1183,7 +386,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1204,7 +406,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read"));
 
@@ -1228,7 +429,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requestPendingAfterComputerSet: false,
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read"), { onClose, onResponded });
 
@@ -1248,7 +448,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requestPendingAfterComputerSet: true,
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read-write"), { onResponded });
 
@@ -1259,22 +458,6 @@ describe("IntegrationConnectCard", () => {
     expect(text()).toContain("Setup requested");
   });
 
-  it("does not redirect a request pinned to another account", async () => {
-    const requestedId = "con_00000000-0000-4000-8000-0000000000a1";
-    const client = fakeClient({
-      connections: [
-        connection(requestedId, "Requested account"),
-        connection("con_other", "Other account"),
-      ],
-      selected: hosted,
-      sources: [hosted],
-    });
-    await render(client, request("read", requestedId));
-
-    expect(text()).toContain("Requested account");
-    expect(text()).not.toContain("Other account");
-  });
-
   it("keeps the chosen computer visible while its setup request awaits approval", async () => {
     const macBookId = "rnr_00000000-0000-4000-8000-0000000000a2";
     const client = fakeClient({
@@ -1282,7 +465,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1297,7 +479,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -1320,7 +501,6 @@ describe("IntegrationConnectCard", () => {
       computerSetGate: gate,
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request(), { onClose, onResponded });
 
@@ -1347,7 +527,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read-write"));
 
@@ -1367,7 +546,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("allows a no-account integration without claiming an account is missing", async () => {
-    const client = fakeClient({ requirementKind: "none", sources: [] });
+    const client = fakeClient({ requirementKind: "none" });
     await render(client);
 
     expect(text()).not.toContain("No account is connected yet");
@@ -1385,7 +564,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   // The ways it could fail: the person closes the sheet while an install, a
-  // server choice, a key or an MCP sign-in is still out, and opens it again;
+  // server choice is still out, and opens it again;
   // the old operation's failure, arriving now, lands on the fresh sheet.
   it.each<{
     readonly client: () => ReturnType<typeof fakeClient>;
@@ -1394,42 +573,22 @@ describe("IntegrationConnectCard", () => {
     readonly start: (client: ReturnType<typeof fakeClient>, held: Promise<never>) => Promise<void>;
   }>([
     {
-      client: () => fakeClient({ isAdministrator: true, sources: [] }),
+      client: () => fakeClient({ isAdministrator: true }),
       operation: "an install",
       request: preinstallRequest,
       start: async (client, held) => {
         client.dispatch.mockReturnValueOnce(held);
-        await press("Connect");
+        await press("Continue");
       },
     },
     {
-      client: () => fakeClient({ sources: [] }),
+      client: () => fakeClient({}),
       operation: "a server choice",
       request: unpinnedRequest,
       start: async (client, held) => {
         client.dispatch.mockReturnValueOnce(held);
         await click("Choose server");
         await click("Continue with live");
-      },
-    },
-    {
-      client: () => fakeClient({ requirementKind: "api-key", sources: [] }),
-      operation: "a key",
-      request,
-      start: async (client, held) => {
-        await press("Connect");
-        typeInto("API token", "secret-token");
-        client.dispatch.mockReturnValueOnce(held);
-        await click("Connect Slack");
-      },
-    },
-    {
-      client: () => fakeClient({ requirementKind: "mcp-oauth", sources: [] }),
-      operation: "an MCP sign-in",
-      request,
-      start: async (_client, held) => {
-        beginMcpIntegrationAuthorization.mockReturnValueOnce(held);
-        await press("Connect");
       },
     },
   ])("leaves a reopened sheet alone when $operation fails late", async (input) => {
@@ -1530,16 +689,6 @@ async function click(label: string): Promise<void> {
   });
 }
 
-function typeInto(label: string, value: string): void {
-  const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
-  if (!input) throw new Error(`No field labelled ${label}`);
-  act(() => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-    setter?.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
 const threadId = "thr_00000000-0000-4000-8000-000000000001";
 const requestId = "req_00000000-0000-4000-8000-000000000001";
 
@@ -1557,11 +706,11 @@ function request(
       access,
       installationId: "iin_00000000-0000-4000-8000-000000000001",
       kind: "integration.access",
-      reason: "Read the deals channel.",
+      reason: "Read the calendar.",
       requestedConnectionId,
       requestedServerId: "isv_00000000-0000-4000-8000-000000000001",
     },
-    presentation: { kind: "external", title: "Connect Slack" },
+    presentation: { kind: "external", title: "Allow Calendar" },
     status: "pending",
   } as never;
 }
@@ -1591,12 +740,11 @@ function preinstallRequest() {
       kind: "integration.access",
       manifest: {
         definition: {
-          adapter: "openapi",
-          authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
+          ...calendarPlatform().installations[0]!.installation.manifest.definition,
           description: "Scheduling for the test suite.",
           id: "test-calendar",
           name: "Test Calendar",
-          provider: "google",
+          provider: "apple-calendar",
         },
         digest: "c".repeat(43),
         kind: "catalog",
@@ -1609,30 +757,19 @@ function preinstallRequest() {
 }
 
 function fakeClient(input: {
-  readonly applications?: readonly ReturnType<typeof application>[];
-  readonly connections?: readonly (
-    | ReturnType<typeof connection>
-    | ReturnType<typeof computerConnection>
-    | ReturnType<typeof keyConnection>
-  )[];
-  readonly saved?: ReturnType<typeof application>;
-  readonly selected?: typeof hosted | typeof personalSource;
+  readonly connections?: readonly ReturnType<typeof computerConnection>[];
   readonly machines?: readonly ReturnType<typeof mac>[];
   readonly computerSetGate?: Promise<void>;
   /** The installed apps the Host lists, when not one of `platform`'s fixtures. */
   readonly installedPlatform?: ReturnType<typeof calendarPlatform>;
   readonly computerSetVisible?: boolean;
   readonly requestPendingAfterComputerSet?: boolean;
-  readonly sources: readonly (typeof hosted | typeof personalSource)[];
-  readonly requirementKind?: "api-key" | "computer" | "mcp-oauth" | "none" | "provider";
+  readonly requirementKind?: "computer" | "none";
   readonly isAdministrator?: boolean;
   readonly multipleServers?: boolean;
-  readonly provider?: "github" | "slack";
   /** Attached from another device, as a phone always is to a Personal Opensteer. */
   readonly remote?: boolean;
 }) {
-  const provider = input.provider ?? "slack";
-  let sources = input.sources;
   const connections = [...(input.connections ?? [])];
   let requestPending = true;
   const listeners = new Set<() => void>();
@@ -1649,10 +786,6 @@ function fakeClient(input: {
     }) => {
       if (command.type === "request.respond" && command.response?.kind === "external")
         requestPending = false;
-      if (command.type === "integration.providerApplication.save") {
-        sources = input.sources;
-        return { application: input.saved, type: command.type };
-      }
       if (command.type === "integration.computer.setup.request") {
         await input.computerSetGate;
         return { type: command.type, request: { id: "test-setup-request" } };
@@ -1681,53 +814,18 @@ function fakeClient(input: {
       "integration.platform.get": async () => {
         const data =
           input.installedPlatform ??
-          platform(input.requirementKind ?? "provider", input.multipleServers ?? false, provider);
+          platform(input.requirementKind ?? "none", input.multipleServers ?? false);
         return {
           ok: true,
           data: input.remote ? { ...data, authorizationSurface: "personal-remote" } : data,
         };
       },
-      "integration.repositoryAccess.check": vi.fn(
-        async (): Promise<
-          | { readonly data: unknown; readonly ok: true }
-          | { readonly error: unknown; readonly ok: false }
-        > => ({ data: { installationUrl: null, installations: [], ready: false }, ok: true }),
-      ),
       "integrations.get": async () => ({
         ok: true,
         data: {
-          applications: input.applications ?? [application({ id: personalAppId, revision: 3 })],
           authorizationSurface: "canonical",
-          callbackUrls: {
-            [provider]: `https://deployment.test/v1/integrations/oauth/callback/${provider}`,
-          },
           connections,
-          hostedOAuthDisclosure: "Opensteer brokers the authorization only.",
           isAdministrator: input.isAdministrator ?? false,
-          providerAuthorizations: {
-            [provider]: {
-              availableSources: sources,
-              code: (input.selected ?? sources[0]) ? "READY" : "PROVIDER_APPLICATION_REQUIRED",
-              detail: input.selected
-                ? "Ready to connect"
-                : "Configure and enable this deployment's OAuth application",
-              hostedOAuthStatus: "available",
-              selectedSource: input.selected ?? sources[0] ?? null,
-              selectedSourceKind: input.selected?.kind ?? null,
-            },
-          },
-          providers: [
-            {
-              description: "Slack apps",
-              hostedOAuthCapable: true,
-              label: "Slack",
-              provider,
-              secretFields: ["clientSecret"],
-              setupLabel: "Slack app",
-              setupSteps: ["Create an app from a manifest."],
-              setupUrl: "https://api.slack.com/apps",
-            },
-          ],
         },
       }),
       "thread.requests.list": async () => ({
@@ -1757,13 +855,8 @@ function fakeClient(input: {
   };
 }
 
-function platform(
-  requirementKind: "api-key" | "computer" | "mcp-oauth" | "none" | "provider",
-  multipleServers = false,
-  provider: "github" | "slack" = "slack",
-) {
+function platform(requirementKind: "computer" | "none", multipleServers = false) {
   if (requirementKind === "computer") return computerPlatform();
-  const name = provider === "github" ? "GitHub" : "Slack";
   return {
     authorizationSurface: "canonical",
     catalog: [],
@@ -1772,107 +865,18 @@ function platform(
       {
         installation: {
           id: "iin_00000000-0000-4000-8000-000000000001",
-          manifest: {
-            definition: {
-              adapter: "openapi",
-              apiKey:
-                requirementKind === "api-key"
-                  ? { destinations: ["https://slack.com"], check: false }
-                  : null,
-              authMethods:
-                requirementKind === "api-key"
-                  ? [
-                      {
-                        id: "api-key",
-                        inputs: [{ label: "API token", secret: true, variable: "apiKey" }],
-                        kind: "api-key",
-                        label: "API key",
-                        placements: [
-                          { carrier: "header", name: "Authorization", variable: "apiKey" },
-                        ],
-                      },
-                    ]
-                  : [
-                      {
-                        id: "oauth",
-                        kind: "oauth",
-                        label: "Install Slack app",
-                        oauth: {
-                          authorizationUrl: "https://slack.com/oauth/v2/authorize",
-                          clientAuth: "body",
-                          identity: { identityPath: "bot_user_id", source: "token-response" },
-                          scopeSeparator: ",",
-                          scopes: ["channels:history", "chat:write"],
-                          tokenUrl: "https://slack.com/api/oauth.v2.access",
-                          usesPkce: false,
-                        },
-                        placements: [
-                          { carrier: "header", name: "Authorization", variable: "accessToken" },
-                        ],
-                      },
-                    ],
-              description: "Read conversations and post messages in Slack workspaces.",
-              id: provider,
-              name,
-              provider,
-            },
-          },
+          manifest: { name: "calendar-server" },
           status: "active",
-          title: name,
+          title: "Calendar server",
         },
-        servers: [
-          {
-            connectionRequirement:
-              requirementKind === "none"
-                ? { kind: "none" }
-                : requirementKind === "mcp-oauth"
-                  ? { kind: "mcp-oauth" }
-                  : {
-                      definitionId: provider,
-                      kind: "provider",
-                      provider,
-                      providerApplicationRequired: requirementKind !== "api-key",
-                    },
-            id: "isv_00000000-0000-4000-8000-000000000001",
-            name: "live",
-            status: "active",
-          },
-          ...(multipleServers
-            ? [
-                {
-                  connectionRequirement: { kind: "none" as const },
-                  id: "isv_00000000-0000-4000-8000-000000000002",
-                  name: "archive",
-                  status: "active" as const,
-                },
-              ]
-            : []),
-        ],
+        servers: ["live", ...(multipleServers ? ["archive"] : [])].map((name, index) => ({
+          connectionRequirement: { kind: "none" },
+          id: `isv_00000000-0000-4000-8000-00000000000${index + 1}`,
+          name,
+          status: "active",
+        })),
         skills: [],
-        tools: [
-          {
-            annotations: { readOnlyHint: true },
-            connectionId: null,
-            description: "Read messages",
-            id: "itl_00000000-0000-4000-8000-000000000001",
-            name: "export_attachment",
-            schemaDigest: "d".repeat(43),
-            serverId: "isv_00000000-0000-4000-8000-000000000001",
-            status: "active",
-            title: "Read messages",
-          },
-          {
-            annotations: { readOnlyHint: false },
-            connectionId: null,
-            description: "Post messages",
-            id: "itl_00000000-0000-4000-8000-000000000002",
-            name: "post_messages",
-            schemaDigest: "e".repeat(43),
-            serverId: "isv_00000000-0000-4000-8000-000000000001",
-            status: "active",
-            title: "Post messages",
-          },
-        ],
+        tools: [],
       },
     ],
   };
@@ -1948,9 +952,7 @@ function computerConnection(
 ) {
   return {
     accountIdentifier: null,
-    applicationSource: null,
     authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, runnerId: overrides.runnerId ?? macMiniId },
     connectionMethod: "computer",
     createdAt: "2026-09-17T00:00:00.000Z",
@@ -1961,7 +963,6 @@ function computerConnection(
     grantedScopes: [],
     id: overrides.id ?? messagesConnectionId,
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-17T00:00:00.000Z",
@@ -1985,7 +986,6 @@ function calendarPlatform() {
           manifest: {
             definition: {
               adapter: "computer",
-              apiKey: null,
               authMethods: [{ id: "computer", kind: "computer", label: "This Mac" }],
               computerApp: {
                 accessLabels: { read: "Can read", readWrite: "Can read and change" },
@@ -2079,105 +1079,6 @@ function computerPlatform() {
         ],
       },
     ],
-  };
-}
-
-function application(input: { readonly id: string; readonly revision: number }) {
-  return {
-    availability: "personal",
-    callbackUrl: "https://deployment.test/v1/integrations/oauth/callback/slack",
-    canManage: true,
-    clientId: "1234567890.987",
-    configuredSecretFields: ["clientSecret"],
-    createdAt: "2026-09-17T00:00:00.000Z",
-    displayName: "Mattress Deal Finder Bot",
-    id: input.id,
-    ownerUserId: "usr_1",
-    provider: "slack",
-    revision: input.revision,
-    status: "active",
-    updatedAt: "2026-09-17T00:00:00.000Z",
-  };
-}
-
-function keyConnection(
-  id: string,
-  createdAt: string,
-  state: {
-    readonly status: "connected" | "needs-attention";
-    readonly statusDetail: string | null;
-  } = {
-    status: "connected",
-    statusDetail: null,
-  },
-) {
-  return {
-    ...connection(id, "Slack"),
-    accountIdentifier: null,
-    applicationSource: { kind: "api-key" as const },
-    authMethodId: "api-key",
-    connectionMethod: "api-key",
-    createdAt,
-    externalIdentityId: null,
-    externalTenantId: null,
-    grantedScopes: [],
-    ...state,
-  };
-}
-
-const githubConnectionId = "con_00000000-0000-4000-8000-0000000000b1";
-const rejectedSignIn = "GitHub rejected the saved sign-in";
-
-/** A GitHub sign-in that worked, waiting for its app to reach a repository. */
-function githubConnection(id: string) {
-  return {
-    ...connection(id, "steerlabs"),
-    accountIdentifier: "steerlabs",
-    definitionId: "github",
-    provider: "github",
-    status: "needs-attention",
-    statusReason: "permissions" as string | null,
-  };
-}
-
-/** The Host's answer to GitHub's 401: the account needs a new sign-in. */
-function rejectSignIn(account: ReturnType<typeof githubConnection>) {
-  account.statusDetail = rejectedSignIn;
-  account.statusReason = null;
-  return {
-    error: { code: "conflict", message: rejectedSignIn, retryable: false },
-    ok: false as const,
-  };
-}
-
-function completed(connectionId: string) {
-  return {
-    connectionId,
-    expiresAt: "2026-09-17T00:10:00.000Z",
-    failureCode: null,
-    status: "completed",
-  };
-}
-
-function connection(id: string, displayName = "Oversteer") {
-  return {
-    accountIdentifier: "oversteer.slack.com",
-    applicationSource: hosted,
-    authMethodId: "oauth",
-    authorizationDigest: "a".repeat(43),
-    connectionMethod: "managed-oauth",
-    createdAt: "2026-09-17T00:00:00.000Z",
-    definitionId: "slack",
-    displayName,
-    externalIdentityId: "B01BOT",
-    externalTenantId: "T01ABCDEF",
-    grantedScopes: ["chat:write"],
-    id,
-    provider: "slack",
-    providerApplicationId: null,
-    status: "connected",
-    statusDetail: null as string | null,
-    updatedAt: "2026-09-17T00:00:00.000Z",
   };
 }
 

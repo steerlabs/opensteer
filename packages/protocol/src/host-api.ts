@@ -1,3 +1,9 @@
+import {
+  pluginOAuthCommands,
+  pluginOAuthOutputs,
+  PluginOAuthMethodsSchema,
+  PluginOAuthStatusSchema,
+} from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineSummarySchema } from "./machines.js";
@@ -39,14 +45,12 @@ import {
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
 import {
-  PluginTargetSchema,
   PluginsOverviewViewSchema,
-  PluginDetailViewSchema,
-  PluginsDirectoryViewSchema,
   DevicesOverviewViewSchema,
   SettingsPluginEnableCommandSchema,
   SettingsPluginEnableResultSchema,
 } from "./settings.js";
+import { PluginCommandResultSchema, PluginCommandSchema, pluginReads } from "./plugins.js";
 import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
@@ -74,7 +78,6 @@ import {
 } from "./personal-remote-access.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
-  SpecialistRegistrationViewSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
@@ -142,44 +145,29 @@ import {
   type AuthenticatedSession,
 } from "@opensteer/core";
 import {
-  BeginIntegrationAuthorizationSchema,
-  BeginMcpAuthorizationSchema,
   ComputerAppSetupRequestViewSchema,
   ComputerAppSetupReviewRequestViewSchema,
   ComputerUseAppApprovalSchema,
-  ConnectIntegrationApiKeySchema,
   CreateIntegrationGrantSchema,
-  InstallAgentPluginSchema,
-  InstallCatalogIntegrationSchema,
-  InstallRemoteMcpSchema,
   IntegrationAuthorizationAttemptIdSchema,
-  IntegrationAuthorizationReturnProofSchema,
-  IntegrationAuthorizationStartViewSchema,
-  IntegrationAuthorizationStatusViewSchema,
   IntegrationConnectionIdSchema,
   IntegrationConnectionSummaryViewSchema,
   IntegrationDashboardViewSchema,
   IntegrationGrantIdSchema,
   IntegrationGrantViewSchema,
   IntegrationInstallationIdSchema,
-  IntegrationInstallationViewSchema,
   IntegrationPlatformDashboardViewSchema,
-  IntegrationProviderApplicationViewSchema,
-  IntegrationRepositoryAccessViewSchema,
   IntegrationServerIdSchema,
   LocalMcpSecretNameSchema,
   LocalMcpSecretViewSchema,
   LocalMcpSecretValuesSchema,
   localMcpMaxSecrets,
   RequestComputerAppSetupSchema,
-  SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
   DeviceSetComputerAppConnectionSchema,
   DeviceRequestComputerAppSetupSchema,
   DeviceComputerAppSetupRequestViewSchema,
   DeviceIntegrationConnectionSummaryViewSchema,
-  SetIntegrationApplicationSourceDefaultSchema,
-  SetIntegrationProviderApplicationStatusSchema,
 } from "@opensteer/integration-core";
 import {
   CreateTriggerHttpBodySchema,
@@ -469,8 +457,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("attachment.upload.discard"),
   }),
-
-  /** A specialist's colour, chosen. Sent only to a Host that advertises `task-marks-v1`. */
 
   z.strictObject({
     accessMode: ThreadAccessModeSchema.optional(),
@@ -878,11 +864,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("runner.enrollment.retire"),
   }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: BeginMcpAuthorizationSchema,
-    type: z.literal("integration.mcp.authorization.begin"),
-  }),
+  // Plugin account sign-in.
+  ...pluginOAuthCommands(idempotencyKeySchema),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     input: z.union([SetComputerAppConnectionSchema, DeviceSetComputerAppConnectionSchema]),
@@ -924,103 +907,14 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.server.secrets.set"),
   }),
   z.strictObject({
-    attemptId: IntegrationAuthorizationAttemptIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("integration.authorization.cancel"),
-  }),
-  /**
-   * The app that started an app-finished consent hands back the browser's
-   * one-use return proof; until then the Account service keeps the result
-   * sealed. Sent only to a Host advertising `integration-app-finish-v1`.
-   */
-  z.strictObject({
-    attemptId: IntegrationAuthorizationAttemptIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-    returnProof: IntegrationAuthorizationReturnProofSchema,
-    type: z.literal("integration.authorization.return"),
-  }),
-  z.strictObject({
-    connectionId: IntegrationConnectionIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("integration.mcp.disconnect"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("plugin.update"),
-    pluginId: z.string(),
-    input: InstallAgentPluginSchema,
-  }),
-  z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("plugin.remove"),
     pluginId: z.string(),
   }),
   z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("plugin.activation.set"),
-    pluginId: z.string(),
-
-    active: z.boolean(),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("plugin.list"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.add"),
-
-    pluginId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.remove"),
-
-    specialistId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.list"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: InstallAgentPluginSchema,
-    type: z.literal("plugin.install"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: InstallRemoteMcpSchema,
-    type: z.literal("integration.remoteMcp.install"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: InstallCatalogIntegrationSchema,
-    type: z.literal("integration.catalog.install"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    installationId: IntegrationInstallationIdSchema,
-    type: z.literal("integration.uninstall"),
-  }),
-  z.strictObject({
     grantId: IntegrationGrantIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.grant.revoke"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: SaveIntegrationProviderApplicationSchema,
-    type: z.literal("integration.providerApplication.save"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: BeginIntegrationAuthorizationSchema,
-    type: z.literal("integration.authorization.begin"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: ConnectIntegrationApiKeySchema,
-    type: z.literal("integration.apiKey.connect"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1031,18 +925,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     connectionId: IntegrationConnectionIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.disconnect"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: SetIntegrationProviderApplicationStatusSchema,
-    provider: z.string().min(1),
-    type: z.literal("integration.providerApplication.status.set"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    input: SetIntegrationApplicationSourceDefaultSchema,
-    provider: z.string().min(1),
-    type: z.literal("integration.applicationSourceDefault.set"),
   }),
   z.strictObject({
     accessPolicy: ChannelAccessPolicySchema,
@@ -1237,6 +1119,7 @@ const commandInputSchema = z.union([
   ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
+  ...PluginCommandSchema.options,
   ...otherCommandInputSchema.options,
 ]);
 
@@ -1247,6 +1130,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
+  ...PluginCommandResultSchema.options,
   ComputerViewCloseResultSchema,
   ComputerViewRenewResultSchema,
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
@@ -1417,9 +1301,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     state: z.enum(["consumed", "expired", "retired"]),
     type: z.literal("runner.enrollment.retire"),
   }),
-  IntegrationAuthorizationStartViewSchema.extend({
-    type: z.literal("integration.mcp.authorization.begin"),
-  }),
   z.object({
     connection: z
       .union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema])
@@ -1437,67 +1318,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.server.secrets.set") }),
   z.object({ type: z.literal("integration.computer.policy.set"), appApproval: z.literal("ask") }),
   z.object({ type: z.literal("integration.computer.app.block") }),
-  IntegrationAuthorizationStatusViewSchema.extend({
-    type: z.literal("integration.authorization.cancel"),
-  }),
-  IntegrationAuthorizationStatusViewSchema.extend({
-    type: z.literal("integration.authorization.return"),
-  }),
-  z.object({ type: z.literal("integration.mcp.disconnect") }),
-  z.object({ type: z.literal("plugin.update") }),
+  // Plugin account sign-in.
+  ...pluginOAuthOutputs,
   z.object({ type: z.literal("plugin.remove") }),
-  z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationViewSchema }),
-  z.object({ type: z.literal("specialist.remove") }),
-  z.object({
-    type: z.literal("specialist.list"),
-    specialists: z.array(SpecialistRegistrationViewSchema),
-  }),
-  z.object({ type: z.literal("plugin.activation.set") }),
-  z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
-  z.object({
-    issues: z
-      .array(
-        z.object({
-          component: z.enum(["manifest", "mcp", "skill"]),
-          entry: z.string().nullable(),
-          message: z.string(),
-        }),
-      )
-      .max(1_000),
-    type: z.literal("plugin.install"),
-  }),
-  z.object({
-    installation: IntegrationInstallationViewSchema,
-    type: z.literal("integration.remoteMcp.install"),
-  }),
-  z.object({
-    installation: IntegrationInstallationViewSchema,
-    type: z.literal("integration.catalog.install"),
-  }),
-  // The counts are the honest part of the answer: a proposed integration's
-  // definition exists only in the row being removed, so its accounts go with
-  // it, while a catalog definition survives the uninstall and keeps its own.
-  z.object({
-    cancelledRequests: z.number().int().nonnegative(),
-    removedConnections: z.number().int().nonnegative(),
-    type: z.literal("integration.uninstall"),
-  }),
   z.object({ type: z.literal("integration.grant.revoke") }),
-  z.object({
-    application: IntegrationProviderApplicationViewSchema,
-    type: z.literal("integration.providerApplication.save"),
-  }),
-  IntegrationAuthorizationStartViewSchema.extend({
-    type: z.literal("integration.authorization.begin"),
-  }),
-  /**
-   * The exact account the key connected or reconnected, so a card answers its
-   * request with that account and never a look-alike. Older Hosts omit it.
-   */
-  z.object({
-    connectionId: IntegrationConnectionIdSchema.optional(),
-    type: z.literal("integration.apiKey.connect"),
-  }),
   z.object({ grant: IntegrationGrantViewSchema, type: z.literal("integration.grant.create") }),
   /**
    * Revocation is best effort: the credential is always destroyed locally, and
@@ -1508,11 +1332,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     revokedUpstream: z.boolean(),
     type: z.literal("integration.disconnect"),
   }),
-  z.object({
-    application: IntegrationProviderApplicationViewSchema,
-    type: z.literal("integration.providerApplication.status.set"),
-  }),
-  z.object({ type: z.literal("integration.applicationSourceDefault.set") }),
   z.object({
     account: ChannelAccountViewSchema,
     binding: ChannelBindingViewSchema,
@@ -1959,13 +1778,82 @@ const hostApiGroup3 = defineRpc({
     PersonalRemoteAdministrationStatusSchema,
   ),
   "plugins.overview.get": declaration("GET", z.strictObject({}), PluginsOverviewViewSchema),
-  "plugins.detail.get": declaration(
-    "GET",
-    z.strictObject({ target: PluginTargetSchema }),
-    PluginDetailViewSchema,
-  ),
-  "plugins.directory.get": declaration("GET", z.strictObject({}), PluginsDirectoryViewSchema),
   "devices.overview.get": declaration("GET", z.strictObject({}), DevicesOverviewViewSchema),
+  "plugins.installed.list": declaration(
+    "GET",
+    pluginReads["plugins.installed.list"].input,
+    pluginReads["plugins.installed.list"].output,
+  ),
+  "plugins.installed.page": declaration(
+    "GET",
+    pluginReads["plugins.installed.page"].input,
+    pluginReads["plugins.installed.page"].output,
+  ),
+  "plugins.local.get": declaration(
+    "GET",
+    pluginReads["plugins.local.get"].input,
+    pluginReads["plugins.local.get"].output,
+  ),
+  "plugins.page.view": declaration(
+    "GET",
+    pluginReads["plugins.page.view"].input,
+    pluginReads["plugins.page.view"].output,
+  ),
+  "plugins.get": declaration(
+    "GET",
+    pluginReads["plugins.get"].input,
+    pluginReads["plugins.get"].output,
+  ),
+  "plugins.tools.list": declaration(
+    "GET",
+    pluginReads["plugins.tools.list"].input,
+    pluginReads["plugins.tools.list"].output,
+  ),
+  "plugins.skills.list": declaration(
+    "GET",
+    pluginReads["plugins.skills.list"].input,
+    pluginReads["plugins.skills.list"].output,
+  ),
+  "plugins.versions.list": declaration(
+    "GET",
+    pluginReads["plugins.versions.list"].input,
+    pluginReads["plugins.versions.list"].output,
+  ),
+  "plugins.catalog.list": declaration(
+    "GET",
+    pluginReads["plugins.catalog.list"].input,
+    pluginReads["plugins.catalog.list"].output,
+  ),
+  "plugins.catalog.get": declaration(
+    "GET",
+    pluginReads["plugins.catalog.get"].input,
+    pluginReads["plugins.catalog.get"].output,
+  ),
+  "plugins.accounts.list": declaration(
+    "GET",
+    pluginReads["plugins.accounts.list"].input,
+    pluginReads["plugins.accounts.list"].output,
+  ),
+  "plugins.account.review": declaration(
+    "GET",
+    pluginReads["plugins.account.review"].input,
+    pluginReads["plugins.account.review"].output,
+  ),
+  "plugins.schedule.runs": declaration(
+    "GET",
+    pluginReads["plugins.schedule.runs"].input,
+    pluginReads["plugins.schedule.runs"].output,
+  ),
+  "plugins.workflow.runs": declaration(
+    "GET",
+    pluginReads["plugins.workflow.runs"].input,
+    pluginReads["plugins.workflow.runs"].output,
+  ),
+  "plugins.webhook.setup.get": declaration(
+    "GET",
+    pluginReads["plugins.webhook.setup.get"].input,
+    pluginReads["plugins.webhook.setup.get"].output,
+  ),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),
   "assignment.get": declaration(
     "GET",
@@ -2021,10 +1909,16 @@ const hostApiGroup3 = defineRpc({
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
   /** Replaces what the call's agent knows the person is looking at. */
   "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
-  "integration.authorization.get": declaration(
+  // Plugin account sign-in.
+  "plugin.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),
-    IntegrationAuthorizationStatusViewSchema,
+    PluginOAuthStatusSchema,
+  ),
+  "plugin.authorization.methods": declaration(
+    "GET",
+    z.strictObject({ connection: z.string().min(1) }),
+    PluginOAuthMethodsSchema,
   ),
   "integration.grants.list": declaration(
     "GET",
@@ -2107,25 +2001,10 @@ const hostApiGroup4 = defineRpc({
       unavailableReason: z.enum(["offline", "not-ready"]).optional(),
     }),
   ),
-  "specialist.list": declaration(
-    "GET",
-    z.strictObject({}),
-    z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
-  ),
-  "plugin.list": declaration(
-    "GET",
-    z.strictObject({}),
-    z.object({ plugins: z.array(z.record(z.string(), z.unknown())) }),
-  ),
   "integration.platform.get": declaration(
     "GET",
     emptyInputSchema,
     IntegrationPlatformDashboardViewSchema,
-  ),
-  "integration.repositoryAccess.check": declaration(
-    "POST",
-    z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
-    IntegrationRepositoryAccessViewSchema,
   ),
   "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardResponseSchema),
   "machine.access.history": declaration(

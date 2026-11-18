@@ -442,6 +442,44 @@ export const betterAuth17Migration: Migration = {
   },
 };
 
+const pluginOAuthRefreshBindingMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`alter table public.hosted_oauth_broker_refreshes add column request_binding_digest text
+      check (request_binding_digest is null or request_binding_digest ~ '^[A-Za-z0-9_-]{43}$')`.execute(
+      database,
+    );
+  },
+};
+
+// A separately deployed broker cannot interpret retired encrypted attempts. Consent must restart.
+export const pluginOAuthOnlyBrokerMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`
+      delete from public.hosted_oauth_broker_attempts;
+      delete from public.hosted_oauth_broker_refreshes;
+      alter table public.hosted_oauth_broker_attempts rename column provider_application_revision to registry_revision;
+      alter table public.hosted_oauth_broker_refreshes rename column provider_application_revision to registry_revision;
+      alter table public.hosted_oauth_broker_refreshes alter column request_binding_digest set not null;
+      alter table public.hosted_oauth_broker_attempts
+        drop constraint hosted_oauth_broker_attempt_failure_check,
+        add constraint hosted_oauth_broker_attempt_failure_check check (
+          failure_code is null or failure_code in (
+            'account-link-mismatch', 'authorization-denied', 'client-rejected', 'grant-rejected',
+            'invalid-provider-response', 'provider-exchange-failed', 'scope-escalation', 'stale-provider-application'
+          )
+        );
+      alter table public.hosted_oauth_broker_refreshes
+        drop constraint hosted_oauth_broker_refresh_failure_check,
+        add constraint hosted_oauth_broker_refresh_failure_check check (
+          failure_code is null or failure_code in (
+            'account-link-mismatch', 'authorization-denied', 'client-rejected', 'grant-rejected',
+            'invalid-provider-response', 'provider-exchange-failed', 'scope-escalation', 'stale-provider-application'
+          )
+        );
+    `.execute(database);
+  },
+};
+
 const migrationProvider = {
   async getMigrations(): Promise<Record<string, Migration>> {
     return {
@@ -468,6 +506,8 @@ const migrationProvider = {
       "0020_team_ready_notifications": teamReadyNotificationsMigration,
       "0021_account_deletion_fence": accountDeletionFenceMigration,
       "0022_account_name_revision": accountNameRevisionMigration,
+      "0023_plugin_oauth_refresh_binding": pluginOAuthRefreshBindingMigration,
+      "0024_plugin_oauth_only_broker": pluginOAuthOnlyBrokerMigration,
     };
   },
 };

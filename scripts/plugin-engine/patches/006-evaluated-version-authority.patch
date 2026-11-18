@@ -1,0 +1,102 @@
+--- a/sdk/src/contracts/pluginEngine.ts
++++ b/sdk/src/contracts/pluginEngine.ts
+@@ -42,6 +42,7 @@
+   ApprovalRequestId,
+   OwnerId,
+   StorageError,
++  VersionId,
+ } from "./shared.ts";
+ import type { BlobStorage } from "./blobs.ts";
+ import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
+@@ -129,7 +130,7 @@
+    * owner it expects, and uses the result only when the accounts it read match.
+    */
+   readonly appResolving: (
+-    app: { readonly id: AppId; readonly owner: OwnerId },
++    app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId },
+     accounts: readonly Pick<Account, "id" | "owner">[],
+     appUses: readonly AppAccountUse[],
+   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+@@ -143,6 +144,7 @@
+     owner: OwnerId,
+     apps: ReadonlyArray<{
+       readonly id: AppId;
++      readonly version?: VersionId;
+       readonly accounts: readonly Pick<Account, "id" | "owner">[];
+       readonly appUses: readonly AppAccountUse[];
+     }>,
+--- a/sdk/src/implementation/declarations.ts
++++ b/sdk/src/implementation/declarations.ts
+@@ -186,7 +186,7 @@
+           lifecycle === undefined
+             ? Effect.void
+             : lifecycle
+-                .appResolving(state.app, checks.linked, checks.appUses)
++                .appResolving({ ...state.app, version: state.version.id }, checks.linked, checks.appUses)
+                 .pipe(
+                   Effect.flatMap((allowed) =>
+                     checks.permitted(allowed) ? Effect.void : Effect.fail(new StorageError()),
+@@ -215,6 +215,7 @@
+                 owner,
+                 states.map((state, index) => ({
+                   id: state.app.id,
++                  version: state.version.id,
+                   accounts: checks[index]?.linked ?? [],
+                   appUses: checks[index]?.appUses ?? [],
+                 })),
+--- a/sdk/src/implementation/tools.ts
++++ b/sdk/src/implementation/tools.ts
+@@ -257,7 +257,7 @@
+  * were read: the app, actor and accounts it ran for, and its outcome.
+  */
+ export interface RecheckAhead {
+-  readonly app: { readonly id: AppId; readonly owner: OwnerId };
++  readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId };
+   readonly actor: string | undefined;
+   readonly accounts: readonly Pick<Account, "id" | "owner">[];
+   /**
+@@ -382,6 +382,7 @@
+   return (
+     ahead.app.id === state.app.id &&
+     ahead.app.owner === state.app.owner &&
++    ahead.app.version === state.version.id &&
+     ahead.actor === state.actor &&
+     same(byId(ahead.accounts), byId(accounts)) &&
+     same(byUse(ahead.appUses), byUse(appUses))
+@@ -482,7 +483,7 @@
+     // falls inside the refresh-ahead window, so one invocation never renews the same grant twice.
+     const selected = distinctSelection(state);
+     const { user, app: appUses } = accountAuthority(state.selections);
+-    const app = { id: state.app.id, owner: state.app.owner };
++    const app = { id: state.app.id, owner: state.app.owner, version: state.version.id };
+     // The actor's app access and its accounts are rechecked together, before any credential.
+     const resolvedFields = yield* (
+       use === "run" &&
+@@ -578,7 +579,7 @@
+     const usedFields = used.fields;
+     const renewed = yield* oauth
+       .renewRejected(
+-        { kind: "run", app: state.app },
++        { kind: "run", app: { ...state.app, version: state.version.id } },
+         selected.account,
+         selected.provider,
+         usedFields,
+--- a/sdk/src/implementation/oauth.ts
++++ b/sdk/src/implementation/oauth.ts
+@@ -93,6 +93,7 @@
+   type AppId,
+   type OwnerId,
+   type ProviderId,
++  type VersionId,
+ } from "../contracts/shared.ts";
+ import { StoredAccount, type Credentials } from "../contracts/storage.ts";
+ import { type AccountCredential, invocationAccount } from "./provider.ts";
+@@ -331,7 +332,7 @@
+  * or checking an account outside the app's code.
+  */
+ type CredentialUse =
+-  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
++  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId } }
+   | { readonly kind: "removal"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
+   | { readonly kind: "check" };
+ /**

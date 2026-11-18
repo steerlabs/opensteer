@@ -1,3 +1,5 @@
+import testExtraInputs from "./ci-test-extra-inputs.json" with { type: "json" };
+export { testExtraInputs };
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 // Shared by Vitest discovery and the dependency-free CI/local lane selector.

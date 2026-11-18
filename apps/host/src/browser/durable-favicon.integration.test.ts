@@ -18,7 +18,7 @@ import {
   startPrivateMachineHost,
   waitForMessage,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";

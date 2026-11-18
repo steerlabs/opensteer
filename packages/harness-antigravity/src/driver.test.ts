@@ -480,7 +480,7 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: ["opensteer_task_read", "integration_call", "computer_use"],
+      tools: ["opensteer_task_read", "plugin_call", "computer_use"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
       skills: ["opensteer:tasks"],

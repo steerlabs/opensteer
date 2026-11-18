@@ -1,0 +1,26 @@
+{
+  "name": "@opensteer/plugin-source",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "effect": "4.1.4",
+    "isomorphic-git": "1.37.4"
+  },
+  "devDependencies": {
+    "@opensteer/plugin-engine-app-source": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

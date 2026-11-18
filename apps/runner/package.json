@@ -45,7 +45,6 @@
     "@opensteer/harness-muse": "workspace:*",
     "@opensteer/harness-opencode": "workspace:*",
     "@opensteer/harness-pi": "workspace:*",
-    "@opensteer/integration-adapters": "workspace:*",
     "@opensteer/integration-catalog": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/messaging-module": "workspace:*",

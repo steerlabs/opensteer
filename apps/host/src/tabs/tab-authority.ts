@@ -16,7 +16,7 @@ import {
   type TabRecord,
   type TabWrite,
 } from "@opensteer/database";
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import type { TabActor } from "./ports.js";
 
@@ -196,7 +196,6 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
           ...scope(actor),
           explicitAccess: "read-write",
           connectionCeiling: connection.computerAccess,
-          resource: { type: target.kind === "phone" ? "phone" : "computer-app", id: connection.id },
         });
         if (access.access && (required === "read" || access.access === "read-write")) return true;
       }
@@ -209,7 +208,6 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
         ownerUserId: ownerId,
         ...scope(actor),
         explicitAccess: "read-write",
-        ...(profileId ? { resource: { type: "browser-profile" as const, id: profileId } } : {}),
       }).then(({ access }) => Boolean(access && (required === "read" || access === "read-write")));
       resources.set(key, allowed);
     }

@@ -12,7 +12,7 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { once } from "node:events";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
-import type { IntegrationAccess } from "@opensteer/integration-core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import {
   DisplayAckSchema,

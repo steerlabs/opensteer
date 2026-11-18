@@ -5292,11 +5292,6 @@ function canonicalDelegateThreadRequest(
           titleSource: input.titleSource,
         }
       : {}),
-    ...(input.specialistId
-      ? {
-          specialistId: input.specialistId,
-        }
-      : {}),
     type: "thread.delegate",
   };
 }
@@ -5717,7 +5712,7 @@ export async function delegateThreadInTransaction(
   ]);
   const lockedThreads = await transaction
     .selectFrom("threads")
-    .select(["id", "lineageRootThreadId", "purpose", "doneAt", "specialistId"])
+    .select(["id", "lineageRootThreadId", "purpose", "doneAt"])
     .where("id", "in", [input.origin.parentThreadId, ...(input.threadId ? [input.threadId] : [])])
     .orderBy("id", "asc")
     .forNoKeyUpdate()
@@ -5874,12 +5869,6 @@ export async function delegateThreadInTransaction(
     : null;
   if (reusedRow) {
     await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
-    if (input.specialistId && input.specialistId !== reusedRow.specialistId) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "The worker has a different specialist binding",
-      });
-    }
   }
   const listed = await delegationListsThread(transaction, parent.purpose, input.origin);
   // Delegation can promote a task; only a migration can take it off the list.
@@ -5905,7 +5894,6 @@ export async function delegateThreadInTransaction(
       : reusedRow
     : await insertThread({
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
-        specialistId: input.specialistId ?? parent.specialistId,
         purpose: "task",
         teamId: null,
         channelId: null,

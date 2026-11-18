@@ -723,7 +723,7 @@ function handleClientMethod(message) {
                       (name !== "opensteer" ||
                         ((scenario !== "previous-host" || tool !== "computer_use") &&
                           (scenario !== "mcp-missing-required-tool" ||
-                            tool !== "integration_search"))) &&
+                            tool !== "plugin_search"))) &&
                       (scenario !== "mcp-direct-missing-required-tool" ||
                         name !== "opensteer-direct" ||
                         tool !== "saved_login_request"),

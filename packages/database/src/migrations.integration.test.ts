@@ -16,6 +16,7 @@ import { createDatabase } from "./connection.js";
 import {
   tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
+  dropSpecialistsMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -30,6 +31,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
+import { TriggerStore } from "./trigger-store.js";
 import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
 import { teamRequestView } from "./team-chat-store.js";
 import {
@@ -39,6 +41,7 @@ import {
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 import { DeploymentSnapshotSchema } from "@opensteer/protocol";
+import { requestFromRow } from "./request-persistence.js";
 import { eventFromRow } from "./deployment-events.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { latestNativePlaces } from "./browser-session-store.js";
@@ -766,6 +769,397 @@ describe("fresh personal/team lineage", () => {
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
+  it("drops specialist storage and settings from databases made before specialists were removed", async () => {
+    await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await sql`create table specialists (id text primary key);
+      alter table threads add column specialist_id text;
+      alter table plugin_versions add column specialist_manifest jsonb`.execute(database);
+    const skill = { kind: "skill", fullName: "notes" };
+    const specialist = { kind: "specialist", pluginId: "p", ownerUserId: userId };
+    await sql`insert into plugin_owner_settings (owner_user_id, target_key, target, enabled, revision)
+      values (${userId}, 'specialist', ${JSON.stringify(specialist)}::jsonb, false, 1),
+        (${userId}, 'skill', ${JSON.stringify(skill)}::jsonb, false, 1)`.execute(database);
+    await migrateToLatest(database);
+    expect(
+      (
+        await sql`select table_name, column_name from information_schema.columns where table_schema='public' and (table_name='specialists' or column_name in ('specialist_id','specialist_manifest'))`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(await database.selectFrom("pluginOwnerSettings").select("target").execute()).toEqual([
+      { target: skill },
+    ]);
+  });
+  it("drops service integrations and keeps device, messaging and local-server rows", async () => {
+    await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));
+    const { userId, runnerId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    // The storage only databases made before this migration have.
+    await sql`create table integration_provider_applications (id text primary key);
+      create table mcp_oauth_credentials (connection_id text primary key);
+      create table integration_application_source_defaults (provider text primary key);
+      alter table integration_connections add column provider_application_id text,
+        add column application_source jsonb, add column auth_method_id text,
+        add column authorization_digest text, add column granted_scopes jsonb;
+      alter table integration_installations add column adapter_snapshot jsonb;
+      alter table integration_auth_attempts add column result_connection_id text;
+      alter table integration_connections drop constraint integration_connections_connection_kind_check;
+      alter table integration_installations drop constraint integration_installations_source_kind_check`.execute(
+      database,
+    );
+    const installation = (id: string, sourceKind: string, pluginId: string | null) =>
+      sql`insert into integration_installations
+        (id, name, title, description, plugin_id, source_kind, trust, manifest, provenance, status, revision)
+        values (${id}, ${id}, ${id}, '', ${pluginId}, ${sourceKind}, 'built-in', '{}', '{}', 'active', 1)`.execute(
+        database,
+      );
+    const server = (id: string, installationId: string, transport: object, requirement: object) =>
+      sql`insert into integration_servers
+        (id, installation_id, name, transport, connection_requirement, status, tool_generation)
+        values (${id}, ${installationId}, 'default', ${JSON.stringify(transport)}::jsonb,
+          ${JSON.stringify(requirement)}::jsonb, 'active', 1)`.execute(database);
+    const connection = (id: string, kind: string, serverId: string | null) =>
+      sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name,
+          capabilities, integration_server_id, granted_scopes, runner_id, device_id, integration_definition_id)
+        values (${id}, ${userId}, ${kind}, ${kind}, 'computer', 'connected', ${id}, '[]',
+          ${serverId}, '[]', ${kind === "computer" ? runnerId : null}, ${kind === "computer" ? runnerId : null},
+          ${kind === "computer" ? "apple-calendar" : null})`.execute(database);
+    const grant = (id: string, installationId: string, connectionId: string | null) =>
+      sql`insert into integration_grants
+        (access, id, owner_user_id, installation_id, connection_id, alias, is_default, created_by, status)
+        values ('read', ${id}, ${userId}, ${installationId}, ${connectionId}, ${id}, false, ${userId},
+          'active')`.execute(database);
+    await installation("device", "built-in", null);
+    await server(
+      "device-server",
+      "device",
+      { type: "computer", definitionId: "apple-calendar" },
+      {
+        kind: "computer",
+        definitionId: "apple-calendar",
+      },
+    );
+    await installation("local", "plugin", "local-plugin");
+    await server(
+      "local-server",
+      "local",
+      { type: "runner", runnerId: null, launch: { type: "stdio", command: "./tv" } },
+      { kind: "none" },
+    );
+    await installation("gmail", "built-in", null);
+    await server(
+      "gmail-server",
+      "gmail",
+      { type: "adapter", adapter: "openapi", definitionId: "gmail" },
+      {
+        kind: "provider",
+        definitionId: "gmail",
+        provider: "google",
+        providerApplicationRequired: true,
+      },
+    );
+    await installation("remote", "remote-mcp", null);
+    await server(
+      "remote-server",
+      "remote",
+      { type: "streamable-http", url: "https://mcp.example.test", headers: {} },
+      { kind: "mcp-oauth" },
+    );
+    await connection("computer-connection", "computer", "device-server");
+    await connection("channel-connection", "channel", null);
+    await connection("google-account", "provider-account", null);
+    await connection("mcp-account", "mcp-oauth", "remote-server");
+    await sql`insert into mcp_oauth_credentials values ('mcp-account');
+      insert into integration_provider_applications values ('google-app')`.execute(database);
+    const channelCredential = createId("credential");
+    const serviceCredential = createId("credential");
+    for (const [id, connectionId] of [
+      [channelCredential, "channel-connection"],
+      [serviceCredential, "google-account"],
+    ] as const) {
+      await sql`insert into credentials(id,owner_id,name,provider,encrypted_payload,encryption_key_version,metadata)
+        values(${id},${userId},${connectionId},'fixture',${Buffer.from("sealed-fixture")},1,'{}')`.execute(
+        database,
+      );
+      await sql`update integration_connections set credential_id=${id} where id=${connectionId}`.execute(
+        database,
+      );
+      await sql`insert into credential_access_audit(id,actor_id,credential_id,connection_id,purpose)
+        values(${connectionId},${userId},${id},${connectionId},'channel-transport')`.execute(
+        database,
+      );
+    }
+    await grant("device-grant", "device", "computer-connection");
+    await grant("local-grant", "local", null);
+    await grant("gmail-grant", "gmail", "google-account");
+    await grant("remote-grant", "remote", "mcp-account");
+    await sql`insert into plugin_owner_settings (owner_user_id, target_key, target, enabled, revision)
+      values (${userId}, '["service","gmail"]', '{"kind":"service","definitionId":"gmail"}', false, 1),
+        (${userId}, '["device-app","apple-calendar"]', '{"kind":"device-app","definitionId":"apple-calendar"}', false, 1),
+        (${userId}, '["plugin","local-plugin"]', '{"kind":"plugin","pluginId":"local-plugin"}', false, 2)`.execute(
+      database,
+    );
+
+    await sql`create unique index if not exists integration_connections_definition_identity_unique
+      on integration_connections(integration_definition_id, external_tenant_id, external_identity_id)
+      nulls not distinct where connection_kind='provider-account' and external_identity_id is not null and status<>'revoked'`.execute(
+      database,
+    );
+    const store = new OpensteerStore(database);
+    const runs = createPersonalRunFixturePort(store);
+    const task = await runs.createTask({ ownerId: userId, suffix: "service-upgrade" });
+    const triggers = new TriggerStore(database);
+    const program = {
+      language: "javascript",
+      source: 'export default async ({opensteer}) => opensteer.callTool("opensteer_task_list", {})',
+      toolContractVersion: 5,
+    } as const;
+    const savedSchedule = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "saved-schedule",
+      name: "Saved schedule",
+      program,
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    const savedWatch = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "saved-watch",
+      name: "Saved watch",
+      program: {
+        ...program,
+        source:
+          'export default async ({opensteer}) => { await opensteer.callTool("opensteer_task_list", {}); await new Promise(() => setInterval(() => {}, 1000)); }',
+      },
+      source: { kind: "watch" },
+    });
+    const retiredSchedule = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.threadId,
+      createdBy: userId,
+      idempotencyKey: "retired-schedule",
+      name: "Schedule using a retired tool",
+      program: {
+        ...program,
+        source: 'export default async ({opensteer}) => opensteer.callTool("integration_call", {})',
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    for (const { revision } of [savedSchedule, savedWatch, retiredSchedule]) {
+      await database
+        .updateTable("triggerRevisions")
+        .set({ program: { ...revision.program, toolContractVersion: 4 } })
+        .where("id", "=", revision.id)
+        .execute();
+    }
+    const { run } = await runs.startTask(task.threadId, "Existing task");
+    const removedRequests: string[] = [];
+    const keptRequests: string[] = [];
+    for (const [kind, installationId, manifest] of [
+      ["integration.install", "gmail", null],
+      ["integration.input", "remote", null],
+      ["integration.access", "gmail", null],
+      [
+        "integration.access",
+        null,
+        { kind: "catalog", definition: { id: "gmail", adapter: "openapi" } },
+      ],
+      ["integration.access", "device", null],
+      ["integration.access", "local", null],
+    ] as const) {
+      const id = createId("request");
+      const keep = installationId === "device" || installationId === "local";
+      (keep ? keptRequests : removedRequests).push(id);
+      const payload = {
+        kind,
+        access: "read",
+        installationId,
+        manifest,
+        reason: "Existing request",
+        requestedConnectionId: null,
+        requestedServerId: null,
+      };
+      await sql`insert into requests (id,kind,mode,status,originating_thread_id,originating_run_id,call_id,requested_by,required_actor,presentation,payload)
+        values (${id},${kind},'durable','pending',${task.threadId},${run.id},${id},${userId},'requester',
+        '{"kind":"external","title":"Existing request","subject":{"kind":"integration.access","id":"app"}}',${JSON.stringify(payload)}::jsonb)`.execute(
+        database,
+      );
+      await sql`insert into integration_request_details(request_id,access,installation_id,manifest) values(${id},'read',${installationId},${JSON.stringify(manifest)}::jsonb)`.execute(
+        database,
+      );
+      await sql`insert into request_continuations(request_id,status) values(${id},'waiting')`.execute(
+        database,
+      );
+      const row = await database
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+      const request = keep ? requestFromRow(row) : { id, kind, payload };
+      for (const type of [
+        "request.opened",
+        "request.updated",
+        "request.resolved",
+        "request.cancelled",
+      ]) {
+        await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+        await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+          select deployment_id,sequence,${createId("event")},${task.threadId},${run.id},${run.environmentId},${type},
+          ${JSON.stringify(type === "request.cancelled" ? { requestId: id, reason: "resource-deleted" } : { request: type === "request.resolved" ? { ...request, status: "declined", resolvedAt: new Date().toISOString(), resolvedBy: userId, response: { kind: "external", value: { decision: "declined" } } } : request })}::jsonb from deployment_event_state`.execute(
+          database,
+        );
+      }
+    }
+    for (const [kind, payload] of [
+      ["integration.install", {}],
+      ["integration.input", {}],
+      ["integration.access", { installationId: "gmail", manifest: null }],
+      [
+        "integration.access",
+        { installationId: null, manifest: { kind: "catalog", definition: { adapter: "openapi" } } },
+      ],
+    ] as const) {
+      const id = createId("request");
+      for (const [type, data] of [
+        ["request.opened", { request: { id, kind, payload } }],
+        ["request.cancelled", { requestId: id, reason: "resource-deleted" }],
+      ] as const) {
+        await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+        await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+          select deployment_id,sequence,${createId("event")},${task.threadId},${run.id},${run.environmentId},${type},
+          ${JSON.stringify(data)}::jsonb from deployment_event_state`.execute(database);
+      }
+    }
+    await sql`create schema plugin_engine; create table plugin_engine.kept_data(id text primary key);
+      insert into plugin_engine.kept_data values('engine-data')`.execute(database);
+    const toolEventId = createId("event");
+    await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+    await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+      select deployment_id,sequence,${toolEventId},${task.threadId},${run.id},${run.environmentId},'tool.started',
+      '{"callId":"old-call","tool":{"name":"integration_call","namespace":"opensteer"},"arguments":{},"integration":{"integration":"Gmail"}}' from deployment_event_state`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+
+    expect(
+      (
+        await sql<{
+          indexname: string;
+        }>`select indexname from pg_indexes where schemaname = 'public'
+        and indexname in ('messages_created_at', 'thread_inputs_updated_at') order by indexname`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ indexname: "messages_created_at" }, { indexname: "thread_inputs_updated_at" }]);
+    expect(
+      (await database.selectFrom("requests").select("id").execute()).map(({ id }) => id).sort(),
+    ).toEqual(keptRequests.sort());
+    expect(
+      (await database.selectFrom("integrationRequestDetails").select("requestId").execute())
+        .map(({ requestId }) => requestId)
+        .sort(),
+    ).toEqual(keptRequests.sort());
+    const historical = await database
+      .selectFrom("deploymentEvents")
+      .selectAll()
+      .where("type", "in", [
+        "request.opened",
+        "request.updated",
+        "request.resolved",
+        "request.cancelled",
+      ])
+      .execute();
+    expect(historical).toHaveLength(8);
+    for (const row of historical) expect(() => eventFromRow(row)).not.toThrow();
+    const oldTool = await database
+      .selectFrom("deploymentEvents")
+      .select("data")
+      .where("eventId", "=", toolEventId)
+      .executeTakeFirstOrThrow();
+    expect(oldTool.data).toMatchObject({ tool: { name: "retired_service", namespace: "history" } });
+    expect(oldTool.data).not.toHaveProperty("integration");
+    expect((await sql`select * from plugin_engine.kept_data`.execute(database)).rows).toEqual([
+      { id: "engine-data" },
+    ]);
+    await sql`drop schema plugin_engine cascade`.execute(database);
+    const ids = async (table: string) =>
+      (
+        await sql<{ id: string }>`select id from ${sql.table(table)} order by id`.execute(database)
+      ).rows.map(({ id }) => id);
+    expect(await ids("integration_installations")).toEqual(["device", "local"]);
+    expect(await ids("integration_servers")).toEqual(["device-server", "local-server"]);
+    expect(await ids("integration_connections")).toEqual([
+      "channel-connection",
+      "computer-connection",
+    ]);
+    expect(await ids("integration_grants")).toEqual(["device-grant", "local-grant"]);
+    expect(await ids("credentials")).toEqual([channelCredential]);
+    expect(
+      (
+        await sql<{
+          name: string | null;
+        }>`select to_regclass('public.integration_connections_definition_identity_unique')::text as name`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ name: null }]);
+    expect(await ids("credential_access_audit")).toEqual(["channel-connection"]);
+    expect(await database.selectFrom("pluginOwnerSettings").select("targetKey").execute()).toEqual(
+      [],
+    );
+    expect(
+      await database
+        .selectFrom("pluginAgentSettings")
+        .select(["pluginId", "access"])
+        .orderBy("pluginId")
+        .execute(),
+    ).toEqual([
+      { pluginId: "app_device_computer-connection", access: "off" },
+      { pluginId: "app_server_local-server", access: "off" },
+    ]);
+    for (const saved of [savedSchedule, savedWatch]) {
+      const detail = await triggers.getForOwner(saved.trigger.id, userId, 1);
+      expect(detail?.revision.program).toEqual(saved.revision.program);
+    }
+    expect(
+      await database
+        .selectFrom("triggerRevisions")
+        .select("program")
+        .where("id", "=", retiredSchedule.revision.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ program: { toolContractVersion: 4 } });
+    expect(
+      (await triggers.getForOwner(savedWatch.trigger.id, userId, 1))?.activation,
+    ).toMatchObject({
+      desired: "active",
+    });
+    expect(
+      (
+        await sql`select table_name, column_name from information_schema.columns where table_schema='public'
+          and (table_name in ('integration_provider_applications', 'mcp_oauth_credentials', 'integration_application_source_defaults')
+            or column_name in ('provider_application_id', 'application_source', 'auth_method_id', 'authorization_digest', 'granted_scopes', 'adapter_snapshot', 'result_connection_id'))`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    await expect(
+      sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name, capabilities)
+        values ('late-account', ${userId}, 'provider-account', 'google', 'computer', 'connected',
+          'Late', '[]')`.execute(database),
+    ).rejects.toThrow("integration_connections_connection_kind_check");
+  });
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -867,7 +1261,7 @@ describe("fresh personal/team lineage", () => {
       await sql<{
         name: string;
         definition: string;
-      }>`select conname as name,pg_get_constraintdef(oid) as definition from pg_constraint where conrelid in ('specialists'::regclass,'browser_session_uses'::regclass) and contype='u' order by conname`.execute(
+      }>`select conname as name,pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'browser_session_uses'::regclass and contype='u' order by conname`.execute(
         database,
       )
     ).rows;
@@ -876,7 +1270,6 @@ describe("fresh personal/team lineage", () => {
         name: "browser_session_uses_identity",
         definition: "UNIQUE NULLS NOT DISTINCT (session_id, thread_id, run_id, tab_id)",
       },
-      { name: "specialists_plugin_owner", definition: "UNIQUE (plugin_id, owner_user_id)" },
     ]);
     const indexes = await catalog();
     expect(indexes.find(({ name }) => name === "delegations_result_message")?.definition).toMatch(
@@ -1033,7 +1426,6 @@ describe("fresh personal/team lineage", () => {
     ["delegations", "revision", "integer", "NO"],
     ["tab_layouts", "items", "jsonb", "NO"],
     ["machine_access_events", "id", "bigint", "YES"],
-    ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
   ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
     await migrateToLatest(database);
     const result = await sql<{ dataType: string; isIdentity: string }>`
@@ -1067,21 +1459,14 @@ describe("fresh personal/team lineage", () => {
         .where("ownerUserId", "=", owner)
         .executeTakeFirst();
     await database.transaction().execute(async (tx) => {
-      await tx
-        .insertInto("pluginOwnerSettings")
-        .values({
-          ownerUserId: owner,
-          targetKey: '["service","records"]',
-          target: { kind: "service", definitionId: "records" },
-          enabled: true,
-          revision: 1,
-        })
-        .execute();
-      await tx
-        .updateTable("pluginOwnerSettings")
-        .set({ enabled: false })
-        .where("ownerUserId", "=", owner)
-        .execute();
+      await sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name, capabilities)
+        values ('connection', ${owner}, 'channel', 'fixture', 'computer', 'connected', 'Initial', '[]')`.execute(
+        tx,
+      );
+      await sql`update integration_connections set display_name = 'Changed' where id = 'connection'`.execute(
+        tx,
+      );
       expect(await generation()).toBeUndefined();
       expect(
         await tx.selectFrom("integrationAuthorityPending").select("ownerUserId").execute(),
@@ -1091,11 +1476,9 @@ describe("fresh personal/team lineage", () => {
     const rejection = new Error("rejected mutation");
     await expect(
       database.transaction().execute(async (tx) => {
-        await tx
-          .updateTable("pluginOwnerSettings")
-          .set({ enabled: true })
-          .where("ownerUserId", "=", owner)
-          .execute();
+        await sql`update integration_connections set display_name = 'Rolled back' where id = 'connection'`.execute(
+          tx,
+        );
         throw rejection;
       }),
     ).rejects.toBe(rejection);

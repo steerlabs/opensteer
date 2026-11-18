@@ -389,3 +389,25 @@ func platformPublicError(err error) (string, string, bool) {
 		return "", "", false
 	}
 }
+
+func (root *filesystemRoot) createBinaryFileAt(parent nodeHandle, name string, content []byte) (string, error) {
+	fd, err := strictOpenAt(parent, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if isAlreadyExists(err) {
+		return "", userError("already-exists", "Destination file already exists")
+	}
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	if _, err := file.Write(content); err != nil {
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		return "sync-uncertain", nil
+	}
+	if err := fsyncDirectory(parent); err != nil {
+		return "sync-uncertain", nil
+	}
+	return "synced", nil
+}

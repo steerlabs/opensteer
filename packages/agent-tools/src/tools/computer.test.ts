@@ -1,7 +1,19 @@
 import { createId } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { requestToolNames, toolsFor } from "../index.js";
-import { computer_access_request } from "./computer.js";
+import { app_access_request, computer_access_request } from "./computer.js";
+
+it("offers local access requests to Runs and Trigger occurrences", () => {
+  const accessMode = "full-access";
+  expect(toolsFor({ kind: "run", accessMode })).toContain(app_access_request);
+  expect(toolsFor({ kind: "program", program: { kind: "trigger" }, accessMode })).toContain(
+    app_access_request,
+  );
+  expect(toolsFor({ kind: "program", program: { kind: "watch" }, accessMode })).not.toContain(
+    app_access_request,
+  );
+  expect(toolsFor({ kind: "connection", accessMode })).not.toContain(app_access_request);
+});
 
 it("exposes computer access only to Runs and holds it as a durable Request", () => {
   expect(toolsFor({ kind: "run", accessMode: "full-access" })).toContain(computer_access_request);

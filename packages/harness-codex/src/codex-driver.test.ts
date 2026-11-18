@@ -395,7 +395,7 @@ describe("Codex app-server harness", () => {
 
   it.each([
     ["host_only_tool"],
-    ["opensteer_task_read", "integration_call", "computer_use"],
+    ["opensteer_task_read", "plugin_call", "computer_use"],
     [
       "opensteer_task_read",
       "opensteer_task_wait",
@@ -1701,11 +1701,9 @@ describe("Codex app-server harness", () => {
           "mcp_servers.opensteer.required": true,
           "mcp_servers.opensteer.tool_timeout_sec": heldToolCallTimeoutMs / 1_000,
           "mcp_servers.opensteer.url": fixture.context.agentTools.url,
-          // A whole computer-use observation or describe page must reach the
-          // model uncut, including on models whose default policy is 10,000 bytes.
-          "mcp_servers.opensteer.tools.integration_call.output_token_limit": 10_000,
+          // A whole computer-use observation must reach the model uncut,
+          // including on models whose default policy is 10,000 bytes.
           "mcp_servers.opensteer.tools.computer_use.output_token_limit": 10_000,
-          "mcp_servers.opensteer.tools.integration_describe.output_token_limit": 10_000,
           "skills.bundled.enabled": false,
           "tools.update_plan.enabled": false,
           allow_login_shell: false,

@@ -17,8 +17,6 @@ import { cursorHookProgramFileName, cursorHookProgramSource } from "./hook-progr
 export const cursorPluginDirectoryName = "opensteer";
 
 export const cursorAgentToolsServerName = "opensteer";
-/** The retired integrations server, kept so historical tool calls keep their identity. */
-export const cursorIntegrationToolsServerName = "opensteer_integrations";
 
 /** What `beforeMCPExecution` calls our server. */
 export function cursorMcpServerIdentifier(serverName: string): string {
@@ -45,7 +43,7 @@ export const cursorOpensteerMcpServerIdentifiers: readonly string[] = [
  * must reach a person rather than run unannounced — which is why both gated
  * modes install it and the driver answers by name (`cursorPreToolUseDecision`)
  * rather than by omission. `beforeMCPExecution` gates other people's MCP
- * servers; Opensteer's own two are always allowed, exactly as for Codex.
+ * servers; Opensteer's own server is always allowed, exactly as for Codex.
  */
 export type CursorHookEvent = "beforeShellExecution" | "beforeMCPExecution" | "preToolUse";
 

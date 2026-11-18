@@ -25,7 +25,7 @@ export const triggerProgramContract = [
   "Automation programs execute as Node.js ESM modules (Node 24 or newer) on the hosting computer,",
   "with Agent home as the working directory, so relative paths and relative imports",
   "resolve from Agent home. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 4. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
+  "The program object must declare toolContractVersion: use 5. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
@@ -35,7 +35,7 @@ export const triggerProgramContract = [
   "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when no browser access is available.",
   "For a watch, every non-null capability also has expiresAt.",
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
-  "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the owner.",
+  "`opensteer.callTool(name, input)` calls any Opensteer tool, including plugin_search, plugin_describe, plugin_call, plugin_execute and plugin_resume. Plugin interactions return pending immediately; retain executionId and resume after the person answers, without replaying the program. Programs cannot manage plugins or request accounts.",
   "Supply a stable observationId with each watch call to opensteer_task_send or opensteer_task_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
   "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in Agent home's node_modules are available;",
   "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
@@ -46,11 +46,11 @@ export const triggerProgramContract = [
 ].join(" ");
 
 export const TRIGGER_PROGRAM_VERSION_REFUSAL =
-  "Programs require toolContractVersion 4. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
+  "Programs require toolContractVersion 5. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
 
 /**
  * A revision's program as stored. Programs written for an older tool contract
- * stay readable so the owner's agent can replace them; only version 4 runs.
+ * stay readable so the owner's agent can replace them; only version 5 runs.
  */
 export const StoredTriggerProgramSchema = z.strictObject({
   language: z.enum(["javascript", "typescript"]),
@@ -65,14 +65,14 @@ const StoredTriggerProgramViewSchema = z.object(StoredTriggerProgramSchema.shape
 
 /** A program Opensteer can write and run. */
 export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
-  toolContractVersion: z.literal(4, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
+  toolContractVersion: z.literal(5, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
 });
 export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
 
 export function isExecutableTriggerProgram(
   program: StoredTriggerProgram,
 ): program is TriggerProgram {
-  return program.toolContractVersion === 4;
+  return program.toolContractVersion === 5;
 }
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [

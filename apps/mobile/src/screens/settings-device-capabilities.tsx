@@ -8,6 +8,8 @@ import {
   type MachineAccessPolicy,
   type MachineSummary,
 } from "@opensteer/protocol";
+import { readInstalledPlugins } from "@opensteer/client/plugins";
+import { usePluginRead } from "./use-plugin-read.js";
 import { ActionLine } from "../ui/action-line.js";
 import { notDone, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
@@ -25,6 +27,16 @@ export function SettingsDeviceCapabilities({
   const [invalid, setInvalid] = useState<string | null>(null);
   const [folder, setFolder] = useState("");
   const [folderWritable, setFolderWritable] = useState(false);
+  const installed = usePluginRead(
+    host,
+    machine.apps?.length ? () => readInstalledPlugins(host) : null,
+    `device-apps:${machine.id}`,
+    "device apps",
+  );
+  const apps =
+    installed.data?.local.filter(
+      (tool) => tool.kind === "device-app" && tool.computer?.id === machine.id,
+    ) ?? [];
   const machineNow = () => host.getSnapshot().machines.find((row) => row.id === machine.id);
   const access = useScreenAction(host, `machine-access:${machine.id}`, {
     label: "change access",
@@ -77,16 +89,11 @@ export function SettingsDeviceCapabilities({
   }
   return (
     <View style={{ gap: 12 }}>
-      {(machine.apps ?? []).map((app) => (
+      {apps.map((tool) => (
         <SecondaryButton
-          key={app.definitionId}
-          label={`${app.definitionId === "apple-messages" ? "iMessage" : app.definitionId} · Plugin`}
-          onPress={() =>
-            navigation.navigate("SettingsPluginDetail", {
-              deploymentId,
-              target: { kind: "device-app", definitionId: app.definitionId },
-            })
-          }
+          key={tool.id}
+          label={tool.title}
+          onPress={() => navigation.navigate("PluginLocalTool", { deploymentId, id: tool.id })}
         />
       ))}
       {machine.access ? (

@@ -93,6 +93,22 @@ describe("explicit signing keychain boundary", () => {
           interpreterEntitlements: "/fixture/interpreter",
           harnessEntitlements: "/fixture/harness",
         };
+        if (leaf === "build-personal-runtime.ts") {
+          const workerd = Array.from(
+            evaluate(commands[0]!, {
+              ...context,
+              artifact: {
+                path: "services/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd",
+              },
+              desktopDirectory: "/desktop",
+              path,
+            }) as string[],
+          );
+          expect(workerd[workerd.indexOf("--entitlements") + 1]).toBe(
+            "/desktop/build/entitlements.mac.workerd.plist",
+          );
+          expect(workerd[workerd.indexOf("--sign") + 1]).toBe(fixture.identity);
+        }
         const args = Array.from(evaluate(commands[0]!, context) as string[]);
         expect(args.includes("--keychain")).toBe(configured);
         if (configured) expect(args[args.indexOf("--keychain") + 1]).toBe(keychain);

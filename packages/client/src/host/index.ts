@@ -84,7 +84,6 @@ export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
 export * from "./remote-access.js";
 export * from "./browser-cursor.js";
-export * from "./plugins.js";
 export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
@@ -113,6 +112,7 @@ export * from "./composer-references.js";
 export * from "./transcript-files.js";
 
 export * from "./tabs-contract.js";
+export * from "./authorization-attempt.js";
 export * from "./device-projection.js";
 export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 export * from "./iphone-setup.js";

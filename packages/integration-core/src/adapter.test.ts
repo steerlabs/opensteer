@@ -1,58 +1,40 @@
 import { describe, expect, it } from "vitest";
-import {
-  IntegrationAdapterKindSchema,
-  IntegrationAdapterSnapshotSchema,
-  IntegrationDefinitionSchema,
-  integrationDefinitionSummary,
-  maximumIntegrationAdapterSnapshotBytes,
-} from "./adapter.js";
+import { IntegrationDefinitionSchema, integrationDefinitionSummary } from "./adapter.js";
 
-describe("integration adapter boundaries", () => {
-  it("keeps presentation facts public and executable config private", () => {
-    const definition = IntegrationDefinitionSchema.parse({
-      adapter: "openapi",
-      authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
-      config: { inline: { openapi: "3.1.0" } },
-      description: "Example API",
-      hostedOAuth: {
-        providerApplicationRevision: 1,
-        qualification: { authorizationCodeExchange: true, refresh: true },
+describe("device definition boundary", () => {
+  it("keeps executable configuration private and validates the native operation contract", () => {
+    const input = {
+      adapter: "computer",
+      authMethods: [{ id: "computer", kind: "computer", label: "This computer" }],
+      description: "Calendar records",
+      id: "calendar",
+      name: "Calendar",
+      provider: "calendar",
+      config: {
+        accessLabels: { read: "Read", readWrite: "Read and write" },
+        accessSummaries: { read: "Read records", readWrite: "Change records" },
+        platforms: ["darwin"],
+        operations: [
+          {
+            name: "list",
+            title: "List records",
+            description: "Read records",
+            effect: "read",
+            inputSchema: {},
+            outputSchema: null,
+          },
+        ],
       },
-      id: "example",
-      name: "Example",
-      provider: "example",
-    });
-
-    const { config, ...publicDefinition } = definition;
-    expect(integrationDefinitionSummary(definition)).toEqual({ ...publicDefinition, apiKey: null });
+    };
+    const definition = IntegrationDefinitionSchema.parse(input);
     expect(integrationDefinitionSummary(definition)).not.toHaveProperty("config");
+    expect(integrationDefinitionSummary(definition).computerApp?.operations).toEqual([
+      { name: "list", effect: "read" },
+    ]);
     expect(
-      IntegrationAdapterSnapshotSchema.parse({
-        adapter: definition.adapter,
-        config,
-        definitionId: definition.id,
-      }),
-    ).toEqual({
-      adapter: "openapi",
-      config: { inline: { openapi: "3.1.0" } },
-      definitionId: "example",
-    });
-  });
-
-  it("accepts only executable adapter families and bounded snapshots", () => {
-    expect(IntegrationAdapterKindSchema.safeParse("native").success).toBe(false);
-    expect(
-      IntegrationAdapterSnapshotSchema.safeParse({
-        adapter: "computer",
-        config: {},
-        definitionId: "apple-messages",
-      }).success,
-    ).toBe(false);
-    expect(
-      IntegrationAdapterSnapshotSchema.safeParse({
-        adapter: "openapi",
-        config: { document: "x".repeat(maximumIntegrationAdapterSnapshotBytes) },
-        definitionId: "example",
+      IntegrationDefinitionSchema.safeParse({
+        ...input,
+        config: { ...input.config, operations: [] },
       }).success,
     ).toBe(false);
   });

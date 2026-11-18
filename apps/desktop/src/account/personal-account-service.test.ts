@@ -32,7 +32,6 @@ const steps = [
   "revoke-account-sessions",
   "revoke-connect-resource",
   "remove-host-link",
-  "repair-hosted-oauth-connections",
   "retain-local-data",
 ] as const satisfies readonly PersonalAccountUnlinkStep[];
 
@@ -47,7 +46,7 @@ describe("DesktopPersonalAccountService", () => {
       await expect(fixture.service.unlink()).resolves.toMatchObject({ status: "unlinked" });
 
       expect(fixture.events).toEqual(
-        ["disable", "sessions", "resource", "host-link", "oauth"].slice(boundary),
+        ["disable", "sessions", "resource", "host-link"].slice(boundary),
       );
       // Every step boundary is still announced…
       expect(published).toEqual([
@@ -458,7 +457,6 @@ function unlinkFixture(boundary: number) {
       events.push("host-link");
       hostLink = null;
     }),
-    repairHostedOAuthConnectionsForUnlink: async () => void events.push("oauth"),
     revokeAccountSessionsForUnlink: async () => void events.push("sessions"),
     status: vi.fn(async (): Promise<PersonalRemoteAccessStatus> =>
       PersonalRemoteAccessStatusSchema.parse({

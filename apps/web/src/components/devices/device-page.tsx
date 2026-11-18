@@ -830,7 +830,7 @@ function NotificationsHere({ deploymentId }: { readonly deploymentId: string }) 
   );
 }
 
-function DevicesBackLink() {
+export function DevicesBackLink() {
   return (
     <Link className="page__back" to={devicesRoute}>
       <Icon name="arrow-left" />

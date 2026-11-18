@@ -193,7 +193,6 @@ it("Runner revoke removes self but retains and detaches its screen targets; Devi
     serverId = createIntegrationId("server");
   await platform.install({
     actorUserId: fixture.userId,
-    adapterSnapshot: null,
     requestId: randomUUID(),
     installation: {
       id: installationId,
@@ -241,7 +240,6 @@ it("Runner revoke removes self but retains and detaches its screen targets; Devi
       ownerUserId: fixture.userId,
       installationId,
       isDefault: false,
-      providerAuthorizations: {},
     });
     await store.updateDeviceAccessPolicy({
       deviceId: phone.deviceId,

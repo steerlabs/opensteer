@@ -30,7 +30,7 @@ import {
   createMachineAccessDatabase,
   freePort,
   type CallerMachine,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   Redaction,
@@ -45,6 +45,7 @@ import {
   fixturePackage,
   installFixture,
   phoneRowOf,
+  phoneCommands,
   readObservation,
   readReceipts,
   rebootDevice,
@@ -517,18 +518,14 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
           }),
         );
         const { gateway } = agent;
-        async function call(toolRef: string, args?: Record<string, unknown>): Promise<ToolResult> {
-          const result = await gateway.call("integration_call", {
-            toolRef,
-            ...(args ? { arguments: args } : {}),
+        async function call(code: string, args?: Record<string, unknown>): Promise<ToolResult> {
+          const result = await gateway.call("computer_use", {
+            code: args ? `${code}(${JSON.stringify(args.actions)})` : code,
           });
           if (result.isError) throw new Error(resultText(result));
           return result;
         }
-        const refs = phoneRowOf(
-          await gateway.call("integration_search", { query: "Android phone" }),
-          phoneId,
-        ).toolRefs;
+        const refs = phoneCommands(phoneRowOf(await gateway.call("computer_apps", {}), phoneId));
         if (!refs?.act) throw new Error("Soak phone has no read-write tool refs.");
         release = refs.release;
         const { act: actRef, observe: observeRef } = refs;
@@ -637,7 +634,7 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
           try {
             const result = await bounded(
               "release phone",
-              agent.gateway.call("integration_call", { toolRef: release }),
+              agent.gateway.call("computer_use", { code: release }),
             );
             if (result.isError) errors.push(`Release: ${resultText(result)}`);
           } catch (error) {

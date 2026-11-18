@@ -1,8 +1,6 @@
 import { createId } from "@opensteer/core";
-import {
-  ComputerAppSetupRequestViewSchema,
-  createIntegrationId,
-} from "@opensteer/integration-core";
+import { ComputerAppSetupRequestViewSchema } from "@opensteer/integration-core/computer-app-setup";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { describe, expect, it } from "vitest";
 import {
   ComputerAppRemedySchema,
@@ -208,9 +206,6 @@ describe("computer app auxiliary frames", () => {
 
     const connection = {
       accountIdentifier: null,
-      applicationSource: null,
-      authMethodId: "computer",
-      authorizationDigest: null,
       computer: {
         access: "read-write",
         app: null,
@@ -224,10 +219,8 @@ describe("computer app auxiliary frames", () => {
       displayName: "Mac mini",
       externalIdentityId: null,
       externalTenantId: null,
-      grantedScopes: [],
       id: createIntegrationId("connection"),
       provider: "apple-messages",
-      providerApplicationId: null,
       status: "connected",
       statusDetail: null,
       statusReason: null,

@@ -51,7 +51,6 @@ const inFlightAllowlist = new Set([
   "apps/desktop/src/main.ts",
   "apps/desktop/src/preload.ts",
   "packages/client/src/mock/mock-host-client.ts",
-  "packages/database/src/integration-store.ts",
   "packages/database/src/migrations.ts",
   "packages/database/src/schema.ts",
   "packages/protocol/src/desktop.ts",

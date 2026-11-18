@@ -15,7 +15,6 @@
     "@opensteer/agent-tools": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
-    "@opensteer/integration-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "opencode-ai": "catalog:",

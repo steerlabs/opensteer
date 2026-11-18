@@ -540,7 +540,7 @@ describe("the personal stack from source", () => {
       input: {
         anchorThreadId: threadId,
         name: "Doubler",
-        program: { language: "typescript", source: automationSource, toolContractVersion: 4 },
+        program: { language: "typescript", source: automationSource, toolContractVersion: 5 },
         source: { kind: "webhook" },
       },
       type: "trigger.create",

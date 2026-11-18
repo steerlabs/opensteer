@@ -2592,7 +2592,7 @@ it("refuses a return proof when main selects B before processing renderer A's re
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          type: "integration.authorization.return",
+          type: "plugin.authorization.return",
           returnProof: "r".repeat(43),
         }),
       }),
@@ -2604,7 +2604,7 @@ it("refuses a return proof when main selects B before processing renderer A's re
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          type: "integration.authorization.return",
+          type: "plugin.authorization.return",
           returnProof: "r".repeat(43),
         }),
       }),

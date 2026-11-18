@@ -168,15 +168,7 @@ export class IntegrationAuthAttemptStore implements IntegrationAuthAttemptStoreP
     return (
       (await this.#database
         .selectFrom("integrationAuthAttempts")
-        .select([
-          "expiresAt",
-          "failureReason",
-          "id",
-          "ownerUserId",
-          "resultConnectionId",
-          "status",
-          "surface",
-        ])
+        .select(["expiresAt", "failureReason", "id", "ownerUserId", "status", "surface"])
         .where("id", "=", input.id)
         .where("ownerUserId", "=", input.ownerUserId)
         .executeTakeFirst()) ?? null

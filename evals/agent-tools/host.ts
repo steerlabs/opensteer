@@ -97,16 +97,29 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     computer_update: async () => unavailable(),
     computer_remove: async () => unavailable(),
     computer_use: async () => unavailable(),
+    computer_apps: async () => unavailable(),
     computer_access_request: async () => unavailable(),
-    integration_list: async () => unavailable(),
-    integration_remove: async () => unavailable(),
     opensteer_messaging_bridge_list: async () => unavailable(),
     opensteer_messaging_bridge_update: async () => unavailable(),
     opensteer_messaging_bridge_remove: async () => unavailable(),
     opensteer_plugin_list: async () => unavailable(),
     opensteer_plugin_install: async () => unavailable(),
-    opensteer_plugin_update: async () => unavailable(),
+    opensteer_plugin_catalog: async () => unavailable(),
+    plugin_resources: async () => unavailable(),
+    plugin_skills: async () => unavailable(),
+    opensteer_plugin_resource_update: async () => unavailable(),
+    plugin_search: async () => unavailable(),
+    plugin_describe: async () => unavailable(),
+    plugin_call: async () => unavailable(),
+    plugin_execute: async () => unavailable(),
+    plugin_resume: async () => unavailable(),
+    opensteer_plugin_export: async () => unavailable(),
+    opensteer_plugin_activate: async () => unavailable(),
+    plugin_account_request: async () => unavailable(),
     opensteer_plugin_remove: async () => unavailable(),
+    local_server_add: async () => unavailable(),
+    local_server_list: async () => unavailable(),
+    local_server_remove: async () => unavailable(),
     browser_profile_update: async () => unavailable(),
     browser_profile_remove: async () => unavailable(),
     app_publish: async () => unavailable(),
@@ -152,12 +165,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     opensteer_automation_create: (call) => triggers.write(call),
     opensteer_automation_update: (call) => triggers.write(call),
     opensteer_automation_control: (call) => triggers.write(call),
-    integration_search: async () => unavailable(),
-    integration_describe: async () => unavailable(),
-    integration_call: async () => unavailable(),
-    integration_request: async () => unavailable(),
     app_access_request: async () => unavailable(),
-    custom_integration_request: async () => unavailable(),
     opensteer_team_read: async () => unavailable(),
     opensteer_team_file_download: async () => unavailable(),
     opensteer_team_search: async () => unavailable(),
@@ -412,7 +420,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         }
         result = output.data;
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
-        if (name === "integration_describe" || !isRecord(result)) {
+        if (name === "plugin_describe" || !isRecord(result)) {
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         }
         return agentToolRecordResult(result);
@@ -583,8 +591,10 @@ function taskFixtureResult(
 
 function defaultResult(name: string): unknown {
   switch (name) {
-    case "integration_search":
-      return { operations: [], results: [], catalog: [], total: 0, nextCursor: null };
+    case "plugin_search":
+      return { items: [], namespaces: [], remaining: 0, next: null };
+    case "computer_apps":
+      return { computers: [], phones: [] };
     case "opensteer_task_list":
       return { tasks: [], hasMore: false, nextCursor: null };
     case "opensteer_request_list":

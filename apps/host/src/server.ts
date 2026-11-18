@@ -1,3 +1,5 @@
+import { registerPluginWebhookRoutes } from "./plugins/plugin-webhook-routes.js";
+import { registerPluginOAuthRoutes } from "./plugins/plugin-oauth-routes.js";
 import { withClientSendKeys, withEventClientSendKeys } from "./threads/client-send-keys.js";
 import {
   RequestIdSchema,
@@ -273,7 +275,7 @@ import {
 } from "./agents/harness-catalogs.js";
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
-import type { RunFileRelay } from "./integrations/run-file-relay.js";
+import type { RunFileRelay } from "./agents/run-file-relay.js";
 import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
 import type { BrowserSourceService } from "./browser/browser-source-service.js";
 import type { PasswordSignInService } from "./browser/password-sign-in-service.js";
@@ -304,26 +306,13 @@ import {
   sealRequestResponse,
   type RequestResponseVault,
 } from "./identity/request-response-vault.js";
-import type { IntegrationAuthAttemptLifecycle } from "./integrations/integration-auth-attempt-service.js";
-import {
-  createIntegrationAuthorizationRpcHandlers,
-  registerIntegrationAuthorizationRoutes,
-  type IntegrationAuthorizationRpcOptions,
-} from "./integrations/integration-authorization-routes.js";
-import type { IntegrationDashboardService } from "./integrations/integration-dashboard-service.js";
-import {
-  createIntegrationPlatformRpcHandlers,
-  registerIntegrationPlatformRoutes,
-  type IntegrationPlatformRpcOptions,
-} from "./integrations/integration-platform-routes.js";
-import type { IntegrationPlatformService } from "./integrations/integration-platform-service.js";
-import {
-  createIntegrationRpcHandlers,
-  registerIntegrationRoutes,
-  type IntegrationRpcOptions,
-} from "./integrations/integration-routes.js";
-import type { IntegrationService } from "./integrations/integration-service.js";
-import type { McpOAuthService } from "./integrations/mcp-oauth-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "./access/integration-auth-attempt-service.js";
+import { registerIntegrationAuthorizationRoutes } from "./access/integration-authorization-routes.js";
+import type { DeviceService } from "./devices/device-service.js";
+import type { AccessRequests } from "./devices/access-requests.js";
+import { createDeviceRpcHandlers, type DeviceRpcOptions } from "./devices/device-routes.js";
+import type { LocalServerService } from "./local-servers/local-server-service.js";
+import type { LocalServerRegistry } from "./local-servers/local-server-registry.js";
 import type { LocalBootstrapService } from "./runtime/local-bootstrap.js";
 import {
   projectMachines,
@@ -395,6 +384,13 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  /** The owner's plugin API; personal Hosts only. */
+  readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
+  readonly pluginOAuth?: import("./plugins/plugin-oauth-service.js").PluginOAuthService;
+  readonly pluginRequests?: Pick<
+    import("./plugins/plugin-executions.js").PluginExecutions,
+    "respond"
+  >;
   readonly deviceDrivers?: DeviceDriverManagementPort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
@@ -447,13 +443,15 @@ export interface HostServerDependencies {
   readonly discovery: HostDiscoveryEnvelope;
   readonly egress: EgressService;
   readonly integrations: {
+    readonly access: AccessRequests;
     readonly authAttempts: IntegrationAuthAttemptLifecycle;
     readonly continuations: ContinuationService;
-    readonly dashboard: IntegrationDashboardService;
-    readonly mcpOauth: McpOAuthService;
-    readonly platform: IntegrationPlatformService;
-    readonly service: IntegrationService;
-    readonly skills: import("./integrations/plugin-package-service.js").PluginPackageService;
+    readonly definitions: DeviceRpcOptions["definitions"];
+    readonly devices: DeviceService;
+    readonly listConnections: DeviceRpcOptions["listConnections"];
+    readonly localServers: LocalServerService;
+    readonly localServerRegistry: LocalServerRegistry;
+    readonly skills: import("./local-servers/plugin-package-service.js").PluginPackageService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
   readonly harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator;
@@ -497,9 +495,16 @@ export async function createHostServer(
     logger: options.logger ?? false,
     requestIdHeader: false,
     logController: new LogController({
-      disableRequestLogging: (request) =>
-        hasAppAuthority(request.headers) ||
-        (request.url ?? "").split("?", 1)[0]?.startsWith("/media/") === true,
+      disableRequestLogging: (request) => {
+        const path = (request.url ?? "").split("?", 1)[0] ?? "";
+        return (
+          hasAppAuthority(request.headers) ||
+          path.startsWith("/media/") ||
+          path.startsWith("/hooks/v1/plugins/") ||
+          path.startsWith("/v1/integration-authorizations/") ||
+          path === "/v1/plugin-oauth/callback"
+        );
+      },
     }),
   });
   const noSendKeys: ReadonlyMap<string, string> = new Map();
@@ -515,12 +520,14 @@ export async function createHostServer(
   };
   const appGateway = new AppGateway({
     apps: dependencies.apps,
+    ...(dependencies.plugins?.pages ? { plugins: dependencies.plugins.pages } : {}),
     identity: dependencies.authenticator.identity,
     signingKey: dependencies.appOriginSigningKey,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
+  dependencies.plugins?.gateway(appGateway);
   dependencies.assets?.register(app);
   installPersonalVersionGate(app);
   installHostHttpBoundary(app);
@@ -584,7 +591,18 @@ export async function createHostServer(
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
-  registerAppRoutes(app, dependencies.apps);
+  registerAppRoutes(app, dependencies.apps, dependencies.plugins?.pages);
+  if (dependencies.plugins?.webhooks)
+    registerPluginWebhookRoutes(app, {
+      ...dependencies.plugins.webhooks,
+      admit: (address) =>
+        consumeAnonymousRateLimit(
+          dependencies.store.database,
+          `plugin-webhook:${address}`,
+          120,
+          new Date(),
+        ),
+    });
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
       ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
@@ -661,34 +679,24 @@ export async function createHostServer(
     currentRoute: async () =>
       (await dependencies.personalRemoteAccess?.service.status())?.route ?? null,
   };
-  const integrationAuthorizationRpcOptions: IntegrationAuthorizationRpcOptions = {
+  registerIntegrationAuthorizationRoutes(app, {
+    ...(dependencies.pluginOAuth ? { plugins: dependencies.pluginOAuth } : {}),
     attempts: dependencies.integrations.authAttempts,
     authenticator: dependencies.authenticator,
     deploymentId: dependencies.discovery.document.deploymentId,
-    integrations: dependencies.integrations.service,
-    mcpOauth: dependencies.integrations.mcpOauth,
-  };
-  registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
-  const integrationRpcOptions: IntegrationRpcOptions = {
+  });
+  if (dependencies.pluginOAuth)
+    registerPluginOAuthRoutes(app, dependencies.pluginOAuth, dependencies.authenticator);
+  const deviceRpcOptions: DeviceRpcOptions = {
     pluginsChanged: (viewers) =>
       dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     authenticator: dependencies.authenticator,
-    dashboard: dependencies.integrations.dashboard,
-    deploymentId: dependencies.discovery.document.deploymentId,
-    integrations: dependencies.integrations.service,
-    platform: dependencies.integrations.platform,
+    definitions: dependencies.integrations.definitions,
+    devices: dependencies.integrations.devices,
+    listConnections: dependencies.integrations.listConnections,
+    localServers: dependencies.integrations.localServers,
+    localServerRegistry: dependencies.integrations.localServerRegistry,
   };
-  registerIntegrationRoutes(app, integrationRpcOptions);
-  const integrationPlatformRpcOptions: IntegrationPlatformRpcOptions = {
-    pluginsChanged: (viewers) =>
-      dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
-    authenticator: dependencies.authenticator,
-    dashboard: dependencies.integrations.dashboard,
-    deploymentId: dependencies.discovery.document.deploymentId,
-    platform: dependencies.integrations.platform,
-    mcpOauth: dependencies.integrations.mcpOauth,
-  };
-  registerIntegrationPlatformRoutes(app, integrationPlatformRpcOptions);
   registerTriggerRoutes(app, dependencies.authenticator, dependencies.triggers.service);
   registerTriggerCdpBridge(app, dependencies.browser, dependencies.triggers.controlTokens);
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
@@ -823,18 +831,6 @@ export async function createHostServer(
       );
       return reply.code(204).send();
     });
-    app.post(
-      "/v1/personal-remote-access/account-unlink/repair-hosted-oauth",
-      async (request, reply) => {
-        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-        const caller = await dependencies.authenticator.authenticateSessionContext(
-          request.headers,
-          { mutation: true },
-        );
-        await personalRemoteAccess.markHostedOAuthConnectionsForRepair(caller);
-        return reply.code(204).send();
-      },
-    );
     app.put("/v1/personal-remote-access/connect-projection", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
         mutation: true,
@@ -1071,7 +1067,7 @@ export async function createHostServer(
         continue;
       computerUsePolicies.set(
         runner.id,
-        await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy({
+        await dependencies.integrations.devices.computerAppApprovals.computerUsePolicy({
           deviceId: await dependencies.store.requireSelfDeviceId(runner.id),
           ownerUserId: ownerId,
         }),
@@ -1181,7 +1177,7 @@ export async function createHostServer(
       }),
       dependencies.store.listDeviceDrivers({ includeDetached: true }),
     ]);
-    const connections = await dependencies.integrations.platform.deviceConnections(session.user.id);
+    const connections = await dependencies.integrations.devices.deviceConnections(session.user.id);
     const access = new Map(registry.access);
     const computerViews = new Map(registry.computerViews);
     const computerUseSessions = new Map(registry.computerUseSessions);
@@ -1818,7 +1814,7 @@ export async function createHostServer(
       );
     switch (command.type) {
       case "settings.plugin.enabled.set": {
-        const result = await dependencies.integrations.platform.store.settings.setEnabled(
+        const result = await dependencies.integrations.devices.store.settings.setEnabled(
           userId,
           command,
         );
@@ -2041,8 +2037,15 @@ export async function createHostServer(
           };
           await (async (): Promise<void> => {
             switch (pending.kind) {
-              case "integration.input":
-                await dependencies.integrations.platform.inputRequests.respond(input);
+              case "plugin.account":
+              case "plugin.approval":
+              case "plugin.input":
+                if (!dependencies.pluginRequests)
+                  throw new OpensteerError({
+                    code: "conflict",
+                    message: "Plugin Requests are unavailable.",
+                  });
+                await dependencies.pluginRequests.respond(input);
                 return;
               // A sign-in is answered by `browser.sign-in.respond`, which can
               // deliver it; a saved-password sign-in is approved only on its
@@ -2065,9 +2068,8 @@ export async function createHostServer(
                   dependencies.integrations.continuations.notify();
                 return;
               }
-              case "integration.access":
-              case "integration.install": {
-                const result = await dependencies.integrations.platform.resolveRequest(input);
+              case "integration.access": {
+                const result = await dependencies.integrations.access.resolve(input);
                 if (result.request.status === "fulfilled")
                   dependencies.integrations.continuations.notify();
                 return;
@@ -2087,7 +2089,7 @@ export async function createHostServer(
               // Allow uses integration.computer.setup.respond to consume exact
               // owner-reviewed setup. This generic path only declines.
               case "computer.app.access":
-                await dependencies.integrations.platform.computerAppApprovals.declineComputerAppAccess(
+                await dependencies.integrations.devices.computerAppApprovals.declineComputerAppAccess(
                   input,
                 );
                 dependencies.integrations.continuations.notify();
@@ -2678,12 +2680,8 @@ export async function createHostServer(
         identityRpcHandlers,
         createTriggerRpcHandlers(dependencies.triggers.service),
         dependencies.triggers.service,
-        createIntegrationRpcHandlers(integrationRpcOptions),
-        integrationRpcOptions,
-        createIntegrationAuthorizationRpcHandlers(integrationAuthorizationRpcOptions),
-        integrationAuthorizationRpcOptions,
-        createIntegrationPlatformRpcHandlers(integrationPlatformRpcOptions),
-        integrationPlatformRpcOptions,
+        createDeviceRpcHandlers(deviceRpcOptions),
+        deviceRpcOptions,
         createChannelRpcHandlers(dependencies.channels.service),
         dependencies.channels.service,
         createBrowserSourceRpcHandlers(browserSourceRpcOptions),
@@ -2691,6 +2689,8 @@ export async function createHostServer(
         coreRpcHandlers,
         handleCoreCommand,
         dependencies.computerViews,
+        dependencies.plugins,
+        dependencies.pluginOAuth,
       ),
       ...(dependencies.connections
         ? createConnectionRpcHandlers(dependencies.connections)
@@ -2737,9 +2737,9 @@ export async function createHostServer(
         }
         if (typeof record.setupRequestId === "string") {
           const request =
-            await dependencies.integrations.platform.store.connections.getDeviceComputerAppSetupRequest(
-              { setupRequestId: record.setupRequestId },
-            );
+            await dependencies.integrations.devices.store.getDeviceComputerAppSetupRequest({
+              setupRequestId: record.setupRequestId,
+            });
           if (request?.ownerUserId === owner && hidden(request)) deviceWireUpdateRequired();
         }
         for (const connectionId of deviceWireReferences(input, "connectionId")) {

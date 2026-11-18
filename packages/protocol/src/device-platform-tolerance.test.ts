@@ -11,9 +11,9 @@ import {
   integrationDefinitionSummary,
 } from "@opensteer/integration-core/adapter";
 import {
-  IntegrationInstallManifestSummarySchema,
-  IntegrationInstallManifestSummaryViewSchema,
-} from "@opensteer/integration-core/models";
+  IntegrationInstallManifestSchema,
+  IntegrationInstallManifestViewSchema,
+} from "@opensteer/integration-core";
 import { describe, expect, it } from "vitest";
 import { HostBootstrapSchema } from "./bootstrap.js";
 import { hostApi } from "./host-api.js";
@@ -382,22 +382,20 @@ describe("device platform presentation compatibility", () => {
         computerApp: { ...presentation, platforms: ["darwin", "ios", "future-phone-os"] },
       },
     };
-    expect(
-      IntegrationInstallManifestSummaryViewSchema.parse({ ...manifest, futureFact: true }),
-    ).toEqual({
+    expect(IntegrationInstallManifestViewSchema.parse({ ...manifest, futureFact: true })).toEqual({
       ...manifest,
       definition: {
         ...summary,
         computerApp: { ...presentation, platforms: ["darwin", "ios"] },
       },
     });
-    expect(IntegrationInstallManifestSummarySchema.safeParse(manifest).success).toBe(false);
+    expect(IntegrationInstallManifestSchema.safeParse(manifest).success).toBe(false);
     for (const malformed of [
       { ...manifest, digest: "invalid" },
       { ...manifest, kind: "future-kind" },
       { ...manifest, definition: { ...manifest.definition, name: 7 } },
     ]) {
-      expect(IntegrationInstallManifestSummaryViewSchema.safeParse(malformed).success).toBe(false);
+      expect(IntegrationInstallManifestViewSchema.safeParse(malformed).success).toBe(false);
     }
   });
 });

@@ -8,7 +8,10 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/integration-core";
+import {
+  computerAppIdentityKey,
+  type ComputerAppIdentity,
+} from "@opensteer/integration-core/computer-app";
 import {
   RunnerAuxiliaryFrameFenceSchema,
   type RunnerIntegrationsDeviceStatus,
@@ -27,7 +30,7 @@ import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComputerAppPlatform } from "@opensteer/integration-core";
+import type { ComputerAppPlatform } from "@opensteer/integration-core/computer-app";
 import type {
   ComputerAppMachine,
   ComputerTargetId,

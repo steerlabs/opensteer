@@ -184,7 +184,7 @@ export class WatchService {
           context.activation.environmentId,
           context.toolContractVersion,
         ));
-      if (incompatibility || context.toolContractVersion !== 4) {
+      if (incompatibility || context.toolContractVersion !== 5) {
         unavailable.push({
           activationId: context.activation.id,
           executionGeneration: context.activation.executionGeneration,

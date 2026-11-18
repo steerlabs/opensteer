@@ -1,0 +1,225 @@
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { createId } from "@opensteer/core";
+import Fastify from "fastify";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostAuthenticator } from "../identity/auth.js";
+import type { IntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
+import {
+  failIntegrationAuthorizationBrowser,
+  finishIntegrationAuthorizationBrowser,
+  readIntegrationAuthorizationBinding,
+  registerIntegrationAuthorizationRoutes,
+} from "../access/integration-authorization-routes.js";
+
+const apps: ReturnType<typeof Fastify>[] = [];
+const attemptId = createIntegrationId("oauthAttempt");
+const deploymentId = createId("deployment");
+const launchTicket = "t".repeat(43);
+const browserBinding = "b".repeat(43);
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+});
+
+describe("integration authorization transaction routes", () => {
+  it("binds an atomic launch to the callback browser and redirects without caching", async () => {
+    const launch = vi.fn(async () => ({
+      authorizationUrl:
+        "https://accounts.example.test/authorize?redirect_uri=https%3A%2F%2Fhost.example.test%2Fcallback&state=opaque",
+      browserBinding,
+      flow: "provider-oauth" as const,
+      id: attemptId,
+      surface: "desktop" as const,
+    }));
+    const app = Fastify();
+    apps.push(app);
+    registerIntegrationAuthorizationRoutes(app, {
+      attempts: { launch } as unknown as IntegrationAuthAttemptLifecycle,
+      authenticator: launchAuthenticator(),
+      deploymentId,
+    });
+
+    const response = await app.inject({
+      headers: { host: "host.example.test" },
+      method: "GET",
+      url: `/v1/integration-authorizations/${attemptId}/launch?ticket=${launchTicket}`,
+    });
+
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toContain("redirect_uri=");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["set-cookie"]).toContain("HttpOnly; SameSite=Lax; Secure");
+    expect(readIntegrationAuthorizationBinding(response.headers["set-cookie"], attemptId)).toBe(
+      browserBinding,
+    );
+    expect(launch).toHaveBeenCalledWith({ id: attemptId, launchTicket });
+  });
+
+  // The ways it could fail: a phone or another computer cannot open a sign-in
+  // through the Account service because it does not reach the Host by its
+  // canonical name; or one returning to the Host's own callback is sent to the
+  // provider from an origin whose browser can never finish it.
+  it.each([
+    {
+      authorizationUrl: "https://account.example.test/v1/oauth-broker/launch/hoa_1?ticket=t",
+      launches: true,
+      name: "through the Account service",
+    },
+    {
+      authorizationUrl: `https://accounts.example.test/authorize?state=s&redirect_uri=${encodeURIComponent(
+        "https://host.example.test/v1/integrations/oauth/callback/google",
+      )}`,
+      launches: false,
+      name: "back to this Host's callback",
+    },
+  ])("launches a sign-in $name from a Personal route: $launches", async (input) => {
+    const launch = vi.fn(async () => ({
+      authorizationUrl: input.authorizationUrl,
+      browserBinding,
+      flow: "provider-oauth" as const,
+      id: attemptId,
+      surface: "native" as const,
+    }));
+    const app = Fastify();
+    apps.push(app);
+    registerIntegrationAuthorizationRoutes(app, {
+      attempts: { launch } as unknown as IntegrationAuthAttemptLifecycle,
+      authenticator: launchAuthenticator(),
+      deploymentId,
+    });
+
+    const remote = await app.inject({
+      headers: { host: "personal-route.example.test" },
+      method: "GET",
+      url: `/v1/integration-authorizations/${attemptId}/launch?ticket=${launchTicket}`,
+    });
+
+    expect(remote.statusCode).toBe(input.launches ? 303 : 500);
+    expect(remote.headers.location).toBe(input.launches ? input.authorizationUrl : undefined);
+  });
+
+  it("returns web callbacks to the stored same-origin path with only the attempt id", async () => {
+    const app = Fastify();
+    apps.push(app);
+    app.get("/finish", (_request, reply) =>
+      finishIntegrationAuthorizationBrowser(reply, {
+        attemptId,
+        deploymentId,
+        publicOrigin: "https://host.example.test",
+        returnPath: "/integrations?view=accounts",
+        status: "completed",
+        surface: "web",
+      }),
+    );
+
+    const response = await app.inject({ method: "GET", url: "/finish" });
+
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe(
+      `https://host.example.test/integrations?view=accounts&integrationAttempt=${attemptId}`,
+    );
+    expect(response.headers.location).not.toContain("code=");
+    expect(response.headers["set-cookie"]).toContain("Max-Age=0");
+  });
+
+  it("returns native callbacks through the fixed app scheme with opaque ids only", async () => {
+    const app = Fastify();
+    apps.push(app);
+    app.get("/finish-native", (_request, reply) =>
+      finishIntegrationAuthorizationBrowser(reply, {
+        attemptId,
+        deploymentId,
+        publicOrigin: "https://host.example.test",
+        returnPath: "/ignored-for-native",
+        status: "completed",
+        surface: "native",
+      }),
+    );
+
+    const response = await app.inject({ method: "GET", url: "/finish-native" });
+
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe(
+      `com.opensteer.mobile:/oauth/integration-callback?deployment_id=${deploymentId}&attempt_id=${attemptId}`,
+    );
+    expect(response.headers.location).not.toContain("host.example.test");
+    expect(response.headers.location).not.toContain("code=");
+  });
+
+  it.each([
+    { status: "completed" as const, statusCode: 200, title: "Connected" },
+    { status: "denied" as const, statusCode: 400, title: "Not connected" },
+  ])(
+    "keeps desktop $status completion on the callback page",
+    async ({ status, statusCode, title }) => {
+      const app = Fastify();
+      apps.push(app);
+      app.get(`/finish-desktop-${status}`, (_request, reply) =>
+        finishIntegrationAuthorizationBrowser(reply, {
+          attemptId,
+          deploymentId,
+          publicOrigin: "https://host.example.test",
+          returnPath: "/integrations",
+          status,
+          surface: "desktop",
+        }),
+      );
+
+      const response = await app.inject({ method: "GET", url: `/finish-desktop-${status}` });
+
+      expect(response.statusCode).toBe(statusCode);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.body).toContain(title);
+      expect(response.headers["set-cookie"]).toContain("Max-Age=0");
+    },
+  );
+
+  it.each([
+    "https://attacker.test/integrations",
+    "//attacker.test/integrations",
+    "/integrations#hidden",
+  ])("refuses an unsafe stored web return path: %s", async (returnPath) => {
+    const app = Fastify();
+    apps.push(app);
+    app.get("/finish-unsafe", (_request, reply) =>
+      finishIntegrationAuthorizationBrowser(reply, {
+        attemptId,
+        deploymentId,
+        publicOrigin: "https://host.example.test",
+        returnPath,
+        status: "completed",
+        surface: "web",
+      }),
+    );
+
+    const response = await app.inject({ method: "GET", url: "/finish-unsafe" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.headers.location).toBeUndefined();
+  });
+
+  it("shows only safe actionable copy for a duplicate provider identity", async () => {
+    const app = Fastify();
+    apps.push(app);
+    app.get("/failed", (_request, reply) =>
+      failIntegrationAuthorizationBrowser(reply, "provider-identity-already-connected"),
+    );
+
+    const response = await app.inject({ method: "GET", url: "/failed" });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("already connected by another user");
+    expect(response.body).toContain("your own provider app");
+  });
+});
+
+/** The canonical Host the launch tests answer as: a request named otherwise is not it. */
+function launchAuthenticator(): HostAuthenticator {
+  return {
+    publicOrigin: "https://host.example.test",
+    requireCanonicalSurface: (headers: { readonly host?: string }) => {
+      if (headers.host !== "host.example.test") throw new Error("canonical surface required");
+    },
+  } as unknown as HostAuthenticator;
+}

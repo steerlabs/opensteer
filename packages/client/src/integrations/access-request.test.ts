@@ -1,10 +1,10 @@
-import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import { describe, expect, it, vi } from "vitest";
 import {
   accessPlan,
   accountsForRequirement,
   computerAccessUpgrade,
-  integrationInstallReview,
+  catalogInstallDefinition,
   integrationRequestStillPending,
   matchingInstallationForManifest,
   type LoadedAccessRequest,
@@ -117,7 +117,6 @@ describe("accessPlan, for an app on a computer", () => {
 describe("definitions stored in manifests", () => {
   const newerApp = {
     ...messages(),
-    apiKey: null,
     computerApp: {
       ...messages().computerApp!,
       platforms: ["darwin", "ios", "future-phone-os"],
@@ -134,16 +133,12 @@ describe("definitions stored in manifests", () => {
     const stored: Record<string, unknown> = { ...messages() };
     delete stored["apiKey"];
     const plan = accessPlan(withManifestDefinition(stored), null);
-    expect(plan?.definition).toMatchObject({ apiKey: null, id: "apple-messages" });
+    expect(plan?.definition).toMatchObject({ id: "apple-messages" });
   });
 
   it("reviews and matches a newer Host's catalog install", () => {
     const manifest = { definition: newerApp, digest: "d".repeat(43), kind: "catalog" };
-    expect(integrationInstallReview(manifest)).toEqual({
-      facts: ["Search, read, and send Messages through an enrolled Mac."],
-      name: "Messages",
-      provenance: null,
-    });
+    expect(catalogInstallDefinition(manifest)).toMatchObject({ name: "Messages" });
     const installed = {
       id: installationId,
       provenance: { definitionDigest: "d".repeat(43), definitionId: "apple-messages" },
@@ -163,7 +158,7 @@ describe("definitions stored in manifests", () => {
     const stored: Record<string, unknown> = { ...messages() };
     delete stored["apiKey"];
     expect(
-      integrationInstallReview({ definition: stored, digest: "d".repeat(43), kind: "catalog" }),
+      catalogInstallDefinition({ definition: stored, digest: "d".repeat(43), kind: "catalog" }),
     ).toMatchObject({ name: "Messages" });
   });
 });
@@ -189,27 +184,11 @@ function withManifestDefinition(definition: object): LoadedAccessRequest {
 }
 
 /**
- * The Request card and the Workspace-access editor read this one function, so
- * an account one of them would offer is an account the other would offer too.
+ * The browser card and the phone's card read this one function, so a computer
+ * one of them would offer is a computer the other would offer too.
  */
 describe("accountsForRequirement", () => {
-  const { dashboard, platform } = loaded();
-
-  it("answers a provider requirement with this person's connected accounts", () => {
-    expect(
-      accountsForRequirement({
-        dashboard,
-        installationId,
-        platform,
-        requirement: {
-          definitionId: "github",
-          kind: "provider",
-          provider: "github",
-          providerApplicationRequired: false,
-        },
-      }).map(({ computer, displayName }) => [displayName, computer]),
-    ).toEqual([["octocat", null]]);
-  });
+  const { dashboard } = loaded();
 
   // An app's account is a computer, and its ceiling travels with it: a surface
   // has to know a read-only computer cannot answer a request that asks to send.
@@ -217,67 +196,12 @@ describe("accountsForRequirement", () => {
     expect(
       accountsForRequirement({
         dashboard,
-        installationId,
-        platform,
         requirement: { definitionId: "apple-messages", kind: "computer" },
       }).map(({ computer, displayName, id }) => [id, displayName, computer?.access]),
     ).toEqual([
       ["con_mac_mini", "Mac mini", "read"],
       ["con_macbook", "Alex's MacBook Pro", "read-write"],
     ]);
-  });
-
-  it("answers an MCP requirement with that installation's own connections", () => {
-    const mcp = {
-      connections: [
-        {
-          accountIdentifier: "a@example.com",
-          connectionId: "con_a",
-          displayName: "Ada",
-          installationId,
-          serverId,
-          status: "connected",
-        },
-        // Another server of the same installation, and a connection that is
-        // not usable: neither answers a Request naming this server.
-        {
-          accountIdentifier: null,
-          connectionId: "con_b",
-          displayName: "Other server",
-          installationId,
-          serverId: "isv_other",
-          status: "connected",
-        },
-        {
-          accountIdentifier: null,
-          connectionId: "con_c",
-          displayName: "Half made",
-          installationId,
-          serverId,
-          status: "pending",
-        },
-      ],
-    } as unknown as NonNullable<Parameters<typeof accountsForRequirement>[0]["platform"]>;
-    const requirement = { kind: "mcp-oauth" } as Parameters<
-      typeof accountsForRequirement
-    >[0]["requirement"];
-
-    expect(
-      accountsForRequirement({
-        dashboard,
-        installationId,
-        platform: mcp,
-        requirement,
-        serverId,
-      }).map(({ id }) => id),
-    ).toEqual(["con_a"]);
-    // The editor asks about an installation rather than one of its servers,
-    // so leaving the server out accepts every server of that installation.
-    expect(
-      accountsForRequirement({ dashboard, installationId, platform: mcp, requirement }).map(
-        ({ id }) => id,
-      ),
-    ).toEqual(["con_a", "con_b"]);
   });
 });
 
@@ -377,9 +301,6 @@ function computerConnection(input: {
 }) {
   return {
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access: input.access, runnerId: input.runnerId },
     connectionMethod: "computer",
     createdAt: "2026-09-02T10:20:00.000Z",
@@ -387,10 +308,8 @@ function computerConnection(input: {
     displayName: input.name,
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: input.id,
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-02T10:20:00.000Z",

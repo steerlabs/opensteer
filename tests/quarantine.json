@@ -248,7 +248,7 @@
     ]
   },
   {
-    "file": "apps/host/src/integrations/computer-use-journey.integration.test.ts",
+    "file": "apps/host/src/devices/computer-use-journey.integration.test.ts",
     "name": [
       "Computer use, end to end as a model sees it",
       "computer REPL revocation tears down globals and handles before the next call"

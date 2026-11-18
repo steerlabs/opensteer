@@ -12133,35 +12133,42 @@ describe("a Run's current place", () => {
   });
 });
 
-it("uses a real app entry URL when supplied and resolves the Host path otherwise", async () => {
-  const client = createHttpHostClient();
-  const at = new Date().toISOString();
-  const app = AppSchema.parse({
-    appId: "app_11111111-1111-4111-8111-111111111111",
-    name: "App",
-    kind: "html",
-    state: "running",
-    computerId: createId("runner"),
-    taskId: null,
-    version: 1,
-    server: null,
-    createdAt: at,
-    updatedAt: at,
-  });
-  const path = `/v1/apps/${app.appId}/dark/${"a".repeat(43)}/`;
-  const entryUrl =
-    "https://aaaaaaaaaaaaaaaaaaaaaaaaaa-11111111111111111111111111111111.example.test/?opensteer-ticket=test";
-  const read = vi.fn<(typeof client.rpc)["apps.view"]>();
-  Object.defineProperty(client.rpc, "apps.view", { value: read });
-  read.mockResolvedValueOnce({ ok: true, data: { app, path, entryUrl } });
-  read.mockResolvedValueOnce({ ok: true, data: { app, path } });
-  try {
-    expect(await client.viewApp(app.appId, "dark")).toEqual({ title: "App", url: entryUrl });
-    expect((await client.viewApp(app.appId, "dark")).url).toBe(`http://127.0.0.1${path}`);
-  } finally {
-    client.dispose();
-  }
-});
+it.each(["app", "plugin"] as const)(
+  "uses a real %s entry URL when supplied and resolves the Host path otherwise",
+  async (kind) => {
+    const client = createHttpHostClient();
+    const at = new Date().toISOString();
+    const app = AppSchema.parse({
+      appId: "app_11111111-1111-4111-8111-111111111111",
+      name: "App",
+      kind: "html",
+      state: "running",
+      computerId: createId("runner"),
+      taskId: null,
+      version: 1,
+      server: null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const path = `/v1/apps/${app.appId}/dark/${"a".repeat(43)}/`;
+    const entryUrl =
+      "https://aaaaaaaaaaaaaaaaaaaaaaaaaa-11111111111111111111111111111111.example.test/?opensteer-ticket=test";
+    const read = vi.fn<(typeof client.rpc)["apps.view"]>();
+    Object.defineProperty(client.rpc, kind === "app" ? "apps.view" : "plugins.page.view", {
+      value: read,
+    });
+    read.mockResolvedValueOnce({ ok: true, data: { app, path, entryUrl } });
+    read.mockResolvedValueOnce({ ok: true, data: { app, path } });
+    const view = () =>
+      kind === "app" ? client.viewApp(app.appId, "dark") : client.viewPluginPage(app.appId, "dark");
+    try {
+      expect(await view()).toEqual({ title: kind === "app" ? "App" : app.appId, url: entryUrl });
+      expect((await view()).url).toBe(`http://127.0.0.1${path}`);
+    } finally {
+      client.dispose();
+    }
+  },
+);
 
 it("hydrates older running helper cards and routes a watched node's work only to its detail", async () => {
   const workspace = makeDeployment();

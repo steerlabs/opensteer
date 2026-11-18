@@ -5,7 +5,7 @@ import {
   type AuthenticatedSession,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationAuthorizationSurface } from "@opensteer/integration-core";
+import type { IntegrationAuthorizationSurface } from "@opensteer/integration-core/models";
 import { IdentityService } from "@opensteer/identity";
 
 export interface RequestHeaders {

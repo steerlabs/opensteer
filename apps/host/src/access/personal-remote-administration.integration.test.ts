@@ -1,4 +1,4 @@
-import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalHostAccountLinkCompletionGrantClaimsSchema,
   CompletePersonalHostAccountLinkResponseSchema,
@@ -1290,13 +1290,6 @@ describe("Personal remote administration intents", () => {
     expect(
       await database.selectFrom("personalRemoteAccountLink").selectAll().executeTakeFirstOrThrow(),
     ).toMatchObject({ state: "activating", linkGeneration: replacement, accountOperation: null });
-  });
-
-  it("refuses hosted OAuth repair from a revoked session", async () => {
-    await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
-    await expect(service().markHostedOAuthConnectionsForRepair({ session })).rejects.toMatchObject({
-      code: "unauthorized",
-    });
   });
 
   it("keeps idempotent retries identical and serializes simultaneous devices", async () => {

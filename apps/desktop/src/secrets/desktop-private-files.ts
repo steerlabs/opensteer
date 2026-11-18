@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 
-const helperBinaryVersion = "1.6.0";
+const helperBinaryVersion = "1.7.0";
 const maxRequestBytes = 3 * 1_024 * 1_024;
 const maxResponseBytes = 3 * 1_024 * 1_024;
 const maxStderrBytes = 64 * 1_024;

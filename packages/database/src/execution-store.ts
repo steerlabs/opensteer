@@ -1063,7 +1063,6 @@ export async function runCapabilityScope(
   runId: RunId,
 ): Promise<{
   readonly bindingGeneration: number;
-  readonly specialistId?: string;
   readonly environmentId: EnvironmentId;
   readonly grantId: GrantId;
   readonly requestedBy: UserId;
@@ -1074,7 +1073,6 @@ export async function runCapabilityScope(
 } | null> {
   const row = await database
     .selectFrom("runs")
-    .innerJoin("threads", "threads.id", "runs.threadId")
     .innerJoin("grants", (join) =>
       join
         .onRef("grants.runId", "=", "runs.id")
@@ -1089,18 +1087,12 @@ export async function runCapabilityScope(
       "runs.environmentId",
       "runs.requestedBy",
       "runs.threadId",
-      "threads.specialistId",
     ])
     .where("runs.id", "=", runId)
     .executeTakeFirst();
   if (!row) return null;
   return {
     bindingGeneration: row.bindingGeneration,
-    ...(row.specialistId
-      ? {
-          specialistId: row.specialistId,
-        }
-      : {}),
     environmentId: row.environmentId,
     grantId: row.grantId,
     requestedBy: row.requestedBy,

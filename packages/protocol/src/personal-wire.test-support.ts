@@ -2,10 +2,10 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 const baseline = JSON.parse(
-  readFileSync(new URL("./personal-wire.baseline.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./device-wire-v60.fixture.json", import.meta.url), "utf8"),
 ) as Record<"input" | "output", Record<string, z.core.JSONSchema.JSONSchema>>;
 
-/** Reconstitutes the frozen minimum-version reader, including strict objects and ID patterns. */
+/** Reconstitutes the frozen v60 reader, including strict objects and ID patterns. */
 export function frozenPersonalReader(
   name: string,
   path: readonly (string | number)[] = [],

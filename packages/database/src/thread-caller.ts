@@ -124,18 +124,6 @@ export async function assertThreadCaller(
         .where("id", "=", target.threadId)
         .executeTakeFirstOrThrow()
     : null;
-  if (target?.activate && thread?.specialistId) {
-    const specialist = await tx
-      .selectFrom("specialists")
-      .select("id")
-      .where("id", "=", thread.specialistId)
-      .where("ownerUserId", "=", caller.userId)
-      .where("status", "=", "ready")
-      .where("removedAt", "is", null)
-      .executeTakeFirst();
-    if (!specialist || (source?.specialistId && source.specialistId !== thread.specialistId))
-      throw forbidden("Specialist registration is unavailable");
-  }
   if (
     !target?.readOnly &&
     !threadAccessModeAtMost(

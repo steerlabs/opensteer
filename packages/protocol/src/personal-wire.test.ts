@@ -42,7 +42,9 @@ const optInFrames = new Set<string>([]);
  * baseline records, and a test proves it. Raising the minimum past the version
  * drops the entry.
  */
-const projectedSince: Readonly<Record<string, number>> = {
+const projectedSince: Readonly<Record<string, number>> = {};
+
+const archivedDeviceProjections: Readonly<Record<string, number>> = {
   "output rpc bootstrap.get": 61,
   "output rpc machines.list": 61,
   "output rpc devices.overview.get": 61,
@@ -353,7 +355,7 @@ describe("frozen v60 Device readers", () => {
   }
 
   it("has a frozen-reader proof for every registered projection", () => {
-    expect(Object.keys(projectedSince).sort()).toEqual(
+    expect(Object.keys(archivedDeviceProjections).sort()).toEqual(
       Object.keys(cases)
         .map((name) => `output ${name}`)
         .sort(),

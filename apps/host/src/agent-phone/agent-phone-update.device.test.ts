@@ -12,7 +12,7 @@ import { createHostRuntime } from "../runtime/runtime.js";
 import {
   freePort,
   privateMachineHostConfig,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   acquireAndroidDevice,

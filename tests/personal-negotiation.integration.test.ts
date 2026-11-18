@@ -20,6 +20,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { verifyAccessEndpoint } from "../packages/client/src/connections/deployment-catalog.js";
+import { sessionExchangePath } from "../packages/protocol/src/index.js";
 import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.test-support.js";
 import { waitForRealtimeMessage } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -118,16 +119,53 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
     expect((await unversioned("/v1/personal-remote-access")).json()).toMatchObject({
       error: { reason: "unsupported-version" },
     });
+    const appId = `app_${crypto.randomUUID()}`;
+    const viewToken = "t".repeat(43);
     for (const url of [
-      "/v1/integration-platform/mcp-oauth/client-metadata.json",
-      "/v1/integration-platform/mcp-oauth/callback?state=x&code=y",
-      "/v1/integrations/oauth/callback/github?state=x&code=y",
+      "/v1/plugin-oauth/client-metadata.json",
+      "/v1/plugin-oauth/callback?state=x&code=y",
       `/v1/integration-authorizations/${crypto.randomUUID()}/launch?ticket=x`,
-      `/v1/apps/app/light/${"t".repeat(43)}/index.html`,
+      `/v1/apps/${appId}/light/${viewToken}/index.html`,
+      `/v1/plugin-pages/${appId}/light/${viewToken}/index.html`,
     ])
       expect(JSON.stringify((await unversioned(url)).body), url).not.toContain(
         "unsupported-version",
       );
+    const webhook = await runtime.host.app.inject({
+      method: "POST",
+      url: `/hooks/v1/plugins/${appId}/whk_fixture`,
+    });
+    expect(webhook.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(webhook.body).not.toContain("unsupported-version");
+    const portalForm = await runtime.host.app.inject({
+      method: "POST",
+      url: sessionExchangePath,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: "grant=invalid",
+    });
+    expect(portalForm.statusCode).toBe(400);
+    expect(portalForm.body).not.toContain("unsupported-version");
+    const clientExchange = await runtime.host.app.inject({
+      method: "POST",
+      url: sessionExchangePath,
+      headers: { "content-type": "application/json" },
+      payload: "{broken",
+    });
+    expect(clientExchange.json()).toMatchObject({
+      error: { reason: "unsupported-version" },
+    });
+    for (const url of [
+      "/v1/integration-platform/mcp-oauth/client-metadata.json",
+      "/v1/integration-platform/mcp-oauth/callback?state=x&code=y",
+      "/v1/integrations/oauth/callback/github?state=x&code=y",
+    ]) {
+      const retired = await runtime.host.app.inject({
+        method: "GET",
+        url,
+        headers: apiVersionHeaders("personal"),
+      });
+      expect(retired.statusCode, url).toBe(404);
+    }
     const realtime = setApiVersionQuery(
       new URL("/v1/realtime", runtime.hostOrigin.origin.replace(/^http/u, "ws")),
       "personal",

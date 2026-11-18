@@ -1,0 +1,112 @@
+/** Undeployed apps and source edits belong to the same app identities as running versions. */
+import { Clock, Effect, Option } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import type { BlobStorage } from "../contracts/blobs.ts";
+import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
+import { adoptStoredFiles, type StoredBytes } from "./public-files.ts";
+import { appSlug } from "../contracts/app-slug.ts";
+import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
+import { AppCodeId, AppId } from "../contracts/shared.ts";
+import {
+  SourceError,
+  sourcePathsFit,
+  type AppSourceStorage,
+  type RepositoryBackend,
+} from "../contracts/source.ts";
+import type { PluginEngine, ResourceLifecycle } from "../contracts/pluginEngine.ts";
+import { query, transaction, type Query } from "./database.ts";
+import { storedApp, createApp as storeApp } from "./apps.ts";
+
+/** Product hosts authorize the owner; SDK mutations enforce names and optimistic Git writes. */
+export const makeAppAuthoring = (
+  db: Query,
+  sources: AppSourceStorage,
+  repositories: RepositoryBackend,
+  blobs: BlobStorage,
+  crypto: HostCrypto,
+  lifecycle?: ResourceLifecycle,
+) => {
+  const create = (
+    input: Parameters<PluginEngine["apps"]["create"]>[0],
+    copiedFrom: AppCopyOrigin | null = null,
+    stored?: StoredBytes,
+    reserved?: AppId,
+  ) =>
+    Effect.gen(function* () {
+      yield* sourcePathsFit(input.files);
+      const code = AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`);
+      // A new app has no repository yet. Stored files of a copy are first copied into its own
+      // store, which its initial files then name; anything else stored names nothing it owns.
+      if (input.files.some((file) => "object" in file)) {
+        if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
+        yield* adoptStoredFiles(blobs, code, input.files, stored);
+      }
+      const id = reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
+      yield* writeInitialSource(blobs, code, input.files);
+      const app = {
+        id,
+        code,
+        repository: null,
+        owner: input.owner,
+        name: input.name,
+        slug: appSlug(input.name),
+        activeVersion: null,
+        copiedFrom,
+        createdAt: new Date(yield* Clock.currentTimeMillis),
+      };
+      yield* transaction(db, (tx) =>
+        Effect.gen(function* () {
+          const existing = yield* query(() =>
+            tx.findFirst("apps", {
+              where: (b) => b.and(b("owner", "=", input.owner), b("name", "=", input.name)),
+            }),
+          );
+          if (existing !== null)
+            return yield* new AppNameTaken({ owner: input.owner, name: input.name });
+          const stored = { ...app, deploySequence: 0, activatedSequence: 0 };
+          yield* storeApp(tx, stored);
+          if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements: { accounts: {} } });
+        }),
+      );
+      return { ...app, requirements: { accounts: {} } };
+    });
+  return {
+    create,
+    history: (input: Parameters<PluginEngine["apps"]["history"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
+        return yield* repositories.history(app.code);
+      }),
+    revision: (input: Parameters<PluginEngine["apps"]["revision"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
+        // The commit pins the listed revision; the app's own code lineage pins its repository.
+        return yield* sources.read({ code: app.code, commit: input.commit });
+      }),
+    workspace: (input: Parameters<PluginEngine["apps"]["workspace"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        const initialized = yield* initializeAppRepository(db, sources, blobs, app);
+        const source = Option.isSome(initialized)
+          ? initialized.value
+          : yield* sources.workspace(app.code);
+        if (source === null) return yield* new SourceError({ reason: "not-found" });
+        return source;
+      }),
+    commit: (input: Parameters<PluginEngine["apps"]["commit"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
+        yield* sourcePathsFit(input.files);
+        const { revision, removed } = yield* sources.commit({
+          code: app.code,
+          expected: input.expected,
+          files: input.files,
+          message: input.message,
+        });
+        return { revision, removed };
+      }),
+  };
+};

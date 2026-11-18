@@ -109,9 +109,22 @@ export const hostApiScopes = {
   "connections.authorization.get": "session",
   "personal.remoteAccess.get": "session",
   "plugins.overview.get": "session",
-  "plugins.detail.get": "session",
-  "plugins.directory.get": "session",
   "devices.overview.get": "session",
+  "plugins.installed.list": "session",
+  "plugins.installed.page": "session",
+  "plugins.local.get": "session",
+  "plugins.get": "session",
+  "plugins.tools.list": "session",
+  "plugins.skills.list": "session",
+  "plugins.versions.list": "session",
+  "plugins.page.view": "session",
+  "plugins.catalog.list": "session",
+  "plugins.catalog.get": "session",
+  "plugins.accounts.list": "session",
+  "plugins.account.review": "session",
+  "plugins.schedule.runs": "session",
+  "plugins.workflow.runs": "session",
+  "plugins.webhook.setup.get": "session",
   "commands.dispatch": "mutation",
   "assignment.get": "session",
   "harness.authentication.get": "session",
@@ -124,7 +137,8 @@ export const hostApiScopes = {
   "voice.say": "mutation",
   "voice.stop": "mutation",
   "voice.context": "mutation",
-  "integration.authorization.get": "session",
+  "plugin.authorization.get": "session",
+  "plugin.authorization.methods": "session",
   "integration.grants.list": "session",
   "integration.computer.policy.get": "session",
   "integration.computer.setup.review": "mutation",
@@ -134,10 +148,7 @@ export const hostApiScopes = {
   "computer.app.windows": "mutation",
   "integration.computer.apps.approved": "session",
   "integration.computer.apps.installed": "mutation",
-  "specialist.list": "session",
-  "plugin.list": "session",
   "integration.platform.get": "session",
-  "integration.repositoryAccess.check": "mutation",
   "integrations.get": "session",
   "machines.list": "session",
   "machine.access.history": "session",
@@ -475,7 +486,12 @@ export function installPersonalVersionGate(app: FastifyInstance): void {
   app.addHook("onRequest", async (request) => {
     carryWebSocketVersion(request, "personal");
     if (!request.url.startsWith("/v1/") || request.url.startsWith("/v1/rpc/")) return;
-    if (request.routeOptions.config.apiVersion === unversionedRoute.apiVersion) return;
+    const exemption = request.routeOptions.config.apiVersion;
+    if (
+      exemption === unversionedRoute.apiVersion ||
+      (typeof exemption === "function" && exemption(request))
+    )
+      return;
     requireNegotiatedVersion(request);
   });
 }

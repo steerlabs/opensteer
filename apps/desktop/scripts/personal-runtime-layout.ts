@@ -19,6 +19,8 @@ export const personalRuntimeLayout = {
   channelRuntimeScript: "services/channel-runtime.mjs",
   hostLauncher: "bin/opensteer-host",
   hostScript: "services/host.mjs",
+  pluginEngineScript: "services/plugin-engine.mjs",
+  pluginBridge: "services/plugin-engine-bridge.json",
   interpreter: "node/bin/node",
   nativeFsHelper: "bin/opensteer-native-fs",
   postgres: "postgres",

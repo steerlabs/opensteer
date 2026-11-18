@@ -1,0 +1,17 @@
+{
+  "name": "@opensteer/plugin-engine-app-live-inbox",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "apps": "workspace:*"
+  }
+}

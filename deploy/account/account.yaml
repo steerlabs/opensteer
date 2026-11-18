@@ -131,18 +131,7 @@ spec:
                 "OPENSTEER_GOOGLE_CLIENT_SECRET",
                 "OPENSTEER_HOSTED_OAUTH_STATE_KEY",
                 "OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY",
-                "OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID",
-                "OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET",
-                "OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION",
-                "OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID",
-                "OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET",
-                "OPENSTEER_HOSTED_OAUTH_SLACK_REVISION",
-                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID",
-                "OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID",
-                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET",
-                "OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET",
-                "OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION",
-                "OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION",
+                "OPENSTEER_HOSTED_OAUTH_PROVIDERS",
                 "OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID",
                 "OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN",
                 "OPENSTEER_CONNECT_CLOUDFLARE_ZONE_ID",
@@ -216,52 +205,8 @@ spec:
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY,
               }
             - {
-                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_SLACK_REVISION_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_SLACK_REVISION,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION,
-              }
-            - {
-                name: OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION_FILE,
-                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION,
+                name: OPENSTEER_HOSTED_OAUTH_PROVIDERS_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_HOSTED_OAUTH_PROVIDERS,
               }
             - {
                 name: OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID_FILE,

@@ -17,7 +17,7 @@ import (
 
 const (
 	helperBinaryIdentity = "opensteer-native-fs"
-	helperBinaryVersion  = "1.6.0"
+	helperBinaryVersion  = "1.7.0"
 	maxFileBytes         = 1024 * 1024
 	maxRequestBytes      = 2 * 1024 * 1024
 	maxSearchBytes       = 16 * 1024 * 1024
@@ -190,9 +190,9 @@ func main() {
 }
 
 func readRequest(reader io.Reader) (request, error) {
-	limited := &io.LimitedReader{R: reader, N: maxRequestBytes + 1}
+	limited := &io.LimitedReader{R: reader, N: maxBinaryRequestBytes + 1}
 	content, err := io.ReadAll(limited)
-	if err != nil || len(content) > maxRequestBytes {
+	if err != nil || len(content) > maxBinaryRequestBytes {
 		return request{}, errors.New("request exceeds its byte limit")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
@@ -203,6 +203,9 @@ func readRequest(reader io.Reader) (request, error) {
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return request{}, errors.New("request contains trailing data")
+	}
+	if value.Operation != "write-binary" && len(content) > maxRequestBytes {
+		return request{}, errors.New("request exceeds its byte limit")
 	}
 	return value, nil
 }
@@ -263,6 +266,10 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 		return executeRead(root, input)
 	case "search":
 		return executeSearch(root, input)
+	case "create-directory":
+		return executeCreateDirectory(root, input)
+	case "write-binary":
+		return executeWriteBinary(root, input)
 	case "write":
 		return executeWrite(root, input)
 	case "replace":

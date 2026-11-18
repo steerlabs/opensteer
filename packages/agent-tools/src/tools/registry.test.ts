@@ -22,10 +22,9 @@ import { send_to_person } from "./person.js";
 import { opensteer_automation_list, opensteer_automation_create } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
-  it("has one specification per product and integration tool", () => {
+  it("has one specification per product tool", () => {
     expect(new Set(agentTools.map(({ name }) => name)).size).toBe(agentTools.length);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
-    expect(runs).toContain("integration_call");
     expect(runs).toEqual(
       expect.arrayContaining([
         "opensteer_task_delegate",

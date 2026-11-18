@@ -319,7 +319,7 @@ describe("foldTranscriptEvent", () => {
       arguments: { arguments: {}, toolRef: "igr_x.itl_y.z" },
       callId: "call-1",
       integration: subject,
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
+      tool: { name: "computer.click", namespace: "opensteer.integrations" },
     });
     const completed = event("tool.completed", {
       callId: "call-1",
@@ -390,6 +390,24 @@ describe("foldTranscriptEvent", () => {
   // when the Request offered one way to decline; telling two ways to decline
   // apart by nothing; dropping which option fulfilled it; inventing a decision
   // a response did not carry.
+  it.each([
+    ["plugin-interrupted", "Cancelled · Plugin execution was interrupted"],
+    ["plugin-expired", "Cancelled · Plugin request expired"],
+  ] as const)("uses plain words for a cancelled plugin Request (%s)", (reason, outcome) => {
+    const pending = request();
+    expect(fold([event("request.cancelled", { requestId: pending.id, reason })])).toMatchObject([
+      { outcome },
+    ]);
+    expect(
+      requestReceipt({
+        ...pending,
+        status: "cancelled",
+        resolvedAt: now,
+        cancellationReason: reason,
+      }),
+    ).toMatchObject({ outcome });
+  });
+
   it("keeps pending Requests out of history and adds one compact terminal receipt", () => {
     const pending = request();
     const opened = fold([

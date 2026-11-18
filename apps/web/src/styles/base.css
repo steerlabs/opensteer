@@ -950,8 +950,7 @@ svg.icon {
   .sidebar__nav-item,
   .sidebar__place,
   .task-row__link,
-  .page__back,
-  .intg-card {
+  .page__back {
     min-height: var(--touch-target);
   }
 
@@ -1064,14 +1063,9 @@ svg.icon {
   }
 }
 
-:is(
-    .intg-card,
-    .hero__suggestion,
-    .chat-btn,
-    .surface-chip,
-    .computer-now__stop,
-    .dictation-keep
-  ):active:not(:disabled) {
+:is(.hero__suggestion, .chat-btn, .surface-chip, .computer-now__stop, .dictation-keep):active:not(
+    :disabled
+  ) {
   box-shadow: none;
   transform: scale(0.97);
 }

@@ -5894,7 +5894,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
 
   async resolveResourceAccess() {
     return {
-      specialistAllowed: true,
       access: "read-write" as const,
       runAccess: "read-write" as const,
     };

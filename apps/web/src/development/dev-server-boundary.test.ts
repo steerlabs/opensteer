@@ -187,15 +187,20 @@ class TestResponse extends EventEmitter {
   }
 }
 
-it("forwards opaque app preflights through Vite to the Host's capability route", async () => {
+it("proxies App and plugin page requests to the Host while keeping the main Vite shell", async () => {
   const { once } = await import("node:events");
-  const { createServer } = await import("node:http");
+  const { createServer, get } = await import("node:http");
   const { createServer: createViteServer } = await import("vite");
   const { closeHttpServerNow } = await import("@opensteer/shared/httpServer");
   const { withTimeout } = await import("@opensteer/shared/withTimeout");
-  const upstream = createServer((_request, response) => {
-    response.writeHead(204, { "access-control-allow-origin": "*" });
-    response.end();
+  const upstream = createServer((request, response) => {
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, { "access-control-allow-origin": "*" });
+      response.end();
+    } else {
+      response.setHeader("content-type", "text/plain");
+      response.end(`${request.headers.host} ${request.url}`);
+    }
   });
   let vite: Awaited<ReturnType<typeof createViteServer>> | undefined;
   try {
@@ -205,12 +210,16 @@ it("forwards opaque app preflights through Vite to the Host's capability route",
     const address = upstream.address();
     if (!address || typeof address === "string") throw new Error("Missing upstream listener");
     vite = await createViteServer({
+      root: new URL("../../", import.meta.url).pathname,
       configFile: new URL("../../vite.config.ts", import.meta.url).pathname,
       server: {
         host: "127.0.0.1",
         port: 0,
         strictPort: false,
-        proxy: { "/v1": { target: `http://127.0.0.1:${address.port}` } },
+        proxy: {
+          "/v1": { target: `http://127.0.0.1:${address.port}` },
+          "/": { target: `http://127.0.0.1:${address.port}` },
+        },
       },
     });
     await withTimeout(vite.listen(), 3_000, {
@@ -232,6 +241,36 @@ it("forwards opaque app preflights through Vite to the Host's capability route",
     );
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    const shell = await fetch(`http://127.0.0.1:${viewer.port}/`, {
+      headers: { accept: "text/html" },
+      signal: AbortSignal.timeout(3_000),
+    });
+    expect(shell.headers.get("content-type")).toContain("text/html");
+    for (const path of ["/?opensteer-ticket=example", "/assets/proof.js", "/api/items"]) {
+      const host = `${"a".repeat(26)}.localhost:${viewer.port}`;
+      const page = await new Promise<string>((resolve, reject) => {
+        const request = get(
+          `http://127.0.0.1:${viewer.port}${path}`,
+          {
+            headers: { host, accept: "text/html" },
+            signal: AbortSignal.timeout(3_000),
+          },
+          (response) => {
+            response.setEncoding("utf8");
+            let body = "";
+            response.on("data", (chunk: string) => (body += chunk));
+            response.on("error", reject);
+            response.on("end", () =>
+              response.statusCode === 200
+                ? resolve(body)
+                : reject(new Error(`App origin returned ${response.statusCode}`)),
+            );
+          },
+        );
+        request.on("error", reject);
+      });
+      expect(page).toBe(`${host} ${path}`);
+    }
   } finally {
     if (vite)
       await withTimeout(vite.close(), 3_000, {

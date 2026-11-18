@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   expectedMutationSessionHeader,
   rpcSuccess,
@@ -31,7 +31,7 @@ const commands = [
   { type: "tab.close", tabIds: ["tab-from-list"] },
   { type: "app.delete", appId: `app_${crypto.randomUUID()}` },
   {
-    type: "integration.authorization.return",
+    type: "plugin.authorization.return",
     attemptId: createIntegrationId("oauthAttempt"),
     returnProof: "r".repeat(43),
   },
@@ -46,7 +46,7 @@ const commands = [
     },
   },
   { type: "session.revoke", sessionId: createId("authSession") },
-  { type: "integration.uninstall", installationId: createIntegrationId("installation") },
+  { type: "plugins.remove", pluginId: "plg_fixture" },
   {
     type: "channel.connection.status.set",
     connectionId: createIntegrationId("connection"),
@@ -168,6 +168,10 @@ it("registers no personal file, media or reference routes on a team Host", async
       "tabs.state",
       "apps.list",
       "apps.get",
+      "plugins.installed.list",
+      "plugins.get",
+      "plugins.catalog.list",
+      "plugins.account.review",
     ])
       expect(
         (await app.inject({ method: "POST", url: `/v1/rpc/${method}`, payload: {} })).statusCode,

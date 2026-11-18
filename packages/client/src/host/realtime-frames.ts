@@ -52,6 +52,8 @@ const realtimeFrameLosses = {
   // Nothing resends these. They carry only `type`, so they cannot be unreadable.
   "host.connections-changed": "snapshot",
   "host.plugins-changed": "snapshot",
+  // The installed list carries the engine's state, so a lost one costs nothing.
+  "host.plugin-engine": "snapshot",
 
   // A gap in the keyed stream asks the Host for a fresh one.
   "host.tabs": "tabs",

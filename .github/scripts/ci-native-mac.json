@@ -84,6 +84,9 @@
         "scripts/quarantine-runner.ts",
         "scripts/quarantine.ts",
         "tests/quarantine.json",
+        "vendor/plugin-engine",
+        "scripts/plugin-engine",
+        "apps/host/tsup.config.ts",
         "apps/runner/native-fs-helper"
       ],
       "lane": true

@@ -1,4 +1,4 @@
-import { integration_search } from "@opensteer/agent-tools/integrations";
+import { computer_apps } from "@opensteer/agent-tools/tools";
 import {
   apiVersionQueryParameter,
   apiCurrentQueryParameter,
@@ -12,7 +12,7 @@ import WebSocket from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createId, DeviceIdSchema, type DeviceId } from "@opensteer/core";
 import { IntegrationPlatformStore } from "@opensteer/database";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { createIntegrationId, integrationDefinitionSummary } from "@opensteer/integration-core";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
@@ -296,11 +296,10 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       ),
     ).rejects.toThrow(/approval/);
     const platform = new IntegrationPlatformStore(host.store.database);
-    const definition = getIntegrationDefinition("iphone-screen")!;
+    const definition = getDeviceDefinition("iphone-screen")!;
     const installationId = createIntegrationId("installation");
     await platform.install({
       actorUserId: host.ownerId,
-      adapterSnapshot: null,
       requestId: randomUUID(),
       installation: {
         id: installationId,
@@ -415,7 +414,6 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       installationId,
       isDefault: true,
       ownerUserId: host.ownerId,
-      providerAuthorizations: {},
     });
     const run = await dispatchCallerRun(host, caller, {
       key: "iphone-screen-run",
@@ -460,13 +458,11 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       text: '["tap","navigate","launch","wait"]',
     });
     const phoneRow = async () => {
-      const result = await callMcpTool(host.origin, run.toolsToken, "integration_search", {
+      const result = await callMcpTool(host.origin, run.toolsToken, "computer_apps", {
         query: "Phone display",
       });
-      const data = integration_search.output.parse(result.structuredContent);
-      return data
-        .catalog!.find((row) => row.definitionId === "iphone-screen")!
-        .phones!.find((row) => row.computerId === first.deviceId)!;
+      const data = computer_apps.output.parse(result.structuredContent);
+      return data.phones!.find((row) => row.computerId === first.deviceId)!;
     };
     expect(await phoneRow()).toEqual({
       computerId: first.deviceId,

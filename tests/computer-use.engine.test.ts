@@ -169,15 +169,15 @@ describe("real-engine computer use", () => {
         .filter(({ event }) => event.type === "tool.started");
       const outer = starts.filter(
         ({ event }) =>
-          event.type === "tool.started" && /(?:^|__)computer$/u.test(event.data.tool.name),
+          event.type === "tool.started" && /(?:^|__)computer_use$/u.test(event.data.tool.name),
       );
       expect(outer.length, "real engine invoked the outer computer MCP tool").toBeGreaterThan(0);
       expect(
         starts.filter(
           ({ event }) =>
-            event.type === "tool.started" && event.data.tool.name.endsWith("integration_call"),
+            event.type === "tool.started" && event.data.tool.name.endsWith("plugin_call"),
         ),
-        "no legacy computer integration calls",
+        "computer use stays in the computer tool",
       ).toEqual([]);
       const operations = starts.filter(
         ({ event }) =>

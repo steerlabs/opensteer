@@ -1,8 +1,7 @@
 import { z } from "zod";
-import {
-  IntegrationAuthorizationReturnPortSchema,
-  OAuthTokenResponseIdentitySchema,
-} from "@opensteer/integration-core";
+import { IntegrationAuthorizationReturnPortSchema } from "@opensteer/integration-core";
+
+export const oauthBrokerMetadataVersion = "3";
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const digestPattern = /^[A-Za-z0-9_-]{43}$/u;
@@ -67,82 +66,23 @@ export const OAuthBrokerAccountSubjectSchema = z.strictObject({
   subject: ControlPlaneAccountIdSchema,
 });
 
-export const OAuthBrokerAuthorizationContextSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  attemptId: HostedOAuthAttemptIdSchema,
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  definitionId: z.string().min(1).max(64),
-  expiresAt: IsoDateTimeSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  schemaVersion: z.literal(1),
-});
-
-export const OAuthBrokerCallbackRelayContextSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  attemptId: HostedOAuthAttemptIdSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  providerApplicationId: z.string().regex(new RegExp(`^ipa_${uuidPattern}$`, "i")),
-  providerApplicationRevision: z.number().int().positive(),
-  redirectUrl: z.url(),
-  schemaVersion: z.literal(1),
-});
-
-export const OAuthBrokerMcpRelayBindingSchema = z.strictObject({
-  serverId: z.string().regex(/^isv_[0-9a-f-]{36}$/iu),
-  issuer: z.url(),
-  authorizationEndpoint: z.url(),
-  authorizationResponseIssuerParameterSupported: z.boolean(),
-});
-export const OAuthBrokerMcpCallbackRelayContextSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  attemptId: HostedOAuthAttemptIdSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  clientId: z.string().min(1).max(2_048),
-  mcp: OAuthBrokerMcpRelayBindingSchema,
-  redirectUrl: z.url(),
-  schemaVersion: z.literal(1),
-});
-
-export const OAuthBrokerMcpAuthorizationResponseSchema = z.strictObject({
+export const OAuthBrokerAuthorizationResponseSchema = z.strictObject({
   parameters: z.array(z.tuple([z.string().max(256), z.string().max(131_072)])).max(32),
-});
-
-export const OAuthBrokerAuthorizationCodeBundleSchema = z.strictObject({
-  code: z.string().min(1).max(131_072),
-});
-
-export const OAuthBrokerRefreshContextSchema = z.strictObject({
-  authorizationDigest: OAuthBrokerDigestSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  schemaVersion: z.literal(1),
-  transactionId: HostedOAuthRefreshTransactionIdSchema,
-});
-
-export const OAuthBrokerRevocationContextSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  provider: OAuthBrokerProviderSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  schemaVersion: z.literal(1),
-  transactionId: HostedOAuthRevocationTransactionIdSchema,
 });
 
 export const OAuthBrokerRevocationCredentialSchema = z.strictObject({
   accessToken: z.string().min(1).max(131_072),
   refreshToken: z.string().min(1).max(131_072).optional(),
 });
+
+/** Provider identity selected from a validated token response. */
+export const OAuthTokenResponseIdentitySchema = z.strictObject({
+  accountIdentifier: z.string().min(1).max(2_048).optional(),
+  displayName: z.string().min(1).max(2_048).optional(),
+  externalIdentityId: z.string().min(1).max(2_048),
+  externalTenantId: z.string().min(1).max(2_048).optional(),
+});
+export type OAuthTokenResponseIdentity = z.infer<typeof OAuthTokenResponseIdentitySchema>;
 
 export const OAuthBrokerTokenBundleSchema = z.strictObject({
   accessToken: z.string().min(1).max(131_072),
@@ -161,54 +101,6 @@ export const OAuthBrokerTokenBundleSchema = z.strictObject({
  * `/return`. Without it the browser's Account session proves the requester.
  */
 export const OAuthBrokerFinishSchema = z.literal("app");
-
-export const CreateHostedOAuthAttemptRequestSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
-  finish: OAuthBrokerFinishSchema.optional(),
-  /** A desktop app finish's listener port, sealed here; the browser never chooses it. */
-  appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
-  attemptId: HostedOAuthAttemptIdSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  hostPublicKey: OAuthBrokerPublicKeySchema,
-  provider: OAuthBrokerProviderSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  returnPath: OAuthBrokerReturnPathSchema.optional(),
-});
-export type CreateHostedOAuthAttemptRequest = z.infer<typeof CreateHostedOAuthAttemptRequestSchema>;
-
-const CreateProviderOAuthCallbackRelayRequestSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
-  finish: OAuthBrokerFinishSchema.optional(),
-  /** A desktop app finish's listener port, sealed here; the browser never chooses it. */
-  appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
-  attemptId: HostedOAuthAttemptIdSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  authorizationUrl: z.url().max(262_144),
-  clientId: z.string().min(1).max(2_048),
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  hostPublicKey: OAuthBrokerPublicKeySchema,
-  provider: OAuthBrokerProviderSchema,
-  providerApplicationId: z.string().regex(new RegExp(`^ipa_${uuidPattern}$`, "i")),
-  providerApplicationRevision: z.number().int().positive(),
-  returnPath: OAuthBrokerReturnPathSchema.optional(),
-});
-export const CreateOAuthCallbackRelayRequestSchema = z.union([
-  CreateProviderOAuthCallbackRelayRequestSchema,
-  CreateProviderOAuthCallbackRelayRequestSchema.omit({ providerApplicationId: true })
-    .extend({
-      provider: z.literal("mcp"),
-      mcp: OAuthBrokerMcpRelayBindingSchema,
-    })
-    .strict(),
-]);
-export type CreateOAuthCallbackRelayRequest = z.infer<typeof CreateOAuthCallbackRelayRequestSchema>;
 
 export const CreateHostedOAuthAttemptResponseSchema = z.strictObject({
   attemptId: HostedOAuthAttemptIdSchema,
@@ -232,7 +124,6 @@ export const HostedOAuthSafeFailureCodeSchema = z.enum([
   "provider-exchange-failed",
   "scope-escalation",
   "stale-provider-application",
-  "catalog-version-skew",
   "grant-rejected",
   "client-rejected",
 ]);
@@ -270,20 +161,6 @@ export const AcknowledgeHostedOAuthResultResponseSchema = z.strictObject({
   attemptId: HostedOAuthAttemptIdSchema,
 });
 
-export const CreateHostedOAuthRefreshRequestSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  brokerSealedCredential: OAuthBrokerSealedEnvelopeSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  grantedScopes: z.array(z.string().min(1).max(256)).max(512),
-  hostPublicKey: OAuthBrokerPublicKeySchema,
-  provider: OAuthBrokerProviderSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  transactionId: HostedOAuthRefreshTransactionIdSchema,
-});
-
 export const CreateHostedOAuthRefreshResponseSchema = z.strictObject({
   expiresAt: IsoDateTimeSchema,
   failureCode: HostedOAuthSafeFailureCodeSchema.nullable(),
@@ -291,21 +168,6 @@ export const CreateHostedOAuthRefreshResponseSchema = z.strictObject({
   status: z.enum(["sealed", "failed"]),
   transactionId: HostedOAuthRefreshTransactionIdSchema,
 });
-
-export const CreateHostedOAuthRevocationRequestSchema = z.strictObject({
-  accountSubject: OAuthBrokerAccountSubjectSchema,
-  authorizationDigest: OAuthBrokerDigestSchema,
-  brokerSealedCredential: OAuthBrokerSealedEnvelopeSchema,
-  definitionId: z.string().min(1).max(64),
-  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
-  expiresAt: IsoDateTimeSchema,
-  provider: OAuthBrokerProviderSchema,
-  providerApplicationRevision: z.number().int().positive(),
-  transactionId: HostedOAuthRevocationTransactionIdSchema,
-});
-export type CreateHostedOAuthRevocationRequest = z.infer<
-  typeof CreateHostedOAuthRevocationRequestSchema
->;
 
 export const CreateHostedOAuthRevocationResponseSchema = z.strictObject({
   revoked: z.literal(true),
@@ -325,27 +187,136 @@ export const AcknowledgeHostedOAuthRefreshRequestSchema = z.strictObject({
   transactionId: HostedOAuthRefreshTransactionIdSchema,
 });
 
+export const OAuthBrokerManagedPlacementSchema = z.strictObject({
+  hosts: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^(\*\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$/u,
+        ),
+    )
+    .min(1),
+  header: z
+    .string()
+    .regex(/^[!#$%&'*+.^_`|~0-9a-z-]+$/u)
+    .optional(),
+  scheme: z
+    .string()
+    .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u)
+    .nullable()
+    .optional(),
+});
+
 export const OAuthBrokerPublicMetadataSchema = z
   .object({
-    callbackRelayProviders: z.array(OAuthBrokerProviderSchema).max(32).default([]),
-    mcpCallbackRelay: z.literal(1).optional(),
+    pluginProviders: z.record(
+      OAuthBrokerProviderSchema,
+      z.strictObject({
+        revision: z.number().int().positive(),
+        authorizationUrl: z.url(),
+        tokenUrl: z.url(),
+        revocationUrl: z.url().optional(),
+        allowedScopes: z.array(z.string().min(1).max(256)).max(512),
+        scopeSeparator: z.string().min(1).max(4),
+        placement: OAuthBrokerManagedPlacementSchema.optional(),
+      }),
+    ),
+    pluginOAuth: z.literal(1),
+    pluginCallbackRelay: z.literal(1).optional(),
     /** The broker accepts `finish: "app"` attempts and their `/return`. */
-    appFinish: z.literal(1).optional(),
+    appFinish: z.literal(1),
     /** The broker accepts `appReturnPort`; a Host drops the port otherwise. */
-    appReturnPort: z.literal(1).optional(),
+    appReturnPort: z.literal(1),
     encryptionPublicKey: OAuthBrokerPublicKeySchema,
     installationUrls: z.record(OAuthBrokerProviderSchema, z.url()).default({}),
     issuer: z.url(),
-    providerRevisions: z.record(OAuthBrokerProviderSchema, z.number().int().positive()),
   })
   .superRefine((metadata, context) => {
     for (const provider of Object.keys(metadata.installationUrls)) {
-      if (metadata.providerRevisions[provider] === undefined) {
+      if (metadata.pluginProviders[provider] === undefined) {
         context.addIssue({
           code: "custom",
-          message: `Installation URL provider ${provider} has no provider revision`,
+          message: `Installation URL provider ${provider} has no managed plugin registration`,
           path: ["installationUrls", provider],
         });
       }
     }
   });
+
+/** Plugin requirements are reviewed on the Host; provider scope authority belongs to the broker registry. */
+export const OAuthBrokerPluginBindingSchema = z.strictObject({
+  accountSubject: OAuthBrokerAccountSubjectSchema,
+  accountLinkGeneration: OAuthBrokerDigestSchema,
+  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
+  hostPublicKey: OAuthBrokerPublicKeySchema,
+  requirementDigest: OAuthBrokerDigestSchema,
+  redirectUrl: z.url(),
+});
+export const OAuthBrokerPluginProviderSchema = z.strictObject({
+  provider: OAuthBrokerProviderSchema,
+  registryRevision: z.number().int().positive(),
+  requestedScopes: z.array(z.string().min(1).max(256)).max(512),
+  binding: OAuthBrokerPluginBindingSchema,
+});
+export const OAuthBrokerPluginAuthorizationContextSchema = OAuthBrokerPluginProviderSchema.extend({
+  attemptId: HostedOAuthAttemptIdSchema,
+  expiresAt: IsoDateTimeSchema,
+  schemaVersion: z.literal(2),
+}).strict();
+export const CreatePluginOAuthAttemptRequestSchema =
+  OAuthBrokerPluginAuthorizationContextSchema.omit({ schemaVersion: true })
+    .extend({
+      kind: z.literal("plugin"),
+      clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
+      finish: OAuthBrokerFinishSchema.optional(),
+      appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
+      returnPath: OAuthBrokerReturnPathSchema.optional(),
+    })
+    .strict();
+export type CreatePluginOAuthAttemptRequest = z.infer<typeof CreatePluginOAuthAttemptRequestSchema>;
+
+/** Custom clients, including discovered MCP servers, retain exchange and PKCE exclusively on the Host. */
+export const OAuthBrokerPluginRelaySchema = z.strictObject({
+  clientId: z.string().min(1).max(2_048),
+  issuer: z.url().nullable(),
+  authorizationEndpoint: z.url(),
+  authorizationResponseIssuerParameterSupported: z.boolean(),
+  usesPkce: z.boolean(),
+  scopeSeparator: z.string().min(1).max(4),
+});
+export const CreatePluginOAuthCallbackRelayRequestSchema =
+  CreatePluginOAuthAttemptRequestSchema.extend({
+    kind: z.literal("plugin-relay"),
+    authorizationUrl: z.url().max(262_144),
+    relay: OAuthBrokerPluginRelaySchema,
+  }).strict();
+export const OAuthBrokerPluginRelayContextSchema =
+  OAuthBrokerPluginAuthorizationContextSchema.extend({
+    relay: OAuthBrokerPluginRelaySchema,
+  }).strict();
+export const OAuthBrokerPluginRefreshContextSchema = OAuthBrokerPluginProviderSchema.extend({
+  expiresAt: IsoDateTimeSchema,
+  schemaVersion: z.literal(2),
+  transactionId: HostedOAuthRefreshTransactionIdSchema,
+}).strict();
+export const CreatePluginOAuthRefreshRequestSchema = OAuthBrokerPluginRefreshContextSchema.omit({
+  schemaVersion: true,
+})
+  .extend({
+    kind: z.literal("plugin"),
+    brokerSealedCredential: OAuthBrokerSealedEnvelopeSchema,
+    grantedScopes: z.array(z.string().min(1).max(256)).max(512),
+  })
+  .strict();
+export const OAuthBrokerPluginRevocationContextSchema =
+  OAuthBrokerPluginRefreshContextSchema.extend({
+    transactionId: HostedOAuthRevocationTransactionIdSchema,
+  }).strict();
+export const CreatePluginOAuthRevocationRequestSchema =
+  OAuthBrokerPluginRevocationContextSchema.omit({ schemaVersion: true })
+    .extend({
+      kind: z.literal("plugin"),
+      brokerSealedCredential: OAuthBrokerSealedEnvelopeSchema,
+    })
+    .strict();

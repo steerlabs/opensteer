@@ -28,7 +28,7 @@ import {
 import {
   ComputerAppSetupRequestSchema,
   type ComputerAppSetupRequest,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app-setup";
 import { inspectRunnerIdentity, type RunnerIdentityDescriptor } from "@opensteer/runner";
 import {
   hostKeyFingerprint,

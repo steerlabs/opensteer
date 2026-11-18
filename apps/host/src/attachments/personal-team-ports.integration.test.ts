@@ -12,7 +12,7 @@ import { RunnerRunFileResultSchema } from "@opensteer/protocol";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { afterEach, expect, it, vi } from "vitest";
 import { SignedTokenService } from "../identity/host-keys.js";
-import { RunFileRelay } from "../integrations/run-file-relay.js";
+import { RunFileRelay } from "../agents/run-file-relay.js";
 import { AttachmentService, RunAttachmentsTokenService } from "./attachment-service.js";
 import { PersonalTeamAttachments } from "./personal-team-ports.js";
 

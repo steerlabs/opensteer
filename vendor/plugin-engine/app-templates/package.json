@@ -1,0 +1,29 @@
+{
+  "name": "@opensteer/plugin-engine-app-templates",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/templates.ts",
+    "./pluginEngine": "./src/pluginEngine.ts",
+    "./pluginEngine/skills/pluginEngine/SKILL.md": "./pluginEngine/skills/pluginEngine/SKILL.md"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "apps": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-gfm": "3.0.0",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  }
+}

@@ -8,7 +8,7 @@ import {
   type DeviceRow,
   type SignedInDeviceRow,
 } from "@opensteer/client/computers";
-import { otherDeviceLine, pluginPath } from "@opensteer/client/settings";
+import { otherDeviceLine } from "@opensteer/client/settings";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
 import { act, failureWords } from "../use-action.js";
@@ -25,7 +25,7 @@ import { useToast } from "../toast.js";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { AddDeviceDialog } from "./add-device-dialog.js";
 import { deviceStatusLine, deviceUsesLine } from "./device-access.js";
-import { deviceRoute } from "./device-routes.js";
+import { deviceRoute, otherDeviceRoute } from "./device-routes.js";
 
 export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
   camera: "camera",
@@ -203,7 +203,7 @@ function OtherDevices({ devices }: { readonly devices: readonly OtherDevice[] })
                 to={
                   line.opens.kind === "task"
                     ? threadPath(line.opens.threadId)
-                    : pluginPath({ kind: "plugin", pluginId: line.opens.pluginId })
+                    : otherDeviceRoute(line.opens.pluginId)
                 }
               >
                 <span aria-hidden className="devices-row__glyph">

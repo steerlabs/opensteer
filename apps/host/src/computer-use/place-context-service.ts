@@ -8,10 +8,11 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationStore, OpensteerStore } from "@opensteer/database";
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
+import type { OpensteerStore } from "@opensteer/database";
+import type { DeviceIntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import type { BrowserService } from "../browser/browser-service.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import type { DeviceService } from "../devices/device-service.js";
 import type { ComputerUseService } from "./computer-use-service.js";
 
 type ComputerUseInventory = Awaited<ReturnType<ComputerUseService["eligibleInventory"]>>;
@@ -19,8 +20,10 @@ type ComputerUseInventory = Awaited<ReturnType<ComputerUseService["eligibleInven
 interface PlaceContextDependencies {
   readonly browser: Pick<BrowserService, "assertPagesUsable">;
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
-  readonly connections: Pick<IntegrationStore, "listDeviceConnections">;
-  readonly integrations: Pick<IntegrationPlatformService, "listCallableTools">;
+  readonly connections: {
+    listConnections(owner: UserId): Promise<readonly DeviceIntegrationConnectionSummary[]>;
+  };
+  readonly integrations: Pick<DeviceService, "listCallableTools">;
   readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace" | "getDeviceSelfRunnerId">;
 }
 
@@ -69,7 +72,7 @@ export class PlaceContextService {
     );
     if (!native.length) return;
     const inventory = await this.#dependencies.computerUse.eligibleInventory(input.ownerId);
-    const connections = await this.#dependencies.connections.listDeviceConnections(input.ownerId);
+    const connections = await this.#dependencies.connections.listConnections(input.ownerId);
     // Re-read the owner's grants for the target task and current Run.
     const tools = await this.#dependencies.integrations.listCallableTools({
       ownerUserId: input.ownerId,

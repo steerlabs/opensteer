@@ -1,4 +1,7 @@
-import { HostedOAuthAttemptIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  CreatePluginOAuthRevocationRequestSchema,
+  HostedOAuthAttemptIdSchema,
+} from "@opensteer/control-plane-protocol";
 import { OpensteerError } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { HostedOAuthBrokerClient } from "./hosted-oauth-broker-client.js";
@@ -72,12 +75,19 @@ describe("HostedOAuthBrokerClient refusals", () => {
   );
   it("authenticates and validates hosted revocation requests and responses", async () => {
     const transactionId = `hov_${crypto.randomUUID()}`;
-    const request = {
-      accountSubject: {
-        issuer: "https://accounts.example.test",
-        subject: `acct_${crypto.randomUUID()}`,
+    const request = CreatePluginOAuthRevocationRequestSchema.parse({
+      kind: "plugin" as const,
+      binding: {
+        accountSubject: {
+          issuer: "https://accounts.example.test",
+          subject: `acct_${crypto.randomUUID()}`,
+        },
+        accountLinkGeneration: "g".repeat(43),
+        deploymentAuthorityDigest: "d".repeat(43),
+        hostPublicKey: "h".repeat(43),
+        requirementDigest: "r".repeat(43),
+        redirectUrl: "https://accounts.example.test/v1/oauth-broker/callback/discord",
       },
-      authorizationDigest: "c".repeat(43),
       brokerSealedCredential: {
         ciphertext: "Y2lwaGVydGV4dA",
         ephemeralPublicKey: "A".repeat(43),
@@ -85,13 +95,12 @@ describe("HostedOAuthBrokerClient refusals", () => {
         tag: "C".repeat(22),
         version: 1 as const,
       },
-      definitionId: "discord",
-      deploymentAuthorityDigest: "d".repeat(43),
       expiresAt: "2030-01-01T00:00:00.000Z",
       provider: "discord",
-      providerApplicationRevision: 1,
+      registryRevision: 1,
+      requestedScopes: ["identify"],
       transactionId,
-    };
+    });
     let calls = 0;
     const broker = new HostedOAuthBrokerClient({
       fetch: async (input, init) => {
@@ -114,12 +123,13 @@ describe("HostedOAuthBrokerClient refusals", () => {
       issuer: new URL("https://accounts.example.test"),
     });
 
-    await expect(broker.revoke(request)).resolves.toEqual({ revoked: true, transactionId });
-    await expect(broker.revoke({ ...request, untrusted: true })).rejects.toThrow();
+    await expect(broker.revokePlugin(request)).resolves.toEqual({ revoked: true, transactionId });
+    const untrusted = { ...request, untrusted: true };
+    await expect(broker.revokePlugin(untrusted)).rejects.toThrow();
     expect(calls).toBe(1);
 
     const invalidResponse = client(() => Response.json({ revoked: false, transactionId }));
-    await expect(invalidResponse.revoke(request)).rejects.toThrow();
+    await expect(invalidResponse.revokePlugin(request)).rejects.toThrow();
   });
 
   it("keeps the public issuer in bindings while using the configured control API transport", async () => {
@@ -131,10 +141,13 @@ describe("HostedOAuthBrokerClient refusals", () => {
         requestedOrigin = requestedUrl.origin;
         requestedPath = `${requestedUrl.pathname}${requestedUrl.search}`;
         return Response.json({
-          callbackRelayProviders: ["slack"],
+          pluginProviders: {},
+          pluginOAuth: 1,
+          pluginCallbackRelay: 1,
+          appFinish: 1,
+          appReturnPort: 1,
           encryptionPublicKey: "A".repeat(43),
           issuer: "https://accounts.example.test",
-          providerRevisions: {},
         });
       },
       hostCredential: "osc_test-credential",
@@ -145,7 +158,7 @@ describe("HostedOAuthBrokerClient refusals", () => {
       issuer: "https://accounts.example.test",
     });
     expect(requestedOrigin).toBe("https://account-control.internal.test");
-    expect(requestedPath).toBe("/v1/oauth-broker/metadata?version=2");
+    expect(requestedPath).toBe("/v1/oauth-broker/metadata?version=3");
     expect(broker.callbackUrl("slack")).toBe(
       "https://accounts.example.test/v1/oauth-broker/callback/slack",
     );

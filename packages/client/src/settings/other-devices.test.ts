@@ -1,7 +1,7 @@
 import { RunnerIdSchema, ThreadIdSchema } from "@opensteer/core";
-import type { OtherDevice, PluginRow } from "@opensteer/protocol";
+import type { OtherDevice } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { otherDeviceLine, pluginsPageRows } from "./other-devices.js";
+import { otherDeviceLine } from "./other-devices.js";
 
 const setupThreadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000d1");
 const device = (change: Partial<OtherDevice> = {}): OtherDevice => ({
@@ -63,18 +63,5 @@ describe("otherDeviceLine", () => {
     expect(otherDeviceLine(device({ issue: "Crashed", setupThreadId: null }), false).opens).toEqual(
       toPlugin,
     );
-  });
-});
-
-describe("pluginsPageRows", () => {
-  it("leaves out plugins that declare a device, including older rows without the field", () => {
-    const row = (title: string, change: Partial<PluginRow> = {}) =>
-      ({ title, ...change }) as PluginRow;
-    const rows = [
-      row("Linear"),
-      row("Living room TV", { device: { kind: "tv", name: "Living room TV" } }),
-      row("Notes", { device: null }),
-    ];
-    expect(pluginsPageRows(rows).map((each) => each.title)).toEqual(["Linear", "Notes"]);
   });
 });

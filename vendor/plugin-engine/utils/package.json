@@ -1,0 +1,32 @@
+{
+  "name": "@opensteer/plugin-engine-utils",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./random-uuid": "./src/random-uuid.ts",
+    "./url-policy": "./src/url-policy.ts",
+    "./safe-fetch": "./src/safe-fetch.ts",
+    "./user-facing-error": "./src/user-facing-error.ts",
+    "./api-error": "./src/api-error.ts",
+    "./recorded-message": "./src/recorded-message.ts",
+    "./connection-failure": "./src/connection-failure.ts",
+    "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
+    "./release-version": "./src/release-version.ts",
+    "./legacy-keys": "./src/legacy-keys.ts",
+    "./schema-definitions": "./src/schema-definitions.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.1.4",
+    "effect": "4.1.4",
+    "ipaddr.js": "2.5.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

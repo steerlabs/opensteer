@@ -1,0 +1,80 @@
+{
+  "name": "apps",
+  "version": "0.0.1-beta.138",
+  "private": true,
+  "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./framework-reference.json": "./dist/framework-reference.json",
+    "./package.json": "./package.json",
+    "./contracts": "./src/contracts/host.ts",
+    "./host": "./src/host.ts",
+    "./effect": "./src/effect.ts",
+    "./operations/approval": "./src/approval.ts",
+    "./client": "./src/client.ts",
+    "./mcp": "./src/mcp.ts",
+    "./mcp/effect": "./src/implementation/mcp.ts",
+    "./graphql": "./src/graphql.ts",
+    "./openapi": "./src/openapi.ts",
+    "./ui/contracts": "./src/contracts/ui.ts",
+    "./ui/auth": "./src/ui-auth.ts",
+    "./ui/serving": "./src/ui-serving.ts",
+    "./ui/auth/contracts": "./src/contracts/ui-auth.ts",
+    "./react": "./src/react.ts",
+    "./storage/facet": "./src/facet.ts",
+    "./skills": "./src/skills.ts",
+    "./skills/effect": "./src/implementation/skill-files.ts",
+    "./published-compat": "./src/published-compat.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "4.1.1",
+    "@csstools/css-tokenizer": "4.0.2",
+    "@opensteer/plugin-engine-app-cache": "workspace:*",
+    "@opensteer/plugin-engine-app-data": "workspace:*",
+    "@opensteer/plugin-engine-telemetry": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "@scalar/helpers": "0.14.0",
+    "@scalar/openapi-upgrader": "0.3.1",
+    "effect": "4.1.4",
+    "js-yaml": "5.4.2",
+    "openapi-server-url-templating": "1.3.0",
+    "parse5": "8.0.0",
+    "swagger-client": "3.38.2",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@types/node": "catalog:",
+    "@types/react": "19.3.0",
+    "esbuild": "0.28.2",
+    "graphql": "16.11.0",
+    "react": "19.3.0",
+    "typescript-5": "npm:typescript@5.9.3",
+    "typescript": "catalog:",
+    "react-dom": "catalog:",
+    "@types/react-dom": "19.3.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "graphql": "^16.11.0",
+    "react": "^19.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "graphql": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}

@@ -205,7 +205,7 @@ describeStore("person-asked Thread listing", (it) => {
               idempotencyKey: "watch",
               name: "Watch",
               program: {
-                toolContractVersion: 4,
+                toolContractVersion: 5,
                 language: "javascript",
                 source: "export default async () => null",
               },

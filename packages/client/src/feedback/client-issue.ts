@@ -103,8 +103,10 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "resource-exhausted": "Too many messages waiting.",
   "team-file-too-large": "Files can be up to 100 MB.",
   "team-file-capacity": "Too many files are moving at once. Try again in a moment.",
-  "integration-key-rejected": "The service turned this key away.",
-  "integration-key-unchecked": "Opensteer couldn't check this key. Check it and its permissions.",
+  "plugin-key-invalid": "Check this key and its fields.",
+  "plugin-consent-changed": "What this plugin asks for changed. Review it again.",
+  "plugin-webhooks-active": "Remove this plugin's webhook subscriptions first.",
+  "plugin-workflows-active": "Stop this plugin's workflow runs first.",
 };
 
 function rejectionDetail(reason: string | undefined): string | undefined {

@@ -2,9 +2,9 @@ import type { ComputerAppIdentity } from "@opensteer/protocol";
 import {
   LocalMcpSecretValueSchema,
   localMcpLaunchSecrets,
-  type IntegrationServerId,
   type LocalMcpSecret,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { type IntegrationServerId } from "@opensteer/integration-core/ids";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "../host/index.js";
 import { invalidateComputerSetupRequests } from "./computer-setup-requests.js";
 

@@ -586,7 +586,7 @@ integration.sequential("Thread title lifecycle", () => {
         name: "Title automation",
         program: {
           language: "javascript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async () => null",
         },
         source:
@@ -609,7 +609,7 @@ integration.sequential("Thread title lifecycle", () => {
         iss: "opensteer-host" as const,
         jti: randomUUID(),
         environmentId: f.environmentId,
-        toolContractVersion: 4 as const,
+        toolContractVersion: 5 as const,
         triggerId: created.trigger.id,
       };
       let handle: (value: unknown) => ReturnType<TriggerToolsTestClient["handle"]>;

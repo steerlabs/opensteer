@@ -10,7 +10,6 @@ import {
   type HarnessInstanceId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { RunnerModuleNameSchema, hostApi } from "@opensteer/protocol";
 import {
@@ -18,11 +17,9 @@ import {
   isAdministrationCommand,
   type AdministrationCommand,
 } from "../../administration/administration-service.js";
-import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
 import type { AgentCaller } from "../agent-caller.js";
 import { computerIds } from "../computer-ids.js";
-import { operationId, requireRun } from "../operations.js";
-import type { RunToolScope } from "../../agents/run-tool-tokens.js";
+import { operationId } from "../operations.js";
 import type { ToolCall, AgentToolHandlers } from "./types.js";
 
 type AdministrationToolName =
@@ -35,22 +32,15 @@ type AdministrationToolName =
   | "browser_profile_list"
   | "browser_profile_update"
   | "browser_profile_remove"
-  | "integration_list"
-  | "integration_remove"
   | "opensteer_messaging_bridge_list"
   | "opensteer_messaging_bridge_update"
-  | "opensteer_messaging_bridge_remove"
-  | "opensteer_plugin_list"
-  | "opensteer_plugin_install"
-  | "opensteer_plugin_update"
-  | "opensteer_plugin_remove";
+  | "opensteer_messaging_bridge_remove";
 export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
 
 function command(value: Record<string, unknown>): AdministrationCommand {
   const parsed = hostApi["commands.dispatch"].payload.parse(value);
   if (
     isAdministrationCommand(parsed) ||
-    isIntegrationAdministrationCommand(parsed) ||
     parsed.type === "browser.site.remove" ||
     parsed.type === "channel.binding.revoke" ||
     parsed.type === "channel.connection.status.set"
@@ -60,15 +50,12 @@ function command(value: Record<string, unknown>): AdministrationCommand {
 }
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
-  readonly listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly canExecute: (environmentId: EnvironmentId) => boolean;
   constructor(
     service: AdministrationService,
-    listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>,
     canExecute: (environmentId: EnvironmentId) => boolean,
   ) {
     this.service = service;
-    this.listConnections = listConnections;
     this.canExecute = canExecute;
   }
   #write(
@@ -185,31 +172,6 @@ export class AdministrationToolHandlers {
         return this.#write(c, tool, { type: "browser.site.remove", site: i.site });
     }
   }
-  async integrationCommand(c: ToolCall<"integration_remove">) {
-    const i = c.input;
-    const tool = "integration_remove";
-    switch (i.target) {
-      case "account": {
-        const kind = i.connectionId
-          ? await this.service.dependencies.integrations.platform.store.getConnectionKind({
-              connectionId: i.connectionId,
-              ownerUserId: c.caller.userId,
-            })
-          : null;
-        return this.#write(c, tool, {
-          type: kind === "mcp-oauth" ? "integration.mcp.disconnect" : "integration.disconnect",
-          connectionId: i.connectionId,
-        });
-      }
-      case "integration":
-        return this.#write(c, tool, {
-          type: "integration.uninstall",
-          installationId: i.installationId,
-        });
-      case "grant":
-        return this.#write(c, tool, { type: "integration.grant.revoke", grantId: i.grantId });
-    }
-  }
   bridgeCommand(
     c:
       ToolCall<"opensteer_messaging_bridge_update"> | ToolCall<"opensteer_messaging_bridge_remove">,
@@ -226,32 +188,7 @@ export class AdministrationToolHandlers {
           status: i.paused ? "paused" : "connected",
         });
   }
-  pluginCommand(
-    c:
-      | ToolCall<"opensteer_plugin_install">
-      | ToolCall<"opensteer_plugin_update">
-      | ToolCall<"opensteer_plugin_remove">,
-  ) {
-    const i = c.input;
-    if ("directory" in i)
-      return this.#write(c, "opensteer_plugin_install", {
-        type: "plugin.update",
-        pluginId: i.pluginId,
-        input: { directory: i.directory, ...(i.computerId ? { runnerId: i.computerId } : {}) },
-      });
-    if ("enabled" in i)
-      return this.#write(c, "opensteer_plugin_update", {
-        type: "plugin.activation.set",
-        pluginId: i.pluginId,
-        active: i.enabled,
-      });
-    return i.target === "plugin"
-      ? this.#write(c, "opensteer_plugin_remove", { type: "plugin.remove", pluginId: i.pluginId })
-      : this.#write(c, "opensteer_plugin_remove", {
-          type: "specialist.remove",
-          specialistId: i.specialistId,
-        });
-  }
+
   async execute(caller: AgentCaller, command: AdministrationCommand) {
     return { ...(await this.service.execute(caller, command)), ok: true as const };
   }
@@ -314,7 +251,7 @@ export class AdministrationToolHandlers {
     }
     const pageRunners = runnerPages.flatMap((page) => page.runners);
     const byRunner = new Map(pageRunners.map((runner) => [runner.id, runner]));
-    const connections = await this.service.dependencies.integrations.platform.deviceConnections(
+    const connections = await this.service.dependencies.integrations.devices.deviceConnections(
       caller.userId,
     );
     const hub = this.service.dependencies.computerApps;
@@ -435,24 +372,6 @@ export class AdministrationToolHandlers {
       sites: sources.sites,
     };
   }
-  async integration_list({ caller }: ToolCall<"integration_list">) {
-    await this.service.actor(caller);
-    const platform = this.service.dependencies.integrations.platform;
-    const [grants, connections, oauth, installations] = await Promise.all([
-      platform.store.listGrants({ ownerUserId: caller.userId }),
-      this.listConnections(caller.userId),
-      platform.store.listMcpOAuthConnections(caller.userId),
-      platform.store.listInstallations(),
-    ]);
-    return {
-      grants,
-      installations,
-      connections: [
-        ...connections,
-        ...oauth.map((connection) => ({ ...connection, id: connection.connectionId })),
-      ],
-    };
-  }
   async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {
     await this.service.actor(caller);
     const dashboard = await this.service.dependencies.channels.service.dashboard(caller.userId);
@@ -475,14 +394,6 @@ export class AdministrationToolHandlers {
       }),
     };
   }
-  async opensteer_plugin_list({ caller }: ToolCall<"opensteer_plugin_list">) {
-    await this.service.actor(caller);
-    const { integrations } = this.service.dependencies;
-    return {
-      plugins: await integrations.platform.store.plugins.listForUser(caller.userId),
-      specialists: await integrations.platform.store.specialists.summaries(caller.userId),
-    };
-  }
 }
 function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchema>) {
   const latest = preferences.history[0];
@@ -502,11 +413,6 @@ function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchem
 }
 export function administrationToolHandlers(
   admin: AdministrationToolHandlers,
-  /** Installs a plugin folder from the Run's Agent home. */
-  installFromAgentHome: (
-    scope: RunToolScope,
-    directory: string,
-  ) => Promise<Record<string, unknown>>,
 ): AdministrationHandlers {
   const mutation = <Name extends AdministrationToolName>(
     parse: (call: ToolCall<Name>) => AdministrationCommand | Promise<AdministrationCommand>,
@@ -533,28 +439,8 @@ export function administrationToolHandlers(
     browser_profile_list: (c) => admin.browser_profile_list(c),
     browser_profile_update: mutation((c) => admin.browserCommand(c)),
     browser_profile_remove: mutation((c) => admin.browserCommand(c)),
-    integration_list: (c) => admin.integration_list(c),
-    integration_remove: mutation((c) => admin.integrationCommand(c)),
     opensteer_messaging_bridge_list: (c) => admin.opensteer_messaging_bridge_list(c),
     opensteer_messaging_bridge_update: mutation((c) => admin.bridgeCommand(c)),
     opensteer_messaging_bridge_remove: mutation((c) => admin.bridgeCommand(c)),
-    opensteer_plugin_list: (c) => admin.opensteer_plugin_list(c),
-    opensteer_plugin_install: Object.assign(
-      async (c: ToolCall<"opensteer_plugin_install">) =>
-        c.input.pluginId === undefined
-          ? await installFromAgentHome(requireRun(c.caller).claims, c.input.directory)
-          : {
-              ...(await admin.execute(c.caller, admin.pluginCommand(c))),
-              pluginId: c.input.pluginId,
-            },
-      {
-        authorize: async (c: ToolCall<"opensteer_plugin_install">) => {
-          if (c.input.pluginId === undefined) requireRun(c.caller);
-          else await admin.service.authorize(c.caller, admin.pluginCommand(c));
-        },
-      },
-    ),
-    opensteer_plugin_update: mutation((c) => admin.pluginCommand(c)),
-    opensteer_plugin_remove: mutation((c) => admin.pluginCommand(c)),
   };
 }

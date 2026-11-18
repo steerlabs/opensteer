@@ -9,10 +9,10 @@ Two kinds of phone lend their whole screen to `computer_use`, through the same `
 
 Not screens: an Android phone added from the Opensteer mobile app lends only its browser (use
 opensteer:browser). The Opensteer iPhone app lends its Calendar, Contacts and Reminders as
-integrations. That data and the iPhone's screen are separate devices with separate approvals; one
+plugin tools. That data and the iPhone's screen are separate devices with separate approvals; one
 never grants the other.
 
-**Prefer data over a screen.** When an integration can do the job (the iPhone app's Calendar,
+**Prefer data over a screen.** When a plugin tool can do the job (the iPhone app's Calendar,
 Contacts or Reminders, a service's API, the browser), use it. Drive a screen only for what its
 interface alone can do.
 
@@ -35,7 +35,7 @@ and screenshot. Each action returns the phone's new observation; target from the
   `type(text, { into })`, `clear`, `wake`, `wait(ms)`, `navigate`, `launch`) and the buttons in
   `p.navigation`. Android offers back, home, recents, notifications and quickSettings. An iPhone
   offers Home and no Back: go back with the app's own on-screen control.
-- `launch(appId)` takes an `appId` from `await p.installedApps({ query })` (or `integration_search`
+- `launch(appId)` takes an `appId` from `await p.installedApps({ query })` (or `computer_apps`
   with the phone's computerId). It is opaque: never guess a package name or bundle id.
 - When what you need is not advertised (an iPhone may lack `type`, `clear` or element indices),
   tell the person what you can't do. Don't improvise around it, such as tapping keyboard keys one

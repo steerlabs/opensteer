@@ -9,24 +9,19 @@
   },
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts": {
     "no-polling-loop-in-tests:908fe1510da0e7c6aa21": 1,
-    "no-polling-loop-in-tests:cf68a7792fa283f91376": 1,
     "no-real-time-wait-in-tests:63c6e631f226af8510cc": 2,
-    "no-real-time-wait-in-tests:78e8dab4e43cdc8c619b": 2,
-    "no-real-time-wait-in-tests:89e10cf942ec27d3eb0b": 1,
-    "no-real-time-wait-in-tests:8d9ed028dfc68b44b6ed": 1,
-    "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 1
+    "no-real-time-wait-in-tests:78e8dab4e43cdc8c619b": 1,
+    "no-real-time-wait-in-tests:8d9ed028dfc68b44b6ed": 1
   },
   "apps/browser-runtime/src/browser/chromium-runtime.test.ts": {
-    "no-real-time-wait-in-tests:78e8dab4e43cdc8c619b": 2,
     "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 4
   },
   "apps/browser-runtime/src/browser/harness-actions-deadlines.test.ts": {
-    "no-polling-loop-in-tests:51240a2b41919ea97552": 1,
     "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
     "no-real-time-wait-in-tests:33c5bf1507fb96d8c9e2": 1,
     "no-real-time-wait-in-tests:b2564ae2ffe11bbda058": 1,
     "no-real-time-wait-in-tests:c354c48a8a883d5053d3": 1,
-    "no-real-time-wait-in-tests:e96b527c7c5fa2300b5a": 2,
+    "no-real-time-wait-in-tests:e96b527c7c5fa2300b5a": 1,
     "no-real-time-wait-in-tests:f506c8f279954b73d932": 2
   },
   "apps/browser-runtime/src/browser/harness-actions-input-lifecycle.test.ts": {
@@ -42,9 +37,6 @@
   "apps/browser-runtime/src/browser/harness-actions.test-support.ts": {
     "no-polling-loop-in-tests:fbe7469db5e7622e4110": 1,
     "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1
-  },
-  "apps/browser-runtime/src/browser/session-files.test.ts": {
-    "no-real-time-wait-in-tests:435535af06e6be0c4087": 1
   },
   "apps/browser-runtime/src/egress-proxy.test.ts": {
     "no-polling-loop-in-tests:1d85c15b26983b572676": 1,
@@ -63,14 +55,7 @@
   "apps/control-plane/src/auth/auth.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/control-plane/src/auth/hosted-oauth-broker-service.test.ts": {
-    "no-unit-test-timeout:d1144d97e01c5840fe92": 1
-  },
   "apps/control-plane/src/auth/hosted-oauth-broker-store.integration.test.ts": {
-    "no-unbounded-created-promise:2b513c963641f185f2e1": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/control-plane/src/cloud/lifecycle.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/control-plane/src/database/migrations.integration.test.ts": {
@@ -143,11 +128,8 @@
     "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1
   },
   "apps/desktop/src/supervisor/local-runner-service.test.ts": {
-    "no-polling-loop-in-tests:2d9b53d1ebfda1469c8b": 1,
-    "no-real-time-wait-in-tests:2119d8441d393c6cf106": 1,
     "no-real-time-wait-in-tests:3946044c8569128c86ae": 1,
-    "no-real-time-wait-in-tests:5b293893e8a08cd3c734": 1,
-    "no-real-time-wait-in-tests:d4debc9ee6cf9ae9aae2": 3,
+    "no-real-time-wait-in-tests:d4debc9ee6cf9ae9aae2": 2,
     "no-real-time-wait-in-tests:dbf7ad594019768ea38b": 2,
     "no-unbounded-created-promise:146d7ad0a5fe30481ab7": 1
   },
@@ -186,7 +168,7 @@
     "no-real-time-wait-in-tests:983c16b04d7812e85127": 2,
     "no-real-time-wait-in-tests:b3741db97d1c34ccd799": 1,
     "no-real-time-wait-in-tests:b6a4cb502f26f3aefd8f": 1,
-    "no-real-time-wait-in-tests:eafbfda1d1bc8edb8d66": 3
+    "no-real-time-wait-in-tests:eafbfda1d1bc8edb8d66": 2
   },
   "apps/host/src/agent-phone/agent-phone-display.test-support.ts": {
     "no-polling-loop-in-tests:33914734d39bd8206c8e": 1,
@@ -216,7 +198,6 @@
     "no-real-time-wait-in-tests:eafbfda1d1bc8edb8d66": 3
   },
   "apps/host/src/agent-phone/agent-phone.soak.test.ts": {
-    "no-polling-loop-in-tests:966757c4ba52f4b62bca": 1,
     "no-real-time-wait-in-tests:0de0002bfe366ee51149": 1,
     "no-real-time-wait-in-tests:695fea8bc180c37dd9dc": 1,
     "no-real-time-wait-in-tests:7c6cbcac5dba4f9143fd": 1
@@ -236,9 +217,6 @@
     "no-real-time-wait-in-tests:129e9a5c97b5e0cd6f88": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/agents/conversation-client-projection.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
   "apps/host/src/agents/conversation-delivery.integration.test.ts": {
     "no-polling-loop-in-tests:ab1e839bc279db992dcc": 1,
     "no-real-time-wait-in-tests:0260d8537da9b13e56ab": 1,
@@ -253,28 +231,12 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/engine-qualification.engine.test.ts": {
-    "no-polling-loop-in-tests:34ce29fe23283271b6ed": 1,
     "no-polling-loop-in-tests:4ebee236da290e6c2c4f": 1,
-    "no-real-time-wait-in-tests:a823bcbf059856a55a87": 2
+    "no-real-time-wait-in-tests:a823bcbf059856a55a87": 1
   },
   "apps/host/src/agents/execution-nodes.integration.test.ts": {
     "no-polling-loop-in-tests:ebd7e6c31819d143f3a5": 1,
     "no-real-time-wait-in-tests:129e9a5c97b5e0cd6f88": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/agents/home-continuation.integration.test.ts": {
-    "no-polling-loop-in-tests:9bf9beabd6f46a0df730": 1,
-    "no-polling-loop-in-tests:c95013750a24d4fd16be": 1,
-    "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1,
-    "no-real-time-wait-in-tests:a823bcbf059856a55a87": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/agents/home-task.engine.test.ts": {
-    "no-polling-loop-in-tests:ab6415bb5ae657100a4c": 1,
-    "no-real-time-wait-in-tests:dbc51bbfb095a102235c": 1
-  },
-  "apps/host/src/agents/home-viewer-sync.integration.test.ts": {
-    "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/live-streaming.integration.test.ts": {
@@ -284,14 +246,6 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/local-endpoint-qualification.engine.test.ts": {
-    "no-polling-loop-in-tests:0a1913018642015aceb0": 1,
-    "no-polling-loop-in-tests:0df5fe017926b0ca5eb0": 1,
-    "no-polling-loop-in-tests:178787a87db50ba60c3d": 1,
-    "no-polling-loop-in-tests:679892eb653e8c709f90": 1,
-    "no-polling-loop-in-tests:a71fc60b4c68cee77b47": 1,
-    "no-real-time-wait-in-tests:34fd81ea2a560ef58a42": 1,
-    "no-real-time-wait-in-tests:a823bcbf059856a55a87": 2,
-    "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/realtime-recovery.integration.test.ts": {
@@ -300,7 +254,6 @@
   "apps/host/src/agents/run-attempts.integration.test.ts": {
     "no-polling-loop-in-tests:ebd7e6c31819d143f3a5": 1,
     "no-real-time-wait-in-tests:129e9a5c97b5e0cd6f88": 1,
-    "no-real-time-wait-in-tests:cb1182c2c50038d69c29": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/run-grants.integration.test.ts": {
@@ -319,23 +272,11 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/runner-reattach.integration.test.ts": {
-    "no-polling-loop-in-tests:18aacb99468e738f3ce7": 1,
-    "no-polling-loop-in-tests:6188e47bb8afcb245c38": 1,
-    "no-polling-loop-in-tests:dde06678f2361ebf1f2e": 1,
-    "no-real-time-wait-in-tests:129e9a5c97b5e0cd6f88": 2,
     "no-real-time-wait-in-tests:147bde6da16440003777": 1,
-    "no-real-time-wait-in-tests:d74870ccd6f4c35020d7": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/agents/thread-titles.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/agents/vertical-stack.test-support.ts": {
-    "no-polling-loop-in-tests:03e06cdfc76d70ba6a1f": 1,
-    "no-polling-loop-in-tests:e24fa57ca7023dac8fa7": 1,
-    "no-real-time-wait-in-tests:a781759e6189d5d6bb67": 1,
-    "no-real-time-wait-in-tests:ccbdc5371da437491e0e": 1,
-    "no-real-time-wait-in-tests:f72b2a834a9fc2f0c581": 1
   },
   "apps/host/src/agents/warm-engines.integration.test.ts": {
     "no-polling-loop-in-tests:630f33774fd14a68f562": 1,
@@ -348,34 +289,17 @@
   "apps/host/src/browser/browser-editing.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/browser/browser-presence.integration.test.ts": {
-    "no-polling-loop-in-tests:be2ed2194f88c3d8abd2": 1,
-    "no-real-time-wait-in-tests:1d0303b277e8a650de88": 4,
-    "no-real-time-wait-in-tests:34fd81ea2a560ef58a42": 1,
-    "no-real-time-wait-in-tests:5c4500bbbc3fd992ccda": 1,
-    "no-real-time-wait-in-tests:7c3e7c41ee9da1358cb2": 1,
-    "no-real-time-wait-in-tests:92d10516f1084f48fe5e": 1,
-    "no-real-time-wait-in-tests:a3e8c6e14e411bb1b924": 1,
-    "no-real-time-wait-in-tests:c041cf5ed7a82a8e0100": 1,
-    "no-real-time-wait-in-tests:f72b2a834a9fc2f0c581": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
   "apps/host/src/browser/browser-route.integration.test.ts": {
     "no-real-time-wait-in-tests:dd481bdd9c45a2ba8013": 3,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/browser/browser-service.test.ts": {
-    "no-polling-loop-in-tests:c96af6d1ef65b264cea1": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1,
     "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1,
     "no-unit-test-timeout:b751cf85b709f0cc8c87": 1
   },
   "apps/host/src/browser/browser-source-service.integration.test.ts": {
-    "no-polling-loop-in-tests:98a76fb8f73e2e96d62e": 1,
     "no-real-time-wait-in-tests:3df4a53cfe59a8dbfbef": 3,
     "no-real-time-wait-in-tests:a823bcbf059856a55a87": 1,
-    "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1,
-    "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/browser/browser-upload-flow.test.ts": {
@@ -386,14 +310,8 @@
     "no-real-time-wait-in-tests:f72b2a834a9fc2f0c581": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/browser/password-sign-in-timeout.engine.test.ts": {
-    "no-real-time-wait-in-tests:fd7ba53a6cccb0a50451": 1
-  },
   "apps/host/src/browser/trigger-cdp-bridge.test.ts": {
     "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 2
-  },
-  "apps/host/src/browser/workspace-tab-reopen.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/channels/channel-pipeline.integration.test.ts": {
     "no-real-time-wait-in-tests:bb29d32c9e248a2bbda2": 1,
@@ -413,9 +331,7 @@
     "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1,
     "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 1,
     "no-unit-test-timeout:024d85e3978533e9abb0": 1,
-    "no-unit-test-timeout:584f9502e0c17e8fb68b": 1,
-    "no-unit-test-timeout:62447342060968df72bb": 1,
-    "no-unit-test-timeout:78b585e9ff37e687ec01": 1
+    "no-unit-test-timeout:584f9502e0c17e8fb68b": 1
   },
   "apps/host/src/computer-use/display-editing-viewer.journey.test.ts": {
     "no-unit-test-timeout:891937cb335016e9c707": 1
@@ -438,48 +354,7 @@
     "no-real-time-wait-in-tests:7769eaf162b0a73b4eed": 1,
     "no-unit-test-timeout:391585291af5d1b10159": 2
   },
-  "apps/host/src/integrations/api-key-reconnect.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/computer-use-journey.integration.test.ts": {
-    "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 3,
-    "no-unbounded-created-promise:71c9ce6caeaa4870e3b5": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/computer-use.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/integration-account-binding.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/integration-platform-service.test.ts": {
-    "no-unbounded-created-promise:e547792b3b751a4e40d6": 1
-  },
-  "apps/host/src/integrations/integration-proposal-credentials.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/integration-schemas.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/local-mcp-servers.integration.test.ts": {
-    "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/mcp-oauth-reconnect.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/managed-destruction-pristine.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/managed-destruction-upgrade.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/managed-destruction.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
   "apps/host/src/notifications/notification-dispatcher.integration.test.ts": {
-    "no-polling-loop-in-tests:914579a5eb434a31b61f": 1,
-    "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1,
     "no-unbounded-created-promise:8bc22740aea37d48b950": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
@@ -493,11 +368,6 @@
   },
   "apps/host/src/runtime/computer-apps.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/runtime/computer-apps.test-support.ts": {
-    "no-polling-loop-in-tests:1b88184e1dc14372ea3c": 1,
-    "no-polling-loop-in-tests:207d6eff2b19eaf92f70": 1,
-    "no-real-time-wait-in-tests:a27c3247ec7e87406f14": 2
   },
   "apps/host/src/runtime/device-platform-compatibility.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
@@ -514,7 +384,6 @@
   },
   "apps/host/src/runtime/machine-access-lifecycle.integration.test.ts": {
     "no-real-time-wait-in-tests:68a536c28b5487825436": 1,
-    "no-real-time-wait-in-tests:dbc51bbfb095a102235c": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/runtime/machine-access-personal.integration.test.ts": {
@@ -530,19 +399,11 @@
     "no-real-time-wait-in-tests:a3e8c6e14e411bb1b924": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/runtime/machine-access.test-support.ts": {
-    "no-polling-loop-in-tests:5fb8a43938bd497da2e0": 1,
-    "no-polling-loop-in-tests:6b8b87005c51e6d94b61": 1,
-    "no-polling-loop-in-tests:8a578381decaffa858a2": 1,
-    "no-real-time-wait-in-tests:709a777325aa1e865ba3": 2,
-    "no-real-time-wait-in-tests:dbc51bbfb095a102235c": 1
-  },
   "apps/host/src/runtime/profile-conformance.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/runtime/runtime.integration.test.ts": {
     "no-polling-loop-in-tests:46be54d5e4c984efa59f": 1,
-    "no-real-time-wait-in-tests:dbc51bbfb095a102235c": 2,
     "no-real-time-wait-in-tests:f72b2a834a9fc2f0c581": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
@@ -556,13 +417,7 @@
   "apps/host/src/server/connection-drain.test.ts": {
     "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 2
   },
-  "apps/host/src/shell/machine-access-events.test.ts": {
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1
-  },
   "apps/host/src/triggers/trigger-authority.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/workspace/files/workspace-files-membership.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/mobile/modules/iphone-apps/journey/native.vm.test.ts": {
@@ -589,11 +444,6 @@
     "no-real-time-wait-in-tests:2a8e1b07b73b53d80f8c": 1,
     "no-real-time-wait-in-tests:f43cb05d58960e5d264e": 6
   },
-  "apps/mobile/src/screens/tabs.interaction.test.tsx": {
-    "no-polling-loop-in-tests:91bfc51d75c58f40ce35": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1,
-    "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 1
-  },
   "apps/mobile/src/screens/task-marks.interaction.test.tsx": {
     "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 1
   },
@@ -609,9 +459,6 @@
     "no-unit-test-timeout:391585291af5d1b10159": 1,
     "no-unit-test-timeout:39e5b4830d4d9c14db73": 1
   },
-  "apps/mobile/src/threads/task-row.interaction.test.tsx": {
-    "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 1
-  },
   "apps/runner/src/browser/browser-cdp-relay.test.ts": {
     "no-polling-loop-in-tests:24bde845ae09c48db77f": 1,
     "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1,
@@ -619,8 +466,7 @@
   },
   "apps/runner/src/computer-apps/computer-use.test.ts": {
     "no-polling-loop-in-tests:1f58cf0a41b03cfd0c16": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1,
-    "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1
+    "no-real-time-wait-in-tests:2e916529649817a8259b": 1
   },
   "apps/runner/src/computer-apps/module-handler.test.ts": {
     "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1
@@ -664,8 +510,6 @@
     "no-real-time-wait-in-tests:34fd81ea2a560ef58a42": 1
   },
   "apps/web/src/components/agent-activity.interaction.test.tsx": {
-    "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1,
-    "no-real-time-wait-in-tests:796efd7f439cfef01b22": 1,
     "no-unit-test-timeout:39e5b4830d4d9c14db73": 1
   },
   "apps/web/src/components/computer-apps/computer-use-section.test.tsx": {
@@ -673,15 +517,6 @@
   },
   "apps/web/src/components/phone-display.test.tsx": {
     "no-real-time-wait-in-tests:9feddc482a90406eac1b": 1
-  },
-  "apps/web/src/components/workspace/workspace-drafts.interaction.test.tsx": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1
-  },
-  "apps/web/src/components/workspace/workspace-recovery.interaction.test.tsx": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1
-  },
-  "apps/web/src/components/workspace/workspace-tabs.interaction.test.tsx": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1
   },
   "apps/web/src/components/workspace/workspace.interaction.test-support.tsx": {
     "no-real-time-wait-in-tests:9feddc482a90406eac1b": 1
@@ -692,9 +527,6 @@
   "evals/agent-tools/host.test.ts": {
     "no-unit-test-timeout:b751cf85b709f0cc8c87": 1
   },
-  "packages/browser-core/src/session-cdp-router.test.ts": {
-    "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1
-  },
   "packages/browser-runtime-core/src/browser/page-title.test.ts": {
     "no-real-time-wait-in-tests:3d3f6543a42fd28b1018": 1
   },
@@ -703,22 +535,14 @@
   },
   "packages/client/src/host/host-session-client.test.ts": {
     "no-polling-loop-in-tests:29216a105795ec3cb027": 1,
-    "no-polling-loop-in-tests:c47ee9cf857429cd5056": 1,
-    "no-real-time-wait-in-tests:a439433b5077f797fad4": 1,
     "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1,
-    "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 5,
-    "no-real-time-wait-in-tests:e315687433d57e526362": 2,
-    "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 4,
-    "no-real-time-wait-in-tests:f43cb05d58960e5d264e": 8,
-    "no-real-time-wait-in-tests:f72b2a834a9fc2f0c581": 1,
+    "no-real-time-wait-in-tests:cf5d6134e051a86dba71": 4,
+    "no-real-time-wait-in-tests:e315687433d57e526362": 1,
+    "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 3,
+    "no-real-time-wait-in-tests:f43cb05d58960e5d264e": 6,
     "no-unbounded-created-promise:5de3d9d42633700ef1b6": 1,
     "no-unbounded-created-promise:d3280e7f9d0a9a9baf64": 1,
     "no-unit-test-timeout:d8b93ec1965ef8de171f": 1
-  },
-  "packages/client/src/host/recent-site-icons.test.ts": {
-    "no-polling-loop-in-tests:b370be182afde6cf9be2": 1,
-    "no-real-time-wait-in-tests:5b5cffd1651354e233f4": 1,
-    "no-real-time-wait-in-tests:f43cb05d58960e5d264e": 12
   },
   "packages/client/src/mock/mock-host-client.test.ts": {
     "no-real-time-wait-in-tests:3df4a53cfe59a8dbfbef": 2
@@ -727,9 +551,6 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/database/src/browser-source-store.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "packages/database/src/channel-contexts.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/database/src/conversation-delivery.integration.test.ts": {
@@ -742,16 +563,7 @@
     "no-unit-test-timeout:af336673280ce1e644d3": 1
   },
   "packages/database/src/integration-platform-stores.integration.test.ts": {
-    "no-polling-loop-in-tests:1fffff2136a62f222519": 1,
-    "no-polling-loop-in-tests:b44664c001ba45bfce94": 1,
-    "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 2,
     "no-unbounded-created-promise:4add3ad3aedea5fd8d14": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "packages/database/src/integration-store.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "packages/database/src/integration-tool-definitions.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/database/src/lock-order-checker.integration.test.ts": {
@@ -759,9 +571,6 @@
   },
   "packages/database/src/lock-order-global-setup.test.ts": {
     "no-unit-test-timeout:7c1c917aafdf98c402c6": 2
-  },
-  "packages/database/src/migrations.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/database/src/notification-store.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
@@ -773,32 +582,14 @@
     "no-real-time-wait-in-tests:a9c2beecbe48adc56ea7": 2
   },
   "packages/database/src/store-request-and-authority.integration.test.ts": {
-    "no-polling-loop-in-tests:003a35321bbaf3383eac": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1,
-    "no-unbounded-created-promise:0c35c6753a7a37780b80": 1,
-    "no-unbounded-created-promise:74e71042dfce6cc431b9": 1,
-    "no-unbounded-created-promise:87811c3e56e7b103861e": 1
+    "no-unbounded-created-promise:74e71042dfce6cc431b9": 1
   },
   "packages/database/src/store-results-messaging-history.integration.test.ts": {
-    "no-polling-loop-in-tests:e27e22db69e3ce7b75de": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1,
-    "no-real-time-wait-in-tests:a9c2beecbe48adc56ea7": 1,
     "no-unbounded-created-promise:a74f3ed2f2839be23071": 1
   },
   "packages/database/src/store-runner-and-browser.integration.test.ts": {
-    "no-polling-loop-in-tests:7108ea4ec3c7e4cbb63b": 3,
-    "no-polling-loop-in-tests:802d863157746fc3a184": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 4,
     "no-unbounded-created-promise:141e4f6940e276cfcdaa": 1,
-    "no-unbounded-created-promise:31235d30887a0b41e96b": 2,
-    "no-unbounded-created-promise:842ce76d5d22e05e72af": 1
-  },
-  "packages/database/src/store-thread-state-and-locking.integration.test.ts": {
-    "no-polling-loop-in-tests:91097d319db15c06b019": 1,
-    "no-real-time-wait-in-tests:7a452a1190516999bfcd": 1
-  },
-  "packages/database/src/store.integration.test-support.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
+    "no-unbounded-created-promise:31235d30887a0b41e96b": 2
   },
   "packages/database/src/task-done.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
@@ -817,13 +608,6 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/database/src/trigger-store.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "packages/database/src/unified-integration-access.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "packages/database/src/workspace-tab-store.integration.test.ts": {
-    "no-unbounded-created-promise:5dcd918267a93acef1f4": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "packages/harness-claude/src/claude-driver.test.ts": {
@@ -894,13 +678,7 @@
     "no-polling-loop-in-tests:b069e30dda9d572273a0": 1,
     "no-real-time-wait-in-tests:8caa93ef41a84ccc11e7": 1
   },
-  "packages/orchestration/src/realtime-hub.test.ts": {
-    "no-polling-loop-in-tests:71c22a6ff8f0ab059042": 1,
-    "no-real-time-wait-in-tests:2e916529649817a8259b": 1
-  },
   "packages/orchestration/src/runner-registry.test.ts": {
-    "no-polling-loop-in-tests:b069e30dda9d572273a0": 1,
-    "no-real-time-wait-in-tests:8caa93ef41a84ccc11e7": 1,
     "no-real-time-wait-in-tests:a0efe161678c2f9065ae": 2,
     "no-real-time-wait-in-tests:be34fa3cf5cca0f11bf4": 1
   },
@@ -928,8 +706,6 @@
     "no-real-time-wait-in-tests:3bbcee9a93e3d67ee48c": 1
   },
   "tests/browser-deployment.test-support.ts": {
-    "no-polling-loop-in-tests:e52093e270e3a8af8429": 1,
-    "no-real-time-wait-in-tests:5c4500bbbc3fd992ccda": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "tests/browser-sessions-viewer.integration.test.ts": {
@@ -939,9 +715,6 @@
   },
   "tests/browser-sessions.test-support.ts": {
     "no-real-time-wait-in-tests:76815dab53c963ac59af": 1
-  },
-  "tests/browser-tab-groups.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "tests/check-steps.test.ts": {
     "no-unit-test-timeout:7c1c917aafdf98c402c6": 2
@@ -960,9 +733,6 @@
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "tests/mobile-network/runner.test-support.ts": {
-    "no-polling-loop-in-tests:6d16570c434d66ff6937": 1,
-    "no-polling-loop-in-tests:a028113719f73494c63d": 1,
-    "no-real-time-wait-in-tests:1093c8d082c7810f9973": 1,
     "no-real-time-wait-in-tests:d866f714c6305cd40d9b": 1
   },
   "tests/owner-view-native.test-support.ts": {
@@ -990,10 +760,5 @@
   },
   "tests/vm-slots.test.ts": {
     "no-real-time-wait-in-tests:147bde6da16440003777": 1
-  },
-  "tests/workspace-negotiation.integration.test.ts": {
-    "no-polling-loop-in-tests:77f6de5ccbf07556c806": 1,
-    "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1,
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   }
 }
