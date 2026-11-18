@@ -1060,6 +1060,7 @@ describe("Runner connection registry", () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const resumed = executeCommand(environmentId);
+    const availableCapacity = vi.fn();
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onAttach: vi.fn(async () => [
@@ -1071,6 +1072,7 @@ describe("Runner connection registry", () => {
       ]),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(commitThrough),
+      onRunDispatchAvailable: () => availableCapacity(registry.hasRunCapacity(environmentId, 1)),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1116,6 +1118,7 @@ describe("Runner connection registry", () => {
     // way fills it.
     expect(registry.hasRunCapacity(environmentId)).toBe(true);
     expect(registry.hasRunCapacity(environmentId, 1)).toBe(false);
+    expect(availableCapacity).not.toHaveBeenCalled();
     await registry.handle(peer, {
       ...fenceOf(peer),
       event: {
@@ -1145,6 +1148,7 @@ describe("Runner connection registry", () => {
       }),
     );
     expect(registry.hasRunCapacity(environmentId, 1)).toBe(true);
+    expect(availableCapacity).toHaveBeenCalledExactlyOnceWith(true);
     await expect(
       registry.handle(peer, {
         ...fenceOf(peer),
@@ -1622,10 +1626,12 @@ describe("Runner connection registry", () => {
     async function attached(
       onHarnessCatalogInvalidated?: RunnerRegistryHooks["onHarnessCatalogInvalidated"],
       targetedInspection = false,
+      onRunDispatchAvailable?: RunnerRegistryHooks["onRunDispatchAvailable"],
     ) {
       const hooks = {
         authorize: vi.fn(async () => undefined),
         onEvent: vi.fn(commitThrough),
+        ...(onRunDispatchAvailable ? { onRunDispatchAvailable } : {}),
         ...(onHarnessCatalogInvalidated
           ? {
               onHarnessCatalogInvalidated,
@@ -1963,6 +1969,48 @@ describe("Runner connection registry", () => {
         await registry.close();
       }
     });
+    it.each(["invalidation", "inspection"] as const)(
+      "wakes dispatch after a preparing harness settles through %s",
+      async (source) => {
+        const harness = definition(createId("harnessInstance"));
+        const dispatchAvailable = vi.fn();
+        const connection = await attached(undefined, false, () =>
+          dispatchAvailable(
+            connection.registry.isHarnessPreparing(connection.environmentId, harness.id),
+          ),
+        );
+        const { answer, catalogs, environmentId, peer, registry } = connection;
+        const signal = AbortSignal.timeout(2_000);
+        try {
+          const initial = registry.inspectHarnesses(environmentId, [harness], signal);
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(1));
+          await answer(0, "preparing");
+          await initial;
+          expect(registry.isHarnessPreparing(environmentId, harness.id)).toBe(true);
+          expect(dispatchAvailable).not.toHaveBeenCalled();
+
+          if (source === "invalidation") {
+            const update = {
+              ...fenceOf(peer),
+              harnessInstanceId: harness.id,
+              type: "runner.harness-catalog-invalidated" as const,
+            };
+            await registry.handle(peer, update);
+            await registry.handle(peer, update);
+          } else {
+            const fresh = registry.inspectHarnesses(environmentId, [harness], signal, {
+              fresh: true,
+            });
+            await vi.waitFor(() => expect(catalogs()).toHaveLength(2));
+            await answer(1);
+            await fresh;
+          }
+          expect(dispatchAvailable).toHaveBeenCalledExactlyOnceWith(false);
+        } finally {
+          await registry.close();
+        }
+      },
+    );
     it("starts an independent recapture when native preparation invalidates an older answer", async () => {
       let registry!: RunnerRegistry;
       let environmentId!: ReturnType<typeof createId<"environment">>;

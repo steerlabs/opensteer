@@ -880,7 +880,7 @@ integration("Runs that outlive their connection", () => {
     );
     const heldSnapshots: Awaited<ReturnType<typeof observation.snapshot>>[] = [];
     const holdStartedAt = Date.now();
-    // Absence of churn must span several real coordinator polls.
+    // Keep preparation held long enough to observe any dispatch churn.
     await vi.waitUntil(
       async () => {
         const current = await observation.snapshot(command.id);

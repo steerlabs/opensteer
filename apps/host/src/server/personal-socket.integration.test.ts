@@ -25,6 +25,7 @@ import {
   ScopedHostMessageSchema,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
+import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   claimPrivateMachineOwner,
@@ -399,21 +400,19 @@ it("closes an over-limit fragmented Personal frame before receiving the final fr
 
 it("automatically retries a failed batch of a Host-owned finish intent", async () => {
   const database = await cloneTestDatabase("host");
-  const failed = Promise.withResolvers<() => void>();
+  const clock = new ManualClock();
+  const retryScheduled = Promise.withResolvers<void>();
   const finished = Promise.withResolvers<void>();
   let host: PrivateMachineHost | undefined;
   try {
     host = await startPrivateMachineHost(database.url, {
       logger: false,
       executionClock: {
-        now: Date.now,
+        now: clock.now,
         schedule(callback, delay) {
-          if (delay === 5_000) {
-            failed.resolve(callback);
-            return () => {};
-          }
-          const timer = setTimeout(callback, delay);
-          return () => clearTimeout(timer);
+          const cancel = clock.schedule(callback, delay);
+          if (delay === 5_000) retryScheduled.resolve();
+          return cancel;
         },
       },
       onPersonalReaction: (notice) => {
@@ -455,7 +454,7 @@ it("automatically retries a failed batch of a Host-owned finish intent", async (
       runnerId: environment!.runnerId!,
       message: "Fixture Host-owned failure",
     });
-    const retry = await deadline(failed.promise, "Failed finish batch did not arm a retry");
+    await deadline(retryScheduled.promise, "Failed finish batch did not arm a retry");
     const read = () =>
       db
         .selectFrom("runs")
@@ -465,11 +464,11 @@ it("automatically retries a failed batch of a Host-owned finish intent", async (
     expect(await read()).toMatchObject({ finishIntent: { mode: "host" }, status: "running" });
     await db
       .updateTable("providerSessions")
-      .set({ leaseExpiresAt: new Date(Date.now() - 1) })
+      .set({ leaseExpiresAt: new Date(clock.now() - 1) })
       .where("active", "=", true)
       .execute();
     expect(await host.store.nextExecutionDeadline()).toBeNull();
-    retry();
+    clock.advanceBy(5_000);
     await deadline(finished.promise, "Finish retry did not settle the Run");
     expect(await read()).toEqual({ finishIntent: null, status: "failed" });
     expect(

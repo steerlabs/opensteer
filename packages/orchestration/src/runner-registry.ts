@@ -244,6 +244,8 @@ export interface RunnerRegistryHooks {
   ): Promise<readonly RunnerAttachResult[]>;
   /** The Runner's Runs are settled and new work may be dispatched to it. */
   onAttached?(identity: RunnerIdentity): Promise<void>;
+  /** A held Run slot or a preparing harness became available for dispatch. */
+  onRunDispatchAvailable?(): void;
   onHarnessCatalogInvalidated?(
     identity: RunnerIdentity,
     invalidation: RunnerHarnessCatalogInvalidated,
@@ -1337,11 +1339,10 @@ export class RunnerRegistry {
       return catalogs.map((catalog) => {
         const cached = connection.catalogCache.get(catalog.harnessInstanceId);
         if (cached && cached.revision > revision) return cached.catalog;
-        if (catalog.status === "preparing") {
+        if (catalog.status === "preparing")
           connection.preparingHarnesses.add(catalog.harnessInstanceId);
-        } else {
-          connection.preparingHarnesses.delete(catalog.harnessInstanceId);
-        }
+        else if (connection.preparingHarnesses.delete(catalog.harnessInstanceId))
+          this.#hooks.onRunDispatchAvailable?.();
         const definitionFingerprint = definitionFingerprints.get(catalog.harnessInstanceId);
         if (!definitionFingerprint) {
           throw new Error("Runner returned a catalog for an unrequested AI account");
@@ -2504,7 +2505,8 @@ export class RunnerRegistry {
         connection.catalogCache.delete(message.harnessInstanceId);
         // Preparation settled, so work waiting on it may be dispatched; the
         // inspection that follows says what the account is now.
-        connection.preparingHarnesses.delete(message.harnessInstanceId);
+        if (connection.preparingHarnesses.delete(message.harnessInstanceId))
+          this.#hooks.onRunDispatchAvailable?.();
         // Existing callers still own their request, but a recapture prompted by
         // this signal must observe the state after preparation completed.
         connection.inFlightCatalogs.clear();
@@ -2701,10 +2703,11 @@ export class RunnerRegistry {
 
   /** Ends this connection's hold on a Run that is terminal or revoked. */
   #releaseRun(connection: RunnerConnection, runId: RunId): void {
-    connection.ownedRunIds.delete(runId);
+    const released = connection.ownedRunIds.delete(runId);
     connection.ownedRunBindings.delete(runId);
     connection.observedRunIds.delete(runId);
     this.#canceledRuns.delete(runId);
+    if (released) this.#hooks.onRunDispatchAvailable?.();
   }
   disconnect(peer: RunnerPeer): void {
     const connection = this.#byPeer.get(peer.id);

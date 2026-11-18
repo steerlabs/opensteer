@@ -2187,9 +2187,10 @@ export async function createHostRuntime(
           return attached.results;
         },
         onAttached: runnerAttachedReaction(
-          wakeExecutionCoordinator,
+          () => wakeExecutionCoordinator(),
           () => idleCompactionService?.reconcile() ?? Promise.resolve(),
         ),
+        onRunDispatchAvailable: () => wakeExecutionCoordinator(),
         onHarnessInstallation: async () => {
           await bumpResources("harness", "harness-auth");
         },
