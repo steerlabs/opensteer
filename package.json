@@ -53,7 +53,8 @@
     "dev:team": "tsx scripts/dev.ts team",
     "verify:team-deployment": "node scripts/verify-team-deployment.mjs",
     "measure:plugin-engine": "pnpm --filter @opensteer/host build && tsx scripts/plugin-engine/measure-service.ts",
-    "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs"
+    "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs",
+    "qualify:plugin-catalog": "pnpm --filter apps build && tsx scripts/plugin-engine/qualify-catalog.ts"
   },
   "devDependencies": {
     "@babel/parser": "7.29.8",
