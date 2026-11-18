@@ -4,10 +4,15 @@ import {
   messageDeliveryStatusShown,
   type MessageDeliveryAction,
 } from "@opensteer/client/host";
-import { presentDeliveryActions, presentMessageDelivery } from "@opensteer/client/feedback";
+import {
+  presentDeliveryActions,
+  presentMessageActionFailure,
+  presentMessageDelivery,
+  presentMessageTakeBack,
+} from "@opensteer/client/feedback";
 import { ActionLine } from "./action-line.js";
 import { MessageDelivery } from "./message-delivery.js";
-import { useAction } from "./use-action.js";
+import { Refusal, useAction } from "./use-action.js";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
@@ -298,6 +303,7 @@ export function AgentTranscript({
   teamChannelName = null,
   inputQueuePaused = false,
   queued = null,
+  afterQueue = noLocalMessages,
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
@@ -349,6 +355,8 @@ export function AgentTranscript({
    * after its live status, inside the transcript so it reads like messages.
    */
   queued?: ReactNode;
+  /** This device's messages sent behind work, drawn after the queue they will join. */
+  afterQueue?: readonly MessageEntry[];
   /** Draws an offer of Opensteer Passwords; a screen that has none shows no offer. */
   renderPasswordsSuggestion?: (offer: PasswordsSetupOffer) => ReactNode;
   /**
@@ -364,14 +372,14 @@ export function AgentTranscript({
     [entries, inputQueuePaused, startHold, assignments],
   );
   const deliveryStatus = useMemo(() => {
-    const own = entries.filter(
+    const own = [...entries, ...afterQueue].filter(
       (entry): entry is MessageEntry => entry.kind === "message" && !!entry.localDelivery,
     );
     const shown = messageDeliveryStatusShown(own.map((entry) => entry.localDelivery!.phase));
     return new Set(
       own.flatMap((entry, index) => (shown[index] ? [entry.clientSendKey ?? entry.id] : [])),
     );
-  }, [entries]);
+  }, [afterQueue, entries]);
   const activities = useMemo(() => {
     const byTurn = new Map<string, ReplyActivity>();
     if (!conversation) return byTurn;
@@ -516,6 +524,21 @@ export function AgentTranscript({
                                             ? null
                                             : renderPasswordsSuggestion?.(passwordsOffer)}
                                           {queued}
+                                          {afterQueue.map((message) => (
+                                            <div
+                                              className="transcript__row"
+                                              data-transcript-row={
+                                                message.clientSendKey ?? message.id
+                                              }
+                                              key={message.clientSendKey ?? message.id}
+                                            >
+                                              <TranscriptMessage
+                                                message={message}
+                                                reveal={null}
+                                                viewerUserId={viewerUserId}
+                                              />
+                                            </div>
+                                          ))}
                                         </TranscriptImageContext>
                                       </Speakers>
                                     </TranscriptBrowsers>
@@ -2197,6 +2220,7 @@ export function TranscriptMessage({
  * The send keys of this device's own undelivered messages that carry their
  * status line: a run of waiting messages says it once, under the last.
  */
+const noLocalMessages: readonly MessageEntry[] = [];
 const DeliveryStatusShown = createContext<ReadonlySet<string>>(new Set());
 
 /** Above a message that joined the turn under way rather than waiting for the next. */
@@ -2260,7 +2284,9 @@ function OwnMessage({
   // The quiet first second of a send counts from when this bubble appeared.
   const [since] = useState(() => Date.now());
   const labels = presentDeliveryActions();
-  // Taking a message back touches only what this device keeps.
+  const unconfirmed = local?.issue?.code === "unconfirmed";
+  // Taking a message back touches only what this device keeps. Edit moves the
+  // whole message into the draft, above any words there, before the bubble goes.
   const takeBack = useAction(
     null,
     {
@@ -2269,21 +2295,46 @@ function OwnMessage({
       happened: "this message changed",
       execute: async (action: MessageDeliveryAction) => {
         if (!outbox) return;
-        if (action === "edit") await outbox.restoreDraft(sendKey);
-        else await outbox.discard(sendKey);
+        if (action === "retry") return outbox.retry(sendKey);
+        let words: string | null;
+        try {
+          words =
+            action === "edit"
+              ? presentMessageTakeBack(await outbox.restoreDraft(sendKey))
+              : (await outbox.discard(sendKey), null);
+        } catch (error) {
+          words = presentMessageActionFailure(error);
+        }
+        if (words) throw new Refusal(words);
       },
     },
     `delivery:${sendKey}`,
   );
-  const menu = local && outbox ? messageDeliveryActions(local.phase, local.attempted) : [];
+  const menu =
+    local && outbox ? messageDeliveryActions(local.phase, local.attempted, unconfirmed) : [];
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
   const [arrived] = useState(() => !queued && justSent(message.createdAt, Date.now()));
+  // A waiting message is taken back from these, whether it has words or files alone.
+  const waitingMarks =
+    local?.phase === "waiting" && !queued
+      ? menu.map((action) => (
+          <button
+            className="mark mark--words"
+            key={action}
+            onClick={() => void takeBack.run(action)}
+            type="button"
+          >
+            {action === "edit" ? labels.edit : labels.discard}
+          </button>
+        ))
+      : [];
   return (
     <MessageDelivery
       attempted={local?.attempted ?? true}
+      unconfirmed={unconfirmed}
       onAction={(action) => void takeBack.run(action)}
       phase={local?.phase ?? "delivered"}
       rejection={
@@ -2300,22 +2351,14 @@ function OwnMessage({
         <MessagePages pages={message.pages ?? []} />
         <MessagePlaces places={message.places ?? []} />
         <MessageAttachments attachments={message.attachments ?? []} />
+        {!message.body && waitingMarks.length > 0 ? (
+          <div className="reply__marks">{waitingMarks}</div>
+        ) : null}
         {message.body ? (
           <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
             {queued ? null : (
               <div className="reply__marks">
-                {local?.phase === "waiting"
-                  ? menu.map((action) => (
-                      <button
-                        className="mark mark--words"
-                        key={action}
-                        onClick={() => void takeBack.run(action)}
-                        type="button"
-                      >
-                        {action === "edit" ? labels.edit : labels.discard}
-                      </button>
-                    ))
-                  : null}
+                {waitingMarks}
                 {message.edit ? (
                   <TranscriptEditMark
                     label="Edited"

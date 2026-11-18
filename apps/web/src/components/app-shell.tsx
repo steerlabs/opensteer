@@ -72,10 +72,10 @@ import {
   type HostSnapshot,
   type LocalRunnerIdentity,
   type ThreadPlacementOption,
-  type ThreadSummary,
   taskAttention,
   heldThread,
   listedRowThreadId,
+  mutationIdempotencyKey,
   taskAfter,
   taskDoneConfirmation,
   taskList,
@@ -89,6 +89,8 @@ import {
   type PendingSubmission,
 } from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
+import { composerDrafts } from "./composer-drafts.js";
+import { draftTaskStart, startTask, type TaskStart } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
@@ -144,7 +146,9 @@ export interface ShellContext {
     message: PendingSubmission,
     selection: ExecutionSelection,
     accessMode: ThreadAccessMode,
-  ) => Promise<ThreadSummary>;
+    /** The draft the task starts from, which keeps the start across retries. */
+    draftKey: string | null,
+  ) => Promise<{ readonly id: string }>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
    * The Desktop's deployment-access state, already filtered by one revision
@@ -676,21 +680,32 @@ export function AppShell({
       message: PendingSubmission,
       selection: ExecutionSelection,
       accessMode: ThreadAccessMode,
-    ): Promise<ThreadSummary> => {
+      draftKey: string | null,
+    ): Promise<{ readonly id: string }> => {
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
       const outbox = hostMessageOutbox(hostClient);
       if (!outbox) throw storageUnavailable();
-      const thread = await hostClient.createThread({
-        accessMode,
-        environmentId: selection.environmentId,
-        harnessInstanceId: selection.harnessInstanceId,
-        modelSelection: selection.modelSelection,
-        generateTitle: true,
-        title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
+      let held: TaskStart | undefined;
+      return startTask({
+        records: draftKey
+          ? draftTaskStart(composerDrafts, draftKey)
+          : { read: () => held, write: (start) => void (held = start) },
+        creation: {
+          accessMode,
+          environmentId: selection.environmentId,
+          harnessInstanceId: selection.harnessInstanceId,
+          modelSelection: selection.modelSelection,
+          generateTitle: true,
+          title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
+        },
+        creationKey: () => mutationIdempotencyKey("thread"),
+        messageKey: message.idempotencyKey,
+        createThread: (creation) => hostClient.createThread(creation),
+        queued: (key) => outbox.getSnapshot().messages.some((entry) => entry.localId === key),
+        enqueue: (threadId, idempotencyKey) =>
+          outbox.enqueue(sendMessageCommand(threadId, { ...message, idempotencyKey })),
       });
-      await outbox.enqueue(sendMessageCommand(thread.id, message));
-      return thread;
     },
     [hostClient],
   );
@@ -1140,15 +1155,16 @@ function ShellPill({
       ),
     [teams],
   );
+  // A team route is about that team even before its connection exists; its gate explains then.
   const teamId = /^\/teams\/([^/]+)/.exec(pathname)?.[1];
-  const current =
-    (teamId && teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`)) ||
-    personal;
+  const current = teamId
+    ? (teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`) ?? null)
+    : personal;
   const others = useMemo(
     () => [personal, ...teamSources].filter((source) => source !== current),
     [current, personal, teamSources],
   );
-  return <ShellConnectionPill current={current} others={others} />;
+  return current ? <ShellConnectionPill current={current} others={others} /> : null;
 }
 
 function failureWords(error: unknown, label = "complete this action"): string {

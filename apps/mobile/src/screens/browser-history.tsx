@@ -1,4 +1,5 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
+import type { ClientConnectionState } from "@opensteer/client/connections";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
@@ -92,6 +93,11 @@ function HistoryList({
     history.getRevision,
   );
   const [loading, setLoading] = useState(true);
+  const connected = useSyncExternalStore(
+    hostClient.connection.subscribe,
+    () => isUsable(hostClient.connection.getSnapshot()),
+    () => isUsable(hostClient.connection.getSnapshot()),
+  );
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [attempt, setAttempt] = useState(0);
@@ -123,8 +129,10 @@ function HistoryList({
     void change.run(input);
   };
   const entries = history.entries(profileId);
-  // Only when nothing was ever read: a failed reread keeps what was last read, silently.
-  const readFailed = !loading && entries.length === 0 && history.failed(profileId);
+  const loaded = history.loaded(profileId);
+  // Only when nothing was ever read and the connection is fine: a failed reread keeps what was
+  // last read, and an outage is the pill's to explain.
+  const readFailed = !loading && !loaded && connected && history.failed(profileId);
   return (
     <Screen edgeToEdge>
       <FlatList
@@ -176,7 +184,7 @@ function HistoryList({
                 link: { label: "Try again", onPress: () => setAttempt((count) => count + 1) },
               }}
             />
-          ) : loading ? (
+          ) : loading || !loaded ? (
             <PlaceholderRows />
           ) : (
             <AppText role="secondary" tone="muted">
@@ -260,3 +268,7 @@ const styles = StyleSheet.create({
   text: { flex: 1, gap: space[2] },
   icon: { width: 20, height: 20 },
 });
+
+function isUsable(state: ClientConnectionState): boolean {
+  return state.phase === "ready" && state.network !== "offline";
+}

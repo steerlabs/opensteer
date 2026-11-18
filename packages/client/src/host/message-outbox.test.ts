@@ -1,12 +1,14 @@
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
 import { visibleTranscript } from "./transcript.js";
+import { placeLocalMessages, splitLocalMessages } from "./message-delivery-view.js";
 import type { TranscriptEntry } from "./client.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
   createMessageOutbox,
   projectMessageOutbox,
+  sameTranscript,
   type MessageOutboxStorage,
   type StoredMessage,
 } from "./message-outbox.js";
@@ -17,6 +19,7 @@ import type { PendingSendCommand } from "./pending-send.js";
 import { clientScopeKey } from "../connections/connection-controller.js";
 
 const threadId = createId("thread");
+const quotedId = createId("message");
 const command = (key: string) => ({
   type: "thread.sendMessage" as const,
   threadId,
@@ -328,6 +331,133 @@ describe("app lifetime message delivery", () => {
     expect(outbox.getSnapshot().messages).toEqual([]);
     outbox.dispose();
   });
+  it("moves a waiting message to the draft whole, and lets go of it only once the draft holds it", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession(),
+      store = storage();
+    session.change({ phase: "recovering" });
+    const restored: StoredMessage[] = [];
+    let draftWrite: { resolve: () => void; reject: (error: Error) => void } | null = null;
+    const sent: string[] = [];
+    const outbox = createMessageOutbox({
+      session,
+      storage: store.port,
+      drafts: {
+        restore: (_scope, entry) =>
+          new Promise((resolve, reject) => {
+            draftWrite = {
+              resolve: () => {
+                restored.push(entry);
+                resolve("restored");
+              },
+              reject,
+            };
+          }),
+      },
+      dispatch: async (cmd) => {
+        sent.push(cmd.idempotencyKey);
+        return { messageId: `server-${cmd.idempotencyKey}` };
+      },
+    });
+    const quoted = { ...command("quoted"), quotedMessageId: quotedId };
+    await outbox.enqueue(quoted, { localAttachmentUris: ["file:///copy"] });
+    await outbox.enqueue(command("later"));
+    // A draft write that fails leaves the message queued, as it was.
+    const failed = outbox.restoreDraft("quoted");
+    draftWrite!.reject(new Error("disk full"));
+    await expect(failed).rejects.toThrow("disk full");
+    expect(outbox.getSnapshot().messages.map((row) => row.localId)).toEqual(["quoted", "later"]);
+    // The connection returns while the draft is being written: nothing goes.
+    const edit = outbox.restoreDraft("quoted");
+    session.change({ phase: "ready", readyRevision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([]);
+    expect(outbox.getSnapshot().messages).toHaveLength(2);
+    draftWrite!.resolve();
+    await expect(edit).resolves.toBe("restored");
+    expect(restored[0]).toMatchObject({
+      command: { quotedMessageId: quotedId },
+      localAttachmentUris: ["file:///copy"],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual(["later"]);
+    expect(await store.port.load(session.connection.getSnapshot().scope!)).toEqual([]);
+    outbox.dispose();
+  });
+  it("leaves a message whose send began in the queue when Edit arrives too late", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession(),
+      store = storage();
+    let lose!: () => void;
+    const restore = vi.fn(async () => "restored" as const);
+    const outbox = createMessageOutbox({
+      session,
+      storage: store.port,
+      drafts: { restore },
+      dispatch: () =>
+        new Promise((_resolve, reject) => {
+          lose = () => reject(new HostTransportError("timed-out"));
+        }),
+    });
+    await outbox.enqueue(command("in-flight"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outbox.getSnapshot().messages[0]).toMatchObject({ phase: "sending", attempted: true });
+    await expect(outbox.restoreDraft("in-flight")).resolves.toBe("sent");
+    lose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restore).not.toHaveBeenCalled();
+    expect(outbox.getSnapshot().messages).toMatchObject([{ localId: "in-flight" }]);
+    outbox.dispose();
+  });
+  it("sends an unsettled legacy message again under its own key only when asked", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession(),
+      store = storage();
+    const sent: string[] = [];
+    const outbox = createMessageOutbox({
+      session,
+      storage: store.port,
+      legacy: { load: async () => [{ command: command("legacy") }], remove: async () => {} },
+      drafts: { restore: async () => "restored" },
+      dispatch: async (cmd) => {
+        sent.push(cmd.idempotencyKey);
+        return { messageId: "existing-server-message" };
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([]);
+    await expect(outbox.restoreDraft("legacy")).resolves.toBe("sent");
+    outbox.retry("legacy");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual(["legacy"]);
+    expect(outbox.getSnapshot().messages).toEqual([]);
+    outbox.dispose();
+  });
+  it("keeps a task's projection when only another task's queue changes", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession(),
+      store = storage();
+    session.change({ phase: "recovering" });
+    const outbox = createMessageOutbox({
+      session,
+      storage: store.port,
+      drafts: { restore: async () => "restored" },
+      dispatch: async () => ({ messageId: "message" }),
+    });
+    const viewer = createId("user");
+    const other = createId("thread");
+    const entries: TranscriptEntry[] = [];
+    const empty = projectMessageOutbox(outbox.getSnapshot(), threadId, entries, viewer);
+    await outbox.enqueue({ ...command("elsewhere"), threadId: other });
+    expect(projectMessageOutbox(outbox.getSnapshot(), threadId, entries, viewer)).toBe(empty);
+    await outbox.enqueue(command("here"));
+    const here = projectMessageOutbox(outbox.getSnapshot(), threadId, entries, viewer);
+    await outbox.enqueue({ ...command("elsewhere-2"), threadId: other });
+    const after = projectMessageOutbox(outbox.getSnapshot(), threadId, entries, viewer);
+    expect(after).not.toBe(here);
+    expect(sameTranscript(here, after)).toBe(here);
+    outbox.dispose();
+  });
   it("honors Don't send while a dispatch claim is still being persisted", async () => {
     vi.useFakeTimers();
     const session = controlledClientSession(),
@@ -491,4 +621,31 @@ it("surfaces a full legacy queue and imports the remainder when a slot is freed"
   } finally {
     outbox.dispose();
   }
+});
+
+describe("where a task's waiting messages stand", () => {
+  it("keeps a message sent behind work after the queue, even once the task is at rest", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession(),
+      store = storage();
+    session.change({ phase: "recovering" });
+    const outbox = createMessageOutbox({
+      session,
+      storage: store.port,
+      drafts: { restore: async () => "restored" },
+      dispatch: async () => ({ messageId: "message" }),
+    });
+    const viewer = createId("user");
+    const project = () => projectMessageOutbox(outbox.getSnapshot(), threadId, [], viewer);
+    await outbox.enqueue(command("behind-work"));
+    let placed = placeLocalMessages(new Map(), project(), true);
+    await outbox.enqueue(command("next"));
+    // The task came to rest before the second was sent: only that one starts a turn.
+    placed = placeLocalMessages(placed, project(), false);
+    const { transcript, afterQueue } = splitLocalMessages(project(), placed);
+    expect(afterQueue.map((row) => row.id)).toEqual(["behind-work"]);
+    expect(transcript.map((row) => row.id)).toEqual(["next"]);
+    expect(placeLocalMessages(placed, project(), false)).toBe(placed);
+    outbox.dispose();
+  });
 });

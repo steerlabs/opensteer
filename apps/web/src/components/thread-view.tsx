@@ -1,5 +1,5 @@
-import { useOptionalMessageOutbox } from "@opensteer/client/react";
-import { hostMessageOutbox, projectMessageOutbox } from "@opensteer/client/host";
+import { useOutboxTranscript } from "@opensteer/client/react";
+import { hostMessageOutbox, placeLocalMessages, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
@@ -302,7 +302,6 @@ function ThreadView({
   );
   // The composer's own record: words sent as new from an open edit are kept the same way.
   const outbox = hostMessageOutbox(hostClient);
-  const outboxState = useOptionalMessageOutbox(outbox);
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -365,6 +364,35 @@ function ThreadView({
       ),
     [conversational, entries, inputQueue, thread.id],
   );
+  // The same answer every surface gives: what this Thread is doing, and
+  // which Run, if any, a Stop would reach.
+  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
+  // This device's waiting messages, drawn where they will stand once sent. They
+  // meet the Host's copies before the queue is taken out, so one the Host
+  // already holds in its queue is drawn once, there.
+  const projected = useOutboxTranscript(outbox, thread.id, entries, snapshot.user?.id ?? null);
+  const withOutbox = useMemo(
+    () =>
+      projected === entries
+        ? conversation
+        : withoutOwnAssignment(
+            visibleTranscript(projected, inputQueue, { conversation: conversational }),
+            thread.id,
+          ),
+    [conversation, conversational, entries, inputQueue, projected, thread.id],
+  );
+  // Where each of them stands, decided once: after the queue when sent behind work.
+  const placedLocal = useRef<ReadonlyMap<string, boolean>>(new Map());
+  placedLocal.current = placeLocalMessages(
+    placedLocal.current,
+    withOutbox,
+    !conversational && (activity !== "idle" || (waiting?.length ?? 0) > 0),
+  );
+  const local = useMemo(
+    () => splitLocalMessages(withOutbox, placedLocal.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [withOutbox, placedLocal.current],
+  );
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, snapshot.user?.id ?? null, conversational),
     [conversation, conversational, snapshot.user?.id],
@@ -381,9 +409,6 @@ function ThreadView({
         .toSorted((left, right) => left.runOrdinal - right.runOrdinal),
     [snapshot.runQueue, thread.id],
   );
-  // The same answer every surface gives: what this Thread is doing, and
-  // which Run, if any, a Stop would reach.
-  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
   const stopTarget = threadStopTarget({ runQueue: snapshot.runQueue, thread });
 
   /**
@@ -1171,16 +1196,8 @@ function ThreadView({
                         conversation={conversational}
                         live={live}
                         computers={computers}
-                        entries={
-                          snapshot.user && outboxState
-                            ? projectMessageOutbox(
-                                outboxState,
-                                thread.id,
-                                conversation,
-                                snapshot.user.id,
-                              )
-                            : conversation
-                        }
+                        entries={local.transcript}
+                        afterQueue={local.afterQueue}
                         waitingRequests={snapshot.waitingRequests}
                         assignments={snapshot.assignments}
                         inputQueuePaused={thread.inputQueuePaused}

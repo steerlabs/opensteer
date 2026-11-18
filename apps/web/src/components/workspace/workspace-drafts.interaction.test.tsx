@@ -339,7 +339,7 @@ describe("the draft's places", () => {
     },
   );
 
-  it("keeps a refused message and its places separate from a newer draft", async () => {
+  it("merges a refused message into a newer draft without losing either's places", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     await settle(100);
     const place = pageTab();
@@ -381,11 +381,11 @@ describe("the draft's places", () => {
     expect(rejected.textContent).toContain(place.title);
     expect(rejected.textContent).toContain("Not sent. You don't have access.");
     await click(element("button", element("[role=status]", rejected)));
-    expect(composerText(field)).toBe("Newer draft");
+    expect(composerText(field)).toBe("First message\n\nNewer draft");
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
-    ).toEqual([other.title, place.title]);
-    expect(rejected.isConnected).toBe(true);
+    ).toEqual([place.title, other.title]);
+    expect(rejected.isConnected).toBe(false);
     expect(document.body.textContent).not.toContain(message);
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
@@ -395,7 +395,7 @@ describe("the draft's places", () => {
     await settle(100);
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
-    ).toEqual([other.title, place.title]);
+    ).toEqual([place.title, other.title]);
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {

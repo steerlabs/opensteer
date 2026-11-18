@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   addToPhone: vi.fn(async (_id: string) => {}),
   forget: vi.fn(async (_id: string) => {}),
   popToTop: vi.fn(),
+  openURL: vi.fn(async (_url: string) => true),
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 type Children = { children?: ReactNode };
@@ -19,6 +20,7 @@ vi.mock("react-native", () => ({
   View: ({ children }: Children) => <div>{children}</div>,
   ActivityIndicator: () => <span data-loading="true">Loading</span>,
   Alert: { alert: vi.fn() },
+  Linking: { openURL: h.openURL },
   StyleSheet: { create: (s: object) => s },
 }));
 vi.mock("@react-navigation/native", () => ({
@@ -133,7 +135,7 @@ it.each([
           : state === "offline" || state === "update-server"
             ? "Try again"
             : state === "update-app"
-              ? "Back"
+              ? "Update"
               : "Remove from this phone";
       const action = [...host.querySelectorAll("button")].find(
         (button) => button.textContent === label,
@@ -144,9 +146,11 @@ it.each([
         state === "signed-out" || state === "offline" || state === "update-server"
           ? h.select
           : state === "update-app"
-            ? h.popToTop
+            ? h.openURL
             : h.forget,
       ).toHaveBeenCalled();
+      if (state === "update-app")
+        expect(h.openURL).toHaveBeenCalledWith("https://opensteer.com/download");
     }
   } finally {
     act(() => root.unmount());

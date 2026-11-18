@@ -1,4 +1,4 @@
-import { clientIssue } from "@opensteer/client/feedback";
+import { clientIssue, clientIssueActions } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine } from "../ui/client-feedback.js";
@@ -147,6 +147,7 @@ function NewTask(props: {
   const [line, setLine] = useState<ActionLineValue | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
+  const resume = useRef<(record: TaskStartRecord) => Promise<void>>(async () => undefined);
   const mounted = useRef(true);
   useEffect(
     () => () => {
@@ -217,9 +218,12 @@ function NewTask(props: {
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
       if (!mounted.current || inFlight.current) return;
       inFlight.current = true;
+      const startRevision = hostClient.connection.getSnapshot().readyRevision;
       setSending(true);
       setLine(null);
       let claimed = existing;
+      // Past this, what fails is this phone handing the message to the task.
+      let created = false;
       try {
         if (claimed === null) {
           const live = hostClient.getSnapshot();
@@ -296,14 +300,24 @@ function NewTask(props: {
           sentAt.current = Date.now();
           keyboardDown.current = dismissKeyboard();
         }
-        const start = claimed.start;
-        if (start === undefined)
-          throw new Error("This message no longer says which task it starts.");
-        const { generateTitle, ...creation } = start;
-        const thread = await hostClient.createThread({
-          ...creation,
-          ...(generateTitle ? { generateTitle: true } : {}),
-        });
+        let threadId = claimed.startedThreadId;
+        if (threadId === undefined) {
+          const start = claimed.start;
+          if (start === undefined)
+            throw new Error("This message no longer says which task it starts.");
+          const { generateTitle, ...creation } = start;
+          const thread = await hostClient.createThread({
+            ...creation,
+            ...(generateTitle ? { generateTitle: true } : {}),
+          });
+          threadId = thread.id;
+          // Unrecorded, a retry asks again under the same key and gets the same task.
+          await drafts
+            .recordTaskStarted(deploymentId, userId, draftKey, claimed.idempotencyKey, threadId)
+            .catch(() => undefined);
+        }
+        created = true;
+        const startedId = threadId;
         let opened = false;
         await handOverFirstMessage({
           hostClient,
@@ -325,10 +339,10 @@ function NewTask(props: {
               active.deploymentId === deploymentId &&
               active.hostClient === hostClient &&
               hostClient.getSnapshot().user?.id === userId &&
-              onStarted(thread.id);
+              onStarted(startedId);
             if (opened && shown !== null) setHandedOff(shown);
           },
-          threadId: thread.id,
+          threadId: startedId,
           userId,
         });
       } catch (error) {
@@ -360,7 +374,24 @@ function NewTask(props: {
           if (error instanceof NotStarted)
             setLine({ key, text: error.words, tone: "muted", haptic: "warning" });
           else if (claimed === null) setLine(issueLine({ code: "storage-unavailable" }, key));
-          else if (isHostRefusal(error)) {
+          else if (created) {
+            // The task exists; the message is held here until this phone can
+            // queue it, under the same key, when the person asks again.
+            const issue =
+              clientIssue(error, { operation: "action", label: "start this task" })?.code ===
+              "queue-full"
+                ? ({ code: "queue-full" } as const)
+                : ({ code: "storage-unavailable" } as const);
+            setLine(
+              issueLine(issue, key, {
+                label: clientIssueActions.retry,
+                onPress: () => {
+                  const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+                  if (record !== null) void resume.current(record);
+                },
+              }),
+            );
+          } else if (isHostRefusal(error)) {
             const issue = clientIssue(error, { operation: "action", label: "start this task" });
             if (issue !== null) setLine(issueLine({ ...issue, done: "started" }, key));
           }
@@ -370,6 +401,13 @@ function NewTask(props: {
         setSending(false);
         // Written down by now, or refused and back in the field.
         setStarting(null);
+        // The connection became ready again while this attempt ran, so the
+        // resume it would have started was skipped: go again for it.
+        const now = hostClient.connection.getSnapshot();
+        if (mounted.current && now.phase === "ready" && now.readyRevision !== startRevision) {
+          const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+          if (record !== null) queueMicrotask(() => void resume.current(record));
+        }
       }
     },
     [
@@ -392,7 +430,6 @@ function NewTask(props: {
   // A message already handed over under its keys goes on by itself: on
   // arrival, and each time the connection is ready again.
   const { phase, readyRevision } = useClientConnection(hostClient.connection);
-  const resume = useRef(send);
   resume.current = send;
   const heldKey = held?.idempotencyKey ?? null;
   useEffect(() => {
@@ -454,13 +491,18 @@ function NewTask(props: {
       underHeader={props.underHeader}
     >
       {sent !== null ? (
-        <FirstMessageStarted
-          hostClient={hostClient}
-          key={sent.idempotencyKey}
-          message={sent}
-          phase={sending || held === null ? "sending" : "waiting"}
-          userId={userId}
-        />
+        <View style={styles.invitation}>
+          <FirstMessageStarted
+            hostClient={hostClient}
+            key={sent.idempotencyKey}
+            message={sent}
+            phase={sending || held === null ? "sending" : "waiting"}
+            userId={userId}
+          />
+          {line === null || held === null ? null : (
+            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+          )}
+        </View>
       ) : (
         <Animated.View exiting={exit} style={styles.invitation}>
           <FirstMessageInvitation

@@ -1,30 +1,100 @@
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import type { TabId } from "@opensteer/core";
-import type { HostClient, PlaceItem } from "@opensteer/client/host";
-import { act, toastFailure } from "../use-action.js";
-import { useToast } from "../toast.js";
+import {
+  createClientAction,
+  type ActionOutcome,
+  type ClientAction,
+} from "@opensteer/client/actions";
+import { classifyClientFailure } from "@opensteer/client/connections";
+import { unwrapRpcResult, type HostClient, type PlaceItem } from "@opensteer/client/host";
+import { useClientAction } from "@opensteer/client/react";
+import type { ActionLineValue } from "../action-line.js";
+import { actionLine } from "../use-action.js";
 
 /**
  * Closing removes tabs from the person's list and nothing more: it never
  * quits an app, stops a phone, stops an agent or stops a server, so it asks
  * nothing first. Nothing here changes what the middle shows: when the tab
  * there leaves the list, its neighbour takes it ([succession](./place-succession.ts)).
+ *
+ * A close that didn't happen leaves the tab in the list, so its outcome is
+ * said on that tab's row, whichever control asked: never a toast.
  */
-const TabCloserContext = createContext<((tabIds: readonly TabId[]) => void) | null>(null);
+interface TabCloser {
+  close(tabIds: readonly TabId[]): void;
+  outcome(tabId: TabId): ClientAction<readonly TabId[], void> | null;
+  subscribe(listener: () => void): () => void;
+}
+const TabCloserContext = createContext<TabCloser | null>(null);
 
-function useCloseTabs(): (tabIds: readonly TabId[]) => void {
-  const close = useContext(TabCloserContext);
-  if (!close) throw new Error("Closing tabs is not available here.");
-  return close;
+function useCloser(): TabCloser {
+  const closer = useContext(TabCloserContext);
+  if (!closer) throw new Error("Closing tabs is not available here.");
+  return closer;
 }
 
 export function useTabCloser(): (place: Pick<PlaceItem, "key">) => void {
-  const close = useCloseTabs();
-  return useCallback((place) => close([place.key]), [close]);
+  const closer = useCloser();
+  return useCallback((place) => closer.close([place.key]), [closer]);
 }
 
 export function useTabGroupCloser(): (tabIds: readonly TabId[]) => void {
-  return useCloseTabs();
+  const closer = useCloser();
+  return useCallback((tabIds) => closer.close(tabIds), [closer]);
+}
+
+const idle = { key: "", running: false, outcome: null, issue: null } as const;
+const noAction = {
+  getSnapshot: () => idle,
+  subscribe: () => () => {},
+  preflight: () => null,
+  run: () => Promise.resolve({ kind: "not-sent", issue: null }),
+  reconcile: () => Promise.resolve(),
+  dismiss: () => {},
+  dispose: () => {},
+} satisfies ClientAction<readonly TabId[], void>;
+
+/** How long a "Not closed" line stays when nothing else clears it. */
+const notSentMs = 6_000;
+
+/** The line a tab's row shows for its last close that didn't happen; null otherwise. */
+export function useTabCloseLine(tabId: TabId): ActionLineValue | null {
+  const closer = useContext(TabCloserContext);
+  const read = useCallback(() => closer?.outcome(tabId) ?? null, [closer, tabId]);
+  const subscribe = useCallback(
+    (listener: () => void) => closer?.subscribe(listener) ?? (() => {}),
+    [closer],
+  );
+  const owned = useSyncExternalStore(subscribe, read, read);
+  const action = owned ?? noAction;
+  const state = useClientAction(action);
+  const notSent = state.outcome?.kind === "not-sent" && state.issue !== null;
+  useEffect(() => {
+    if (!notSent) return;
+    const timer = setTimeout(action.dismiss, notSentMs);
+    return () => clearTimeout(timer);
+  }, [action, notSent, state.outcome]);
+  return useMemo(
+    () => (state.issue === null ? null : actionLine(state.issue, () => void action.reconcile())),
+    [action, state.issue],
+  );
+}
+
+/** The Host's in-band refusal of a tab, carried as the refusal it is. */
+function tabCloseRefused(code: string): Error {
+  return Object.assign(new Error("The tab was not closed."), {
+    code,
+    provenance: "host",
+    retryable: false,
+  });
 }
 
 export function TabCloserProvider({
@@ -34,30 +104,73 @@ export function TabCloserProvider({
   readonly children: ReactNode;
   readonly hostClient: HostClient;
 }) {
-  const toast = useToast();
-  const close = useCallback(
-    (tabIds: readonly TabId[]) => {
+  const closer = useMemo(() => createTabCloser(hostClient), [hostClient]);
+  useEffect(() => () => closer.dispose(), [closer]);
+  return <TabCloserContext.Provider value={closer}>{children}</TabCloserContext.Provider>;
+}
+
+function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void } {
+  const latest = new Map<TabId, ClientAction<readonly TabId[], void>>();
+  const listeners = new Set<() => void>();
+  const publish = () => listeners.forEach((listener) => listener());
+  const release = (action: ClientAction<readonly TabId[], void>) => {
+    for (const [tabId, held] of latest) if (held === action) latest.delete(tabId);
+    action.dispose();
+  };
+  const exists = async (tabId: TabId, signal: AbortSignal): Promise<boolean | null> => {
+    try {
+      signal.throwIfAborted();
+      unwrapRpcResult(await hostClient.rpc["tabs.get"]({ tabId }));
+      return true;
+    } catch (error) {
+      return classifyClientFailure(error).code === "not_found" ? false : null;
+    }
+  };
+  return {
+    close(tabIds) {
       if (!tabIds.length) return;
-      void act(
-        hostClient,
-        tabIds.length === 1
-          ? { label: "close this tab", done: "closed", happened: "this tab closed" }
-          : { label: "close these tabs", done: "closed", happened: "these tabs closed" },
-        () => hostClient.closeTabs([...tabIds]),
-      )
-        .then((result) => {
-          // Each tab the Host refused is said once, in the app's words.
-          if (result.failed.length)
-            toast.error(
-              result.failed.length === 1
-                ? "Couldn't close this tab."
-                : `Couldn't close ${result.failed.length} tabs.`,
-            );
-        })
-        .catch((error: unknown) => toastFailure(toast)(error));
+      const action = createClientAction<readonly TabId[], void>(hostClient, {
+        key: `close:${tabIds.join(",")}`,
+        label: "close this tab",
+        done: "closed",
+        happened: "this tab closed",
+        execute: async (ids) => {
+          const result = await hostClient.closeTabs([...ids]);
+          // Each tab the Host refused stays in the list; its row says so.
+          const [refused] = result.failed;
+          if (refused) throw tabCloseRefused(refused.error.code);
+        },
+        // A lost answer is settled by asking for the tabs again, never by closing again.
+        reconcile: async (ids, signal): Promise<ActionOutcome<void> | null> => {
+          const found = await Promise.all(ids.map((id) => exists(id, signal)));
+          if (found.some((value) => value === true))
+            return { kind: "not-sent", issue: { code: "not-sent", done: "closed" } };
+          return found.every((value) => value === false)
+            ? { kind: "confirmed", value: undefined }
+            : null;
+        },
+      });
+      const previous = new Set(tabIds.flatMap((tabId) => latest.get(tabId) ?? []));
+      for (const tabId of tabIds) latest.set(tabId, action);
+      for (const held of previous) if (![...latest.values()].includes(held)) held.dispose();
+      publish();
+      const settle = () => {
+        if (action.getSnapshot().outcome?.kind !== "confirmed") return;
+        release(action);
+        publish();
+      };
+      action.subscribe(settle);
+      void action.run(tabIds).then(settle);
     },
-    [hostClient, toast],
-  );
-  const value = useMemo(() => close, [close]);
-  return <TabCloserContext.Provider value={value}>{children}</TabCloserContext.Provider>;
+    outcome: (tabId) => latest.get(tabId) ?? null,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    dispose() {
+      for (const action of new Set(latest.values())) action.dispose();
+      latest.clear();
+      listeners.clear();
+    },
+  };
 }

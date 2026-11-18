@@ -9,6 +9,7 @@ import { memo, type ReactNode } from "react";
 const defaultCopy = {
   delete: "Delete",
   edit: "Edit",
+  retry: "Send again",
   sending: "Sending…",
   waiting: "Waiting to send",
 };
@@ -29,6 +30,8 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   /** When this message was first shown, in epoch milliseconds: the quiet moment counts from it. */
   readonly since: number;
   readonly attempted: boolean;
+  /** An older release's send whose answer was lost: it can only go again under its key. */
+  readonly unconfirmed?: boolean;
   /** False for every waiting message of a run but the last. */
   readonly showStatus: boolean;
   /** The refusal in full, "Not sent. Message is too long."; shown only when rejected. */
@@ -45,7 +48,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   const actions =
     onAction === undefined || props.phase !== "rejected"
       ? []
-      : messageDeliveryActions(props.phase, props.attempted);
+      : messageDeliveryActions(props.phase, props.attempted, props.unconfirmed === true);
   const status =
     props.phase === "rejected"
       ? "rejected"
@@ -83,7 +86,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
                   onClick={() => onAction(name)}
                   type="button"
                 >
-                  {name === "edit" ? copy.edit : copy.delete}
+                  {name === "edit" ? copy.edit : name === "retry" ? copy.retry : copy.delete}
                 </button>
               ))}
             </span>

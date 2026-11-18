@@ -244,7 +244,7 @@ export function useScreenRead<T>(
   return useClientRead(resource);
 }
 
-/** An action's words and work; the words are fixed per key, the callbacks may change. */
+/** An action's words and work; both may change, and a run uses the latest. */
 export type ScreenActionSpec<I, O> = Omit<ClientActionSpec<I, O>, "key">;
 interface HeldAction {
   readonly action: ClientAction<unknown, unknown>;
@@ -263,11 +263,19 @@ function heldAction<I, O>(
   let entry = held.get(key);
   if (!entry) {
     const holder: { current: HeldAction | null } = { current: null };
+    // Words are read from the latest spec, never frozen at the key's first use.
     const action = createClientAction<unknown, unknown>(session, {
       key,
-      label: spec.label,
-      ...(spec.done ? { done: spec.done } : {}),
-      ...(spec.happened ? { happened: spec.happened } : {}),
+      get label() {
+        return holder.current!.spec.label;
+      },
+      // Empty is unsaid: the action adds only the words it has.
+      get done() {
+        return holder.current!.spec.done ?? "";
+      },
+      get happened() {
+        return holder.current!.spec.happened ?? "";
+      },
       execute: (input, signal) => holder.current!.spec.execute(input, signal),
       reconcile: (input, signal) =>
         holder.current!.spec.reconcile?.(input, signal) ?? Promise.resolve(null),
@@ -315,7 +323,7 @@ export function useScreenAction<I, O>(
 } {
   const entry = useMemo(
     () => (session === null ? null : heldAction(session, key, spec)),
-    // The spec's words are fixed per key; its callbacks are refreshed below.
+    // The spec's words and callbacks are refreshed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session, key],
   );

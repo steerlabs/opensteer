@@ -7,6 +7,7 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
+import { TaskStartSchema } from "./home/task-start.js";
 
 /**
  * What a person has written and not sent, kept on this device so leaving a
@@ -47,6 +48,8 @@ const DraftSchema = z.object({
   /** Why a send was refused after its composer closed, until the draft is opened. */
   refusal: z.string().optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
+  /** A new task being started from this draft; see `startTask`. */
+  start: TaskStartSchema.optional().catch(undefined),
   text: z.string(),
   updatedAt: z.number(),
 });
@@ -305,16 +308,21 @@ export function createComposerDraftStore(
 
     read,
 
-    /** Lays a discarded draft back down, exactly as it was. */
-    restore(key: string, draft: ComposerDraft): boolean {
+    /**
+     * Lays a draft down. An open composer is handed `returned` to merge into what
+     * it holds, or else the whole draft, exactly as it was.
+     */
+    restore(key: string, draft: ComposerDraft, returned?: ReturnedToDraft): boolean {
       const saved = write(key, draft);
       if (saved)
-        receivers.get(key)?.({
-          edit: () => draft.text,
-          files: draft.files,
-          ...(draft.places ? { places: draft.places } : {}),
-          quote: draft.quote,
-        });
+        receivers.get(key)?.(
+          returned ?? {
+            edit: () => draft.text,
+            files: draft.files,
+            ...(draft.places ? { places: draft.places } : {}),
+            quote: draft.quote,
+          },
+        );
       publish();
       return saved;
     },

@@ -11,7 +11,8 @@ import { useQuestionAnswering } from "./use-question-answering.js";
 /**
  * The composer while a question is open: what is typed here is the answer to
  * the question in view on the card above, never a message, so the Thread's
- * draft is exactly where it was when the question has gone.
+ * draft is exactly where it was when the question has gone. An unreachable
+ * computer never locks it: Answer then says "Not sent" on the card above.
  */
 export function AnswerBar(props: {
   readonly canRespond: boolean;
@@ -40,7 +41,7 @@ export function AnswerBar(props: {
         step.kind === "blocked" && draft.typed.trim() === "" && props.onStop !== null ? (
           <ComposerAction
             busy={props.stopBusy}
-            disabled={props.stopBusy || !props.canRespond}
+            disabled={props.stopBusy}
             kind="stop"
             label={props.stopLabel}
             onPress={props.onStop}
@@ -48,7 +49,7 @@ export function AnswerBar(props: {
         ) : (
           <ComposerAction
             busy={session.pendingId === "form"}
-            disabled={step.kind === "blocked" || !props.canRespond || session.pendingId !== null}
+            disabled={step.kind === "blocked" || session.pendingId !== null}
             kind={finishes ? "send" : "next"}
             label={finishes ? "Answer" : "Next"}
             onPress={question.advance}
@@ -60,7 +61,7 @@ export function AnswerBar(props: {
           <TextInput
             accessibilityLabel={field.prompt === "" ? "Your answer" : field.prompt}
             cursorColor={color.ember}
-            editable={typing && props.canRespond && session.pendingId === null}
+            editable={typing && session.pendingId === null}
             maxFontSizeMultiplier={controlFontScaleLimit}
             maxLength={requestAnswerMaxLength}
             multiline

@@ -1986,6 +1986,90 @@ describe("a conversation with a page", () => {
     expect(text(container)).not.toContain("offline");
   });
 
+  it("lets a refused message of files alone be deleted, which frees the message behind it", async () => {
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      network: "offline",
+    });
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "image/jpeg",
+      name: "photo.jpg",
+      sizeBytes: 10,
+      type: "artifact" as const,
+    };
+    const command = (idempotencyKey: string, content: readonly object[]) =>
+      ({
+        content,
+        delivery: "queue",
+        idempotencyKey,
+        threadId: workId,
+        type: "thread.sendMessage",
+      }) as never;
+    await act(async () => {
+      await outbox.enqueue(command("files-only", [file]));
+      await outbox.enqueue(command("behind", [{ text: "After the photo", type: "text" }]));
+    });
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    host.move({ ...host.client.getSnapshot(), network: "online" });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    expect(sent(host.dispatch)).toHaveLength(1);
+    await press(container, "Delete");
+    expect(host.dispatch.mock.calls.at(-1)?.[0]).toMatchObject({ idempotencyKey: "behind" });
+    expect(outbox.getSnapshot().messages).toEqual([]);
+  });
+
+  it("Edit puts a refused message back whole, above the draft already there", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container, drafts } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const quotedMessageId = createId("message");
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "application/pdf",
+      name: "agenda.pdf",
+      sizeBytes: 2048,
+      type: "artifact" as const,
+    };
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    await act(async () => {
+      await outbox.enqueue(
+        {
+          content: [{ text: "Refused words", type: "text" }, file],
+          delivery: "queue",
+          idempotencyKey: "refused",
+          quotedMessageId,
+          threadId: workId,
+          type: "thread.sendMessage",
+        },
+        { localAttachmentUris: ["file:///private/agenda.pdf"] },
+      );
+    });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    await type(container, "Message", "Newer draft");
+    await press(container, "Edit");
+    expect(outbox.getSnapshot().messages).toEqual([]);
+    const draft = drafts.readDraft(deploymentId, userId, workId);
+    expect(draft).toMatchObject({
+      attachments: [
+        { attachmentId: file.artifactId, localUri: "file:///private/agenda.pdf", status: "ready" },
+      ],
+      quote: { messageId: quotedMessageId },
+      text: "Refused words\n\nNewer draft",
+    });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Refused words\n\nNewer draft");
+  });
+
   it("includes a page Ask handed to its own screen until the person removes it, for good", async () => {
     const included = page();
     const files = new MemoryPrivateFilesystem();
@@ -3380,6 +3464,29 @@ describe("a task", () => {
     expect(button(container, "Stop this run").dataset["kind"]).toBe("stop");
     expect(hasButton(container, "Stop the reply")).toBe(false);
     expect(headers.at(-1)?.title).toBe(base.threads.find(({ id }) => id === workId)?.title);
+  });
+
+  it("says an offline Stop didn't go out beside it, and lets the line go with the run", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost({ ...running, network: "offline" });
+    const { container } = await mount(host, workId);
+
+    await press(container, "Stop this run");
+    expect(host.stopRun).not.toHaveBeenCalled();
+    expect(text(container)).toContain("Not stopped");
+
+    // Back online the line still says what that tap came to, until the run ends by itself.
+    host.move({ ...running, network: "online" });
+    await settle();
+    host.move(snapshotFor({ entries: task.entries, run: null, threadId: workId }));
+    await settle();
+    expect(hasButton(container, "Stop this run")).toBe(false);
+    expect(text(container)).not.toContain("Not stopped");
   });
 
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
@@ -5266,6 +5373,52 @@ it("resumes New task creation under the same keys when Ask is opened again after
       content: expect.arrayContaining([included]),
     }),
   );
+});
+
+it("says beside the held message when this phone couldn't queue it, and Retry hands it over under the same key without making the task again", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const { ClientOperationError } = await import("@opensteer/client/connections");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  const createThread = vi.fn(async () => thread);
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  harness.activeHost = host.client;
+  const outbox = hostMessageOutbox(host.client)!;
+  const enqueue = vi.spyOn(outbox, "enqueue").mockRejectedValueOnce(
+    new ClientOperationError("Too many messages waiting.", "blocked", {
+      kind: "local",
+      reason: "queue-full",
+      retryable: false,
+    }),
+  );
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  const onStarted = vi.fn(() => true);
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />,
+    ),
+  );
+  await press(container, "Send message");
+  await settle();
+  const held = drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))!;
+  expect(held.startedThreadId).toBe(workId);
+  expect(text(container)).toContain("Too many messages waiting.");
+  expect(onStarted).not.toHaveBeenCalled();
+
+  await press(container, "Retry");
+  await settle();
+  expect(createThread).toHaveBeenCalledOnce();
+  expect(enqueue).toHaveBeenCalledTimes(2);
+  expect(enqueue.mock.calls[1]![0].idempotencyKey).toBe(held.idempotencyKey);
+  expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
 });
 
 it("doesn't start a new task offline, says so above the composer and keeps the draft", async () => {

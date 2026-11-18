@@ -7,6 +7,7 @@ import {
   type HostClient,
   type MessageRecordStorage,
   type PendingSendCommand,
+  type StoredMessage,
 } from "@opensteer/client/host";
 import { ClientOperationError, type ClientScope } from "@opensteer/client/connections";
 import {
@@ -16,7 +17,13 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
-import { composerDraftKey, composerDrafts } from "../components/composer-drafts.js";
+import {
+  composerDraftKey,
+  composerDrafts,
+  type createComposerDraftStore,
+} from "../components/composer-drafts.js";
+
+type ComposerDraftStore = ReturnType<typeof createComposerDraftStore>;
 
 export function initializeBrowserMessageOutbox(
   client: HostClient,
@@ -32,36 +39,7 @@ export function initializeBrowserMessageOutbox(
           if (command.idempotencyKey === id) globalThis.localStorage.removeItem(key);
       },
     },
-    drafts: {
-      restore: async (scope, entry) => {
-        const key = composerDraftKey(
-          { deploymentId: scope.deploymentId, userId: scope.viewerId },
-          { kind: "thread", threadId: entry.command.threadId },
-        );
-        const held = composerDrafts.read(key);
-        if (held?.recoveredSendKeys?.includes(entry.localId)) return "restored";
-        if (held && (held.text.trim() || held.files.length || held.places?.length || held.quote))
-          return "occupied";
-        const parts = messageDraftParts(entry.command.content);
-        const restored = composerDrafts.restore(key, {
-          text: parts.body,
-          files: parts.attachments.map((part) => ({
-            part,
-            mediaType: part.mediaType,
-            name: part.name,
-            sizeBytes: part.sizeBytes ?? 0,
-          })),
-          places: parts.places,
-          quote: entry.command.quotedMessageId
-            ? { messageId: entry.command.quotedMessageId, attribution: "", excerpt: "" }
-            : null,
-          updatedAt: Date.now(),
-          recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
-        });
-        if (!restored) throw new Error("The draft could not be saved.");
-        return "restored";
-      },
-    },
+    drafts: { restore: async (scope, entry) => restoreComposerDraft(composerDrafts, scope, entry) },
   });
 }
 
@@ -81,6 +59,52 @@ function browserLegacyMessages(scope: ClientScope) {
       return [];
     }
   });
+}
+
+/**
+ * Edit's hand-back: the message goes above the words already in its thread's
+ * draft, with its files, places and quote; nothing of the draft is lost.
+ */
+export function restoreComposerDraft(
+  drafts: ComposerDraftStore,
+  scope: ClientScope,
+  entry: StoredMessage,
+): "restored" {
+  const key = composerDraftKey(
+    { deploymentId: scope.deploymentId, userId: scope.viewerId },
+    { kind: "thread", threadId: entry.command.threadId },
+  );
+  const held = drafts.read(key);
+  if (held?.recoveredSendKeys?.includes(entry.localId)) return "restored";
+  const parts = messageDraftParts(entry.command.content);
+  const above = (text: string) => (text.trim() ? `${parts.body}\n\n${text}` : parts.body);
+  const files = parts.attachments
+    .filter((part) => !held?.files.some((file) => file.part?.artifactId === part.artifactId))
+    .map((part) => ({
+      part,
+      mediaType: part.mediaType,
+      name: part.name,
+      sizeBytes: part.sizeBytes ?? 0,
+    }));
+  const quote =
+    held?.quote ??
+    (entry.command.quotedMessageId
+      ? { messageId: entry.command.quotedMessageId, attribution: "", excerpt: "" }
+      : null);
+  const restored = drafts.restore(
+    key,
+    {
+      text: above(held?.text ?? ""),
+      files: [...files, ...(held?.files ?? [])],
+      places: [...parts.places, ...(held?.places ?? [])],
+      quote,
+      updatedAt: Date.now(),
+      recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
+    },
+    { edit: above, files, places: parts.places, quote: held?.quote ? null : quote },
+  );
+  if (!restored) throw new Error("The draft could not be saved.");
+  return "restored";
 }
 
 /**

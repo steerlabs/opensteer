@@ -1,6 +1,6 @@
 import { messageDraftParts } from "./pending-send.js";
 import type { UserId } from "@opensteer/core";
-import type { HostClient, TranscriptEntry } from "./client.js";
+import type { HostClient, MessageEntry, TranscriptEntry } from "./client.js";
 import { hostApi } from "@opensteer/protocol";
 import type { PendingSendCommand } from "./pending-send.js";
 import {
@@ -33,9 +33,15 @@ export interface MessageOutboxStorage {
   exclusive?<T>(scope: ClientScope, work: () => Promise<T>): Promise<T>;
   subscribe?(listener: () => void): () => void;
 }
+/**
+ * Puts a taken-back message in its thread's durable draft, above any words
+ * already there. "occupied" means the draft cannot hold both, so nothing changed.
+ */
 export interface MessageDraftRecovery {
   restore(scope: ClientScope, entry: StoredMessage): Promise<"restored" | "occupied">;
 }
+/** What Edit came to: back in the draft, no room in the draft, or already on its way. */
+export type MessageTakeBack = "restored" | "occupied" | "sent";
 export interface MessageOutboxSnapshot {
   readonly loading: boolean;
   readonly issue: ClientIssue | null;
@@ -51,7 +57,8 @@ export interface MessageOutbox {
   ): Promise<string>;
   observe(messages: readonly { readonly id: string; readonly clientSendKey?: string }[]): void;
   retry(localId: string): void;
-  restoreDraft(localId: string): Promise<void>;
+  /** Edit: a refused or never-tried message moves to the draft, then leaves the queue. */
+  restoreDraft(localId: string): Promise<MessageTakeBack>;
   discard(localId: string): Promise<void>;
   dispose(): void;
 }
@@ -73,6 +80,12 @@ export interface MessageOutboxOptions {
   readonly storage: MessageOutboxStorage;
   readonly drafts: MessageDraftRecovery;
   readonly dispatch: (command: PendingSendCommand) => Promise<{ readonly messageId: string }>;
+}
+/** A refusal, or a message never tried: nothing of it can be on the computer. */
+function takeable(entry: StoredMessage): boolean {
+  return entry.phase === "rejected"
+    ? entry.rejection?.code !== "unconfirmed"
+    : entry.phase === "waiting" && !entry.attempted;
 }
 function storageFailure(): ClientOperationError {
   return new ClientOperationError("The message could not be saved.", "blocked", {
@@ -382,16 +395,67 @@ class SessionMessageOutbox implements MessageOutbox {
     if (timer) clearTimeout(timer);
     this.#retries.delete(localId);
     this.#attempts.delete(localId);
-    if (this.#state.issue?.code === "storage-unavailable") void this.#reload();
-    else this.#drain();
-  };
-  restoreDraft = async (localId: string): Promise<void> => {
     const scope = this.#scope,
       generation = this.#generation,
       entry = this.#state.messages.find((value) => value.localId === localId);
-    if (!scope || !entry || entry.phase !== "rejected") return;
-    const restored = await this.#options.drafts.restore(scope, entry);
-    if (restored === "restored") await this.#remove(scope, generation, entry.localId);
+    // A message whose answer was lost goes again under its own key, which the
+    // Host settles as the one message. Only the person asks for that.
+    if (scope && entry?.phase === "rejected" && entry.rejection?.code === "unconfirmed") {
+      const { rejection: _rejection, ...rest } = entry;
+      const waiting: StoredMessage = { ...rest, phase: "waiting", attempted: true };
+      this.#publish({
+        messages: this.#state.messages.map((value) =>
+          value.localId === localId ? waiting : value,
+        ),
+      });
+      void this.#write(() => this.#options.storage.put(scope, waiting)).then(
+        () => {
+          if (this.#current(scope, generation)) this.#drain();
+        },
+        () => {
+          if (!this.#current(scope, generation)) return;
+          this.#publish({
+            issue: { code: "storage-unavailable" },
+            messages: this.#state.messages.map((value) =>
+              value.localId === localId ? entry : value,
+            ),
+          });
+          this.#retryStorage();
+        },
+      );
+      return;
+    }
+    if (this.#state.issue?.code === "storage-unavailable") void this.#reload();
+    else this.#drain();
+  };
+  restoreDraft = async (localId: string): Promise<MessageTakeBack> => {
+    const scope = this.#scope,
+      generation = this.#generation,
+      entry = this.#state.messages.find((value) => value.localId === localId);
+    if (!scope || !entry || !takeable(entry)) return "sent";
+    // Holds the head back from a dispatch claim while the draft is written.
+    this.#cancelled.add(localId);
+    const takeBack = async (): Promise<MessageTakeBack> => {
+      const held = this.#options.storage.delivery
+        ? (await this.#options.storage.load(scope)).find((value) => value.localId === localId)
+        : this.#state.messages.find((value) => value.localId === localId);
+      if (!this.#current(scope, generation)) return "sent";
+      if (!held || !takeable(held)) {
+        await this.#reload();
+        return "sent";
+      }
+      if ((await this.#options.drafts.restore(scope, held)) === "occupied") return "occupied";
+      // The draft owns the words and files now; only then does the queue let go.
+      await this.#remove(scope, generation, localId);
+      return "restored";
+    };
+    try {
+      return await (this.#options.storage.delivery?.(scope, entry.command.threadId, takeBack) ??
+        takeBack());
+    } finally {
+      this.#cancelled.delete(localId);
+      if (this.#current(scope, generation)) this.#drain();
+    }
   };
   discard = async (localId: string): Promise<void> => {
     const scope = this.#scope,
@@ -686,46 +750,79 @@ export function projectMessageOutbox(
   entries: readonly TranscriptEntry[],
   viewerId: UserId,
 ): readonly TranscriptEntry[] {
-  if (state.messages.length === 0 && state.acknowledged.size === 0) return entries;
+  const local = state.messages.filter((entry) => entry.command.threadId === threadId);
+  const aliased = (entry: TranscriptEntry): string | undefined =>
+    entry.kind === "message" ? state.acknowledged.get(entry.id) : undefined;
+  // Another task's queue moving changes nothing here: the same array comes back.
+  if (
+    local.length === 0 &&
+    (state.acknowledged.size === 0 || !entries.some((entry) => aliased(entry) !== undefined))
+  )
+    return entries;
   const confirmed = new Set(
     entries.flatMap((entry) =>
-      entry.kind === "message"
-        ? (entry.clientSendKey ?? state.acknowledged.get(entry.id) ?? [])
-        : [],
+      entry.kind === "message" ? (entry.clientSendKey ?? aliased(entry) ?? []) : [],
     ),
   );
-  const projected = entries.map((entry) =>
-    entry.kind === "message" &&
-    state.acknowledged.has(entry.id) &&
-    entry.clientSendKey !== state.acknowledged.get(entry.id)
-      ? { ...entry, clientSendKey: state.acknowledged.get(entry.id)! }
-      : entry,
-  );
-  const pending: TranscriptEntry[] = state.messages
-    .filter((entry) => entry.command.threadId === threadId && !confirmed.has(entry.localId))
-    .map((entry) => {
-      const parts = messageDraftParts(entry.command.content);
-      return {
-        kind: "message",
-        id: entry.localId,
-        clientSendKey: entry.localId,
-        createdAt: entry.createdAt,
-        messageKind: "input",
-        runId: null,
-        policy: entry.command.delivery ?? "queue",
-        body: parts.body,
-        attachments: parts.attachments,
-        pages: parts.places.filter((part) => part.type === "browser-page"),
-        places: parts.places.filter(
-          (part) => part.type === "computer-app" || part.type === "phone",
-        ),
-        author: { kind: "human", userId: viewerId, principalId: viewerId, displayName: "You" },
-        localDelivery: {
-          phase: entry.phase,
-          attempted: entry.attempted,
-          ...(entry.rejection ? { issue: entry.rejection } : {}),
-        },
-      };
-    });
-  return [...projected, ...pending];
+  let changed = false;
+  const projected = entries.map((entry) => {
+    const key = aliased(entry);
+    if (entry.kind !== "message" || key === undefined || entry.clientSendKey === key) return entry;
+    changed = true;
+    const held = aliasRows.get(entry);
+    if (held?.clientSendKey === key) return held;
+    const row = { ...entry, clientSendKey: key };
+    aliasRows.set(entry, row);
+    return row;
+  });
+  const pending = local
+    .filter((entry) => !confirmed.has(entry.localId))
+    .map((entry) => localRow(entry, viewerId));
+  return pending.length === 0 && !changed ? entries : [...projected, ...pending];
+}
+
+// Rows are rebuilt only when what they show changes, so a row that did not change keeps
+// its identity and the transcript beneath it declines to redraw.
+const aliasRows = new WeakMap<TranscriptEntry, MessageEntry>();
+const localRows = new WeakMap<StoredMessage, MessageEntry>();
+function localRow(entry: StoredMessage, viewerId: UserId): MessageEntry {
+  const held = localRows.get(entry);
+  if (held?.author.kind === "human" && held.author.userId === viewerId) return held;
+  const parts = messageDraftParts(entry.command.content);
+  const row: MessageEntry = {
+    kind: "message",
+    id: entry.localId,
+    clientSendKey: entry.localId,
+    createdAt: entry.createdAt,
+    messageKind: "input",
+    runId: null,
+    policy: entry.command.delivery ?? "queue",
+    body: parts.body,
+    attachments: parts.attachments,
+    pages: parts.places.filter((part) => part.type === "browser-page"),
+    places: parts.places.filter((part) => part.type === "computer-app" || part.type === "phone"),
+    author: { kind: "human", userId: viewerId, principalId: viewerId, displayName: "You" },
+    localDelivery: {
+      phase: entry.phase,
+      attempted: entry.attempted,
+      ...(entry.rejection ? { issue: entry.rejection } : {}),
+    },
+  };
+  localRows.set(entry, row);
+  return row;
+}
+
+/**
+ * The previous projection when every row in the next one is the same object, so a
+ * subscriber to the whole outbox redraws only for a change to its own task.
+ */
+export function sameTranscript(
+  previous: readonly TranscriptEntry[] | null,
+  next: readonly TranscriptEntry[],
+): readonly TranscriptEntry[] {
+  return previous !== null &&
+    previous.length === next.length &&
+    previous.every((entry, index) => entry === next[index])
+    ? previous
+    : next;
 }

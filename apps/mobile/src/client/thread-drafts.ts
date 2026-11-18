@@ -34,6 +34,7 @@ import { z } from "zod";
 
 const maxTaskStartRecords = 48;
 const maxDraftCharacters = 16_000;
+const maxDraftAttachments = 10;
 // A hard file cap covers escaped text, keys and metadata, and is the only bound
 // on how many drafts a phone keeps. Drafts and messages share it: a write past
 // it is refused and the composer says so, rather than dropping an older draft.
@@ -52,7 +53,7 @@ const DraftAttachmentsSchema = z
       })
       .refine((attachment) => attachment.localUri !== null || attachment.attachmentId !== null),
   )
-  .max(10);
+  .max(maxDraftAttachments);
 const LegacyDraftSchema = z.strictObject({
   attachments: DraftAttachmentsSchema.optional(),
   text: z.string().max(maxDraftCharacters),
@@ -134,6 +135,8 @@ const TaskStartRecordSchema = LegacyTaskStartRecordSchema.extend({
   // source, or it is a different message.
   quotedMessageId: z.string().min(1).max(200).optional(),
   start: TaskStartParametersSchema.optional(),
+  /** The task the Host confirmed making, so the handoff is retried without making it again. */
+  startedThreadId: z.string().min(1).max(200).optional(),
   userId: z.string().min(1).max(200),
 })
   .refine((command) => command.text.trim().length > 0 || (command.attachments?.length ?? 0) > 0)
@@ -207,7 +210,10 @@ export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boole
 }
 
 /** What a composer knows; the store stamps the time it was claimed. */
-export type TaskStartInput = Omit<TaskStartRecord, "createdAt" | "delivery" | "userId">;
+export type TaskStartInput = Omit<
+  TaskStartRecord,
+  "createdAt" | "delivery" | "startedThreadId" | "userId"
+>;
 
 /**
  * A schema 3 file without its steering decisions. Typing no longer answers an
@@ -272,6 +278,14 @@ export interface ThreadDraftStore {
     threadId: string,
     expectedIdempotencyKey?: string,
   ): Promise<boolean>;
+  /** Notes the task the Host made for this start, for the record under that key only. */
+  recordTaskStarted(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+    expectedIdempotencyKey: string,
+    startedThreadId: string,
+  ): Promise<void>;
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
@@ -522,28 +536,40 @@ export function createThreadDraftStore(options: {
           outcome = "restored";
           return;
         }
-        if (held && draftHasContent(held)) return;
+        // The message goes above the words already there, with its files after
+        // theirs; the draft's own quote and page stand, else the message's.
         const parts = messageDraftParts(entry.command.content);
+        const current = held && draftHasContent(held) ? held : undefined;
+        const text = current?.text.trim() ? `${parts.body}\n\n${current.text}` : parts.body;
+        const kept = current?.attachments ?? [];
+        const attachments = [
+          ...kept,
+          ...parts.attachments
+            .map((part, index) => ({
+              attachmentId: part.artifactId,
+              localUri: entry.localAttachmentUris?.[index] ?? null,
+              mediaType: part.mediaType,
+              name: part.name,
+              sizeBytes: part.sizeBytes ?? 0,
+              status: "ready" as const,
+            }))
+            .filter((part) => !kept.some((item) => item.attachmentId === part.attachmentId)),
+        ];
+        if (text.length > maxDraftCharacters || attachments.length > maxDraftAttachments) return;
+        const page = parts.places.find((part) => part.type === "browser-page");
         putDraft(nextDrafts, entryKey, scope.viewerId, {
-          text: parts.body,
-          attachments: parts.attachments.map((part, index) => ({
-            attachmentId: part.artifactId,
-            localUri: entry.localAttachmentUris?.[index] ?? null,
-            mediaType: part.mediaType,
-            name: part.name,
-            sizeBytes: part.sizeBytes ?? 0,
-            status: "ready" as const,
-          })),
-          page: parts.places.find((part) => part.type === "browser-page"),
-          ...(entry.command.quotedMessageId
-            ? {
-                quote: {
+          text,
+          attachments,
+          page: current?.page ?? page,
+          quote:
+            current?.quote ??
+            (entry.command.quotedMessageId
+              ? {
                   messageId: entry.command.quotedMessageId,
                   attribution: "Quoted message",
                   excerpt: "",
-                },
-              }
-            : {}),
+                }
+              : undefined),
           recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
         });
         outcome = "restored";
@@ -643,6 +669,21 @@ export function createThreadDraftStore(options: {
         cleared = true;
       });
       return cleared;
+    },
+
+    async recordTaskStarted(
+      deploymentId,
+      userId,
+      threadId,
+      expectedIdempotencyKey,
+      startedThreadId,
+    ): Promise<void> {
+      await mutate((_nextDrafts, nextPending) => {
+        const entryKey = key(deploymentId, userId, threadId);
+        const current = nextPending.get(entryKey);
+        if (current?.idempotencyKey !== expectedIdempotencyKey) return;
+        nextPending.set(entryKey, { ...current, startedThreadId });
+      });
     },
 
     async discardDraft(deploymentId, userId, threadId): Promise<void> {

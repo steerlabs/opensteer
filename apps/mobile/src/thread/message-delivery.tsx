@@ -28,6 +28,7 @@ const defaultCopy = {
   delete: "Delete",
   dontSend: "Don't send",
   edit: "Edit",
+  retry: "Send again",
   sending: "Sending…",
   waiting: "Waiting to send",
 };
@@ -40,6 +41,8 @@ const defaultCopy = {
 export interface MessageDeliveryControls {
   readonly act: (key: string, action: MessageDeliveryAction) => void;
   readonly statusShown: (key: string) => boolean;
+  /** What the last Edit, Delete or Send again on this message came to, when it needs saying. */
+  readonly note: (key: string) => string | null;
 }
 
 export const MessageDeliveryContext = createContext<MessageDeliveryControls | null>(null);
@@ -48,16 +51,24 @@ export const MessageDeliveryContext = createContext<MessageDeliveryControls | nu
 export function deliveryMenu(
   phase: MessageDeliveryPhase,
   attempted: boolean,
+  unconfirmed = false,
 ): readonly {
   readonly group: number;
   readonly id: MessageDeliveryAction;
   readonly image: string;
   readonly title: string;
 }[] {
-  return messageDeliveryActions(phase, attempted).map((id) => ({
+  return messageDeliveryActions(phase, attempted, unconfirmed).map((id) => ({
     group: 0,
     id,
-    image: id === "edit" ? "pencil" : id === "delete" ? "trash" : "xmark",
+    image:
+      id === "edit"
+        ? "pencil"
+        : id === "delete"
+          ? "trash"
+          : id === "retry"
+            ? "arrow.clockwise"
+            : "xmark",
     title: actionLabel(id, defaultCopy),
   }));
 }
@@ -79,14 +90,22 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   /** When this message was first shown, in epoch milliseconds: the quiet moment counts from it. */
   readonly since: number;
   readonly attempted: boolean;
+  /** An older release's send whose answer was lost: it can only go again under its key. */
+  readonly unconfirmed?: boolean;
+  /** No bubble to hold, as with files alone: a waiting message's actions stand under it. */
+  readonly inline?: boolean;
+  /** What the last action on this message came to, when it needs saying. */
+  readonly note?: string | null;
   /** False for every waiting message of a run but the last. */
   readonly showStatus: boolean;
   /** The refusal in full, "Not sent. Message is too long."; shown only when rejected. */
   readonly rejection?: string | null;
   readonly onAction?: ((action: MessageDeliveryAction) => void) | undefined;
   readonly copy?: Partial<typeof defaultCopy>;
+  readonly style?: ViewStyle;
 }): ReactNode {
   const copy = { ...defaultCopy, ...props.copy };
+  const unconfirmed = props.unconfirmed === true;
   const quiet = useQuietMoment(props.phase === "sending" ? props.since : null, quietMs);
   const dimmed = props.phase === "waiting" || (props.phase === "sending" && !quiet);
   const opacity = useSharedValue(dimmed ? pendingOpacity : 1);
@@ -97,12 +116,18 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
 
   const accessibilityActions = useMemo(
     () =>
-      messageDeliveryActions(props.phase, props.attempted).map((name) => ({
-        label: name === "edit" ? copy.edit : name === "delete" ? copy.delete : copy.dontSend,
+      messageDeliveryActions(props.phase, props.attempted, unconfirmed).map((name) => ({
+        label: actionLabel(name, copy),
         name,
       })),
-    [props.phase, props.attempted, copy.edit, copy.delete, copy.dontSend],
+    [props.phase, props.attempted, unconfirmed, copy.edit, copy.delete, copy.dontSend, copy.retry],
   );
+  const links =
+    props.onAction === undefined
+      ? []
+      : props.phase === "rejected" || (props.inline === true && props.phase === "waiting")
+        ? messageDeliveryActions(props.phase, props.attempted, unconfirmed)
+        : [];
   const onAction = props.onAction;
   const status =
     props.phase === "rejected"
@@ -123,53 +148,75 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
           ? undefined
           : (event: AccessibilityActionEvent) => {
               const name = event.nativeEvent.actionName;
-              if (name === "edit" || name === "delete" || name === "dont-send") onAction(name);
+              if (name === "edit" || name === "delete" || name === "dont-send" || name === "retry")
+                onAction(name);
             }
       }
     >
-      <Animated.View style={look}>{props.children}</Animated.View>
-      {status === null ? null : (
-        <Animated.View entering={appear} exiting={exit} key={status} style={styles.status}>
-          {status === "rejected" ? (
-            <>
-              <AppText role="caption" style={styles.reason} tone="danger">
-                {props.rejection ?? null}
-              </AppText>
-              {onAction === undefined
-                ? null
-                : (["edit", "delete"] as const).map((name, index) => (
-                    <View key={name} style={styles.linkRow}>
-                      {index === 0 ? null : (
-                        <AppText role="caption" tone="muted">
-                          ·
-                        </AppText>
-                      )}
-                      <Pressable
-                        accessibilityRole="button"
-                        hitSlop={space[8]}
-                        onPress={() => onAction(name)}
-                        style={styles.link}
-                      >
-                        <AppText role="caption" style={styles.linkLabel} tone="ember">
-                          {actionLabel(name, copy)}
-                        </AppText>
-                      </Pressable>
-                    </View>
-                  ))}
-            </>
+      <Animated.View style={[props.style, look]}>{props.children}</Animated.View>
+      {status === null && links.length === 0 ? null : (
+        <Animated.View
+          entering={appear}
+          exiting={exit}
+          key={status ?? "actions"}
+          style={styles.status}
+        >
+          {status === null ? null : status === "rejected" ? (
+            <AppText role="caption" style={styles.reason} tone={unconfirmed ? "muted" : "danger"}>
+              {props.rejection ?? null}
+            </AppText>
           ) : (
             <AppText role="caption" tone="muted">
               {status === "waiting" ? copy.waiting : copy.sending}
             </AppText>
           )}
+          {onAction === undefined
+            ? null
+            : links.map((name, index) => (
+                <View key={name} style={styles.linkRow}>
+                  {index === 0 && status === null ? null : (
+                    <AppText role="caption" tone="muted">
+                      ·
+                    </AppText>
+                  )}
+                  <Pressable
+                    accessibilityRole="button"
+                    hitSlop={space[8]}
+                    onPress={() => onAction(name)}
+                    style={styles.link}
+                  >
+                    <AppText role="caption" style={styles.linkLabel} tone="ember">
+                      {actionLabel(name, copy)}
+                    </AppText>
+                  </Pressable>
+                </View>
+              ))}
         </Animated.View>
       )}
+      {props.note ? (
+        <Animated.View
+          accessibilityRole="alert"
+          entering={appear}
+          exiting={exit}
+          style={styles.status}
+        >
+          <AppText role="caption" style={styles.reason} tone="danger">
+            {props.note}
+          </AppText>
+        </Animated.View>
+      ) : null}
     </View>
   );
 });
 
 function actionLabel(name: MessageDeliveryAction, copy: typeof defaultCopy): string {
-  return name === "edit" ? copy.edit : name === "delete" ? copy.delete : copy.dontSend;
+  return name === "edit"
+    ? copy.edit
+    : name === "delete"
+      ? copy.delete
+      : name === "retry"
+        ? copy.retry
+        : copy.dontSend;
 }
 
 const styles = StyleSheet.create({

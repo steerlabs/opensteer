@@ -2,8 +2,8 @@ import { useMobileNotifications } from "../ui/notifications-context.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
-import { issueLine } from "../ui/client-feedback.js";
-import { notSent, notSentIssue, useConnectionReady } from "../ui/connection-live.js";
+import { issueLine, notDone, useScreenAction } from "../ui/client-feedback.js";
+import { useConnectionReady } from "../ui/connection-live.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
 import { ComposerEditor } from "../ui/composer-editor.js";
@@ -200,10 +200,27 @@ export function Composer(props: {
   );
   const quote = draft?.quote ?? null;
   const [sending, setSending] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  // What Send or Stop came to, beside the bar: a message that couldn't be
-  // written down here, or a Stop that didn't go out.
+  // What Send came to, beside the bar: a message that couldn't be written down here.
   const [failure, setFailure] = useState<ActionLineValue | null>(null);
+  const running = useRef(props.running);
+  running.current = props.running;
+  // Stop's outcome beside it: "Not stopped" goes by itself, a lost answer
+  // waits for a check, and neither outlives the Stop control.
+  const stopAction = useScreenAction<undefined, void>(props.hostClient, `run-stop:${threadId}`, {
+    label: "stop this run",
+    done: "stopped",
+    execute: async () => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      await props.hostClient.stopRun(threadId);
+    },
+    reconcile: async () =>
+      running.current ? notDone("stopped") : { kind: "confirmed", value: undefined },
+  });
+  const stopping = stopAction.running;
+  const dismissStop = stopAction.dismiss;
+  useEffect(() => {
+    if (!props.running) dismissStop();
+  }, [props.running, dismissStop]);
   const reopenLine = useTaskDoneLine(threadId);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
@@ -226,7 +243,6 @@ export function Composer(props: {
    */
   const [presenting, setPresenting] = useState(false);
   const inFlight = useRef(false);
-  const stoppingRef = useRef(false);
   const draftText = useRef(text);
   draftText.current = text;
   const draftWrite = useRef(0);
@@ -615,29 +631,8 @@ export function Composer(props: {
   };
 
   const stop = async (): Promise<void> => {
-    if (stoppingRef.current || props.runStopping) return;
-    const unsent = props.canRespond
-      ? null
-      : (notSentIssue(props.hostClient, "stopped") ?? notSent("stopped"));
-    if (unsent !== null) {
-      setFailure(issueLine(unsent, `stop:${Date.now()}`));
-      return;
-    }
-    setFailure(null);
-    stoppingRef.current = true;
-    setStopping(true);
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    try {
-      await props.hostClient.stopRun(props.threadId);
-    } catch (error) {
-      const issue = clientIssue(error, { operation: "action", label: "stop this run" });
-      setFailure(
-        issue === null ? null : issueLine({ ...issue, done: "stopped" }, `stop:${Date.now()}`),
-      );
-    } finally {
-      stoppingRef.current = false;
-      setStopping(false);
-    }
+    if (stopping || props.runStopping) return;
+    await stopAction.run(undefined);
   };
 
   // Not the connection: offline, an answer is tapped and said not to have gone out.
@@ -753,6 +748,11 @@ export function Composer(props: {
       {failure === null ? null : (
         <View style={styles.failure}>
           <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
+        </View>
+      )}
+      {stopAction.line === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine line={stopAction.line} numberOfLines={2} onDismiss={dismissStop} />
         </View>
       )}
       {filesWait ? (

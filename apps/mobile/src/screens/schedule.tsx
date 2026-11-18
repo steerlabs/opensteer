@@ -246,13 +246,16 @@ function ScheduleBody(props: {
   const { item, definition } = detail;
   const managed = item.systemRole != null;
   const worker = definition.anchorThread;
+  // Reopen and Resume are separate actions, so an outcome keeps the words of the verb tapped.
+  const verb = worker?.doneAt ? "reopen" : "resume";
+  const done = verb === "reopen" ? "reopened" : "resumed";
   const recovery = useScreenAction<"reopen" | "resume", void>(
     props.hostClient,
-    `schedule-worker:${worker?.id ?? item.id}`,
+    `schedule-worker:${verb}:${worker?.id ?? item.id}`,
     {
       label: "restart the worker",
-      done: worker?.doneAt ? "reopened" : "resumed",
-      happened: `the worker was ${worker?.doneAt ? "reopened" : "resumed"}`,
+      done,
+      happened: `the worker was ${done}`,
       execute: async (kind) => {
         if (!worker) return;
         if (kind === "reopen") await props.hostClient.setTaskDone(worker.id, false);
@@ -270,11 +273,11 @@ function ScheduleBody(props: {
           ? notDone(kind === "reopen" ? "reopened" : "resumed")
           : { kind: "confirmed", value: undefined };
       },
-      retry: () => void recovery.run(worker?.doneAt ? "reopen" : "resume"),
+      retry: () => void recovery.run(verb),
     },
   );
   const recovering = recovery.running;
-  const recover = () => recovery.run(worker?.doneAt ? "reopen" : "resume");
+  const recover = () => recovery.run(verb);
   const source = definition.revision.source;
   const now = Date.now();
   const watch =
