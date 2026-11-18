@@ -115,13 +115,19 @@ function SubscribedThreadSettings(props: {
   readonly threadId: string;
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
+  const { runQueue } = useThreadTranscript(props.hostClient, props.threadId);
+  usePersonalResources(props.hostClient, settingsResources);
   const navigation = useNavigation();
   const userId = snapshot.user?.id ?? null;
   const thread = snapshot.threads.find(({ id }) => id === props.threadId) ?? null;
   if (thread === null) {
+    const loading =
+      snapshot.connection !== "offline" && snapshot.threadLookups[props.threadId] === undefined;
     return (
       <UnavailableSheet
-        detail="It may have been deleted, or it belongs to another deployment."
+        {...(loading
+          ? {}
+          : { detail: "It may have been deleted, or it belongs to another deployment." })}
         onDone={() => navigation.goBack()}
       />
     );
@@ -129,6 +135,7 @@ function SubscribedThreadSettings(props: {
   return (
     <ModelPickerForUser
       {...props}
+      hasRun={runQueue.length > 0}
       key={`${props.deploymentId}:${userId ?? "signed-out"}:${props.threadId}`}
       snapshot={snapshot}
       thread={thread}
@@ -139,6 +146,7 @@ function SubscribedThreadSettings(props: {
 interface PickerForUserProps {
   readonly conversation: boolean;
   readonly deploymentId: string;
+  readonly hasRun: boolean;
   readonly hostClient: HostClient;
   readonly snapshot: HostSnapshot;
   readonly thread: ThreadSummary;
@@ -170,8 +178,6 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     [props.deploymentId, props.snapshot.user?.id, props.threadId],
   );
   const { gate, owner } = useThreadMutation(scope);
-  const { runQueue } = useThreadTranscript(props.hostClient, props.threadId);
-  usePersonalResources(props.hostClient, settingsResources);
 
   // Set on mount rather than at creation, so StrictMode's replayed effect
   // leaves a mounted sheet able to report its own failures.
@@ -188,7 +194,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
   );
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(props.snapshot),
-    hasRun: runQueue.length > 0,
+    hasRun: props.hasRun,
     mutationOwner: owner,
     kind: "thread",
     thread: props.thread,
@@ -673,7 +679,13 @@ interface ExecutionSwitchReview {
   readonly expectedSelection: ExecutionSelection;
 }
 
-const settingsResources = ["harness-catalog", "harness-auth", "agent-home-settings"] as const;
+const settingsResources = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "agent-home-settings",
+] as const;
 
 /** A Run that has not finished is what a switch has to wait for. */
 function runningHere(client: HostClient, threadId: string): boolean {
@@ -1110,6 +1122,7 @@ function SubscribedNewThread(props: {
   readonly hostClient: HostClient;
   readonly pickerAttemptId?: string;
 }): ReactNode {
+  usePersonalResources(props.hostClient, settingsResources);
   const { snapshot } = useHostSnapshot(props.hostClient);
   const navigation = useNavigation();
   const client = useMobileClient();
@@ -1442,13 +1455,19 @@ function SubscribedNewThread(props: {
 }
 
 function UnavailableSheet(props: {
-  readonly detail: string;
+  readonly detail?: string;
   readonly onDone: () => void;
 }): ReactNode {
   return (
     <ScrollView contentContainerStyle={[styles.unavailable, styles.content]}>
       <SheetBar onBack={null} onClose={props.onDone} subtitle={null} title="Model" />
-      <Notice detail={props.detail} title="The model picker is unavailable" tone="neutral" />
+      {props.detail === undefined ? (
+        <AppText role="secondary" tone="muted">
+          Opening this thread…
+        </AppText>
+      ) : (
+        <Notice detail={props.detail} title="The model picker is unavailable" tone="neutral" />
+      )}
     </ScrollView>
   );
 }
