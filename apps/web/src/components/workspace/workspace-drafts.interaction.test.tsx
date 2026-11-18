@@ -62,12 +62,15 @@ import {
   setRoot,
 } from "./workspace.interaction.test-support.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";
+// These tests check what a Send carries, never the agent's reply to it.
+const sentOnly = { mock: { replies: "brief" } } as const;
+
 describe("the draft's places", () => {
   it("follows the sign-in form page and sends its automatic reference on the first press", async () => {
     await mount((source) => {
       const form = placeList(source.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
       return `/${tabSearch(form)}`;
-    });
+    }, sentOnly);
     await settle(100);
     const form = placeList(client.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
     const sessionId = pageSession(form.key);
@@ -113,7 +116,7 @@ describe("the draft's places", () => {
   });
 
   it("follows the page while untouched, freezes on typing, and a removal sticks", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     const place = pageTab();
     await settle(100);
     expect(element(".context-chip__title").textContent).toBe(place.title);
@@ -145,7 +148,7 @@ describe("the draft's places", () => {
       await mount((source) => {
         vi.spyOn(source, "readBrowserContextCandidate").mockImplementationOnce(() => late.promise);
         return `/${tabSearch(pageTab(source))}`;
-      });
+      }, sentOnly);
       await settle(100);
       const place = pageTab();
       const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
@@ -189,7 +192,7 @@ describe("the draft's places", () => {
   );
 
   it("never picks up a page on a task's reply", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     await settle(150);
@@ -197,7 +200,7 @@ describe("the draft's places", () => {
   });
 
   it("explicit + attaches a tab through the candidate read", async () => {
-    await mount("/");
+    await mount("/", sentOnly);
     const read = vi.spyOn(client, "readBrowserContextCandidate");
     const place = pageTab();
     await click(element('.composer__attach[aria-label="Attach"]'));
@@ -213,7 +216,7 @@ describe("the draft's places", () => {
   it.each(["navigate", "reload"] as const)(
     "sends a frozen page on the first press after its tab %ss",
     async (change) => {
-      await mount((source) => `/${tabSearch(pageTab(source))}`);
+      await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
       await settle(100);
       const place = pageTab();
       const tabId = place.key;
@@ -263,7 +266,7 @@ describe("the draft's places", () => {
   it.each(["held", "handed back"] as const)(
     "lets its automatic page go when that tab closes, but keeps an explicit pick, greyed (%s)",
     async (how) => {
-      await mount((source) => `/${tabSearch(pageTab(source))}`);
+      await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
       await settle(100);
       const place = pageTab();
       const other = placeList(client.getSnapshot()).find(
@@ -340,7 +343,7 @@ describe("the draft's places", () => {
   );
 
   it("merges a refused message into a newer draft without losing either's places", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const place = pageTab();
     const other = placeList(client.getSnapshot()).find(
@@ -399,7 +402,7 @@ describe("the draft's places", () => {
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const place = pageTab();
     expect(element(".context-chip__title").textContent).toBe(place.title);
@@ -475,7 +478,7 @@ describe("the draft's places", () => {
     const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
@@ -504,7 +507,7 @@ describe("the draft's places", () => {
     });
 
     it("carries the phone display in front", async () => {
-      await mount("/");
+      await mount("/", sentOnly);
       const phone = placeList(client.getSnapshot()).find(
         (item) => item.kind === "phone" && item.availability === "ready",
       );
@@ -521,7 +524,7 @@ describe("the draft's places", () => {
     });
 
     it("freezes on typing, keeps its app when another place is shown, and a removal sticks", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "About this");
@@ -533,7 +536,7 @@ describe("the draft's places", () => {
     });
 
     it("lets its automatic app go when its tab closes", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "About this");
@@ -550,7 +553,7 @@ describe("the draft's places", () => {
     });
 
     it("sends the place as it is now when it is renamed in the same place", async () => {
-      await mount("/");
+      await mount("/", sentOnly);
       const phone = placeList(client.getSnapshot()).find(
         (item) => item.kind === "phone" && item.availability === "ready",
       );
@@ -581,7 +584,7 @@ describe("the draft's places", () => {
     });
 
     it("takes no app from a Mac that is not ready, and follows it again once it is", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
@@ -594,7 +597,7 @@ describe("the draft's places", () => {
     });
 
     it("an automatic app alone does not enable Send; an explicit pick alone does", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
@@ -615,7 +618,7 @@ describe("the draft's places", () => {
     });
 
     it("never picks up an app on a task's reply", async () => {
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       expect(chip()).not.toBeNull();
       await click(element(`.side-task[data-thread-id="${firstTaskId()}"] .side-task__main`));
@@ -625,7 +628,7 @@ describe("the draft's places", () => {
 
     it("retries the app it carried with identical content and key, again after a reload", async () => {
       const dispatch = loseFirstSend();
-      await mount("/?panel=browser");
+      await mount("/?panel=browser", sentOnly);
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "Can you see my screen?");
@@ -661,7 +664,7 @@ describe("the draft's places", () => {
 describe("unconfirmed sends keep every place exactly", () => {
   it("retries with identical content and key, again after a reload, pages and apps alike", async () => {
     const dispatch = loseFirstSend();
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`, sentOnly);
     await settle(100);
     const app = placeList(client.getSnapshot()).find(
       (place) => place.kind === "window" && place.availability === "ready",

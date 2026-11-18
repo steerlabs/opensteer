@@ -1826,6 +1826,8 @@ export interface MockHostClientOptions {
   world?: "seeded" | "first-run" | "busy" | "stress";
   /** The team this Host plays; `absent`, today's Hosts, by default. */
   latencyMs?: number;
+  /** What a Run does before its reply: the scripted reasoning, tools and streamed text, or only the reply. */
+  replies?: "scripted" | "brief";
   now?: () => Date;
   pendingRequests?: readonly Request[];
   /** The sessions `sessions.list` reports; one current session by default. */
@@ -6348,6 +6350,7 @@ class MockHostState {
     { readonly startedAt: number; readonly method: HarnessSetupMethod }
   >();
   private readonly latencyMs: number;
+  private readonly replies: "scripted" | "brief";
   private readonly listeners = new Set<() => void>();
   private readonly notificationListeners = new Set<(notification: NotificationView) => void>();
   private readonly assignments = new Map<string, AssignmentView>();
@@ -6489,6 +6492,7 @@ class MockHostState {
       ]),
     ];
     this.latencyMs = options.latencyMs ?? 420;
+    this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());
     this.chrome = new MockChromeSignIns(this.now);
     const initial = {
@@ -12847,88 +12851,7 @@ class MockHostState {
       ),
     );
 
-    // Reasoning streams a couple of sentences, then completes.
-    let reasoning: ReasoningEntry = {
-      createdAt: this.now().toISOString(),
-      id: `reasoning:${run.id}:block-1`,
-      kind: "reasoning",
-      runId: run.id,
-      state: "streaming",
-      text: "",
-    };
-    const reasoningSentences = [
-      "I should inspect the files before changing anything. ",
-      "One shell check plus a focused edit will keep the run small and verifiable.",
-    ];
-    for (const sentence of reasoningSentences) {
-      await delay(this.latencyMs / 2);
-      if (!this.isRunCurrent(thread.id, run)) return;
-      reasoning = { ...reasoning, text: `${reasoning.text}${sentence}` };
-      this.upsertEntry(thread.id, reasoning);
-    }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, { ...reasoning, state: "done" });
-
-    // A shell tool call streams stdout lines, then completes with canonical output.
-    let shell: ToolEntry = {
-      arguments: { command: "rg --files src | head -n 3" },
-      callId: "call-shell-1",
-      createdAt: this.now().toISOString(),
-      id: `tool:${run.id}:call-shell-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      output: undefined,
-      runId: run.id,
-      state: "running",
-      streamText: "",
-      tool: { name: "shell", namespace: "codex" },
-    };
-    this.upsertEntry(thread.id, shell);
-    const stdoutLines = ["src/app.tsx\n", "src/host/client.ts\n", "src/host/transcript.ts\n"];
-    for (const line of stdoutLines) {
-      await delay(this.latencyMs / 3);
-      if (!this.isRunCurrent(thread.id, run)) return;
-      shell = { ...shell, streamText: `${shell.streamText}${line}` };
-      this.upsertEntry(thread.id, shell);
-    }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, {
-      ...shell,
-      output: { text: shell.streamText },
-      state: "done",
-    });
-
-    // A second, edit-shaped tool call with a diff-ish payload.
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    const edit: ToolEntry = {
-      arguments: {
-        patch: "@@ -1,2 +1,3 @@\n # Notes\n+\n+- Recorded this run in the Thread.\n",
-        path: "docs/notes.md",
-      },
-      callId: "call-edit-1",
-      createdAt: this.now().toISOString(),
-      id: `tool:${run.id}:call-edit-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      output: undefined,
-      runId: run.id,
-      state: "running",
-      streamText: "",
-      tool: { name: "apply_patch", namespace: "codex" },
-    };
-    this.upsertEntry(thread.id, edit);
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, {
-      ...edit,
-      output: { text: "Applied patch to docs/notes.md" },
-      state: "done",
-    });
+    if (this.replies === "scripted" && !(await this.streamMockWork(thread, run))) return;
 
     // The assistant reply streams into a draft, then the final markdown
     // message replaces the draft in place.
@@ -12947,14 +12870,16 @@ class MockHostState {
       runId: run.id,
       streaming: true,
     };
-    for (const chunk of splitIntoChunks(reply, 3)) {
-      await delay(this.latencyMs / 3);
+    if (this.replies === "scripted") {
+      for (const chunk of splitIntoChunks(reply, 3)) {
+        await delay(this.latencyMs / 3);
+        if (!this.isRunCurrent(thread.id, run)) return;
+        draft = { ...draft, body: `${draft.body}${chunk}` };
+        this.upsertEntry(thread.id, draft);
+      }
+      await delay(this.latencyMs / 2);
       if (!this.isRunCurrent(thread.id, run)) return;
-      draft = { ...draft, body: `${draft.body}${chunk}` };
-      this.upsertEntry(thread.id, draft);
     }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
     const assistantEntry: MessageEntry = {
       author: mockAgentAuthor(run.id, thread.id),
       body: reply,
@@ -12965,7 +12890,8 @@ class MockHostState {
       published: true,
       runId: run.id,
     };
-    this.replaceEntryById(thread.id, streamId, assistantEntry);
+    if (this.replies === "scripted") this.replaceEntryById(thread.id, streamId, assistantEntry);
+    else this.upsertEntry(thread.id, assistantEntry);
 
     // The engine states what the turn consumed just before the Run ends.
     runEntry = {
@@ -13014,6 +12940,92 @@ class MockHostState {
     if (answersPerson) this.notifyReply(thread.id, run.id);
     // Finalization is what admits the next queued message; each gets its own turn.
     this.admitNextInput(thread.id);
+  }
+  /** A Run's scripted work before its reply: reasoning, a shell call and an edit, streamed. */
+  private async streamMockWork(thread: ThreadSummary, run: ActiveMockRun): Promise<boolean> {
+    // Reasoning streams a couple of sentences, then completes.
+    let reasoning: ReasoningEntry = {
+      createdAt: this.now().toISOString(),
+      id: `reasoning:${run.id}:block-1`,
+      kind: "reasoning",
+      runId: run.id,
+      state: "streaming",
+      text: "",
+    };
+    const reasoningSentences = [
+      "I should inspect the files before changing anything. ",
+      "One shell check plus a focused edit will keep the run small and verifiable.",
+    ];
+    for (const sentence of reasoningSentences) {
+      await delay(this.latencyMs / 2);
+      if (!this.isRunCurrent(thread.id, run)) return false;
+      reasoning = { ...reasoning, text: `${reasoning.text}${sentence}` };
+      this.upsertEntry(thread.id, reasoning);
+    }
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, { ...reasoning, state: "done" });
+
+    // A shell tool call streams stdout lines, then completes with canonical output.
+    let shell: ToolEntry = {
+      arguments: { command: "rg --files src | head -n 3" },
+      callId: "call-shell-1",
+      createdAt: this.now().toISOString(),
+      id: `tool:${run.id}:call-shell-1`,
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: run.id,
+      state: "running",
+      streamText: "",
+      tool: { name: "shell", namespace: "codex" },
+    };
+    this.upsertEntry(thread.id, shell);
+    const stdoutLines = ["src/app.tsx\n", "src/host/client.ts\n", "src/host/transcript.ts\n"];
+    for (const line of stdoutLines) {
+      await delay(this.latencyMs / 3);
+      if (!this.isRunCurrent(thread.id, run)) return false;
+      shell = { ...shell, streamText: `${shell.streamText}${line}` };
+      this.upsertEntry(thread.id, shell);
+    }
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, {
+      ...shell,
+      output: { text: shell.streamText },
+      state: "done",
+    });
+
+    // A second, edit-shaped tool call with a diff-ish payload.
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    const edit: ToolEntry = {
+      arguments: {
+        patch: "@@ -1,2 +1,3 @@\n # Notes\n+\n+- Recorded this run in the Thread.\n",
+        path: "docs/notes.md",
+      },
+      callId: "call-edit-1",
+      createdAt: this.now().toISOString(),
+      id: `tool:${run.id}:call-edit-1`,
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: run.id,
+      state: "running",
+      streamText: "",
+      tool: { name: "apply_patch", namespace: "codex" },
+    };
+    this.upsertEntry(thread.id, edit);
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, {
+      ...edit,
+      output: { text: "Applied patch to docs/notes.md" },
+      state: "done",
+    });
+    return true;
   }
 
   private isRunCurrent(threadId: string, run: ActiveMockRun): boolean {
