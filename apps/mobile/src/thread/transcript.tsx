@@ -1439,46 +1439,38 @@ export function Message(props: {
             : {})}
         />
       )}
-      <MessagePages pages={message.pages ?? []} />
-      <MessagePlaces places={message.places ?? []} />
-      <MessageAttachments attachments={message.attachments ?? []} />
-      {!message.body ? null : mine && !props.queued && delivery !== null ? (
-        <PendingMessage
-          bubble={
-            <Bubble
-              fill={delivery.phase === "rejected" ? rejectedBubble.fill : color.bubble}
-              fit={bubbleFit(message.body)}
-              side="mine"
-              style={[
-                props.conversation ? undefined : styles.bubbleCorner,
-                delivery.phase === "rejected" ? rejectedBubble.style : undefined,
-              ]}
-              tail={props.conversation && props.continued !== true}
-            >
-              {delivery.phase === "rejected" ? refusedFold : fold}
-            </Bubble>
-          }
+      {mine && !props.queued ? (
+        // One tree from Waiting to delivered: what it is a change of state in, never a remount.
+        <OwnMessage
+          conversation={props.conversation}
           entry={message}
+          bubble={
+            message.body ? (
+              <Bubble
+                fill={delivery?.phase === "rejected" ? rejectedBubble.fill : color.bubble}
+                // Lists, headings and code take the bubble's whole measure, as a reply's do.
+                fit={bubbleFit(message.body)}
+                side="mine"
+                // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
+                style={[
+                  props.conversation ? undefined : styles.bubbleCorner,
+                  delivery?.phase === "rejected" ? rejectedBubble.style : undefined,
+                ]}
+                tail={props.conversation && props.continued !== true}
+              >
+                {delivery?.phase === "rejected" ? refusedFold : fold}
+              </Bubble>
+            ) : null
+          }
         />
-      ) : !message.body ? null : mine && !props.queued ? (
-        <MessageHold
-          previewBottomEndRadius={props.conversation ? undefined : radius.xs}
-          previewRadius={bubble.radius}
-          text={message.body}
-        >
-          <Bubble
-            fill={color.bubble}
-            // Lists, headings and code take the bubble's whole measure, as a reply's do.
-            fit={bubbleFit(message.body)}
-            side="mine"
-            // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
-            style={props.conversation ? undefined : styles.bubbleCorner}
-            tail={props.conversation && props.continued !== true}
-          >
-            {fold}
-          </Bubble>
-        </MessageHold>
-      ) : props.hold === undefined ? (
+      ) : (
+        <>
+          <MessagePages pages={message.pages ?? []} />
+          <MessagePlaces places={message.places ?? []} />
+          <MessageAttachments attachments={message.attachments ?? []} />
+        </>
+      )}
+      {mine && !props.queued ? null : !message.body ? null : props.hold === undefined ? (
         <View
           style={
             update
@@ -1535,45 +1527,75 @@ function bubbleFit(body: string): string | null {
 }
 
 /**
- * The reader's own message still on this phone, where the delivered one will
- * stand: its status under it, and Edit, Delete or Don't send where it may be
- * taken back, on a long press as well as under a refused one.
+ * The reader's own message, still on this phone or delivered, in one tree, so
+ * delivery is a change of state in place. Its status stands under it, and
+ * Edit, Delete, Don't send or Send again where it may be taken back: on a long
+ * press of its words and, for a refusal or files alone, under it.
  */
-function PendingMessage(props: { readonly bubble: ReactNode; readonly entry: MessageEntry }) {
+function OwnMessage(props: {
+  readonly bubble: ReactNode;
+  readonly conversation: boolean;
+  readonly entry: MessageEntry;
+}) {
   const controls = useContext(MessageDeliveryContext);
-  const delivery = props.entry.localDelivery;
-  const key = props.entry.clientSendKey ?? props.entry.id;
-  const since = useMemo(() => Date.parse(props.entry.createdAt), [props.entry.createdAt]);
-  if (delivery === undefined) return props.bubble;
-  const act = (action: MessageDeliveryAction) => controls?.act(key, action);
-  const menu = deliveryMenu(delivery.phase, delivery.attempted);
-  const status = (
+  const { entry } = props;
+  const delivery = entry.localDelivery;
+  const key = entry.clientSendKey ?? entry.id;
+  const since = useMemo(() => Date.parse(entry.createdAt), [entry.createdAt]);
+  const unconfirmed = delivery?.issue?.code === "unconfirmed";
+  const menu = useMemo(
+    () =>
+      delivery === undefined || controls === null
+        ? []
+        : deliveryMenu(delivery.phase, delivery.attempted, unconfirmed),
+    [controls, delivery, unconfirmed],
+  );
+  const hold = useMemo(
+    () =>
+      menu.length === 0 || controls === null
+        ? null
+        : {
+            actions: menu,
+            onAction: (id: string) => {
+              const action = menu.find((item) => item.id === id)?.id;
+              if (action !== undefined) controls.act(key, action);
+            },
+          },
+    [controls, key, menu],
+  );
+  return (
     <MessageDelivery
-      attempted={delivery.attempted}
-      onAction={controls === null ? undefined : act}
-      phase={delivery.phase}
+      attempted={delivery?.attempted ?? true}
+      inline={props.bubble === null}
+      note={delivery === undefined ? null : (controls?.note(key) ?? null)}
+      onAction={
+        controls === null || delivery === undefined
+          ? undefined
+          : (action: MessageDeliveryAction) => controls.act(key, action)
+      }
+      phase={delivery?.phase ?? "delivered"}
       rejection={
-        delivery.phase === "rejected" ? presentMessageDelivery("rejected", delivery.issue) : null
+        delivery?.phase === "rejected" ? presentMessageDelivery("rejected", delivery.issue) : null
       }
       showStatus={controls?.statusShown(key) ?? true}
       since={Number.isNaN(since) ? Date.now() : since}
+      style={styles.ownStack}
+      unconfirmed={unconfirmed}
     >
-      {props.bubble}
+      <MessagePages pages={entry.pages ?? []} />
+      <MessagePlaces places={entry.places ?? []} />
+      <MessageAttachments attachments={entry.attachments ?? []} />
+      {props.bubble === null ? null : (
+        <MessageHold
+          delivery={hold}
+          previewBottomEndRadius={props.conversation ? undefined : radius.xs}
+          previewRadius={bubble.radius}
+          text={entry.body}
+        >
+          {props.bubble}
+        </MessageHold>
+      )}
     </MessageDelivery>
-  );
-  return menu.length === 0 || controls === null ? (
-    status
-  ) : (
-    <WaitingHold
-      actions={menu}
-      onAction={(id) => {
-        if (id === "edit" || id === "delete" || id === "dont-send") act(id);
-      }}
-      previewBottomEndRadius={radius.xs}
-      previewRadius={bubble.radius}
-    >
-      {status}
-    </WaitingHold>
   );
 }
 
@@ -1969,6 +1991,7 @@ const styles = StyleSheet.create({
     gap: space[4],
     maxWidth: bubble.maxWidth,
   },
+  ownStack: { alignItems: "flex-end", gap: space[4] },
   updateColumn: {
     alignItems: "flex-start",
     alignSelf: "stretch",

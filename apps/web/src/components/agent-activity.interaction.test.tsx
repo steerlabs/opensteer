@@ -21,6 +21,11 @@ import {
 } from "@opensteer/client/mock";
 import { TabIdSchema, createId, defaultTaskSymbol, ThreadIdSchema } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
+import {
+  createMessageOutboxStorage,
+  disposeMessageOutbox,
+  initializeMessageOutbox,
+} from "@opensteer/client/host";
 import { mcpPresentationScenarios, mcpPresentationTool } from "@opensteer/client/test-support";
 import {
   AgentTranscript,
@@ -1095,4 +1100,63 @@ it("keeps an edited message's history a click away after a Run took it", async (
   expect(document.body.textContent).toContain("Check the shard");
   await act(async () => click(marks[1]));
   expect(listMessageRevisions).toHaveBeenLastCalledWith("thread-1", "message-asked", undefined);
+});
+
+describe("a message still on this device", () => {
+  it("offers Edit and Don't send for files alone, and Edit takes it back", async () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    const records = new Map<string, string>();
+    const outbox = initializeMessageOutbox(mock, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => void records.set(key, value),
+        remove: async (key) => void records.delete(key),
+      }),
+      drafts: { restore: async () => "restored" },
+    });
+    const restoreDraft = vi.spyOn(outbox, "restoreDraft").mockResolvedValue("restored");
+    try {
+      const viewer = createId("user");
+      const entry: MessageEntry = {
+        kind: "message",
+        id: "files-only",
+        clientSendKey: "files-only",
+        createdAt: new Date().toISOString(),
+        messageKind: "input",
+        runId: null,
+        policy: "queue",
+        body: "",
+        attachments: [
+          {
+            type: "artifact",
+            artifactId: createId("attachment"),
+            name: "photo.jpg",
+            mediaType: "image/jpeg",
+            sizeBytes: 10,
+          },
+        ],
+        author: { kind: "human", userId: viewer, principalId: viewer, displayName: "You" },
+        localDelivery: { phase: "waiting", attempted: false },
+      };
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <MemoryRouter>
+            <AgentTranscript entries={[entry]} attachmentReader={mock} viewerUserId={viewer} />
+          </MemoryRouter>,
+        ),
+      );
+      const control = (name: string) =>
+        [...container.querySelectorAll("button")].find((item) => item.textContent === name);
+      expect(control("Don't send")).toBeDefined();
+      await act(async () => control("Edit")!.click());
+      expect(restoreDraft).toHaveBeenCalledWith("files-only");
+    } finally {
+      disposeMessageOutbox(mock);
+      mock.dispose();
+    }
+  });
 });

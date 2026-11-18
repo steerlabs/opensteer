@@ -305,16 +305,21 @@ export function createComposerDraftStore(
 
     read,
 
-    /** Lays a discarded draft back down, exactly as it was. */
-    restore(key: string, draft: ComposerDraft): boolean {
+    /**
+     * Lays a draft down. An open composer is handed `returned` to merge into what
+     * it holds, or else the whole draft, exactly as it was.
+     */
+    restore(key: string, draft: ComposerDraft, returned?: ReturnedToDraft): boolean {
       const saved = write(key, draft);
       if (saved)
-        receivers.get(key)?.({
-          edit: () => draft.text,
-          files: draft.files,
-          ...(draft.places ? { places: draft.places } : {}),
-          quote: draft.quote,
-        });
+        receivers.get(key)?.(
+          returned ?? {
+            edit: () => draft.text,
+            files: draft.files,
+            ...(draft.places ? { places: draft.places } : {}),
+            quote: draft.quote,
+          },
+        );
       publish();
       return saved;
     },

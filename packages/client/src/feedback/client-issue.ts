@@ -166,7 +166,8 @@ export function presentMessageDelivery(
   phase: "waiting" | "sending" | "rejected",
   issue?: ClientIssue,
 ): string {
-  if (issue?.code === "unconfirmed") return presentClientIssue(issue).title;
+  if (issue?.code === "unconfirmed")
+    return presentClientIssue({ happened: "this message was sent", ...issue }).title;
   if (phase === "sending") return "Sending…";
   if (phase === "waiting") return "Waiting to send";
   return `Not sent. ${presentMessageRejection(issue)}`;
@@ -194,8 +195,25 @@ export function presentDeliveryActions(): {
   readonly edit: string;
   readonly delete: string;
   readonly discard: string;
+  readonly retry: string;
 } {
-  return { edit: "Edit", delete: "Delete", discard: "Don't send" };
+  return { edit: "Edit", delete: "Delete", discard: "Don't send", retry: "Send again" };
+}
+
+/**
+ * Why Edit, Delete or Don't send didn't happen. They touch only this device,
+ * so a failure is its storage; a send that began first leaves the message,
+ * whose own status says so.
+ */
+export function presentMessageActionFailure(error: unknown): string | null {
+  return classifyClientFailure(error).reason === "message-unconfirmed"
+    ? null
+    : presentClientIssue({ code: "storage-unavailable" }).title;
+}
+
+/** What Edit came to, when the message could not go back to the draft. */
+export function presentMessageTakeBack(outcome: "restored" | "occupied" | "sent"): string | null {
+  return outcome === "occupied" ? "Couldn't add this to your draft." : null;
 }
 
 export const connectedLabel = "Connected";

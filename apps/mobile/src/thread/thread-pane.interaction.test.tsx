@@ -1986,6 +1986,90 @@ describe("a conversation with a page", () => {
     expect(text(container)).not.toContain("offline");
   });
 
+  it("lets a refused message of files alone be deleted, which frees the message behind it", async () => {
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      network: "offline",
+    });
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "image/jpeg",
+      name: "photo.jpg",
+      sizeBytes: 10,
+      type: "artifact" as const,
+    };
+    const command = (idempotencyKey: string, content: readonly object[]) =>
+      ({
+        content,
+        delivery: "queue",
+        idempotencyKey,
+        threadId: workId,
+        type: "thread.sendMessage",
+      }) as never;
+    await act(async () => {
+      await outbox.enqueue(command("files-only", [file]));
+      await outbox.enqueue(command("behind", [{ text: "After the photo", type: "text" }]));
+    });
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    host.move({ ...host.client.getSnapshot(), network: "online" });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    expect(sent(host.dispatch)).toHaveLength(1);
+    await press(container, "Delete");
+    expect(host.dispatch.mock.calls.at(-1)?.[0]).toMatchObject({ idempotencyKey: "behind" });
+    expect(outbox.getSnapshot().messages).toEqual([]);
+  });
+
+  it("Edit puts a refused message back whole, above the draft already there", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container, drafts } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const quotedMessageId = createId("message");
+    const file = {
+      artifactId: createId("attachment"),
+      mediaType: "application/pdf",
+      name: "agenda.pdf",
+      sizeBytes: 2048,
+      type: "artifact" as const,
+    };
+    host.dispatch.mockImplementationOnce(async () => {
+      throw new HostClientRequestError({ code: "forbidden", message: "No", status: 403 });
+    });
+    await act(async () => {
+      await outbox.enqueue(
+        {
+          content: [{ text: "Refused words", type: "text" }, file],
+          delivery: "queue",
+          idempotencyKey: "refused",
+          quotedMessageId,
+          threadId: workId,
+          type: "thread.sendMessage",
+        },
+        { localAttachmentUris: ["file:///private/agenda.pdf"] },
+      );
+    });
+    await settle();
+    expect(text(container)).toContain("Not sent.");
+    await type(container, "Message", "Newer draft");
+    await press(container, "Edit");
+    expect(outbox.getSnapshot().messages).toEqual([]);
+    const draft = drafts.readDraft(deploymentId, userId, workId);
+    expect(draft).toMatchObject({
+      attachments: [
+        { attachmentId: file.artifactId, localUri: "file:///private/agenda.pdf", status: "ready" },
+      ],
+      quote: { messageId: quotedMessageId },
+      text: "Refused words\n\nNewer draft",
+    });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Refused words\n\nNewer draft");
+  });
+
   it("includes a page Ask handed to its own screen until the person removes it, for good", async () => {
     const included = page();
     const files = new MemoryPrivateFilesystem();

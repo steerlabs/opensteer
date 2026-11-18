@@ -34,6 +34,7 @@ import { z } from "zod";
 
 const maxTaskStartRecords = 48;
 const maxDraftCharacters = 16_000;
+const maxDraftAttachments = 10;
 // A hard file cap covers escaped text, keys and metadata, and is the only bound
 // on how many drafts a phone keeps. Drafts and messages share it: a write past
 // it is refused and the composer says so, rather than dropping an older draft.
@@ -52,7 +53,7 @@ const DraftAttachmentsSchema = z
       })
       .refine((attachment) => attachment.localUri !== null || attachment.attachmentId !== null),
   )
-  .max(10);
+  .max(maxDraftAttachments);
 const LegacyDraftSchema = z.strictObject({
   attachments: DraftAttachmentsSchema.optional(),
   text: z.string().max(maxDraftCharacters),
@@ -522,28 +523,40 @@ export function createThreadDraftStore(options: {
           outcome = "restored";
           return;
         }
-        if (held && draftHasContent(held)) return;
+        // The message goes above the words already there, with its files after
+        // theirs; the draft's own quote and page stand, else the message's.
         const parts = messageDraftParts(entry.command.content);
+        const current = held && draftHasContent(held) ? held : undefined;
+        const text = current?.text.trim() ? `${parts.body}\n\n${current.text}` : parts.body;
+        const kept = current?.attachments ?? [];
+        const attachments = [
+          ...kept,
+          ...parts.attachments
+            .map((part, index) => ({
+              attachmentId: part.artifactId,
+              localUri: entry.localAttachmentUris?.[index] ?? null,
+              mediaType: part.mediaType,
+              name: part.name,
+              sizeBytes: part.sizeBytes ?? 0,
+              status: "ready" as const,
+            }))
+            .filter((part) => !kept.some((item) => item.attachmentId === part.attachmentId)),
+        ];
+        if (text.length > maxDraftCharacters || attachments.length > maxDraftAttachments) return;
+        const page = parts.places.find((part) => part.type === "browser-page");
         putDraft(nextDrafts, entryKey, scope.viewerId, {
-          text: parts.body,
-          attachments: parts.attachments.map((part, index) => ({
-            attachmentId: part.artifactId,
-            localUri: entry.localAttachmentUris?.[index] ?? null,
-            mediaType: part.mediaType,
-            name: part.name,
-            sizeBytes: part.sizeBytes ?? 0,
-            status: "ready" as const,
-          })),
-          page: parts.places.find((part) => part.type === "browser-page"),
-          ...(entry.command.quotedMessageId
-            ? {
-                quote: {
+          text,
+          attachments,
+          page: current?.page ?? page,
+          quote:
+            current?.quote ??
+            (entry.command.quotedMessageId
+              ? {
                   messageId: entry.command.quotedMessageId,
                   attribution: "Quoted message",
                   excerpt: "",
-                },
-              }
-            : {}),
+                }
+              : undefined),
           recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
         });
         outcome = "restored";

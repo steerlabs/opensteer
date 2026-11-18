@@ -77,14 +77,32 @@ export function MessageHold(
     readonly previewRadius: number;
     readonly previewBottomEndRadius?: number | undefined;
     readonly style?: StyleProp<ViewStyle>;
+    /** A message still on this phone: what may be done to it, ahead of Copy and the rest. */
+    readonly delivery?: {
+      readonly actions: readonly LinkAction[];
+      readonly onAction: (id: string) => void;
+    } | null;
   },
 ): ReactNode {
   const { act, actions, selecting, stopSelecting } = useMessageActions(props);
+  const delivery = props.delivery ?? null;
+  const menu = useMemo(
+    () =>
+      delivery === null || delivery.actions.length === 0
+        ? actions
+        : [...delivery.actions.map((action) => ({ ...action, group: -1 })), ...actions],
+    [actions, delivery],
+  );
+  const onAction = useCallback(
+    (id: string) =>
+      delivery?.actions.some((action) => action.id === id) ? delivery.onAction(id) : act(id),
+    [act, delivery],
+  );
   return (
     <>
       <HoldMenu
-        actions={actions}
-        onAction={act}
+        actions={menu}
+        onAction={onAction}
         previewBottomEndRadius={props.previewBottomEndRadius}
         previewRadius={props.previewRadius}
         style={props.style}
