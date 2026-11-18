@@ -152,6 +152,7 @@ export class TeamSessionClient {
   readonly #releaseAuthentication: () => void;
   #synchronize: ((cut?: "sidebar" | number) => void) | null = null;
   #needsRevalidation = false;
+  #viewRevalidationPending = false;
   readonly #probeAnswers = new Set<() => void>();
   readonly rpc: HostApiClient;
   readonly owner: TeamRuntimeOwner | undefined;
@@ -365,7 +366,8 @@ export class TeamSessionClient {
   async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
     attempt.signal.throwIfAborted();
     if (!this.#snapshot.bootstrap) await this.load(false);
-    else if (this.#needsRevalidation) await this.#revalidate(attempt.signal);
+    else if (this.#needsRevalidation || this.#viewRevalidationPending)
+      await this.#revalidate(attempt.signal);
     attempt.signal.throwIfAborted();
     attempt.acceptScope({
       authorityKey: this.#options.authorityKey ?? this.scope.teamDeploymentId,
@@ -474,6 +476,7 @@ export class TeamSessionClient {
         this.#connectionGeneration++;
         this.#needsRevalidation = event.code !== restartingCloseCode;
         if (event.code === 1008) {
+          this.#viewRevalidationPending = true;
           void this.#revalidate(attempt.signal).then(
             () => fail(new HostTransportError("unreachable")),
             fail,
@@ -533,40 +536,53 @@ export class TeamSessionClient {
           type: "team.access.changed",
           accessRevision: bootstrap.sidebar.accessRevision,
         });
-        const selected = this.#snapshot.channel;
-        if (selected) {
-          try {
-            await this.rpc["team.channel.get"](
-              { channelId: selected.scope.channelId },
-              { signal },
-            ).then(unwrapRpcResult);
-          } catch (error) {
-            signal.throwIfAborted();
-            if (lifetime !== this.#lifetime) return;
-            if (
-              !(error instanceof OpensteerError) ||
-              !["forbidden", "not_found"].includes(error.code)
-            )
-              throw error;
-            const channelId = selected.scope.channelId;
-            if (this.#snapshot.channel?.generation === selected.generation)
-              this.selectChannel(null);
-            this.#update({
-              pending: this.#snapshot.pending.filter((row) => row.command.channelId !== channelId),
-              drafts: Object.fromEntries(
-                Object.entries(this.#snapshot.drafts).filter(([key]) => {
-                  try {
-                    const parsed: unknown = JSON.parse(key);
-                    return !Array.isArray(parsed) || parsed[1] !== channelId;
-                  } catch {
-                    return true;
-                  }
-                }),
-              ),
-            });
-            await this.#save();
-          }
+        this.#viewRevalidationPending = true;
+      }
+      while (this.#viewRevalidationPending) {
+        const selected = this.#snapshot.channel ?? this.#snapshot.thread;
+        if (!selected) {
+          this.#viewRevalidationPending = false;
+          break;
         }
+        const channelId = selected.scope.channelId;
+        let revoked = false;
+        try {
+          await this.rpc["team.channel.get"]({ channelId }, { signal }).then(unwrapRpcResult);
+        } catch (error) {
+          signal.throwIfAborted();
+          if (lifetime !== this.#lifetime) return;
+          if (
+            !(error instanceof OpensteerError) ||
+            !["forbidden", "not_found"].includes(error.code)
+          )
+            throw error;
+          revoked = true;
+        }
+        signal.throwIfAborted();
+        if (lifetime !== this.#lifetime) return;
+        const current = this.#snapshot.channel ?? this.#snapshot.thread;
+        if (current?.generation !== selected.generation) continue;
+        if (revoked) {
+          this.selectChannel(null);
+          this.#update({
+            pending: this.#snapshot.pending.filter((row) => row.command.channelId !== channelId),
+            drafts: Object.fromEntries(
+              Object.entries(this.#snapshot.drafts).filter(([key]) => {
+                try {
+                  const parsed: unknown = JSON.parse(key);
+                  return !Array.isArray(parsed) || parsed[1] !== channelId;
+                } catch {
+                  return true;
+                }
+              }),
+            ),
+          });
+          await this.#save();
+          signal.throwIfAborted();
+          if (lifetime !== this.#lifetime) return;
+          if (this.#snapshot.channel || this.#snapshot.thread) continue;
+        }
+        this.#viewRevalidationPending = false;
       }
       signal.throwIfAborted();
       if (lifetime === this.#lifetime) {

@@ -1057,4 +1057,73 @@ describe("team attempt fencing", () => {
       }
     },
   );
+  it("revalidates the selected channel after a path change even after the sidebar caught up", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    const sockets: MockTeamSocket[] = [];
+    const sidebar = { ...host.sidebar(), accessRevision: SequenceSchema.parse("2"), channels: [] };
+    const forbidden = {
+      ok: false as const,
+      error: {
+        code: "forbidden" as const,
+        message: "Channel access removed",
+        retryable: false,
+      },
+    };
+    const held = Promise.withResolvers<typeof forbidden>();
+    const channel = vi.fn(async () => forbidden).mockImplementationOnce(() => held.promise);
+    let policyClosed = false;
+    let changePath!: () => void;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (policyClosed && key === "team.bootstrap.get")
+            return async () => ({ ok: true, data: { ...host.bootstrap, sidebar } });
+          if (policyClosed && key === "team.sidebar.get")
+            return async () => ({ ok: true, data: sidebar });
+          if (policyClosed && key === "team.channel.get") return channel;
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+      lifecycle: {
+        getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+        onNetworkChange: (listener) => {
+          changePath = () => listener("online", "changed");
+          return () => {};
+        },
+        onForeground: () => () => {},
+        onBackground: () => () => {},
+      },
+    });
+    try {
+      await client.load();
+      client.selectChannel(mockTeamChannelId);
+      await vi.advanceTimersByTimeAsync(0);
+      policyClosed = true;
+      sockets[0]!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(channel).toHaveBeenCalledOnce();
+      expect(client.getSnapshot().sidebar?.accessRevision).toBe("2");
+      changePath();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(channel).toHaveBeenCalledTimes(2);
+      expect(client.getSnapshot().channel).toBeNull();
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+      held.resolve(forbidden);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+    } finally {
+      held.resolve(forbidden);
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
 });
