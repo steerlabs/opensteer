@@ -8,13 +8,13 @@ import ReactMarkdown, { type Components, type Options, type UrlTransform } from 
 
 type PluggableList = NonNullable<Options["remarkPlugins"]>;
 import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import {
   hideIncompleteLinkTail,
   repairStrong,
   splitMarkdownBlocks,
 } from "@opensteer/shared/markdown";
 import { CopyMark } from "./copy-mark.js";
+import { createMarkdownHighlight } from "./markdown-highlight.js";
 import { remarkChipPunctuation } from "./references/chip-punctuation.js";
 import { ReferenceLink } from "./references/reference-link.js";
 
@@ -33,7 +33,6 @@ const personRemarkPlugins: PluggableList = [
   remarkPersonWords,
   remarkChipPunctuation,
 ];
-const rehypePlugins = [rehypeHighlight];
 const noRehypePlugins: [] = [];
 
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
@@ -127,13 +126,14 @@ const MarkdownBlock = memo(function MarkdownBlock({
   text: string;
 }) {
   const person = profile === "person";
+  const highlight = useMemo(createMarkdownHighlight, []);
   return (
     <ReactMarkdown
       components={bare ? bareComponents : components}
       remarkPlugins={
         person ? personRemarkPlugins : streaming ? streamingRemarkPlugins : remarkPlugins
       }
-      rehypePlugins={person ? noRehypePlugins : rehypePlugins}
+      rehypePlugins={person ? noRehypePlugins : [[highlight, { streaming }]]}
       urlTransform={urlTransform}
     >
       {streaming ? hideIncompleteLinkTail(text) : text}
