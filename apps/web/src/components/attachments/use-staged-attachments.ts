@@ -34,7 +34,8 @@ export interface StagedAttachment {
   /** False when the Host refused the file itself, so trying again cannot help. */
   readonly retryable: boolean;
   readonly sizeBytes: number;
-  readonly status: "checking" | "failed" | "ready" | "uploading";
+  /** `waiting`: the connection is not ready; it uploads, or is checked, once it is back. */
+  readonly status: "checking" | "failed" | "ready" | "uploading" | "waiting";
 }
 
 export interface StagedAttachments {
@@ -57,6 +58,8 @@ export interface StagedAttachments {
 interface StagedRecord {
   attachmentId: string | null;
   controller: AbortController | null;
+  /** The ready revision a dropped connection failed it under; it goes again once that changes. */
+  interruptedAt: number | null;
   mediaType: string;
   name: string;
   /** What the draft saves for it, known before a reload's check against the Host confirms it. */
@@ -82,8 +85,8 @@ const addAgain = "This file has to be added again.";
 
 /**
  * The files one draft holds before they are sent. Each one is reserved and
- * uploaded the moment it is chosen, so a message only waits on bytes still in
- * flight. A retry continues the same reservation with the same bytes (see
+ * uploaded the moment it is chosen, or once the connection is ready, so a
+ * message only waits on bytes still in flight. A retry continues the same reservation with the same bytes (see
  * `stageAttachment`).
  *
  * They belong to the draft rather than to a composer, so leaving does not stop
@@ -100,6 +103,8 @@ class StagedFiles {
   #asideFromDraft = false;
   readonly #records = new Map<string, StagedRecord>();
   readonly #listeners = new Set<() => void>();
+  #unwatch: (() => void) | null = null;
+  #readyRevision: number | null = null;
 
   constructor(target: AttachmentTarget) {
     this.client = target.client;
@@ -117,6 +122,7 @@ class StagedFiles {
     this.#records.set(localId, {
       attachmentId: part?.artifactId ?? null,
       controller: null,
+      interruptedAt: null,
       mediaType: file.mediaType,
       name: file.name,
       part,
@@ -142,11 +148,46 @@ class StagedFiles {
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
+    this.#watch();
     return () => {
       this.#listeners.delete(listener);
       this.#dropIfIdle();
     };
   };
+
+  #ready(): boolean {
+    return this.client.connection.getSnapshot().phase === "ready";
+  }
+
+  /** Files that waited for the connection, or that it dropped, go again once it is back. */
+  #watch(): void {
+    if (this.#unwatch) return;
+    this.#readyRevision = this.client.connection.getSnapshot().readyRevision;
+    this.#unwatch = this.client.connection.subscribe(() => {
+      const { phase, readyRevision } = this.client.connection.getSnapshot();
+      if (phase !== "ready" || readyRevision === this.#readyRevision) return;
+      this.#readyRevision = readyRevision;
+      for (const item of this.#state.items) {
+        const record = this.#records.get(item.localId);
+        if (!record || record.controller) continue;
+        const interrupted =
+          item.status === "failed" &&
+          record.interruptedAt !== null &&
+          record.interruptedAt < readyRevision;
+        if (item.status === "waiting" || interrupted) this.retry(item.localId);
+      }
+    });
+  }
+
+  /** Whether a failure is the connection's, and if so, parks the file as waiting. */
+  #interrupted(localId: string, record: StagedRecord, error: unknown): boolean {
+    if (classifyClientFailure(error).kind !== "transport") return false;
+    const connection = this.client.connection.getSnapshot();
+    record.interruptedAt = connection.readyRevision;
+    if (connection.phase === "ready") return false;
+    this.#patch(localId, { error: null, part: null, retryable: false, status: "waiting" });
+    return true;
+  }
 
   readonly snapshot = (): State => this.#state;
 
@@ -172,6 +213,8 @@ class StagedFiles {
   }
 
   dispose(): void {
+    this.#unwatch?.();
+    this.#unwatch = null;
     for (const record of this.#records.values()) forget(record);
     this.#records.clear();
     this.#unchecked = [];
@@ -180,6 +223,8 @@ class StagedFiles {
 
   #dropIfIdle(): void {
     if (this.#listeners.size > 0 || this.#records.size > 0) return;
+    this.#unwatch?.();
+    this.#unwatch = null;
     if (sessions.get(this.#scope) === this) sessions.delete(this.#scope);
   }
 
@@ -257,6 +302,12 @@ class StagedFiles {
     const source = record?.source;
     if (!record || !source) return;
     record.controller?.abort();
+    record.controller = null;
+    record.interruptedAt = null;
+    if (!this.#ready()) {
+      this.#patch(localId, { error: null, part: null, retryable: false, status: "waiting" });
+      return;
+    }
     const controller = new AbortController();
     record.controller = controller;
     const deploymentId = this.#deploymentId;
@@ -288,6 +339,7 @@ class StagedFiles {
         (error: unknown) => {
           if (controller.signal.aborted) return;
           record.controller = null;
+          if (this.#interrupted(localId, record, error)) return;
           this.#patch(localId, {
             error: uploadFailure(),
             retryable: retryable(error),
@@ -300,6 +352,13 @@ class StagedFiles {
   #check(localId: string): void {
     const record = this.#records.get(localId);
     if (!record?.attachmentId) return;
+    record.controller?.abort();
+    record.controller = null;
+    record.interruptedAt = null;
+    if (!this.#ready()) {
+      this.#patch(localId, { error: null, retryable: false, status: "waiting" });
+      return;
+    }
     const controller = new AbortController();
     record.controller = controller;
     this.#patch(localId, { error: null, retryable: false, status: "checking" });
@@ -317,6 +376,7 @@ class StagedFiles {
       (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
+        if (this.#interrupted(localId, record, error)) return;
         const unreachable = retryable(error) && !isNotFound(error);
         this.#patch(localId, {
           error: unreachable
@@ -356,6 +416,7 @@ class StagedFiles {
         const record: StagedRecord = {
           attachmentId: null,
           controller: null,
+          interruptedAt: null,
           mediaType: mediaType.success ? mediaType.data : fallbackMediaType,
           name: name.data,
           part: null,
@@ -387,6 +448,7 @@ class StagedFiles {
       items: added.length > 0 ? [...this.#state.items, ...added] : this.#state.items,
       notice: refused.length > 0 ? `Not added: ${refused.join(" ")}` : null,
     });
+    this.#watch();
     for (const item of added) this.#upload(item.localId);
   };
 
@@ -401,6 +463,7 @@ class StagedFiles {
       }),
     );
     this.#set({ items: [...added, ...this.#state.items], notice: null });
+    this.#watch();
     this.begin();
   };
 

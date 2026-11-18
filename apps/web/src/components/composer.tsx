@@ -28,7 +28,7 @@ import { type ArtifactContentPart, type PlaceContentPart } from "@opensteer/core
 import type { PendingSubmission } from "../host/message-outbox.js";
 import { mutationIdempotencyKey, type HostClient, type PlaceItem } from "@opensteer/client/host";
 import { collectComposerTokens, type ComposerSnapshot } from "@opensteer/client/references";
-import { AttachmentTray } from "./attachments/attachment-tray.js";
+import { AttachmentTray, filesWaitLine } from "./attachments/attachment-tray.js";
 import {
   ComposerEditor,
   type ComposerChange,
@@ -662,9 +662,11 @@ export function Composer({
     sendBlocked ??
     (staged.items.some((item) => item.status === "failed")
       ? "Remove or retry the attachments that could not be uploaded"
-      : uploadsPending || placesPending
-        ? "Waiting for attachments to finish uploading"
-        : null);
+      : staged.items.some((item) => item.status === "waiting")
+        ? filesWaitLine
+        : uploadsPending || placesPending
+          ? "Waiting for attachments to finish uploading"
+          : null);
 
   const attachable = !disabled && !readOnly;
   const attachmentControl =

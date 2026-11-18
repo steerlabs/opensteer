@@ -2,6 +2,9 @@ import { Icon } from "../icon.js";
 import { attachmentDetail } from "./attachment-parts.js";
 import type { StagedAttachment } from "./use-staged-attachments.js";
 
+/** The composer's one line while files wait for the connection; each chip says its own part. */
+export const filesWaitLine = "Sends once your files upload.";
+
 /**
  * The files riding on the message being written, above its words. Each says
  * where its upload stands; a failed one says why in place and offers Retry
@@ -30,6 +33,7 @@ export function AttachmentTray({
     (item) => item.status === "uploading" || item.status === "checking",
   ).length;
   const failed = items.filter((item) => item.status === "failed").length;
+  const paused = items.some((item) => item.status === "waiting");
   const summary = [
     waiting > 0 ? `${waiting} uploading` : "",
     failed > 0 ? `${failed} could not be attached` : "",
@@ -56,6 +60,7 @@ export function AttachmentTray({
       <p aria-live="polite" className="visually-hidden">
         {summary}
       </p>
+      {paused ? <p className="attachment-tray__waiting">{filesWaitLine}</p> : null}
       {notice ? (
         <p className="attachment-tray__notice" role="alert">
           <span>{notice}</span>
@@ -92,11 +97,13 @@ function StagedChip({
       ? "Uploading…"
       : item.status === "checking"
         ? "Checking…"
-        : item.status === "failed"
-          ? (item.error ?? "Could not be attached.")
-          : sending
-            ? "Sending…"
-            : attachmentDetail(item.name, item.mediaType, item.sizeBytes);
+        : item.status === "waiting"
+          ? "Waiting to upload"
+          : item.status === "failed"
+            ? (item.error ?? "Could not be attached.")
+            : sending
+              ? "Sending…"
+              : attachmentDetail(item.name, item.mediaType, item.sizeBytes);
   const errorId = `attachment-${item.localId}-error`;
   return (
     <li

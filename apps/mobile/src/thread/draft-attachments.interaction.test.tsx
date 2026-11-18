@@ -151,7 +151,9 @@ const uploaded = {
   sizeBytes: 1_024,
 };
 const photo = {
-  images: [{ uri: "file:///tmp/pasted-images/photo.png", mediaType: "image/png", name: "photo.png" }],
+  images: [
+    { uri: "file:///tmp/pasted-images/photo.png", mediaType: "image/png", name: "photo.png" },
+  ],
   failed: 0,
   tooLarge: 0,
 };
