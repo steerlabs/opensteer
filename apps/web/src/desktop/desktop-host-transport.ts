@@ -68,7 +68,9 @@ export function createDesktopHostFetch(
       const failure = DesktopHostTransportErrorCodeSchema.safeParse(
         response.headers.get(desktopHostTransportErrorHeader),
       );
-      if (failure.success) throw new HostTransportError(failure.data);
+      // Main's answer to this caller's own cancel can arrive before fetch rejects; the caller's reason wins.
+      if (failure.success)
+        throw caller.aborted ? caller.reason : new HostTransportError(failure.data);
       return release ? releasedWhenSettled(response, caller, release) : response;
     } catch (error) {
       release?.();
