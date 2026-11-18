@@ -587,8 +587,12 @@ class SessionMessageOutbox implements MessageOutbox {
         await this.#reload();
         return "sent";
       }
-      const restoring: StoredMessage = { ...held, phase: "restoring" };
-      if (held.phase !== "restoring" && !(await this.#replace(scope, held, restoring))) {
+      const restoring: StoredMessage = {
+        ...held,
+        phase: "restoring",
+        attemptId: globalThis.crypto.randomUUID(),
+      };
+      if (!(await this.#replace(scope, held, restoring))) {
         await this.#reload();
         return "sent";
       }

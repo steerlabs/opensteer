@@ -145,6 +145,59 @@ it("fences a paused dispatch in another window after a refusal is edited", async
   }
 });
 
+it("keeps a shared take-back fenced when one window cannot restore its copy", async () => {
+  vi.stubGlobal("navigator", {});
+  vi.stubGlobal("BroadcastChannel", undefined);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  vi.stubGlobal("window", new EventTarget());
+  const first = controlledClientSession();
+  const second = controlledClientSession();
+  const scope = { ...first.connection.getSnapshot().scope!, loginId: "simultaneous-edit" };
+  for (const session of [first, second]) session.change({ scope, phase: "recovering" });
+  const occupied = Promise.withResolvers<"occupied">();
+  const restored = Promise.withResolvers<"restored">();
+  const dispatch = vi.fn(async () => ({ messageId: "should-not-send" }));
+  const outbox = (session: typeof first, restore: () => Promise<"occupied" | "restored">) =>
+    createMessageOutbox({
+      session,
+      dispatch,
+      drafts: { restore },
+      storage: {
+        ...createMessageOutboxStorage(browserMessageRecords()),
+        delivery: (_scope, _threadId, work) => work(),
+      },
+    });
+  const restoreA = vi.fn(() => occupied.promise);
+  const restoreB = vi.fn(() => restored.promise);
+  const a = outbox(first, restoreA);
+  const b = outbox(second, restoreB);
+  const pending = sendMessageCommand(createId("thread"), {
+    body: "Restore this message",
+    attachments: [],
+    idempotencyKey: "shared-edit",
+  });
+  try {
+    await a.enqueue(pending);
+    await b.enqueue(pending);
+    const editingA = a.restoreDraft(pending.idempotencyKey);
+    await vi.waitFor(() => expect(restoreA).toHaveBeenCalledOnce(), { timeout: 1000 });
+    const editingB = b.restoreDraft(pending.idempotencyKey).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(restoreB).toHaveBeenCalledOnce(), { timeout: 1000 });
+    occupied.resolve("occupied");
+    await expect(editingA).resolves.toBe("occupied");
+    expect(a.getSnapshot().messages[0]?.phase).toBe("restoring");
+    first.change({ phase: "ready", readyRevision: 2 });
+    restored.resolve("restored");
+    await expect(editingB).resolves.toBe("restored");
+    expect(dispatch).not.toHaveBeenCalled();
+  } finally {
+    occupied.resolve("occupied");
+    restored.resolve("restored");
+    a.dispose();
+    b.dispose();
+  }
+});
+
 it("allocates distinct send order inside IndexedDB for two writers with the same snapshot", async () => {
   vi.stubGlobal("navigator", {});
   vi.stubGlobal("BroadcastChannel", undefined);
