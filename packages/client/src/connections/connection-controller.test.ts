@@ -114,6 +114,47 @@ describe("session recovery owner", () => {
     connection.dispose();
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("never presents an old interruption after a network return during failure publication", async () => {
+    vi.useFakeTimers();
+    const life = lifecycle();
+    const closed = Promise.withResolvers<ReturnType<typeof classifyClientFailure>>();
+    let initial = true;
+    const connection = createConnectionController({
+      lifecycle: life.port,
+      backoff: { baseMs: 20_000, maximumMs: 20_000 },
+      driver: {
+        async connect(attempt) {
+          const live = initial ? { ...lease(), closed: closed.promise } : lease();
+          initial = false;
+          attempt.admit?.(live);
+          return live;
+        },
+      },
+    });
+    try {
+      connection.start();
+      await vi.advanceTimersByTimeAsync(3500);
+      let returned = false;
+      const notices: boolean[] = [];
+      connection.subscribe(() => {
+        const state = connection.getSnapshot();
+        notices.push(state.showInterruption);
+        if (state.phase === "recovering" && !returned) {
+          returned = true;
+          life.network("online");
+        }
+      });
+      closed.resolve(classifyClientFailure(new HostTransportError("unreachable")));
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(returned).toBe(true);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(notices).not.toContain(true);
+      expect(connection.getSnapshot().phase).toBe("ready");
+    } finally {
+      connection.dispose();
+    }
+  });
+
   it("does not bypass the hold for OS offline, but blocks immediately on a real refusal", async () => {
     vi.useFakeTimers();
     const life = lifecycle();
