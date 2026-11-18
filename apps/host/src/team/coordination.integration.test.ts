@@ -290,7 +290,8 @@ it("drains a new checkout that reaches the driver while the pool is closing", as
     await deliverCheckout.promise;
     return client;
   };
-  const checkout = vi.spyOn(pool, "connect").mockImplementation(heldConnect as typeof pool.connect);
+  // pg types connect() with a callback overload that returns void; this is the promise form.
+  const checkout = vi.spyOn(pool, "connect").mockImplementation(heldConnect as never);
   const read = sql<{ value: number }>`select 1 as value`.execute(reader);
   void read.catch(() => undefined);
   const client = await checkedOut.promise;
