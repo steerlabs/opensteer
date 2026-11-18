@@ -17,6 +17,7 @@ export function readSigningMode(
   environment?: Readonly<Record<string, string | undefined>>,
 ): SigningMode;
 export function developerIdRequirement(teamId: string, identifier: string): string;
+export function requirementOption(requirement: string): string;
 export function generatedSigningConstants(options: SigningOptions): {
   typescript: string;
   build: SigningInput | { mode: "development" | "unavailable" };

@@ -11,7 +11,7 @@ const {
   writeFileSync,
 } = require("node:fs");
 const { tmpdir } = require("node:os");
-const { readSigningMode } = require("./signing-input.cjs");
+const { readSigningMode, requirementOption } = require("./signing-input.cjs");
 const { join, resolve } = require("node:path");
 const capability = "com.apple.developer.web-browser.public-key-credential";
 function execute(program, args, input) {
@@ -217,8 +217,7 @@ function verifyPasskeyAddon(appPath, signed = false, teamId, required = true, fo
   if (teamId)
     execute("/usr/bin/codesign", [
       "--verify",
-      "-R",
-      `anchor apple generic and certificate leaf[subject.OU] = "${teamId}"`,
+      requirementOption(`anchor apple generic and certificate leaf[subject.OU] = "${teamId}"`),
       filename,
     ]);
   if (signedEntitlements(filename)[capability] !== undefined)
