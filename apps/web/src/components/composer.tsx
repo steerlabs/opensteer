@@ -223,8 +223,14 @@ export function Composer({
   stopping: runStopping = false,
 }: ComposerProps) {
   const [saved] = useState(() => (draftKey ? composerDrafts.read(draftKey) : null));
-  const editorDraft = useRef(saved);
+  const editorEditId = useRef(saved?.editId);
   const draftSave = useRef(Promise.resolve());
+  const editorFields = useRef({
+    text: saved?.text ?? "",
+    quote: saved?.quote ?? null,
+    places: saved?.places,
+    refusal: saved?.refusal !== undefined,
+  });
   const [draft, setDraft] = useState(saved?.text ?? "");
   const { controller: dictation, snapshot: speech } = useDictation();
   const onCall = useVoiceOn();
@@ -317,25 +323,50 @@ export function Composer({
     performance.mark("dictation-press");
     baseSelection.current = readSelection();
     editorRef.current?.focus();
+    // Take the draft behind the edits already queued by this field. A later
+    // completion is still this draft's even if the field has gone.
+    const held = draftKey
+      ? draftSave.current
+          .then(async () => {
+            const editId = await composerDrafts.reserveEdit(draftKey, editorEditId.current);
+            if (editId !== null) editorEditId.current = editId;
+            return editId;
+          })
+          .catch(() => null)
+      : null;
+    if (held) draftSave.current = held.then(() => undefined);
     dictation.start({
       owner,
       read: () => ({ text: ownerDraft.text, selection: readSelection() }),
       commit: (text, selection) => {
         const before = ownerDraft.text;
         ownerDraft.text = text;
-        // Recognition finished after leaving: the words still belong to this
-        // draft, and any written there since stay.
-        if (!mounted.current) {
-          if (draftKey)
-            void composerDrafts
-              .handBack(draftKey, {
-                edit: (current) =>
-                  current === before || !current.trim() ? text : `${text}\n${current}`,
-              })
-              .catch(() => {});
-          return;
+        const editing = () => mounted.current && currentOwner.current === owner;
+        if (draftKey && held) {
+          const edit = (current: string) =>
+            current === before || !current.trim() ? text : `${text}\n${current}`;
+          // Send and leave both await the same durable edit. The live field
+          // still applies the text itself so it has an undo step.
+          draftSave.current = draftSave.current.then(async () => {
+            const editId = await held;
+            const saved =
+              editId !== null &&
+              (await composerDrafts
+                .transaction((store) =>
+                  editing()
+                    ? store.update(
+                        draftKey,
+                        { text: edit(store.read(draftKey)?.text ?? "") },
+                        editId,
+                      )
+                    : store.handBack(draftKey, { edit }, editId),
+                )
+                .catch(() => false));
+            if (editing()) setDraftUnsaved(!saved);
+          });
+          if (editing()) editorFields.current.text = text;
         }
-        if (currentOwner.current !== owner) return;
+        if (!editing()) return;
         latestDraft.current = text;
         const editor = editorRef.current;
         const base = dictationBase.current;
@@ -442,14 +473,28 @@ export function Composer({
   const followingPlace = context?.following ?? true;
   useEffect(() => {
     if (!draftKey) return;
-    const change = keepDraft
+    const shown = keepDraft
       ? { quote, text: draft, ...(followingPlace || !context ? {} : { places: context.parts() }) }
       : { places: [], quote: null, text: "" };
+    // A reopened editor may still show the old values when a late write
+    // arrives from another view. Save only fields this editor changed.
+    const before = editorFields.current;
+    const change = {
+      ...(shown.text !== before.text ? { text: shown.text } : {}),
+      ...(JSON.stringify(shown.quote) !== JSON.stringify(before.quote)
+        ? { quote: shown.quote }
+        : {}),
+      ...(shown.places && JSON.stringify(shown.places) !== JSON.stringify(before.places ?? [])
+        ? { places: shown.places }
+        : {}),
+    };
+    editorFields.current = { ...before, ...shown, refusal: false };
+    if (!before.refusal && Object.keys(change).length === 0) return;
     draftSave.current = draftSave.current.then(async () => {
       const kept = await composerDrafts
         .transaction((store) => {
-          if (!store.update(draftKey, change, editorDraft.current?.editId)) return false;
-          editorDraft.current = store.read(draftKey);
+          if (!store.update(draftKey, change, editorEditId.current)) return false;
+          editorEditId.current = store.read(draftKey)?.editId;
           return true;
         })
         .catch(() => false);
@@ -484,6 +529,7 @@ export function Composer({
       setSubmitting(true);
       setError(null);
       setStaleDraft(false);
+      let sourceEditId: string | undefined;
       try {
         await draftSave.current;
         const source = draftKey
@@ -492,7 +538,7 @@ export function Composer({
         if (
           draftKey &&
           (!source?.revision ||
-            (editorDraft.current?.editId && editorDraft.current.editId !== source.editId) ||
+            (editorEditId.current && editorEditId.current !== source.editId) ||
             source.text.trim() !== body ||
             source.quote?.messageId !== carriedQuote?.messageId ||
             (source.places?.length
@@ -502,6 +548,7 @@ export function Composer({
               JSON.stringify(parts.map((part) => part.artifactId)))
         )
           throw changedTaskDraft();
+        sourceEditId = source?.editId;
         const result = await onSend(submission.body, {
           attachments: submission.attachments,
           places: submission.places ?? [],
@@ -529,13 +576,25 @@ export function Composer({
           }
           if (finished !== "cleared") return;
         }
-        editorDraft.current = draftKey ? composerDrafts.read(draftKey) : null;
+        const sameText = latestDraft.current.trim() === text.trim();
+        if (draftKey && !result && sameText && source?.revision) {
+          await composerDrafts.transaction((store) => {
+            if (store.durableDraft(draftKey)?.revision === source.revision) store.clear(draftKey);
+          });
+        }
+        const samePlaces = JSON.stringify(context?.parts() ?? []) === JSON.stringify(places);
+        const before = editorFields.current;
+        editorFields.current = {
+          ...before,
+          ...(sameText ? { text: "" } : {}),
+          ...(before.quote === carriedQuote ? { quote: null } : {}),
+          ...(samePlaces ? { places: undefined } : {}),
+        };
+        editorEditId.current = draftKey ? composerDrafts.read(draftKey)?.editId : undefined;
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));
-        if (JSON.stringify(context?.parts() ?? []) === JSON.stringify(places)) context?.reset();
-        if (draftKey && !result && latestDraft.current.trim() === text.trim())
-          await composerDrafts.update(draftKey, { text: "", places: [], quote: null });
+        if (samePlaces) context?.reset();
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
         const issue = clientIssue(error, { operation: "action", label: "save this message" });
@@ -550,9 +609,9 @@ export function Composer({
                 "issue" in error.outcome &&
                 error.outcome.issue?.code === "draft-changed"),
           );
-        } else if (draftKey && !isTaskDraft && reason)
+        } else if (draftKey && !isTaskDraft && reason && sourceEditId)
           void composerDrafts
-            .handBack(draftKey, { edit: (current) => current, reason })
+            .handBack(draftKey, { edit: (current) => current, reason }, sourceEditId)
             .catch(() => {});
       } finally {
         submittingRef.current = false;

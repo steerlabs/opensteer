@@ -82,7 +82,8 @@ import { BesideSlot } from "./workspace/workspace-layout.js";
 import { UsageNotice } from "./usage-notice.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
-import type { ComposerQuote, ComposerRestore } from "./composer.js";
+import type { ComposerQuote } from "./composer.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
@@ -277,19 +278,11 @@ function ThreadView({
   const [activityOwnerAnchor, setActivityOwnerAnchor] = useState<HTMLElement | null>(null);
   const activityPanelId = useId();
   const headerTitleRef = useRef<HTMLHeadingElement | null>(null);
-  // A quoted reply on its way into the composer. It belongs to the composer
-  // of the conversation it came from, and to no other.
-  const [restoredDraft, setRestoredDraft] = useState<{
-    readonly composer: string;
-    readonly restore: ComposerRestore;
-  } | null>(null);
   // Each conversation, for each signed-in user of each deployment, has its own
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
   useEffect(() => {
-    // Handed over once; opening this conversation again starts from its own draft.
-    setRestoredDraft(null);
     setHistorical(false);
     setActivityView(null);
   }, [composerKey]);
@@ -846,10 +839,15 @@ function ThreadView({
   /** Quotes a message into this conversation's own composer, focused and unsent. */
   const replyWith = (message: MessageEntry) => {
     const quote = quoteFromMessage(message);
-    setRestoredDraft((current) => ({
-      composer: composerKey,
-      restore: { key: (current?.restore.key ?? 0) + 1, quote, text: "" },
-    }));
+    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
+      kind: "thread",
+      threadId: thread.id,
+    });
+    if (!key) return;
+    const editId = composerDrafts.read(key)?.editId;
+    void composerDrafts
+      .handBack(key, { edit: (text) => text, quote }, editId)
+      .catch(reportActionError);
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
 
@@ -1399,9 +1397,6 @@ function ThreadView({
                         : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
                           ? "Pause this task"
                           : "Stop the run"
-                    }
-                    restoredDraft={
-                      restoredDraft?.composer === composerKey ? restoredDraft.restore : null
                     }
                     running={stopTarget !== null}
                     stopping={activity === "stopping"}

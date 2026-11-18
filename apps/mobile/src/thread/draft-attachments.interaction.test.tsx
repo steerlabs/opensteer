@@ -6,9 +6,18 @@ import { attachmentMessageMaxCount } from "@opensteer/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import type { DraftPaste } from "../../modules/composer-editor/paste-events.js";
 import { createThreadDraftStore } from "../client/thread-drafts.js";
-import { discardPastedImage, importPastedImage } from "../platform/attachment-draft-files.js";
-import { useDraftAttachments, type DraftAttachments } from "./draft-attachments.js";
+import {
+  discardPastedImage,
+  importPastedImage,
+  removeChatDraftFile,
+} from "../platform/attachment-draft-files.js";
+import {
+  receiveNativeDraftPastes,
+  useDraftAttachments,
+  type DraftAttachments,
+} from "./draft-attachments.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("../client/mobile-client.js", () => ({
@@ -210,5 +219,41 @@ it("restarts an upload that fails after its replacement connection is ready", as
     expect(strip.current!.items[0]).toMatchObject({ status: "ready" });
   } finally {
     await act(async () => root.unmount());
+  }
+});
+
+it("saves a native paste after its editor has gone and drops one for a retired draft", async () => {
+  const drafts = createThreadDraftStore({
+    filePath: "/private/drafts.json",
+    now: () => new Date("2026-11-14T12:00:00.000Z"),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  const args = [deploymentId, userId, threadId] as const;
+  let receive!: (event: DraftPaste) => void;
+  const unsubscribe = receiveNativeDraftPastes(drafts, (listener) => {
+    receive = listener;
+    return () => {};
+  });
+  const target = JSON.stringify(drafts.captureEdit(...args));
+  try {
+    receive({ target, pasted: photo });
+    await vi.waitFor(() =>
+      expect(drafts.readDraft(...args)?.attachments?.[0]?.name).toBe("photo.png"),
+    );
+
+    await drafts.discardDraft(...args);
+    await drafts.writeDraft(...args, "A replacement draft");
+    const image = { ...photo.images[0]!, uri: "file:///tmp/pasted-images/retired.png" };
+    receive({ target, pasted: { images: [image], failed: 0, tooLarge: 0 } });
+    await vi.waitFor(() =>
+      expect(removeChatDraftFile).toHaveBeenCalledWith(
+        { deploymentId, userId, threadId },
+        `${image.uri}.draft`,
+      ),
+    );
+    expect(drafts.readDraft(...args)?.text).toBe("A replacement draft");
+    expect(drafts.readDraft(...args)?.attachments).toBeUndefined();
+  } finally {
+    unsubscribe();
   }
 });

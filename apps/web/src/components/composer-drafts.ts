@@ -22,6 +22,9 @@ import {
  *
  * A composer owns its live draft and writes it through here on every change;
  * while it is open, its row in the sidebar holds still (see `open`).
+ * Deferred input reserves the draft's edit ID, even while empty. Closing an
+ * editor leaves that ID current. Discard and send cleanup retire it in the
+ * same commit order as edits. A completion can only merge into its own ID.
  */
 
 const prefix = "opensteer:composer-draft:v1:";
@@ -49,6 +52,7 @@ const FileSchema = z.object({
 const DraftSchema = z.object({
   files: z.array(FileSchema).catch([]),
   editId: z.string().optional(),
+  editReserved: z.literal(true).optional(),
   revision: z.string().optional(),
   replyScope: z.string().optional(),
   /** Absent while an untouched draft still follows the place in front. */
@@ -140,6 +144,25 @@ export function holdsContent(draft: ComposerDraft): boolean {
     draft.files.length > 0 ||
     (draft.places ?? []).some((place) => !isAutomatic(place))
   );
+}
+
+export function composerPlaceKey(part: PlaceContentPart): string {
+  switch (part.type) {
+    case "browser-page":
+      return part.tabId;
+    case "phone":
+      return `phone:${part.machineId}:${part.display}`;
+    case "computer-app":
+      return `app:${part.machineId}:${part.app.bundleId.toLowerCase()}`;
+  }
+}
+
+/** Updates a place in its existing position or adds a new one at the end. */
+export function addComposerPlace(places: readonly PlaceContentPart[], part: PlaceContentPart) {
+  const key = composerPlaceKey(part);
+  return places.some((item) => composerPlaceKey(item) === key)
+    ? places.map((item) => (composerPlaceKey(item) === key ? part : item))
+    : [...places, part];
 }
 
 function holdsTaskStart(draft: ComposerDraft): boolean {
@@ -333,6 +356,7 @@ export function createComposerDraftStore(
       startGeneration: _generation,
       startPending: _pending,
       startScope: _scope,
+      editReserved: _reserved,
       ...draft
     }: ComposerDraft) => draft;
     return sameDraft(revision(held), revision(expected));
@@ -347,6 +371,15 @@ export function createComposerDraftStore(
   return {
     clear,
     durableDraft,
+    reserveEdit(key: string, expectedEditId?: string): string | null {
+      const held = read(key);
+      if (expectedEditId !== undefined && held?.editId !== expectedEditId) return null;
+      if (held?.editReserved) return held.editId!;
+      const editId = held?.editId ?? globalThis.crypto.randomUUID();
+      return write(key, { ...(held ?? blank()), editId, editReserved: true }, true, true)
+        ? editId
+        : null;
+    },
     bindReply(key: string, scope: string, revision: string): void {
       const draft = durableDraft(key);
       if (draft?.revision !== revision) throw changedTaskDraft();
@@ -441,6 +474,7 @@ export function createComposerDraftStore(
             ...draft,
             start: undefined,
             editId: undefined,
+            editReserved: undefined,
             startGeneration: undefined,
             startPending: undefined,
             startScope: undefined,
@@ -476,28 +510,25 @@ export function createComposerDraftStore(
     },
 
     /**
-     * What a closed composer still owed this draft reaches whichever composer
-     * has it open now, which would otherwise write over it, or else storage,
-     * where the reason waits for the draft to be opened.
+     * Commit the returned input before refreshing any editor showing it.
      */
-    handBack(key: string, returned: ReturnedToDraft): void {
-      const receive = receivers.get(key);
-      if (receive) {
-        receive(returned);
-        return;
-      }
-      const draft = read(key) ?? blank();
-      write(key, {
+    handBack(key: string, returned: ReturnedToDraft, expectedEditId?: string): boolean {
+      const held = read(key);
+      if (expectedEditId !== undefined && held?.editId !== expectedEditId) return false;
+      const draft = held ?? blank();
+      const places = returned.places?.reduce(addComposerPlace, draft.places ?? []);
+      const saved = write(key, {
         ...draft,
-        ...(returned.places?.length
-          ? { places: [...returned.places, ...(draft.places ?? [])] }
-          : {}),
+        ...(returned.files?.length ? { files: [...returned.files, ...draft.files] } : {}),
+        ...(places ? { places } : {}),
         quote: returned.quote ?? draft.quote,
         ...(returned.reason === undefined ? {} : { refusal: returned.reason }),
         text: returned.edit(draft.text),
         updatedAt: now(),
       });
+      if (saved) receivers.get(key)?.(returned);
       publish();
+      return saved;
     },
 
     subscribe(listener: () => void): () => void {
@@ -531,7 +562,7 @@ export function createComposerDraftStore(
         if (current === null) return true;
         const preserveStart = key.includes(":task:") && holdsTaskStart(draft);
         let saved = true;
-        if (preserveStart || draft.recoveredSendKeys?.length) {
+        if (preserveStart || draft.editReserved || draft.recoveredSendKeys?.length) {
           saved = write(key, {
             ...draft,
             ...(preserveStart
@@ -594,6 +625,8 @@ export function transactionalComposerDrafts(
   return {
     ...drafts,
     transaction,
+    reserveEdit: (...args: Parameters<typeof drafts.reserveEdit>) =>
+      transaction((store) => store.reserveEdit(...args)),
     update: (...args: Parameters<typeof drafts.update>) => write((store) => store.update(...args)),
     clear: (...args: Parameters<typeof drafts.clear>) => write((store) => store.clear(...args)),
     clearAll: () => transaction((store) => store.clearAll()),

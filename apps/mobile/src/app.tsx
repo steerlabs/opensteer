@@ -115,6 +115,11 @@ import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
 import { AppText, Notice } from "./ui/primitives.js";
 import { failureWords } from "./ui/client-feedback.js";
+import {
+  subscribeToDraftPastes,
+  supportsDraftPastes,
+} from "../modules/composer-editor/paste-events.js";
+import { receiveNativeDraftPastes } from "./thread/draft-attachments.js";
 
 /**
  * The composition root, and the only place any of this is wired.
@@ -452,6 +457,11 @@ const startupRefusal: StartupFailure | null =
 
 export function App(): ReactNode {
   const [{ broker, client, entry, iphone, notifications, teams }] = useState(mobileClient);
+  useEffect(() => {
+    if (supportsDraftPastes())
+      return receiveNativeDraftPastes(client.drafts, subscribeToDraftPastes);
+    return undefined;
+  }, [client]);
   const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(startupRefusal);
   const [initialNavigationState, setInitialNavigationState] = useState<InitialState | null>(null);
   const [linkFailure, setLinkFailure] = useState<string | null>(null);

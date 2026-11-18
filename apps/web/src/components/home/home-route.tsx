@@ -230,8 +230,10 @@ function NewTaskComposer({
         login === clientScopeKey(hostClient.connection.getSnapshot().scope)
       ) {
         const held = composerDrafts.read(draftKey);
-        if (held?.startGeneration === expected && held.startScope === login)
-          void composerDrafts.handBack(draftKey, { edit: (text) => text, reason }).catch(() => {});
+        if (held?.startGeneration === expected && held.startScope === login && held.editId)
+          void composerDrafts
+            .handBack(draftKey, { edit: (text) => text, reason }, held.editId)
+            .catch(() => {});
       }
       throw error;
     }
@@ -273,6 +275,9 @@ function NewTaskComposer({
           key={`${editorVersion}/${suggestion?.key ?? 0}`}
           onReloadDraft={() => {
             if (draftKey) setAsideStagedFiles(draftKey).forget();
+            context.reset();
+            const saved = draftKey ? composerDrafts.read(draftKey)?.places : undefined;
+            if (saved) context.restore(saved);
             setEditorVersion((version) => version + 1);
           }}
           onSend={startThread}
@@ -298,6 +303,7 @@ function NewTaskComposer({
               }
               setDiscardError(null);
               setAsideStagedFiles(draftKey).forget();
+              context.reset();
               setEditorVersion((version) => version + 1);
             });
           }}

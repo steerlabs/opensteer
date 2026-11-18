@@ -164,6 +164,7 @@ public final class ComposerEditorView: ExpoView, UITextViewDelegate, UITextDropD
   private var selectedChipRanges: [NSRange] = []
   private var lastContentHeight: CGFloat = 0
   var maxBytes = 0
+  var deliverDraftPaste: (([String: Any]) -> Void)?
 
   let onComposerChange = EventDispatcher()
   let onComposerSelectionChange = EventDispatcher()
@@ -461,11 +462,15 @@ public final class ComposerEditorView: ExpoView, UITextViewDelegate, UITextDropD
   }
 
   private func pasteImages(_ providers: [NSItemProvider]) {
+    let deliverDraftPaste = self.deliverDraftPaste
     PastedImages.load(
       providers,
       maxBytes: maxBytes,
-      isLive: { [weak self] in self?.window != nil },
-      deliver: { [weak self] payload in self?.onComposerPasteImages(payload) }
+      isLive: { [weak self] in deliverDraftPaste != nil || self?.window != nil },
+      deliver: { [weak self] payload in
+        if let deliverDraftPaste { deliverDraftPaste(payload) }
+        else { self?.onComposerPasteImages(payload) }
+      }
     )
   }
 

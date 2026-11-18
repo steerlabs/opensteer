@@ -728,6 +728,7 @@ export function FirstMessageComposer(props: {
                   onChangeText={changeText}
                   onFocus={() => setFieldFocused(true)}
                   onPasteImages={(pasted) => void staged.paste(pasted)}
+                  draftPasteTarget={staged.pasteTarget}
                   onSelectionChange={(next) => setCaret(next.start)}
                   paddingVertical={space[6]}
                   placeholder={page === null ? props.placeholder : "Ask about this page…"}

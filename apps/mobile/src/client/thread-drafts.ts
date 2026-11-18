@@ -27,6 +27,8 @@ import { z } from "zod";
  * frozen creation and message for its sign-in. After restart it replays those
  * keys until the outbox owns the message, or restores after a definite refusal.
  * A reply leaves its revision in the draft until the outbox records the send.
+ * Deferred input belongs to the draft until discard or send cleanup. All live
+ * editors share this store, and their callbacks cannot outlive the app process.
  */
 
 const maxTaskStartRecords = 48;
@@ -185,6 +187,17 @@ const SteeringDraftFileSchema = z.strictObject({
 
 export type ThreadDraft = z.infer<typeof DraftSchema>;
 export type ThreadDraftQuote = z.infer<typeof DraftQuoteSchema>;
+export const DraftEditTargetSchema = z.strictObject({
+  deploymentId: z.string(),
+  userId: z.string(),
+  threadId: z.string(),
+  editId: z.uuid(),
+});
+type DraftEditTarget = z.infer<typeof DraftEditTargetSchema>;
+type DeferredDraftChange = Partial<Pick<ThreadDraft, "attachments" | "page" | "quote" | "text">>;
+export type CompleteDraftEdit = (
+  change: (draft: ThreadDraft | null) => DeferredDraftChange | null,
+) => Promise<boolean>;
 export function threadDraftRevision(draft: ThreadDraft | null): string | null {
   return draft ? (draft.revision ?? messageStorageFingerprint(JSON.stringify(draft))) : null;
 }
@@ -311,6 +324,9 @@ export interface ThreadDraftStore {
   ): Promise<void>;
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
+  captureEdit(deploymentId: string, userId: string, threadId: string): DraftEditTarget;
+  completeEdit(target: DraftEditTarget, change: Parameters<CompleteDraftEdit>[0]): Promise<boolean>;
+  reserveEdit(deploymentId: string, userId: string, threadId: string): CompleteDraftEdit;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readSavedDraft(
     deploymentId: string,
@@ -384,6 +400,7 @@ export function createThreadDraftStore(options: {
   const unsaved = new Map<string, Set<keyof typeof overlays>>();
   const retryDelays = options.saveRetryDelaysMs ?? [150, 600];
   const writes = new MutationQueue();
+  const editOwners = new Map<string, string>();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
     `${deploymentId}:${userId}:${threadId}`;
@@ -463,12 +480,13 @@ export function createThreadDraftStore(options: {
     change: (
       nextDrafts: Map<string, ThreadDraft>,
       nextPending: Map<string, TaskStartRecord>,
-    ) => void,
+    ) => void | false,
+    committed?: () => void,
   ): Promise<void> =>
     writes.run(async () => {
       const nextDrafts = new Map(drafts);
       const nextPending = new Map(pending);
-      change(nextDrafts, nextPending);
+      if (change(nextDrafts, nextPending) === false) return;
       const content = JSON.stringify(
         DraftFileSchema.parse({
           drafts: Object.fromEntries(nextDrafts),
@@ -485,6 +503,7 @@ export function createThreadDraftStore(options: {
       // claim or make a retry forget its original idempotency key.
       drafts = nextDrafts;
       pending = nextPending;
+      committed?.();
       publish();
     });
 
@@ -711,6 +730,7 @@ export function createThreadDraftStore(options: {
       const claimedTextEdit = textEdits.get(entryKey);
       const claimedQuoteEdit = quoteEdits.get(entryKey);
       const claimedPageEdit = pageEdits.get(entryKey);
+      let claimed = false;
       const entry = TaskStartRecordSchema.parse({
         compaction: command.compaction,
         attachments: command.attachments,
@@ -726,41 +746,48 @@ export function createThreadDraftStore(options: {
         threadId: command.threadId,
         userId,
       });
-      await mutate((nextDrafts, nextPending) => {
-        const previous = nextPending.get(entryKey);
-        if (previous !== undefined) {
-          if (
-            previous.idempotencyKey !== entry.idempotencyKey ||
-            JSON.stringify(previous.attachments ?? []) !==
-              JSON.stringify(entry.attachments ?? []) ||
-            JSON.stringify(previous.localUris ?? []) !== JSON.stringify(entry.localUris ?? []) ||
-            JSON.stringify(previous.browserPage ?? null) !==
-              JSON.stringify(entry.browserPage ?? null) ||
-            previous.ownerScope !== entry.ownerScope ||
-            previous.quotedMessageId !== entry.quotedMessageId ||
-            previous.compaction !== entry.compaction ||
-            JSON.stringify(previous.start ?? null) !== JSON.stringify(entry.start ?? null) ||
-            previous.text !== entry.text ||
-            previous.threadId !== entry.threadId ||
-            previous.userId !== entry.userId
-          ) {
-            throw new Error("This thread already has a message awaiting acknowledgement.");
+      await mutate(
+        (nextDrafts, nextPending) => {
+          const previous = nextPending.get(entryKey);
+          if (previous !== undefined) {
+            if (
+              previous.idempotencyKey !== entry.idempotencyKey ||
+              JSON.stringify(previous.attachments ?? []) !==
+                JSON.stringify(entry.attachments ?? []) ||
+              JSON.stringify(previous.localUris ?? []) !== JSON.stringify(entry.localUris ?? []) ||
+              JSON.stringify(previous.browserPage ?? null) !==
+                JSON.stringify(entry.browserPage ?? null) ||
+              previous.ownerScope !== entry.ownerScope ||
+              previous.quotedMessageId !== entry.quotedMessageId ||
+              previous.compaction !== entry.compaction ||
+              JSON.stringify(previous.start ?? null) !== JSON.stringify(entry.start ?? null) ||
+              previous.text !== entry.text ||
+              previous.threadId !== entry.threadId ||
+              previous.userId !== entry.userId
+            ) {
+              throw new Error("This thread already has a message awaiting acknowledgement.");
+            }
+            return;
           }
-          return;
-        }
-        if (nextPending.size >= maxTaskStartRecords) {
-          throw new Error(
-            "Too many messages are awaiting acknowledgement. Retry those messages first.",
-          );
-        }
-        if (
-          expectedRevision !== undefined &&
-          threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !== expectedRevision
-        )
-          throw changedTaskDraft();
-        nextPending.set(entryKey, entry);
-        nextDrafts.delete(entryKey);
-      });
+          if (nextPending.size >= maxTaskStartRecords) {
+            throw new Error(
+              "Too many messages are awaiting acknowledgement. Retry those messages first.",
+            );
+          }
+          if (
+            expectedRevision !== undefined &&
+            threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !==
+              expectedRevision
+          )
+            throw changedTaskDraft();
+          nextPending.set(entryKey, entry);
+          nextDrafts.delete(entryKey);
+          claimed = true;
+        },
+        () => {
+          if (claimed) editOwners.delete(entryKey);
+        },
+      );
       // A failed draft write remains visible until another edit saves it. A
       // durable pending claim has now taken those exact words and quote; only
       // discard the overlays if no newer edit arrived while it was queued.
@@ -888,14 +915,49 @@ export function createThreadDraftStore(options: {
 
     async discardDraft(deploymentId, userId, threadId): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
+      const discarded = [
+        textEdits.get(entryKey),
+        quoteEdits.get(entryKey),
+        pageEdits.get(entryKey),
+      ];
+      await mutate(
+        (nextDrafts) => {
+          nextDrafts.delete(entryKey);
+        },
+        () => {
+          editOwners.delete(entryKey);
+          if (textEdits.get(entryKey) === discarded[0]) textEdits.delete(entryKey);
+          if (quoteEdits.get(entryKey) === discarded[1]) quoteEdits.delete(entryKey);
+          if (pageEdits.get(entryKey) === discarded[2]) pageEdits.delete(entryKey);
+        },
+      );
+    },
+
+    captureEdit(deploymentId, userId, threadId) {
+      const entryKey = key(deploymentId, userId, threadId);
+      const editId = editOwners.get(entryKey) ?? globalThis.crypto.randomUUID();
+      editOwners.set(entryKey, editId);
+      return { deploymentId, userId, threadId, editId };
+    },
+
+    async completeEdit({ deploymentId, userId, threadId, editId }, change) {
+      const entryKey = key(deploymentId, userId, threadId);
+      let saved = false;
       await mutate((nextDrafts) => {
-        nextDrafts.delete(entryKey);
+        if (editOwners.get(entryKey) !== editId) return false;
+        const current = nextDrafts.get(entryKey);
+        const patch = change(current ?? null);
+        if (patch === null) return false;
+        putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), ...patch });
+        saved = true;
+        return undefined;
       });
-      // An edit whose write failed would otherwise bring the words back.
-      textEdits.delete(entryKey);
-      quoteEdits.delete(entryKey);
-      pageEdits.delete(entryKey);
-      publish();
+      return saved;
+    },
+
+    reserveEdit(deploymentId, userId, threadId) {
+      const target = store.captureEdit(deploymentId, userId, threadId);
+      return (change) => store.completeEdit(target, change);
     },
 
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
@@ -926,18 +988,21 @@ export function createThreadDraftStore(options: {
       const entryKey = key(deploymentId, userId, threadId);
       const claimed = [textEdits.get(entryKey), quoteEdits.get(entryKey), pageEdits.get(entryKey)];
       let consumed = false;
-      await mutate((nextDrafts) => {
-        if (threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !== revision)
-          return;
-        nextDrafts.delete(entryKey);
-        consumed = true;
-      });
-      if (consumed) {
-        if (textEdits.get(entryKey) === claimed[0]) textEdits.delete(entryKey);
-        if (quoteEdits.get(entryKey) === claimed[1]) quoteEdits.delete(entryKey);
-        if (pageEdits.get(entryKey) === claimed[2]) pageEdits.delete(entryKey);
-        publish();
-      }
+      await mutate(
+        (nextDrafts) => {
+          if (threadDraftRevision(readVisibleDraft(deploymentId, userId, threadId)) !== revision)
+            return false;
+          nextDrafts.delete(entryKey);
+          consumed = true;
+          return undefined;
+        },
+        () => {
+          editOwners.delete(entryKey);
+          if (textEdits.get(entryKey) === claimed[0]) textEdits.delete(entryKey);
+          if (quoteEdits.get(entryKey) === claimed[1]) quoteEdits.delete(entryKey);
+          if (pageEdits.get(entryKey) === claimed[2]) pageEdits.delete(entryKey);
+        },
+      );
       return consumed;
     },
 

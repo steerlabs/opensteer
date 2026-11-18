@@ -36,7 +36,6 @@ import {
 import {
   attachmentMaxBytes,
   attachmentMessageMaxCount,
-  type ArtifactContentPart,
   type AuthenticatedUser,
   type BrowserPageContentPart,
   type Request,
@@ -145,17 +144,8 @@ export function Composer(props: {
   readonly conversationActions: readonly NativeMenuOption[];
   readonly placeholder: string;
   readonly requests: readonly Request[];
-  /**
-   * Words handed back to the composer, such as a queued message taken back to
-   * be reworded. Each new value joins the draft once, ahead of what is there.
-   */
-  readonly restore?: {
-    readonly attachments?: readonly ArtifactContentPart[];
-    readonly key: number;
-    /** An update to answer; it becomes a removable chip, never draft text. */
-    readonly quote?: ThreadDraftQuote | null;
-    readonly text: string;
-  } | null;
+  /** Focus after a quote or an edit has been saved in this draft. */
+  readonly focusDraft?: number;
   readonly running: boolean;
   readonly stopRunId: string | null;
   readonly runStopping: boolean;
@@ -444,12 +434,14 @@ export function Composer(props: {
   const startDictation = (): void => {
     if (voiceOn) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const complete = drafts.reserveEdit(deploymentId, userId, threadId);
+    let readText = "";
     dictation.start({
       owner,
       read: () => {
         dictationBase.current = selection.current;
         return {
-          text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+          text: (readText = drafts.readDraft(deploymentId, userId, threadId)?.text ?? ""),
           selection: selection.current,
         };
       },
@@ -457,7 +449,9 @@ export function Composer(props: {
         selection.current = caret;
         if (mounted.current && currentOwner.current === owner)
           committedSelection.current = { text: next, ...caret };
-        void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => {
+        void complete((draft) => ({
+          text: !draft?.text.trim() || draft.text === readText ? next : `${next}\n${draft.text}`,
+        })).catch(() => {
           if (mounted.current && currentOwner.current === owner)
             setDraftFailure("This draft could not be saved on this phone.");
         });
@@ -492,20 +486,9 @@ export function Composer(props: {
     setDeclinedPage(offeredKey);
   };
 
-  const restore = props.restore ?? null;
   useEffect(() => {
-    if (restore === null) return;
-    const current = draftText.current;
-    if (restore.text) replaceText(current.trim() ? `${restore.text}\n${current}` : restore.text);
-    // A restore without a quote leaves the one already standing; only an
-    // explicit null takes it away.
-    if (restore.quote !== undefined) changeQuote(restore.quote);
-    // Files already on the Host come back by reference; this phone has no copy.
-    const parts = restore.attachments ?? [];
-    if (parts.length > 0) staged.restore(parts.map((part) => ({ localUri: null, part })));
-    input.current?.focus();
-    // Only a new hand-back is applied; a re-render leaves the draft alone.
-  }, [restore]);
+    if (props.focusDraft) input.current?.focus();
+  }, [props.focusDraft]);
 
   useEffect(() => {
     if (refused === null) return;
@@ -991,6 +974,7 @@ export function Composer(props: {
                     settle();
                   }}
                   onPasteImages={(pasted) => void staged.paste(pasted)}
+                  draftPasteTarget={staged.pasteTarget}
                   onSelectionChange={(next) => {
                     selection.current = next;
                     setCaret(next.start);

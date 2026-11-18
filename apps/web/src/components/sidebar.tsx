@@ -484,14 +484,16 @@ export function Sidebar({
           run: () => {
             void retired
               .then(async (start) => {
-                await composerDrafts.transaction((store) => {
-                  if (store.read(key)) return;
-                  store.restore(
-                    key,
-                    start ? { ...draft, start, startGeneration: undefined } : draft,
-                  );
+                const restored = await composerDrafts.transaction((store) => {
+                  if (store.read(key)) return false;
+                  return store.restore(key, {
+                    ...draft,
+                    editId: undefined,
+                    editReserved: undefined,
+                    ...(start ? { start, startGeneration: undefined } : {}),
+                  });
                 });
-                files.takeBack();
+                if (restored) files.takeBack();
               })
               .catch(() => {});
           },

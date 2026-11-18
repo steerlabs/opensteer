@@ -478,28 +478,44 @@ function ThreadPaneForUser(
     navigationFocused && inView && appForeground,
   );
   const askDecisions = useAskDecisions(hostClient);
-  // Words handed to the composer: an update to answer, or an edit the agent
-  // took first, on its way to being sent as a new message.
-  const [restoredDraft, setRestoredDraft] = useState<{
-    readonly attachments?: readonly ArtifactContentPart[];
-    readonly key: number;
-    readonly quote?: ThreadDraftQuote | null;
-    readonly text: string;
-  } | null>(null);
+  const [focusDraft, setFocusDraft] = useState(0);
+  const drafts = client.drafts;
   const sendAsNew = useCallback(
     (words: { readonly parts: readonly ContentPart[]; readonly text: string } | null) => {
-      if (words === null) return;
+      if (words === null || viewerUserId === null) return;
       // Files go with it by reference; a page or app it named was this edit's alone.
       const attachments = words.parts.filter(
         (part): part is ArtifactContentPart => part.type === "artifact",
       );
-      setRestoredDraft((current) => ({
-        attachments,
-        key: (current?.key ?? 0) + 1,
-        text: words.text,
-      }));
+      const complete = drafts.reserveEdit(deploymentId, viewerUserId, threadId);
+      void complete((draft) => {
+        const held = draft?.attachments ?? [];
+        return {
+          ...(words.text
+            ? { text: draft?.text.trim() ? `${words.text}\n${draft.text}` : words.text }
+            : {}),
+          attachments: [
+            ...attachments
+              .filter((part) => !held.some((file) => file.attachmentId === part.artifactId))
+              .map((part) => ({
+                attachmentId: part.artifactId,
+                localUri: null,
+                mediaType: part.mediaType,
+                name: part.name,
+                sizeBytes: part.sizeBytes ?? 0,
+                status: "staged" as const,
+              })),
+            ...held,
+          ],
+        };
+      }).then(
+        (kept) => {
+          if (kept) setFocusDraft((value) => value + 1);
+        },
+        () => setDeliveryNotice(issueLine({ code: "draft-unsaved" }, `restore:${Date.now()}`)),
+      );
     },
-    [],
+    [deploymentId, drafts, threadId, viewerUserId],
   );
 
   const thread = snapshot.thread;
@@ -931,10 +947,18 @@ function ThreadPaneForUser(
     [hostClient, openSurface, surfaceTurns, threadId],
   );
   /** Quotes a reply into this conversation's own composer, unsent. */
-  const replyWith = useCallback((message: MessageEntry): void => {
-    const quote = draftQuoteFrom(message);
-    setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-  }, []);
+  const replyWith = useCallback(
+    (message: MessageEntry): void => {
+      if (viewerUserId === null) return;
+      void drafts
+        .writeDraftQuote(deploymentId, viewerUserId, threadId, draftQuoteFrom(message))
+        .then(
+          () => setFocusDraft((value) => value + 1),
+          () => setDeliveryNotice(issueLine({ code: "draft-unsaved" }, `quote:${Date.now()}`)),
+        );
+    },
+    [deploymentId, drafts, threadId, viewerUserId],
+  );
 
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, viewerUserId, conversational),
@@ -1597,7 +1621,7 @@ function ThreadPaneForUser(
                       : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                   }
                   requests={dockableRequests}
-                  restore={restoredDraft}
+                  focusDraft={focusDraft}
                   running={stopTarget !== null}
                   stopRunId={stopTarget?.id ?? null}
                   // A task card in a conversation stops its own task, and a task's

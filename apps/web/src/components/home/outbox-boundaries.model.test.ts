@@ -752,3 +752,83 @@ it("reopens a lease committed just before its owner could dispatch", async () =>
     }
   });
 });
+
+it.each(["web", "mobile"] as const)(
+  "only the owning %s draft receives input that completes after its editor leaves",
+  async (platform) => {
+    await seeds(
+      [
+        ["capture", "leave", "complete"],
+        ["intervene", "reopen"],
+      ],
+      async (events, seed) => {
+        const reopen = webDrafts(disk());
+        let browser = reopen();
+        const { drafts: phone } = mobile();
+        const { deploymentId, viewerId } = original;
+        const threadId = createId("thread");
+        const key = draftKey.replace("task:home", `thread:${threadId}`);
+        const args = [deploymentId, viewerId, threadId] as const;
+        const keep = async (text: string) => {
+          if (platform === "web") await browser.update(key, { text });
+          else await phone.writeDraft(...args, text);
+        };
+        const read = () =>
+          (platform === "web" ? browser.read(key) : phone.readDraft(...args))?.text ?? "";
+        const action = (["edit", "discard", "send"] as const)[seed % 3]!;
+        let expected = seed % 2 === 0 || action === "send" ? "original" : "";
+        if (expected) await keep(expected);
+        let epoch = 0;
+        let captured = -1;
+        let left = false;
+        let complete: (() => Promise<boolean>) | undefined;
+        const late = (text: string) => (text ? `${text} continued` : "continued");
+
+        for (const event of events) {
+          if (event === "capture") {
+            captured = epoch;
+            if (platform === "web") {
+              const editor = browser;
+              const id = await editor.reserveEdit(key);
+              assert(id);
+              complete = () => editor.handBack(key, { edit: late }, id);
+            } else {
+              const commit = phone.reserveEdit(...args);
+              complete = () => commit((draft) => ({ text: late(draft?.text ?? "") }));
+            }
+          } else if (event === "leave") {
+            left = true;
+          } else if (event === "reopen") {
+            browser = reopen();
+          } else if (event === "intervene") {
+            if (action === "send") {
+              if (platform === "web") await browser.clear(key);
+              else {
+                const revision = threadDraftRevision(phone.readDraft(...args));
+                assert(revision);
+                assert(await phone.consumeReply(...args, revision));
+              }
+              epoch++;
+              expected = "";
+            } else if (action === "discard") {
+              if (platform === "web") await browser.clear(key);
+              else await phone.discardDraft(...args);
+              epoch++;
+              expected = "replacement draft";
+              await keep(expected);
+            } else {
+              expected = "newer words";
+              await keep(expected);
+            }
+          } else {
+            assert(left);
+            const owned = captured === epoch;
+            assert.equal(await complete?.(), owned);
+            if (owned) expected = late(expected);
+          }
+          assert.equal(read(), expected);
+        }
+      },
+    );
+  },
+);

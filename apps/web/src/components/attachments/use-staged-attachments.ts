@@ -224,6 +224,7 @@ class StagedFiles {
 
   takeBack(): void {
     if (sessions.get(this.#scope) !== this) return;
+    this.#draftEditId = composerDrafts.read(this.#scope)?.editId;
     this.#asideFromDraft = false;
     this.#saveFiles();
   }

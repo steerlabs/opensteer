@@ -47,6 +47,7 @@ export interface ComposerEditorProps {
   readonly autoFocus?: boolean;
   /** Where pasted and dropped images go; without it they are discarded, as an edit takes none. */
   readonly onPasteImages?: (pasted: PastedImages) => void;
+  readonly draftPasteTarget?: string | undefined;
   /** The most one pasted image may hold. */
   readonly maxImageBytes?: number;
   readonly onFocus?: () => void;
@@ -234,6 +235,7 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
         else for (const image of event.nativeEvent.images) discardPastedImage(image.uri);
       }}
       onComposerSelectionChange={(event) => void deliver(event.nativeEvent)}
+      {...(props.draftPasteTarget === undefined ? {} : { pasteTarget: props.draftPasteTarget })}
       placeholder={props.placeholder}
       ref={native}
       style={[
