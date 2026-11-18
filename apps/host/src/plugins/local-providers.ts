@@ -146,6 +146,20 @@ export class LocalProviders {
       );
     if (!input.input || typeof input.input !== "object" || Array.isArray(input.input))
       throw failure(`${input.tool} takes an object of arguments.`);
+    const assertAuthority = async (transaction?: Parameters<PluginAuthority["authorize"]>[2]) => {
+      const permission = await this.#options.authority.authorize(
+        { ...input, operation: "call", write: !tool.readOnly },
+        signal,
+        transaction,
+      );
+      if (
+        !permission.allowed ||
+        permission.grants?.[input.plugin] === "off" ||
+        (permission.grants?.[input.plugin] === "read-only" && !tool.readOnly)
+      ) {
+        throw failure("Local tool authority changed while waiting; the call was not sent.");
+      }
+    };
     const toolCaller: ToolCaller = {
       run: caller.kind === "run" ? caller.claims : null,
       threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
@@ -171,18 +185,9 @@ export class LocalProviders {
           throw failure(
             "Local tool authority or identity changed while waiting; the call was not sent.",
           );
-        const permission = await this.#options.authority.authorize(
-          { ...input, operation: "call", write: !tool.readOnly },
-          signal,
-        );
-        if (
-          !permission.allowed ||
-          permission.grants?.[input.plugin] === "off" ||
-          (permission.grants?.[input.plugin] === "read-only" && !tool.readOnly)
-        ) {
-          throw failure("Local tool authority changed while waiting; the call was not sent.");
-        }
+        await assertAuthority();
       },
+      authorizeAtHandoff: assertAuthority,
     };
     let result: LocalToolResponse;
     try {

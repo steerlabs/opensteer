@@ -1,4 +1,6 @@
 import type { RunId, ThreadId } from "@opensteer/core";
+import type { DatabaseSchema } from "@opensteer/database";
+import type { Transaction } from "kysely";
 import type { RunCapabilityClaims } from "./run-capability.js";
 import type { PluginElicit } from "../plugins/plugin-service.js";
 
@@ -20,4 +22,5 @@ export interface ToolCaller {
   /** For a call through the plugin tools: asks the person through the calling execution. */
   readonly elicit?: PluginElicit;
   readonly authorize?: () => Promise<void>;
+  readonly authorizeAtHandoff?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
 }

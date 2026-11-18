@@ -5,7 +5,14 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { pluginOwnerId } from "./engine-protocol.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { PluginAgentStore, TriggerStore, type OpensteerStore } from "@opensteer/database";
+import {
+  executionDate,
+  OpensteerStore,
+  PluginAgentStore,
+  TriggerStore,
+  type DatabaseSchema,
+} from "@opensteer/database";
+import type { Transaction } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { PluginAuthorization, PluginCaller } from "./engine-protocol.js";
 
@@ -131,6 +138,7 @@ export class PluginAuthority {
   async authorize(
     input: PluginAuthorization,
     signal?: AbortSignal,
+    handoff?: Transaction<DatabaseSchema>,
   ): Promise<import("./engine-protocol.js").PluginAuthorizationResult> {
     const scope = this.#callers.get(input.caller);
     if (
@@ -141,14 +149,18 @@ export class PluginAuthority {
       !discovery.has(input.operation)
     )
       scope.plugins.add(input.plugin);
-    const owner = await this.options.owner();
+    // The first authorization waits for the engine's execution report. At
+    // dispatch we already have that report and only reread committed authority.
+    const owner = handoff ? scope?.caller.userId : await this.options.owner();
+    if (!owner) return { allowed: false };
+    const settingsStore = handoff ? new PluginAgentStore(handoff) : this.options.settings;
     if (input.operation === "cancel" && input.execution) {
-      const execution = await this.options.settings.execution(input.execution);
+      const execution = await settingsStore.execution(input.execution);
       return { allowed: execution?.ownerUserId === owner && execution.caller === input.caller };
     }
-    if (input.execution) await this.options.beforeAuthorize?.();
+    if (input.execution && !handoff) await this.options.beforeAuthorize?.();
     signal?.throwIfAborted();
-    const settings = await this.options.settings.settings(owner);
+    const settings = await settingsStore.settings(owner);
     const grants = Object.fromEntries(settings.map((s) => [s.pluginId, s.access]));
     if (input.plugin && input.write && (grants[input.plugin] ?? "all") !== "all")
       return { allowed: false, grants };
@@ -164,6 +176,11 @@ export class PluginAuthority {
     }
     const caller = scope?.caller;
     if (!caller || caller.userId !== owner) return { allowed: false };
+    const store = handoff
+      ? new OpensteerStore(handoff, {
+          executionClock: { now: () => executionDate(this.options.store.database).getTime() },
+        })
+      : this.options.store;
     if (
       !discovery.has(input.operation) &&
       !management.has(input.operation) &&
@@ -171,7 +188,7 @@ export class PluginAuthority {
     )
       return { allowed: false };
     if (caller.kind === "program" && input.operation !== "cancel") {
-      const triggers = new TriggerStore(this.options.store.database);
+      const triggers = new TriggerStore(store.database);
       try {
         if (caller.program.kind === "trigger")
           await triggers.assertActiveExecutionBinding(caller.program);
@@ -182,7 +199,7 @@ export class PluginAuthority {
     }
     // Integration discovery/calls already use the personal owner's task authority, including team-bound tasks.
     if (caller.kind !== "connection") {
-      const thread = await this.options.store.getThreadForOwner(
+      const thread = await store.getThreadForOwner(
         caller.kind === "run" ? caller.thread.id : caller.anchor.id,
         owner,
       );
@@ -195,7 +212,7 @@ export class PluginAuthority {
       )
         return { allowed: false };
       const execution = input.execution
-        ? await this.options.settings.execution(input.execution)
+        ? await settingsStore.execution(input.execution)
         : undefined;
       if (
         input.execution &&
@@ -210,7 +227,7 @@ export class PluginAuthority {
       if (caller.kind === "run" && input.operation !== "cancel") {
         if (!execution?.handoff) {
           try {
-            await this.options.store.assertActiveGrant(caller.claims);
+            await store.assertActiveGrant(caller.claims);
           } catch {
             return { allowed: false };
           }
@@ -222,7 +239,7 @@ export class PluginAuthority {
       )
         return { allowed: false };
     } else {
-      const live = await this.options.store.database
+      const live = await store.database
         .selectFrom("agentConnections")
         .select("id")
         .where("id", "=", caller.connectionId)
