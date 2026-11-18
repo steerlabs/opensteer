@@ -310,6 +310,37 @@ describe("a catalog the Host can't reach", () => {
     });
   });
 
+  it("says the catalog can't be reached when a reconnect refresh fails, and clears it on recovery", async () => {
+    const unreachable = "The plugin catalog can't be reached right now.";
+    for (const [first, view] of [
+      [[] as PluginCatalogEntryView[], { kind: "failed", text: unreachable, retry: true }],
+      [[entry], { kind: "entries", issue: { text: unreachable, retry: true } }],
+    ] as const) {
+      const session = controlledClientSession();
+      const pages: { items: PluginCatalogEntryView[]; catalog?: "listed" | "unavailable" }[] = [
+        { items: [...first], catalog: "listed" },
+        { items: [], catalog: "unavailable" },
+        { items: [entry], catalog: "listed" },
+      ];
+      const list = new PagedList(session, pluginCatalogReader(host(pages), "x"));
+      const stop = list.subscribe(() => {});
+      await settle(list);
+      // The link drops and comes back; the Host answers, but can't reach the catalog.
+      session.change({ phase: "recovering", epoch: 2 });
+      session.change({ phase: "ready", readyRevision: 2 });
+      await vi.waitFor(() => expect(list.getState().error).not.toBeNull());
+      expect(list.getState().items).toEqual(first);
+      expect(pluginCatalogListView(list.getState(), "x")).toEqual(view);
+      // Losing the link again keeps saying so rather than the stale result.
+      session.change({ phase: "recovering", epoch: 3 });
+      expect(pluginCatalogListView(list.getState(), "x")).toEqual(view);
+      session.change({ phase: "ready", readyRevision: 3 });
+      await vi.waitFor(() => expect(list.getState().items).toEqual([entry]));
+      expect(pluginCatalogListView(list.getState(), "x")).toEqual({ kind: "entries", issue: null });
+      stop();
+    }
+  });
+
   it("says empty or no match only after a read that listed, including from an older Host", async () => {
     for (const page of [{ items: [], catalog: "listed" as const }, { items: [] }]) {
       const list = new PagedList(controlledClientSession(), pluginCatalogReader(host([page]), "x"));
