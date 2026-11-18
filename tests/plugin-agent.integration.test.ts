@@ -1705,13 +1705,14 @@ test("workflow history projects metadata when a plugin turns off before the engi
     { timeout: 10_000 },
   );
   const original = authority.authorize.bind(authority);
-  const authorize = vi.spyOn(authority, "authorize");
-  authorize.mockImplementationOnce(async (input, signal) => {
-    if (input.operation === "resourcesRead")
+  const authorize = vi.spyOn(authority, "authorize").mockImplementation(async (input, signal) => {
+    if (input.operation === "resourcesRead" && input.plugin === plugin)
       await records.setAccess(personal.userId, plugin, "off");
     return original(input, signal);
   });
   try {
+    // A background authorization can arrive before the resource read.
+    await authority.authorize({ ...ownerContext, operation: "background", plugin });
     const history = await read();
     expect(history.items).toEqual([expect.objectContaining({ status: "complete" })]);
     expect(history.items).toEqual([expect.not.objectContaining({ output: expect.anything() })]);
