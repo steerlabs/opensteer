@@ -88,7 +88,7 @@ const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
 `;
 /** Databases created from the current baseline never had this storage. */
-export const dropSpecialistsMigrationName = "0029_drop_specialists_contract";
+export const dropSpecialistsMigrationName = "0030_drop_specialists_contract";
 const DROP_SPECIALISTS_SQL = `
 drop table if exists specialists;
 alter table threads drop column if exists specialist_id;
@@ -101,7 +101,7 @@ delete from plugin_owner_settings where target->>'kind' = 'specialist';
  * only they could answer. Computer, messaging and local-server rows stay. Databases created from
  * the current baseline never had the dropped storage.
  */
-export const dropServiceIntegrationsMigrationName = "0032_drop_service_integrations_contract";
+export const dropServiceIntegrationsMigrationName = "0033_drop_service_integrations_contract";
 const DROP_SERVICE_INTEGRATIONS_SQL = `
 create temporary table service_servers on commit drop as
   select id from integration_servers where transport->>'type' not in ('computer', 'runner');
@@ -431,17 +431,24 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
           },
         },
+        // opensteer_task_list's changedSince reads only messages written or delivered after it.
+        "0029_changed_since_indexes": {
+          async up(database) {
+            await sql`create index messages_created_at on messages(created_at);
+              create index thread_inputs_updated_at on thread_inputs(updated_at)`.execute(database);
+          },
+        },
         [dropSpecialistsMigrationName]: {
           async up(database) {
             await sql.raw(DROP_SPECIALISTS_SQL).execute(database);
           },
         },
-        "0030_plugin_host": {
+        "0031_plugin_host": {
           async up(database) {
             await sql.raw(PLUGIN_HOST_SQL).execute(database);
           },
         },
-        "0031_plugin_oauth": {
+        "0032_plugin_oauth": {
           async up(database) {
             await sql
               .raw(

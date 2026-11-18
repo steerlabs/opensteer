@@ -42,7 +42,13 @@ function argumentMatches(
       value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined,
     call.args,
   );
-  return typeof value === "string" && new RegExp(match.pattern, "u").test(value);
+  const text =
+    typeof value === "string"
+      ? value
+      : value !== null && typeof value === "object"
+        ? JSON.stringify(value)
+        : undefined;
+  return text !== undefined && new RegExp(match.pattern, "u").test(text);
 }
 export function grade(
   expect: EvalCase["expect"],
@@ -78,7 +84,14 @@ export function grade(
   for (const [i, required] of expect.calls.entries())
     add(
       `calls[${i}]:${required.tool}`,
-      valid.some((c) => toolMatches(c.tool, required.tool) && partialMatch(c.args, required.args)),
+      valid.some(
+        (c) =>
+          toolMatches(c.tool, required.tool) &&
+          partialMatch(c.args, required.args) &&
+          (required.withoutKeys ?? []).every(
+            (key) => c.args !== null && typeof c.args === "object" && !Object.hasOwn(c.args, key),
+          ),
+      ),
     );
   for (const [i, rule] of expect.callsOnlyKeys.entries())
     add(

@@ -10,8 +10,7 @@ import type { LocalMcpSecretsUpdate } from "@opensteer/database";
 
 /**
  * The secrets an MCP server's launch declares, as the owner of the computer
- * that runs it entered them (`docs/computers.md`, "MCP servers on a
- * computer"). Sealed per server; opened only to start that server.
+ * that runs it entered them. Sealed per server; opened only to start that server.
  */
 export class LocalMcpSecrets {
   readonly #vault: Pick<AesGcmSecretVault, "open" | "seal">;

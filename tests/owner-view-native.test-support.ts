@@ -1,4 +1,4 @@
-/** Controlled native transport driver; see docs/computer-use.md for the opt-in journey. */
+/** Controlled native transport driver for the opt-in journey. */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";

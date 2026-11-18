@@ -333,9 +333,10 @@ test("a version change of one plugin waits only for that plugin's earlier change
   );
 });
 
-test("consent discloses a raw secret that reaches plugin code", async (context) => {
+test("reports raw credential consent and redacts the value in the plugin result", async (context) => {
   const service = await outputFixture(context);
   const target = { requirement: "service", scope: "user" as const };
+  const syntheticKey = "synthetic-raw-key";
   const exposed = await service.install(
     {
       kind: "files",
@@ -347,7 +348,13 @@ test("consent discloses a raw secret that reaches plugin code", async (context) 
               content: file.content
                 .replace("string, query", "string, raw, query")
                 .replace("token: string()", "token: raw(string())")
-                .replace("amount + 1", "_ctx.user.accounts.service.fields.token"),
+                .replace(
+                  "amount + 1",
+                  `{
+                    const token = _ctx.user.accounts.service.fields.token;
+                    return { receivedRawValue: token === ${JSON.stringify(syntheticKey)}, token };
+                  }`,
+                ),
             }
           : file,
       ),
@@ -363,7 +370,7 @@ test("consent discloses a raw secret that reaches plugin code", async (context) 
     {
       provider: exposed.plugin.requirements.accounts.service!.provider,
       method: "key",
-      fields: { token: "synthetic-raw-key" },
+      fields: { token: syntheticKey },
     },
     caller,
   );
@@ -374,7 +381,9 @@ test("consent discloses a raw secret that reaches plugin code", async (context) 
   expect(
     (await service.call({ calls: { path: "tools.exposed.read", input: { amount: 0 } } }, caller))
       .result,
-  ).toMatchObject({ execution: { value: { value: "synthetic-raw-key" } } });
+  ).toMatchObject({
+    execution: { value: { ok: true, value: { receivedRawValue: true, token: "[redacted]" } } },
+  });
 });
 
 test("oversized execution results are refused before IPC and terminal state is pruned", async (context) => {

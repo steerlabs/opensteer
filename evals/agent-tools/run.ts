@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
 import { caseChain, copyWorkspace } from "./chains.js";
-import { parseCases } from "./cases.js";
+import { caseAtTime, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary, type Check } from "./grader.js";
 import {
   compareBaseline,
@@ -228,7 +228,8 @@ async function main() {
             try {
               root = await mkdtemp(join(tmpdir(), "opensteer-eval-sample-"));
               let previousWorkspace: string | undefined;
-              for (const [stageIndex, stage] of caseChain(c, corpus).entries()) {
+              for (const [stageIndex, sourceStage] of caseChain(c, corpus).entries()) {
+                const stage = caseAtTime(sourceStage, Date.now());
                 const stageRoot = join(root, String(stageIndex));
                 await mkdir(stageRoot);
                 const p = await prepareEngine(stageRoot, engine, stop.signal, inspected.models);

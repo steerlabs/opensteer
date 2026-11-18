@@ -1,9 +1,9 @@
-import { callMcpTool } from "../../host/src/mcp/call-tool.test-support.js";
+import { callMcpTool } from "../mcp/call-tool.test-support.js";
 import { createId, formatReferenceLink } from "@opensteer/core";
 import { chrome_cookies_request } from "@opensteer/agent-tools/tools";
 import { TabCommandResultSchema } from "@opensteer/protocol";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
+import { startPersonalRuntime } from "../runtime/personal-startup.test-support.js";
 /**
  * Chrome sign-ins v2, end to end, on real parts only: the built extension in a
  * disposable Chromium profile ("the user's everyday Chrome"), the in-process
@@ -68,12 +68,21 @@ import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { createDatabase } from "../../../packages/database/src/index.js";
-import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import { testRpcData } from "../../host/src/server/test-host-api-request.js";
+import { createDatabase } from "@opensteer/database";
+import { writeWebDistributionManifest } from "../../../../scripts/write-web-distribution-manifest.mjs";
+import { testRpcData } from "../server/test-host-api-request.js";
 
-const repositoryRoot = resolve(import.meta.dirname, "../../..");
+// Chromium supplies this API inside Playwright's extension worker callbacks.
+declare const chrome: {
+  readonly notifications: { getAll(): Promise<Record<string, boolean>> };
+  readonly storage: {
+    readonly local: { get(key: "connections"): Promise<{ readonly connections?: unknown }> };
+  };
+};
+
+const repositoryRoot = resolve(import.meta.dirname, "../../../..");
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// The integration launcher supplies the PostgreSQL database for the real Host.
 const journey = databaseUrl ? describe : describe.skip;
 const artifactDirectory =
   process.env.OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR ??
@@ -535,12 +544,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
 
     await step("extension: the first share of a site notified once", async () => {
       const notifications = await everyday.worker.evaluate(async () =>
-        // The extension's own Chrome typings declare only what it calls.
-        Object.keys(
-          await (
-            chrome.notifications as unknown as { getAll(): Promise<Record<string, boolean>> }
-          ).getAll(),
-        ),
+        Object.keys(await chrome.notifications.getAll()),
       );
       expect(notifications).toEqual([`share\n${sourceId}\nhttps://alpha.test`]);
       const stored = await extensionConnections(everyday.worker);

@@ -133,6 +133,11 @@ const harness = {
   integration: ["vitest.integration.config.ts", "scripts/test-integration.ts", "deploy/compose"],
   "browser-journeys": ["vitest.browser.config.ts"],
 };
+// These integration tests use another workspace's built files without importing its code.
+const integrationArtifactPackages = {
+  "apps/host/src/browser/browser-source-journey.integration.test.ts":
+    "@opensteer/browser-extension",
+};
 // This standalone Gradle project intentionally has no Node workspace manifest; the
 // Kotlin modules beside it and the shared fixtures its tests read select it too.
 const androidSource = (p) =>
@@ -555,7 +560,9 @@ export function decide(
     for (const lane of ["tests", "integration"]) {
       for (const file of universe[lane]) {
         const owners = ownerOf(file);
-        if (whole[lane] || direct.has(file)) selection[lane].push(file);
+        const artifactChanged =
+          lane === "integration" && affected.has(integrationArtifactPackages[file]);
+        if (whole[lane] || direct.has(file) || artifactChanged) selection[lane].push(file);
         else if (owners.length) {
           if (owners.some((p) => affected.has(p.name))) selection[lane].push(file);
         } else if (lane === "tests" && isGuard(file)) guards.push(file);

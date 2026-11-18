@@ -6,8 +6,7 @@ and owns no clipboard or platform I/O. Adapters are the web proxy
 ([remote-editing](../../../../apps/web/src/components/remote-editing)), the Expo module
 ([remote-text-input](../../../../apps/mobile/modules/remote-text-input/src/editing-proxy.tsx)) and
 the display viewer ([phone-display.tsx](../../../../apps/web/src/components/phone-display.tsx)).
-Browser targets are in [Browser sessions](../../../../docs/browser-sessions.md); phone targets in
-[Agent Phone](../../../../docs/agent-phone.md#live-display). Procedures are in the
+Browser targets are in [Browser sessions](../../../../docs/browser-sessions.md). Procedures are in the
 [mobile skill](../../../../.agents/skills/mobile/SKILL.md).
 
 ## Adapter contract

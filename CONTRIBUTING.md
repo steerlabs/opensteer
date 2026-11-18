@@ -6,7 +6,7 @@ request on [steerlabs/opensteer](https://github.com/steerlabs/opensteer) with th
 problem, resulting behavior and validation. Reproduce bugs before changing code.
 The required `Check` must pass; pull requests are squash-merged.
 
-Run checks covering your change as described in [Testing](docs/testing.md).
+Run checks covering your change.
 GUI journeys run in the supported macOS test environment. Keep documentation near
 its owner and report checks you could not run. Coding agents should follow
 [AGENTS.md](AGENTS.md).

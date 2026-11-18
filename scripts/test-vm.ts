@@ -35,7 +35,7 @@ import { retainHostStorage } from "./storage-retention.js";
 const source = path.resolve(import.meta.dirname, "..");
 const state = path.join(homedir(), ".local/state/opensteer");
 const cache = path.join(homedir(), ".cache/opensteer/vm");
-/** Vitest's shared results (docs/testing.md#integration-databases); guests start from a copy. */
+/** Vitest's shared results; guests start from a copy. */
 const vitestCache = path.join(homedir(), ".cache/opensteer/vitest");
 const locks = path.join(state, "vm/locks");
 const gib = 1024 ** 3;
@@ -474,7 +474,7 @@ async function main(): Promise<void> {
           );
           if (!existsSync(path.join(seed, "personal-runtime/release.json"))) {
             throw new Error(
-              "Set OPENSTEER_VM_NATIVE_RESOURCES to validated native smoke resources (see docs/testing.md).",
+              "Set OPENSTEER_VM_NATIVE_RESOURCES to validated native smoke resources.",
             );
           }
           const temporary = path.join(cache, `${actual}.building-${runId}`);

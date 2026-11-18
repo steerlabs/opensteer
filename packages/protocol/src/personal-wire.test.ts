@@ -173,7 +173,7 @@ describe("personal wire compatibility", () => {
     ).toBe(minimumHostApiVersion);
     expect(
       windowBreaks(baseline, current),
-      "This breaks apps the Host still serves. Make it additive, send it only to callers that ask for it, or project it for older callers and list it in projectedSince (docs/connections.md#api-compatibility).",
+      "This breaks apps the Host still serves. Make it additive, send it only to callers that ask for it, or project it for older callers and list it in projectedSince.",
     ).toEqual([]);
   });
 

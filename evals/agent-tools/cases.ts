@@ -1,12 +1,18 @@
 import { z } from "zod";
 import {
   createId,
+  IsoDateTimeSchema,
   ThreadAccessModeSchema,
   MessageOriginSchema,
   type MessageOrigin,
   TeamTurnContextSchema,
 } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
+import { memoryPassWakeText } from "@opensteer/triggers";
+import {
+  ThreadDetailSchema,
+  ThreadItemSchema,
+} from "../../packages/agent-tools/src/tools/outputs.js";
 
 const regex = z.string().superRefine((value, ctx) => {
   try {
@@ -204,6 +210,8 @@ export const CaseSchema = z
     machineAccessNotice: z.string().min(1).optional(),
     /** The operating system of the computer hosting the Run, as its Runner reports it. */
     hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
+    /** Rebase this fixture's ISO instants onto the actual Run clock. */
+    timeAnchor: IsoDateTimeSchema.optional(),
     /** Where the person's turns come from, as their app states it. */
     origin: MessageOriginSchema.optional(),
     engines: z
@@ -212,6 +220,16 @@ export const CaseSchema = z
       .optional(),
     browser: BrowserFixtureSchema.optional(),
     fixtures: z.record(fixturePath, z.string()).default({}),
+    /** Published task messages, including this worker's prior handoffs. Explicit mocks win. */
+    tasks: z
+      .array(
+        z.strictObject({
+          task: ThreadDetailSchema,
+          items: z.array(ThreadItemSchema),
+          self: z.boolean().default(false),
+        }),
+      )
+      .default([]),
     gitRepository: z.boolean().default(false),
     turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
     mocks: z.record(z.string(), z.json()).default({}),
@@ -232,7 +250,7 @@ export const CaseSchema = z
         )
         .default([]),
       callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
-      calls: z.array(call).default([]),
+      calls: z.array(call.extend({ withoutKeys: z.array(z.string()).optional() })).default([]),
       notCalls: z.array(z.string()).default([]),
       notCallsWithArgs: z.array(call).default([]),
       callsArgMatch: z
@@ -274,6 +292,10 @@ export const CaseSchema = z
     }),
   })
   .superRefine((c, ctx) => {
+    if (c.tasks.filter((task) => task.self).length > 1)
+      ctx.addIssue({ code: "custom", path: ["tasks"], message: "Only one task can be self" });
+    if (new Set(c.tasks.map(({ task }) => task.id)).size !== c.tasks.length)
+      ctx.addIssue({ code: "custom", path: ["tasks"], message: "Task IDs must be unique" });
     for (const [, app] of JSON.stringify(c.mocks).matchAll(/\{\{appServer:([a-z0-9-]+)\}\}/gu))
       if (!Object.hasOwn(c.appServers, app!))
         ctx.addIssue({
@@ -283,12 +305,86 @@ export const CaseSchema = z
         });
   });
 export type EvalCase = z.infer<typeof CaseSchema>;
+export function caseAtTime(testCase: EvalCase, now: number): EvalCase {
+  if (!testCase.timeAnchor) return testCase;
+  const delta = now - Date.parse(testCase.timeAnchor);
+  return CaseSchema.parse(
+    JSON.parse(
+      JSON.stringify(testCase).replace(
+        /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/gu,
+        (instant) => new Date(Date.parse(instant) + delta).toISOString(),
+      ),
+    ),
+  );
+}
+
+const memoryWake = /^(Light|Nightly) pass due \(([^)]+)\)/u;
+const firstPassWindow = { Light: 24 * 60 * 60 * 1000, Nightly: 28 * 24 * 60 * 60 * 1000 };
+
+/**
+ * Appends the Host's list to each memory wake, rendered from the case's tasks as the Host
+ * would: since the self task's last completed handoff, or the first pass's window, less the
+ * commit overlap, skipping managed workers.
+ */
+export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
+  const published = (items: EvalCase["tasks"][number]["items"]) =>
+    items.filter((item) => item.type === "message" && item.status === "published");
+  const handoff = published(testCase.tasks.find(({ self }) => self)?.items ?? [])
+    .filter((item) => item.runId)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .at(-1);
+  const turns = testCase.turns.map((turn) => {
+    if (typeof turn === "string" || turn.author.kind !== "trigger" || !turn.text) return turn;
+    const [, label, at] = turn.text.match(memoryWake) ?? [];
+    if (!label || !at || turn.text.includes("\n\n")) return turn;
+    const since = new Date(
+      (handoff
+        ? Date.parse(handoff.createdAt)
+        : Date.parse(at) - firstPassWindow[label as keyof typeof firstPassWindow]) -
+        10 * 60 * 1000,
+    );
+    const changes = testCase.tasks.flatMap(({ task, items, self }) => {
+      if (self || task.purpose === "background-job") return [];
+      const fresh = published(items).filter((item) => Date.parse(item.createdAt) > since.getTime());
+      if (!fresh.length) return [];
+      const dates = fresh.map((item) => Date.parse(item.createdAt));
+      return [
+        {
+          id: task.id,
+          title: task.title ?? "",
+          count: fresh.length,
+          first: new Date(Math.min(...dates)),
+          newest: Math.max(...dates),
+          sources: [
+            ...new Map(
+              fresh.flatMap((item) =>
+                item.teamSource
+                  ? [[JSON.stringify(item.teamSource), item.teamSource] as const]
+                  : [],
+              ),
+            ).values(),
+          ],
+        },
+      ];
+    });
+    changes.sort((a, b) => b.newest - a.newest);
+    const list = memoryPassWakeText({
+      since,
+      completedRunId: handoff?.runId ?? null,
+      changes,
+      more: false,
+    });
+    return { ...turn, text: `${turn.text}\n\n${list}` };
+  });
+  return { ...testCase, turns };
+}
+
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();
   const cases = text.split(/\r?\n/u).flatMap((line, i) => {
     if (!line.trim()) return [];
     try {
-      const value = CaseSchema.parse(JSON.parse(line));
+      const value = withHostMemoryWakes(CaseSchema.parse(JSON.parse(line)));
       if (ids.has(value.id)) throw new Error(`Duplicate case ${value.id}`);
       ids.add(value.id);
       return [value];

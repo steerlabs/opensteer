@@ -8,7 +8,7 @@ const object = z.record(z.string(), json);
 const searchInput = z.strictObject({
   query: z.string().max(2000).optional(),
   namespace: id.optional(),
-  limit: z.number().int().min(1).max(100).optional(),
+  limit: z.number().int().min(1).max(100).optional().describe("At most 100. Page with next."),
   offset: z.number().int().nonnegative().optional(),
 });
 const executionOutput = z.object({
