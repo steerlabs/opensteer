@@ -58,10 +58,10 @@ void test("each minimum admits the latest published Stable, selected numerically
     );
     write(4, 4, [63, 63]);
     assert.deepEqual(checkStableApi(root).personal, { published: 59, minimum: 63 });
-    write(4, 4, [63, 63]);
+    write(4, 4, [64, 64]);
     assert.throws(
       () => checkStableApi(root),
-      /minimumHostApiVersion 63.*desktop-v0.1.11.*hostApiVersion 59/s,
+      /minimumHostApiVersion 64.*desktop-v0.1.11.*hostApiVersion 59/s,
     );
     write(5, 5, [63, 63]);
     assert.throws(

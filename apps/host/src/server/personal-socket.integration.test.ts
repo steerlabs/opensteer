@@ -202,10 +202,10 @@ it("delivers a bound send key only to the sending login in live and retained vie
     expect(viewerItem).not.toHaveProperty("clientSendKey");
     const page = (headers: Readonly<Record<string, string>>) =>
       host.runtime.app.inject({
-        method: "POST",
+        method: "GET",
         url: "/v1/rpc/thread.items.page",
         headers,
-        payload: { threadId },
+        query: { input: JSON.stringify({ threadId }) },
       });
     const [senderPage, viewerPage] = await Promise.all([page(host.ownerHeaders), page(recipient)]);
     expect(senderPage.statusCode, senderPage.body).toBe(200);
