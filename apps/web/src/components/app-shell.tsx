@@ -1,3 +1,4 @@
+import { clientScopeKey } from "@opensteer/client/connections";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -90,7 +91,7 @@ import {
 } from "../host/message-outbox.js";
 import { Sidebar, type SidebarProps } from "./sidebar.js";
 import { composerDrafts } from "./composer-drafts.js";
-import { draftTaskStart, startTask, type TaskStart } from "./home/task-start.js";
+import { draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
@@ -685,12 +686,23 @@ export function AppShell({
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
       const outbox = hostMessageOutbox(hostClient);
-      if (!outbox) throw storageUnavailable();
-      let held: TaskStart | undefined;
+      const scope = hostClient.connection.getSnapshot().scope;
+      if (!outbox || !draftKey || !scope) throw storageUnavailable();
+      const scopeKey = clientScopeKey(scope);
+      const generation = composerDrafts.taskStartGeneration(draftKey);
+      if (!generation) throw storageUnavailable();
+      const prepared = sendMessageCommand("", message);
       return startTask({
-        records: draftKey
-          ? draftTaskStart(composerDrafts, draftKey)
-          : { read: () => held, write: (start) => void (held = start) },
+        records: draftTaskStart(JSON.stringify([scopeKey, draftKey]), generation),
+        message: {
+          content: prepared.content,
+          ...(prepared.compaction ? { compaction: prepared.compaction } : {}),
+          ...(prepared.quotedMessageId ? { quotedMessageId: prepared.quotedMessageId } : {}),
+        },
+        assertCurrent: () => {
+          if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== scopeKey)
+            throw storageUnavailable();
+        },
         creation: {
           accessMode,
           environmentId: selection.environmentId,
@@ -702,9 +714,7 @@ export function AppShell({
         creationKey: () => mutationIdempotencyKey("thread"),
         messageKey: message.idempotencyKey,
         createThread: (creation) => hostClient.createThread(creation),
-        queued: (key) => outbox.getSnapshot().messages.some((entry) => entry.localId === key),
-        enqueue: (threadId, idempotencyKey) =>
-          outbox.enqueue(sendMessageCommand(threadId, { ...message, idempotencyKey })),
+        enqueue: (command) => outbox.enqueue(command, { handoff: true }),
       });
     },
     [hostClient],

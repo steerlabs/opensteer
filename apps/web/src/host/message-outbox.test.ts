@@ -1,3 +1,5 @@
+import { IDBFactory } from "fake-indexeddb";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserMessageRecords } from "./message-outbox-records.js";
 import {
@@ -5,7 +7,12 @@ import {
   restoreComposerDraft,
   sendMessageCommand,
 } from "./message-outbox.js";
-import { hostMessageOutbox, disposeMessageOutbox } from "@opensteer/client/host";
+import {
+  createMessageOutbox,
+  createMessageOutboxStorage,
+  hostMessageOutbox,
+  disposeMessageOutbox,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { createId } from "@opensteer/core";
 
@@ -20,15 +27,40 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("disables browser message storage when cross-window locks are unavailable", async () => {
+it("persists and sends messages through IndexedDB without Web Locks", async () => {
   vi.stubGlobal("navigator", {});
   vi.stubGlobal("BroadcastChannel", undefined);
-  const open = vi.fn(() => {
-    throw new Error("IndexedDB should not be used without Web Locks");
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  vi.stubGlobal("window", new EventTarget());
+  const session = controlledClientSession();
+  session.change({ phase: "recovering" });
+  const storage = createMessageOutboxStorage(browserMessageRecords());
+  const acknowledgement = Promise.withResolvers<{ messageId: string }>();
+  const dispatch = vi.fn(() => acknowledgement.promise);
+  const outbox = createMessageOutbox({
+    session,
+    storage,
+    dispatch,
+    drafts: { restore: async () => "restored" },
   });
-  vi.stubGlobal("indexedDB", { open });
-  await expect(browserMessageRecords().read("scope")).rejects.toThrow();
-  expect(open).not.toHaveBeenCalled();
+  try {
+    const command = sendMessageCommand(createId("thread"), {
+      body: "Stays on this device until the Host is ready",
+      attachments: [],
+      idempotencyKey: "no-locks",
+    });
+    await outbox.enqueue(command);
+    const scope = session.connection.getSnapshot().scope!;
+    expect((await storage.load(scope))[0]?.command).toEqual(command);
+    expect(dispatch).not.toHaveBeenCalled();
+    session.change({ phase: "ready", readyRevision: 2 });
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    acknowledgement.resolve({ messageId: "ack" });
+    await vi.waitFor(() => expect(outbox.getSnapshot().messages).toEqual([]), { timeout: 1_000 });
+  } finally {
+    acknowledgement.resolve({ messageId: "ack" });
+    outbox.dispose();
+  }
 });
 
 it.each(["one malformed entry", "localStorage inaccessible"] as const)(
@@ -160,6 +192,12 @@ describe("Edit's hand-back to the composer draft", () => {
       attempted: false,
       phase: "waiting" as const,
     };
+    drafts.update(key, {
+      quote: { messageId: createId("message"), attribution: "Other", excerpt: "Other" },
+    });
+    expect(restoreComposerDraft(drafts, scope, entry)).toBe("occupied");
+    expect(drafts.read(key)?.text).toBe("Newer draft");
+    drafts.update(key, { quote: null });
     expect(restoreComposerDraft(drafts, scope, entry)).toBe("restored");
     expect(restoreComposerDraft(drafts, scope, entry)).toBe("restored");
     expect(drafts.read(key)).toMatchObject({

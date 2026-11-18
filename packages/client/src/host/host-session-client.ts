@@ -2991,14 +2991,16 @@ export class HttpHostClient {
     });
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
-    const run = threadStopTarget({ runQueue: this.#snapshot.runQueue, thread });
-    if (!run) throw new Error("This Thread has nothing to stop.");
+    const runId = expectedRunId
+      ? RunIdSchema.parse(expectedRunId)
+      : threadStopTarget({ runQueue: this.#snapshot.runQueue, thread })?.id;
+    if (!runId) throw new Error("This Thread has nothing to stop.");
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("interrupt"),
-      runId: run.id,
+      runId,
       threadId,
       type: "run.interrupt",
     });

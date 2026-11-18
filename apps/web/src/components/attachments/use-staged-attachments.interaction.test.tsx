@@ -170,3 +170,35 @@ describe("files during an outage", () => {
     expect(files.items[0]).toMatchObject({ error: null, status: "ready" });
   });
 });
+
+it.each(["upload", "saved check"] as const)(
+  "restarts a %s that fails after its replacement connection is ready",
+  async (operation) => {
+    const connection = fakeConnection();
+    const held = Promise.withResolvers<never>();
+    const started = Promise.withResolvers<void>();
+    const read = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        started.resolve();
+        return held.promise;
+      })
+      .mockResolvedValue(notes);
+    if (operation === "saved check") await reopen(read, connection);
+    else {
+      vi.mocked(stageAttachment).mockImplementation(() => read());
+      const client = { connection } as unknown as HostClient;
+      root = createRoot(document.createElement("div"));
+      await act(async () => root?.render(<Tray client={client} />));
+      await act(async () => files.add([new File(["abc"], "notes.txt", { type: "text/plain" })]));
+    }
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    await started.promise;
+    await act(async () => connection.set({ phase: "recovering" }));
+    await act(async () => connection.set({ phase: "ready", readyRevision: 2 }));
+    expect(read).toHaveBeenCalledOnce();
+    await act(async () => held.reject(new HostTransportError("unreachable")));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    expect(files.items[0]).toMatchObject({ status: "ready" });
+  },
+);

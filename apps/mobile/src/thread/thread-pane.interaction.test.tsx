@@ -811,6 +811,7 @@ function WithNativeHeader(props: {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 const outboxClients = new Set<HostClient>();
+const persistedOutboxes = new WeakMap<HostClient, Map<string, string>>();
 afterEach(() => {
   composerEditorFake.composing = false;
   composerEditorFake.ahead = null;
@@ -1454,7 +1455,8 @@ async function settle(): Promise<void> {
 
 function connectFixtureOutbox(client: HostClient, drafts: ThreadDraftStore): void {
   if (!outboxClients.has(client)) {
-    const records = new Map<string, string>();
+    const records = persistedOutboxes.get(client) ?? new Map<string, string>();
+    persistedOutboxes.set(client, records);
     initializeMessageOutbox(client, {
       storage: createMessageOutboxStorage({
         read: async (key) => records.get(key) ?? null,
@@ -2365,7 +2367,7 @@ describe("a voice conversation while Opensteer is replying", () => {
     const { container } = await mount(host, conversationId);
 
     await press(container, "Stop the reply");
-    expect(host.stopRun).toHaveBeenCalledWith(conversationId);
+    expect(host.stopRun).toHaveBeenCalledWith(conversationId, chat.runB);
 
     // The Host ends the reply and cancels what that exchange had not yet taken.
     host.move(
@@ -3487,6 +3489,81 @@ describe("a task", () => {
     await settle();
     expect(hasButton(container, "Stop this run")).toBe(false);
     expect(text(container)).not.toContain("Not stopped");
+  });
+
+  it("settles an unconfirmed Stop for its original run when a different run starts", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(running);
+    host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { container } = await mount(host, workId);
+    await press(container, "Stop this run");
+    expect(text(container)).toContain("Couldn't confirm");
+    const next = snapshotFor({
+      entries: task.entries,
+      run: { id: createId("run"), status: "running" },
+      threadId: workId,
+    });
+    host.move({ ...running, network: "offline" });
+    host.move(next);
+    await settle();
+    expect(hasButton(container, "Stop this run")).toBe(true);
+    expect(text(container)).not.toContain("Not stopped");
+    expect(text(container)).not.toContain("Couldn't confirm");
+  });
+
+  it("keeps the same bubble when the Host queues a local message ahead of its pending sibling", async () => {
+    const initial = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost({ ...initial, network: "offline" });
+    const { container } = await mount(host, workId);
+    const outbox = hostMessageOutbox(host.client)!;
+    const enqueue = (idempotencyKey: string, words: string) =>
+      outbox.enqueue({
+        content: [{ text: words, type: "text" }],
+        delivery: "queue",
+        idempotencyKey,
+        threadId: workId,
+        type: "thread.sendMessage",
+      });
+    await act(async () => {
+      await enqueue("first-held", "First local bubble");
+      await enqueue("second-held", "Second local bubble");
+    });
+    const body = (words: string) =>
+      [...container.querySelectorAll("*")].find(
+        (element) => element.childElementCount === 0 && element.textContent === words,
+      );
+    const first = body("First local bubble");
+    const second = body("Second local bubble");
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    const older = said("Older held bubble", null);
+    const confirmed = { ...said("First local bubble", null), clientSendKey: "first-held" };
+    const queue = [waitingInput(older, workId), waitingInput(confirmed, workId)];
+    queue[1]!.message.clientSendKey = "first-held";
+    const task = taskAtWork();
+    host.move({
+      ...snapshotFor({
+        entries: [...task.entries, older, confirmed],
+        queue,
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+      network: "offline",
+    });
+    await settle();
+    expect(body("First local bubble")).toBe(first);
+    expect(body("Second local bubble")).toBe(second);
+    expect(text(container).indexOf("Older held bubble")).toBeLessThan(
+      text(container).indexOf("First local bubble"),
+    );
+    expect(text(container).indexOf("First local bubble")).toBeLessThan(
+      text(container).indexOf("Second local bubble"),
+    );
   });
 
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
@@ -5420,6 +5497,61 @@ it("says beside the held message when this phone couldn't queue it, and Retry ha
   expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
   expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
 });
+
+it.each(["replacement login", "interrupted cleanup"] as const)(
+  "keeps the first-message handoff safe after %s",
+  async (scenario) => {
+    const { NewTaskPane } = await import("../screens/new-task.js");
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+    const createThread = vi.fn(async () => thread);
+    Object.assign(host.client, { createThread });
+    const { container, drafts, root } = await mount(host, workId);
+    harness.activeHost = host.client;
+    const outbox = hostMessageOutbox(host.client)!;
+    const enqueue = vi.spyOn(outbox, "enqueue");
+    if (scenario === "replacement login") enqueue.mockRejectedValueOnce(new Error("queue full"));
+    else vi.spyOn(drafts, "clearTaskStart").mockRejectedValueOnce(new Error("disk full"));
+    const draftKey = newTaskDraftKey(newDraftId);
+    await drafts.writeDraft(deploymentId, userId, draftKey, "Old login's first message");
+    const onStarted = vi.fn(() => true);
+    const draw = () => (
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />
+    );
+    await act(async () => root.render(draw()));
+    await press(container, "Send message");
+    await settle();
+    expect(drafts.readTaskStart(deploymentId, userId, draftKey)?.startedThreadId).toBe(workId);
+    expect(enqueue).toHaveBeenCalledOnce();
+    await act(async () => root.render(<div />));
+    let reopenedEnqueue: ReturnType<typeof vi.spyOn> | undefined;
+    if (scenario === "replacement login") {
+      host.move({ ...host.client.getSnapshot(), sessionId: createId("authSession") });
+    } else {
+      expect(outbox.getSnapshot().messages).toEqual([]);
+      disposeMessageOutbox(host.client);
+      outboxClients.delete(host.client);
+      connectFixtureOutbox(host.client, drafts);
+      reopenedEnqueue = vi.spyOn(hostMessageOutbox(host.client)!, "enqueue");
+    }
+    await act(async () => root.render(draw()));
+    await settle();
+    expect(createThread).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledOnce();
+    if (scenario === "replacement login") expect(onStarted).not.toHaveBeenCalled();
+    else {
+      expect(reopenedEnqueue).not.toHaveBeenCalled();
+      expect(drafts.readTaskStart(deploymentId, userId, draftKey)).toBeNull();
+      expect(sent(host.dispatch)).toHaveLength(1);
+    }
+  },
+);
 
 it("doesn't start a new task offline, says so above the composer and keeps the draft", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");

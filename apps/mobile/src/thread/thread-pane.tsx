@@ -1,7 +1,6 @@
 import {
   hostMessageOutbox,
   messageDeliveryStatusShown,
-  placeLocalMessages,
   splitLocalMessages,
   type MessageDeliveryAction,
 } from "@opensteer/client/host";
@@ -143,7 +142,6 @@ import { useVoiceAskedRequest, useVoiceOn } from "../voice/use-voice-value.js";
 import { useSidebarVisible } from "../sidebar/sidebar-context.js";
 import { settingsDisabledReason } from "./settings/settings-controller.js";
 import {
-  Message,
   TranscriptGroupRow,
   WorkingIndicator,
   replyActivityKeys,
@@ -526,11 +524,6 @@ function ThreadPaneForUser(
   // which Run, if any, a Stop would reach.
   const activity =
     thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
-  // The messages this phone owes the Host. Sent to a Thread at rest one starts
-  // the next turn, so it is drawn in the transcript and the Host's copy takes
-  // its place; sent behind a turn at work it will wait in the Host's queue, so
-  // it is drawn after that queue, where it will join it. Where it stands is
-  // decided once, so it never jumps between them.
   const outbox = hostMessageOutbox(props.hostClient);
   const withOutbox = useOutboxTranscript(outbox, threadId, entries, viewerUserId);
   const visible = useMemo(
@@ -541,16 +534,9 @@ function ThreadPaneForUser(
       ),
     [conversational, inputQueue, threadId, withOutbox],
   );
-  const placedLocal = useRef<ReadonlyMap<string, boolean>>(new Map());
-  placedLocal.current = placeLocalMessages(
-    placedLocal.current,
-    visible,
-    !conversational && (activity !== "idle" || (waiting?.length ?? 0) > 0),
-  );
   const local = useMemo(
-    () => splitLocalMessages(visible, placedLocal.current),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visible, placedLocal.current],
+    () => splitLocalMessages(visible, !conversational),
+    [conversational, visible],
   );
   const conversation = local.transcript;
   // Messages still on this phone: which carry their status line, and what
@@ -584,7 +570,10 @@ function ThreadPaneForUser(
         if (outbox === null || !heldMessages.current.has(key)) return;
         noteDelivery(key, null);
         const failed = (error: unknown) => noteDelivery(key, presentMessageActionFailure(error));
-        if (action === "retry") outbox.retry(key);
+        if (action === "retry")
+          void outbox.retry(key).then((result) => {
+            if (result === "settled") noteDelivery(key, presentMessageTakeBack("sent"));
+          }, failed);
         // Edit moves the whole message, its files and quote too, into the draft
         // above any words there; the queue lets go of it only once it is saved.
         else if (action === "edit")
@@ -1120,31 +1109,19 @@ function ThreadPaneForUser(
       !conversational &&
       (waiting !== null || editing.edit !== null || local.afterQueue.length > 0) ? (
         <TranscriptHostClientContext value={hostClient}>
-          {waiting !== null || editing.edit !== null ? (
-            <WaitingInputs
-              canRespond={canRespond}
-              editing={editing}
-              hostClient={hostClient}
-              items={waiting ?? noWaiting}
-              paused={inputQueue?.paused ?? false}
-              resumable={thread.status !== "archived"}
-              threadId={threadId}
-              viewerUserId={viewerUserId}
-            />
-          ) : null}
-          {local.afterQueue.map((message) => (
-            <View key={message.clientSendKey ?? message.id} style={styles.afterQueue}>
-              <Message
-                conversation={false}
-                message={message}
-                onOpenThread={props.onOpenThread}
-                onReply={undefined}
-                onToggle={noop}
-                open
-                viewerUserId={viewerUserId}
-              />
-            </View>
-          ))}
+          <WaitingInputs
+            canRespond={canRespond}
+            editing={editing}
+            hostClient={hostClient}
+            items={waiting ?? noWaiting}
+            local={local.afterQueue}
+            onOpenThread={props.onOpenThread}
+            paused={inputQueue?.paused ?? false}
+            resumable={thread.status !== "archived"}
+            threadId={threadId}
+            transcript={withOutbox}
+            viewerUserId={viewerUserId}
+          />
         </TranscriptHostClientContext>
       ) : null,
     [
@@ -1156,6 +1133,7 @@ function ThreadPaneForUser(
       canRespond,
       hostClient,
       local.afterQueue,
+      withOutbox,
       props.onOpenThread,
       threadId,
       viewerUserId,
@@ -1592,6 +1570,7 @@ function ThreadPaneForUser(
                   requests={dockableRequests}
                   restore={restoredDraft}
                   running={stopTarget !== null}
+                  stopRunId={stopTarget?.id ?? null}
                   // A task card in a conversation stops its own task, and a task's
                   // title menu stops the task. In a conversation this ends only the
                   // reply under way; in a task it leaves the task paused.
@@ -1888,7 +1867,6 @@ const styles = StyleSheet.create({
   // touches the thing it sits on reads as part of it.
   jumpHome: { alignItems: "center", left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
-  afterQueue: { marginTop: space[10] },
   passwords: { marginTop: space[10] },
   hidden: { display: "none" },
 });
@@ -1909,4 +1887,3 @@ function useChannelName(teamId: string | null, channelId: string | null): string
   );
   return useSyncExternalStore(subscribe, read, read);
 }
-const noop = (): void => {};

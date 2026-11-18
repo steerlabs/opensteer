@@ -11,6 +11,7 @@ const defaultCopy = {
   edit: "Edit",
   retry: "Send again",
   sending: "Sending…",
+  restoring: "Returning to draft",
   waiting: "Waiting to send",
 };
 
@@ -46,12 +47,12 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   // Inline only when refused; a waiting message is taken back from its own menu
   // (`messageDeliveryActions`), so a run of waiting bubbles reserves no line.
   const actions =
-    onAction === undefined || props.phase !== "rejected"
+    onAction === undefined || (props.phase !== "rejected" && props.phase !== "restoring")
       ? []
       : messageDeliveryActions(props.phase, props.attempted, props.unconfirmed === true);
   const status =
-    props.phase === "rejected"
-      ? "rejected"
+    props.phase === "rejected" || props.phase === "restoring"
+      ? props.phase
       : !props.showStatus || props.phase === "delivered"
         ? null
         : props.phase === "waiting"
@@ -75,7 +76,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
           {status === "rejected" ? (
             <span className="delivery__reason">{props.rejection ?? null}</span>
           ) : (
-            <span>{status === "waiting" ? copy.waiting : copy.sending}</span>
+            <span>{copy[status]}</span>
           )}
           {actions.length === 0 || onAction === undefined ? null : (
             <span className="delivery__actions">

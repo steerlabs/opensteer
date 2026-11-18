@@ -91,7 +91,12 @@ function primaryButton(
   if (issue.code === "sign-in") return signIn;
   if (issue.code === "update-app")
     return { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) };
-  if ((issue.code === "connection" || issue.code === "update-server") && connection !== null)
+  if (
+    (issue.code === "connection" ||
+      issue.code === "update-server" ||
+      issue.code === "login-storage-unavailable") &&
+    connection !== null
+  )
     return {
       busy: trying,
       label: clientIssueActions.tryAgain,

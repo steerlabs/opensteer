@@ -1,7 +1,7 @@
+import { createMessageOutboxStorage } from "./message-outbox-storage.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
 import { visibleTranscript } from "./transcript.js";
-import { placeLocalMessages, splitLocalMessages } from "./message-delivery-view.js";
 import type { TranscriptEntry } from "./client.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
@@ -29,14 +29,22 @@ const command = (key: string) => ({
 });
 function storage() {
   const scopes = new Map<string, StoredMessage[]>();
+  const migrated = new Map<string, Set<string>>();
   let refuse = false;
   const port: MessageOutboxStorage = {
     async load(scope) {
       return structuredClone(scopes.get(clientScopeKey(scope)!) ?? []);
     },
-    async put(scope, entry) {
+    async put(scope, entry, options) {
       if (refuse) throw new Error("disk unavailable");
       const key = clientScopeKey(scope)!;
+      if (options?.migrated) {
+        const ids = migrated.get(key) ?? new Set<string>();
+        if (ids.has(entry.localId)) return;
+        if ((scopes.get(key) ?? []).length >= 48) throw new Error("queue full");
+        ids.add(entry.localId);
+        migrated.set(key, ids);
+      }
       scopes.set(
         key,
         [
@@ -364,8 +372,10 @@ describe("app lifetime message delivery", () => {
     await outbox.enqueue(command("later"));
     // A draft write that fails leaves the message queued, as it was.
     const failed = outbox.restoreDraft("quoted");
+    const failure = expect(failed).rejects.toThrow("disk full");
+    await vi.advanceTimersByTimeAsync(0);
     draftWrite!.reject(new Error("disk full"));
-    await expect(failed).rejects.toThrow("disk full");
+    await failure;
     expect(outbox.getSnapshot().messages.map((row) => row.localId)).toEqual(["quoted", "later"]);
     // The connection returns while the draft is being written: nothing goes.
     const edit = outbox.restoreDraft("quoted");
@@ -624,29 +634,155 @@ it("surfaces a full legacy queue and imports the remainder when a slot is freed"
   }
 });
 
-describe("where a task's waiting messages stand", () => {
-  it("keeps a message sent behind work after the queue, even once the task is at rest", async () => {
+describe("durable outbox interleavings", () => {
+  it("never dispatches an edited message after cleanup fails, including after reopen", async () => {
     vi.useFakeTimers();
-    const session = controlledClientSession(),
-      store = storage();
+    const session = controlledClientSession();
     session.change({ phase: "recovering" });
+    const store = storage();
+    const remove = store.port.remove;
+    let failCleanup = true;
+    store.port.remove = (scope, id) =>
+      failCleanup ? Promise.reject(new Error("disk full")) : remove(scope, id);
+    const restore = vi.fn(async () => "restored" as const);
+    const dispatch = vi.fn(async () => ({ messageId: "delivered" }));
+    const options = { session, storage: store.port, drafts: { restore }, dispatch };
+    let outbox = createMessageOutbox(options);
+    try {
+      await outbox.enqueue(command("edit-before-cleanup"));
+      store.refuse(true);
+      await expect(outbox.restoreDraft("edit-before-cleanup")).rejects.toThrow("disk unavailable");
+      expect(restore).not.toHaveBeenCalled();
+      expect(outbox.getSnapshot().messages[0]?.phase).toBe("waiting");
+      store.refuse(false);
+      await expect(outbox.restoreDraft("edit-before-cleanup")).rejects.toThrow("disk full");
+      expect(restore).toHaveBeenCalledOnce();
+      outbox.dispose();
+      failCleanup = false;
+      outbox = createMessageOutbox(options);
+      session.change({ phase: "ready", readyRevision: 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).not.toHaveBeenCalled();
+      await expect(outbox.restoreDraft("edit-before-cleanup")).resolves.toBe("restored");
+    } finally {
+      outbox.dispose();
+    }
+  });
+
+  it("does not restore an acknowledged migration when the source survives cleanup and reopen", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    const records = new Map<string, string>();
+    const port = {
+      read: async (key: string) => records.get(key) ?? null,
+      write: async (key: string, value: string) => {
+        records.set(key, value);
+      },
+      remove: async (key: string) => {
+        records.delete(key);
+      },
+    };
+    let source = true;
+    const dispatch = vi.fn(async () => ({ messageId: "delivered" }));
+    const options = {
+      session,
+      storage: createMessageOutboxStorage(port),
+      drafts: { restore: async () => "restored" as const },
+      dispatch,
+      legacy: {
+        load: async () => (source ? [{ command: command("surviving-legacy") }] : []),
+        remove: async () => {
+          throw new Error("legacy disk full");
+        },
+      },
+    };
+    let outbox = createMessageOutbox(options);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await outbox.retry("surviving-legacy");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalledOnce();
+      outbox.dispose();
+      outbox = createMessageOutbox({ ...options, storage: createMessageOutboxStorage(port) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outbox.getSnapshot().messages).toEqual([]);
+      source = false;
+    } finally {
+      outbox.dispose();
+    }
+  });
+
+  it("does not reinsert a settled message when another window presses Send again", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    const store = storage();
+    const dispatch = vi.fn(async () => ({ messageId: "delivered" }));
+    const scope = session.connection.getSnapshot().scope!;
+    await store.port.put(scope, {
+      command: command("ambiguous"),
+      localId: "ambiguous",
+      attempted: true,
+      createdAt: new Date().toISOString(),
+      order: 0,
+      phase: "rejected",
+      rejection: { code: "unconfirmed" },
+    });
+    const options = {
+      session,
+      storage: store.port,
+      drafts: { restore: async () => "restored" as const },
+      dispatch,
+    };
+    const first = createMessageOutbox(options);
+    const second = createMessageOutbox(options);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await first.retry("ambiguous");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalledOnce();
+      await second.retry("ambiguous");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(second.getSnapshot().messages).toEqual([]);
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  });
+
+  it("keeps a pending row by reference when a storage notification changes another task", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    session.change({ phase: "recovering" });
+    const store = storage();
+    let changed!: () => void;
+    store.port.subscribe = (listener) => {
+      changed = listener;
+      return () => {};
+    };
     const outbox = createMessageOutbox({
       session,
       storage: store.port,
       drafts: { restore: async () => "restored" },
-      dispatch: async () => ({ messageId: "message" }),
+      dispatch: async () => ({ messageId: "unexpected" }),
     });
-    const viewer = createId("user");
-    const project = () => projectMessageOutbox(outbox.getSnapshot(), threadId, [], viewer);
-    await outbox.enqueue(command("behind-work"));
-    let placed = placeLocalMessages(new Map(), project(), true);
-    await outbox.enqueue(command("next"));
-    // The task came to rest before the second was sent: only that one starts a turn.
-    placed = placeLocalMessages(placed, project(), false);
-    const { transcript, afterQueue } = splitLocalMessages(project(), placed);
-    expect(afterQueue.map((row) => row.id)).toEqual(["behind-work"]);
-    expect(transcript.map((row) => row.id)).toEqual(["next"]);
-    expect(placeLocalMessages(placed, project(), false)).toBe(placed);
-    outbox.dispose();
+    try {
+      await outbox.enqueue(command("in-view"));
+      const scope = session.connection.getSnapshot().scope!;
+      const viewer = createId("user");
+      const project = () => projectMessageOutbox(outbox.getSnapshot(), threadId, [], viewer);
+      const before = project();
+      await store.port.put(scope, {
+        ...outbox.getSnapshot().messages[0]!,
+        localId: "another-task",
+        command: { ...command("another-task"), threadId: createId("thread") },
+      });
+      changed();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outbox.getSnapshot().messages).toHaveLength(2);
+      expect(sameTranscript(before, project())).toBe(before);
+    } finally {
+      outbox.dispose();
+    }
   });
 });

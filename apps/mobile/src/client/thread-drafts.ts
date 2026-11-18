@@ -135,6 +135,7 @@ const TaskStartRecordSchema = LegacyTaskStartRecordSchema.extend({
   // source, or it is a different message.
   quotedMessageId: z.string().min(1).max(200).optional(),
   start: TaskStartParametersSchema.optional(),
+  ownerScope: z.string().min(1).max(2048).optional(),
   /** The task the Host confirmed making, so the handoff is retried without making it again. */
   startedThreadId: z.string().min(1).max(200).optional(),
   userId: z.string().min(1).max(200),
@@ -271,6 +272,13 @@ export interface ThreadDraftStore {
     threadId: string,
     command: TaskStartInput,
   ): Promise<void>;
+  bindTaskStartLogin(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+    expectedIdempotencyKey: string,
+    ownerScope: string,
+  ): Promise<TaskStartRecord | null>;
   /** Clears only the command that was acknowledged or definitively refused. */
   clearTaskStart(
     deploymentId: string,
@@ -557,6 +565,13 @@ export function createThreadDraftStore(options: {
         ];
         if (text.length > maxDraftCharacters || attachments.length > maxDraftAttachments) return;
         const page = parts.places.find((part) => part.type === "browser-page");
+        if (
+          (current?.page && page && JSON.stringify(current.page) !== JSON.stringify(page)) ||
+          (current?.quote &&
+            entry.command.quotedMessageId &&
+            current.quote.messageId !== entry.command.quotedMessageId)
+        )
+          return;
         putDraft(nextDrafts, entryKey, scope.viewerId, {
           text,
           attachments,
@@ -591,6 +606,7 @@ export function createThreadDraftStore(options: {
         idempotencyKey: command.idempotencyKey,
         localUris: command.localUris,
         quotedMessageId: command.quotedMessageId,
+        ownerScope: command.ownerScope,
         start: command.start,
         text: command.text,
         threadId: command.threadId,
@@ -606,6 +622,7 @@ export function createThreadDraftStore(options: {
             JSON.stringify(previous.localUris ?? []) !== JSON.stringify(entry.localUris ?? []) ||
             JSON.stringify(previous.browserPage ?? null) !==
               JSON.stringify(entry.browserPage ?? null) ||
+            previous.ownerScope !== entry.ownerScope ||
             previous.quotedMessageId !== entry.quotedMessageId ||
             previous.compaction !== entry.compaction ||
             JSON.stringify(previous.start ?? null) !== JSON.stringify(entry.start ?? null) ||
@@ -652,6 +669,22 @@ export function createThreadDraftStore(options: {
         pageEdits.delete(entryKey);
         publish();
       }
+    },
+
+    async bindTaskStartLogin(deploymentId, userId, threadId, expectedIdempotencyKey, ownerScope) {
+      let bound: TaskStartRecord | null = null;
+      await mutate((_nextDrafts, nextPending) => {
+        const entryKey = key(deploymentId, userId, threadId);
+        const current = nextPending.get(entryKey);
+        if (
+          current?.idempotencyKey !== expectedIdempotencyKey ||
+          (current.ownerScope && current.ownerScope !== ownerScope)
+        )
+          return;
+        bound = { ...current, ownerScope };
+        nextPending.set(entryKey, bound);
+      });
+      return bound;
     },
 
     async clearTaskStart(deploymentId, userId, threadId, expectedIdempotencyKey): Promise<boolean> {

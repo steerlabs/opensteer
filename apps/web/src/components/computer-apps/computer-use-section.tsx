@@ -1,3 +1,6 @@
+import { clientScopeKey } from "@opensteer/client/connections";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { createClientRead } from "@opensteer/client/reads";
 import { Link } from "react-router";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -49,10 +52,10 @@ import {
   type ComputerUseViewer,
 } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
-import { useComputerUseStop } from "@opensteer/client/react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useClientConnection, useClientRead, useComputerUseStop } from "@opensteer/client/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { act, failureWords, runRead } from "../use-action.js";
+import { act, failureWords, useDisposedWithView } from "../use-action.js";
 
 import { AppMark } from "./app-icons.js";
 
@@ -584,89 +587,90 @@ function AddAppDialog({
   readonly onDone: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
-  const [listing, setListing] = useState<{
+  const [heldListing, setListing] = useState<{
     readonly apps: readonly ComputerUseInstalledApp[];
     readonly query: string;
+    readonly scopeKey: string | null;
     readonly total: number;
   } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [request, load] = useState({ search: "", offset: 0 });
+  const scopeKey = clientScopeKey(useClientConnection(hostClient.connection).scope);
+
   const [asking, setAsking] = useState<{
     readonly access: IntegrationAccess;
     readonly bundleId: string;
   } | null>(null);
   const [askError, setAskError] = useState<Failure | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const generation = useRef(0);
-
-  // A read the connection interrupted; the ready transition reruns it, unannounced.
-  const interrupted = useRef<{ readonly search: string; readonly offset: number } | null>(null);
-  const load = useCallback(
-    (search: string, offset: number) => {
-      const current = ++generation.current;
-      interrupted.current = null;
-      setLoading(true);
-      setLoadError(null);
-      void runRead(hostClient, {
-        resource: "this computer's apps",
-        read: async () =>
+  const { search, offset } = request;
+  const resource = useMemo(
+    () =>
+      createClientRead(hostClient, {
+        key: JSON.stringify(["computer-apps", machine.id, search, offset]),
+        label: "this computer's apps",
+        read: async (signal) =>
           unwrapRpcResult(
-            await hostClient.rpc["integration.computer.apps.installed"]({
-              icons: true,
-              limit: pickerPageSize,
-              offset,
-              query: search,
-              runnerId: machine.id,
-            }),
+            await hostClient.rpc["integration.computer.apps.installed"](
+              {
+                icons: true,
+                limit: pickerPageSize,
+                offset,
+                query: search,
+                runnerId: machine.id,
+              },
+              { signal },
+            ),
           ),
-      })
-        .then((read) => {
-          if (current !== generation.current) return;
-          if (!read.ok) {
-            if (read.words === null) interrupted.current = { offset, search };
-            else setLoadError(read.words);
-            return;
-          }
-          const result = read.value;
-          if (result.unavailableReason) {
-            setListing(null);
-            setLoadError(
-              result.unavailableReason === "offline"
-                ? `${machine.name} is offline.`
-                : `${machine.name} isn’t ready to list apps yet.`,
-            );
-            return;
-          }
-          setListing((previous) => ({
-            apps:
-              offset > 0 && previous?.query === search
-                ? [...previous.apps, ...result.apps]
-                : result.apps,
-            query: search,
-            total: result.total,
-          }));
-        })
-        .finally(() => {
-          if (current === generation.current) setLoading(false);
-        });
-    },
-    [hostClient, machine.id, machine.name],
+      }),
+    [hostClient, machine.id, search, offset],
   );
+  useDisposedWithView(resource);
+  const read = useClientRead(resource);
+  const result = read.data;
+  const denied = read.issue?.code === "access-lost";
+  const listing = !denied && heldListing?.scopeKey === scopeKey ? heldListing : null;
+  const loading =
+    read.status === "waiting" ||
+    read.status === "loading" ||
+    (read.status === "ready" && read.refreshing);
+  const loadError = read.issue
+    ? presentClientIssue(read.issue).title
+    : result?.unavailableReason
+      ? result.unavailableReason === "offline"
+        ? `${machine.name} is offline.`
+        : `${machine.name} isn’t ready to list apps yet.`
+      : null;
+
+  useEffect(() => {
+    if (denied) {
+      setListing(null);
+      return;
+    }
+    if (!result || query.trim() !== search) return;
+    if (result.unavailableReason) {
+      setListing(null);
+      return;
+    }
+    setListing((previous) => ({
+      apps:
+        offset > 0 && previous?.query === search && previous.scopeKey === scopeKey
+          ? [...previous.apps.slice(0, offset), ...result.apps]
+          : result.apps,
+      query: search,
+      scopeKey,
+      total: result.total,
+    }));
+  }, [denied, offset, query, result, scopeKey, search]);
 
   useEffect(() => {
     const search = query.trim();
-    const timer = globalThis.setTimeout(() => load(search, 0), search ? pickerSearchDelayMs : 0);
+    if (search === request.search) return;
+    const timer = globalThis.setTimeout(
+      () => load({ search, offset: 0 }),
+      search ? pickerSearchDelayMs : 0,
+    );
     return () => globalThis.clearTimeout(timer);
-  }, [load, query]);
-
-  const readyRevision = useSyncExternalStore(
-    hostClient.connection.subscribe,
-    () => hostClient.connection.getSnapshot().readyRevision,
-  );
-  useEffect(() => {
-    const pending = interrupted.current;
-    if (pending) load(pending.search, pending.offset);
-  }, [load, readyRevision]);
+  }, [query, request.search]);
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -737,7 +741,7 @@ function AddAppDialog({
               <button
                 className="btn btn--small"
                 disabled={loading}
-                onClick={() => load(query.trim(), 0)}
+                onClick={() => void resource.refresh()}
                 type="button"
               >
                 Try again
@@ -815,7 +819,7 @@ function AddAppDialog({
           <button
             className="btn btn--ghost btn--small computer-use__more"
             disabled={loading}
-            onClick={() => load(listing.query, apps.length)}
+            onClick={() => load({ search: listing.query, offset: apps.length })}
             type="button"
           >
             {loading ? "Loading…" : "Show more"}

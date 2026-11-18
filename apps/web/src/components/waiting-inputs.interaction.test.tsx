@@ -12,6 +12,7 @@ import {
   HttpHostClient,
   waitingInputs,
   type HostClient,
+  type MessageEntry,
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
@@ -147,6 +148,7 @@ function render(
     disabled?: boolean;
     paused?: boolean;
     onError?: (error: unknown) => void;
+    local?: readonly MessageEntry[];
   } = {},
 ) {
   return (
@@ -155,6 +157,7 @@ function render(
         client={client}
         disabled={options.disabled ?? false}
         inputs={inputs}
+        {...(options.local ? { local: options.local } : {})}
         onError={options.onError ?? vi.fn()}
         paused={options.paused ?? false}
         resumable
@@ -208,6 +211,40 @@ async function press(target: Pick<Element, "dispatchEvent">, key: string) {
     target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
   });
 }
+
+it("keeps the queued row and its bubble mounted as the Host takes over a local send", async () => {
+  const [older, confirmed, later] = inputsOf([
+    item("older", "Older held"),
+    item("confirmed", "First local"),
+    item("later", "Second local"),
+  ]);
+  if (!older || !confirmed || !later) throw new Error("Expected three message rows.");
+  const local = (entry: MessageEntry, key: string): MessageEntry => ({
+    ...entry,
+    id: key,
+    clientSendKey: key,
+    localDelivery: { phase: "waiting", attempted: false },
+  });
+  const first = local(confirmed.entry, "first-send");
+  const second = local(later.entry, "second-send");
+  const host = {} as HostClient;
+  const container = mount(render(host, [older], { local: [first, second] }));
+  const bubble = container.querySelector('[data-message-id="first-send"] .message-fold');
+  expect(bubble).not.toBeNull();
+  await act(async () =>
+    root?.render(
+      render(
+        host,
+        [older, { ...confirmed, entry: { ...confirmed.entry, clientSendKey: "first-send" } }],
+        { local: [first, second] },
+      ),
+    ),
+  );
+  expect(container.querySelector('[data-message-id="confirmed"] .message-fold')).toBe(bubble);
+  expect(
+    [...container.querySelectorAll(".queued__item .message-fold")].map((node) => node.textContent),
+  ).toEqual(["Older held", "First local", "Second local"]);
+});
 
 describe("WaitingInputs", () => {
   it("keeps one image read when a queued message is taken before download finishes", async () => {

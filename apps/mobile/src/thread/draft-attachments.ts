@@ -218,6 +218,7 @@ export function useDraftAttachments(options: {
       const key = attachmentKey(item);
       if (controllers.current.has(key) || !readyNow.current) return;
       const controller = new AbortController();
+      const revision = client.connection.getSnapshot().readyRevision;
       if (!acquireUpload(drafts, ownerKey(key), controller)) return;
       controllers.current.set(key, controller);
       interrupted.current.delete(key);
@@ -239,8 +240,8 @@ export function useDraftAttachments(options: {
           if (controller.signal.aborted) return;
           if (classifyClientFailure(error).kind === "transport") {
             const connection = client.connection.getSnapshot();
-            interrupted.current.set(key, connection.readyRevision);
-            if (connection.phase !== "ready") {
+            interrupted.current.set(key, revision);
+            if (connection.phase !== "ready" || connection.readyRevision !== revision) {
               // Back to waiting, holding its reservation; this copy no longer
               // owns an upload, so the next ready connection starts one.
               controllers.current.delete(key);
@@ -333,8 +334,9 @@ export function useDraftAttachments(options: {
           localDirty.current = false;
           syncFromStore();
         }
+        resume();
       });
-  }, [deploymentId, draftKey, drafts, items, ownerKey, syncFromStore, userId]);
+  }, [deploymentId, draftKey, drafts, items, ownerKey, resume, syncFromStore, userId]);
 
   // Work the app was closed during picks up where the Host left it.
   useEffect(() => {

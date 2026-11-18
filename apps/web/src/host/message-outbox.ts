@@ -69,13 +69,19 @@ export function restoreComposerDraft(
   drafts: ComposerDraftStore,
   scope: ClientScope,
   entry: StoredMessage,
-): "restored" {
+): "restored" | "occupied" {
   const key = composerDraftKey(
     { deploymentId: scope.deploymentId, userId: scope.viewerId },
     { kind: "thread", threadId: entry.command.threadId },
   );
   const held = drafts.read(key);
   if (held?.recoveredSendKeys?.includes(entry.localId)) return "restored";
+  if (
+    held?.quote &&
+    entry.command.quotedMessageId &&
+    held.quote.messageId !== entry.command.quotedMessageId
+  )
+    return "occupied";
   const parts = messageDraftParts(entry.command.content);
   const above = (text: string) => (text.trim() ? `${parts.body}\n\n${text}` : parts.body);
   const files = parts.attachments

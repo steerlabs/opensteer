@@ -1439,15 +1439,22 @@ export function Message(props: {
             : {})}
         />
       )}
-      {mine && !props.queued ? (
+      {mine ? (
         // One tree from Waiting to delivered: what it is a change of state in, never a remount.
         <OwnMessage
           conversation={props.conversation}
           entry={message}
+          waiting={props.hold}
           bubble={
             message.body ? (
               <Bubble
-                fill={delivery?.phase === "rejected" ? rejectedBubble.fill : color.bubble}
+                fill={
+                  props.queued
+                    ? "transparent"
+                    : delivery?.phase === "rejected"
+                      ? rejectedBubble.fill
+                      : color.bubble
+                }
                 // Lists, headings and code take the bubble's whole measure, as a reply's do.
                 fit={bubbleFit(message.body)}
                 side="mine"
@@ -1455,6 +1462,7 @@ export function Message(props: {
                 style={[
                   props.conversation ? undefined : styles.bubbleCorner,
                   delivery?.phase === "rejected" ? rejectedBubble.style : undefined,
+                  props.queued ? [styles.bubbleQueued, styles.bubbleQueuedMine] : undefined,
                 ]}
                 tail={props.conversation && props.continued !== true}
               >
@@ -1470,7 +1478,7 @@ export function Message(props: {
           <MessageAttachments attachments={message.attachments ?? []} />
         </>
       )}
-      {mine && !props.queued ? null : !message.body ? null : props.hold === undefined ? (
+      {mine || !message.body ? null : props.hold === undefined ? (
         <View
           style={
             update
@@ -1478,10 +1486,7 @@ export function Message(props: {
               : [
                   styles.bubble,
                   props.queued
-                    ? [
-                        styles.bubbleQueued,
-                        mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
-                      ]
+                    ? [styles.bubbleQueued, styles.bubbleQueuedOther]
                     : styles.bubbleInput,
                 ]
           }
@@ -1497,15 +1502,7 @@ export function Message(props: {
           previewRadius={radius.xl}
           style={styles.held}
         >
-          <View
-            style={[
-              styles.bubble,
-              styles.bubbleQueued,
-              mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
-            ]}
-          >
-            {fold}
-          </View>
+          <View style={[styles.bubble, styles.bubbleQueued, styles.bubbleQueuedOther]}>{fold}</View>
         </WaitingHold>
       )}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
@@ -1536,6 +1533,7 @@ function OwnMessage(props: {
   readonly bubble: ReactNode;
   readonly conversation: boolean;
   readonly entry: MessageEntry;
+  readonly waiting?: React.ComponentProps<typeof Message>["hold"];
 }) {
   const controls = useContext(MessageDeliveryContext);
   const { entry } = props;
@@ -1567,7 +1565,7 @@ function OwnMessage(props: {
     <MessageDelivery
       attempted={delivery?.attempted ?? true}
       inline={props.bubble === null}
-      note={delivery === undefined ? null : (controls?.note(key) ?? null)}
+      note={controls?.note(key) ?? null}
       onAction={
         controls === null || delivery === undefined
           ? undefined
@@ -1585,7 +1583,17 @@ function OwnMessage(props: {
       <MessagePages pages={entry.pages ?? []} />
       <MessagePlaces places={entry.places ?? []} />
       <MessageAttachments attachments={entry.attachments ?? []} />
-      {props.bubble === null ? null : (
+      {props.bubble === null ? null : props.waiting ? (
+        <WaitingHold
+          actions={delivery ? (hold?.actions ?? []) : props.waiting.actions}
+          onAction={delivery ? (hold?.onAction ?? ignoreDeliveryAction) : props.waiting.onAction}
+          onPress={props.waiting.onPress}
+          previewBottomEndRadius={radius.xs}
+          previewRadius={bubble.radius}
+        >
+          {props.bubble}
+        </WaitingHold>
+      ) : (
         <MessageHold
           delivery={hold}
           previewBottomEndRadius={props.conversation ? undefined : radius.xs}
@@ -1598,6 +1606,8 @@ function OwnMessage(props: {
     </MessageDelivery>
   );
 }
+
+const ignoreDeliveryAction = () => {};
 
 /**
  * A sent message's words, folded to `lines` of body text until the reader

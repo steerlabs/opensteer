@@ -30,7 +30,7 @@ import { actionLine } from "../use-action.js";
  */
 interface TabCloser {
   close(tabIds: readonly TabId[]): void;
-  outcome(tabId: TabId): ClientAction<readonly TabId[], void> | null;
+  outcome(tabId: TabId): ClientAction<TabId, void> | null;
   subscribe(listener: () => void): () => void;
 }
 const TabCloserContext = createContext<TabCloser | null>(null);
@@ -60,7 +60,7 @@ const noAction = {
   reconcile: () => Promise.resolve(),
   dismiss: () => {},
   dispose: () => {},
-} satisfies ClientAction<readonly TabId[], void>;
+} satisfies ClientAction<TabId, void>;
 
 /** How long a "Not closed" line stays when nothing else clears it. */
 const notSentMs = 6_000;
@@ -110,17 +110,17 @@ export function TabCloserProvider({
 }
 
 function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void } {
-  const latest = new Map<TabId, ClientAction<readonly TabId[], void>>();
+  const latest = new Map<TabId, ClientAction<TabId, void>>();
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
-  const release = (action: ClientAction<readonly TabId[], void>) => {
+  const release = (action: ClientAction<TabId, void>) => {
     for (const [tabId, held] of latest) if (held === action) latest.delete(tabId);
     action.dispose();
   };
   const exists = async (tabId: TabId, signal: AbortSignal): Promise<boolean | null> => {
     try {
       signal.throwIfAborted();
-      unwrapRpcResult(await hostClient.rpc["tabs.get"]({ tabId }));
+      unwrapRpcResult(await hostClient.rpc["tabs.get"]({ tabId }, { signal }));
       return true;
     } catch (error) {
       return classifyClientFailure(error).code === "not_found" ? false : null;
@@ -129,38 +129,42 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
   return {
     close(tabIds) {
       if (!tabIds.length) return;
-      const action = createClientAction<readonly TabId[], void>(hostClient, {
-        key: `close:${tabIds.join(",")}`,
-        label: "close this tab",
-        done: "closed",
-        happened: "this tab closed",
-        execute: async (ids) => {
-          const result = await hostClient.closeTabs([...ids]);
-          // Each tab the Host refused stays in the list; its row says so.
-          const [refused] = result.failed;
-          if (refused) throw tabCloseRefused(refused.error.code);
-        },
-        // A lost answer is settled by asking for the tabs again, never by closing again.
-        reconcile: async (ids, signal): Promise<ActionOutcome<void> | null> => {
-          const found = await Promise.all(ids.map((id) => exists(id, signal)));
-          if (found.some((value) => value === true))
-            return { kind: "not-sent", issue: { code: "not-sent", done: "closed" } };
-          return found.every((value) => value === false)
-            ? { kind: "confirmed", value: undefined }
-            : null;
-        },
+      const ids = [...new Set(tabIds)];
+      let batch: ReturnType<HostClient["closeTabs"]> | undefined;
+      const rows = ids.map((tabId) => {
+        const action = createClientAction<TabId, void>(hostClient, {
+          key: `close:${tabId}`,
+          label: "close this tab",
+          done: "closed",
+          happened: "this tab closed",
+          execute: async (id) => {
+            const result = await (batch ??= hostClient.closeTabs(ids));
+            const refused = result.failed.find((row) => row.tabId === id);
+            if (refused) throw tabCloseRefused(refused.error.code);
+          },
+          reconcile: async (id, signal): Promise<ActionOutcome<void> | null> => {
+            const found = await exists(id, signal);
+            if (found === null) return null;
+            return found
+              ? { kind: "not-sent", issue: { code: "not-sent", done: "closed" } }
+              : { kind: "confirmed", value: undefined };
+          },
+        });
+        latest.get(tabId)?.dispose();
+        latest.set(tabId, action);
+        return { tabId, action };
       });
-      const previous = new Set(tabIds.flatMap((tabId) => latest.get(tabId) ?? []));
-      for (const tabId of tabIds) latest.set(tabId, action);
-      for (const held of previous) if (![...latest.values()].includes(held)) held.dispose();
       publish();
-      const settle = () => {
-        if (action.getSnapshot().outcome?.kind !== "confirmed") return;
-        release(action);
-        publish();
-      };
-      action.subscribe(settle);
-      void action.run(tabIds).then(settle);
+      for (const { tabId, action } of rows) {
+        const settle = () => {
+          if (latest.get(tabId) !== action || action.getSnapshot().outcome?.kind !== "confirmed")
+            return;
+          release(action);
+          publish();
+        };
+        action.subscribe(settle);
+        void action.run(tabId).then(settle);
+      }
     },
     outcome: (tabId) => latest.get(tabId) ?? null,
     subscribe(listener) {

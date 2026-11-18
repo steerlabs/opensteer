@@ -1,5 +1,5 @@
 import { useOutboxTranscript } from "@opensteer/client/react";
-import { hostMessageOutbox, placeLocalMessages, splitLocalMessages } from "@opensteer/client/host";
+import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
@@ -381,17 +381,9 @@ function ThreadView({
           ),
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
-  // Where each of them stands, decided once: after the queue when sent behind work.
-  const placedLocal = useRef<ReadonlyMap<string, boolean>>(new Map());
-  placedLocal.current = placeLocalMessages(
-    placedLocal.current,
-    withOutbox,
-    !conversational && (activity !== "idle" || (waiting?.length ?? 0) > 0),
-  );
   const local = useMemo(
-    () => splitLocalMessages(withOutbox, placedLocal.current),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [withOutbox, placedLocal.current],
+    () => splitLocalMessages(withOutbox, !conversational),
+    [conversational, withOutbox],
   );
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, snapshot.user?.id ?? null, conversational),
@@ -1203,13 +1195,15 @@ function ThreadView({
                         inputQueuePaused={thread.inputQueuePaused}
                         renderPasswordsSuggestion={renderPasswordsSuggestion}
                         queued={
-                          inputQueue && waiting && !conversational ? (
+                          !conversational && (waiting || local.afterQueue.length) ? (
                             <WaitingInputs
                               client={hostClient}
                               disabled={!canRespond}
-                              inputs={waiting}
+                              inputs={waiting ?? []}
+                              local={local.afterQueue}
+                              transcript={projected}
                               onError={reportActionError}
-                              paused={inputQueue.paused}
+                              paused={inputQueue?.paused ?? false}
                               resumable={thread.status !== "archived"}
                               threadId={thread.id}
                               viewerUserId={snapshot.user?.id ?? null}

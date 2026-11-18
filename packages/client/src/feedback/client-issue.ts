@@ -12,6 +12,7 @@ export type ClientIssueCode =
   | "not-sent"
   | "unconfirmed"
   | "rejected"
+  | "login-storage-unavailable"
   | "storage-unavailable"
   | "queue-full"
   | "preparation-required";
@@ -44,6 +45,7 @@ export function clientIssue(
 ): ClientIssue | null {
   const failure = classifyClientFailure(error);
   if (failure.kind === "cancelled") return null;
+  if (failure.reason === "login-storage-unavailable") return { code: "login-storage-unavailable" };
   if (failure.reason === "storage-unavailable") return { code: "storage-unavailable" };
   if (failure.reason === "queue-full") return { code: "queue-full" };
   if (failure.code === "unauthorized") return { code: "sign-in" };
@@ -153,6 +155,8 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
           : `Couldn't ${issue.action ?? "change this"}.`,
       );
     }
+    case "login-storage-unavailable":
+      return result("Couldn't save this sign-in on this phone.", "retry");
     case "storage-unavailable":
       return result("Couldn't save this message on this device. Try again.", "retry");
     case "queue-full":
@@ -207,13 +211,15 @@ export function presentDeliveryActions(): {
  */
 export function presentMessageActionFailure(error: unknown): string | null {
   return classifyClientFailure(error).reason === "message-unconfirmed"
-    ? null
-    : presentClientIssue({ code: "storage-unavailable" }).title;
+    ? "This message is already on its way."
+    : "Couldn't change this message on this device. Try again.";
 }
 
 /** What Edit came to, when the message could not go back to the draft. */
 export function presentMessageTakeBack(outcome: "restored" | "occupied" | "sent"): string | null {
-  return outcome === "occupied" ? "Couldn't add this to your draft." : null;
+  if (outcome === "occupied") return "Couldn't add this to your draft.";
+  if (outcome === "sent") return "This message is already on its way.";
+  return null;
 }
 
 export const connectedLabel = "Connected";

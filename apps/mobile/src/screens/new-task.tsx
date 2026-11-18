@@ -1,3 +1,4 @@
+import { clientScopeKey } from "@opensteer/client/connections";
 import { clientIssue, clientIssueActions } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
@@ -39,6 +40,7 @@ import { color, space } from "../theme.js";
 import {
   attachmentKey,
   draftAttachmentPart,
+  forgetDraftFiles,
   useDraftAttachments,
 } from "../thread/draft-attachments.js";
 import {
@@ -125,7 +127,10 @@ function NewTask(props: {
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
   const agentHome = snapshot.personalSettings?.agentHome.path ?? null;
   const text = draft?.text ?? "";
-  const held = drafts.readTaskStart(deploymentId, userId, draftKey);
+  const { scope, phase, readyRevision } = useClientConnection(hostClient.connection);
+  const scopeKey = clientScopeKey(scope);
+  const savedStart = drafts.readTaskStart(deploymentId, userId, draftKey);
+  const held = scopeKey && savedStart?.ownerScope === scopeKey ? savedStart : null;
   const input = useRef<ComposerEditorHandle>(null);
   const files = useMemo<FirstMessageAttachmentDraftScope>(
     () => ({ deploymentId, draftId, kind: "new-task", userId }),
@@ -218,7 +223,18 @@ function NewTask(props: {
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
       if (!mounted.current || inFlight.current) return;
       inFlight.current = true;
-      const startRevision = hostClient.connection.getSnapshot().readyRevision;
+      const connection = hostClient.connection.getSnapshot();
+      const ownedScope = connection.scope;
+      const ownerScope = clientScopeKey(ownedScope);
+      if (!ownedScope || !ownerScope || (existing && existing.ownerScope !== ownerScope)) {
+        inFlight.current = false;
+        return;
+      }
+      const assertCurrent = () => {
+        if (clientScopeKey(hostClient.connection.getSnapshot().scope) !== ownerScope)
+          throw new NotStarted("This message belongs to another sign-in.");
+      };
+      const startRevision = connection.readyRevision;
       setSending(true);
       setLine(null);
       let claimed = existing;
@@ -272,6 +288,7 @@ function NewTask(props: {
             draftKey,
             drafts,
             idempotencyKey,
+            ownerScope,
             quote: null,
             staged,
             start: {
@@ -300,6 +317,7 @@ function NewTask(props: {
           sentAt.current = Date.now();
           keyboardDown.current = dismissKeyboard();
         }
+        assertCurrent();
         let threadId = claimed.startedThreadId;
         if (threadId === undefined) {
           const start = claimed.start;
@@ -310,6 +328,7 @@ function NewTask(props: {
             ...creation,
             ...(generateTitle ? { generateTitle: true } : {}),
           });
+          assertCurrent();
           threadId = thread.id;
           // Unrecorded, a retry asks again under the same key and gets the same task.
           await drafts
@@ -322,6 +341,7 @@ function NewTask(props: {
         await handOverFirstMessage({
           hostClient,
           claimed,
+          scope: ownedScope,
           deploymentId,
           draftKey,
           drafts,
@@ -332,6 +352,7 @@ function NewTask(props: {
             // is this one's last.
             const rising = reduceMotion ? 0 : sentAt.current + bubbleSettleMs - Date.now();
             await Promise.all([keyboardDown.current, rising > 0 ? delay(rising) : undefined]);
+            assertCurrent();
             const active = client.getSnapshot().selection;
             const shown = drafts.readTaskStart(deploymentId, userId, draftKey);
             opened =
@@ -348,7 +369,13 @@ function NewTask(props: {
       } catch (error) {
         // Only a screen still here can take the message back as a draft; one
         // that has gone leaves it held, and the next visit shows it.
-        if (claimed !== null && isHostRefusal(error) && mounted.current) {
+        if (
+          claimed !== null &&
+          !created &&
+          isHostRefusal(error) &&
+          mounted.current &&
+          clientScopeKey(hostClient.connection.getSnapshot().scope) === ownerScope
+        ) {
           // The Host said no, so no task was made: the message goes back to
           // being a draft, to be changed and sent anew under new keys.
           const refused = claimed;
@@ -429,14 +456,13 @@ function NewTask(props: {
 
   // A message already handed over under its keys goes on by itself: on
   // arrival, and each time the connection is ready again.
-  const { phase, readyRevision } = useClientConnection(hostClient.connection);
   resume.current = send;
   const heldKey = held?.idempotencyKey ?? null;
   useEffect(() => {
     if (heldKey === null || phase !== "ready") return;
     const record = drafts.readTaskStart(deploymentId, userId, draftKey);
-    if (record !== null) void resume.current(record);
-  }, [deploymentId, draftKey, drafts, heldKey, phase, readyRevision, userId]);
+    if (record !== null && record.ownerScope === scopeKey) void resume.current(record);
+  }, [deploymentId, draftKey, drafts, heldKey, phase, readyRevision, scopeKey, userId]);
 
   // Once the task has faded in over this screen, it is Home again underneath.
   useEffect(() => {
@@ -450,6 +476,56 @@ function NewTask(props: {
     };
   }, [handedOff, navigation]);
 
+  const otherStart = savedStart !== null && held === null ? savedStart : null;
+  const otherStartLine: ActionLineValue | null =
+    otherStart && scopeKey
+      ? {
+          key: otherStart.idempotencyKey,
+          text: otherStart.ownerScope
+            ? "A held message belongs to your previous sign-in."
+            : "A message from an earlier version is waiting. Send it with this sign-in?",
+          tone: "muted",
+          link: otherStart.ownerScope
+            ? {
+                label: "Remove",
+                onPress: () => {
+                  void drafts
+                    .clearTaskStart(deploymentId, userId, draftKey, otherStart.idempotencyKey)
+                    .then(
+                      (cleared) => {
+                        if (cleared) forgetDraftFiles(files, otherStart.localUris ?? []);
+                      },
+                      () =>
+                        setLine(
+                          issueLine({ code: "storage-unavailable" }, otherStart.idempotencyKey),
+                        ),
+                    );
+                },
+              }
+            : {
+                label: "Resume",
+                onPress: () => {
+                  void drafts
+                    .bindTaskStartLogin(
+                      deploymentId,
+                      userId,
+                      draftKey,
+                      otherStart.idempotencyKey,
+                      scopeKey,
+                    )
+                    .then(
+                      (record) => {
+                        if (record) void resume.current(record);
+                      },
+                      () =>
+                        setLine(
+                          issueLine({ code: "storage-unavailable" }, otherStart.idempotencyKey),
+                        ),
+                    );
+                },
+              },
+        }
+      : null;
   const sent = held ?? starting ?? handedOff;
   const empty = text.trim() === "" && sent === null && staged.items.length === 0;
 
@@ -459,7 +535,7 @@ function NewTask(props: {
       blocker={blocker}
       voice={props.voice === true}
       onVoiceLine={setLine}
-      held={held !== null}
+      held={held !== null || otherStart !== null}
       execution={execution}
       hostClient={hostClient}
       inputRef={input}
@@ -525,6 +601,7 @@ function NewTask(props: {
           {line === null ? null : (
             <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
           )}
+          {otherStartLine ? <ActionLine line={otherStartLine} numberOfLines={2} /> : null}
           {draftFailure === null ? null : (
             <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
           )}

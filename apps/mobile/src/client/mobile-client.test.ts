@@ -4571,6 +4571,40 @@ describe("durable mobile connection admission", () => {
     }
   });
 
+  it("retries a failed durable login upgrade before admitting a usable attachment", async () => {
+    vi.useFakeTimers();
+    const secure = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "login-repair", secureStore: secure });
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, undefined, { records });
+    try {
+      await records.write(`personal.${serverId}`, JSON.stringify(personalSession()));
+      await client.initialize();
+      await client.catalog.upsert(connectComputer(1));
+      secure.interrupt = () => {
+        throw new Error("secure store unavailable");
+      };
+      await expect(client.openDeployment(serverId)).rejects.toThrow("Could not save");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.getSnapshot().selection.hostClient).toBeNull();
+      const connection = client.getSnapshot().selection.session?.connection;
+      expect(connection?.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        issue: { code: "login-storage-unavailable" },
+      });
+      secure.interrupt = () => undefined;
+      connection!.retry();
+      await vi.advanceTimersByTimeAsync(1);
+      const attached = client.getSnapshot().selection.hostClient!;
+      const login = await client.sessions.load(DeploymentIdSchema.parse(serverId));
+      expect(login?.viewLoginId).toBeDefined();
+      expect(attached.connection.getSnapshot().scope?.loginId).toBe(login?.viewLoginId);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("recovers only fallback records proved by the authenticated Host session", async () => {
     vi.useFakeTimers();
     const hostSessionId = createId("authSession");
@@ -4615,8 +4649,9 @@ describe("durable mobile connection admission", () => {
         loginId: hostSessionId,
       };
       const other = { ...fallback, loginId: createId("authSession") };
+      const threadId = createId("thread");
       const record = (key: string) => ({
-        command: send(key),
+        command: { ...send(key), threadId },
         localId: key,
         createdAt: new Date().toISOString(),
         attempted: false,
@@ -4624,13 +4659,20 @@ describe("durable mobile connection admission", () => {
         order: 1,
       });
       await files.ensureDirectory(folder);
-      await store.put(fallback, record("same-session"));
+      await store.put(fallback, { ...record("never-tried"), order: 2 });
+      await store.put(fallback, {
+        ...record("refused"),
+        phase: "rejected",
+        attempted: true,
+        rejection: { code: "rejected", reason: "forbidden" },
+      });
       await store.put(other, record("different-session"));
       await client.retrySelection();
       await vi.advanceTimersByTimeAsync(1);
       const next = client.getSnapshot().selection.hostClient!;
       expect(hostMessageOutbox(next)!.getSnapshot().messages).toMatchObject([
-        { localId: "same-session", attempted: true, phase: "rejected" },
+        { localId: "refused", attempted: true, phase: "rejected", rejection: { code: "rejected" } },
+        { localId: "never-tried", attempted: false, phase: "waiting" },
       ]);
       expect(base.commands).toEqual([]);
       expect(await store.load(fallback)).toEqual([]);

@@ -1,3 +1,4 @@
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { describe, expect, it, vi } from "vitest";
 import { ClientOperationError } from "@opensteer/client/connections";
 import { ModelSelectionSchema } from "@opensteer/core";
@@ -46,20 +47,41 @@ function host() {
   };
 }
 
+function journal() {
+  const records = new Map<string, string>();
+  const writes = new MutationQueue();
+  return {
+    records,
+    mutate: vi.fn((key: string, change: (raw: string | null) => string | null) =>
+      writes.run(async () => {
+        const next = change(records.get(key) ?? null);
+        if (next === null) records.delete(key);
+        else records.set(key, next);
+      }),
+    ),
+  };
+}
+
 let keys = 0;
-function attempt(
+async function attempt(
   drafts: ReturnType<typeof createComposerDraftStore>,
   fake: ReturnType<typeof host>,
-  enqueue = async (threadId: string, key: string) => void fake.queued.push({ threadId, key }),
+  saved: ReturnType<typeof journal>,
+  enqueue = async (threadId: string, key: string) => {
+    if (!fake.queued.some((entry) => entry.key === key)) fake.queued.push({ threadId, key });
+  },
 ) {
+  const generation = drafts.taskStartGeneration(draftKey);
+  if (generation === null) throw new Error("Draft storage refused.");
   return startTask({
-    records: draftTaskStart(drafts, draftKey),
+    records: draftTaskStart(draftKey, generation, saved.mutate),
     creation,
     creationKey: () => `thread-key-${++keys}`,
     messageKey: `message-key-${++keys}`,
+    message: { content: [{ type: "text", text: drafts.read(draftKey)?.text ?? "Text" }] },
+    assertCurrent: () => {},
     createThread: fake.createThread,
-    queued: (key) => fake.queued.some((entry) => entry.key === key),
-    enqueue,
+    enqueue: (command) => enqueue(command.threadId, command.idempotencyKey),
   });
 }
 
@@ -71,9 +93,42 @@ const lost = () =>
   });
 
 describe("starting a new task from a draft", () => {
+  it("does not create a task when IndexedDB rejects the start transaction", async () => {
+    const storage = memoryStorage();
+    const drafts = createComposerDraftStore(() => storage);
+    const fake = host();
+    const saved = journal();
+    drafts.update(draftKey, { text: "Compare quotes" });
+    saved.mutate.mockRejectedValueOnce(new Error("disk full"));
+    await expect(attempt(drafts, fake, saved)).rejects.toThrow();
+    expect(fake.createThread).not.toHaveBeenCalled();
+  });
+
+  it("uses one creation key when separate windows start the same saved draft", async () => {
+    const storage = memoryStorage();
+    const first = createComposerDraftStore(() => storage);
+    const second = createComposerDraftStore(() => storage);
+    const fake = host();
+    const saved = journal();
+    first.update(draftKey, { text: "Compare quotes" });
+    // Both readers can capture the same value before either commits a claim.
+    const [started, another] = await Promise.all([
+      attempt(first, fake, saved),
+      attempt(second, fake, saved),
+    ]);
+    expect(another).toEqual(started);
+    await expect(attempt(second, fake, saved)).resolves.toEqual(started);
+    second.clear(draftKey);
+    second.update(draftKey, { text: "A different draft" });
+    expect(await attempt(second, fake, saved)).not.toEqual(started);
+    expect(fake.tasks.size).toBe(2);
+    expect(fake.queued).toHaveLength(2);
+  });
+
   it("makes one task when the creation's answer is lost and Start is pressed again after a reload", async () => {
     const storage = memoryStorage();
     const fake = host();
+    const saved = journal();
     const first = createComposerDraftStore(() => storage);
     first.update(draftKey, { text: "Compare quotes" });
     const made = fake.createThread.getMockImplementation()!;
@@ -81,37 +136,42 @@ describe("starting a new task from a draft", () => {
       await made(input);
       throw lost();
     });
-    await expect(attempt(first, fake)).rejects.toThrow();
+    await expect(attempt(first, fake, saved)).rejects.toThrow();
 
     // A reload reads the same draft from storage.
     const reloaded = createComposerDraftStore(() => storage);
-    const thread = await attempt(reloaded, fake);
+    const thread = await attempt(reloaded, fake, saved);
     expect(fake.tasks.size).toBe(1);
     expect(thread.id).toBe("thr_1");
     expect(fake.queued).toEqual([{ threadId: "thr_1", key: expect.any(String) }]);
-    expect(reloaded.read(draftKey)?.start).toBeUndefined();
+    expect([...saved.records.values()].map((value) => JSON.parse(value))).toMatchObject([
+      { completedThreadId: "thr_1" },
+    ]);
   });
 
   it("queues the first message on retry without making the task again when this device couldn't save it", async () => {
     const fake = host();
+    const saved = journal();
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
     drafts.update(draftKey, { text: "Compare quotes" });
     await expect(
-      attempt(drafts, fake, async () => {
+      attempt(drafts, fake, saved, async () => {
         throw new Error("Storage refused.");
       }),
     ).rejects.toThrow();
-    const held = drafts.read(draftKey)!.start!;
-    expect(held.threadId).toBe("thr_1");
+    const [raw] = saved.records.values();
+    const held = JSON.parse(raw!) as { start: { threadId: string; messageKey: string } };
+    expect(held.start.threadId).toBe("thr_1");
 
-    await attempt(drafts, fake);
+    await attempt(drafts, fake, saved);
     expect(fake.createThread).toHaveBeenCalledOnce();
-    expect(fake.queued).toEqual([{ threadId: "thr_1", key: held.messageKey }]);
+    expect(fake.queued).toEqual([{ threadId: "thr_1", key: held.start.messageKey }]);
   });
 
   it("starts afresh after the Host refused the creation, so a changed choice is not refused again", async () => {
     const fake = host();
+    const saved = journal();
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
     drafts.update(draftKey, { text: "Compare quotes" });
@@ -122,9 +182,9 @@ describe("starting a new task from a draft", () => {
         retryable: false,
       }),
     );
-    await expect(attempt(drafts, fake)).rejects.toThrow();
-    expect(drafts.read(draftKey)?.start).toBeUndefined();
-    await attempt(drafts, fake);
+    await expect(attempt(drafts, fake, saved)).rejects.toThrow();
+    expect(saved.records.size).toBe(0);
+    await attempt(drafts, fake, saved);
     const [refused, made] = fake.createThread.mock.calls.map(([input]) => input.idempotencyKey);
     expect(made).not.toBe(refused);
   });

@@ -44,7 +44,10 @@ export interface PersonalSessionStore {
   clear(deploymentId: DeploymentId): Promise<void>;
   load(deploymentId: DeploymentId): Promise<PersonalRemoteSession | null>;
   save(session: PersonalRemoteSession): Promise<void>;
-  initializeViewLoginId?(deploymentId: DeploymentId, isCurrent: () => boolean): Promise<void>;
+  initializeViewLoginId?(
+    deploymentId: DeploymentId,
+    isCurrent: () => boolean,
+  ): Promise<string | undefined>;
 }
 
 export function createPersonalSessionStore(
@@ -96,11 +99,11 @@ export function createPersonalSessionStore(
     initializeViewLoginId: (deploymentId, isCurrent) =>
       mutations.run(async () => {
         const current = await load(deploymentId);
-        if (!isCurrent() || current === null || current.viewLoginId) return;
-        await records.write(
-          recordName(deploymentId),
-          JSON.stringify({ ...current, viewLoginId: globalThis.crypto.randomUUID() }),
-        );
+        if (!isCurrent() || current === null) return undefined;
+        if (current.viewLoginId) return current.viewLoginId;
+        const viewLoginId = globalThis.crypto.randomUUID();
+        await records.write(recordName(deploymentId), JSON.stringify({ ...current, viewLoginId }));
+        return viewLoginId;
       }),
 
     async save(session): Promise<void> {
