@@ -178,15 +178,11 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
     await withTimeout(once(socket, "open"), 3000, {
       timeoutError: () => new Error("Personal realtime never opened"),
     });
-    const replaced = waitForRealtimeMessage(
+    const reset = waitForRealtimeMessage(
       socket,
-      (frame) => frame.type === "host.snapshot" && "scope" in frame && frame.scope.kind === "shell",
+      (frame) => frame.type === "host.snapshot-required",
     );
-    const synchronized = waitForRealtimeMessage(
-      socket,
-      (frame) => frame.type === "host.synchronized",
-    );
-    // A cursor from a prior epoch is replaced from the start.
+    // A cursor from a prior epoch must be replaced from the start.
     socket.send(
       JSON.stringify({
         type: "client.attach",
@@ -201,6 +197,27 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
           scopeKey: "shell",
           afterSequence: "0",
         },
+      }),
+    );
+    expect(await reset).toMatchObject({
+      type: "host.snapshot-required",
+      reason: "scope-changed",
+      subscriptionId: "shell",
+    });
+    const replaced = waitForRealtimeMessage(
+      socket,
+      (frame) => frame.type === "host.snapshot" && "scope" in frame && frame.scope.kind === "shell",
+    );
+    const synchronized = waitForRealtimeMessage(
+      socket,
+      (frame) => frame.type === "host.synchronized",
+    );
+    socket.send(
+      JSON.stringify({
+        type: "client.subscribe",
+        subscriptionId: "shell",
+        generation: 2,
+        scope: { kind: "shell" },
       }),
     );
     const [snapshot, sync] = await Promise.all([replaced, synchronized]);
