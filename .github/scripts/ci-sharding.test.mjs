@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { assignShards, integrationContention, unknownDuration } from "./ci-sharding.mjs";
+import { assignShards, unknownDuration } from "./ci-sharding.mjs";
 
 test("duration balancing is deterministic, exhaustive and disjoint for new files", () => {
   const files = ["a", "b", "c", "d", "new"];
@@ -21,59 +21,19 @@ test("invalid shard configuration and duplicate files fail", () => {
   assert.throws(() => assignShards(["a"], { a: -1 }, 1, 1));
 });
 
-test("integration bulk seed and partner setup stay apart from contention-heavy suites", () => {
+void test("the full integration matrix balances the recorded duration without empty shards", () => {
   const durations = JSON.parse(
     readFileSync(new URL("./ci-durations.json", import.meta.url)),
   ).integration;
+  const count = JSON.parse(readFileSync(new URL("./ci-shards.json", import.meta.url))).integration;
   const files = Object.keys(durations);
-  const shards = assignShards(
-    files,
-    durations,
-    6,
-    unknownDuration.integration,
-    integrationContention,
-  );
+  const shards = assignShards(files, durations, count, unknownDuration.integration);
   assert.deepEqual(
     shards,
-    assignShards(
-      [...files].reverse(),
-      durations,
-      6,
-      unknownDuration.integration,
-      integrationContention,
-    ),
+    assignShards([...files].reverse(), durations, count, unknownDuration.integration),
   );
   assert.deepEqual(shards.flat().sort(), files.sort());
-  for (const file of integrationContention.files) {
-    const shard = shards.find((files) => files.includes(file));
-    assert.ok(shard, `Missing ${file}`);
-    assert.ok(
-      shard.every(
-        (file) =>
-          integrationContention.files.includes(file) ||
-          durations[file] <= integrationContention.maxCompanionDuration,
-      ),
-    );
-  }
+  assert.ok(shards.every((shard) => shard.length > 0));
   const totals = shards.map((files) => files.reduce((sum, file) => sum + durations[file], 0));
-  assert.ok(Math.max(...totals) < (totals.reduce((sum, total) => sum + total, 0) / 6) * 1.03);
-});
-
-test("contention separation handles focused selections and a single runner without losing files", () => {
-  const files = [...integrationContention.files, "browser", "migration", "new"];
-  const durations = { browser: 60_000, migration: 40_000 };
-  const shards = assignShards(files, durations, 2, 1, integrationContention);
-  assert.deepEqual(shards.flat().sort(), [...files].sort());
-  assert.ok(shards[0].every((file) => !["browser", "migration"].includes(file)));
-  assert.ok(!shards[0].includes("new"));
-  assert.ok(shards[1].every((file) => !integrationContention.files.includes(file)));
-  assert.deepEqual(
-    assignShards(files, durations, 1, 1, integrationContention),
-    assignShards(files, durations, 1, 1),
-  );
-  const ordinary = ["browser", "migration", "new"];
-  assert.deepEqual(
-    assignShards(ordinary, durations, 2, 1, integrationContention),
-    assignShards(ordinary, durations, 2, 1),
-  );
+  assert.ok(Math.max(...totals) < (totals.reduce((sum, total) => sum + total, 0) / count) * 1.03);
 });

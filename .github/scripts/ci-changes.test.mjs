@@ -13,6 +13,7 @@ import {
   nativeMacMatrix,
   parseDiff,
   readGraph,
+  shardCount,
 } from "./ci-changes.mjs";
 import { darwinOnlyTests, realBrowserTests, testExtraInputs } from "./ci-test-files.mjs";
 
@@ -204,6 +205,10 @@ test("a root test reaching a package by relative import runs when that package i
     repo: repoWith({}),
   });
   assert.ok(host.files.tests.includes("tests/host-flow.test.ts"));
+});
+void test("a focused integration selection cannot schedule more runners than files", () => {
+  const selected = ["apps/host/src/runtime/machine-access-warm.integration.test.ts"];
+  assert.equal(shardCount("integration", selected, [...selected, "new.integration.test.ts"]), 1);
 });
 test("a lockfile change selects the importers whose entries changed", () => {
   const web = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
