@@ -59,6 +59,13 @@ export function refreshRequestState(
         .select("position")
         .where("id", "=", id)
         .executeTakeFirst();
+      const node = nodeId
+        ? await tx
+            .selectFrom("executionNodes")
+            .select("attemptId")
+            .where("id", "=", nodeId)
+            .executeTakeFirstOrThrow()
+        : null;
       const position = prior?.position ?? (await allocateTranscriptPosition(tx, threadId));
       const fields = {
         position,
@@ -73,6 +80,7 @@ export function refreshRequestState(
           id,
           threadId,
           runId,
+          attemptId: node?.attemptId ?? null,
           nodeId,
           requestId,
           kind: "request",

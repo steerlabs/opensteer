@@ -247,6 +247,13 @@ integration("Execution nodes", () => {
           status: "fulfilled",
         },
       ]);
+      expect(
+        await active.host.store.database
+          .selectFrom("transcriptItems")
+          .select(["nodeId", "attemptId"])
+          .where("requestId", "=", request.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ nodeId: nodes[0]!.id, attemptId: nodes[0]!.attemptId });
       // The child's command is its step, not the Run's own.
       const childTool = await active.host.store.database
         .selectFrom("toolCalls")
@@ -978,7 +985,7 @@ async function queue(active: VerticalStack, threadId: ThreadId, text: string): P
 async function pendingRequest(active: VerticalStack, runId: RunId) {
   let found:
     | {
-        readonly id: string;
+        readonly id: RequestId;
         readonly revision: string;
         readonly originatingNodeId: string | null;
         readonly presentation: unknown;
@@ -1000,7 +1007,7 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
 async function answer(
   active: VerticalStack,
   request: {
-    readonly id: string;
+    readonly id: RequestId;
     readonly revision: string;
     readonly presentation: unknown;
   },
