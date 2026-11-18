@@ -37,6 +37,9 @@ const Creation = Context.Reference<{ key: string; kind: CreationKind } | undefin
   "opensteer/PluginCreation",
   { defaultValue: () => undefined },
 );
+const RemovingAccount = Context.Reference<string[] | undefined>("opensteer/RemovingAccount", {
+  defaultValue: () => undefined,
+});
 const rows = Schema.Array(
   Schema.Struct({
     requirement: Schema.String,
@@ -593,11 +596,30 @@ export function engineAccounts(options: {
       account.owner === owner
         ? rememberCreation("account", account)
         : Effect.fail(new StorageError()),
-    accountRemoving: () => Effect.void,
+    accountRemoving: ({ id }) =>
+      Effect.gen(function* () {
+        const plugins = yield* RemovingAccount;
+        if (!plugins) return;
+        // Freeze foreign-key references before capturing the links the deletion will cascade.
+        yield* storage(sql`select id from plugin_engine_accounts where id = ${id} for update`);
+        const links = yield* storage(sql<{ app: string }>`
+          select distinct app from opensteer_account_links where account = ${id} order by app
+        `);
+        plugins.push(...links.map(({ app }) => app));
+      }),
     oauthClientCreated: (client) => rememberCreation("oauth-client", client),
   };
   return {
     hooks,
+    removeAccount: (account: AccountId) =>
+      Effect.gen(function* () {
+        const affectedPlugins: string[] = [];
+        const sdk = yield* engine;
+        yield* sdk.accounts
+          .remove({ owner, account })
+          .pipe(Effect.provideService(RemovingAccount, affectedPlugins));
+        return { account, affectedPlugins };
+      }),
     once,
     committed: <A, E extends Error, R>(
       key: string | undefined,

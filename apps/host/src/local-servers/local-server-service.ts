@@ -7,6 +7,7 @@ import {
   OpensteerError,
   UserIdSchema,
   refused,
+  type DeviceId,
   type RunId,
   type RunnerId,
   type UserId,
@@ -70,6 +71,7 @@ export class LocalServerService {
     | "openMcpSession"
     | "removePluginData"
     | "requireAgentAccess"
+    | "withDeviceAdmission"
     | "withRunnerAdmission"
   >;
   readonly #dataDirectory: string;
@@ -94,6 +96,7 @@ export class LocalServerService {
       | "openMcpSession"
       | "removePluginData"
       | "requireAgentAccess"
+      | "withDeviceAdmission"
       | "withRunnerAdmission"
     >;
     readonly dataDirectory: string;
@@ -471,17 +474,21 @@ export class LocalServerService {
   async #assertServerCurrent(
     serverId: IntegrationServerId,
     transport: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId },
-  ): Promise<void> {
+    deviceId?: DeviceId,
+  ): Promise<DeviceId> {
     const current = await this.#store.localMcp.get(serverId);
     if (
       !current ||
       current.status === "disabled" ||
       current.runnerId !== transport.runnerId ||
+      current.deviceId === null ||
+      (deviceId !== undefined && current.deviceId !== deviceId) ||
       current.launchDigest !== localMcpLaunchDigest(transport.launch) ||
       current.approvedLaunchDigest !== current.launchDigest
     ) {
       throw refused("conflict", "It was removed or changed as this started; find its tools again.");
     }
+    return current.deviceId;
   }
 
   /**
@@ -510,7 +517,7 @@ export class LocalServerService {
     // Every open is held in the pool before it gets here, so a removal or
     // change either finds it and ends it or is read here first: nothing
     // starts on the computer for a server as it no longer is.
-    await this.#assertServerCurrent(server.id, {
+    const deviceId = await this.#assertServerCurrent(server.id, {
       launch: transport.launch,
       runnerId: transport.runnerId,
     });
@@ -522,11 +529,17 @@ export class LocalServerService {
     );
     signal?.throwIfAborted();
     const computer = new ComputerMcpTransport(this.#computerApps, {
-      authorize: () =>
-        this.#assertServerCurrent(server.id, {
-          launch: transport.launch,
-          runnerId: transport.runnerId!,
-        }),
+      authorize: async () => {
+        await this.#assertServerCurrent(
+          server.id,
+          {
+            launch: transport.launch,
+            runnerId: transport.runnerId!,
+          },
+          deviceId,
+        );
+      },
+      deviceId,
       launch: transport.launch,
       runnerId: transport.runnerId,
       secrets,

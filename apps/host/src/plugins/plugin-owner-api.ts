@@ -1081,10 +1081,16 @@ export class PluginOwnerApi {
           },
         };
       }
-      case "plugins.account.remove":
-        await this.#call(service.removeAccount({ account: command.accountId }, owner));
+      case "plugins.account.remove": {
+        const { affectedPlugins } = await this.#call(
+          service.removeAccount({ account: command.accountId }, owner),
+        );
+        await Promise.all(
+          affectedPlugins.map((plugin) => this.#options.cancelPlugin?.(userId, plugin)),
+        );
         changed();
         return { type: command.type };
+      }
       case "plugins.account.link":
         await this.#link(command, userId, sessionId);
         changed();

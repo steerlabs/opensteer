@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import { defineAgentTool } from "../registry.js";
 
 const name = z
@@ -20,7 +20,7 @@ const server = z.object({
   pluginId: z.string(),
   path: z.string(),
   computer: z.string().nullable(),
-  computerId: z.string().nullable(),
+  computerId: DeviceIdSchema.nullable(),
   kind: z.enum(["program", "loopback"]),
   state: z.enum(["approved", "waiting", "declined", "unavailable"]),
   detail: z.string().optional(),
@@ -38,8 +38,8 @@ export const local_server_add = defineAgentTool({
     .strictObject({
       name,
       description: z.string().trim().max(500).optional(),
-      computerId: RunnerIdSchema.optional().describe(
-        "Computer that runs it; omit to keep its computer, or for a new one the computer hosting tasks.",
+      computerId: DeviceIdSchema.optional().describe(
+        "Computer ID from computer_list. For a new server, omit to use the computer hosting tasks. An update keeps its existing computer while enrolled.",
       ),
       launch: z
         .strictObject({

@@ -7,6 +7,7 @@ import {
   OpensteerError,
   refused,
   type AgentEvent,
+  type DeviceId,
   type RunnerId,
   type ThreadId,
   type UserId,
@@ -26,7 +27,7 @@ import { pendingLocalServer, type LocalServerService } from "./local-server-serv
 export interface LocalServerRegistration {
   readonly name: string;
   readonly description?: string | undefined;
-  readonly computerId?: RunnerId | undefined;
+  readonly computerId?: DeviceId | undefined;
   readonly launch?:
     | {
         readonly command: string;
@@ -83,6 +84,14 @@ export class LocalServerRegistry {
     requestId: string,
     authorize?: () => Promise<void>,
   ) {
+    const runnerId = input.computerId
+      ? await this.#options.store.getDeviceSelfRunnerId(input.computerId)
+      : undefined;
+    if (runnerId === null)
+      throw refused(
+        "bad_request",
+        "Local servers need a computer with its own Runner. A screen-only Device cannot run a server.",
+      );
     const install = (directory: string) =>
       this.installPackage({
         actorUserId: actor.userId,
@@ -91,7 +100,7 @@ export class LocalServerRegistry {
         registration: input,
         threadId: actor.threadId,
         requestId,
-        runnerId: input.computerId,
+        runnerId,
       });
     let result: Awaited<ReturnType<typeof install>>;
     if (input.folder)
@@ -149,10 +158,10 @@ export class LocalServerRegistry {
             pluginId: plugin.id,
             path: toolsPath(localNamespace(slugify(plugin.name), `app_server_${server.id}`)),
             computer: server.runnerName,
-            computerId: server.runnerId,
+            computerId: server.deviceId,
             kind: server.launch.type === "stdio" ? ("program" as const) : ("loopback" as const),
             state:
-              server.status === "disabled" || server.runnerId === null
+              server.status === "disabled" || server.deviceId === null
                 ? ("unavailable" as const)
                 : server.approvedLaunchDigest === server.launchDigest
                   ? ("approved" as const)
@@ -349,13 +358,20 @@ export class LocalServerRegistry {
     readonly requestId: string;
   }) {
     const { store, devices } = this.#options;
-    const runnerIds = await store.listComputerDeviceIdsForInstallation(input.installationId);
-    const mutation = await devices.withDeviceAdmissions(runnerIds, async () => {
-      await input.authorize?.();
-      const removed = await store.uninstall(input);
-      await devices.endSessionsForRemovedApps(removed.removedApps);
-      return removed;
-    });
+    const [appDevices, servers] = await Promise.all([
+      store.listComputerDeviceIdsForInstallation(input.installationId),
+      store.localMcp.list(input.installationId),
+    ]);
+    const serverDevices = servers.flatMap(({ deviceId }) => (deviceId === null ? [] : [deviceId]));
+    const mutation = await devices.withDeviceAdmissions(
+      [...appDevices, ...serverDevices],
+      async () => {
+        await input.authorize?.();
+        const removed = await store.uninstall(input);
+        await devices.endSessionsForRemovedApps(removed.removedApps);
+        return removed;
+      },
+    );
     this.#publish(mutation.requestEvents);
     for (const serverId of mutation.removedServerIds) {
       await this.#options.onProviderRemoved?.(input.actorUserId, `app_server_${serverId}`);

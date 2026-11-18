@@ -18,7 +18,7 @@ import { JsonValue } from "../contracts/schema.ts";
 import { nativeOperation } from "./operations.ts";
 import { declaredOperations } from "./router.ts";
 import { fromPromise, toPromise } from "./authoring.ts";
-import { failureDetail, redactOutput } from "./failure-detail.ts";
+import { failureDetail } from "./failure-detail.ts";
 
 /** A step's context as the host builds it: a run without a caller has no `user`. */
 type WorkflowStepContext = AuthorStepContext<AppRequirements, AccountScope> &
@@ -141,7 +141,6 @@ export const makeWorkflowContext = (
                     step.secrets,
                   );
                   return yield* Schema.decodeUnknownEffect(WorkflowValue)(result).pipe(
-                    Effect.map((value) => redactOutput(value, step.secrets)),
                     Effect.mapError(
                       () =>
                         new WorkflowFailure({

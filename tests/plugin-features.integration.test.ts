@@ -833,6 +833,24 @@ test("webhook setup preserves signatures and bytes, hides unknown targets, and w
     { timeout: 10_000 },
   );
   const webhook = detail.webhooks[0]!;
+  await sql`INSERT INTO plugin_engine.plugin_engine_webhooks
+      (id, app, owner, actor, subscription_key, deployment, name, source_account, callback_url,
+        accounts, status, failure, created_at, encrypted, revision, lease_until)
+    SELECT 'whk_!history_' || lpad(n::text, 3, '0'), app, owner, actor, subscription_key,
+      deployment, name, source_account, callback_url, accounts, 'stopped', null,
+      created_at - n * interval '1 second', encrypted, revision, lease_until
+    FROM plugin_engine.plugin_engine_webhooks, generate_series(1, 55) n
+    WHERE id = ${webhook.id}`.execute(database);
+  const subscriptions = z
+    .array(z.object({ id: z.string() }))
+    .parse(
+      await service.manage({ operation: "webhooks.list", input: { app: fixture.plugin } }, owner),
+    );
+  expect(subscriptions.map(({ id }) => id)).toEqual([
+    webhook.id,
+    ...Array.from({ length: 50 }, (_, i) => `whk_!history_${String(i + 1).padStart(3, "0")}`),
+  ]);
+  expect((await api.detail(personal.userId, fixture.plugin)).webhooks[0]?.id).toBe(webhook.id);
   const setup = await api
     .reads()
     ["plugins.webhook.setup.get"]({ pluginId: fixture.plugin, webhookId: webhook.id }, context);
@@ -1198,89 +1216,6 @@ test.each(["off", "read-only"] as const)(
     );
   },
 );
-
-test("successful tools and workflow checkpoints redact linked credential values", async () => {
-  const token = "synthetic-success-redaction-token";
-  const source = files(1)
-    .filter(({ path }) => path === "index.ts" || path === "package.json")
-    .map((file) =>
-      file.path !== "index.ts"
-        ? file
-        : {
-            ...file,
-            content: `
-import { defineApp, defineProvider, secrets, object, string, query, router, workflow } from "apps";
-const service = defineProvider({ name: "Redaction fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ user: { accounts: { service } } }, {
-  tools: router({ echo: query({ input: object({}) }, async ctx => ({ token: ctx.user.accounts.service.fields.token })) }),
-  workflows: { echo: workflow({ input: object({}) }, async ctx => {
-    let seen;
-    const checkpoint = await ctx.step.do("echo", async step => {
-      seen = step.user.accounts.service.fields.token;
-      return { token: seen };
-    });
-    return { checkpointRedacted: checkpoint.token !== seen, final: seen };
-  }) },
-});`,
-          },
-    );
-  const installed = await service.install(
-    { kind: "files", name: "Redaction fixture", files: source },
-    owner,
-  );
-  if (installed.status !== "installed") throw new Error("Redaction fixture did not install");
-  const target = { plugin: installed.plugin.id, requirement: "service", scope: "user" as const };
-  const account = await service.createApiKeyAccount(
-    {
-      provider: installed.plugin.requirements.accounts.service!.provider,
-      method: "key",
-      fields: { token },
-    },
-    owner,
-  );
-  await service.linkAccount(
-    {
-      ...target,
-      account: account.id,
-      consent: await service.reviewAccountLink(target, owner),
-    },
-    owner,
-  );
-  const called = await service.call(
-    {
-      calls: { path: `tools[${JSON.stringify(installed.plugin.slug)}].echo`, input: {} },
-    },
-    owner,
-  );
-  expect(called.result).toMatchObject({
-    execution: { value: { ok: true, value: { token: "[redacted]" } } },
-  });
-  const completed = onBackground(
-    () => api.reads()["plugins.workflow.runs"]({ pluginId: target.plugin }, context),
-    (page) => page.ok && page.data.runs.some((run) => run.status === "complete"),
-  );
-  const started = await api.command(
-    {
-      type: "plugins.workflow.start",
-      pluginId: target.plugin,
-      workflow: "echo",
-      input: {},
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-  if (started.type !== "plugins.workflow.start") throw new Error("Unexpected workflow response");
-  await completed;
-  expect(
-    await service.manage(
-      {
-        operation: "workflowRuns.get",
-        input: { app: target.plugin, run: started.runId },
-      },
-      owner,
-    ),
-  ).toMatchObject({ output: { checkpointRedacted: true, final: "[redacted]" } });
-});
 
 test("workflow history pages once on creation order, shows long-lived runs first, and needs no current declarations", async () => {
   const fixture = await install("Workflow history", 1, false);

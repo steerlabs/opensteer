@@ -43,17 +43,19 @@ import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
+import type { ScheduleDispatcher } from "../vendor/plugin-engine/sdk/src/contracts/scheduler.ts";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import framework from "../vendor/plugin-engine/apps/package.json" with { type: "json" };
 
 const fixtureSource = (revision: number) => `
-import { defineApp, query, mutation, router, object, number } from "apps";
+import { defineApp, query, mutation, router, object, number, userInterval } from "apps";
 import { always } from "apps/operations/approval";
+const reviewed = mutation({ input: object({ amount: number() }), approval: always() }, async ({ sql }, { amount }) => sql.exec("UPDATE counter SET value = value + ? RETURNING value", amount).one().value);
 export default defineApp({}, { tools: router({
   read: query({ input: object({}) }, async ({ sql }) => ({ value: sql.exec("SELECT value FROM counter").one().value, revision: ${revision} })),
   add: mutation({ input: object({ amount: number() }) }, async ({ sql }, { amount }) => sql.exec("UPDATE counter SET value = value + ? RETURNING value", amount).one().value),
-  reviewed: mutation({ input: object({ amount: number() }), approval: always() }, async ({ sql }, { amount }) => sql.exec("UPDATE counter SET value = value + ? RETURNING value", amount).one().value),
-}) });`;
+  reviewed,
+}), schedules: { reviewed: userInterval({ minutes: 1 }, reviewed, { amount: 7 }) } });`;
 const credentialSource = `
 import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Fixture service", hosts: ["api.fixture.invalid"], auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
@@ -108,8 +110,15 @@ function files(source: string, database = false) {
   ]);
 }
 
-test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as const)(
-  "runs %s beside Host tables",
+const fixtureFlows = [
+  "versions, codemode and sealed credentials",
+  "brokered OAuth",
+  "live schedule approvals",
+  "scheduler authorization failures",
+] as const;
+
+test.for(fixtureFlows)(
+  "runs %s in a private engine beside the Host tables",
   async (flow, context) => {
     const clone = await cloneTestDatabase("host");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-engine-test-"));
@@ -389,6 +398,88 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
       }).pipe(Effect.timeout("15 seconds")),
     );
     const owner = OwnerId.make("fixture-owner");
+    if (flow === "live schedule approvals" || flow === "scheduler authorization failures") {
+      const {
+        app: { id: app },
+      } = await run(
+        engine.apps.deploy({
+          owner,
+          name: "Schedule fixture",
+          files: files(fixtureSource(1), true),
+        }),
+      );
+      const target = { app, owner, name: "reviewed", actor: owner };
+      const configure = (approvalMode: "automatic" | "browser", enabled = true) =>
+        run(engine.schedules.configure({ ...target, enabled, approvalMode }));
+      const forceDue = () =>
+        run(engineSql<{ next_at: Date }>`UPDATE plugin_engine_schedules
+        SET next_at = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE app = ${app} RETURNING next_at`);
+      const list = () => run(engine.schedules.runs({ app, owner }));
+      const tick = (authorize: Parameters<ScheduleDispatcher["tick"]>[0]["authorize"]) =>
+        run(
+          engine.scheduler.tick({
+            runner: "fixture",
+            maxCandidates: 1,
+            execute: (work) => work,
+            authorize,
+          }),
+        );
+      if (flow === "live schedule approvals") {
+        for (const enabled of [true, false]) {
+          await configure("automatic");
+          await forceDue();
+          const entered = Promise.withResolvers<void>();
+          const release = Promise.withResolvers<void>();
+          const started = tick(({ phase }) =>
+            phase === "resume"
+              ? Effect.promise(async () => {
+                  entered.resolve();
+                  await withTimeout(release.promise, 5_000, {
+                    timeoutError: () => new Error("Schedule preparation was not released"),
+                  });
+                })
+              : Effect.void,
+          );
+          void started.catch(() => {});
+          try {
+            await withTimeout(entered.promise, 5_000, {
+              timeoutError: () => new Error("Schedule did not reach automatic approval"),
+            });
+            await configure("browser", enabled);
+          } finally {
+            release.resolve();
+            await started;
+          }
+          const pending = (await list())[0]!;
+          expect(pending.status).toBe(enabled ? "awaiting-approval" : "cancelled");
+          if (enabled) {
+            await run(engine.schedules.answer({ owner, run: pending.id, action: "decline" }));
+            await tick(() => Effect.void);
+          }
+        }
+      } else {
+        await configure("browser");
+        const [due] = await forceDue();
+        const unavailable = () => Effect.fail(new Error("Host authorization query unavailable"));
+        await tick(unavailable);
+        expect.soft((await run(engine.schedules.copy(target))).nextAt).toEqual(due?.next_at);
+        expect(await list()).toEqual([]);
+        await forceDue();
+        await tick(() => Effect.void);
+        const [pending] = await list();
+        expect(pending?.status).toBe("awaiting-approval");
+        await run(engine.schedules.answer({ owner, run: pending!.id, action: "accept" }));
+        await tick(unavailable);
+        expect((await list())[0]?.status).toBe("ready");
+        await tick(() => Effect.void);
+        expect((await list())[0]?.status).toBe("succeeded");
+      }
+      const result = await run(engine.tools.call({ app, tool: ToolName.make("read"), input: {} }));
+      expect(result).toMatchObject({
+        value: { value: flow === "live schedule approvals" ? 0 : 7 },
+      });
+      return;
+    }
     if (flow !== "brokered OAuth") {
       const v1 = await run(
         engine.apps.deploy({ owner, name: "Fixture", files: files(fixtureSource(1), true) }),
@@ -513,8 +604,8 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
       expect(probed).toMatchObject({
         status: "completed",
         value: {
-          token: "[redacted]",
-          echo: expect.stringContaining("[redacted]"),
+          token: expect.stringMatching(/^oscred/),
+          echo: expect.stringContaining("oscred"),
           blocked: expect.stringContaining("other.fixture.invalid"),
         },
       });
@@ -581,7 +672,7 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
       expect(brokerCall).toMatchObject({
         status: "completed",
         value: {
-          token: "[redacted]",
+          token: expect.stringMatching(/^oscred/u),
           blocked: expect.stringContaining("other.fixture.invalid"),
         },
       });

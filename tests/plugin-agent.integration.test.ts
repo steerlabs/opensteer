@@ -962,7 +962,7 @@ test("raising a task to automatic never answers its existing approval Request", 
   });
 });
 
-test.each(["off", "remove", "unlink"] as const)(
+test.each(["off", "remove", "unlink", "delete account"] as const)(
   "plugin %s cancels its execution and removes the pending Request",
   async (change) => {
     const caller = await run();
@@ -1020,13 +1020,19 @@ test.each(["off", "remove", "unlink"] as const)(
         ? { ...key, type: "plugins.access.set" as const, access: "off" as const }
         : change === "remove"
           ? { ...key, type: "plugins.remove" as const }
-          : {
-              ...key,
-              type: "plugins.account.unlink" as const,
-              requirement: target.requirement,
-              scope: target.scope,
-              accountId: account.id,
-            };
+          : change === "delete account"
+            ? {
+                type: "plugins.account.remove" as const,
+                idempotencyKey: key.idempotencyKey,
+                accountId: account.id,
+              }
+            : {
+                ...key,
+                type: "plugins.account.unlink" as const,
+                requirement: target.requirement,
+                scope: target.scope,
+                accountId: account.id,
+              };
     await api.command(changeCommand, {
       session: {
         id: createId("authSession"),
@@ -1582,6 +1588,37 @@ test.each(["cloud", "resource"] as const)(
     }
   },
 );
+
+test("workflow history projects metadata when a plugin turns off before the engine handles the read", async () => {
+  const caller = await run("full-access");
+  await call(caller, "opensteer_plugin_resource_update", {
+    pluginId: plugin,
+    change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+  });
+  const read = () => call(caller, "plugin_resources", { pluginId: plugin, resource: "workflows" });
+  await vi.waitFor(
+    async () => {
+      expect(await read(), "The completed workflow output was never available").toMatchObject({
+        items: [{ status: "complete", output: { preview: '"done"', truncated: false } }],
+      });
+    },
+    { timeout: 10_000 },
+  );
+  const original = authority.authorize.bind(authority);
+  const authorize = vi.spyOn(authority, "authorize");
+  authorize.mockImplementationOnce(async (input, signal) => {
+    if (input.operation === "resourcesRead")
+      await records.setAccess(personal.userId, plugin, "off");
+    return original(input, signal);
+  });
+  try {
+    const history = await read();
+    expect(history.items).toEqual([expect.objectContaining({ status: "complete" })]);
+    expect(history.items).toEqual([expect.not.objectContaining({ output: expect.anything() })]);
+  } finally {
+    authorize.mockRestore();
+  }
+});
 
 test("new plugin tools enforce their caller and standing-access matrix", async () => {
   const connections = new AgentConnectionStore(database);

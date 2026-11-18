@@ -299,7 +299,10 @@ export const operations = {
     }),
     output: AccountSchema,
   },
-  removeAccount: { input: z.strictObject({ account: id }), output: JsonSchema },
+  removeAccount: {
+    input: z.strictObject({ account: id }),
+    output: z.strictObject({ account: id, affectedPlugins: z.array(id) }),
+  },
   reviewAccountLink: { input: z.strictObject(target), output: ConsentSchema },
   linkAccount: {
     input: z.strictObject({ ...target, account: id, consent: ConsentSchema }),
@@ -409,7 +412,7 @@ export const operations = {
     input: plugin,
     output: z.strictObject({ plugin: id, version: id, digest: id, files }),
   },
-  // `outputs` is the Host's decision that this caller may read run outputs, not the agent's.
+  // The Host supplies caller eligibility. The child also checks current plugin access.
   resourcesRead: {
     input: plugin_resources.input.extend({ outputs: z.boolean() }),
     output: JsonSchema,

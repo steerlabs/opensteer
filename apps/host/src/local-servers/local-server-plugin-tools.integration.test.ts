@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { LocalMcpServers } from "@opensteer/runner";
-import type { RequestId } from "@opensteer/core";
+import { createId, DeviceIdSchema, type RequestId } from "@opensteer/core";
+import { computer_list } from "@opensteer/agent-tools/tools";
+import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
+import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { DeviceService } from "../devices/device-service.js";
 import { LocalServerService } from "./local-server-service.js";
 import { ServerInput } from "./server-input.js";
@@ -44,6 +47,154 @@ integration("local servers as plugin tools", () => {
   const closers: (() => Promise<void>)[] = [];
   afterEach(async () => {
     for (const close of closers.splice(0)) await close().catch(() => undefined);
+  }, 60_000);
+
+  it("places and lists a local server by Device ID and waits for its opening before uninstall", async () => {
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
+    closers.unshift(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Caller",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    closers.unshift(() => caller.close());
+    const computer = await connectComputerAppMachine(host, []);
+    closers.unshift(() => computer.close());
+    const id = createId("device");
+    const phoneId = createId("device");
+    const database = host.store.database;
+    await database.transaction().execute(async (tx) => {
+      const driver = await tx
+        .selectFrom("deviceDrivers")
+        .selectAll()
+        .where("runnerId", "=", computer.runnerId)
+        .where("role", "=", "self")
+        .executeTakeFirstOrThrow();
+      const device = await tx
+        .selectFrom("devices")
+        .selectAll()
+        .where("id", "=", driver.deviceId)
+        .executeTakeFirstOrThrow();
+      await tx
+        .insertInto("devices")
+        .values([
+          { ...device, id, name: "Second Mac" },
+          { ...device, id: phoneId, name: "Screen-only iPhone", kind: "phone", platform: "ios" },
+        ])
+        .execute();
+      await tx
+        .updateTable("deviceDrivers")
+        .set({ deviceId: id })
+        .where("deviceId", "=", driver.deviceId)
+        .where("role", "=", "self")
+        .execute();
+      await tx
+        .insertInto("deviceDrivers")
+        .values({ ...driver, deviceId: phoneId, role: "screen" })
+        .execute();
+    });
+    const run = await dispatchCallerRun(host, caller, { key: "place", title: "Place the server" });
+    closers.unshift(() => run.complete());
+    const gateway = await integrationGateway(run.integrationTools);
+    closers.unshift(() => gateway.close());
+    const { computers } = computer_list.output.parse(await gateway.call("computer_list", {}));
+    const byName = (name: string) =>
+      DeviceIdSchema.parse(computers.find((computer) => computer.name === name)?.computerId);
+    const computerId = byName("Second Mac");
+    expect(computerId).toBe(id);
+    const launch = { name: "fixture-placement", url: "http://127.0.0.1:12345/mcp" };
+    expect(await gateway.call("local_server_add", { ...launch, computerId })).toMatchObject({
+      server: { computerId: id, state: "waiting" },
+    });
+    expect(await gateway.call("local_server_list", {})).toMatchObject({
+      servers: [{ name: launch.name, computerId: id }],
+    });
+    await expect(
+      gateway.call("local_server_add", {
+        ...launch,
+        name: "wrong-device",
+        computerId: byName("Screen-only iPhone"),
+      }),
+    ).rejects.toThrow(/screen-only Device cannot run a server/u);
+    const servers = await host.runtime.localServers.options.store.localMcp.list();
+    expect(servers).toMatchObject([{ runnerId: computer.runnerId }]);
+    const [installed] = servers;
+    if (!installed) throw new Error("Placement fixture did not install");
+
+    const hub = host.runtime.computerApps;
+    const openingEntered = Promise.withResolvers<void>();
+    const releaseOpening = Promise.withResolvers<void>();
+    const pauseOpen = vi.spyOn(hub, "requireAgentAccess").mockImplementationOnce(async () => {
+      openingEntered.resolve();
+      await withTimeout(releaseOpening.promise, 10_000, {
+        timeoutError: () => new Error("The opening MCP session was never released"),
+      });
+    });
+    const opened = vi.spyOn(hub, "openMcpSession").mockResolvedValueOnce({
+      close: async () => {},
+      send: async () => {},
+    });
+    const target = {
+      authorize: async () => {},
+      deviceId: computerId,
+      runnerId: computer.runnerId,
+      serverId: installed.id,
+      launch: installed.launch,
+      secrets: {},
+    };
+    const transport = new ComputerMcpTransport(hub, target);
+    const opening = transport.start();
+    void opening.catch(() => {});
+    try {
+      await withTimeout(openingEntered.promise, 10_000, {
+        timeoutError: () => new Error("The MCP session did not reach the Runner access lookup"),
+      });
+      const queued = Promise.withResolvers<"queued" | "uninstalled">();
+      const admit = DeviceDriverResolver.prototype.withAdmission;
+      const admission = vi
+        .spyOn(DeviceDriverResolver.prototype, "withAdmission")
+        .mockImplementation(function (this: DeviceDriverResolver, id, action) {
+          if (id === computerId) queued.resolve("queued");
+          return admit.call(this, id, action);
+        });
+      const platform = host.runtime.localServers.options.store;
+      const uninstall = platform.uninstall.bind(platform);
+      const mutation = vi.spyOn(platform, "uninstall").mockImplementationOnce((input) => {
+        queued.resolve("uninstalled");
+        return uninstall(input);
+      });
+      const removing = gateway.call("local_server_remove", { name: launch.name });
+      void removing.catch(() => {});
+      try {
+        expect(
+          await withTimeout(queued.promise, 10_000, {
+            timeoutError: () => new Error("Uninstall did not reach admission or storage"),
+          }),
+        ).toBe("queued");
+        expect(mutation).not.toHaveBeenCalled();
+      } finally {
+        releaseOpening.resolve();
+        admission.mockRestore();
+        try {
+          await removing;
+        } finally {
+          mutation.mockRestore();
+        }
+      }
+      expect(opened).toHaveBeenCalledOnce();
+    } finally {
+      releaseOpening.resolve();
+      try {
+        await opening;
+      } finally {
+        await transport.close();
+        pauseOpen.mockRestore();
+        opened.mockRestore();
+      }
+    }
+    expect(await gateway.call("local_server_list", {})).toEqual({ servers: [] });
   }, 60_000);
 
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {

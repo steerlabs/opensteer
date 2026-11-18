@@ -2242,9 +2242,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "computerId": {
-          "description": "Computer that runs it; omit to keep its computer, or for a new one the computer hosting tasks.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "Computer ID from computer_list. For a new server, omit to use the computer hosting tasks. An update keeps its existing computer while enrolled.",
         },
         "description": {
           "maxLength": 500,

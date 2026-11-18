@@ -75,7 +75,11 @@ import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/n
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
-import { startScheduleWorker, deliverEvents } from "@opensteer/plugin-engine-sdk/scheduling";
+import {
+  startScheduleWorker,
+  ScheduleAccessRevoked,
+  deliverEvents,
+} from "@opensteer/plugin-engine-sdk/scheduling";
 import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource, openapiAppSource } from "@opensteer/plugin-engine-app-templates";
 import { safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
@@ -343,18 +347,19 @@ export async function startEngine(
           Redacted.make(config.secret),
           globalThis.crypto,
         );
-        const check = (input: import("./engine-protocol.js").PluginAuthorization) =>
+        const check = (
+          input: import("./engine-protocol.js").PluginAuthorization,
+          refusal: () => Error = () =>
+            new PluginServiceError("forbidden", "Plugin authority changed before dispatch"),
+        ) =>
           callback("authorize", input).pipe(
-            Effect.flatMap(({ allowed }) =>
-              allowed
-                ? Effect.void
-                : Effect.fail(
-                    new PluginServiceError("forbidden", "Plugin authority changed before dispatch"),
-                  ),
-            ),
+            Effect.flatMap(({ allowed }) => (allowed ? Effect.void : Effect.fail(refusal()))),
           );
-        const standing = (plugin: string) =>
-          check({ caller: config.owner, mode: "automatic", operation: "background", plugin });
+        const standing = (plugin: string, refusal?: () => Error) =>
+          check(
+            { caller: config.owner, mode: "automatic", operation: "background", plugin },
+            refusal,
+          );
         const beforeResourceWrite = (
           plugin: string,
           action: "deploy" | "activate" | "schedule" | "workflow",
@@ -504,11 +509,11 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        const scheduler = yield* startScheduleWorker(engine, ({ app }) => standing(app), {
-          runner: "host",
-          concurrency: 2,
-          pollMilliseconds: 1000,
-        });
+        const scheduler = yield* startScheduleWorker(
+          engine,
+          ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
+          { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+        );
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
         const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? officialCatalogUrl });
@@ -581,7 +586,7 @@ export async function startEngine(
       }).pipe(
         Effect.flatMap((result) =>
           result.allowed
-            ? Effect.void
+            ? Effect.succeed(result)
             : Effect.fail(
                 new PluginServiceError("forbidden", "Plugin operation is not authorized"),
               ),
@@ -661,7 +666,7 @@ export async function startEngine(
         (change?.action === "schedule.configure" && !change.enabled);
       const authorityOperation = stop ? "resourcesStop" : operation;
       return Effect.gen(function* () {
-        yield* authorize(context, authorityOperation, plugin, fields.execution);
+        const permission = yield* authorize(context, authorityOperation, plugin, fields.execution);
         switch (operation) {
           case "health":
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
@@ -919,12 +924,11 @@ export async function startEngine(
             );
           }
           case "removeAccount":
-            return yield* engine.accounts.remove({
-              owner,
-              account: Schema.decodeUnknownSync(AccountId)(
+            return yield* accountAdapter.removeAccount(
+              Schema.decodeUnknownSync(AccountId)(
                 operations.removeAccount.input.parse(raw).account,
               ),
-            });
+            );
           case "reviewAccountLink":
             return yield* accountAdapter.review(operations.reviewAccountLink.input.parse(raw));
           case "linkAccount": {
@@ -1297,7 +1301,9 @@ export async function startEngine(
               const page = yield* workflowRunPage(composed.sql, { app, limit: 10, ...cursor });
               return {
                 items: yield* Effect.forEach(page.runs, (run) =>
-                  input.outputs && (run.status === "complete" || run.status === "errored")
+                  input.outputs &&
+                  permission.grants?.[app] !== "off" &&
+                  (run.status === "complete" || run.status === "errored")
                     ? engine.apps.workflowRuns
                         .get({
                           app,

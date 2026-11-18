@@ -4,7 +4,7 @@ import {
   type CredentialResponseRedactor,
 } from "@opensteer/access/host";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import type { RunnerId } from "@opensteer/core";
+import type { DeviceId, RunnerId } from "@opensteer/core";
 import type { IntegrationServerId } from "@opensteer/integration-core/ids";
 import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import { computerMcpLastOutputLabel, type HostIntegrationsMcpMessage } from "@opensteer/protocol";
@@ -30,10 +30,11 @@ export class ComputerMcpTransport implements Transport {
   beforeToolCall: (() => Promise<void>) | undefined;
   readonly #hub: Pick<
     ComputerAppHub,
-    "openMcpSession" | "withRunnerAdmission" | "requireAgentAccess"
+    "openMcpSession" | "withDeviceAdmission" | "withRunnerAdmission" | "requireAgentAccess"
   >;
   readonly #target: {
     readonly authorize: () => Promise<void>;
+    readonly deviceId: DeviceId;
     readonly launch: LocalMcpLaunch;
     readonly runnerId: RunnerId;
     /** What its launch's secrets were given, which the computer starts it with. */
@@ -47,9 +48,13 @@ export class ComputerMcpTransport implements Transport {
   #session: ComputerMcpSession | undefined;
 
   constructor(
-    hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission" | "requireAgentAccess">,
+    hub: Pick<
+      ComputerAppHub,
+      "openMcpSession" | "withDeviceAdmission" | "withRunnerAdmission" | "requireAgentAccess"
+    >,
     target: {
       readonly authorize: () => Promise<void>;
+      readonly deviceId: DeviceId;
       readonly launch: LocalMcpLaunch;
       readonly runnerId: RunnerId;
       readonly secrets: Readonly<Record<string, string>>;
@@ -62,7 +67,7 @@ export class ComputerMcpTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    const admitted = await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
+    const admitted = await this.#hub.withDeviceAdmission(this.#target.deviceId, async () => {
       this.#abandoned.signal.throwIfAborted();
       await this.#target.authorize();
       await this.#hub.requireAgentAccess(this.#target.runnerId);

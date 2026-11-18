@@ -439,18 +439,12 @@ export class PluginToolHandlers {
         };
       },
       plugin_skills: (c) => o.service.skills(c.input, o.authority.admit(c.caller), c.signal),
-      // The person's own agent reads its plugins' outputs across tasks; an external connection,
-      // or any caller of a plugin turned off, reads what ran, when and how it ended.
-      plugin_resources: async (c) => {
-        const access = (await o.settings.settings(c.caller.userId)).find(
-          (s) => s.pluginId === c.input.pluginId,
-        )?.access;
-        return o.service.resourcesRead(
-          { ...c.input, outputs: c.caller.kind !== "connection" && access !== "off" },
+      plugin_resources: (c) =>
+        o.service.resourcesRead(
+          { ...c.input, outputs: c.caller.kind !== "connection" },
           o.authority.admit(c.caller),
           c.signal,
-        );
-      },
+        ),
       opensteer_plugin_resource_update: async (c) => {
         await c.checkLive?.();
         const result = await o.service.resourcesUpdate(

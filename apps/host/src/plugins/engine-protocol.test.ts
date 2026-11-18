@@ -7,6 +7,7 @@ import {
   parseIpcMessage,
 } from "./engine-protocol.js";
 import { catalogPage } from "./catalog-page.js";
+import { PluginExecutions } from "./plugin-executions.js";
 
 test("parses every envelope at the IPC boundary and refuses malformed requests", () => {
   expect(
@@ -127,8 +128,7 @@ test("source and HTTP payloads keep their own limits instead of the agent result
 
 test.each(["cancelled", "expired", "interrupted", "failed"] as const)(
   "does not return a pending form as a %s execution result",
-  async (state) => {
-    const { PluginExecutions } = await import("./plugin-executions.js");
+  (state) => {
     const executions = new PluginExecutions(
       {} as ConstructorParameters<typeof PluginExecutions>[0],
     );
