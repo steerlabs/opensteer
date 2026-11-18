@@ -18,12 +18,15 @@ import type { HostEpochAgreement, MobileHostPort } from "../apps/mobile/src/clie
 import { createHostNetwork } from "../apps/mobile/src/platform/host-network.js";
 import { MemorySecureStore } from "../apps/mobile/src/platform/memory-secure-store.js";
 import { createSecureRecordStore } from "../apps/mobile/src/platform/secure-record-store.js";
+import { ScopedClientMessageSchema } from "../packages/protocol/src/personal-sync.js";
 import { testDeploymentConnection } from "../apps/mobile/test-support/deployment-fixtures.js";
 
 describe("mobile retained attachment over HTTP and WebSocket", () => {
   it.each(["identity-mismatch", "client-too-old", "host-too-old"] as const)(
     "revokes %s, preserves repair and selection, and fences retained transports",
     async (verdict) => {
+      const connection = testDeploymentConnection({ kind: "personal" });
+      const id = connection.authority.document.deploymentId;
       const mock = new MockHostClient({ latencyMs: 0, places: "absent" });
       await mock.load();
       const traffic: string[] = [];
@@ -54,12 +57,28 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         socket.on("close", () => {
           observation.closed = true;
         });
+        socket.on("message", (raw) => {
+          const message = ScopedClientMessageSchema.parse(JSON.parse(raw.toString()));
+          if (message.type !== "client.attach") return;
+          const throughSequence = "1";
+          const address = {
+            scope: { kind: "shell" },
+            subscriptionId: "shell",
+            generation: message.generation,
+            throughSequence,
+          };
+          const snapshot = { ...mock.scopedShell(undefined, throughSequence), deploymentId: id };
+          socket.send(JSON.stringify({ ...address, type: "host.snapshot", snapshot }));
+          socket.send(JSON.stringify({ ...address, type: "host.synchronized" }));
+        });
       });
       server.listen(0, "127.0.0.1");
       await once(server, "listening");
       const address = server.address();
       if (address === null || typeof address === "string") throw new Error("No HTTP address");
       const origin = `http://127.0.0.1:${address.port}`;
+      const settingsResource = new URL("/v1/rpc/resources.get", origin);
+      settingsResource.searchParams.set("input", JSON.stringify({ kind: "settings" }));
       let agreement: HostEpochAgreement = { status: "compatible", capabilities: [] };
       let pending: Promise<HostEpochAgreement> | null = null;
       let read: Parameters<MobileHostPort["attach"]>[0]["capabilities"];
@@ -95,7 +114,6 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
               baseUrl: origin,
               capabilities,
               ...network,
-              refreshIntervalMs: 60_000,
             });
             const dispose = host.dispose.bind(host);
             host.dispose = () => {
@@ -121,8 +139,6 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         }),
       });
       try {
-        const connection = testDeploymentConnection({ kind: "personal" });
-        const id = connection.authority.document.deploymentId;
         const {
           createdAt: _createdAt,
           updatedAt: _updatedAt,
@@ -148,7 +164,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         credentialRead = new Promise((resolve) => {
           finishCredential = resolve;
         });
-        const inFlight = network!.fetch(`${origin}/v1/rpc/bootstrap.get`);
+        const inFlight = network!.fetch(settingsResource);
         const inFlightResult = expect(inFlight).rejects.toThrow();
         agreement = verdict;
         await expect(initialRead({ revalidate: true })).rejects.toThrow();
@@ -163,10 +179,10 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         });
         await vi.waitFor(() => expect(observed.every(({ closed }) => closed)).toBe(true));
         const afterRevocation = traffic.length;
-        await expect(retained.rpc["bootstrap.get"]({})).resolves.toMatchObject({
+        await expect(retained.rpc["resources.get"]({ kind: "settings" })).resolves.toMatchObject({
           ok: false,
         });
-        await expect(network!.fetch(`${origin}/v1/rpc/bootstrap.get`)).rejects.toThrow();
+        await expect(network!.fetch(settingsResource)).rejects.toThrow();
         expect(() => network!.webSocketFactory(origin.replace("http", "ws"))).toThrow();
         expect(traffic).toHaveLength(afterRevocation);
         await client.select(id);

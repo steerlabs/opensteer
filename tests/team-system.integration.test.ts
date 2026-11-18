@@ -353,16 +353,17 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     const allow = choice.options.find(
       (row) => row.hint !== "reject-once" && row.hint !== "cancel",
     )!;
-    const answer = async (requestId: typeof approval.id, response: RequestResponse) => {
+    const answer = async (request: typeof approval, response: RequestResponse) => {
       const result = await personal.api["commands.dispatch"]({
         type: "request.respond",
         idempotencyKey: crypto.randomUUID(),
-        requestId,
+        requestId: request.id,
+        expectedRevision: request.revision,
         response,
       });
       if (!result.ok) throw new Error(JSON.stringify(result.error));
     };
-    await answer(approval.id, { kind: "choice", optionId: allow.id });
+    await answer(approval, { kind: "choice", optionId: allow.id });
     console.info("Z4: waiting private question");
     const question = await nextRequest("form");
     const originalPublication = PersonalTeamRequestsStore.prototype.publication;
@@ -378,7 +379,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     const form = RequestPresentationSchema.parse(question.presentation);
     if (form.kind !== "form") throw new Error("Expected private question");
-    await answer(question.id, {
+    await answer(question, {
       kind: "form",
       answers: Object.fromEntries(
         form.fields.map((field) => [field.id, [field.choices?.[0]?.value ?? "PRIVATE_ANSWER_Z4"]]),
@@ -386,7 +387,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     console.info("Z4: waiting completed");
     const completed = await personal.waitForInput(localInputId, AbortSignal.timeout(15000));
-    expect(completed.events.some((event) => event.type === "run.completed")).toBe(true);
+    expect(completed.status).toBe("completed");
     await teamCondition(
       session.client,
       () =>
@@ -445,7 +446,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
 
     console.info("Z4: reading local task");
     personalClient = new HttpHostClient({
-      refreshIntervalMs: 0,
       baseUrl: personal.hostOrigin,
       fetch: (url, init) =>
         fetch(url, {
@@ -703,7 +703,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       },
       { timeout: 10000 },
     );
-    expect((await personals[1]!.api["bootstrap.get"]({})).ok).toBe(true);
+    expect((await personals[1]!.api["resources.get"]({ kind: "settings" })).ok).toBe(true);
   } finally {
     releasePublication.resolve();
     stopReplyRead?.();

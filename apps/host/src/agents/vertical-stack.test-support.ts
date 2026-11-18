@@ -1,5 +1,5 @@
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
-import type { Selectable } from "kysely";
+import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
 import type { HostConfig } from "@opensteer/config";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
@@ -39,6 +39,27 @@ export type VerticalToolCall = Pick<
   Selectable<DatabaseSchema["toolCalls"]>,
   "callId" | "tool" | "arguments" | "integration" | "status" | "isError" | "output" | "startedAt"
 >;
+
+export function readVerticalRunTools(database: Kysely<DatabaseSchema>, runId: RunId) {
+  return database
+    .selectFrom("toolCalls")
+    .select([
+      "callId",
+      "tool",
+      "arguments",
+      "integration",
+      "origin",
+      "status",
+      "isError",
+      "output",
+      "startedAt",
+      "completedAt",
+    ])
+    .where("runId", "=", runId)
+    .orderBy("startedAt")
+    .orderBy("completionOrder")
+    .execute();
+}
 
 export interface VerticalTurn {
   readonly assistantText: string;

@@ -1,3 +1,4 @@
+import { readTestResource } from "../apps/host/src/server/test-host-api-request.js";
 import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
@@ -32,6 +33,7 @@ import {
   type RequestId,
 } from "../packages/core/src/index.js";
 import {
+  browserFixtureOwner,
   addCleanup,
   browserAvailable,
   deployment,
@@ -207,7 +209,6 @@ async function connectedPeople(stack: VerticalStack): Promise<HttpHostClient[]> 
   for (let index = 0; index < 2; index++) {
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
-      refreshIntervalMs: 0,
       fetch: (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set("cookie", stack.sessionCookie);
@@ -219,7 +220,11 @@ async function connectedPeople(stack: VerticalStack): Promise<HttpHostClient[]> 
           headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
         }) as unknown as WebSocketClient,
     });
-    addCleanup(`profile person client ${index}`, async () => client.dispose());
+    const releaseProfiles = client.watchPersonalResource("browser-profile", () => {});
+    addCleanup(`profile person client ${index}`, async () => {
+      releaseProfiles();
+      client.dispose();
+    });
     await client.load();
     clients.push(client);
   }
@@ -276,6 +281,7 @@ async function fulfillNewProfile(
         );
       const resolved = await stack.api["commands.dispatch"]({
         type: "request.respond",
+        expectedRevision: request.revision,
         requestId,
         idempotencyKey: randomUUID(),
         response: {
@@ -305,16 +311,14 @@ async function fulfillNewProfile(
   } finally {
     limit?.mockRestore();
   }
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-  const profile = bootstrap.data.browser.profiles.find((profile) => profile.name === "Brex Ops");
+  const owner = await browserFixtureOwner(stack);
+  const { profiles } = await readTestResource(stack.api, "browser-profile");
+  const profile = profiles.find((profile) => profile.name === "Brex Ops");
   if (!profile) throw new Error("Request did not create Brex Ops");
   evidence.observations.push({
     requestId,
     profile,
-    sessionIds: (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).map(
-      (session) => session.id,
-    ),
+    sessionIds: (await stack.host.store.listBrowserSessions(owner.id)).map((session) => session.id),
   });
   if (people) {
     try {
@@ -350,7 +354,7 @@ run("Browser profiles through a whole deployment", () => {
           async () => {
             const rows = await stack.host.store.database
               .selectFrom("requests")
-              .select("id")
+              .select(["id", "revision"])
               .where("originatingRunId", "=", runId)
               .execute();
             expect(rows, "replayed profile call did not open one Request").toHaveLength(1);
@@ -360,6 +364,7 @@ run("Browser profiles through a whole deployment", () => {
         );
         const resolved = await stack.api["commands.dispatch"]({
           type: "request.respond",
+          expectedRevision: request.revision,
           requestId: request.id,
           idempotencyKey: randomUUID(),
           response: {
@@ -378,21 +383,20 @@ run("Browser profiles through a whole deployment", () => {
     );
     equal(evidence, "replay is identified", report.replayed!.replayed, true);
     expect(report.request).toMatchObject({ status: "fulfilled" });
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const owner = await browserFixtureOwner(stack);
     equal(
       evidence,
       "approval created exactly the person's chosen profile",
-      bootstrap.data.browser.profiles.map(({ name }) => name),
+      (await readTestResource(stack.api, "browser-profile")).profiles.map(({ name }) => name),
       ["Brex"],
     );
     equal(
       evidence,
       "approval opened no session",
-      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+      (await stack.host.store.listBrowserSessions(owner.id)).length,
       0,
     );
-    const profile = bootstrap.data.browser.profiles[0]!;
+    const profile = (await readTestResource(stack.api, "browser-profile")).profiles[0]!;
     await waitFor(
       async () =>
         people.every((client) =>
@@ -444,9 +448,11 @@ run("Browser profiles through a whole deployment", () => {
     const childId = delegated.report.delegated!.taskId;
     let child: Report | undefined;
     await waitFor(async () => {
-      const snapshot = await stack.host.store.deploymentSnapshot();
-      const text = snapshot.messages
-        .filter((message) => message.threadId === childId && message.kind === "assistant")
+      const result = await stack.api["thread.messages.list"]({ threadId: childId });
+      if (!result.ok) throw new Error(result.error.message);
+      const text = [...result.data.messages]
+        .reverse()
+        .filter((message) => message.kind === "assistant")
         .flatMap((message) => message.content)
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
         .at(-1);
@@ -501,9 +507,10 @@ run("Browser profiles through a whole deployment", () => {
       await browserAvailable(stack);
       let continuation: Report | undefined;
       await waitFor(async () => {
-        const snapshot = await stack.host.store.deploymentSnapshot();
-        for (const message of snapshot.messages.filter(
-          (message) => message.threadId === result.threadId && message.kind === "assistant",
+        const history = await stack.api["thread.messages.list"]({ threadId: result.threadId });
+        if (!history.ok) throw new Error(history.error.message);
+        for (const message of history.data.messages.filter(
+          (message) => message.kind === "assistant",
         )) {
           for (const part of message.content) {
             if (part.type !== "text") continue;
@@ -531,12 +538,11 @@ run("Browser profiles through a whole deployment", () => {
         continuation!.profiles!.profiles.map((profile) => ({ id: profile.id, name: profile.name })),
         [{ id: result.profile.id, name: "Brex Ops" }],
       );
-      const retained = await stack.api["bootstrap.get"]({});
+      const retained = await readTestResource(stack.api, "browser-profile");
       equal(
         evidence,
         "Personal approval retains the profile across restart",
-        retained.ok &&
-          retained.data.browser.profiles.some((profile) => profile.id === result.profile.id),
+        retained.profiles.some((profile) => profile.id === result.profile.id),
         true,
       );
       const request = await stack.host.store.database
@@ -641,12 +647,11 @@ run("Browser profiles through a whole deployment", () => {
         client.getSnapshot().browserProfiles.some((profile) => profile.id === id),
         true,
       );
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const owner = await browserFixtureOwner(stack);
     equal(
       evidence,
       "no session opened to trigger invalidation",
-      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+      (await stack.host.store.listBrowserSessions(owner.id)).length,
       0,
     );
   });
@@ -664,12 +669,11 @@ run("Browser profiles through a whole deployment", () => {
           client.getSnapshot().browserProfiles.some((profile) => profile.id === result.profile.id),
           true,
         );
-      const bootstrap = await stack.api["bootstrap.get"]({});
-      if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+      const owner = await browserFixtureOwner(stack);
       equal(
         evidence,
         "Request opened no session",
-        (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+        (await stack.host.store.listBrowserSessions(owner.id)).length,
         0,
       );
     },

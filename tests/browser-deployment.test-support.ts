@@ -1,3 +1,4 @@
+import { readTestResource } from "../apps/host/src/server/test-host-api-request.js";
 import {
   hostApiVersion,
   hostApiVersionHeader,
@@ -140,10 +141,15 @@ export async function deployment(
   return stack;
 }
 
+export async function browserFixtureOwner(stack: VerticalStack) {
+  const owner = await stack.host.store.firstUser();
+  if (!owner) throw new Error("Browser fixture owner is missing.");
+  return owner;
+}
+
 export async function browserAvailable(stack: VerticalStack): Promise<void> {
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    return bootstrap.ok && bootstrap.data.browser.available;
+    return (await readTestResource(stack.api, "browser-availability")).available;
   }, 30_000);
 }
 

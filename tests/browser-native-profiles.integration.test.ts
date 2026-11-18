@@ -1,3 +1,4 @@
+import { readTestResource } from "../apps/host/src/server/test-host-api-request.js";
 import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { spawn } from "node:child_process";
@@ -15,7 +16,6 @@ import type { NativeProfileOpenTiming } from "../apps/browser-runtime/src/browse
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import type { BrowserOpenTiming } from "../packages/browser-runtime-core/src/runtime.js";
 import { RunnerIdSchema, type BrowserProfileId } from "../packages/core/src/index.js";
-import { RealtimeHub } from "../packages/orchestration/src/realtime-hub.js";
 import type { BrowserTabOpenResult } from "../packages/protocol/src/index.js";
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { closeHttpServerNow } from "../packages/shared/src/httpServer.js";
@@ -217,7 +217,6 @@ async function stateSite() {
 
 it("creates native profiles lazily, retains sign-ins through restart, and erases them on their owner", async () => {
   await access(chromium.executablePath());
-  const broadNotices = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
   const browser = await browserProcess();
   let journeyAssertionsComplete = false;
   let reopenTimings: BrowserOpenTiming[] = [];
@@ -253,9 +252,8 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const site = await stateSite();
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
-        bootstrap.ok && bootstrap.data.browser.available,
+        (await readTestResource(stack.api, "browser-availability")).available,
         "Runner browser module never became available",
       ).toBe(true);
     },
@@ -394,6 +392,8 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
 
   expect(await stack.host.store.getBrowserProfileStorage(profile.id)).toEqual(binding);
   // A reconnect may confirm established storage, never replace its immutable binding.
+  const beforeDelete = await stack.api["resources.get"]({ kind: "browser-profile" });
+  if (!beforeDelete.ok) throw new Error(beforeDelete.error.message);
   const deleted = await runtimeBrowserCommand(stack, {
     type: "browser.profile.delete",
     profileId: profile.id,
@@ -424,21 +424,17 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
       expect(deletion.state, "Runtime did not acknowledge physical profile erasure").toBe(
         "deleted",
       );
-      expect(broadNotices).toHaveBeenCalledWith([owner.id], "browser.profile-reconciled");
-      expect(broadNotices).toHaveBeenCalledWith([owner.id], "browser.profile-deletions");
     },
     { timeout: 10_000 },
   );
   await expect(
     access(path.join(browser.profileRoot, "profiles", profile.id)),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  expect(
-    bootstrap.ok &&
-      bootstrap.data.browser.profileDeletions?.some(
-        (deletion) => deletion.profileId === profile.id,
-      ),
-  ).toBeFalsy();
+  const afterDelete = await stack.api["resources.get"]({ kind: "browser-profile" });
+  if (!afterDelete.ok) throw new Error(afterDelete.error.message);
+  expect(BigInt(afterDelete.data.revision)).toBeGreaterThan(BigInt(beforeDelete.data.revision));
+  const { deletions } = await readTestResource(stack.api, "browser-profile");
+  expect((deletions ?? []).some((deletion) => deletion.profileId === profile.id)).toBe(false);
   const tombstone = JSON.parse(
     await readFile(path.join(browser.profileRoot, "tombstones", `${profile.id}.json`), "utf8"),
   );
@@ -459,9 +455,8 @@ it("advertises exact prepared storage through the reachable Personal browser com
   });
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
-        bootstrap.ok && bootstrap.data.browser.available,
+        (await readTestResource(stack.api, "browser-availability")).available,
         `Standalone browser auxiliary stream never became ready: ${browser.diagnostics()}`,
       ).toBe(true);
     },

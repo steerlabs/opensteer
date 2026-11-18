@@ -1,3 +1,4 @@
+import { readVerticalRunTools } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -5,7 +6,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  AgentEventViewSchema,
   ModelSelectionSchema,
   WindowIdSchema,
   ThreadAccessModeSchema,
@@ -162,71 +162,44 @@ describe("real-engine computer use", () => {
       evidence.run = run;
       expect(run).toMatchObject({ status: "completed", accessMode });
       assertHelperJourney(desktop.requests, fixture);
-      const transcript = await readTranscript(stack, turn.runId);
+      const transcript = await readVerticalRunTools(stack.host.store.database, turn.runId);
       evidence.transcriptExcerpt = transcript;
-      const starts = transcript
-        .map((row) => ({ row, event: AgentEventViewSchema.parse(row) }))
-        .filter(({ event }) => event.type === "tool.started");
-      const outer = starts.filter(
-        ({ event }) =>
-          event.type === "tool.started" && /(?:^|__)computer$/u.test(event.data.tool.name),
-      );
+      const starts = transcript.filter((call) => call.startedAt !== null);
+      const outer = starts.filter((call) => /(?:^|__)computer$/u.test(call.tool?.name ?? ""));
       expect(outer.length, "real engine invoked the outer computer MCP tool").toBeGreaterThan(0);
       expect(
-        starts.filter(
-          ({ event }) =>
-            event.type === "tool.started" && event.data.tool.name.endsWith("integration_call"),
-        ),
+        starts.filter((call) => call.tool?.name.endsWith("integration_call")),
         "no legacy computer integration calls",
       ).toEqual([]);
-      const operations = starts.filter(
-        ({ event }) =>
-          event.type === "tool.started" && event.data.tool.name.startsWith("computer."),
-      );
+      const operations = starts.filter((call) => call.tool?.name.startsWith("computer."));
       for (const operation of ["windows", "bind", "observe"]) {
         expect(
-          operations.some(
-            ({ event }) =>
-              event.type === "tool.started" && event.data.tool.name === `computer.${operation}`,
-          ),
+          operations.some((call) => call.tool?.name === `computer.${operation}`),
           `Host recorded computer.${operation}`,
         ).toBe(true);
       }
-      // act() may batch the same required inputs; the helper assertions below
-      // still require the exact Title edit and Save press in Recipes.
+      // act() may batch the same required inputs; the helper still checks the exact edits.
       for (const operation of ["type", "click"]) {
         expect(
-          operations.some(
-            ({ event }) =>
-              event.type === "tool.started" &&
-              ["computer.act", `computer.${operation}`].includes(event.data.tool.name),
+          operations.some((call) =>
+            ["computer.act", `computer.${operation}`].includes(call.tool?.name ?? ""),
           ),
           `Host recorded ${operation} input`,
         ).toBe(true);
       }
-      for (const { row, event } of operations) {
-        if (event.type !== "tool.started") continue;
-        expect(row, "computer operation was authored by the Host").toMatchObject({
-          runnerId: null,
-          runnerOrdinal: null,
-          runnerBindingGeneration: null,
-        });
-        expect(event.data.integration?.computerApp).toMatchObject({
+      for (const call of operations) {
+        expect(call.origin, "computer operation was authored by the Host").toBe("host-computer");
+        expect(call.integration?.computerApp).toMatchObject({
           app: "Notes",
           bundleId: notes.bundleId,
           runnerId: mac.id,
         });
       }
-      for (const { event } of [...outer, ...operations]) {
-        if (event.type !== "tool.started") continue;
-        const completed = transcript
-          .map((row) => AgentEventViewSchema.parse(row))
-          .filter(
-            (candidate) =>
-              candidate.type === "tool.completed" && candidate.data.callId === event.data.callId,
-          );
-        expect(completed, `completed transcript pair for ${event.data.tool.name}`).toHaveLength(1);
-        expect(completed[0]).toMatchObject({ data: { isError: false } });
+      for (const call of [...outer, ...operations]) {
+        expect(call, `completed transcript card for ${call.tool?.name}`).toMatchObject({
+          status: "completed",
+          isError: false,
+        });
       }
       evidence.outcome = "passed";
     } catch (error) {
@@ -238,7 +211,7 @@ describe("real-engine computer use", () => {
       const cleanupErrors: string[] = [];
       if (stack && runId) {
         try {
-          evidence.transcriptExcerpt = await readTranscript(stack, runId);
+          evidence.transcriptExcerpt = await readVerticalRunTools(stack.host.store.database, runId);
         } catch (error) {
           cleanupErrors.push(`transcript: ${String(error)}`);
         }
@@ -268,17 +241,6 @@ describe("real-engine computer use", () => {
     }
   });
 });
-
-async function readTranscript(stack: VerticalStack, runId: RunId) {
-  return (
-    await stack.host.store.database
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", runId)
-      .orderBy("sequence")
-      .execute()
-  ).map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
-}
 
 function scriptedNotes() {
   const documents = [

@@ -120,7 +120,6 @@ run("Browser Sessions through a whole deployment", () => {
       );
       const client = new HttpHostClient({
         baseUrl: stack.hostOrigin,
-        refreshIntervalMs: 0,
         fetch: (input, init) => {
           const headers = new Headers(init?.headers);
           headers.set("cookie", stack.sessionCookie);
@@ -213,11 +212,13 @@ run("Browser Sessions through a whole deployment", () => {
             .executeTakeFirst();
           return run?.status === "completed";
         }, 30_000);
-        const snapshot = await stack.host.store.deploymentSnapshot();
+        const history = await stack.api["thread.messages.list"]({ threadId });
+        if (!history.ok) throw new Error(history.error.message);
         expect(
-          snapshot.messages.find((message) => message.id === result.message.id)?.content,
+          history.data.messages.find((message) => message.id === result.message.id)?.content,
         ).toEqual(command.content);
-        const answer = snapshot.messages
+        const answer = [...history.data.messages]
+          .reverse()
           .filter((message) => message.runId === result.run!.id && message.kind === "assistant")
           .flatMap((message) => message.content)
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
@@ -263,11 +264,13 @@ run("Browser Sessions through a whole deployment", () => {
       expect(retry.wasDuplicate).toBe(true);
       expect(retry.message.id).toBe(automatic.result.message.id);
       expect(retry.run?.id).toBe(automatic.result.run!.id);
-      const snapshot = await stack.host.store.deploymentSnapshot();
       expect(
-        snapshot.messages.filter(
-          (message) => message.threadId === automatic.command.threadId && message.kind === "input",
-        ),
+        await stack.host.store.database
+          .selectFrom("messages")
+          .select("id")
+          .where("threadId", "=", automatic.command.threadId)
+          .where("kind", "=", "input")
+          .execute(),
       ).toHaveLength(1);
       expect(
         await stack.host.store.database
@@ -390,7 +393,6 @@ run("Browser Sessions through a whole deployment", () => {
     if (!owner) throw new Error("Missing owner");
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
-      refreshIntervalMs: 0,
       fetch: (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set("cookie", stack.sessionCookie);
@@ -791,8 +793,6 @@ run("Browser Sessions through a whole deployment", () => {
     const sessionId = tabs[0]!.sessionId;
     expect(tabs[1]!.sessionId).toBe(sessionId);
     const coldRows = async () => {
-      const result = await stack.api["bootstrap.get"]({});
-      if (!result.ok) throw new Error(JSON.stringify(result));
       return (await browserInventory(stack)).tabs;
     };
     await waitFor(async () => (await coldRows()).filter((row) => row.iconRef).length === 2, 10_000);
@@ -891,10 +891,7 @@ run("Browser Sessions through a whole deployment", () => {
       return new Promise((resolve) => page.close(() => resolve(undefined)));
     });
     const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
-    await waitFor(async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
-      return bootstrap.ok && bootstrap.data.browser.available;
-    }, 30_000);
+    await browserAvailable(stack);
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",

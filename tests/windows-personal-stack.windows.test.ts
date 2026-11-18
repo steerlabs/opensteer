@@ -20,7 +20,7 @@ import {
   spawnSupervised,
   type SupervisedProcess,
 } from "../packages/harness/src/process-supervisor.js";
-import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
+import { testResourceData, testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { generatedShims } from "@opensteer/shared/test-support/commandShims";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
@@ -439,10 +439,13 @@ describe("the personal stack from source", () => {
     // through it, read for its version and signed in on its default account.
     const engines = await vi.waitFor(
       async () => {
-        const view = await rpc("bootstrap.get", {});
-        const computer = view.environments.find((value) => value.id === stack.environmentId);
+        const [{ environments }, { harnesses }] = await Promise.all([
+          testResourceData(origin, "harness-catalog", { headers }),
+          testResourceData(origin, "harness", { headers }),
+        ]);
+        const computer = environments.find((value) => value.id === stack.environmentId);
         const driver = computer?.harnessDrivers.find((value) => value.driverKind === "codex");
-        const account = view.harnesses.find(
+        const account = harnesses.find(
           (value) => value.driverKind === "codex" && value.stateKind === "ambient",
         );
         const catalog = computer?.harnessCatalogs.find(
@@ -509,10 +512,10 @@ describe("the personal stack from source", () => {
       `${toolCall("app_publish", { path: "server app", start, name: "Greeting" })} [[reply Published.]]`,
       "Published.",
     );
-    const { events } = await rpc("thread.events.list", { threadId });
-    const published = events.find((event) => event.type === "app.published");
-    if (published?.type !== "app.published") throw new Error("The task never published its app");
-    const appId = published.data.appId;
+    const page = await rpc("thread.items.page", { threadId });
+    const published = page.kind === "page" ? page.items.find((item) => item.kind === "app") : null;
+    if (published?.kind !== "app") throw new Error("The task never published its app");
+    const appId = published.appId;
     const { apps } = await rpc("apps.list", {});
     const app = apps.find((app) => app.appId === appId);
     expect(app).toMatchObject({ name: "Greeting", kind: "server", state: "running" });

@@ -1,3 +1,4 @@
+import { readVerticalRunTools } from "../agents/vertical-stack.test-support.js";
 import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
 import { forkRunnerChild } from "../agents/runner-child.test-support.js";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
@@ -551,22 +552,7 @@ export async function startPersonalRuntime(input: {
                 .where("kind", "=", "assistant")
                 .orderBy("sequence")
                 .execute();
-              const tools = await host!.store.database
-                .selectFrom("toolCalls")
-                .select([
-                  "callId",
-                  "tool",
-                  "arguments",
-                  "integration",
-                  "status",
-                  "isError",
-                  "output",
-                  "startedAt",
-                ])
-                .where("runId", "=", run.id)
-                .orderBy("startedAt")
-                .orderBy("completionOrder")
-                .execute();
+              const tools = await readVerticalRunTools(host!.store.database, run.id);
               return {
                 tools,
                 runId: run.id,

@@ -160,14 +160,17 @@ integration("phone network performance using the real shared client", () => {
                   expect(sample.resume.snapshots).toBe(1);
                   expect(sample.milestonesMs.taskListRenderable).toBeDefined();
                   expect(sample.milestonesMs.tabsLoaded).toBeDefined();
-                  expect(sample.rpc["bootstrap.get"]?.count).toBeGreaterThan(0);
+                  expect(sample.websocket.some((frame) => frame.type === "client.attach")).toBe(
+                    true,
+                  );
                 }
                 if (sample.scenario === "open-task") {
                   expect(sample.milestonesMs.historyFirstPage).toBeDefined();
                   expect(
-                    sample.rpc["thread.messages.list"]?.count ??
-                      sample.rpc["thread.events.list"]?.count,
-                  ).toBeGreaterThan(0);
+                    sample.websocket.some(
+                      (frame) => frame.type === "host.snapshot" && frame.scope === "thread",
+                    ),
+                  ).toBe(true);
                 }
                 if (sample.scenario === "reconnect") {
                   expect(BigInt(sample.resume.cursor ?? "0")).toBeGreaterThan(0n);

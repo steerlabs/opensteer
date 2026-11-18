@@ -1,3 +1,4 @@
+import { readTestResource } from "../apps/host/src/server/test-host-api-request.js";
 import { BrowserSurfaceIdSchema, DeviceIdSchema } from "../packages/core/src/index.js";
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import {
@@ -27,6 +28,7 @@ import {
   type BrowserServerMessage,
 } from "../packages/protocol/src/browser.js";
 import {
+  browserFixtureOwner,
   addCleanup,
   executablePath,
   enrollBrowserComputer,
@@ -58,8 +60,7 @@ export async function agentJourney(
   });
   const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    return bootstrap.ok && bootstrap.data.browser.available;
+    return (await readTestResource(stack.api, "browser-availability")).available;
   }, 30_000);
 
   const threadId = await stack.createThread({
@@ -202,16 +203,12 @@ export async function agentJourney(
   }
   crashChromium();
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    return (
-      bootstrap.ok &&
-      (
-        await stack.host.store.getBrowserSessionForOwner(
-          BrowserSessionIdSchema.parse(profileSession),
-          bootstrap.data.user.id,
-        )
-      )?.state !== "ready"
+    const owner = await browserFixtureOwner(stack);
+    const session = await stack.host.store.getBrowserSessionForOwner(
+      BrowserSessionIdSchema.parse(profileSession),
+      owner.id,
     );
+    return session?.state !== "ready";
   }, 20_000);
   const later = await stack.sendMessage({
     text: `Check the account. UPLOAD_PAGE=${pageOrigin}/upload CHECK_PROFILE=${profileId}`,
@@ -987,8 +984,7 @@ document.getElementById("choose").addEventListener("click", () => document.getEl
 }
 
 export async function browserInventory(stack: VerticalStack, sessionId?: string) {
-  const owner = await stack.host.store.firstUser();
-  if (!owner) throw new Error("Browser fixture owner is missing.");
+  const owner = await browserFixtureOwner(stack);
   const rows = await browserRows(
     stack.host.browser,
     owner.id,

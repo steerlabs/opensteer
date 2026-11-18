@@ -562,12 +562,12 @@ describe("human Passwords settlement", () => {
           computerUsePhones: async () => [],
         },
         passwordSignIn: (operationId) => h.service.continuationState(operationId),
-        intervalMs: 5_000,
         onError: (error) => {
           throw error;
         },
         requests: {
           get: async () => h.request(),
+          nextContinuationDeadline: async () => null,
           listPendingContinuations: vi.fn(async () =>
             h.request().status === "fulfilled"
               ? [
@@ -587,8 +587,10 @@ describe("human Passwords settlement", () => {
       continuations.start();
       const response = answer(h);
       try {
-        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(0);
         expect(h.request().status).toBe("fulfilled");
+        continuations.notify();
+        await vi.advanceTimersByTimeAsync(0);
         expect(h.service.leaseForOperation(h.operationId())).toBeNull();
         expect(enqueueThreadInput).not.toHaveBeenCalled();
         expect(recordContinuationAttempt).not.toHaveBeenCalled();
@@ -644,6 +646,7 @@ describe("human Passwords settlement", () => {
         passwordSignIn: (id) => h.service.continuationState(id),
         requests: {
           get: async () => h.request(),
+          nextContinuationDeadline: async () => null,
           listPendingContinuations: async () => [],
           recordContinuationAttempt: async () => true,
         },

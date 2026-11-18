@@ -1,13 +1,5 @@
-import {
-  createId,
-  DeviceIdSchema,
-  WindowIdSchema,
-  type App,
-  type Tab,
-  type TabLayout,
-} from "../packages/core/src/index.js";
+import { createId, DeviceIdSchema, WindowIdSchema, type App } from "../packages/core/src/index.js";
 import { createBrowserSessionId } from "../packages/protocol/src/index.js";
-import { KeyedStreamReceiver } from "../packages/protocol/src/keyed-stream.js";
 import { tabDatabaseFixture } from "../apps/host/src/tabs/tab-service.integration.test-support.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import type {
@@ -146,11 +138,6 @@ integration("mixed workspace layout", () => {
         "organize",
       );
       expect(grouped.groups[0]?.tabIds).toEqual(ids);
-      const first = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
-      const subscription = tabs.streams.subscribe(f.ownerId, async (message) => {
-        first.apply(message.stream);
-      });
-      await subscription.ready;
       const phoneId = ids[2]!;
       const claims = {
         requestedBy: f.ownerId,
@@ -167,27 +154,19 @@ integration("mixed workspace layout", () => {
         membershipRevision: (await f.tabs.snapshot(f.ownerId)).layout.revision,
       };
       expect(await acquired!(acquisition)).toBe(phoneId);
-      expect(first.rows.get(phoneId)?.usedBy).toEqual([{ taskId }]);
+      const openedView = await tabs.bootstrap(f.ownerId, 65536);
+      expect(openedView.tabs.find((tab) => tab.tabId === phoneId)?.usedBy).toEqual([{ taskId }]);
       expect(await tabs.close(actor, [phoneId], "close-held-phone")).toEqual({
         closed: [phoneId],
         failed: [],
       });
-      await subscription.flush();
-      expect(first.rows.has(phoneId)).toBe(false);
       expect(agentHoldingPhone).toBe(true);
-      const bootstrap = await tabs.bootstrap(f.ownerId, 65536);
-      const second = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
-      second.seed(bootstrap.tabs, { layout: bootstrap.layout });
-      const reconnect = tabs.streams.subscribe(
-        f.ownerId,
-        async (message) => {
-          second.apply(message.stream);
-        },
-        bootstrap.tabs,
+      const closedView = await tabs.bootstrap(f.ownerId, 65536);
+      expect(closedView.tabs.map((tab) => tab.tabId).sort()).toEqual(
+        ids.filter((id) => id !== phoneId).sort(),
       );
-      await reconnect.ready;
-      expect([...second.rows.keys()]).toEqual([...first.rows.keys()]);
-      expect(second.meta).toEqual(first.meta);
+      const bootstrap = await tabs.bootstrap(f.ownerId, 65536);
+      expect(bootstrap).toEqual(closedView);
       expect(bootstrap.layout.items[0]).toMatchObject({
         kind: "group",
         group: { tabIds: ids.filter((id) => id !== phoneId) },
@@ -198,12 +177,9 @@ integration("mixed workspace layout", () => {
       });
       agentHoldingPhone = false;
       tabs.changed(f.ownerId);
-      await subscription.flush();
-      await reconnect.flush();
-      expect(first.rows.has(phoneId)).toBe(false);
-      expect(second.rows.has(phoneId)).toBe(false);
-      subscription.close();
-      reconnect.close();
+      expect(
+        (await tabs.bootstrap(f.ownerId, 65536)).tabs.some((tab) => tab.tabId === phoneId),
+      ).toBe(false);
     } finally {
       tabs.dispose();
     }
