@@ -2,26 +2,34 @@
  * Copy a plugin catalog feed into a directory that serves as the same feed from any base URL.
  *
  *   pnpm catalog:snapshot --out <dir> [--cache <dir>] [--feed <index.json URL>]
- *                         [--rewrites <module>] [--concurrency <n>] [--offline]
+ *                         [--rules <rules.json>] [--concurrency <n>] [--offline]
  *
  * Downloads go to the cache (default `<out>.download`) exactly as served, one file per document,
  * so an interrupted run resumes where it stopped and `--offline` rebuilds from the cache alone, for
- * example with a new mapping. The cache belongs to one version of the feed: when the feed's index
- * has changed since, the run stops and asks for a new cache. The output is rebuilt in full beside
- * `<out>` and replaces it only when every document validates and no old string remains.
+ * example with new rules. The cache belongs to one version of the feed: when the feed's index has
+ * changed since, the run stops and asks for a new cache.
  *
- * `--rewrites` names a module whose `renames` (or default) export is a list of exact
- * [old, new] string pairs, applied in order to the feed and to every source document.
+ * Output, cache and staging are resolved through symlinks and must lie outside the repository and
+ * apart from each other. The snapshot is built in a new directory beside `<out>`, checked as
+ * written, and only then swapped in; an earlier snapshot stays until the swap has succeeded.
+ * `--rules` is a JSON rule file (see rewrite.ts); its detailed report goes to `<out>.rewrites.json`,
+ * beside the snapshot and never in it.
  *
  * Everything downloaded is data: it is parsed as JSON or stored as bytes, never executed.
  */
-import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
 import { officialCatalogUrl } from "@opensteer/plugin-engine-catalog/contracts";
-import { buildSnapshot, checkRewrites, iconPath, sourcePath, type Rewrites } from "./core.ts";
+import { buildSnapshot, iconPath, legacySourcePath, servableId, sha256 } from "./core.ts";
+import {
+  readSnapshot,
+  replaceDirectory,
+  separatePlaces,
+  stagingBeside,
+  writeTree,
+} from "./disk.ts";
+import { parseRules } from "./rewrite.ts";
 
 const userAgent = "catalog-snapshot";
 
@@ -30,34 +38,35 @@ const { values } = parseArgs({
     out: { type: "string" },
     cache: { type: "string" },
     feed: { type: "string", default: officialCatalogUrl },
-    rewrites: { type: "string" },
+    rules: { type: "string" },
     concurrency: { type: "string", default: "8" },
     offline: { type: "boolean", default: false },
   },
 });
 if (!values.out) throw new Error("--out <directory> is required");
-const out = resolve(values.out);
-const cache = resolve(values.cache ?? `${out}.download`);
-// The repository is public and plugin source is not ours to publish there.
 const repository = resolve(import.meta.dirname, "../..");
-for (const path of [out, cache])
-  if (path === repository || path.startsWith(repository + sep))
-    throw new Error(`${path} is inside the repository; keep snapshots outside it`);
+const places = await separatePlaces(
+  {
+    out: values.out,
+    cache: values.cache ?? `${resolve(values.out)}.download`,
+    report: `${resolve(values.out)}.rewrites.json`,
+  },
+  repository,
+);
+const { out, cache } = places;
 const concurrency = Number(values.concurrency);
 if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32)
   throw new Error("--concurrency takes a whole number from 1 to 32");
-const rewrites: Rewrites = values.rewrites
-  ? await import(pathToFileURL(resolve(values.rewrites)).href).then(
-      (module: Record<string, unknown>) => checkRewrites(module.renames ?? module.default),
-    )
-  : [];
+const rulesText = values.rules ? await readFile(values.rules, "utf8") : undefined;
+const rules =
+  rulesText === undefined ? undefined : { rules: parseRules(rulesText), sha256: sha256(rulesText) };
 
 const exists = (path: string) =>
   stat(path).then(
     () => true,
     () => false,
   );
-/** Write through a temporary name, so a present file is always a complete one. */
+/** Write through a temporary name, so a present cache file is always a complete one. */
 async function writeAtomic(path: string, bytes: Uint8Array) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(`${path}.part`, bytes);
@@ -101,9 +110,8 @@ async function download(feedUrl: string) {
   };
   const wanted = new Set<string>();
   for (const app of feed.apps) {
-    // Ids become file names; one that cannot be a path segment is reported by the build instead.
-    if (app.id !== "." && app.id !== ".." && encodeURIComponent(app.id) === app.id)
-      wanted.add(sourcePath(app.id));
+    // Ids become file names; one that cannot be is reported by the build instead.
+    if (servableId(app.id)) wanted.add(legacySourcePath(app.id));
     for (const icon of app.icons) {
       const path = iconPath(icon.src);
       if (path !== undefined) wanted.add(path);
@@ -128,58 +136,69 @@ async function download(feedUrl: string) {
 
 const started = performance.now();
 if (!values.offline) await download(values.feed);
-const partial = `${out}.partial`;
-await rm(partial, { recursive: true, force: true });
+// Replace only an earlier snapshot, never a directory this tool did not write.
+if ((await exists(out)) && !(await exists(join(out, "manifest.json"))))
+  throw new Error(`${out} exists and is not a snapshot`);
 const read = (path: string) => readFile(join(cache, path)).catch(() => undefined);
 const result = await buildSnapshot({
   feed: await readFile(join(cache, "index.json"), "utf8"),
-  readSource: async (id) => (await read(sourcePath(id)))?.toString("utf8"),
-  readIcon: async (path) => (await read(path)) ?? undefined,
-  write: (path, bytes) => writeAtomic(join(partial, path), bytes),
-  rewrites,
+  readSource: async (id) => (await read(legacySourcePath(id)))?.toString("utf8"),
+  readIcon: async (path) => {
+    const bytes = await read(path);
+    return bytes === undefined ? undefined : new Uint8Array(bytes);
+  },
+  ...(rules ? { rules } : {}),
 });
-await writeAtomic(
-  join(partial, "manifest.json"),
-  Buffer.from(JSON.stringify(result.manifest, null, 2) + "\n"),
-);
+const { manifest, failures, report } = result;
+// The detailed report names what was rewritten and kept; it stays private, beside the snapshot.
+if (rules) await writeAtomic(places.report, Buffer.from(JSON.stringify(report, null, 2) + "\n"));
 
-const { manifest, failures, leftovers } = result;
 const largest = Object.entries(manifest.files)
-  .filter(([path]) => path.startsWith("apps/"))
+  .filter(([path]) => /^apps\/[^/]+\/[^/]+$/u.test(path))
   .sort(([, a], [, b]) => b.bytes - a.bytes)
-  .slice(0, 10);
+  .slice(0, 5);
+const reasons = new Map<string, number>();
+for (const occurrence of report.remaining)
+  reasons.set(
+    occurrence.reason ?? "unaccounted",
+    (reasons.get(occurrence.reason ?? "unaccounted") ?? 0) + 1,
+  );
 console.log(
   JSON.stringify(
     {
       entries: manifest.entries,
       documents: manifest.documents,
       icons: manifest.icons,
+      files: result.files.size,
       totalBytes: manifest.totalBytes,
       feedSha256: manifest.feed.sha256,
-      manifestSha256: createHash("sha256")
-        .update(await readFile(join(partial, "manifest.json")))
-        .digest("hex"),
+      manifestSha256: sha256(result.files.get("manifest.json")!),
       duplicateIds: manifest.duplicateIds,
-      externalIcons: manifest.externalIcons,
       largest: largest.map(([path, file]) => ({ path, bytes: file.bytes })),
-      rewrites: manifest.rewrites,
-      failures,
-      leftovers,
+      rules: report.rules,
+      remaining: Object.fromEntries(reasons),
+      failures: failures.slice(0, 50),
+      failureCount: failures.length,
       seconds: Math.round((performance.now() - started) / 100) / 10,
     },
     null,
     2,
   ),
 );
-if (failures.length > 0 || leftovers.length > 0) {
-  console.error(
-    `Not usable: ${failures.length} documents fail validation, ${leftovers.length} old strings remain. The build is in ${partial}.`,
-  );
+if (failures.length > 0) {
+  console.error(`Not usable: ${failures.length} problems. Nothing was written to ${out}.`);
   process.exit(1);
 }
-// Replace only an earlier snapshot, never a directory this tool did not write.
-if ((await exists(out)) && !(await exists(join(out, "manifest.json"))))
-  throw new Error(`${out} exists and is not a snapshot; the build is in ${partial}`);
-await rm(out, { recursive: true, force: true });
-await rename(partial, out);
-console.log(`Snapshot written to ${out}`);
+
+const staging = await stagingBeside(out);
+try {
+  await separatePlaces({ out, cache, staging }, repository);
+  await writeTree(staging, result.files);
+  // Check what is on disk, as the publisher will.
+  await readSnapshot(staging);
+  await replaceDirectory(out, staging);
+} catch (error) {
+  await rm(staging, { recursive: true, force: true });
+  throw error;
+}
+console.log(`Snapshot written to ${out}${rules ? `; rewrite report in ${places.report}` : ""}`);

@@ -1,40 +1,53 @@
 /**
- * The pure part of the catalog snapshot: turn a feed's raw documents into a directory that serves
- * as the same feed from any base URL. `index.json` sits at the root, each entry's source at
- * `apps/<id>.json` (the only place the catalog client reads it), and each relative icon at its own
- * relative path. Nothing here touches the network or the disk; `buildSnapshot` reads and writes
- * through the functions it is given.
+ * The pure part of the catalog snapshot: turn a feed's raw documents into files that serve as the
+ * same feed from any base URL, and check that a set of files is exactly such a snapshot. Nothing
+ * here touches the network or the disk.
+ *
+ * Layout. Documents and icons are addressed by the SHA-256 of their bytes, so a path never changes
+ * meaning and an index cached from an earlier release still finds its documents:
+ *
+ *   index.json                    the feed; each entry's `source` names its document's path
+ *   apps/<id>/<sha256>.json       an entry's source document, `{ package, files }`
+ *   apps/<id>.json                the same bytes at the path today's catalog client reads
+ *   icons/<sha256>.<ext>          the icons the feed refers to
+ *   manifest.json                 every other file's hash and size, and counts
  */
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { CatalogFeed, CatalogFeedSource } from "@opensteer/plugin-engine-catalog/contracts";
-
-/** Exact string replacements, applied in order. */
-export type Rewrites = ReadonlyArray<readonly [from: string, to: string]>;
+import { PackageName } from "@opensteer/plugin-engine-sdk";
+import {
+  Rewriter,
+  rewriteProblems,
+  type RewriteRules,
+  type Occurrence,
+  type Source,
+} from "./rewrite.ts";
 
 export interface Problem {
   readonly document: string;
   readonly reason: string;
 }
-
+export interface FileRecord {
+  readonly sha256: string;
+  readonly bytes: number;
+}
 export interface Manifest {
-  readonly version: 1;
+  readonly version: 2;
   /** The feed document `index.json`. */
-  readonly feed: { readonly sha256: string; readonly bytes: number };
-  /** Entries listed in the feed, duplicates included. */
+  readonly feed: FileRecord;
+  /** Entries the index lists, each id once. */
   readonly entries: number;
-  /** Distinct source documents under `apps/`. */
   readonly documents: number;
   readonly icons: number;
   /** Bytes of every file except this manifest. */
   readonly totalBytes: number;
-  /** Ids the feed lists more than once; every listing reads the same document. */
+  /** Ids the source feed listed more than once with identical entries; listed once here. */
   readonly duplicateIds: readonly string[];
-  /** Icon addresses outside the feed, left as they are. */
-  readonly externalIcons: readonly string[];
-  readonly rewrites: ReadonlyArray<{ from: string; to: string; count: number }>;
-  /** Every file except this manifest, by path. An entry's source is `apps/<id>.json`. */
-  readonly files: Readonly<Record<string, { readonly sha256: string; readonly bytes: number }>>;
+  /** SHA-256 of the rewrite rule file the snapshot was built with. Never its strings. */
+  readonly rules: string | null;
+  /** Every file except this manifest, by path. */
+  readonly files: Readonly<Record<string, FileRecord>>;
 }
 
 export interface SnapshotInput {
@@ -44,43 +57,35 @@ export interface SnapshotInput {
   readonly readSource: (id: string) => Promise<string | undefined>;
   /** A relative icon's bytes, or undefined when the feed has none. */
   readonly readIcon: (path: string) => Promise<Uint8Array | undefined>;
-  readonly write: (path: string, bytes: Uint8Array) => Promise<void>;
-  readonly rewrites: Rewrites;
+  /** Parsed rules, and the SHA-256 of the file they came from. */
+  readonly rules?: { readonly rules: RewriteRules; readonly sha256: string };
+}
+
+/** The private account of a rewrite: counts per rule and every remaining name with its reason. */
+export interface RewriteReport {
+  readonly rules: ReadonlyArray<{ id: string; scope: string; count: number }>;
+  readonly remaining: readonly Occurrence[];
 }
 
 export interface SnapshotResult {
+  /** Every file of the snapshot, `manifest.json` included. */
+  readonly files: ReadonlyMap<string, Uint8Array>;
   readonly manifest: Manifest;
-  /** Documents that do not satisfy the catalog contracts. A snapshot with any is not usable. */
+  /** Problems that make the snapshot unusable. */
   readonly failures: readonly Problem[];
-  /** Old strings still present after rewriting. A snapshot with any is not usable. */
-  readonly leftovers: ReadonlyArray<{ from: string; count: number; first: string }>;
+  readonly report: RewriteReport;
 }
 
-/** Check a mapping module's export: pairs of strings, each old string non-empty and listed once. */
-export function checkRewrites(value: unknown): Rewrites {
-  if (
-    !Array.isArray(value) ||
-    !value.every(
-      (pair): pair is [string, string] =>
-        Array.isArray(pair) &&
-        pair.length === 2 &&
-        typeof pair[0] === "string" &&
-        typeof pair[1] === "string" &&
-        pair[0] !== "",
-    )
-  )
-    throw new Error("A mapping is a list of [old, new] string pairs with non-empty old strings");
-  const repeated = value.find(([from], index) => value.findIndex(([f]) => f === from) !== index);
-  if (repeated) throw new Error(`The mapping lists ${JSON.stringify(repeated[0])} twice`);
-  return value;
-}
-
-/** The path an entry's source is served at, and whether an id can be one. */
-export const sourcePath = (id: string) => `apps/${id}.json`;
-const servableId = (id: string) => id !== "." && id !== ".." && encodeURIComponent(id) === id;
+const segment = /^[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/u;
+const hex64 = /^[0-9a-f]{64}$/u;
+/** Whether an id can name its files: one plain path segment that cannot collide with another's. */
+export const servableId = (id: string) => segment.test(id) && !id.endsWith(".json");
+export const sourcePath = (id: string, sha256: string) => `apps/${id}/${sha256}.json`;
+export const legacySourcePath = (id: string) => `apps/${id}.json`;
+export const iconFile = (sha256: string, extension: string) => `icons/${sha256}.${extension}`;
 
 /**
- * Where a relative icon lives inside the snapshot, or undefined for an address outside it. The
+ * Where a relative icon lives in the source feed, or undefined for an address outside it. The
  * client resolves icons against the feed's URL, so only plain paths that stay below it are copied.
  */
 export function iconPath(src: string): string | undefined {
@@ -90,9 +95,7 @@ export function iconPath(src: string): string | undefined {
   if (url.origin !== base.origin || url.search || url.hash) return undefined;
   if (!url.pathname.startsWith("/catalog/")) return undefined;
   const path = url.pathname.slice("/catalog/".length);
-  const plain = path
-    .split("/")
-    .every((segment) => /^[A-Za-z0-9._~-]+$/u.test(segment) && !/^\.\.?$/u.test(segment));
+  const plain = path.split("/").every((part) => segment.test(part));
   return plain && path !== "index.json" ? path : undefined;
 }
 
@@ -111,67 +114,34 @@ export function serialize(value: unknown): string {
   return JSON.stringify(sorted(value), null, 2) + "\n";
 }
 
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-
-/** Every string value in a JSON document except base64 file contents, with its JSON pointer. */
-function* strings(value: unknown, pointer = ""): Generator<[string, string]> {
-  if (typeof value === "string") yield [pointer, value];
-  else if (Array.isArray(value))
-    for (const [index, item] of value.entries()) yield* strings(item, `${pointer}/${index}`);
-  else if (value !== null && typeof value === "object")
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "content" && "encoding" in value) continue;
-      yield* strings(item, `${pointer}/${key}`);
-    }
-}
-
-/** Counts each mapping entry's replacements across every document it rewrites. */
-export class Rewriter {
-  readonly rewrites: Rewrites;
-  readonly counts: number[];
-  constructor(rewrites: Rewrites) {
-    this.rewrites = rewrites;
-    this.counts = rewrites.map(() => 0);
-  }
-  text(value: string): string {
-    return this.rewrites.reduce((text, [from, to], index) => {
-      const parts = text.split(from);
-      this.counts[index]! += parts.length - 1;
-      return parts.join(to);
-    }, value);
-  }
-  /** A copy of a JSON document with every string value rewritten, except base64 contents. */
-  json(value: unknown): unknown {
-    if (typeof value === "string") return this.text(value);
-    if (Array.isArray(value)) return value.map((item) => this.json(item));
-    if (value === null || typeof value !== "object") return value;
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        key === "content" && "encoding" in value ? item : this.json(item),
-      ]),
-    );
-  }
-}
+export const sha256 = (bytes: Uint8Array | string) =>
+  createHash("sha256").update(bytes).digest("hex");
+const record = (bytes: Uint8Array): FileRecord => ({
+  sha256: sha256(bytes),
+  bytes: bytes.byteLength,
+});
 
 const decodeFeed = Schema.decodeUnknownResult(CatalogFeed);
 const decodeSource = Schema.decodeUnknownResult(CatalogFeedSource);
-const decodeManifest = Schema.decodeUnknownResult(
+const isPackageName = Schema.is(PackageName);
+const decodeManifestName = Schema.decodeUnknownResult(
   Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
 );
 
-/** What the catalog client refuses when it prepares this document, if anything. */
-function sourceProblem(value: unknown): string | undefined {
+/** What the catalog client refuses when it prepares this document, or a name it cannot carry. */
+function sourceProblem(value: unknown, listed: string): string | undefined {
   const decoded = decodeSource(value);
   if (decoded._tag === "Failure") return `not a catalog source: ${decoded.failure.message}`;
   const { files, package: name } = decoded.success;
   const manifest = files.find((file) => file.path === "package.json");
   if (manifest === undefined || "encoding" in manifest || "object" in manifest)
     return "package.json is missing or not text";
-  const parsed = decodeManifest(manifest.content);
+  const parsed = decodeManifestName(manifest.content);
   if (parsed._tag === "Failure") return "package.json has no name";
   if (parsed.success.name !== name)
     return `package.json names ${parsed.success.name}, the document ${name}`;
+  if (name !== listed) return `the index lists ${listed}, the document ${name}`;
+  if (!isPackageName(name)) return `${name} is not a valid package name`;
   return undefined;
 }
 
@@ -182,144 +152,248 @@ const parse = (text: string): unknown => {
     return undefined;
   }
 };
+const encoder = new TextEncoder();
+type Entry = { id: string; package: string; icons: { src: string }[]; [key: string]: unknown };
 
 /**
- * Rewrite, validate, lay out and hash a feed. Each index entry gains `sha256`, the hash of the
- * exact bytes of its source document, and its `source` is the path the client reads. Every
- * problem is collected rather than thrown, so one run lists them all; the caller decides whether
- * the result is usable.
+ * Rewrite, validate, lay out and hash a feed. Every problem is collected rather than thrown, so
+ * one run lists them all; the caller decides whether the result is usable.
  */
 export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResult> {
-  const rewriter = new Rewriter(input.rewrites);
+  const rewriter = new Rewriter(
+    input.rules?.rules ?? { version: 1, names: [], rules: [], preserve: [] },
+  );
   const failures: Problem[] = [];
-  const files: Record<string, { sha256: string; bytes: number }> = {};
-  const encoder = new TextEncoder();
-  const write = async (path: string, bytes: Uint8Array) => {
-    files[path] = { sha256: sha256(bytes), bytes: bytes.byteLength };
-    await input.write(path, bytes);
-  };
-  const remaining = input.rewrites.map(([from]) => ({ from, count: 0, first: "" }));
-  const check = (document: string, value: unknown) => {
-    for (const [pointer, text] of strings(value))
-      for (const leftover of remaining) {
-        const count = text.split(leftover.from).length - 1;
-        if (count === 0) continue;
-        leftover.count += count;
-        leftover.first ||= `${document}#${pointer}`;
-      }
-  };
+  const files = new Map<string, Uint8Array>();
 
   const raw = parse(input.feed);
-  const rewritten = rewriter.json(raw);
-  const feed = decodeFeed(rewritten);
+  const feed = decodeFeed(raw);
   if (feed._tag === "Failure")
     throw new Error(`index.json is not a catalog feed: ${feed.failure.message}`);
-  const apps = (rewritten as { apps: Record<string, unknown>[] }).apps;
-  const rawApps = (raw as { apps: { id: string; icons: { src: string }[] }[] }).apps;
+  const { apps: rawApps, ...feedFields } = raw as { apps: Entry[] };
 
-  // Each distinct id has one document; an id listed twice reads the same one.
-  const ids = new Map<string, string>();
+  // One listing per id: an identical repeat is dropped, a different one is a failure.
+  const listed = new Map<string, string>();
   const duplicateIds = new Set<string>();
-  const externalIcons = new Set<string>();
-  const icons = new Map<string, string | undefined>();
-  for (const [index, entry] of feed.success.apps.entries()) {
-    const rawEntry = rawApps[index]!;
-    for (const [iconIndex, icon] of entry.icons.entries()) {
-      const path = iconPath(icon.src);
-      if (path !== undefined) icons.set(path, iconPath(rawEntry.icons[iconIndex]!.src));
-      else if (!icon.src.startsWith("data:")) externalIcons.add(icon.src);
-    }
-    if (!servableId(entry.id))
+  const unique: { entry: Entry; index: number }[] = [];
+  for (const [index, entry] of rawApps.entries()) {
+    const text = serialize(entry);
+    const earlier = listed.get(entry.id);
+    if (earlier === undefined) {
+      listed.set(entry.id, text);
+      unique.push({ entry, index });
+    } else if (earlier === text) duplicateIds.add(entry.id);
+    else
       failures.push({
         document: `index.json#/apps/${index}`,
-        reason: `id ${JSON.stringify(entry.id)} cannot be a path segment`,
+        reason: `${entry.id} is listed again with different fields`,
       });
-    else if (ids.has(entry.id)) duplicateIds.add(entry.id);
-    else ids.set(entry.id, rawEntry.id);
   }
 
-  const hashes = new Map<string, string>();
-  for (const [id, rawId] of ids) {
-    const document = sourcePath(id);
-    const text = await input.readSource(rawId);
+  const icons = new Map<string, string>();
+  const iconFor = async (src: string, document: string) => {
+    if (src.startsWith("data:")) return src;
+    const path = iconPath(src);
+    const extension = path === undefined ? undefined : /\.([A-Za-z0-9]{1,8})$/u.exec(path)?.[1];
+    if (path === undefined || extension === undefined) {
+      failures.push({ document, reason: `icon ${src} is not a file inside the feed` });
+      return src;
+    }
+    if (!icons.has(path)) {
+      const bytes = await input.readIcon(path);
+      if (bytes === undefined) {
+        failures.push({ document, reason: `the feed has no icon ${path}` });
+        return src;
+      }
+      const name = iconFile(sha256(bytes), extension.toLowerCase());
+      files.set(name, bytes);
+      icons.set(path, name);
+    }
+    return icons.get(path)!;
+  };
+
+  const apps: Entry[] = [];
+  for (const { entry, index } of unique) {
+    const at = `index.json#/apps/${index}`;
+    if (!servableId(entry.id)) {
+      failures.push({ document: at, reason: `id ${JSON.stringify(entry.id)} cannot name a file` });
+      continue;
+    }
+    const output = rewriter.entry(entry);
+    output.icons = [];
+    for (const icon of entry.icons)
+      output.icons.push({ ...icon, src: await iconFor(icon.src, at) });
+    const document = legacySourcePath(entry.id);
+    const text = await input.readSource(entry.id);
     const source = text === undefined ? undefined : parse(text);
-    if (source === undefined) {
+    const decoded = decodeSource(source);
+    if (decoded._tag === "Failure") {
       failures.push({
         document,
-        reason: text === undefined ? "the feed has no source document for this entry" : "not JSON",
+        reason:
+          text === undefined
+            ? "the feed has no source document for this entry"
+            : source === undefined
+              ? "not JSON"
+              : `not a catalog source: ${decoded.failure.message}`,
       });
       continue;
     }
-    const output = rewriter.json(source);
-    check(document, output);
-    const problem = sourceProblem(output);
-    if (problem !== undefined) failures.push({ document, reason: problem });
-    await write(document, encoder.encode(serialize(output)));
-    hashes.set(id, files[document]!.sha256);
-  }
-  for (const app of apps) {
-    const hash = hashes.get(app.id as string);
-    if (hash === undefined) continue;
-    app.source = sourcePath(app.id as string);
-    app.sha256 = hash;
-  }
-
-  for (const [path, rawPath] of [...icons].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const bytes = rawPath === undefined ? undefined : await input.readIcon(rawPath);
-    if (bytes === undefined) failures.push({ document: path, reason: "the feed has no such icon" });
-    else await write(path, bytes);
+    const rewritten = rewriter.document(entry.id, source as Source);
+    for (const reason of [
+      ...rewritten.problems,
+      ...rewriteProblems(source as Source, rewritten.source),
+      sourceProblem(rewritten.source, output.package) ?? [],
+    ].flat())
+      failures.push({ document, reason });
+    rewriter.accountSource(entry.id, document, rewritten.source);
+    const bytes = encoder.encode(serialize(rewritten.source));
+    const hash = sha256(bytes);
+    files.set(sourcePath(entry.id, hash), bytes);
+    files.set(document, bytes);
+    apps.push({ ...output, source: sourcePath(entry.id, hash), sha256: hash });
   }
 
-  check("index.json", rewritten);
-  await write("index.json", encoder.encode(serialize(rewritten)));
-  const sorted = Object.fromEntries(
-    Object.keys(files)
-      .sort()
-      .map((path) => [path, files[path]!]),
-  );
+  const index = { ...feedFields, apps };
+  for (const [position, app] of apps.entries())
+    for (const [field, value] of Object.entries(app))
+      if (typeof value === "string")
+        rewriter.account(app.id, `index.json#/apps/${position}/${field}`, value);
+  const indexBytes = encoder.encode(serialize(index));
+  files.set("index.json", indexBytes);
+  if (decodeFeed(index)._tag === "Failure")
+    failures.push({ document: "index.json", reason: "the rewritten index is not a catalog feed" });
+
+  const unaccounted = rewriter.remaining.filter((occurrence) => occurrence.reason === null);
+  for (const occurrence of unaccounted)
+    failures.push({
+      document: occurrence.location,
+      reason: "a name remains that no rule rewrites and no preserve entry keeps",
+    });
+
+  const sorted = [...files.keys()].sort();
+  const records = Object.fromEntries(sorted.map((path) => [path, record(files.get(path)!)]));
+  const manifest: Manifest = {
+    version: 2,
+    feed: records["index.json"]!,
+    entries: apps.length,
+    documents: apps.length,
+    icons: icons.size,
+    totalBytes: Object.values(records).reduce((sum, file) => sum + file.bytes, 0),
+    duplicateIds: [...duplicateIds].sort(),
+    rules: input.rules?.sha256 ?? null,
+    files: records,
+  };
+  files.set("manifest.json", encoder.encode(serialize(manifest)));
   return {
-    manifest: {
-      version: 1,
-      feed: files["index.json"]!,
-      entries: apps.length,
-      documents: hashes.size,
-      icons: [...icons.keys()].filter((path) => files[path] !== undefined).length,
-      totalBytes: Object.values(files).reduce((sum, file) => sum + file.bytes, 0),
-      duplicateIds: [...duplicateIds].sort(),
-      externalIcons: [...externalIcons].sort(),
-      rewrites: input.rewrites.map(([from, to], index) => ({
-        from,
-        to,
-        count: rewriter.counts[index]!,
-      })),
-      files: sorted,
-    },
+    files,
+    manifest,
     failures,
-    leftovers: remaining.filter((leftover) => leftover.count > 0),
+    report: {
+      rules: (input.rules?.rules.rules ?? []).map((rule) => ({
+        id: rule.id,
+        scope: rule.scope,
+        count: rewriter.counts.get(rule.id)!,
+      })),
+      remaining: rewriter.remaining,
+    },
   };
 }
 
+/** The kind of path a snapshot file has, or undefined for one that has no place in a snapshot. */
+export function snapshotPathKind(
+  path: string,
+): "index" | "manifest" | "document" | "legacy" | "icon" | undefined {
+  if (path === "index.json") return "index";
+  if (path === "manifest.json") return "manifest";
+  const parts = path.split("/");
+  if (parts[0] === "apps" && parts.length === 3 && servableId(parts[1]!))
+    return hex64.test(parts[2]!.replace(/\.json$/u, "")) && parts[2]!.endsWith(".json")
+      ? "document"
+      : undefined;
+  if (parts[0] === "apps" && parts.length === 2 && parts[1]!.endsWith(".json"))
+    return servableId(parts[1]!.slice(0, -".json".length)) ? "legacy" : undefined;
+  if (parts[0] === "icons" && parts.length === 2) {
+    const [hash, extension, ...rest] = parts[1]!.split(".");
+    return hex64.test(hash!) && /^[a-z0-9]{1,8}$/u.test(extension ?? "") && rest.length === 0
+      ? "icon"
+      : undefined;
+  }
+  return undefined;
+}
+
 /**
- * Differences between a snapshot directory's files and its manifest: every listed file present
- * with its hash and size, and nothing else beside the manifest. A directory with any is not the
- * snapshot the manifest describes and must not be published.
+ * Every way a set of files differs from the snapshot its `manifest.json` describes: each file
+ * listed with its hash and size and nothing else present; every path one the layout allows; each
+ * content-addressed file named by its own hash; every index entry's document present, hashed as
+ * the entry says, valid, and the same bytes at its legacy path; every icon an entry names present.
+ * Files with any problem must not be published.
  */
-export function manifestProblems(
-  manifest: Pick<Manifest, "files" | "feed">,
-  files: Readonly<Record<string, { readonly sha256: string; readonly bytes: number }>>,
-): string[] {
+export function snapshotProblems(files: ReadonlyMap<string, Uint8Array>): string[] {
   const problems: string[] = [];
+  const manifestBytes = files.get("manifest.json");
+  const manifest = manifestBytes && (parse(new TextDecoder().decode(manifestBytes)) as Manifest);
+  if (!manifest || manifest.version !== 2 || typeof manifest.files !== "object")
+    return ["manifest.json is missing or not a version 2 manifest"];
   for (const [path, expected] of Object.entries(manifest.files)) {
-    const actual = files[path];
-    if (actual === undefined) problems.push(`${path} is missing`);
-    else if (actual.sha256 !== expected.sha256 || actual.bytes !== expected.bytes)
+    const bytes = files.get(path);
+    if (bytes === undefined) problems.push(`${path} is missing`);
+    else if (!isDeepStrictEqualRecord(record(bytes), expected))
       problems.push(`${path} differs from the manifest`);
   }
-  for (const path of Object.keys(files))
+  for (const path of files.keys()) {
     if (path !== "manifest.json" && manifest.files[path] === undefined)
       problems.push(`${path} is not in the manifest`);
-  const index = manifest.files["index.json"];
-  if (index?.sha256 !== manifest.feed.sha256)
+    const kind = snapshotPathKind(path);
+    if (kind === undefined) problems.push(`${path} has no place in a snapshot`);
+    const bytes = files.get(path)!;
+    if (kind === "document" && path.split("/")[2] !== `${sha256(bytes)}.json`)
+      problems.push(`${path} is not named by its hash`);
+    if (kind === "icon" && !path.startsWith(`icons/${sha256(bytes)}.`))
+      problems.push(`${path} is not named by its hash`);
+  }
+  const index = files.get("index.json");
+  if (index === undefined) return [...problems, "index.json is missing"];
+  if (!isDeepStrictEqualRecord(record(index), manifest.feed))
     problems.push("the manifest's feed is not its index.json");
+  const rawIndex = parse(new TextDecoder().decode(index));
+  if (decodeFeed(rawIndex)._tag === "Failure")
+    return [...problems, "index.json is not a catalog feed"];
+  // As written: decoding drops the fields the contract does not name, such as `sha256`.
+  const apps = (rawIndex as { apps: (Entry & { source: string; sha256?: unknown })[] }).apps;
+  if (manifest.entries !== apps.length)
+    problems.push("the manifest's entry count is not the index's");
+  const referenced = new Set(["index.json"]);
+  const seen = new Set<string>();
+  for (const app of apps) {
+    if (seen.has(app.id)) problems.push(`${app.id} is listed twice`);
+    seen.add(app.id);
+    const hash = typeof app.sha256 === "string" ? app.sha256 : "";
+    if (app.source !== sourcePath(app.id, hash) || !hex64.test(hash))
+      problems.push(`${app.id}: its source is not its document's content address`);
+    const bytes = files.get(app.source);
+    if (bytes === undefined || sha256(bytes) !== hash)
+      problems.push(`${app.id}: no document with its hash`);
+    else {
+      const legacy = files.get(legacySourcePath(app.id));
+      if (legacy === undefined || !Buffer.from(legacy).equals(bytes))
+        problems.push(`${app.id}: ${legacySourcePath(app.id)} is not the same document`);
+      const problem = sourceProblem(parse(new TextDecoder().decode(bytes)), app.package);
+      if (problem !== undefined) problems.push(`${app.id}: ${problem}`);
+    }
+    referenced.add(app.source).add(legacySourcePath(app.id));
+    for (const icon of app.icons) {
+      if (icon.src.startsWith("data:")) continue;
+      if (snapshotPathKind(icon.src) !== "icon" || !files.has(icon.src))
+        problems.push(`${app.id}: icon ${icon.src} is not a file in the snapshot`);
+      referenced.add(icon.src);
+    }
+  }
+  for (const path of files.keys())
+    if (path !== "manifest.json" && !referenced.has(path))
+      problems.push(`${path} is not referenced by the index`);
   return problems;
 }
+
+const isDeepStrictEqualRecord = (a: FileRecord, b: FileRecord | undefined) =>
+  b !== undefined && a.sha256 === b.sha256 && a.bytes === b.bytes;

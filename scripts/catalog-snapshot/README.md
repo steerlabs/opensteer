@@ -1,45 +1,83 @@
 # Plugin catalog snapshot
 
-Opensteer serves its own copy of the plugin catalog at `https://catalog.opensteer.com/index.json`,
-the Host's default feed (`apps/host/src/plugins/engine-runtime.ts`). These scripts take the copy,
+Opensteer will serve its own copy of the plugin catalog at
+`https://catalog.opensteer.com/index.json`. Until that address is live, the Host's default feed stays
+upstream's (`officialCatalogUrl` in `apps/host/src/plugins/engine-runtime.ts`); switching it is a
+separate change made after the copy is published and verified there. These scripts take the copy,
 check it, publish it, and check what is served.
 
-Snapshots hold third-party plugin source and run to about 150 MB. Keep them outside this
-repository; `catalog:snapshot` refuses a path inside it.
+Snapshots hold third-party plugin source and run to about 290 MB. Keep them outside this
+repository: every tool resolves its paths through symlinks and refuses one inside it.
 
 ## Take a snapshot
 
 ```sh
-pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rewrites <module>] [--feed <index.json URL>]
+pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed <index.json URL>]
 ```
 
 - Downloads go to `<out>.download` (`--cache` to choose), exactly as served, eight at a time
-  (`--concurrency`), with the User-Agent `catalog-snapshot`. An interrupted run resumes from the
-  cache. The cache belongs to one version of the feed; when the feed changes, start a new one.
-- `--offline` rebuilds from the cache alone, for example to apply a new mapping.
-- The output is rebuilt in `<out>.partial` and replaces `<out>` only when every document validates
-  and no old string remains. Two builds from the same cache are byte-identical.
+  (`--concurrency`), with the User-Agent `catalog-snapshot` and no redirects followed. An
+  interrupted run resumes from the cache. The cache belongs to one version of the feed; when the
+  feed changes, start a new one.
+- `--offline` rebuilds from the cache alone, for example to apply new rules.
+- `--out`, the cache and the staging directory are resolved through symlinks and must lie outside
+  the repository and apart from each other.
+- The build is written to a new, uniquely named directory beside `<out>`, read back and checked as
+  `catalog:publish` checks it, and only then swapped in. An earlier snapshot is moved aside and
+  removed only once the new one is in place; a build with any problem writes nothing to `<out>`.
+  Two builds from the same cache are byte-identical.
 - `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
 
-Layout, valid at any base URL because the client resolves everything against the index's URL:
+### Layout
 
-| Path             | Content                                                                    |
-| ---------------- | -------------------------------------------------------------------------- |
-| `index.json`     | The feed. Each entry gains `sha256`, the hash of its source document.      |
-| `apps/<id>.json` | One entry's source, `{ package, files }`; the only place the client reads. |
-| `icons/…`        | The icons the feed refers to by relative path.                             |
-| `manifest.json`  | Hash and size of every other file, counts, and the rewrite report.         |
+Valid at any base URL, because the client resolves every path against the index's URL. Documents
+and icons are addressed by the SHA-256 of their bytes, so a path never changes meaning.
 
-Every document is validated with the engine's `CatalogFeed` and `CatalogFeedSource` contracts and
-the check the client makes when it prepares an install (`package.json` names the document's
-package). JSON is written with sorted keys and two-space indentation.
+| Path                      | Content                                                     | `Cache-Control`                        |
+| ------------------------- | ----------------------------------------------------------- | -------------------------------------- |
+| `index.json`              | The feed. Each entry's `source` is its document's path and  | `public, max-age=300, must-revalidate` |
+|                           | `sha256` that document's hash.                              |                                        |
+| `apps/<id>/<sha256>.json` | One entry's source document, `{ package, files }`.          | `public, max-age=31536000, immutable`  |
+| `apps/<id>.json`          | The same bytes, at the path today's catalog client reads.   | `public, max-age=300, must-revalidate` |
+| `icons/<sha256>.<ext>`    | The icons the feed refers to; entries name these paths.     | `public, max-age=31536000, immutable`  |
+| `manifest.json`           | Hash and size of every other file, counts, the rules' hash. | `public, max-age=300, must-revalidate` |
+
+`catalog:publish` writes these lifetimes into the Hosting configuration it deploys with.
+
+Every document is validated with the engine's `CatalogFeed` and `CatalogFeedSource` contracts, the
+check the client makes when it prepares an install (`package.json` names the document's package),
+the index entry's `package` matching the document's, and the engine's `PackageName` contract. An
+id the source feed lists twice with identical entries is listed once (`duplicateIds` in the
+manifest); an id listed twice with different entries fails the build. An icon outside the feed
+fails it too. JSON is written with sorted keys and two-space indentation.
 
 ### Rewriting
 
-`--rewrites <module>` takes a module whose `renames` (or default) export is an ordered list of exact
-`[old, new]` string pairs. Each pair is applied in order to every string in the feed and in every
-source document: file paths and text contents, but not base64 contents. The report lists how many
-replacements each pair made, and the build fails if any old string remains anywhere it rewrote.
+`--rules <rules.json>` takes a JSON rule file: data, never a module. Each rule names where it
+applies, and everything else is left as it is:
+
+| `scope`        | Where `from` becomes `to`                                                          |
+| -------------- | ---------------------------------------------------------------------------------- |
+| `package`      | The index entry's `package`, the document's `package` and `package.json`'s `name`. |
+| `manifest-key` | A top-level key of `package.json`, renamed in place.                               |
+| `markdown`     | Prose in `.md` files: outside fenced code blocks and inline code spans.            |
+| `comments`     | Comments in JavaScript, TypeScript and Python files.                               |
+| `text`         | The whole text of the `files` named, in the `documents` named, for one-off edits.  |
+
+Any rule may be limited to `documents` (entry ids). `preserve` lists literals that are never
+rewritten wherever they appear, each with its reason (a third-party literal, an identifier a
+provider receives, an ordinary English word); data URIs and long base64 runs are never rewritten
+either. `names` lists words to account for: after rewriting, every remaining case-insensitive
+occurrence must lie inside a preserved literal or base64 data, or the build fails.
+
+After rewriting, the build also fails if the file list, a non-text file, a data URI or base64 run,
+or a relative import changed; if an import that named a file in its document no longer does; if a
+JSON file that parsed no longer does; or if any package name breaks the contract.
+
+The detailed report (counts per rule, and every remaining occurrence with its location and
+reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. The published manifest
+records only the rule file's SHA-256, never its strings. The proposed rule set is kept outside this
+repository, with the rest of the catalog working files.
 
 ## Check a served feed
 
@@ -48,37 +86,69 @@ pnpm catalog:verify --feed https://catalog.opensteer.com/index.json \
   --manifest ~/catalog/2026-11-18/manifest.json [--entry gmail --entry resend]
 ```
 
-It lists the feed with the engine's catalog client, prepares the named entries (by default the first
-OAuth and the first key-based one), checks each prepared source is the document the index hashes,
-and fails if a request or a listed icon leaves the feed's host.
+No request it makes follows a redirect; a redirect is a failure. The served `index.json` must have
+the manifest's exact size and hash, and the served `manifest.json` must be the same bytes. Every
+file the manifest lists, every document at both paths and every icon, is fetched (eight at a time,
+`--concurrency`) and must match its hash and size, and the served set must pass the checks
+`catalog:publish` applies. Then the engine's catalog client lists the feed (the count must be the
+manifest's) and prepares the named entries (by default the first OAuth and the first key-based
+one), each of which must be the document the index names. Any request or listed icon that leaves
+the feed's host fails the check.
 
 ## Publish
 
 Firebase Hosting serves the catalog. See [Hosting](#hosting) for why and for the one-time setup.
 
 ```sh
-pnpm catalog:publish --dir ~/catalog/2026-11-18 --site opensteer-catalog --dry-run
-pnpm catalog:publish --dir ~/catalog/2026-11-18 --site opensteer-catalog
+pnpm catalog:publish --dir ~/catalog/2026-11-25 --previous ~/catalog/2026-11-18 \
+  --site opensteer-catalog --dry-run
+pnpm catalog:publish --dir ~/catalog/2026-11-25 --previous ~/catalog/2026-11-18 \
+  --site opensteer-catalog
 ```
 
-The script refuses a directory that differs from its manifest. It then deploys with a pinned
-`firebase-tools`. The deploy uploads a new version and switches the whole site to it in one
-release, clearing the CDN. `firebase hosting:rollback` returns to the previous release.
+`--previous` is the snapshot published last; `--first` replaces it for the first release. The
+snapshot and the previous one are read as regular files only (a symlink or any other entry is
+refused) and must each pass every check: each file listed in its manifest with its hash and size
+and nothing else present; every path one the layout allows; each content-addressed file named by
+its own hash; every index entry's document present, hashed as the entry says, valid, and the same
+bytes at its legacy path; every icon an entry names present.
+
+The release is then assembled in a private temporary directory from those checked bytes alone: the
+snapshot, plus the previous snapshot's content-addressed documents and icons, with the Hosting
+configuration (site, the cache lifetimes above, no ignore patterns) written beside them. The
+deploy runs there; nothing is written into a snapshot, and the directory is removed afterwards.
+
+Retention: a release holds two snapshots' content-addressed files, its own and the previous one's,
+so an install that read the previous index finds its document. Older ones are pruned by the deploy
+itself, because a Hosting release is its complete file set. The index's lifetime is five minutes,
+so leave at least that long between releases.
+
+`--dry-run` stops before the deploy and needs no credentials. Deploying needs a dedicated identity
+with Firebase Hosting permissions on the project (for example the Firebase Hosting Admin role),
+signed in as Application Default Credentials or with `firebase login`. The deploy, with a pinned `firebase-tools`,
+uploads a new version and switches the whole site to it in one release, clearing the CDN.
+
+Rollback: the pinned CLI has no rollback command. In the Firebase console, open Hosting, the site,
+then its release history, and choose Roll back on the release to return to. That release becomes
+current again with its complete file set.
 
 ## Hosting
 
-Measured snapshot (2026-11-18): 1,840 entries, 1,837 source documents, 2,399 icons, 4,239 files,
-149 MB in total. The largest document is 9.4 MB and the index is 0.83 MB. A full listing downloads
-the index. Installing an entry downloads one document; browsers load its icons.
+Measured snapshot (2026-11-18): 1,840 entries in the source feed (three ids listed twice), 1,837
+source documents and 2,399 icons. In the source feed's layout that was 4,238 files including the
+manifest and 149 MB. In this layout it is 6,075 files and 287 MB, because each document is served
+at both paths; a release that keeps the previous snapshot's documents is about 7,900 files and
+430 MB. The largest document is 9.4 MB and the index is 1.6 MB. A full listing downloads the
+index. Installing an entry downloads one document; browsers load its icons.
 
 |                    | Firebase Hosting (chosen)                                                                       | Cloud Storage + HTTPS load balancer                                                                                                       | Vercel                                                                                        |
 | ------------------ | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| HTTPS on our name  | Managed certificate after a TXT and an A record                                                 | Google-managed certificate on a reserved global IP                                                                                        | Automatic certificate after a CNAME                                                           |
+| HTTPS on our name  | Managed certificate once the records the console gives are in place                             | Google-managed certificate on a reserved global IP                                                                                        | Automatic certificate after a CNAME                                                           |
 | Limits vs snapshot | 2 GB per file; 10 GB storage free, then $0.026/GB. No file-count limit in its quota docs. Fits. | No relevant limits                                                                                                                        | CLI upload 100 MB on Hobby (too small), 1 GB on Pro; 15,000 files per deployment. Fits on Pro |
 | Caching            | Global CDN; `Cache-Control` from the deploy's config; every deploy clears the CDN               | Objects default to `max-age=3600` unless set; Cloud CDN is optional and must be invalidated by hand                                       | Per-deployment CDN cache; headers from `vercel.json`                                          |
 | Cost               | Transfer free to 10 GB a month, then $0.15/GB; storage free here                                | About $18 a month for the forwarding rule before any traffic, plus processing and egress                                                  | Included in a Pro seat's allowance                                                            |
-| Atomic refresh     | Yes: one release switches every file; rollback built in                                         | No multi-object swap: needs a prefix per snapshot and a URL-map rewrite switch, which reaches edges over minutes, plus a CDN invalidation | Yes: immutable deployments, atomic promotion and rollback                                     |
-| DNS at Porkbun     | `TXT catalog hosting-site=<site>`, `A catalog 199.36.158.100`                                   | `A catalog <reserved IP>`                                                                                                                 | `CNAME catalog cname.vercel-dns.com`                                                          |
+| Atomic refresh     | Yes: one release switches every file; rollback from the console's release history               | No multi-object swap: needs a prefix per snapshot and a URL-map rewrite switch, which reaches edges over minutes, plus a CDN invalidation | Yes: immutable deployments, atomic promotion and rollback                                     |
+| DNS at Porkbun     | The ownership TXT record and the records the custom-domain wizard shows                         | `A catalog <reserved IP>`                                                                                                                 | `CNAME catalog cname.vercel-dns.com`                                                          |
 | Setup              | Enable Firebase on the project, create a site                                                   | Bucket, backend bucket, URL map, HTTPS proxy, certificate, IP, forwarding rule, HTTP redirect                                             | A project on the team; a second vendor for a Google Cloud asset                               |
 
 Firebase Hosting is the simplest choice that publishes atomically and lives in the company's Google
@@ -94,41 +164,62 @@ project also exists). Firebase is not yet enabled on `opensteer-staging`; billin
    `pnpm dlx firebase-tools@15.34.2 projects:addfirebase opensteer-staging`.
 2. Create the site (the id is global, 30 characters at most):
    `pnpm dlx firebase-tools@15.34.2 hosting:sites:create opensteer-catalog --project opensteer-staging`.
-3. Sign in for deploys: `pnpm dlx firebase-tools@15.34.2 login`, or Application Default
-   Credentials (`gcloud auth application-default login`).
-4. Publish a snapshot (above) and check it on the site's own address:
+3. Create a dedicated service account for publishing with the Firebase Hosting Admin role on the
+   project, and sign in as it for deploys (Application Default Credentials). Do not deploy as a
+   person's own account.
+4. Publish the first snapshot (`--first`) and check it on the site's own address:
    `pnpm catalog:verify --feed https://opensteer-catalog.web.app/index.json --manifest <snapshot>/manifest.json`.
 5. In the Firebase console, Hosting, site `opensteer-catalog`, add the custom domain
-   `catalog.opensteer.com`. Add the records it shows at Porkbun (DNS for `opensteer.com`). They
-   have this form:
-
-   | Type | Host                      | Answer                                                      |
-   | ---- | ------------------------- | ----------------------------------------------------------- |
-   | TXT  | `catalog`                 | `hosting-site=opensteer-catalog` (keep it)                  |
-   | TXT  | `_acme-challenge.catalog` | the value the console shows (optional, earlier certificate) |
-   | A    | `catalog`                 | `199.36.158.100`, or the address the console shows          |
-
-   Add no AAAA or CNAME record for `catalog`. `opensteer.com` has no CAA records today, so none are
-   needed.
-
+   `catalog.opensteer.com`. Copy the records the wizard shows into Porkbun (DNS for
+   `opensteer.com`) exactly; do not hard-code an address from this page or elsewhere, since the
+   wizard gives the current ones.
+   - Keep the ownership TXT record in place after the domain connects, as the wizard says; it is
+     how Hosting knows the name is still the project's.
+   - Quick setup gives the records that point `catalog` at Hosting; the certificate is issued once
+     they resolve, so the name serves errors for a while. That is acceptable here, since nothing
+     uses `catalog.opensteer.com` yet.
+   - Advanced setup is for a name already serving traffic: it verifies ownership and issues the
+     certificate (through an `_acme-challenge` record) before any traffic moves, then gives the
+     records to switch. Use it if the name is ever moved from another host.
+   - Add no other A, AAAA or CNAME record for `catalog`. `opensteer.com` has no CAA records today,
+     so none are needed.
 6. When the console shows the certificate as active, run `catalog:verify` against
-   `https://catalog.opensteer.com/index.json`. Then set the number of releases to keep in Hosting's
-   release settings; ten is enough for rollback.
+   `https://catalog.opensteer.com/index.json`. Then switch the Host's default feed in a separate
+   change.
 
-## Integrity
+## What remains (the engine workstream, after its move)
 
-Each index entry carries `sha256`, the hash of its source document's exact bytes. Clients that do not
-know the field ignore it. `manifest.json` records every file's hash, and `catalog:publish`
-refuses a directory that does not match it.
+These changes belong to the catalog client and the worker build in the engine; none is made here.
 
-The install side is one change to the engine's catalog client, made once the engine move has
-landed:
-
-- `catalog/src/contracts/catalog.ts`: in `CatalogFeed`, each app gains an optional
-  `sha256` (64 lowercase hex characters).
-- `catalog/src/implementation/source.ts`, `catalogSource`: one shared, ETag-revalidated read of the
-  index keeps each entry's hash beside the listing. `prepare` reads the index this way, reads the
-  document as bytes, and fails with `CatalogUnavailable` ("try again shortly; nothing was added")
-  when the bytes do not match the recorded hash. An entry without a hash installs as before.
-- Test: serve an index with one matching entry, one whose document differs from its hash, and one
-  without a hash. Preparing them succeeds, fails with `CatalogUnavailable`, and succeeds.
+1. **The client honors and validates `source`.** Today `catalogSource().prepare` in
+   `catalog/src/implementation/source.ts` ignores `source` and reads `apps/<id>.json`, so an index
+   and a document from different releases can meet. Change: `CatalogFeed` in
+   `catalog/src/contracts/catalog.ts` gains an optional `sha256` (64 lowercase hex characters) per
+   app; `catalogSource().list` keeps each entry's `source` and `sha256` from the index it read,
+   beside the listing, and `prepare` reads that `source` resolved against the feed URL. A `source`
+   that resolves outside the feed's origin, or not below the index's directory, fails with
+   `CatalogImportFailed` code `invalid_source` before any request. Without a kept index (an entry
+   never listed) `prepare` reads the index once, as `list` does. Test in
+   `catalog/src/implementation/source.test.ts`: serve an index whose entry names
+   `apps/x/<hash>.json` while `apps/x.json` holds other bytes; `prepare` returns the named
+   document. A `source` of `https://elsewhere.example/x.json` or `../x.json` is refused with
+   `invalid_source` and no request leaves.
+2. **The install checks the document's hash, failing closed for Opensteer's own feed.** In
+   `prepare`, read the document as bytes and compare their SHA-256 with the kept `sha256`. A
+   mismatch fails with `CatalogUnavailable` ("try again shortly; nothing was added"). An entry
+   without `sha256` installs as before, except from a feed the Host marks as requiring hashes:
+   `createCatalog` takes `requireHashes: true`, which the Host passes for Opensteer's own feed, and
+   there an entry without one is refused with `invalid_source`. Test: an index with one matching
+   entry, one whose document differs from its hash, and one without a hash; preparing them
+   succeeds, fails with `CatalogUnavailable`, and succeeds, and with `requireHashes` the third is
+   refused.
+3. **The plugin framework comes from the Host's own engine, not the public npm registry.**
+   Catalog documents declare `dependencies.apps` (for example `0.0.1-beta.140`), and the worker
+   build (`compileWorkerApp` in `sdk/src/implementation/worker-build.ts`, reached through
+   `workerdApps` and `workerd-entry.ts`) installs that release from the npm registry unless
+   `WorkerHost.apps` supplies it. Change: the Host passes `WorkerHost.apps` with the version and
+   package files of the engine's own `apps` package through `workerdApps`; a source declaring
+   another release is built against the Host's when its protocol is supported and refused with a
+   build failure otherwise, and the registry is never asked for `apps`. Test: compile a catalog
+   source declaring another `apps` release with the registry set to an unreachable address; it
+   builds against the Host's framework and no request is made.

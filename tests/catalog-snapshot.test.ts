@@ -1,18 +1,28 @@
-import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
   buildSnapshot,
-  checkRewrites,
   iconPath,
-  manifestProblems,
   serialize,
-  type Rewrites,
+  sha256,
+  snapshotProblems,
 } from "../scripts/catalog-snapshot/core.ts";
+import {
+  markdownProse,
+  parseRules,
+  pythonComments,
+  rewriteProblems,
+  scriptComments,
+  type RewriteRules,
+  type Source,
+} from "../scripts/catalog-snapshot/rewrite.ts";
 
-const manifest = (name: string) => JSON.stringify({ name, dependencies: { apps: "1.0.0" } });
-const source = (name: string, extra: object[] = []) => ({
+// "acme" stands in for the upstream name throughout.
+const manifest = (name: string) =>
+  JSON.stringify({ name, acme: { title: "x" }, dependencies: { apps: "1.0.0" } }, null, 2) + "\n";
+const source = (name: string, extra: { path: string; content: string }[] = []) => ({
   files: [
-    { path: "index.ts", content: `import { defineApp } from "apps"; // acme app ${name}` },
+    { path: "index.ts", content: `import { tools } from "./tools/main.ts"; // acme app ${name}` },
+    { path: "tools/main.ts", content: "export const tools = [];" },
     { path: "package.json", content: manifest(name) },
     ...extra,
   ],
@@ -22,18 +32,19 @@ const entry = (id: string, icons: { src: string }[] = []) => ({
   id,
   package: `@acme.sh/${id}`,
   name: id,
-  description: `Talk to ${id} through acme`,
+  description: `Talk to ${id}`,
   auth: [{ method: "oauth", kind: "oauth2" }],
   icons,
   source: `apps/${id}.json`,
 });
+const text = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
 
-/** Build from in-memory documents, collecting what the snapshot writes. */
+/** Build from in-memory documents. */
 async function build(options: {
-  apps?: ReturnType<typeof entry>[];
+  apps?: object[];
   sources?: Record<string, unknown>;
   icons?: Record<string, string>;
-  rewrites?: Rewrites;
+  rules?: RewriteRules;
 }) {
   const apps = options.apps ?? [entry("mail", [{ src: "icons/mail.svg" }]), entry("chat")];
   const sources = options.sources ?? {
@@ -41,99 +52,113 @@ async function build(options: {
     chat: source("@acme.sh/chat"),
   };
   const icons = options.icons ?? { "icons/mail.svg": "<svg/>" };
-  const written = new Map<string, string>();
-  const result = await buildSnapshot({
+  return buildSnapshot({
     feed: JSON.stringify({ apps, version: 1 }),
     readSource: async (id) => (id in sources ? JSON.stringify(sources[id]) : undefined),
     readIcon: async (path) => (path in icons ? new TextEncoder().encode(icons[path]) : undefined),
-    write: async (path, bytes) => {
-      written.set(path, new TextDecoder().decode(bytes));
-    },
-    rewrites: options.rewrites ?? [],
+    ...(options.rules ? { rules: { rules: options.rules, sha256: "f".repeat(64) } } : {}),
   });
-  return { ...result, written };
 }
+const rules = (partial: Partial<RewriteRules>): RewriteRules => ({
+  version: 1,
+  names: [],
+  rules: [],
+  preserve: [],
+  ...partial,
+});
+const file = (source: Source, path: string) =>
+  source.files.find((candidate) => candidate.path === path)!.content!;
+const documentOf = (files: ReadonlyMap<string, Uint8Array>, id: string) =>
+  JSON.parse(text(files.get(`apps/${id}.json`))) as Source;
 
-describe("catalog snapshot", () => {
-  test("lays out the feed the catalog client reads from any base URL", async () => {
-    const { written, failures, manifest } = await build({});
+describe("catalog snapshot layout", () => {
+  test("addresses each document by its hash and keeps the path today's client reads", async () => {
+    const { files, failures, manifest } = await build({});
     expect(failures).toEqual([]);
-    expect([...written.keys()].sort()).toEqual([
-      "apps/chat.json",
-      "apps/mail.json",
-      "icons/mail.svg",
-      "index.json",
-    ]);
-    const index = JSON.parse(written.get("index.json")!);
-    const mail = index.apps[0];
-    // The client resolves the source and icons against the index's own URL.
-    for (const base of ["https://catalog.example/index.json", "http://127.0.0.1:9/x/index.json"]) {
-      expect(new URL(`apps/${mail.id}.json`, base).href).toBe(new URL(mail.source, base).href);
-      expect(new URL(mail.icons[0].src, base).href).toBe(
-        new URL("icons/mail.svg", new URL(".", base)).href,
-      );
-    }
-    expect(manifest).toMatchObject({ entries: 2, documents: 2, icons: 1, duplicateIds: [] });
-  });
-
-  test("hashes each source document's exact bytes in the index and the manifest", async () => {
-    const { written, manifest } = await build({});
-    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-    const index = JSON.parse(written.get("index.json")!);
+    const index = JSON.parse(text(files.get("index.json")));
     for (const app of index.apps) {
-      const document = written.get(`apps/${app.id}.json`)!;
-      expect(app.sha256).toBe(hash(document));
-      expect(manifest.files[`apps/${app.id}.json`]).toEqual({
-        sha256: hash(document),
-        bytes: Buffer.byteLength(document),
-      });
+      const bytes = files.get(app.source)!;
+      expect(app.source).toBe(`apps/${app.id}/${sha256(bytes)}.json`);
+      expect(app.sha256).toBe(sha256(bytes));
+      // Both lookups are present, with the same bytes.
+      expect(Buffer.from(files.get(`apps/${app.id}.json`)!).equals(bytes)).toBe(true);
+      // Both resolve against the index's own URL, from any base.
+      for (const base of ["https://catalog.example/index.json", "http://127.0.0.1:9/x/index.json"])
+        expect(new URL(app.source, base).href).toBe(
+          new URL(`apps/${app.id}/${app.sha256}.json`, new URL(".", base)).href,
+        );
     }
-    expect(manifest.feed.sha256).toBe(hash(written.get("index.json")!));
-    expect(manifest.totalBytes).toBe(
-      [...written.values()].reduce((sum, text) => sum + Buffer.byteLength(text), 0),
+    const [mail] = index.apps;
+    expect(mail.icons[0].src).toBe(`icons/${sha256("<svg/>")}.svg`);
+    expect([...files.keys()].sort()).toEqual(
+      [
+        "apps/chat.json",
+        index.apps[1].source,
+        "apps/mail.json",
+        mail.source,
+        mail.icons[0].src,
+        "index.json",
+        "manifest.json",
+      ].sort(),
     );
+    expect(manifest).toMatchObject({ version: 2, entries: 2, documents: 2, icons: 1, rules: null });
+    expect(snapshotProblems(files)).toEqual([]);
   });
 
   test("is byte-identical across runs and independent of the served formatting", async () => {
     const first = await build({});
     const second = await build({});
-    expect([...second.written]).toEqual([...first.written]);
-    expect(second.manifest).toEqual(first.manifest);
+    expect([...second.files]).toEqual([...first.files]);
     expect(serialize({ b: [2, { d: 1, c: 0 }], a: "x" })).toBe(
       '{\n  "a": "x",\n  "b": [\n    2,\n    {\n      "c": 0,\n      "d": 1\n    }\n  ]\n}\n',
     );
   });
 
-  test("lists every document it cannot validate instead of stopping at the first", async () => {
-    const { failures, written } = await build({
-      apps: [entry("mail"), entry("chat"), entry("gone"), entry("no-index")],
+  test("lists an id repeated with an identical entry once, and fails one repeated differently", async () => {
+    const same = await build({ apps: [entry("mail"), entry("chat"), entry("mail")] });
+    expect(same.failures).toEqual([]);
+    expect(same.manifest).toMatchObject({ entries: 2, duplicateIds: ["mail"] });
+    const ids = JSON.parse(text(same.files.get("index.json"))).apps.map(
+      (app: { id: string }) => app.id,
+    );
+    expect(ids).toEqual(["mail", "chat"]);
+
+    const different = await build({
+      apps: [entry("mail"), entry("chat"), { ...entry("mail"), description: "Other" }],
+    });
+    expect(different.failures).toEqual([
+      { document: "index.json#/apps/2", reason: "mail is listed again with different fields" },
+    ]);
+  });
+
+  test("lists every document it cannot use instead of stopping at the first", async () => {
+    const { failures } = await build({
+      apps: [
+        entry("mail"),
+        entry("chat"),
+        entry("gone"),
+        entry("../up"),
+        entry("x", [{ src: "https://cdn.example/a.svg" }]),
+      ],
       sources: {
         mail: { ...source("@acme.sh/mail"), package: "@acme.sh/other" },
         chat: { package: "@acme.sh/chat" },
-        "no-index": { package: "x", files: [{ path: "package.json", content: manifest("x") }] },
+        x: source("@acme.sh/x"),
       },
       icons: {},
     });
-    expect(failures.map((failure) => failure.document)).toEqual([
-      "apps/mail.json",
-      "apps/chat.json",
-      "apps/gone.json",
-      "apps/no-index.json",
+    expect(failures.map((failure) => [failure.document, failure.reason.slice(0, 30)])).toEqual([
+      ["apps/mail.json", "package.json names @acme.sh/ma"],
+      ["apps/chat.json", "not a catalog source: Missing "],
+      ["apps/gone.json", "the feed has no source documen"],
+      ["index.json#/apps/3", 'id "../up" cannot name a file'],
+      ["index.json#/apps/4", "icon https://cdn.example/a.svg"],
     ]);
-    expect(failures[0]!.reason).toContain("package.json names @acme.sh/mail");
-    expect(failures[2]!.reason).toBe("the feed has no source document for this entry");
-    expect(written.has("index.json")).toBe(true);
   });
 
-  test("refuses an id or icon that would leave the snapshot", async () => {
-    const { failures } = await build({ apps: [entry("../mail")], sources: {} });
-    expect(failures).toEqual([
-      expect.objectContaining({ document: "index.json#/apps/0", reason: expect.any(String) }),
-    ]);
+  test("reads only icons that stay inside the feed", () => {
     expect(iconPath("icons/a.svg")).toBe("icons/a.svg");
     expect(iconPath("./icons/a.svg")).toBe("icons/a.svg");
-    // Resolved as the client resolves it: this one stays inside, at the root.
-    expect(iconPath("icons/%2e%2e/a.svg")).toBe("a.svg");
     for (const outside of [
       "../a.svg",
       "/a.svg",
@@ -141,104 +166,288 @@ describe("catalog snapshot", () => {
       "icons/a.svg?x=1",
       "index.json",
       "data:image/png;base64,AA==",
+      "icons/.hidden",
     ])
       expect(iconPath(outside)).toBeUndefined();
   });
+});
 
-  test("keeps duplicate ids pointing at their one document", async () => {
-    const { manifest, written } = await build({
-      apps: [entry("mail"), entry("chat"), entry("mail")],
+describe("snapshot relationships", () => {
+  /** The snapshot's files with one changed and the manifest fixed up to match, as an attacker would. */
+  async function tampered(change: (files: Map<string, Uint8Array>) => void) {
+    const files = new Map((await build({})).files);
+    change(files);
+    const manifest = JSON.parse(text(files.get("manifest.json")));
+    manifest.files = Object.fromEntries(
+      [...files.keys()]
+        .filter((path) => path !== "manifest.json")
+        .sort()
+        .map((path) => [
+          path,
+          { sha256: sha256(files.get(path)!), bytes: files.get(path)!.byteLength },
+        ]),
+    );
+    manifest.feed = manifest.files["index.json"];
+    files.set("manifest.json", new TextEncoder().encode(serialize(manifest)));
+    return snapshotProblems(files);
+  }
+
+  test("refuses a document whose bytes are not the index's hash, even with the manifest fixed up", async () => {
+    const problems = await tampered((files) => {
+      const index = JSON.parse(text(files.get("index.json")));
+      const path = index.apps[0].source;
+      const edited = new TextEncoder().encode(
+        text(files.get(path)).replace("acme app", "evil app"),
+      );
+      files.set(path, edited);
+      files.set("apps/mail.json", edited);
     });
-    expect(manifest).toMatchObject({ entries: 3, documents: 2, duplicateIds: ["mail"] });
-    const [first, , again] = JSON.parse(written.get("index.json")!).apps;
-    expect(again).toEqual(first);
+    expect(problems).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/mail.*not named by its hash/u),
+        "mail: no document with its hash",
+      ]),
+    );
   });
 
-  test("rewrites the feed and every text file in order, counting each mapping entry", async () => {
-    const binary = { path: "ui/public/logo.png", content: "YWNtZQ==", encoding: "base64" };
-    const { written, manifest, leftovers, failures } = await build({
-      sources: {
-        mail: source("@acme.sh/mail", [binary]),
-        chat: source("@acme.sh/chat"),
+  test("refuses a dotfile, an unlisted extra, an icon outside icons/ and a different legacy copy", async () => {
+    expect(await tampered((files) => files.set(".env", new Uint8Array([1])))).toContain(
+      ".env has no place in a snapshot",
+    );
+    expect(
+      await tampered((files) => files.set("apps/.hidden.json", new Uint8Array([1]))),
+    ).toContain("apps/.hidden.json has no place in a snapshot");
+    const [extra] = await tampered((files) =>
+      files.set(`icons/${"a".repeat(64)}.svg`, new Uint8Array([1])),
+    );
+    expect(extra).toMatch(/is not named by its hash/u);
+    const moved = await tampered((files) => {
+      const index = JSON.parse(text(files.get("index.json")));
+      // The icon moved to a document's path.
+      const icon = files.get(index.apps[0].icons[0].src)!;
+      files.delete(index.apps[0].icons[0].src);
+      index.apps[0].icons[0].src = index.apps[1].source;
+      files.set(index.apps[1].source, icon);
+      files.set("index.json", new TextEncoder().encode(serialize(index)));
+    });
+    expect(moved).toEqual(
+      expect.arrayContaining([expect.stringMatching(/icon apps\/chat\/.* is not a file/u)]),
+    );
+    const legacy = await tampered((files) =>
+      files.set("apps/chat.json", new TextEncoder().encode("{}")),
+    );
+    expect(legacy).toContain("chat: apps/chat.json is not the same document");
+  });
+
+  test("refuses files that differ from an untouched manifest", async () => {
+    const files = new Map((await build({})).files);
+    files.set("apps/extra.json", new Uint8Array([1]));
+    files.delete("apps/chat.json");
+    expect(snapshotProblems(files)).toEqual(
+      expect.arrayContaining([
+        "apps/chat.json is missing",
+        "apps/extra.json is not in the manifest",
+      ]),
+    );
+  });
+});
+
+describe("scoped rewrite rules", () => {
+  const scoped = rules({
+    names: ["acme"],
+    rules: [
+      { id: "scope", scope: "package", from: "@acme.sh/", to: "@opensteer.example/" },
+      { id: "key", scope: "manifest-key", from: "acme", to: "engine" },
+      { id: "prose", scope: "markdown", from: "Acme", to: "Opensteer" },
+      { id: "comments", scope: "comments", from: "acme", to: "the engine" },
+      {
+        id: "one-off",
+        scope: "text",
+        from: "Acme tools",
+        to: "Opensteer tools",
+        documents: ["mail"],
+        files: ["tools/main.ts"],
       },
-      rewrites: [
-        ["@acme.sh/", "@opensteer/"],
-        ["acme", "steer"],
-      ],
+    ],
+    preserve: [
+      { text: "Acme Cloud", reason: "upstream's hosted service" },
+      { text: "User-Agent: acme/1", reason: "provider-facing identifier" },
+      // Code the scopes do not reach still has to be accounted for.
+      { text: "`Acme` stays", reason: "code span" },
+      { text: "Acme in a fence", reason: "fenced code" },
+      { text: "/acme\\/\\//u", reason: "regular expression" },
+      { text: "`acme ${", reason: "template" },
+      { text: "} acme`", reason: "template" },
+      { text: 'name = "acme"', reason: "string" },
+    ],
+  });
+  const readme = [
+    "Acme registers a client. Acme Cloud does too.",
+    "Requests send `User-Agent: acme/1` and `Acme` stays in code.",
+    "```",
+    "Acme in a fence",
+    "```",
+    "![logo](data:image/png;base64,iVBORacmeQ==)",
+    "",
+  ].join("\n");
+  const code = [
+    'const ua = "User-Agent: acme/1"; // sent by acme',
+    "const re = /acme\\/\\//u; /* acme block */",
+    "const t = `acme ${x /* acme */} acme`;",
+    'export const tools = ["Acme tools"];',
+  ].join("\n");
+  const mail = source("@acme.sh/mail", [
+    { path: "README.md", content: readme },
+    { path: "helper.py", content: '# acme\nname = "acme"  # acme\n' },
+  ]).files.map((f) => (f.path === "tools/main.ts" ? { ...f, content: code } : f));
+
+  test("rewrites only where each rule applies and keeps preserved, coded and encoded text", async () => {
+    const { files, failures, report, manifest } = await build({
+      apps: [entry("mail")],
+      sources: { mail: { files: mail, package: "@acme.sh/mail" } },
+      rules: scoped,
     });
     expect(failures).toEqual([]);
-    expect(leftovers).toEqual([]);
-    const mail = JSON.parse(written.get("apps/mail.json")!);
-    expect(mail.package).toBe("@opensteer/mail");
-    expect(
-      JSON.parse(mail.files.find((f: { path: string }) => f.path === "package.json").content),
-    ).toMatchObject({ name: "@opensteer/mail" });
-    expect(mail.files.find((f: { path: string }) => f.path === "index.ts").content).toContain(
-      "// steer app @opensteer/mail",
-    );
-    // Binary bytes are not text, so they are copied as they are.
-    expect(mail.files.find((f: { path: string }) => f.path === binary.path)).toEqual(binary);
-    expect(JSON.parse(written.get("index.json")!).apps[0]).toMatchObject({
-      package: "@opensteer/mail",
-      description: "Talk to mail through steer",
+    const document = documentOf(files, "mail");
+    // The package name in all three places, and a valid one.
+    expect(document.package).toBe("@opensteer.example/mail");
+    expect(JSON.parse(file(document, "package.json"))).toEqual({
+      name: "@opensteer.example/mail",
+      engine: { title: "x" },
+      dependencies: { apps: "1.0.0" },
     });
-    // Index: 2 packages, 2 descriptions. Each source: package, package.json name, index.ts.
-    expect(manifest.rewrites).toEqual([
-      { from: "@acme.sh/", to: "@opensteer/", count: 2 + 3 * 2 },
-      { from: "acme", to: "steer", count: 2 + 2 },
+    expect(JSON.parse(text(files.get("index.json"))).apps[0].package).toBe(
+      "@opensteer.example/mail",
+    );
+    expect(file(document, "README.md")).toBe(
+      readme.replace("Acme registers", "Opensteer registers"),
+    );
+    expect(file(document, "tools/main.ts")).toBe(
+      [
+        'const ua = "User-Agent: acme/1"; // sent by the engine',
+        "const re = /acme\\/\\//u; /* the engine block */",
+        "const t = `acme ${x /* the engine */} acme`;",
+        'export const tools = ["Opensteer tools"];',
+      ].join("\n"),
+    );
+    expect(file(document, "helper.py")).toBe('# the engine\nname = "acme"  # the engine\n');
+    // Every name left is accounted for: preserved, inside code the rules do not touch, or base64.
+    const left = report.remaining.map((occurrence) => [
+      occurrence.location.split("#")[1],
+      occurrence.reason,
+    ]);
+    expect(left).toEqual(
+      expect.arrayContaining([
+        ["README.md:1", "upstream's hosted service"],
+        ["README.md:2", "provider-facing identifier"],
+        ["README.md:4", "fenced code"],
+        ["README.md:6", "base64"],
+        ["tools/main.ts:2", "regular expression"],
+      ]),
+    );
+    expect(report.rules.find((rule) => rule.id === "scope")?.count).toBe(3);
+    // The published manifest carries the rule file's hash, never its strings.
+    expect(text(files.get("manifest.json"))).not.toMatch(/acme/iu);
+    expect(manifest.rules).toBe("f".repeat(64));
+  });
+
+  test("fails a name no rule rewrites and no preserve entry keeps", async () => {
+    const { failures } = await build({
+      apps: [entry("mail")],
+      sources: { mail: { files: mail, package: "@acme.sh/mail" } },
+      // A string in code no scope reaches, and no preserve entry keeps.
+      rules: { ...scoped, preserve: scoped.preserve.filter((item) => item.reason !== "string") },
+    });
+    expect(failures).toEqual([
+      { document: "apps/mail.json#helper.py:2", reason: expect.stringContaining("a name remains") },
     ]);
   });
 
-  test("reports old strings that remain after rewriting", async () => {
-    const { leftovers, written } = await build({
-      // The second pair puts the first one's old string back.
-      rewrites: [
-        ["acme", "steer"],
-        ["steer", "acme"],
-      ],
-    });
-    expect(leftovers).toEqual([
-      expect.objectContaining({ from: "acme", first: "apps/mail.json#/files/0/content" }),
-    ]);
-    expect(leftovers[0]!.count).toBeGreaterThan(0);
-    expect(written.get("index.json")).toContain("through acme");
-  });
-
-  test("accepts only an ordered list of exact string pairs", () => {
-    expect(checkRewrites([["a", "b"]])).toEqual([["a", "b"]]);
-    expect(checkRewrites([])).toEqual([]);
-    for (const invalid of [undefined, { a: "b" }, [["a"]], [["", "b"]], [["a", 1]]])
-      expect(() => checkRewrites(invalid)).toThrow("[old, new] string pairs");
-    expect(() =>
-      checkRewrites([
-        ["a", "b"],
-        ["a", "c"],
-      ]),
-    ).toThrow('lists "a" twice');
-  });
-
-  test("publishes only a directory that is exactly the snapshot its manifest describes", async () => {
-    const { manifest, written } = await build({});
-    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-    const files = Object.fromEntries(
-      [...written].map(([path, text]) => [
-        path,
-        { sha256: hash(text), bytes: Buffer.byteLength(text) },
-      ]),
-    );
-    const manifestFile = { sha256: hash("{}"), bytes: 2 };
-    expect(manifestProblems(manifest, { ...files, "manifest.json": manifestFile })).toEqual([]);
-    const { "apps/chat.json": _missing, ...partial } = files;
-    expect(
-      manifestProblems(manifest, {
-        ...partial,
-        "apps/mail.json": { ...files["apps/mail.json"]!, sha256: hash("edited") },
-        "apps/extra.json": manifestFile,
+  test("refuses a package scope the engine's package-name contract rejects", async () => {
+    const { failures } = await build({
+      rules: rules({
+        rules: [{ id: "scope", scope: "package", from: "@acme.sh/", to: "@Opensteer/" }],
       }),
-    ).toEqual([
-      "apps/chat.json is missing",
-      "apps/mail.json differs from the manifest",
-      "apps/extra.json is not in the manifest",
+    });
+    expect(failures).toEqual(
+      expect.arrayContaining([
+        { document: "apps/mail.json", reason: "@Opensteer/mail is not a valid package name" },
+      ]),
+    );
+  });
+
+  test("refuses a rewrite that breaks an import, a JSON file or encoded data", () => {
+    const original: Source = {
+      package: "p",
+      files: [
+        {
+          path: "index.ts",
+          content: 'import { a } from "./lib/a.js";\nconst logo = "data:image/png;base64,AAAA";',
+        },
+        { path: "lib/a.ts", content: "export const a = 1;" },
+        { path: "spec.json", content: '{"a":"acme"}' },
+        { path: "ui/public/x.png", content: "AAAA", encoding: "base64" },
+      ],
+    };
+    const edit = (path: string, content: string, encoding?: string): Source => ({
+      ...original,
+      files: original.files.map((f) =>
+        f.path === path ? { ...f, content, ...(encoding ? { encoding } : {}) } : f,
+      ),
+    });
+    expect(rewriteProblems(original, original)).toEqual([]);
+    expect(
+      rewriteProblems(
+        original,
+        edit(
+          "index.ts",
+          'import { a } from "./lib/b.js";\nconst logo = "data:image/png;base64,AAAA";',
+        ),
+      ),
+    ).toEqual(["index.ts: a relative import changed"]);
+    expect(
+      rewriteProblems(
+        original,
+        edit(
+          "index.ts",
+          'import { a } from "./lib/a.js";\nconst logo = "data:image/png;base64,AAAB";',
+        ),
+      ),
+    ).toEqual(["index.ts: a data URI or base64 run changed"]);
+    expect(rewriteProblems(original, edit("spec.json", '{"a":"ac"me"}'))).toEqual([
+      "spec.json: no longer parses as JSON",
     ]);
+    expect(rewriteProblems(original, edit("ui/public/x.png", "AAAB", "base64"))).toEqual([
+      "ui/public/x.png: a non-text file changed",
+    ]);
+  });
+
+  test("finds prose and comments without touching code, strings or regular expressions", () => {
+    const prose = (value: string) => markdownProse(value).map(([a, b]) => value.slice(a, b));
+    expect(prose("a `b` c\n```\nd\n```\ne ``f ` g`` h")).toEqual(["a ", " c\n", "e ", " h"]);
+    const comments = (value: string, find = scriptComments) =>
+      find(value).map(([a, b]) => value.slice(a, b));
+    expect(comments('a("//x"); b = 1 / 2; // c\nd = /\\/\\/*/; /* e */ `${"//"}` // f')).toEqual([
+      "// c",
+      "/* e */",
+      "// f",
+    ]);
+    expect(comments("x = '''# not\n''' # yes\n\"#\" # also", pythonComments)).toEqual([
+      "# yes",
+      "# also",
+    ]);
+  });
+
+  test("takes rules as JSON data with known keys only", () => {
+    const valid = JSON.stringify(scoped);
+    expect(parseRules(valid)).toEqual(scoped);
+    for (const invalid of [
+      "export const renames = [];",
+      JSON.stringify({ ...scoped, rules: [{ ...scoped.rules[0], extra: 1 }] }),
+      JSON.stringify({ ...scoped, rules: [{ ...scoped.rules[0], scope: "everywhere" }] }),
+      JSON.stringify({ ...scoped, rules: [{ id: "t", scope: "text", from: "a", to: "b" }] }),
+      JSON.stringify({ ...scoped, rules: [scoped.rules[0], scoped.rules[0]] }),
+    ])
+      expect(() => parseRules(invalid)).toThrow();
   });
 });
