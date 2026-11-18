@@ -1,6 +1,6 @@
 ---
 name: testing
-description: Use when diagnosing PostgreSQL integration test failures, containment or worker-contamination errors, lock-order violations or same-SHA reruns, quarantining an unresolved flaky test, selecting client attachment and Personal connection recovery checks after changing routing, catalog authority or reconnect behavior, or maintaining CI selection, shard weights, job timeouts and native-mac inputs.
+description: Use when diagnosing PostgreSQL integration test failures, containment or worker-contamination errors, lock-order violations or same-SHA reruns, listing main's flaky tests with the flake ledger, quarantining an unresolved flaky test, selecting client attachment and Personal connection recovery checks after changing routing, catalog authority or reconnect behavior, or maintaining CI selection, shard weights, job timeouts and native-mac inputs.
 ---
 
 # Testing
@@ -23,6 +23,7 @@ Test infrastructure procedures. Report commands run and checks skipped.
 
 - [Integration tests](references/integration-tests.md): focused runs, lock order, reruns, crash
   cleanup.
-- [Quarantine a flaky test](references/quarantine.md): recording an unresolved flake.
+- [Quarantine a flaky test](references/quarantine.md): the flake ledger, the quarantine rule,
+  recording an unresolved flake.
 - [Client connections](references/client-connections.md): attachment and recovery checks.
 - [CI maintenance](references/ci-maintenance.md): selection, shard weights, timeouts.
