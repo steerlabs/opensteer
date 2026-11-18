@@ -1,4 +1,5 @@
 import { DeviceIdSchema } from "@opensteer/core";
+import { appFrameReadinessScript } from "@opensteer/shared/appFrame";
 import { phoneUseView } from "../integrations/computer-use.js";
 import { mockIphoneScreenStates } from "./mock-screen-devices.js";
 import { DeviceMachineSummarySchema } from "@opensteer/protocol";
@@ -49,6 +50,35 @@ const fixedNow = new Date("2026-08-09T21:15:00.000Z");
 function createClient(): MockHostClient {
   return new MockHostClient({ latencyMs: 0, now: () => fixedNow });
 }
+
+it("reports the mock plugin page ready to the native WebView bridge", async () => {
+  const client = createClient();
+  try {
+    const { url } = await client.viewPluginPage("plg_linear", "dark");
+    const html = decodeURIComponent(new URL(url).pathname.slice("text/html,".length));
+    const script = /<script>([\s\S]*?)<\/script>/u.exec(html)?.[1];
+    expect(script).toBeDefined();
+
+    const postMessage = vi.fn();
+    const window = { ReactNativeWebView: { postMessage }, dispatchEvent: vi.fn() };
+    const document = { documentElement: { dataset: {}, style: {} } };
+    new Function("window", "parent", "document", "addEventListener", script!)(
+      window,
+      window,
+      document,
+      vi.fn(),
+    );
+
+    expect(postMessage).toHaveBeenCalledWith(JSON.stringify({ type: "opensteer-app:ready" }));
+    postMessage.mockClear();
+    new Function("window", appFrameReadinessScript)(window);
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({ type: "opensteer-app:ready" }),
+    );
+  } finally {
+    client.dispose();
+  }
+});
 
 it("implements installed-engine update commands in the mock", async () => {
   const client = createClient();

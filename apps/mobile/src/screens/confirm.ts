@@ -1,11 +1,17 @@
 import { ActionSheetIOS, Alert, Platform } from "react-native";
 
-export function confirmDestructive(input: {
+interface Confirmation {
   readonly title: string;
   readonly message: string;
   readonly confirm: string;
   readonly onConfirm: () => void;
-}): void {
+}
+
+export function confirm(input: Confirmation): void {
+  confirmAlert(input, false);
+}
+
+export function confirmDestructive(input: Confirmation): void {
   if (Platform.OS === "ios") {
     ActionSheetIOS.showActionSheetWithOptions(
       {
@@ -21,8 +27,21 @@ export function confirmDestructive(input: {
     );
     return;
   }
-  Alert.alert(input.title, input.message, [
-    { style: "cancel", text: "Cancel" },
-    { onPress: input.onConfirm, style: "destructive", text: input.confirm },
-  ]);
+  confirmAlert(input, true);
+}
+
+function confirmAlert(input: Confirmation, destructive: boolean): void {
+  Alert.alert(
+    input.title,
+    input.message,
+    [
+      { style: "cancel", text: "Cancel" },
+      {
+        onPress: input.onConfirm,
+        text: input.confirm,
+        ...(destructive ? { style: "destructive" } : {}),
+      },
+    ],
+    { cancelable: true },
+  );
 }

@@ -1,6 +1,11 @@
 import type { HostClient } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
-import { appContentHeight, appFrameReady, isAppNavigation } from "@opensteer/shared/appFrame";
+import {
+  appContentHeight,
+  appFrameReadinessScript,
+  appFrameReady,
+  isAppNavigation,
+} from "@opensteer/shared/appFrame";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
@@ -115,9 +120,13 @@ function isolation(url: string): WebViewProps {
  * failed when it never does. A page's messages carry no native authority, so
  * each is parsed for exactly what it may say.
  */
-function useAppLoad(onMessage: (message: unknown) => void) {
+function useAppLoad(
+  webView: RefObject<WebView<object> | null>,
+  onMessage: (message: unknown) => void,
+) {
   const [loadFailed, setLoadFailed] = useState(false);
   const ready = useRef(false);
+  const android = Platform.OS === "android";
   const settle = () => {
     if (!ready.current) setLoadFailed(true);
   };
@@ -129,6 +138,10 @@ function useAppLoad(onMessage: (message: unknown) => void) {
       } catch {
         return;
       }
+      if (android && isRecord(message) && message["type"] === "opensteer-app:unprepared") {
+        setLoadFailed(true);
+        return;
+      }
       if (appFrameReady(message)) {
         ready.current = true;
         setLoadFailed(false);
@@ -138,19 +151,25 @@ function useAppLoad(onMessage: (message: unknown) => void) {
     onLoadStart: () => {
       ready.current = false;
     },
-    onLoad: settle,
-    onError: settle,
+    onLoad: () => {
+      // The Android load event can overtake the bootstrap's ready message.
+      // Ask the finished document before replacing its WebView with an error.
+      if (!android) settle();
+      else if (!ready.current) webView.current?.injectJavaScript(appFrameReadinessScript);
+    },
+    onError: android ? () => setLoadFailed(true) : settle,
     onHttpError: () => {
       /* A prepared error document can still send ready before onLoadEnd. */
     },
-    onLoadEnd: settle,
+    ...(android ? { onRenderProcessGone: () => setLoadFailed(true) } : { onLoadEnd: settle }),
   };
   return { events, loadFailed };
 }
 
 function CardDocument(props: { readonly url: string; readonly retry: () => void }) {
   const [height, setHeight] = useState(280);
-  const { events, loadFailed } = useAppLoad((message) => {
+  const webView = useRef<WebView<object>>(null);
+  const { events, loadFailed } = useAppLoad(webView, (message) => {
     const reported = appContentHeight(message);
     if (reported !== null) setHeight(reported);
   });
@@ -164,6 +183,7 @@ function CardDocument(props: { readonly url: string; readonly retry: () => void 
     <WebView
       {...isolation(props.url)}
       {...events}
+      ref={webView}
       style={frameStyle}
       containerStyle={frameStyle}
       startInLoadingState
@@ -268,7 +288,7 @@ function TabDocument(props: {
   // `withTiming` honours Reduce Motion, which shows the app at once.
   const opacity = useSharedValue(0);
   const reveal = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  const { events, loadFailed } = useAppLoad((message) => {
+  const { events, loadFailed } = useAppLoad(webView, (message) => {
     if (appFrameReady(message)) {
       opacity.value = withTiming(1, { duration: revealDuration });
       onReady();

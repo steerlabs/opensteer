@@ -46,6 +46,8 @@ export type NativeSettingsRow =
       readonly kind: "primary";
       readonly label: string;
       readonly disabled?: boolean;
+      /** Let a form keep its action visible while the list scrolls above the keyboard. */
+      readonly pinned?: boolean;
       readonly onPress: () => void;
     }
   | {
