@@ -96,6 +96,7 @@ async function serveMcp(
   );
   if (options.notify) options.notify.current = () => realtime.wake("0", new Set(["deployment"]));
   const observations = {
+    observe: realtime.observe.bind(realtime),
     observeScopes: (...args: Parameters<RealtimeHub["observeScopes"]>) => {
       options.subscribed?.();
       const detach = realtime.observeScopes(...args);
