@@ -34,11 +34,12 @@ import { publishThreadSummary } from "./thread-status.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
 const retainedRows = 4_096;
+// Pruning frees this many rows at once, so most commits that fill the feed delete nothing.
+const pruneChunkRows = 512;
 const maxCommitRows = 128;
 const maxChangeBytes = 8 * 1024;
 const maxCommitBytes = personalChangesFrameMaxBytes;
 const scopeEnvelopeReserve = 1024;
-const retentionMs = 24 * 60 * 60 * 1000;
 
 type TargetDb = Kysely<DatabaseSchema>;
 export type PersonalMutationTransaction = Transaction<DatabaseSchema>;
@@ -86,7 +87,6 @@ interface CommitNotice {
   readonly deploymentId: DeploymentId;
   readonly head: string;
   readonly floor: string;
-  readonly nextExpiryAt: number | null;
   readonly changedScopes: ReadonlySet<string>;
   readonly resourceKinds: ReadonlySet<PersonalResourceKind>;
 }
@@ -222,6 +222,7 @@ class Mutation {
     { kind: PersonalAttentionTable["kind"] | null; write: ProjectionWrite }
   >();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
+  readonly touchedThreads = new Set<ThreadId>();
   readonly #counters = {
     pendingRequestCount: 0,
     pendingDeviceAccessRequestCount: 0,
@@ -385,6 +386,10 @@ class Mutation {
   receipt(write: (head: string) => Promise<void>) {
     this.#receipts.push(write);
   }
+  /** A Request or approval-gated input of this task changed; its pending count is recounted. */
+  touchThread(threadId: ThreadId) {
+    this.touchedThreads.add(threadId);
+  }
 
   transcriptPlacement(id: string) {
     return this.#transcript.get(id)?.placement;
@@ -418,58 +423,30 @@ class Mutation {
     const at = new Date(Math.max(state.now.getTime(), state.lastCommitAt.getTime()));
     let floor = state.prunedThroughSequence;
     let count = state.retainedChangeCount;
-    const keep = tx
-      .selectFrom("clientChanges")
-      .select("sequence")
-      .where("deploymentId", "=", deploymentId);
-    const earliest = keep.select("createdAt").orderBy("sequence").orderBy("ordinal").limit(1);
-    const oldestBefore = count > 0 ? await earliest.executeTakeFirstOrThrow() : undefined;
-    if (this.#reset || this.#privacyPurge) {
-      floor = head;
-    } else {
-      const overshoot = count + changes.length - retainedRows;
-      const countCut =
-        overshoot > 0
-          ? (
-              await keep
-                .orderBy("sequence")
-                .orderBy("ordinal")
-                .offset(overshoot - 1)
-                .limit(1)
-                .executeTakeFirst()
-            )?.sequence
-          : undefined;
-      const before = state.now.getTime() - retentionMs;
-      const ageCut =
-        oldestBefore && oldestBefore.createdAt.getTime() <= before
-          ? (
-              await keep
-                .select("createdAt")
-                .orderBy("sequence")
-                .orderBy("ordinal")
-                .limit(maxCommitRows)
-                .execute()
-            ).findLast((row) => row.createdAt.getTime() <= before)?.sequence
-          : undefined;
-      for (const candidate of [countCut, ageCut]) {
-        if (candidate !== undefined && BigInt(candidate) > BigInt(floor)) floor = candidate;
-      }
-    }
     for (const write of this.#receipts) await write(head);
     for (const id of [...this.#attention.keys()].sort()) await this.#attention.get(id)!.write();
-    if (BigInt(floor) > BigInt(state.prunedThroughSequence) && count > 0) {
-      await keep
-        .where("sequence", "<=", floor)
-        .orderBy("sequence")
-        .orderBy("ordinal")
-        // FOR UPDATE: Deletes this prefix from the feed.
-        .forUpdate()
+    const feed = () => tx.deleteFrom("clientChanges").where("deploymentId", "=", deploymentId);
+    if (this.#reset || this.#privacyPurge) {
+      floor = head;
+      if (count > 0) count -= Number((await feed().executeTakeFirst()).numDeletedRows);
+    } else if (count + changes.length > retainedRows) {
+      // Rounds the cut up to a whole commit, so a replay never sees part of one.
+      const cut = Math.min(count, count + changes.length - retainedRows + pruneChunkRows) - 1;
+      const pruned = await feed()
+        .where("sequence", "<=", (eb) =>
+          eb
+            .selectFrom("clientChanges")
+            .select("sequence")
+            .where("deploymentId", "=", deploymentId)
+            .orderBy("sequence")
+            .orderBy("ordinal")
+            .offset(cut)
+            .limit(1),
+        )
+        .returning("sequence")
         .execute();
-      const prefix = tx
-        .deleteFrom("clientChanges")
-        .where("deploymentId", "=", deploymentId)
-        .where("sequence", "<=", floor);
-      count -= Number((await prefix.executeTakeFirst()).numDeletedRows);
+      count -= pruned.length;
+      for (const { sequence } of pruned) if (BigInt(sequence) > BigInt(floor)) floor = sequence;
     }
     if (changes.length) {
       await tx
@@ -515,12 +492,6 @@ class Mutation {
         .where("deploymentId", "=", deploymentId)
         .execute();
     }
-    const oldest =
-      count === 0
-        ? null
-        : oldestBefore && BigInt(oldestBefore.sequence) > BigInt(floor)
-          ? oldestBefore
-          : await earliest.executeTakeFirstOrThrow();
     return {
       deploymentId,
       head,
@@ -535,7 +506,6 @@ class Mutation {
         ...(this.authorityScopes.size ? ["authority"] : []),
         ...(this.#reset || this.#privacyPurge ? ["deployment"] : []),
       ]),
-      nextExpiryAt: oldest ? oldest.createdAt.getTime() + retentionMs : null,
     };
   }
 
@@ -567,6 +537,7 @@ export type PersonalMutation = Pick<
   | "purge"
   | "fence"
   | "receipt"
+  | "touchThread"
   | "observation"
   | "reaction"
   | "react"
@@ -595,34 +566,19 @@ export async function commitPersonalMutation<Result>(
     const state = await tx
       .selectFrom("clientSyncState")
       .selectAll()
+      .select(sql<Date>`clock_timestamp()`.as("now"))
       .forNoKeyUpdate()
       .limit(1)
       .executeTakeFirstOrThrow();
     if (!state.ready) throw new Error("Personal current state is unready");
-    await tx
-      .selectFrom("personalSettings")
-      .select("singletonKey")
-      .forNoKeyUpdate()
-      .limit(1)
-      .execute();
-    const clock = await tx
-      .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
-      .executeTakeFirstOrThrow();
-    const mutation = new Mutation({ ...state, now: clock.now });
+    const mutation = new Mutation(state);
     active.set(tx, mutation);
     const result = await action(tx, mutation);
-    // The database counter covers both Requests and approval-gated inputs.
-    // Publish its dependent rows under the same commit fence as the change.
-    const changedCounts = await tx
-      .updateTable("threads")
-      .set({ requestCountChanged: false })
-      .where(sql<boolean>`request_count_changed`)
-      .returning("id")
-      .execute();
-    for (const { id } of changedCounts) {
-      await publishThreadSummary(tx, id);
-      await refreshAssignmentWorkerSummaries(tx, id);
-    }
+    for (const id of [...mutation.touchedThreads].sort())
+      if (await recountPendingRequests(tx, id)) {
+        await publishThreadSummary(tx, id);
+        await refreshAssignmentWorkerSummaries(tx, id);
+      }
     const notice = await mutation.write(tx);
     if (mutation.authorityScopes.size) {
       if (!listener?.suspend) throw new Error("Personal authority mutation has no dispatch fence");
@@ -652,6 +608,22 @@ export async function commitPersonalMutation<Result>(
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;
+}
+
+/** Requests and approval-gated inputs both wait on the person. */
+async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {
+  const pending = sql<number>`(select count(*) from requests
+      where originating_thread_id = threads.id and status = 'pending')
+    + (select count(*) from thread_inputs
+      where thread_id = threads.id and state = 'awaiting-approval')`;
+  const changed = await tx
+    .updateTable("threads")
+    .set({ pendingRequestCount: pending })
+    .where("id", "=", threadId)
+    .where("pendingRequestCount", "<>", pending)
+    .returning("id")
+    .executeTakeFirst();
+  return changed !== undefined;
 }
 
 export function wakeExecutionCommands(tx: PersonalMutationTransaction) {

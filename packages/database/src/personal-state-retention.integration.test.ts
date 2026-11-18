@@ -37,10 +37,15 @@ test("a replay cut either sees its whole commit or the new retention floor", asy
         });
       return mutation.sequence;
     });
+    // Later commits in another scope fill the feed to its row cap, one row each.
+    const fill = 4096 - (state.retainedChangeCount + 2);
+    await sql`insert into client_changes(deployment_id,sequence,scope_key,ordinal,entity_kind,entity_id,operation,payload,created_at)
+      select ${run.deploymentId}, n+${head}::bigint, 'node:retention-fill', 0, 'item', 'fill-'||n, 'remove', '{}', clock_timestamp()
+      from generate_series(1,${fill}) n`.execute(database);
+    const filled = (BigInt(head) + BigInt(fill)).toString();
     await database
-      .updateTable("clientChanges")
-      .set({ createdAt: new Date("2000-01-01") })
-      .where("sequence", "=", head)
+      .updateTable("clientSyncState")
+      .set({ sequence: filled, retainedChangeCount: 4096 })
       .execute();
     const read = {
       viewerId: run.userId,
@@ -61,7 +66,14 @@ test("a replay cut either sees its whole commit or the new retention floor", asy
     await withTimeout(cutCaptured.promise, 2000, {
       timeoutError: () => new Error("Old replay did not capture its cut"),
     });
-    await commitPersonalMutation(database, async () => undefined);
+    await commitPersonalMutation(database, async (_tx, mutation) => {
+      mutation.change({
+        scopeKey: "node:retention-fill",
+        entityKind: "item",
+        entityId: "tail",
+        operation: "remove",
+      });
+    });
     pruneFinished.resolve();
     expect(await oldReplay).toMatchObject({
       kind: "replay",
@@ -71,27 +83,34 @@ test("a replay cut either sees its whole commit or the new retention floor", asy
           throughSequence: head,
           changes: [{ entityId: "one" }, { entityId: "two" }],
         },
+        { fromSequence: head, throughSequence: filled, changes: [] },
       ],
     });
+    // One prune frees a whole chunk: 513 rows, rounded up to whole commits.
+    const floor = (BigInt(head) + BigInt(511 - state.retainedChangeCount)).toString();
     expect(await readPersonalScopeCut(database, read)).toMatchObject({
       kind: "snapshot-required",
-      state: { prunedThroughSequence: head, retainedChangeCount: 0 },
+      reason: "cursor-unavailable",
+      state: { prunedThroughSequence: floor, retainedChangeCount: 4096 + 1 - 513 },
     });
     const resourceHead = await commitPersonalMutation(database, async (_tx, mutation) => {
       mutation.bumpResource("settings");
       return mutation.sequence;
     });
     expect(
-      await readPersonalScopeCut(database, { ...read, cursor: { ...cursor, afterSequence: head } }),
+      await readPersonalScopeCut(database, {
+        ...read,
+        cursor: { ...cursor, afterSequence: floor },
+      }),
     ).toMatchObject({
       kind: "replay",
       state: {
         sequence: resourceHead,
-        prunedThroughSequence: head,
-        retainedChangeCount: 0,
+        prunedThroughSequence: floor,
+        retainedChangeCount: 4096 + 1 - 513,
         resourceRevisions: { settings: resourceHead },
       },
-      commits: [{ fromSequence: head, throughSequence: resourceHead, changes: [] }],
+      commits: [{ fromSequence: floor, throughSequence: resourceHead, changes: [] }],
     });
   } finally {
     pruneFinished.resolve();
@@ -200,8 +219,9 @@ test("retention rounds up to a complete commit and purges old scope cursors", as
       .selectFrom("clientSyncState")
       .selectAll()
       .executeTakeFirstOrThrow();
-    expect(point.prunedThroughSequence).toBe((BigInt(initial.sequence) + 1n).toString());
-    expect(point.retainedChangeCount).toBe(3969);
+    // The cut frees a 512-row chunk and rounds up to the fifth whole commit.
+    expect(point.prunedThroughSequence).toBe((BigInt(initial.sequence) + 5n).toString());
+    expect(point.retainedChangeCount).toBe(4096 - 5 * 128 + 1);
     const purged = await commitPersonalMutation(database, async (_tx, mutation) => {
       mutation.purge(`thread:${run.threadId}`);
       return mutation.sequence;

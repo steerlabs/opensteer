@@ -151,6 +151,7 @@ export async function refreshInputQueue(
 ): Promise<void> {
   if (isOfflineSettlement(tx)) return;
   await commitPersonalMutation(tx, async (tx, mutation) => {
+    mutation.touchThread(threadId);
     if (messageId) await syncTranscriptMessage(tx, messageId);
     await tx
       .updateTable("threads")

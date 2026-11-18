@@ -278,6 +278,15 @@ describeStore("PostgreSQL store", (it) => {
             .where("id", "=", fixture.thread.id)
             .executeTakeFirstOrThrow(),
         ).toEqual({ pendingRequestCount: count });
+        const published = await database
+          .selectFrom("clientChanges")
+          .select("payload")
+          .where("entityKind", "=", "thread")
+          .where("entityId", "=", fixture.thread.id)
+          .orderBy("sequence", "desc")
+          .limit(1)
+          .executeTakeFirstOrThrow();
+        expect(published.payload).toMatchObject({ pendingRequestCount: count });
       };
       let ordinal = 1;
       const open = async () => {
