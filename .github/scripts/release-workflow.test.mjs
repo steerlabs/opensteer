@@ -6,7 +6,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { parseDocument } from "yaml";
-import { preflight, qualifiedPreflight, discover, unreleasedPaths } from "./release-plan.mjs";
+import {
+  execute,
+  preflight,
+  qualifiedPreflight,
+  discover,
+  unreleasedPaths,
+} from "./release-plan.mjs";
 const text = readFileSync(new URL("../workflows/release.yml", import.meta.url), "utf8");
 const doc = parseDocument(text, { uniqueKeys: true });
 const workflow = doc.toJS();
@@ -1544,4 +1550,15 @@ test("stable is gated only by the full run's jobs for what a release ships", asy
   } finally {
     f.close();
   }
+});
+
+test("a command's output larger than Node's one megabyte default is returned whole", () => {
+  // A page of 100 workflow runs is about 1.4 MB; the first automatic release failed on it.
+  const size = 3 * 1024 * 1024;
+  const output = execute(
+    process.execPath,
+    ["-e", `process.stdout.write("x".repeat(${size}))`],
+    process.cwd(),
+  );
+  assert.equal(output.length, size);
 });
