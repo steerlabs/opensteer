@@ -44,7 +44,12 @@ async function measure(events: number) {
     const messageCount = Math.floor((events * 5) / 6);
     const tools = Math.floor(events / 60);
     const createdAt = new Date();
-    const author = { kind: "agent", harnessInstanceId: run.harnessInstance.id };
+    const author = {
+      kind: "agent",
+      displayName: "Opensteer",
+      runId: run.runId,
+      threadId: run.threadId,
+    };
     const content = [{ type: "text", text: "A retained assistant update" }];
     // These rows represent messages that predate the migration's fast default.
     await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content,created_at,published)
