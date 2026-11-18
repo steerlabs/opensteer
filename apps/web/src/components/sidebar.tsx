@@ -3,7 +3,7 @@ import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
 import type { TabGroupColor, TabId } from "@opensteer/core";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
-import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
+import { sameTaskRow, taskMark, taskMarkQuiet } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
 import { useNativeBrowserLayer, useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -87,7 +87,7 @@ import {
   useListedBrowserPresentations,
   type BrowserPresentation,
 } from "./workspace/identity.js";
-import { OccupantMarks, useFocusRescue } from "./workspace/occupant-marks.js";
+import { OccupantMarks, useFocusRescue, useOccupantDirectory } from "./workspace/occupant-marks.js";
 import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
@@ -461,22 +461,25 @@ export function Sidebar({
     onCloseMobile();
     nav.openConversation("/voice");
   };
-  const discardDraft = (target: ComposerDraftTarget) => {
-    if (!deploymentId || !userId) return;
-    const key = composerDraftKey({ deploymentId, userId }, target);
-    const draft = composerDrafts.read(key);
-    if (!draft) return;
-    const files = setAsideStagedFiles(key);
-    composerDrafts.clear(key);
-    toast.success("Draft discarded", {
-      label: "Undo",
-      lapse: files.forget,
-      run: () => {
-        composerDrafts.restore(key, draft);
-        files.takeBack();
-      },
-    });
-  };
+  const discardDraft = useCallback(
+    (target: ComposerDraftTarget) => {
+      if (!deploymentId || !userId) return;
+      const key = composerDraftKey({ deploymentId, userId }, target);
+      const draft = composerDrafts.read(key);
+      if (!draft) return;
+      const files = setAsideStagedFiles(key);
+      composerDrafts.clear(key);
+      toast.success("Draft discarded", {
+        label: "Undo",
+        lapse: files.forget,
+        run: () => {
+          composerDrafts.restore(key, draft);
+          files.takeBack();
+        },
+      });
+    },
+    [deploymentId, toast, userId],
+  );
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
   const loadEarlier = () => {
     if (loadingEarlier) return;
@@ -1102,17 +1105,7 @@ function openConversationRow(
 
 /* ---- Tasks ---- */
 
-const TaskRowItem = memo(function TaskRowItem({
-  hostClient,
-  ask,
-  onDiscardDraft,
-  onNavigate,
-  onSetDone,
-  open,
-  row,
-  unsent,
-  workspace,
-}: {
+interface TaskRowItemProps {
   readonly hostClient: HostClient;
   readonly ask: string | null;
   readonly onDiscardDraft: (target: ComposerDraftTarget) => void;
@@ -1123,7 +1116,19 @@ const TaskRowItem = memo(function TaskRowItem({
   /** A reply is waiting here, unsent. */
   readonly unsent: boolean;
   readonly workspace: WorkspaceState;
-}) {
+}
+
+const TaskRowItem = memo(function TaskRowItem({
+  hostClient,
+  ask,
+  onDiscardDraft,
+  onNavigate,
+  onSetDone,
+  open,
+  row,
+  unsent,
+  workspace,
+}: TaskRowItemProps) {
   const { highlight, nav, work } = workspace;
   const threadId = row.threadId;
   const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
@@ -1298,7 +1303,16 @@ const TaskRowItem = memo(function TaskRowItem({
       ) : null}
     </li>
   );
-});
+}, sameTaskRowItemProps);
+
+/** A snapshot that changes nothing this row says, a reply streaming elsewhere, leaves it undrawn. */
+function sameTaskRowItemProps(left: TaskRowItemProps, right: TaskRowItemProps): boolean {
+  return (
+    (Object.keys(right) as (keyof TaskRowItemProps)[]).every(
+      (key) => key === "row" || left[key] === right[key],
+    ) && sameTaskRow(left.row, right.row)
+  );
+}
 
 /* ---- Tabs ---- */
 
@@ -1318,9 +1332,22 @@ const TabRowItem = memo(function TabRowItem({
   ...props
 }: TabRowProps) {
   const place = usePlace(props.hostClient, placeKey);
+  const occupantIds = useMemo(
+    () => place?.occupants.map((occupant) => occupant.threadId) ?? [],
+    [place?.occupants],
+  );
+  const directory = useOccupantDirectory(props.directory, occupantIds);
   if (!place) return null;
   const device = place.kind === "phone" ? null : (elsewhere.get(place.device.machineId) ?? null);
-  return <TabRow {...props} badge={badges ? place.identity : null} device={device} place={place} />;
+  return (
+    <TabRow
+      {...props}
+      badge={badges ? place.identity : null}
+      device={device}
+      directory={directory}
+      place={place}
+    />
+  );
 });
 
 const TabRow = memo(function TabRow({
@@ -1599,14 +1626,18 @@ function neighbourRow(index: number): HTMLElement | null {
 }
 
 /** Why this tab is still here after a close, whichever control asked; nothing otherwise. */
-function TabCloseOutcome({ tabId }: { readonly tabId: PlaceItem["key"] }) {
+const TabCloseOutcome = memo(function TabCloseOutcome({
+  tabId,
+}: {
+  readonly tabId: PlaceItem["key"];
+}) {
   const line = useTabCloseLine(tabId);
   return (
     <span className="side-tab__outcome">
       <RowSubtitle line={line} subtitle={null} />
     </span>
   );
-}
+});
 
 /**
  * Takes exactly this tab off the list; it quits and stops nothing. Its row

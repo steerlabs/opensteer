@@ -59,7 +59,7 @@ export const ActionLine = memo(function ActionLine({
  * A list row's secondary line: its own text, or the outcome of an action on
  * the row in its place, at the same one-line height, so the row never grows.
  */
-export function RowSubtitle({
+export const RowSubtitle = memo(function RowSubtitle({
   line,
   subtitle,
 }: {
@@ -75,7 +75,7 @@ export function RowSubtitle({
       {line === null ? subtitle : null}
     </span>
   );
-}
+});
 
 /**
  * A dialog's one-line slot above its footer buttons, reserved whether or not it
