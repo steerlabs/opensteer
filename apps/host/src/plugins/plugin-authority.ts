@@ -34,31 +34,22 @@ const management = new Set([
   "resourcesUpdate",
   "resourcesStop",
 ]);
-const personOnly = new Set([
-  "installed",
-  "scheduleApprovals",
-  "pinOAuth",
-  "prepareOAuth",
-  "oauthMethods",
-  "startOAuth",
-  "completeOAuth",
-  "cancelOAuth",
-  "oauthStatus",
-  "saveOAuthApp",
-  "removeOAuthApp",
-  "createApiKeyAccount",
-  "removeAccount",
-  "reviewAccountLink",
-  "linkAccount",
-  "unlinkAccount",
-  "manage",
-  "page",
-  "webhook",
-  "accounts",
-  "detail",
-  "detailSection",
-  "versions",
-  "skillFiles",
+// What an agent caller may ask for besides discovery and management. Anything unlisted is the
+// person's alone, so a new engine operation is refused until it is added here on purpose.
+const execution = new Set([
+  "call",
+  "callTool",
+  "execute",
+  "resume",
+  "answer",
+  "cancel",
+  "executions",
+  "resumeInvocation",
+  "authorizeElicitation",
+  "account-request",
+  "subscribeEvent",
+  "unsubscribeEvent",
+  "findEventSubscription",
 ]);
 export function pluginCaller(caller: AgentCaller): PluginCaller {
   const subject =
@@ -173,6 +164,12 @@ export class PluginAuthority {
     }
     const caller = scope?.caller;
     if (!caller || caller.userId !== owner) return { allowed: false };
+    if (
+      !discovery.has(input.operation) &&
+      !management.has(input.operation) &&
+      !execution.has(input.operation)
+    )
+      return { allowed: false };
     if (caller.kind === "program" && input.operation !== "cancel") {
       const triggers = new TriggerStore(this.options.store.database);
       try {
@@ -236,7 +233,6 @@ export class PluginAuthority {
         .executeTakeFirst();
       if (!live || !discovery.has(input.operation)) return { allowed: false };
     }
-    if (personOnly.has(input.operation)) return { allowed: false };
     if (
       input.plugin &&
       ((grants[input.plugin] === "off" &&

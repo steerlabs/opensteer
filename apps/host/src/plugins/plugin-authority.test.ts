@@ -81,7 +81,7 @@ test("retires completed occurrences while retaining a handed-off execution", asy
   }
 });
 
-test("a full-access Run cannot read the person's scheduled approvals", async () => {
+test("a full-access Run is refused every operation that is not listed for agents", async () => {
   const owner = createId("user");
   const authority = new PluginAuthority({
     store: {
@@ -103,8 +103,10 @@ test("a full-access Run cannot read the person's scheduled approvals", async () 
     expect(await authority.authorize({ ...context, operation: "search" })).toMatchObject({
       allowed: true,
     });
-    expect(
-      await authority.authorize({ ...context, operation: "scheduleApprovals", plugin: "app_test" }),
-    ).toMatchObject({ allowed: false });
+    for (const operation of ["scheduleApprovals", "detail", "manage", "anOperationAddedLater"])
+      expect(
+        await authority.authorize({ ...context, operation, plugin: "app_test" }),
+        operation,
+      ).toMatchObject({ allowed: false });
   });
 });
