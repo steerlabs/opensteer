@@ -52,6 +52,26 @@ async function writeAttention(tx: Tx, id: string, row: Insertable<PersonalAttent
   } else await tx.deleteFrom("personalAttention").where("id", "=", id).execute();
 }
 
+async function previousAttentionKind(tx: Tx, mutation: PersonalMutation, id: string) {
+  const staged = mutation.attentionKind(id);
+  if (staged !== undefined) return staged;
+  const row = await tx
+    .selectFrom("personalAttention")
+    .select("kind")
+    .where("id", "=", id)
+    .executeTakeFirst();
+  return row?.kind ?? null;
+}
+
+function stageAttention(
+  tx: Tx,
+  mutation: PersonalMutation,
+  id: string,
+  row: Insertable<PersonalAttentionTable> | null,
+) {
+  mutation.stageAttention(id, row?.kind ?? null, () => writeAttention(tx, id, row));
+}
+
 export async function refreshRequestAttention(
   tx: Tx,
   mutation: PersonalMutation,
@@ -64,21 +84,18 @@ export async function refreshRequestAttention(
     .executeTakeFirst();
   if (!source) throw new Error("The Request must be refreshed before deleting its source");
   const id = `request:${requestId}`;
-  const previous = await tx
-    .selectFrom("personalAttention")
-    .select("id")
-    .where("id", "=", id)
-    .executeTakeFirst();
+  const previous = await previousAttentionKind(tx, mutation, id);
   const pending = source.status === "pending";
-  const delta = Number(pending) - Number(previous !== undefined);
+  const delta = Number(pending) - Number(previous !== null);
   if (delta) {
     mutation.count("pendingRequestCount", delta);
     if (source.kind === "device.access") mutation.count("pendingDeviceAccessRequestCount", delta);
     mutation.count("needsYouCount", delta);
   }
   if (pending || previous) {
-    await writeAttention(
+    stageAttention(
       tx,
+      mutation,
       id,
       pending
         ? {
@@ -101,7 +118,7 @@ export async function refreshRequestAttention(
     requestId,
     kind: source.kind,
     status: source.status,
-    opened: pending && previous === undefined,
+    opened: pending && previous === null,
     threadId: source.originatingThreadId,
     runId: source.originatingRunId,
   });
@@ -137,11 +154,7 @@ export async function refreshTeamAskAttention(
     .where("teamDeploymentId", "=", teamDeploymentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  const previous = await tx
-    .selectFrom("personalAttention")
-    .select("kind")
-    .where("id", "=", id)
-    .executeTakeFirst();
+  const previous = await previousAttentionKind(tx, mutation, id);
   const failed =
     source.kind === "ask" &&
     source.terminalState === "failed" &&
@@ -154,7 +167,7 @@ export async function refreshTeamAskAttention(
     source.terminalState === null &&
     source.consentExpiresAt !== null &&
     source.consentExpiresAt > mutation.state.now;
-  const bucketDelta = Number(ordinary) - Number(previous?.kind === "team-ask");
+  const bucketDelta = Number(ordinary) - Number(previous === "team-ask");
   if (bucketDelta) {
     await tx
       .updateTable("personalTeamLinks")
@@ -167,13 +180,14 @@ export async function refreshTeamAskAttention(
   mutation.count(
     "needsYouCount",
     Number(failed) -
-      Number(previous?.kind === "failed-ask") +
+      Number(previous === "failed-ask") +
       (eligibleLink(link.state) ? bucketDelta : 0),
   );
   if (failed || ordinary || previous) {
-    const visible = failed || previous?.kind === "failed-ask" || eligibleLink(link.state);
-    await writeAttention(
+    const visible = failed || previous === "failed-ask" || eligibleLink(link.state);
+    stageAttention(
       tx,
+      mutation,
       id,
       failed || ordinary
         ? {
@@ -269,17 +283,6 @@ export function settleExpiredPersonalAttention(database: Kysely<DatabaseSchema>)
       .selectFrom("personalTeamLinks")
       .select("id")
       .where("teamDeploymentId", "in", [...new Set(due.map((entry) => entry.teamDeploymentId!))])
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    await tx
-      .selectFrom("personalAttention")
-      .select("id")
-      .where(
-        "id",
-        "in",
-        due.map((entry) => entry.id),
-      )
       .orderBy("id")
       .forNoKeyUpdate()
       .execute();

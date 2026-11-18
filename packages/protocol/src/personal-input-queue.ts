@@ -1,12 +1,12 @@
 import {
   ArtifactContentPartSchema,
   DeploymentIdSchema,
-  MessageAuthorSchema,
+  MessageAuthorViewSchema,
   MessageIdSchema,
-  MessageEditSchema,
+  MessageEditViewSchema,
   RunIdSchema,
   TeamAgentRequestIdSchema,
-  TeamAudienceSchema,
+  TeamAudienceViewSchema,
   ThreadIdSchema,
   ThreadInputViewSchema,
   utf8ByteLength,
@@ -14,28 +14,28 @@ import {
 import { z } from "zod";
 import { PersonalRevisionSchema } from "./resources.js";
 
-const WaitingInputSchema = z.strictObject({
-  message: z.strictObject({
+const WaitingInputViewSchema = z.object({
+  message: z.object({
     id: MessageIdSchema,
     clientSendKey: z.string().min(1).max(255).optional(),
     revision: z.int().nonnegative(),
-    edit: MessageEditSchema.optional(),
-    author: MessageAuthorSchema,
+    edit: MessageEditViewSchema.optional(),
+    author: MessageAuthorViewSchema,
     createdAt: z.iso.datetime(),
     preview: z.string(),
     truncated: z.boolean(),
     attachments: z.array(ArtifactContentPartSchema).max(6).optional(),
   }),
-  input: z.strictObject({
+  input: z.object({
     messageId: MessageIdSchema,
     state: ThreadInputViewSchema.shape.state,
     queueRank: PersonalRevisionSchema,
   }),
   ask: z
-    .strictObject({
+    .object({
       teamId: DeploymentIdSchema,
       requestId: TeamAgentRequestIdSchema,
-      audience: TeamAudienceSchema,
+      audience: TeamAudienceViewSchema,
     })
     .nullable(),
   canEdit: z.boolean(),
@@ -43,7 +43,7 @@ const WaitingInputSchema = z.strictObject({
   canMove: z.boolean(),
   canSteer: z.boolean(),
   lease: z
-    .strictObject({
+    .object({
       deviceLabel: z.string(),
       expiresAt: z.iso.datetime(),
       ownedBySession: z.boolean(),
@@ -51,14 +51,14 @@ const WaitingInputSchema = z.strictObject({
     .nullable(),
 });
 
-export const PersonalInputQueueSchema = z
-  .strictObject({
+export const PersonalInputQueueViewSchema = z
+  .object({
     threadId: ThreadIdSchema,
     revision: PersonalRevisionSchema,
     paused: z.boolean(),
     steerRunId: RunIdSchema.nullable(),
-    items: z.array(WaitingInputSchema).max(100),
+    items: z.array(WaitingInputViewSchema).max(100),
   })
   .refine((queue) => utf8ByteLength(JSON.stringify(queue)) <= 96 * 1024);
 
-export type PersonalInputQueue = z.infer<typeof PersonalInputQueueSchema>;
+export type PersonalInputQueue = z.infer<typeof PersonalInputQueueViewSchema>;

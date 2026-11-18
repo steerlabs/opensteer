@@ -1,4 +1,4 @@
-import { PersonalInputQueueSchema } from "./personal-input-queue.js";
+import { PersonalInputQueueViewSchema } from "./personal-input-queue.js";
 import {
   PersonalDetailSnapshotSchema,
   PersonalRequestSummarySchema,
@@ -2122,7 +2122,7 @@ const hostApiGroup4 = defineRpc({
       threadId: ThreadIdSchema,
       expectedRevision: PersonalRevisionSchema.optional(),
     }),
-    PersonalInputQueueSchema,
+    PersonalInputQueueViewSchema,
   ),
   /** A waiting message's versions, newest first, a bounded page at a time. */
   "thread.message.revisions.list": declaration(
@@ -2261,7 +2261,7 @@ const workspaceHostApi = defineRpc({
         runtimeId: z.string().trim().min(1).max(255),
       }),
     ]),
-    z.strictObject({ ready: z.boolean() }),
+    z.object({ ready: z.boolean() }),
   ),
   "thread.snapshot.get": declaration(
     "GET",
@@ -2299,7 +2299,7 @@ const workspaceHostApi = defineRpc({
       expectedRevision: PersonalRevisionSchema.optional(),
       cursor: z.string().max(4096).optional(),
     }),
-    z.strictObject({
+    z.object({
       threadId: ThreadIdSchema,
       nodeId: ExecutionNodeIdSchema.nullable(),
       kind: z.enum(["requests", "tools", "nodes"]),
@@ -2314,7 +2314,7 @@ const workspaceHostApi = defineRpc({
       kind: PersonalResourceKindSchema,
       knownRevision: PersonalRevisionSchema.optional(),
     }),
-    z.strictObject({ revision: PersonalRevisionSchema, view: PersonalResourceViewSchema }),
+    z.object({ revision: PersonalRevisionSchema, view: PersonalResourceViewSchema }),
   ),
   "resources.detail.get": declaration(
     "GET",

@@ -4890,6 +4890,13 @@ export class MockHostClient implements HostClient {
    * A work location dropping off or coming back. A real Host learns it from
    * the Runner's connection, never from a client, so the preview takes it here.
    */
+  setMachineIntegrationReadiness(
+    machineId: string,
+    readiness: NonNullable<MachineSummary["modules"]["integrations"]>["readiness"],
+  ): void {
+    this.#state.setMachineIntegrationReadiness(machineId, readiness);
+  }
+
   setEnvironmentConnected(environmentId: string, connected: boolean): void {
     this.#state.setEnvironmentConnected(environmentId, connected);
   }
@@ -7267,6 +7274,26 @@ class MockHostState {
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
         machine.id === machineId ? { ...machine, status } : machine,
+      ),
+    });
+  }
+
+  setMachineIntegrationReadiness(
+    machineId: string,
+    readiness: NonNullable<MachineSummary["modules"]["integrations"]>["readiness"],
+  ): void {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.id === machineId && machine.modules.integrations
+          ? {
+              ...machine,
+              modules: {
+                ...machine.modules,
+                integrations: { ...machine.modules.integrations, readiness },
+              },
+            }
+          : machine,
       ),
     });
   }

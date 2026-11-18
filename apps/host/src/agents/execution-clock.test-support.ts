@@ -60,6 +60,14 @@ export async function setBackgroundDeadline(
   at: Date,
 ): Promise<void> {
   await commitPersonalMutation(host.store.database, async (tx, mutation) => {
+    if (runIds.length)
+      await tx
+        .selectFrom("runs")
+        .select("id")
+        .where("id", "in", [...runIds])
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
     await tx
       .updateTable("runs")
       .set({ backgroundDeadlineAt: at })

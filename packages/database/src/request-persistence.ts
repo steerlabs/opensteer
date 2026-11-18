@@ -6,6 +6,7 @@ import {
   type EnvironmentId,
   type Request,
   type RequestId,
+  type ThreadId,
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
@@ -34,6 +35,20 @@ export function describeTranscriptRequest(request: Request) {
   });
 }
 
+export async function lockRequestThreads(
+  tx: Transaction<DatabaseSchema>,
+  threadIds: readonly ThreadId[],
+): Promise<void> {
+  if (!threadIds.length) return;
+  await tx
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "in", [...new Set(threadIds)])
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+}
+
 export function refreshRequestState(
   transaction: Transaction<DatabaseSchema>,
   requestId: RequestId,
@@ -56,11 +71,13 @@ export function refreshRequestState(
     const request = requestFromRow(row);
     if (request.status !== "pending") {
       const view = describeTranscriptRequest(request);
-      const prior = await tx
-        .selectFrom("transcriptItems")
-        .select("position")
-        .where("id", "=", id)
-        .executeTakeFirst();
+      const prior =
+        mutation.transcriptPlacement(id) ??
+        (await tx
+          .selectFrom("transcriptItems")
+          .select("position")
+          .where("id", "=", id)
+          .executeTakeFirst());
       const node = nodeId
         ? await tx
             .selectFrom("executionNodes")
@@ -76,24 +93,30 @@ export function refreshRequestState(
         visible: true,
         createdAt: request.resolvedAt,
       };
-      const item = await tx
-        .insertInto("transcriptItems")
-        .values({
-          id,
-          threadId,
-          runId,
-          attemptId: node?.attemptId ?? null,
-          nodeId,
-          requestId,
-          kind: "request",
-          isTurnStart: false,
-          ...fields,
-        })
-        .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      mutation.change({ scopeKey, entityKind: "item", entityId: id, operation: "upsert" }, () =>
-        itemView(item),
+      mutation.stageTranscript(
+        id,
+        { position, visible: true, nodeId, isTurnStart: false },
+        async () => {
+          const item = await tx
+            .insertInto("transcriptItems")
+            .values({
+              id,
+              threadId,
+              runId,
+              attemptId: node?.attemptId ?? null,
+              nodeId,
+              requestId,
+              kind: "request",
+              isTurnStart: false,
+              ...fields,
+            })
+            .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          mutation.change({ scopeKey, entityKind: "item", entityId: id, operation: "upsert" }, () =>
+            itemView(item),
+          );
+        },
       );
     }
     mutation.change(

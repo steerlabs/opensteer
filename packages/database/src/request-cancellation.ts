@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import type { Transaction } from "kysely";
-import { refreshRequestState } from "./request-persistence.js";
+import { lockRequestThreads, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
@@ -65,12 +65,26 @@ async function cancelInTransaction(
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
+  if (refresh) {
+    const parents = await pending.clearSelect().select("originatingThreadId").distinct().execute();
+    await lockRequestThreads(
+      transaction,
+      parents.map(({ originatingThreadId }) => originatingThreadId),
+    );
+  }
   const locked = await pending.orderBy("id", "asc").forNoKeyUpdate().execute();
   if (locked.length === 0) return [];
   const responseCommandIds = locked
     .map(({ responseCommandId }) => responseCommandId)
     .filter((id): id is NonNullable<typeof id> => id !== null);
   if (responseCommandIds.length > 0) {
+    await transaction
+      .selectFrom("commands")
+      .select("id")
+      .where("id", "in", responseCommandIds)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     await transaction
       .updateTable("commands")
       .set({

@@ -10,7 +10,6 @@ import {
   type RunAttemptId,
   type RunId,
   type ThreadId,
-  utf8Prefix,
 } from "@opensteer/core";
 import { CompiledQuery, sql, type Insertable, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
@@ -80,7 +79,7 @@ const legacyBatchSql = `
         case when b.bytes > ${maxLegacyBatchBytes} then
           case when e.type in ('reasoning.completed','node.message') then jsonb_strip_nulls(jsonb_build_object(
             'blockId',left(e.data->>'blockId',255),'nodeId',left(e.data->>'nodeId',255),
-            'text',left(e.data->>'text',75000))) else null end
+            'text',left(e.data->>'text',300001))) else null end
         else case e.type
           when 'message.created' then jsonb_build_object('id',e.data#>>'{message,id}')
           when 'message.placed' then jsonb_build_object('id',e.data#>>'{message,id}')
@@ -137,13 +136,6 @@ const legacyBatchSql = `
     ), placements as (
       select distinct on (id) id,thread_id,sequence,move from markers
       order by id,move desc,case when move then sequence end desc,sequence
-    ), locked as materialized (
-      select i.id,$4::bigint + p.sequence as position
-      from placements p join transcript_items i on i.id=p.id and i.thread_id=p.thread_id
-      where i.visible and (p.move or i.position <= $4::bigint)
-      order by i.id for no key update of i
-    ), placed as (
-      update transcript_items i set position=locked.position from locked where i.id=locked.id
     ), blocks as (
       -- Match transcriptIdentity's compact JSON array for these root blocks.
       select 'reasoning:' || encode(sha256(convert_to(concat(
@@ -152,28 +144,44 @@ const legacyBatchSql = `
         ),'UTF8')),'hex') as id, thread_id,run_id,attempt_id,runner_binding_generation,sequence,
         created_at,data->>'blockId' as block_id,data->>'text' as body
       from resolved where (select reasoning_only from batch)
-    ), imported_blocks as (
-      insert into transcript_items(id,thread_id,run_id,attempt_id,binding_generation,kind,position,
-        visible,is_turn_start,created_at,block_id,body,view)
-      select distinct on (id) id,thread_id,run_id,attempt_id,runner_binding_generation,'reasoning',
-        $4::bigint + sequence,true,false,date_trunc('milliseconds',created_at),
-        block_id,to_jsonb(body),jsonb_build_object('preview',body)
-      from blocks order by id,sequence desc
-      on conflict (id) do nothing returning 1
     )
     select b.sequence,
       case when b.type='node.message' and b.runner_ordinal is null then b.event_id end as "eventId",
       b.run_id as "runId",b.thread_id as "threadId",b.runner_ordinal as "runnerOrdinal",
       b.runner_binding_generation as "runnerBindingGeneration",b.type,b.created_at as "createdAt",b.data,
-      b.node_id as "nodeId",b.attempt_id as "attemptId",false as "importedInSql",0 as reasoning
+      b.node_id as "nodeId",b.attempt_id as "attemptId",null::json as placements,null::json as blocks
     from resolved b
     where not (select message_only or reasoning_only from batch)
     union all
-    select last,null,null,null,null,null,null,null,null,null,null,true,
-      (select count(*)::int from imported_blocks)
+    select last,null,null,null,null,null,null,null,null,null,null,
+      (select json_agg(row) from (
+        select id,thread_id,($4::bigint + sequence)::text as place,move from placements
+      ) row),
+      (select json_agg(row) from (select distinct on (id) id,thread_id,run_id,attempt_id,
+        runner_binding_generation,sequence::text,created_at,block_id,body
+        from blocks order by id,sequence desc) row)
     from batch where message_only or reasoning_only
     order by sequence
 `;
+
+type LegacyPlacement = { id: string; thread: ThreadId; place: string; move: boolean };
+
+async function applyLegacyPlacements(
+  tx: Tx,
+  positions: readonly LegacyPlacement[],
+  reserved: string,
+) {
+  if (!positions.length) return;
+  const rows = sql`jsonb_to_recordset(${JSON.stringify(positions)}::jsonb)
+    as record(id text,thread text,place bigint,move boolean)`;
+  await sql`select i.id from ${rows}
+    join transcript_items i on i.id=record.id and i.thread_id=record.thread
+    where i.visible and (record.move or i.position <= ${reserved}::bigint)
+    order by i.id for no key update of i`.execute(tx);
+  await sql`update transcript_items i set position=record.place from ${rows}
+    where i.id=record.id and i.thread_id=record.thread and i.visible
+    and (record.move or i.position <= ${reserved}::bigint)`.execute(tx);
+}
 
 export async function convertLegacyActivityBatch(
   tx: Tx,
@@ -183,7 +191,10 @@ export async function convertLegacyActivityBatch(
   reservedPosition: string,
 ): Promise<{ through: string | null; counts: LegacyImportCounts }> {
   const page = await tx.executeQuery<
-    LegacyActivity & { importedInSql: boolean; reasoning: number }
+    LegacyActivity & {
+      placements: { id: string; thread_id: ThreadId; place: string; move: boolean }[] | null;
+      blocks: unknown[] | null;
+    }
   >(
     CompiledQuery.raw(legacyBatchSql, [
       deploymentId,
@@ -196,12 +207,30 @@ export async function convertLegacyActivityBatch(
     ]),
   );
   const last = page.rows.at(-1);
+  const counts = { ...emptyCounts };
+  if (last?.placements)
+    await applyLegacyPlacements(
+      tx,
+      last.placements.map(({ thread_id, ...row }) => ({ ...row, thread: thread_id })),
+      reservedPosition,
+    );
+  if (last?.blocks) {
+    const imported = await sql`
+      insert into transcript_items(id,thread_id,run_id,attempt_id,binding_generation,kind,position,
+        visible,is_turn_start,created_at,block_id,body,view)
+      select id,thread_id,run_id,attempt_id,runner_binding_generation,'reasoning',
+        ${reservedPosition}::bigint + sequence,true,false,date_trunc('milliseconds',created_at),
+        block_id,to_jsonb(body),jsonb_build_object('preview',body)
+      from jsonb_to_recordset(${JSON.stringify(last.blocks)}::jsonb)
+        as record(id text,thread_id text,run_id text,attempt_id text,runner_binding_generation int,
+          sequence bigint,created_at timestamptz,block_id text,body text)
+      order by id on conflict (id) do nothing
+    `.execute(tx);
+    counts.reasoning = Number(imported.numAffectedRows ?? 0);
+  }
   return {
     through: last?.sequence ?? null,
-    counts:
-      !last || last.importedInSql
-        ? { ...emptyCounts, reasoning: last?.reasoning ?? 0 }
-        : await importLegacyActivity(tx, page.rows, reservedPosition),
+    counts: last?.type ? await importLegacyActivity(tx, page.rows, reservedPosition) : counts,
   };
 }
 
@@ -323,7 +352,7 @@ function toOwnedCard(
 ): Insertable<TranscriptItemTable> | null {
   if (!row.runId || !row.threadId || !event.data.text) return null;
   const kind = event.type === "reasoning.completed" ? "reasoning" : "node-message";
-  const text = utf8Prefix(event.data.text, 480 * 1024);
+  const text = event.data.text;
   return {
     id:
       event.type === "reasoning.completed"
@@ -578,19 +607,7 @@ async function importLegacyActivity(
       as record(run text,thread text,reply text)
     where r.id=record.run and r.thread_id=record.thread and r.status='completed'`.execute(tx);
   const tools = await importToolBatch(tx, candidates, reserved, [...placements.keys()]);
-  if (placements.size)
-    await sql`with records as materialized (
-      select * from jsonb_to_recordset(${JSON.stringify([...placements.values()])}::jsonb)
-        as record(id text,thread text,place bigint,move boolean)
-    ), locked as materialized (
-      select i.id,record.place from records record
-      join transcript_items i on i.id=record.id and i.thread_id=record.thread
-      where i.visible and (record.move or i.position <= ${reservedPosition}::bigint)
-      order by i.id for no key update of i
-    )
-    update transcript_items i set position=locked.place from locked where i.id=locked.id`.execute(
-      tx,
-    );
+  await applyLegacyPlacements(tx, [...placements.values()], reservedPosition);
   counts.tools = tools.tools;
   counts.images = tools.images;
   counts.skipped += tools.skipped;

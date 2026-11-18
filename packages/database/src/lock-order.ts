@@ -11,6 +11,8 @@
  */
 export const databaseLockOrder = [
   "client_sync_state",
+  // The 0029 fence occupies the same rank before the offline rename.
+  "deployment_event_state",
   "personal_settings",
   // BEGIN team authority and content lock order.
   "team_access_state",
@@ -251,13 +253,14 @@ export const databaseLockOrder = [
   "plugin_oauth_records",
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",
-  "integration_authority_generations",
   "tool_calls",
   "transcript_items",
   "tool_output_images",
   "runner_event_receipts",
   "personal_attention",
   "client_changes",
+  // The deferred integration trigger writes generations at COMMIT, after Personal projections.
+  "integration_authority_generations",
   // Account-service tables are separate physical resources from identically named Host tables.
   "control-plane:auth_accounts",
   "control-plane:auth_jwks",

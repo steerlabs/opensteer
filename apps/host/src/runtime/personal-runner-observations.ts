@@ -50,6 +50,8 @@ export class PersonalRunnerObservations {
     this.#moduleReadiness = moduleReadiness;
   }
 
+  readonly onHarnessInstallation = (identity: RunnerIdentity) => this.publish(identity, true);
+
   publish(identity: RunnerIdentity, online: boolean, readinessOnly = false) {
     const id = identity.runnerId;
     const valid = () => {
@@ -68,6 +70,7 @@ export class PersonalRunnerObservations {
         .where("connectionGeneration", "=", String(identity.connectionGeneration))
         .executeTakeFirst();
       if (!runner || (online && runner.revokedAt) || !valid()) return;
+      const observed = online ? this.#current(id) : undefined;
       const previous = this.#byRunner.get(id);
       if (readinessOnly && previous?.identity.connectionId !== identity.connectionId) return;
       const readiness = new Map<RunnerModuleName, RunnerModuleReadiness>();
@@ -101,7 +104,7 @@ export class PersonalRunnerObservations {
           revision,
           identityRevision: readinessOnly && held ? held.identityRevision : revision,
           connectionGeneration: identity.connectionGeneration,
-          identity,
+          identity: observed!,
           readiness,
         });
       });

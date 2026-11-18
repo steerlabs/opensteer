@@ -518,7 +518,8 @@ export async function createHostServer(
   installHostHttpBoundary(app);
   await registerResponseCompression(app);
   const harnessCatalogs = {
-    recordHarnessCatalogs: dependencies.store.recordHarnessCatalogs.bind(dependencies.store),
+    recordHarnessCatalogs: (...args: Parameters<OpensteerStore["recordHarnessCatalogs"]>) =>
+      dependencies.store.recordHarnessCatalogs(...args),
     listHarnessInstances: (options?: Parameters<OpensteerStore["listHarnessInstances"]>[0]) =>
       dependencies.store.listHarnessInstances(options),
   };

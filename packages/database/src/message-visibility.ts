@@ -67,11 +67,13 @@ export async function syncTranscriptMessage(
             .limit(1)
             .executeTakeFirst()
         : undefined;
-    const prior = await tx
-      .selectFrom("transcriptItems")
-      .selectAll()
-      .where("id", "=", messageId)
-      .executeTakeFirst();
+    const prior =
+      mutation.transcriptPlacement(messageId) ??
+      (await tx
+        .selectFrom("transcriptItems")
+        .select(["visible", "position", "nodeId", "isTurnStart"])
+        .where("id", "=", messageId)
+        .executeTakeFirst());
     const runId = placement?.runId ?? message.runId ?? input?.runId ?? seed?.id ?? null;
     const assigned =
       runId && runId !== seed?.id
@@ -116,30 +118,33 @@ export async function syncTranscriptMessage(
       runId,
       view,
     };
-    const item = await tx
-      .insertInto("transcriptItems")
-      .values({
-        id: messageId,
-        messageId,
-        threadId: message.threadId,
-        attemptId: null,
-        nodeId: null,
-        kind: "message",
-        createdAt: message.createdAt,
-        ...fields,
-      })
-      .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
-      .returningAll()
-      .executeTakeFirstOrThrow();
     const scopeKey = `thread:${message.threadId}` as const;
-    if (visible)
-      mutation.change(
-        { scopeKey, entityKind: "item", entityId: messageId, operation: "upsert" },
-        () => itemView(item),
-      );
-    else if (prior?.visible)
-      mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
-    else await invalidateThreadCollection(tx, message.threadId, "messages");
+    mutation.stageTranscript(messageId, { ...fields, nodeId: null }, async () => {
+      const item = await tx
+        .insertInto("transcriptItems")
+        .values({
+          id: messageId,
+          messageId,
+          threadId: message.threadId,
+          attemptId: null,
+          nodeId: null,
+          kind: "message",
+          createdAt: message.createdAt,
+          ...fields,
+        })
+        .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      if (visible)
+        mutation.change(
+          { scopeKey, entityKind: "item", entityId: messageId, operation: "upsert" },
+          () => itemView(item),
+        );
+      else if (prior?.visible)
+        mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
+    });
+    if (!visible && !prior?.visible)
+      await invalidateThreadCollection(tx, message.threadId, "messages");
     if (orderChanged) {
       await tx
         .updateTable("threads")
@@ -183,36 +188,15 @@ export async function publishThreadCard(
   >,
   move = false,
 ) {
-  const old = await tx
-    .selectFrom("transcriptItems")
-    .select("position")
-    .where("id", "=", card.id)
-    .executeTakeFirst();
+  const old =
+    mutation.transcriptPlacement(card.id) ??
+    (await tx
+      .selectFrom("transcriptItems")
+      .select("position")
+      .where("id", "=", card.id)
+      .executeTakeFirst());
   const position =
     !move && old?.position ? old.position : await allocateTranscriptPosition(tx, card.threadId);
-  const item = await tx
-    .insertInto("transcriptItems")
-    .values({
-      ...card,
-      position,
-      visible: true,
-      revision: mutation.sequence,
-      isTurnStart: false,
-      attemptId: null,
-      nodeId: null,
-    })
-    .onConflict((conflict) =>
-      conflict.column("id").doUpdateSet({
-        view: card.view,
-        runId: card.runId,
-        revision: mutation.sequence,
-        position,
-        ...(move ? { createdAt: card.createdAt } : {}),
-        visible: true,
-      }),
-    )
-    .returningAll()
-    .executeTakeFirstOrThrow();
   if (move && old?.position) {
     await tx
       .updateTable("threads")
@@ -221,13 +205,42 @@ export async function publishThreadCard(
       .execute();
     await invalidateThreadCollection(tx, card.threadId, "transcript-order");
   }
-  mutation.change(
-    {
-      scopeKey: `thread:${card.threadId}`,
-      entityKind: "item",
-      entityId: card.id,
-      operation: "upsert",
+  mutation.stageTranscript(
+    card.id,
+    { position, visible: true, nodeId: null, isTurnStart: false },
+    async () => {
+      const item = await tx
+        .insertInto("transcriptItems")
+        .values({
+          ...card,
+          position,
+          visible: true,
+          revision: mutation.sequence,
+          isTurnStart: false,
+          attemptId: null,
+          nodeId: null,
+        })
+        .onConflict((conflict) =>
+          conflict.column("id").doUpdateSet({
+            view: card.view,
+            runId: card.runId,
+            revision: mutation.sequence,
+            position,
+            ...(move ? { createdAt: card.createdAt } : {}),
+            visible: true,
+          }),
+        )
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      mutation.change(
+        {
+          scopeKey: `thread:${card.threadId}`,
+          entityKind: "item",
+          entityId: card.id,
+          operation: "upsert",
+        },
+        () => itemView(item),
+      );
     },
-    () => itemView(item),
   );
 }

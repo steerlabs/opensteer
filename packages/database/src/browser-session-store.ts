@@ -1116,6 +1116,15 @@ export async function detachBrowserSessionAttachments(
   agentBindingId: string,
 ): Promise<readonly BrowserSessionId[]> {
   return commitPersonalMutation(database, async (tx, mutation) => {
+    await tx
+      .selectFrom("browserSessionAttachments")
+      .select("sessionId")
+      .where("agentBindingId", "=", agentBindingId)
+      .orderBy("sessionId")
+      .orderBy("agentBindingId")
+      // FOR UPDATE: Deletes the attachments for this agent binding.
+      .forUpdate()
+      .execute(databaseOperationOptions());
     const detached = await tx
       .deleteFrom("browserSessionAttachments")
       .where("agentBindingId", "=", agentBindingId)

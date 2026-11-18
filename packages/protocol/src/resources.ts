@@ -69,7 +69,7 @@ export const PersonalResourceInterestsSchema = z
   .max(personalResourceKinds.length)
   .refine((kinds) => new Set(kinds).size === kinds.length);
 
-export const PersonalResourceSummarySchema = z.strictObject({
+export const PersonalResourceSummarySchema = z.object({
   id: z.string().min(1).max(255),
   label: z.string().max(256).optional(),
   status: z.string().max(80).optional(),
@@ -78,7 +78,7 @@ export const PersonalResourceSummarySchema = z.strictObject({
   observedAt: z.iso.datetime().optional(),
 });
 export const PersonalResourceViewSchema = z
-  .strictObject({
+  .object({
     entries: z.array(PersonalResourceSummarySchema).max(32),
     complete: z.boolean(),
     hasMore: z.boolean(),
@@ -94,44 +94,44 @@ export type PersonalResourceRevisions = z.infer<typeof PersonalResourceRevisions
 export type PersonalResourceView = z.infer<typeof PersonalResourceViewSchema>;
 
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
+  z.object({
     kind: z.literal("settings"),
     settings: PersonalSettingsViewSchema,
     quietTaskDays: QuietTaskDaysSchema,
     executionPreferences: ExecutionPreferencesViewSchema,
   }),
-  z.strictObject({ kind: z.literal("identity"), identity: IdentityConfigViewSchema }),
-  z.strictObject({
+  z.object({ kind: z.literal("identity"), identity: IdentityConfigViewSchema }),
+  z.object({
     kind: z.literal("owner-profile"),
     ownerProfile: OwnerProfileViewSchema.nullable(),
   }),
-  z.strictObject({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
-  z.strictObject({ kind: z.literal("machine"), machines: PersonalMachinesViewSchema }),
-  z.strictObject({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
-  z.strictObject({
+  z.object({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
+  z.object({ kind: z.literal("machine"), machines: PersonalMachinesViewSchema }),
+  z.object({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
+  z.object({
     kind: z.literal("harness-catalog"),
     environments: PersonalEnvironmentsViewSchema,
   }),
-  z.strictObject({ kind: z.literal("harness-auth"), environments: PersonalEnvironmentsViewSchema }),
-  z.strictObject({ kind: z.literal("agent-home-settings"), settings: PersonalSettingsViewSchema }),
-  z.strictObject({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
-  z.strictObject({
+  z.object({ kind: z.literal("harness-auth"), environments: PersonalEnvironmentsViewSchema }),
+  z.object({ kind: z.literal("agent-home-settings"), settings: PersonalSettingsViewSchema }),
+  z.object({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
+  z.object({
     kind: z.literal("browser-profile"),
     profiles: BrowserProfilesViewSchema,
     deletions: BrowserProfileDeletionsViewSchema,
   }),
-  z.strictObject({
+  z.object({
     kind: z.literal("browser-placement"),
     placements: BrowserPlacementsViewSchema,
   }),
-  z.strictObject({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
-  z.strictObject({ kind: z.literal("browser-availability"), available: z.boolean() }),
-  z.strictObject({ kind: z.enum(pluginChangeResources) }),
-  z.strictObject({ kind: z.literal("plugin-engine"), engine: PluginEngineStateViewSchema }),
+  z.object({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
+  z.object({ kind: z.literal("browser-availability"), available: z.boolean() }),
+  z.object({ kind: z.enum(pluginChangeResources) }),
+  z.object({ kind: z.literal("plugin-engine"), engine: PluginEngineStateViewSchema }),
 ]);
 
 export const PersonalResourceDetailSchema = z
-  .strictObject({
+  .object({
     revision: PersonalRevisionSchema,
     data: PersonalResourceDataSchema,
     next: z.string().max(4096).nullable(),

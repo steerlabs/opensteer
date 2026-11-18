@@ -1,4 +1,4 @@
-import { lockThreadProviderSession } from "./run-projection-locks.js";
+import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
@@ -116,6 +116,13 @@ export async function finalizeRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
+  const children = offline ? undefined : await readFinishChildren(transaction, run.id);
+  if (children && !children.hasMore)
+    await lockRunProjectionRows(transaction, {
+      threadIds: [run.threadId],
+      runIds: [run.id],
+      ...(input.expectedCommandId ? { commandIds: [input.expectedCommandId] } : {}),
+    });
   if (input.expectedCommandId) {
     const command = await transaction
       .selectFrom("commands")
@@ -133,11 +140,9 @@ export async function finalizeRunTransaction(
     }
   }
   const reply = input.status === "completed" ? await runReply(transaction, run) : null;
-  if (offline) return finalizeRunOutcome(transaction, input, run, thread, null, null);
+  if (!children) return finalizeRunOutcome(transaction, input, run, thread, null, null);
   return commitPersonalMutation(transaction, async (tx, mutation) => {
-    const children = await readFinishChildren(tx, run.id);
     if (!children.hasMore) {
-      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       await settleFinishChildren(tx, mutation, run.id, input, children);
       await finalizeRunOutcome(tx, input, run, thread, reply?.id ?? null, mutation);
       mutation.react({
@@ -244,6 +249,30 @@ export async function settleFinishChildren(
       .executeTakeFirst();
     if (request) await refreshRequestState(tx, id);
   }
+  if (children.commands.length)
+    await tx
+      .selectFrom("commands")
+      .select("id")
+      .where("id", "in", children.commands)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  if (children.steers.length) {
+    await tx
+      .selectFrom("threadInputs")
+      .select("messageId")
+      .where("messageId", "in", children.steers)
+      .orderBy("messageId")
+      .forNoKeyUpdate()
+      .execute();
+    await tx
+      .selectFrom("messages")
+      .select("id")
+      .where("id", "in", children.steers)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  }
   const replacement = children.steers.length ? await pendingReplacementAttempt(tx, runId) : null;
   const stoppedConversation =
     children.steers.length > 0 && (await stoppedConversationReply(tx, runId));
@@ -321,13 +350,30 @@ export async function settleFinishChildren(
       .execute();
   }
   await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
-  await interruptPersonalToolCalls(tx, mutation, runId, children.tools, input.completedAt);
-  if (children.grants.length)
+  // The terminal outcome or replacement may still end an existing attempt.
+  await tx
+    .selectFrom("runAttempts")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("endedAt", "is", null)
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (children.grants.length) {
+    await tx
+      .selectFrom("grants")
+      .select("id")
+      .where("id", "in", children.grants)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     await tx
       .updateTable("grants")
       .set({ revokedAt: input.completedAt, revokedReason: "superseded", status: "revoked" })
       .where("id", "in", children.grants)
       .execute();
+  }
+  await interruptPersonalToolCalls(tx, mutation, runId, children.tools, input.completedAt);
 }
 
 async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: RunId) {
@@ -416,7 +462,6 @@ export async function drainRunFinish(
         .executeTakeFirst();
       if (!run?.finishIntent) return "settled";
       await lockThreadRow(tx, run.threadId);
-      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       const thread = await tx
         .selectFrom("threads")
         .selectAll()
@@ -436,15 +481,18 @@ export async function drainRunFinish(
           : {}),
       });
       return advancePersonalRunFinish(tx, mutation, runId, {
-        settle: (children, intent) =>
-          settleFinishChildren(
+        settle: async (children, intent) => {
+          if (!children.hasMore)
+            await lockRunProjectionRows(tx, { threadIds: [run.threadId], runIds: [runId] });
+          await settleFinishChildren(
             tx,
             mutation,
             runId,
             request(intent),
             children,
             intent.mode === "recovery",
-          ),
+          );
+        },
         finalize: async (intent) => {
           if (intent.mode === "steer" || intent.mode === "recovery") {
             if (!intent.attemptId) throw new Error("A replacement must name the old attempt");

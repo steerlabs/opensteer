@@ -1,3 +1,4 @@
+import { lockRequestThreads } from "./request-persistence.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   getDeviceSelfRunnerId,
@@ -340,6 +341,7 @@ export type { ComputerAppAccessSettlement } from "./computer-app-approvals.js";
 export async function revokeComputerConnectionsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   selector: RevokeComputerConnectionSelector,
+  requestThreadIds: readonly import("@opensteer/core").ThreadId[] = [],
 ): Promise<RevokeComputerConnectionsMutation> {
   let query = transaction
     .selectFrom("integrationConnections")
@@ -502,6 +504,7 @@ export async function revokeComputerConnectionsInTransaction(
     transaction,
     dependentChannels.map(({ id }) => id),
   );
+  await lockRequestThreads(transaction, requestThreadIds);
   const requestIds = new Set<RequestId>();
   for (const connection of connections) {
     const pending = await transaction
@@ -634,10 +637,24 @@ export async function uninstallIntegrationInTransaction(
         .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
         .execute();
   }
+  const requestThreads = await transaction
+    .selectFrom("requests")
+    .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
+    .select("requests.originatingThreadId")
+    .distinct()
+    .where("requests.kind", "=", "integration.access")
+    .where("requests.status", "=", "pending")
+    .where("integrationRequestDetails.installationId", "=", installation.id)
+    .execute();
+  const requestThreadIds = requestThreads.map(({ originatingThreadId }) => originatingThreadId);
   const uninstallIds = await uninstallConnectionIds(transaction, serverIds);
-  const revokedComputerConnections = await revokeComputerConnectionsInTransaction(transaction, {
-    installationId: installation.id,
-  });
+  const revokedComputerConnections = await revokeComputerConnectionsInTransaction(
+    transaction,
+    {
+      installationId: installation.id,
+    },
+    requestThreadIds,
+  );
   // A server a computer runs goes with its plugin, and so does the approval
   // it waits on there.
   if (serverIds.length > 0) {
@@ -654,8 +671,8 @@ export async function uninstallIntegrationInTransaction(
     .where("requests.kind", "=", "integration.access")
     .where("requests.status", "=", "pending")
     .where("integrationRequestDetails.installationId", "=", installation.id)
-    .forNoKeyUpdate("requests")
     .execute();
+  await lockRequestThreads(transaction, requestThreadIds);
   const remainingCancelledRequestIds = pendingAccessRequests.map(({ id }) => id);
   await cancelPending(transaction, {
     reason: "resource-deleted",

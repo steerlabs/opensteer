@@ -720,6 +720,12 @@ it("publishes count-only approval changes to the subscribed task and shell", asy
     const changeApproval = (state: "awaiting-approval" | "cancelled") =>
       commitPersonalMutation(db, async (tx) => {
         await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("id", "=", input.message.threadId)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        await tx
           .updateTable("threadInputs")
           .set({
             state,

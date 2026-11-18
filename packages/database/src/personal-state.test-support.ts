@@ -40,6 +40,8 @@ export async function preparePersonalConversion(
 ) {
   const { PERSONAL_TEAM_BASELINE_SQL } = await import("./baseline-schema.js");
   await database.transaction().execute(async (tx) => {
+    await tx.selectFrom("clientSyncState").select("deploymentId").forNoKeyUpdate().execute();
+    await tx.selectFrom("threads").select("id").orderBy("id").forNoKeyUpdate().execute();
     for (const table of ["deployment_events", "thread_state_pending"]) {
       const ddl = PERSONAL_TEAM_BASELINE_SQL.match(
         new RegExp(`create table ${table} \\(.*?\\n\\);`, "s"),

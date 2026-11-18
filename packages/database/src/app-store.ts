@@ -347,6 +347,12 @@ export class AppStore {
           creationKey: `${input.scope.runId}:${input.publishKey}`,
           computerId: agentHome.computerId,
         }));
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", input.scope.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       const app = await lockApp(tx, input.scope.userId, appId, true);
       const replay = await tx
         .selectFrom("appVersions")
@@ -470,6 +476,14 @@ export class AppStore {
         .set({ name: parsed, updatedAt: mutation.state.now })
         .where("id", "=", app.id)
         .execute();
+      await tx
+        .selectFrom("transcriptItems")
+        .select("id")
+        .where("appId", "=", app.id)
+        .where("visible", "=", true)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const cards = await tx
         .updateTable("transcriptItems")
         .set({ view: transcriptPreview({ title: parsed }), revision: mutation.sequence })
@@ -560,6 +574,17 @@ export class AppStore {
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await authorize?.(tx);
       await removeTabs(tx, appId);
+      const appCards = tx
+        .selectFrom("transcriptItems")
+        .where("appId", "=", appId)
+        .where("visible", "=", true);
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "in", appCards.select("threadId"))
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const app = await lockApp(tx, ownerId, appId, true);
       await tx.updateTable("apps").set({ deleting: true }).where("id", "=", app.id).execute();
       await tx
@@ -567,6 +592,7 @@ export class AppStore {
         .set((eb) => ({ desiredState: "stopped", generation: eb("generation", "+", 1) }))
         .where("appId", "=", app.id)
         .execute();
+      await appCards.select("id").orderBy("id").forNoKeyUpdate().execute();
       const cards = await tx
         .updateTable("transcriptItems")
         .set({ visible: false, position: null, revision: mutation.sequence })

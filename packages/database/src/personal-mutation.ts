@@ -24,8 +24,10 @@ import type {
   ClientChangeOperation,
   ClientEntityKind,
   ClientSyncStateTable,
+  PersonalAttentionTable,
   PersonalResourceKind,
   PersonalScopeKey,
+  TranscriptItemTable,
 } from "./personal-state-schema.js";
 import type { RevokedRunGrant } from "./run-grants.js";
 import { publishThreadSummary } from "./thread-status.js";
@@ -195,6 +197,12 @@ function notify(
   }
 }
 
+type TranscriptPlacement = Pick<
+  Selectable<TranscriptItemTable>,
+  "position" | "visible" | "nodeId" | "isTurnStart"
+>;
+type ProjectionWrite = () => Promise<void>;
+
 class Mutation {
   readonly state: State & { now: Date };
   readonly sequence: string;
@@ -205,6 +213,14 @@ class Mutation {
   readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
   readonly #observations = new Set<() => void>();
+  readonly #transcript = new Map<
+    string,
+    { placement?: TranscriptPlacement; writes: ProjectionWrite[] }
+  >();
+  readonly #attention = new Map<
+    string,
+    { kind: PersonalAttentionTable["kind"] | null; write: ProjectionWrite }
+  >();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
   readonly #counters = {
     pendingRequestCount: 0,
@@ -370,7 +386,29 @@ class Mutation {
     this.#receipts.push(write);
   }
 
+  transcriptPlacement(id: string) {
+    return this.#transcript.get(id)?.placement;
+  }
+
+  stageTranscript(id: string, placement: TranscriptPlacement | undefined, write: ProjectionWrite) {
+    const staged = this.#transcript.get(id) ?? { writes: [] };
+    if (placement) staged.placement = placement;
+    staged.writes.push(write);
+    this.#transcript.set(id, staged);
+  }
+
+  attentionKind(id: string) {
+    return this.#attention.get(id)?.kind;
+  }
+
+  stageAttention(id: string, kind: PersonalAttentionTable["kind"] | null, write: ProjectionWrite) {
+    this.#attention.set(id, { kind, write });
+  }
+
   async write(tx: PersonalMutationTransaction): Promise<CommitNotice> {
+    // Source rows and position counters are already settled before derived rows lock.
+    for (const id of [...this.#transcript.keys()].sort())
+      for (const write of this.#transcript.get(id)!.writes) await write();
     const state = this.state;
     const { deploymentId } = state;
     const head = this.hasVisibleChange ? this.sequence : state.sequence;
@@ -417,14 +455,22 @@ class Mutation {
         if (candidate !== undefined && BigInt(candidate) > BigInt(floor)) floor = candidate;
       }
     }
+    for (const write of this.#receipts) await write(head);
+    for (const id of [...this.#attention.keys()].sort()) await this.#attention.get(id)!.write();
     if (BigInt(floor) > BigInt(state.prunedThroughSequence) && count > 0) {
+      await keep
+        .where("sequence", "<=", floor)
+        .orderBy("sequence")
+        .orderBy("ordinal")
+        // FOR UPDATE: Deletes this prefix from the feed.
+        .forUpdate()
+        .execute();
       const prefix = tx
         .deleteFrom("clientChanges")
         .where("deploymentId", "=", deploymentId)
         .where("sequence", "<=", floor);
       count -= Number((await prefix.executeTakeFirst()).numDeletedRows);
     }
-    for (const write of this.#receipts) await write(head);
     if (changes.length) {
       await tx
         .insertInto("clientChanges")
@@ -524,6 +570,10 @@ export type PersonalMutation = Pick<
   | "observation"
   | "reaction"
   | "react"
+  | "transcriptPlacement"
+  | "stageTranscript"
+  | "attentionKind"
+  | "stageAttention"
 >;
 
 export async function commitPersonalMutation<Result>(

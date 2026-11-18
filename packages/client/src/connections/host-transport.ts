@@ -10,6 +10,7 @@ import {
   hostApiVersionHeader,
   setApiVersionQuery,
   teamApiVersionHeader,
+  usesPersonalApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
@@ -282,7 +283,7 @@ export class HostTransport {
         );
         const { apiVersion: _version, apiCurrent: _current, ...headers } = request.headers;
         const versions =
-          deploymentKind === "personal" &&
+          usesPersonalApiVersion(deploymentKind) &&
           request.headers.apiVersion === String(scopedPersonalApiVersion)
             ? scopedPersonalHeaders
             : apiVersionHeaders(deploymentKind);
@@ -446,7 +447,7 @@ export class HostTransport {
     target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
     const kind = connection.authority.document.deploymentShape.kind;
     const scoped =
-      kind === "personal" &&
+      usesPersonalApiVersion(kind) &&
       target.searchParams.get(apiVersionQueryParameter) === String(scopedPersonalApiVersion);
     if (!scoped) setApiVersionQuery(target, kind);
     assertCurrent();

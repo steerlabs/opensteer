@@ -103,6 +103,7 @@ import { cancelPending } from "./request-cancellation.js";
 import {
   assertRequestRevision,
   refreshRequestState,
+  lockRequestThreads,
   requestFromRow,
   requestInsert,
 } from "./request-persistence.js";
@@ -328,6 +329,7 @@ export class RequestStore {
         });
       assertRequestRevision(row, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+      await lockRequestThreads(transaction, [row.originatingThreadId]);
       const now = new Date();
       const resolved = await transaction
         .updateTable("requests")
@@ -374,6 +376,12 @@ export class RequestStore {
         message: "Answer a question with its answers, or dismiss it.",
       });
     return commitPersonalMutation(this.#database, async (transaction) => {
+      const origin = await transaction
+        .selectFrom("requests")
+        .select("originatingThreadId")
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (origin) await lockRequestThreads(transaction, [origin.originatingThreadId]);
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -1146,6 +1154,7 @@ export class RequestStore {
         throw new Error("Computer app access Request payload does not match its kind");
       }
       await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      await lockRequestThreads(transaction, [observed.originatingThreadId]);
       assertRequestRevision(observed, input.expectedRevision);
       const setupRequestId = observedRequest.payload.setupRequestId;
       // Another Thread may still be waiting on this same approval, and its
@@ -1238,6 +1247,7 @@ export class RequestStore {
       }
       assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      await lockRequestThreads(transaction, [observed.originatingThreadId]);
       const now = new Date();
       const row = await transaction
         .updateTable("requests")
@@ -1274,15 +1284,22 @@ export class RequestStore {
     requests: Request[];
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const rows = await transaction
+      const pending = transaction
         .selectFrom("requests")
         .selectAll()
         .where("kind", "=", "machine.full-disk-access")
         .where("status", "=", "pending")
-        .where(sql<string>`payload->>'machineId'`, "=", machineId)
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
+        .where(sql<string>`payload->>'machineId'`, "=", machineId);
+      const parents = await pending
+        .clearSelect()
+        .select("originatingThreadId")
+        .distinct()
         .execute();
+      await lockRequestThreads(
+        transaction,
+        parents.map(({ originatingThreadId }) => originatingThreadId),
+      );
+      const rows = await pending.orderBy("id").forNoKeyUpdate().execute();
       const requests: Request[] = [];
       for (const row of rows) {
         try {
@@ -1361,7 +1378,6 @@ export class RequestStore {
               )
           : undefined;
       const observedRequest = requestFromRow(observed);
-      await lockActiveDurableRequestAuthority(transaction, observedRequest);
       if (creation && "profileId" in creation) {
         await transaction
           .selectFrom("browserProfiles")
@@ -1370,6 +1386,8 @@ export class RequestStore {
           .forShare()
           .executeTakeFirst();
       }
+      await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      await lockRequestThreads(transaction, [observed.originatingThreadId]);
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -1505,6 +1523,7 @@ export class RequestStore {
       }
       assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      await lockRequestThreads(transaction, [observed.originatingThreadId]);
       const now = new Date();
       const resolvedRow = await transaction
         .updateTable("requests")
@@ -1907,6 +1926,7 @@ export class RequestStore {
           throw error;
         }
       }
+      await lockRequestThreads(transaction, [observed.originatingThreadId]);
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -1971,6 +1991,7 @@ export class RequestStore {
     readonly withdrawnBy: UserId;
   }): Promise<RequestMutation> {
     return commitPersonalMutation(this.#database, async (transaction) => {
+      await lockRequestThreads(transaction, [input.threadId]);
       const pending = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2605,17 +2626,6 @@ async function createRequestInTransaction(
   }
   await requirePersonalOwner(transaction, input.requestedBy);
 
-  // Occurrence is re-validated against its Trigger's live authority instead.
-
-  if (
-    input.originatingRunId &&
-    !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
-  ) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: assignmentClosedToRequestsMessage,
-    });
-  }
   if (input.kind === "device.access") {
     if (
       input.payload.kind !== "device.access" ||
@@ -2714,6 +2724,18 @@ async function createRequestInTransaction(
   }
   if (input.kind === "integration.access") {
     await validateIntegrationRequestDetail(transaction, input);
+  }
+  await lockRequestThreads(transaction, [input.originatingThreadId]);
+  // Occurrence is re-validated against its Trigger's live authority instead.
+
+  if (
+    input.originatingRunId &&
+    !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
+  ) {
+    throw new OpensteerError({
+      code: "conflict",
+      message: assignmentClosedToRequestsMessage,
+    });
   }
   const integrationDetail = input.integrationDetail;
   if (input.kind === "integration.access" && integrationDetail?.access) {
@@ -3005,6 +3027,7 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .executeTakeFirst();
   if (!matches(observed)) return null;
   await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+  await lockRequestThreads(transaction, [observed.originatingThreadId]);
   const row = await transaction
     .selectFrom("requests")
     .selectAll()
@@ -3224,6 +3247,14 @@ async function lockRequestOrigin(
 ): Promise<LockedRequestOrigin | undefined> {
   const origin = requestOriginOf(input);
   if (origin.originatingWatchActivationId !== undefined) {
+    if (lock) {
+      const parent = await transaction
+        .selectFrom("triggerWatchActivations")
+        .select("anchorThreadId")
+        .where("id", "=", origin.originatingWatchActivationId)
+        .executeTakeFirst();
+      if (parent) await lockRequestThreads(transaction, [parent.anchorThreadId]);
+    }
     const watch = await transaction
       .selectFrom("triggerWatchActivations")
       .selectAll()
@@ -3498,6 +3529,10 @@ export async function fulfillDeviceAccessRequestsInTransaction(
     .where(sql<string>`payload->>'machineId'`, "=", machineId)
     .orderBy("id")
     .execute();
+  await lockRequestThreads(
+    transaction,
+    rows.map(({ originatingThreadId }) => originatingThreadId),
+  );
   const settled: RequestId[] = [];
   for (const row of rows) {
     const request = requestFromRow(row);

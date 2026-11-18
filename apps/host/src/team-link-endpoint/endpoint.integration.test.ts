@@ -178,7 +178,7 @@ describe("standing team link authority", () => {
   });
   afterEach(async () => {
     endpoint?.options.lifetimes.stop();
-    files?.close();
+    await files?.close();
     await fixture?.close();
     if (directory) await rm(directory, { recursive: true, force: true });
   });

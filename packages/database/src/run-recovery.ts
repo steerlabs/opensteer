@@ -25,7 +25,7 @@ import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { endAttempt } from "./run-attempts.js";
 import { settleFinishChildren, finalizeRunTransaction } from "./run-finalization.js";
 import { runWasStopped, type RevokedRunGrant } from "./run-grants.js";
-import { lockThreadProviderSession } from "./run-projection-locks.js";
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import type { FinishIntent } from "./personal-state-schema.js";
 import type { DatabaseSchema, RunRow } from "./schema.js";
 import {
@@ -330,6 +330,8 @@ export async function recoverLostRunTransaction(
       .execute();
     await publishExecutionInput(transaction, receipt);
   }
+  if (!children.hasMore)
+    await lockRunProjectionRows(transaction, { threadIds: [run.threadId], runIds: [run.id] });
   await commitPersonalMutation(transaction, async (tx, mutation) => {
     const intent: FinishIntent = {
       mode: "recovery",

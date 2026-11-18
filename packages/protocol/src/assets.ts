@@ -16,7 +16,7 @@ export const assetUrlsMaxPaths = 32;
 export const AssetVariantSchema = z.enum(["preview", "original"]);
 export type AssetVariant = z.infer<typeof AssetVariantSchema>;
 
-export const TranscriptImageRefSchema = z.strictObject({
+export const TranscriptImageRefSchema = z.object({
   id: z.string().min(1).max(255),
   mediaType: ToolOutputImageMediaTypeSchema,
   generated: z.literal(true).optional(),

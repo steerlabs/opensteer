@@ -609,11 +609,9 @@ describe("the draft's places", () => {
         reference(keynote),
       ]);
       expect(reference(keynote)).toMatchObject({ machineId: studioMac });
-      await expect(
-        dispatch.mock.results.find(
-          (_, index) => dispatch.mock.calls[index]?.[0].type === "thread.sendMessage",
-        )!.value,
-      ).resolves.toMatchObject({ type: "thread.sendMessage" });
+      await act(async () => {
+        await expect(sendResult(dispatch)).resolves.toMatchObject({ type: "thread.sendMessage" });
+      });
       expect(document.querySelector(".composer__error")).toBeNull();
       expect(composerText(field())).toBe("");
     });

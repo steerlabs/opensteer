@@ -37,18 +37,23 @@ describe("browser.searchSuggestions.get over the Host's HTTP API", () => {
       { extra: true },
     ]);
   };
+  const session = { id: createId("authSession"), user: { id: createId("user") } };
+  const authenticateSession = async (headers: Readonly<Record<string, unknown>>) => {
+    if (headers.cookie !== "journey=person")
+      throw new OpensteerError({ code: "unauthorized", message: "Sign in" });
+    return session;
+  };
   const authenticator = {
+    authenticateSession,
     identity: {
       nativeOpenIdConfiguration: () => undefined,
       configuration: async () => ({ localPasswordEnabled: true, oidcProviders: [] }),
     },
     authenticateSessionContext: async (headers: Readonly<Record<string, unknown>>) => {
-      if (headers.cookie !== "journey=person")
-        throw new OpensteerError({ code: "unauthorized", message: "Sign in" });
       return {
         credentialKind: "browser-cookie",
         surface: "canonical",
-        session: { user: { id: createId("user") } },
+        session: await authenticateSession(headers),
       };
     },
   } as unknown as HostServerDependencies["authenticator"];

@@ -43,6 +43,7 @@ import {
   deleteComputerAppSetupRequestsInTransaction,
   insertComputerAppSetupRequestInTransaction,
   lockComputerAppSetupRequestInTransaction,
+  lockComputerApprovalRequestThreads,
 } from "./computer-app-setup.js";
 import {
   askForComputerAppApprovalInTransaction,
@@ -529,6 +530,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         input.ownerUserId,
         input.settlementSessionId,
       );
+      await lockComputerApprovalRequestThreads(transaction, [input.requestId]);
       const removed = await transaction
         .deleteFrom("computerAppSetupRequests")
         .where("id", "=", input.requestId)
@@ -566,10 +568,25 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     for (const { deviceId } of expiring) {
       const settled = await commitPersonalMutation(this.database, async (transaction) => {
         await lockComputerApprovalScopeInTransaction(transaction, { deviceId });
+        const due = transaction
+          .selectFrom("computerAppSetupRequests")
+          .select("id")
+          .where("runnerId", "=", deviceId)
+          .where("expiresAt", "<=", now);
+        await lockComputerApprovalRequestThreads(transaction, due);
+        const rows = await due
+          .orderBy("id")
+          // FOR UPDATE: Deletes the expired approvals.
+          .forUpdate()
+          .execute();
+        if (!rows.length) return emptyComputerAppAccessSettlement;
         const expired = await transaction
           .deleteFrom("computerAppSetupRequests")
-          .where("runnerId", "=", deviceId)
-          .where("expiresAt", "<=", now)
+          .where(
+            "id",
+            "in",
+            rows.map(({ id }) => id),
+          )
           .returning("id")
           .execute();
         return declineComputerAppAccessRequestsInTransaction(transaction, {

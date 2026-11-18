@@ -13,7 +13,7 @@ import {
   type RpcResult,
 } from "@opensteer/protocol";
 import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
-import { attachmentMaxBytes } from "@opensteer/core";
+import { attachmentMaxBytes, deploymentPolicy } from "@opensteer/core";
 import {
   apiCurrentQueryParameter,
   apiNegotiation,
@@ -500,7 +500,8 @@ export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentK
         : "invalid";
   };
   carry(apiVersionQueryParameter, apiVersionHeader(kind));
-  if (kind === "personal") carry(apiCurrentQueryParameter, hostApiCurrentHeader);
+  if (deploymentPolicy({ kind }).services.personal)
+    carry(apiCurrentQueryParameter, hostApiCurrentHeader);
 }
 
 /**

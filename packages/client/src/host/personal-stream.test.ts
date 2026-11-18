@@ -899,6 +899,99 @@ test("uses no timers or network reads when an attached personal client is idle",
   }
 });
 
+test("restarts an interrupted catalog read when the same revision is reopened", async () => {
+  const host = new MockPersonalHost();
+  const environment = host.client.getSnapshot().environments[0]!;
+  const account = createId("harnessInstance");
+  const model = (modelId: string) => ({
+    modelId,
+    providerId: "openai",
+    displayName: modelId,
+    isDefault: false,
+    options: [],
+  });
+  const reply = (revision: string, modelId: string, next: string | null) =>
+    Response.json({
+      ok: true,
+      data: {
+        revision,
+        next,
+        data: {
+          kind: "harness-catalog",
+          environments: [
+            {
+              ...environment,
+              harnessCatalogs: [
+                {
+                  status: "ready",
+                  driverKind: "codex",
+                  harnessInstanceId: account,
+                  continuationIdentity: {
+                    driverKind: "codex",
+                    continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
+                  },
+                  models: [model(modelId)],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  let firstRead = true;
+  let secondPageSignal: AbortSignal | null | undefined;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const { kind, cursor, expectedRevision } = JSON.parse(url.searchParams.get("input") ?? "{}");
+    if (url.pathname !== "/v1/rpc/resources.detail.get" || kind !== "harness-catalog")
+      return host.fetch(input, init);
+    if (!cursor) return reply(expectedRevision, "first-model", "next");
+    if (firstRead) {
+      secondPageSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    }
+    return reply(expectedRevision, "second-model", null);
+  };
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: host.connect,
+    capabilities: [],
+  });
+  const releaseEnvironment = client.watchPersonalResource("environment", () => {});
+  let release = client.watchPersonalResource("harness-catalog", () => {});
+  const models = () =>
+    client
+      .getSnapshot()
+      .environments.find(({ id }) => id === environment.id)
+      ?.harnessCatalogs.find(({ harnessInstanceId }) => harnessInstanceId === account)
+      ?.models.map(({ modelId }) => modelId);
+  try {
+    await client.load();
+    await vi.waitFor(
+      () => {
+        expect(secondPageSignal).toBeDefined();
+        expect(models()).toEqual(["first-model"]);
+      },
+      { timeout: 1000 },
+    );
+    release();
+    expect(secondPageSignal?.aborted).toBe(true);
+    firstRead = false;
+    release = client.watchPersonalResource("harness-catalog", () => {});
+    await vi.waitFor(() => expect(models()).toEqual(["first-model", "second-model"]), {
+      timeout: 1000,
+    });
+  } finally {
+    release();
+    releaseEnvironment();
+    client.dispose();
+    host.dispose();
+  }
+});
+
 test("retains stale tab inventory until replacement and keeps its independent layout", async () => {
   const tab = TabSchema.parse({
     tabId: "page",

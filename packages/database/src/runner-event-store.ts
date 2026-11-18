@@ -1,3 +1,4 @@
+import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { executionDate } from "./personal-transaction.js";
 import { projectLastReply } from "./thread-status.js";
 import { refreshRequestState } from "./request-persistence.js";
@@ -310,6 +311,12 @@ async function applyEventProjection(
 
   switch (event.type) {
     case "request.cancelled": {
+      if (event.runId)
+        await lockRunProjectionRows(transaction, {
+          threadIds: [event.threadId],
+          runIds: [event.runId],
+          requestIds: [event.data.requestId],
+        });
       const pendingRequest = await transaction
         .selectFrom("requests")
         .select(["id", "responseCommandId"])
@@ -432,6 +439,11 @@ async function applyEventProjection(
       }
       break;
     case "run.started":
+      if (event.runId)
+        await lockRunProjectionRows(transaction, {
+          threadIds: [event.threadId],
+          runIds: [event.runId],
+        });
       await transaction
         .updateTable("providerSessions")
         .set({
@@ -452,6 +464,14 @@ async function applyEventProjection(
             status: "running",
           })
           .where("id", "=", event.runId)
+          .execute();
+        await transaction
+          .selectFrom("runAttempts")
+          .select("id")
+          .where("runId", "=", event.runId)
+          .where("endedAt", "is", null)
+          .orderBy("id")
+          .forNoKeyUpdate()
           .execute();
         // The attempt's start delivers its fixed batch: a first attempt's
         // claimed work, or the messages a restart was started with.
@@ -942,6 +962,10 @@ export async function commitRunnerEvent(
                   transition: "finishing",
                 });
               } else {
+                await lockRunProjectionRows(tx, {
+                  threadIds: [run.threadId],
+                  runIds: [run.id],
+                });
                 await settleFinishChildren(
                   tx,
                   mutation,

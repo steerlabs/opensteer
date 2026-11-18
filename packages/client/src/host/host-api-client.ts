@@ -13,11 +13,7 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import {
-  apiVersionHeaders,
-  hostApiVersionHeader,
-  hostApiCurrentHeader,
-} from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -270,13 +266,7 @@ async function request<Name extends keyof typeof hostApi>(
             : {}),
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
-          ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
-          ...(options.kind !== "team" && options.personalVersion
-            ? {
-                [hostApiVersionHeader]: String(options.personalVersion),
-                [hostApiCurrentHeader]: String(options.personalVersion),
-              }
-            : {}),
+          ...apiVersionHeaders(options.kind ?? "personal", options.personalVersion),
           ...(declaration.method === "POST"
             ? {
                 "content-type":

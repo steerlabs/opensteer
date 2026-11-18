@@ -155,39 +155,51 @@ async function storeToolCard(
     tool: call.tool,
     ...(call.completedAt ? { completedAt: call.completedAt.toISOString() } : {}),
   });
-  const row = await tx
-    .insertInto("transcriptItems")
-    .values({
-      id,
-      threadId: call.threadId,
-      runId: call.runId,
-      attemptId: call.attemptId,
-      nodeId: call.nodeId,
-      kind: "tool",
+  const held = mutation.transcriptPlacement(id);
+  mutation.stageTranscript(
+    id,
+    held ?? {
       position,
-      revision: mutation.sequence,
+      nodeId: call.nodeId,
       visible: true,
       isTurnStart: false,
-      createdAt: call.startedAt ?? call.completedAt!,
-      toolCallId: call.id,
-      view,
-    })
-    .onConflict((conflict) =>
-      conflict.column("id").doUpdateSet((eb) => ({
-        revision: eb.ref("excluded.revision"),
-        view: eb.ref("excluded.view"),
-      })),
-    )
-    .returningAll()
-    .executeTakeFirstOrThrow();
-  mutation.change(
-    {
-      scopeKey: call.nodeId ? `node:${call.nodeId}` : `thread:${call.threadId}`,
-      entityKind: "item",
-      entityId: id,
-      operation: "upsert",
     },
-    () => itemView(row),
+    async () => {
+      const row = await tx
+        .insertInto("transcriptItems")
+        .values({
+          id,
+          threadId: call.threadId,
+          runId: call.runId,
+          attemptId: call.attemptId,
+          nodeId: call.nodeId,
+          kind: "tool",
+          position,
+          revision: mutation.sequence,
+          visible: true,
+          isTurnStart: false,
+          createdAt: call.startedAt ?? call.completedAt!,
+          toolCallId: call.id,
+          view,
+        })
+        .onConflict((conflict) =>
+          conflict.column("id").doUpdateSet((eb) => ({
+            revision: eb.ref("excluded.revision"),
+            view: eb.ref("excluded.view"),
+          })),
+        )
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      mutation.change(
+        {
+          scopeKey: call.nodeId ? `node:${call.nodeId}` : `thread:${call.threadId}`,
+          entityKind: "item",
+          entityId: id,
+          operation: "upsert",
+        },
+        () => itemView(row),
+      );
+    },
   );
 }
 
@@ -259,12 +271,16 @@ export async function startPersonalToolCall(
         .where("id", "=", id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const card = await tx
-        .selectFrom("transcriptItems")
-        .select("position")
-        .where("toolCallId", "=", id)
-        .executeTakeFirstOrThrow();
-      await storeToolCard(tx, mutation, updated, card.position!);
+      const position =
+        mutation.transcriptPlacement(`tool:${id}`)?.position ??
+        (
+          await tx
+            .selectFrom("transcriptItems")
+            .select("position")
+            .where("toolCallId", "=", id)
+            .executeTakeFirstOrThrow()
+        ).position!;
+      await storeToolCard(tx, mutation, updated, position);
       return { call: updated, started: false };
     }
     if (matches && (existing.provisional || !input.provisional))
@@ -459,43 +475,37 @@ export async function interruptPersonalToolCalls(
     .set({ status: "interrupted", completedAt })
     .where("id", "in", callIds)
     .execute();
-  const closedCards = new Map(current.map((call) => [`tool:${call.id}`, call]));
-  const cardIds = [...closedCards.keys()];
-  await tx
-    .selectFrom("transcriptItems")
-    .select("id")
-    .where("id", "in", cardIds)
-    .orderBy("id")
-    .forNoKeyUpdate()
-    .execute();
-  const cards = await tx
-    .updateTable("transcriptItems")
-    .set({
-      revision: mutation.sequence,
-      view: sql`view || jsonb_build_object('status','stopped','completedAt',${completedAt.toISOString()}::text)`,
-    })
-    .where("id", "in", cardIds)
-    .returningAll()
-    .execute();
-  for (const card of cards) {
-    mutation.react({
-      type: "liveClosed",
-      itemId: card.id,
-      runId,
-      attemptId: card.attemptId,
-      bindingGeneration: closedCards.get(card.id)!.bindingGeneration,
-      threadId: card.threadId,
-      nodeId: card.nodeId,
-      afterSequence: mutation.sequence,
+  for (const call of current) {
+    const id = `tool:${call.id}`;
+    mutation.stageTranscript(id, undefined, async () => {
+      const card = await tx
+        .updateTable("transcriptItems")
+        .set({
+          revision: mutation.sequence,
+          view: sql`view || jsonb_build_object('status','stopped','completedAt',${completedAt.toISOString()}::text)`,
+        })
+        .where("id", "=", id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      mutation.react({
+        type: "liveClosed",
+        itemId: id,
+        runId,
+        attemptId: card.attemptId,
+        bindingGeneration: call.bindingGeneration,
+        threadId: card.threadId,
+        nodeId: card.nodeId,
+        afterSequence: mutation.sequence,
+      });
+      mutation.change(
+        {
+          scopeKey: card.nodeId ? `node:${card.nodeId}` : `thread:${card.threadId}`,
+          entityKind: "item",
+          entityId: id,
+          operation: "upsert",
+        },
+        () => itemView(card),
+      );
     });
-    mutation.change(
-      {
-        scopeKey: card.nodeId ? `node:${card.nodeId}` : `thread:${card.threadId}`,
-        entityKind: "item",
-        entityId: card.id,
-        operation: "upsert",
-      },
-      () => itemView(card),
-    );
   }
 }

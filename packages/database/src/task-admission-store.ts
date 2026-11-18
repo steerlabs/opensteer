@@ -707,6 +707,7 @@ function purgeRemovedAskTask(database: Kysely<DatabaseSchema>, threadId: ThreadI
       .select("id")
       .where("id", "=", threadId)
       .where("removedAt", "is not", null)
+      // FOR UPDATE: This batch can delete the removed thread.
       .forUpdate()
       .executeTakeFirst();
     if (!removed) return false;

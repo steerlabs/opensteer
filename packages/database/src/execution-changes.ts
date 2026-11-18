@@ -145,11 +145,13 @@ export async function writeExecutionItem(
   mutation: PersonalMutation,
   item: Omit<Insertable<TranscriptItemTable>, "position" | "revision">,
 ) {
-  const old = await tx
-    .selectFrom("transcriptItems")
-    .select(["position", "nodeId", "visible"])
-    .where("id", "=", item.id)
-    .executeTakeFirst();
+  const old =
+    mutation.transcriptPlacement(item.id) ??
+    (await tx
+      .selectFrom("transcriptItems")
+      .select(["position", "nodeId", "visible"])
+      .where("id", "=", item.id)
+      .executeTakeFirst());
   let position = old?.position ?? null;
   if (item.visible && position === null) {
     const thread = await tx
@@ -172,43 +174,55 @@ export async function writeExecutionItem(
             string | import("./personal-state-schema.js").PlaceView | null
           >`${JSON.stringify(body)}::jsonb`,
         };
-  const card = await tx
-    .insertInto("transcriptItems")
-    .values({ ...fields, ...ownedBody, position, revision: mutation.sequence })
-    .onConflict((conflict) =>
-      conflict.column("id").doUpdateSet({
-        nodeId: item.nodeId,
-        runId: item.runId,
-        isTurnStart: item.isTurnStart,
-        view: item.view,
-        visible: item.visible,
-        position,
-        ...ownedBody,
-        revision: mutation.sequence,
-      }),
-    )
-    .returningAll()
-    .executeTakeFirstOrThrow();
-  const scopeKey = card.nodeId
-    ? (`node:${card.nodeId}` as const)
-    : (`thread:${card.threadId}` as const);
-  if (old?.visible && (!card.visible || old.nodeId !== card.nodeId)) {
+  if (old?.visible && (!item.visible || old.nodeId !== item.nodeId)) {
     await tx
       .updateTable("threads")
       .set({ transcriptOrderRevision: mutation.sequence })
-      .where("id", "=", card.threadId)
+      .where("id", "=", item.threadId)
       .execute();
     mutation.change({
-      scopeKey: old.nodeId ? `node:${old.nodeId}` : `thread:${card.threadId}`,
+      scopeKey: old.nodeId ? `node:${old.nodeId}` : `thread:${item.threadId}`,
       entityKind: "item",
-      entityId: card.id,
+      entityId: item.id,
       operation: "remove",
     });
   }
-  if (card.visible)
-    mutation.change({ scopeKey, entityKind: "item", entityId: card.id, operation: "upsert" }, () =>
-      itemView(card),
-    );
+  mutation.stageTranscript(
+    item.id,
+    {
+      position,
+      nodeId: item.nodeId ?? null,
+      visible: item.visible,
+      isTurnStart: item.isTurnStart,
+    },
+    async () => {
+      const card = await tx
+        .insertInto("transcriptItems")
+        .values({ ...fields, ...ownedBody, position, revision: mutation.sequence })
+        .onConflict((conflict) =>
+          conflict.column("id").doUpdateSet({
+            nodeId: item.nodeId,
+            runId: item.runId,
+            isTurnStart: item.isTurnStart,
+            view: item.view,
+            visible: item.visible,
+            position,
+            ...ownedBody,
+            revision: mutation.sequence,
+          }),
+        )
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const scopeKey = card.nodeId
+        ? (`node:${card.nodeId}` as const)
+        : (`thread:${card.threadId}` as const);
+      if (card.visible)
+        mutation.change(
+          { scopeKey, entityKind: "item", entityId: card.id, operation: "upsert" },
+          () => itemView(card),
+        );
+    },
+  );
 }
 
 export async function publishExecutionInput(

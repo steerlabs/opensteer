@@ -2201,9 +2201,7 @@ export async function createHostRuntime(
           () => idleCompactionService?.reconcile() ?? Promise.resolve(),
         ),
         onRunDispatchAvailable: () => wakeExecutionCoordinator(),
-        onHarnessInstallation: async () => {
-          await bumpResources("harness", "harness-auth");
-        },
+        onHarnessInstallation: runnerObservations.onHarnessInstallation,
         onHarnessCatalogInvalidated: async (identity, invalidation) => {
           try {
             const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);

@@ -68,7 +68,7 @@ export const ToolIdentitySchema = z.strictObject({
   namespace: z.string().min(1).max(255),
 });
 export type ToolIdentity = z.infer<typeof ToolIdentitySchema>;
-const ToolIdentityViewSchema = z.object(ToolIdentitySchema.shape);
+export const ToolIdentityViewSchema = z.object(ToolIdentitySchema.shape);
 
 /**
  * What an integration gateway call addressed, as the Host resolved the call's
@@ -109,7 +109,7 @@ export const IntegrationCallSubjectSchema = z.strictObject({
   }),
 });
 export type IntegrationCallSubject = z.infer<typeof IntegrationCallSubjectSchema>;
-const IntegrationCallSubjectViewSchema = z.object({
+export const IntegrationCallSubjectViewSchema = z.object({
   ...IntegrationCallSubjectSchema.shape,
   computerApp: z.object(IntegrationCallSubjectSchema.shape.computerApp.unwrap().shape).nullable(),
   operation: z.object(IntegrationCallSubjectSchema.shape.operation.shape),

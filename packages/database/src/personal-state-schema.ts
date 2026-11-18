@@ -439,7 +439,7 @@ const retainedStateDdl = `
       when 'delegation' then delegation_id is not null
       when 'app' then app_id is not null
       when 'reasoning' then run_id is not null and body is not null
-        and jsonb_typeof(body) = 'string' and octet_length(body #>> '{}') <= 491520
+        and jsonb_typeof(body) = 'string' and octet_length(body #>> '{}') <= 900000
       when 'node-message' then node_id is not null and body is not null
         and jsonb_typeof(body) = 'string' and octet_length(body #>> '{}') <= 491520
       when 'place' then run_id is not null and body is not null and opensteer_valid_place(body)

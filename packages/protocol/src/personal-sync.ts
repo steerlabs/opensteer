@@ -29,7 +29,7 @@ import {
 import {
   TranscriptItemIdSchema,
   TranscriptItemSchema,
-  TranscriptOrderCursorSchema,
+  TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
 export const scopedPersonalApiVersion = 64;
@@ -149,7 +149,7 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("client.ping"), nonce: z.string().min(1).max(256) }),
 ]);
 
-const task = z.strictObject({
+const task = z.object({
   id: ThreadIdSchema,
   title: z.string().max(240),
   revision: PersonalRevisionSchema,
@@ -164,12 +164,12 @@ const task = z.strictObject({
   latestRunCompletedAt: z.iso.datetime().nullable(),
   thread: ThreadViewSchema.optional(),
 });
-const visit = z.strictObject({
+const visit = z.object({
   threadId: ThreadIdSchema,
   lastVisitedAt: z.iso.datetime(),
   revision: PersonalRevisionSchema,
 });
-const attention = z.strictObject({
+const attention = z.object({
   id: z.string().min(1).max(600),
   kind: z.enum(["request", "team-ask", "failed-ask"]),
   threadId: ThreadIdSchema.nullable(),
@@ -177,7 +177,7 @@ const attention = z.strictObject({
   title: z.string().max(240),
   preview: z.string().max(500).optional(),
 });
-export const PersonalRequestSummarySchema = z.strictObject({
+export const PersonalRequestSummarySchema = z.object({
   id: RequestIdSchema,
   revision: PersonalRevisionSchema,
   status: z.string().max(80),
@@ -185,11 +185,11 @@ export const PersonalRequestSummarySchema = z.strictObject({
   title: z.string().max(240),
   threadId: ThreadIdSchema,
 });
-const queue = z.strictObject({
+const queue = z.object({
   revision: PersonalRevisionSchema,
   runs: z
     .array(
-      z.strictObject({
+      z.object({
         id: RunIdSchema,
         revision: PersonalRevisionSchema,
         status: z.string().max(80),
@@ -201,7 +201,7 @@ const queue = z.strictObject({
     .max(2),
   paused: z.boolean(),
 });
-export const PersonalDetailSnapshotSchema = z.strictObject({
+export const PersonalDetailSnapshotSchema = z.object({
   thread: task,
   orderRevision: PersonalRevisionSchema,
   inputQueueRevision: PersonalRevisionSchema,
@@ -210,23 +210,23 @@ export const PersonalDetailSnapshotSchema = z.strictObject({
   items: z.array(TranscriptItemSchema).max(50),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),
-  nextBefore: TranscriptOrderCursorSchema.nullable(),
-  nextAfter: TranscriptOrderCursorSchema.nullable().optional(),
+  nextBefore: TranscriptOrderCursorViewSchema.nullable(),
+  nextAfter: TranscriptOrderCursorViewSchema.nullable().optional(),
   anchorItemId: TranscriptItemIdSchema.nullable().optional(),
   overlayCursors: z
-    .strictObject({
+    .object({
       requests: z.string().max(4096).optional(),
       tools: z.string().max(4096).optional(),
       nodes: z.string().max(4096).optional(),
     })
     .optional(),
 });
-const counts = z.strictObject({
+const counts = z.object({
   pendingRequestCount: z.int().nonnegative(),
   needsYouCount: z.int().nonnegative(),
   unreadTaskCount: z.int().nonnegative(),
 });
-export const PersonalShellSnapshotSchema = z.strictObject({
+export const PersonalShellSnapshotSchema = z.object({
   deploymentId: DeploymentIdSchema,
   viewerId: UserIdSchema,
   epoch: z.uuid(),
@@ -236,7 +236,7 @@ export const PersonalShellSnapshotSchema = z.strictObject({
   counts,
   resourceRevisions: PersonalResourceRevisionsSchema,
   session: z
-    .strictObject({
+    .object({
       sessionId: AuthSessionIdSchema,
       user: AuthenticatedUserViewSchema,
       sessionSurface: PersonalSessionSurfaceSchema,
@@ -248,7 +248,7 @@ export const PersonalShellSnapshotSchema = z.strictObject({
   activeTaskIds: z.array(ThreadIdSchema).max(10).optional(),
   resources: z
     .array(
-      z.strictObject({
+      z.object({
         kind: PersonalResourceKindSchema,
         revision: PersonalRevisionSchema,
         view: PersonalResourceViewSchema,

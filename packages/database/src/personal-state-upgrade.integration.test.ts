@@ -1,3 +1,4 @@
+import { readTranscriptItem } from "./personal-sync-store.js";
 import { createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect, test } from "vitest";
@@ -170,7 +171,7 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
 
     await preparePersonalConversion(database, 1013);
     const imagePath = "/disposable-fixture/screenshot.png";
-    const reasoningText = 'Retained "reasoning"\nSecond line';
+    const reasoningText = "考".repeat(200_000);
     await sql`delete from deployment_events`.execute(database);
     const identity = { callId: "legacy-test", tool: { namespace: "native", name: "image" } };
     const output = { text: "result", images: [{ path: imagePath, mediaType: "image/png" }] };
@@ -353,9 +354,24 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
           "thought",
         ),
         body: reasoningText,
-        view: { preview: reasoningText },
+        view: { preview: reasoningText.slice(0, 341), truncated: true },
       },
     ]);
+
+    await expect(
+      readTranscriptItem(target, {
+        viewerId: active.userId,
+        scope: { kind: "thread", threadId: active.threadId },
+        itemId: transcriptIdentity(
+          "reasoning",
+          active.runId,
+          tools[1]!.attemptId,
+          active.bindingGeneration,
+          null,
+          "thought",
+        ),
+      }),
+    ).resolves.toMatchObject({ body: { kind: "text", text: reasoningText }, truncated: false });
 
     const original = await target
       .selectFrom("toolOutputImages")

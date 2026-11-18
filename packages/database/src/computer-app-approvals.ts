@@ -135,7 +135,11 @@ export async function askForComputerAppApprovalInTransaction(
   readonly settlement: ComputerAppAccessSettlement;
 }> {
   const scope = computerAppScopeOf(input);
-  const existing = await lockComputerAppSetupRequestInTransaction(transaction, scope);
+  const existing = await lockComputerAppSetupRequestInTransaction(
+    transaction,
+    scope,
+    input.task?.threadId,
+  );
   const waiting =
     existing && existing.ownerUserId === input.ownerUserId && existing.expiresAt > input.now
       ? existing

@@ -73,15 +73,19 @@ export function apiNegotiation(kind: z.infer<typeof DeploymentKindSchema>): ApiN
 export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): string {
   return kind === "team" ? teamApiVersionHeader : hostApiVersionHeader;
 }
+export function usesPersonalApiVersion(kind: z.infer<typeof DeploymentKindSchema>): boolean {
+  return apiVersionHeader(kind) === hostApiVersionHeader;
+}
 /** What every caller that can set headers sends to a Host of `kind`. */
 export function apiVersionHeaders(
   kind: z.infer<typeof DeploymentKindSchema>,
+  personalVersion?: number,
 ): Readonly<Record<string, string>> {
   return kind === "team"
     ? { [teamApiVersionHeader]: String(teamApiVersion) }
     : {
-        [hostApiVersionHeader]: String(minimumHostApiVersion),
-        [hostApiCurrentHeader]: String(hostApiVersion),
+        [hostApiVersionHeader]: String(personalVersion ?? minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(personalVersion ?? hostApiVersion),
       };
 }
 

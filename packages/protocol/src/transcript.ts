@@ -5,12 +5,13 @@ import {
   ExecutionNodeIdSchema,
   MessageIdSchema,
   MessageViewSchema,
-  MessageAuthorSchema,
-  MessageEditSchema,
+  MessageAuthorViewSchema,
+  MessageEditViewSchema,
   TeamSourceSchema,
-  TeamRunDeliverySchema,
-  IntegrationCallSubjectSchema,
-  ToolIdentitySchema,
+  TeamAudienceViewSchema,
+  TeamRunDeliveryViewSchema,
+  IntegrationCallSubjectViewSchema,
+  ToolIdentityViewSchema,
   ToolOutputViewSchema,
   ExecutionNodeViewSchema,
   RunViewSchema,
@@ -43,8 +44,10 @@ export const TranscriptOrderCursorSchema = z.strictObject({
   beforeId: TranscriptItemIdSchema,
 });
 
+export const TranscriptOrderCursorViewSchema = z.object(TranscriptOrderCursorSchema.shape);
+
 export const TranscriptItemPreviewSchema = z
-  .strictObject({
+  .object({
     title: z.string().max(192).optional(),
     preview: z.string().max(1120).optional(),
     author: z.string().max(40).optional(),
@@ -59,6 +62,11 @@ export const TranscriptPlaceSchema = z.strictObject({
   tabId: TabIdSchema,
   title: z.string().max(1024),
   site: z.string().max(2048).nullable(),
+});
+const TranscriptPlaceViewSchema = z.object(TranscriptPlaceSchema.shape);
+const TeamSourceViewSchema = z.object({
+  ...TeamSourceSchema.shape,
+  audience: TeamAudienceViewSchema,
 });
 const card = {
   id: TranscriptItemIdSchema,
@@ -76,76 +84,76 @@ const clientSendKey = z.string().min(1).max(255);
 export const clientSendKeyWireReserve = 6 * 255 + 20;
 
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("message"),
     messageId: MessageIdSchema,
     clientSendKey: clientSendKey.optional(),
     messageKind: z.enum(["assistant", "input", "continuation"]).optional(),
-    author: MessageAuthorSchema.optional(),
-    edit: MessageEditSchema.optional(),
-    teamSource: TeamSourceSchema.optional(),
+    author: MessageAuthorViewSchema.optional(),
+    edit: MessageEditViewSchema.optional(),
+    teamSource: TeamSourceViewSchema.optional(),
     delivery: z
-      .strictObject({
+      .object({
         status: z.enum(["failed", "unconfirmed"]),
         reason: z.string().max(500),
       })
       .optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("tool"),
     toolCallId: z.string().min(1).max(160),
-    tool: ToolIdentitySchema.nullable().optional(),
+    tool: ToolIdentityViewSchema.nullable().optional(),
     completedAt: z.iso.datetime().optional(),
     view: TranscriptItemPreviewSchema.refine((value) => value.preview === undefined),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("run"),
     runId: RunIdSchema,
     replyMessageId: MessageIdSchema.nullable().optional(),
-    delivery: TeamRunDeliverySchema.optional(),
+    delivery: TeamRunDeliveryViewSchema.optional(),
     endedAt: z.iso.datetime().optional(),
     usage: RunUsageViewSchema.optional(),
     failure: RunFailureViewSchema.optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("request"),
     requestId: RequestIdSchema,
     requestKind: RequestKindSchema.optional(),
     waitedSince: z.iso.datetime().optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("node"),
     executionNodeId: ExecutionNodeIdSchema,
     node: ExecutionNodeViewSchema.optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("assignment"),
     delegationId: DelegationIdSchema,
     assignment: AssignmentSummarySchema.optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("app"),
     appId: AppIdSchema,
     version: z.int().nonnegative().optional(),
   }),
-  z.strictObject({
+  z.object({
     ...card,
     kind: z.literal("reasoning"),
     blockId: z.string().min(1).max(255),
     bindingGeneration: z.int().nonnegative().nullable(),
   }),
-  z.strictObject({ ...card, kind: z.literal("node-message"), nodeId: ExecutionNodeIdSchema }),
-  z.strictObject({ ...card, kind: z.literal("place"), place: TranscriptPlaceSchema.optional() }),
+  z.object({ ...card, kind: z.literal("node-message"), nodeId: ExecutionNodeIdSchema }),
+  z.object({ ...card, kind: z.literal("place"), place: TranscriptPlaceViewSchema.optional() }),
 ]);
 
-export const TranscriptPageSchema = z.strictObject({
+export const TranscriptPageSchema = z.object({
   kind: z.literal("page"),
   threadId: ThreadIdSchema,
   nodeId: ExecutionNodeIdSchema.nullable(),
@@ -153,8 +161,8 @@ export const TranscriptPageSchema = z.strictObject({
   revision: PersonalRevisionSchema,
   items: z.array(TranscriptItemSchema).max(100),
   hasMore: z.boolean(),
-  nextBefore: TranscriptOrderCursorSchema.nullable(),
-  nextAfter: TranscriptOrderCursorSchema.nullable().optional(),
+  nextBefore: TranscriptOrderCursorViewSchema.nullable(),
+  nextAfter: TranscriptOrderCursorViewSchema.nullable().optional(),
 });
 
 export type TranscriptItem = z.infer<typeof TranscriptItemSchema>;
@@ -162,7 +170,7 @@ export type TranscriptOrderCursor = z.infer<typeof TranscriptOrderCursorSchema>;
 
 export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
   TranscriptPageSchema,
-  z.strictObject({
+  z.object({
     kind: z.literal("history-reset"),
     orderRevision: PersonalRevisionSchema,
     anchorUnavailable: z.literal(true).optional(),
@@ -170,23 +178,23 @@ export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("message"), message: MessageViewSchema }),
-  z.strictObject({
+  z.object({ kind: z.literal("message"), message: MessageViewSchema }),
+  z.object({
     kind: z.literal("tool"),
     arguments: z.unknown(),
-    integration: IntegrationCallSubjectSchema.optional(),
+    integration: IntegrationCallSubjectViewSchema.optional(),
     output: ToolOutputViewSchema.omit({ images: true }).optional(),
     images: z.array(TranscriptImageRefSchema).max(8).optional(),
   }),
-  z.strictObject({ kind: z.literal("node"), node: ExecutionNodeViewSchema }),
-  z.strictObject({ kind: z.literal("run"), run: RunViewSchema }),
-  z.strictObject({ kind: z.literal("assignment"), assignment: AssignmentSummarySchema }),
-  z.strictObject({ kind: z.literal("place"), place: TranscriptPlaceSchema }),
-  z.strictObject({ kind: z.literal("text"), text: z.string().max(480 * 1024) }),
+  z.object({ kind: z.literal("node"), node: ExecutionNodeViewSchema }),
+  z.object({ kind: z.literal("run"), run: RunViewSchema }),
+  z.object({ kind: z.literal("assignment"), assignment: AssignmentSummarySchema }),
+  z.object({ kind: z.literal("place"), place: TranscriptPlaceViewSchema }),
+  z.object({ kind: z.literal("text"), text: z.string().max(480 * 1024) }),
 ]);
 
 export const TranscriptItemResultSchema = z
-  .strictObject({
+  .object({
     threadId: ThreadIdSchema,
     nodeId: ExecutionNodeIdSchema.nullable(),
     item: TranscriptItemSchema,

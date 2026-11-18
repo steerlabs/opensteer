@@ -252,6 +252,11 @@ export function passwordsAnywhereJourneys() {
               const account = card.accounts[0]!;
               if (name.includes("after-read")) await run.complete();
               expect((await held).isError, "ending the origin Run ends its held call").toBe(true);
+              const current = await host.store.database
+                .selectFrom("requests")
+                .select("revision")
+                .where("id", "=", request.id)
+                .executeTakeFirstOrThrow();
               const approve = () =>
                 testRpcData(
                   host.origin,
@@ -260,6 +265,7 @@ export function passwordsAnywhereJourneys() {
                     type: "browser.password-sign-in.respond",
                     idempotencyKey: "fixture-password-approval",
                     requestId: request.id,
+                    expectedRevision: current.revision,
                     decision: {
                       kind: "approve",
                       loginId: account.id,

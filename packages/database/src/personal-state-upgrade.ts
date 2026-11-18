@@ -4,6 +4,8 @@ import { itemView } from "./personal-sync-store.js";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
+  type DeploymentKind,
+  deploymentPolicy,
   MessageIdSchema,
   type MessageAuthor,
   type MessageId,
@@ -84,7 +86,7 @@ type UpgradeCursor = z.infer<typeof cursorSchema>;
 type CanonicalKind = (typeof canonicalKinds)[number];
 type Tx = Transaction<DatabaseSchema>;
 type Source = { readonly id: DeploymentId; readonly sequence: string; readonly cutAt: Date };
-type Deployment = { readonly id: DeploymentId; readonly kind: string };
+type Deployment = { readonly id: DeploymentId; readonly kind: DeploymentKind };
 
 const initialCursor: UpgradeCursor = {
   stage: "settle",
@@ -117,8 +119,7 @@ const offlineCommandTypes = ["run.execute", "run.steer", ...resendableControlCom
 
 async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
   // A team reply target is unique to its admitted Run. It cannot be admitted again.
-  const inputs = await sql<{ count: number }>`
-    with batch as materialized (
+  const inputs = await sql<{ message_id: MessageId; can_requeue: boolean; delivery: string }>`
       select i.message_id, i.policy='queue' and not (
         i.message_id=r.seed_input_id and (r.reply_target->>'kind'='team-thread') is true
       ) as can_requeue,
@@ -139,7 +140,9 @@ async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
       left join run_attempts a on a.run_id=i.run_id and a.status='current'
       where i.run_id=${runId} and i.state='claimed'
       order by i.message_id limit ${settlementBatchSize} for no key update of i
-    ), settled as (
+  `.execute(tx.withoutPlugins());
+  if (inputs.rows.length) {
+    await sql`
       update thread_inputs i set
         state=case
           when b.delivery='delivered' then 'delivered'
@@ -153,17 +156,25 @@ async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
         run_id=case when b.delivery='unsent' and b.can_requeue then null else i.run_id end,
         steer_command_id=case when b.delivery='unsent' and b.can_requeue then null else i.steer_command_id end,
         updated_at=${cutAt}
-      from batch b where i.message_id=b.message_id
-      returning i.message_id,i.state
-    ), requeued as (
-      update messages m set run_id=null
-        from settled s where m.id=s.message_id and s.state='pending'
-    )
-    select count(*)::int as count from settled
-  `.execute(tx);
-  if (inputs.rows[0]!.count) return true;
-  const commands = await sql`
-    with batch as materialized (
+      from jsonb_to_recordset(${JSON.stringify(inputs.rows)}::jsonb)
+        as b(message_id text, can_requeue boolean, delivery text) where i.message_id=b.message_id
+    `.execute(tx);
+    const requeued = inputs.rows
+      .filter((row) => row.can_requeue && row.delivery === "unsent")
+      .map(({ message_id }) => message_id);
+    if (requeued.length) {
+      await tx
+        .selectFrom("messages")
+        .select("id")
+        .where("id", "in", requeued)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      await tx.updateTable("messages").set({ runId: null }).where("id", "in", requeued).execute();
+    }
+    return true;
+  }
+  const batch = await sql<{ id: string; unsent: boolean }>`
       select c.id, (
         (c.status='pending' and c.attempts=0)
         or (c.type='run.execute' and r.binding_generation is null)
@@ -172,13 +183,16 @@ async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
       where c.run_id=${runId} and c.type=any(${offlineCommandTypes}::text[])
         and c.status in ('pending','dispatched')
       order by c.id limit ${settlementBatchSize} for no key update of c
-    )
+  `.execute(tx);
+  if (!batch.rows.length) return false;
+  const commands = await sql`
     update commands c set status=case when b.unsent then 'failed' else 'unknown' end,
       last_error=jsonb_build_object('message',case when b.unsent then
         'The Run ended during upgrade before dispatch' else
         'The Run ended during upgrade before delivery could be confirmed' end),
       updated_at=${cutAt}
-    from batch b where c.id=b.id
+    from jsonb_to_recordset(${JSON.stringify(batch.rows)}::jsonb)
+      as b(id text, unsent boolean) where c.id=b.id
   `.execute(tx);
   return Boolean(commands.numAffectedRows);
 }
@@ -413,23 +427,26 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       view: card.view,
     };
   });
-  await sql`
-    with cards as materialized (
+  const cards = sql`(
       select item.id,card.run_id,
         case when card.visible then ${cursor.position}::bigint + item.batch_offset end as position,
         card.visible,card.published,card.turn_start,card.view
       from jsonb_to_recordset(${JSON.stringify(projected)}::jsonb)
         as card(ids text[],offsets int[],run_id text,visible boolean,published boolean,turn_start boolean,view jsonb)
       cross join lateral unnest(card.ids,card.offsets) as item(id,batch_offset)
-    ), changed as materialized (
-      select m.id,c.published from messages m join cards c on c.id=m.id
-      where m.published is distinct from c.published order by m.id for no key update of m
-    ), publication as (
-      update messages m set published=c.published from changed c where m.id=c.id
-    )
+    )`;
+  await sql`select m.id from messages m join ${cards} c on c.id=m.id
+    where m.published is distinct from c.published order by m.id for no key update of m`.execute(
+    tx,
+  );
+  await sql`update messages m set published=c.published from ${cards} c
+    where m.id=c.id and m.published is distinct from c.published`.execute(tx);
+  await sql`select i.id from transcript_items i join ${cards} c on c.id=i.id
+    order by i.id for no key update of i`.execute(tx);
+  await sql`
     insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
     select m.id,m.thread_id,c.run_id,'message',c.position,c.visible,c.turn_start,m.created_at,m.id,c.view
-    from cards c join messages m on m.id=c.id order by m.id
+    from ${cards} c join messages m on m.id=c.id order by m.id
     on conflict (id) do update set position=excluded.position,visible=excluded.visible,
       is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
   `.execute(tx);
@@ -492,6 +509,17 @@ async function deriveRunDetails(tx: Tx, cursor: UpgradeCursor) {
   const last = runs.at(-1);
   if (!last) return stage(cursor, "close-tools");
   const cards = runs.map((run) => ({ id: `run:${run.id}`, view: describeTranscriptRun(run) }));
+  await tx
+    .selectFrom("transcriptItems")
+    .select("id")
+    .where(
+      "id",
+      "in",
+      cards.map(({ id }) => id),
+    )
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
   await sql`update transcript_items i set view=c.view
     from jsonb_to_recordset(${JSON.stringify(cards)}::jsonb) as c(id text,view jsonb)
     where i.id=c.id`.execute(tx);
@@ -713,12 +741,12 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
   return stage(cursor, "verify");
 }
 
-async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
+async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
   const {
     rows: [page],
-  } = await sql<{ lastId: string | null; ids: string[] }>`
+  } = await sql<{ lastId: string | null; ids: string[]; badText: boolean }>`
     with page as materialized (
-      select id,kind,view,case
+      select id,kind,view,position,case
         when kind='message' then id=message_id and id collate "C" ~* ${messageIdPattern}
         when kind='reasoning' then octet_length(id) between 1 and 600
           and octet_length(block_id) between 1 and 255
@@ -736,8 +764,17 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
         select id from (
           select distinct on (kind,view) id from page where shape_checked
           order by kind,view,id
-        ) checked) as ids
+        ) checked) as ids,
+      exists (
+        select 1 from page p join transcript_items i on i.id=p.id
+        left join deployment_events e on e.deployment_id=${source.id}
+          and e.sequence=p.position-${cursor.reserved}::bigint
+        where p.kind in ('reasoning','node-message')
+          and i.body is distinct from e.data->'text'
+        limit 1
+      ) as "badText"
   `.execute(tx.withoutPlugins());
+  if (page?.badText) throw new Error("Personal conversion text parity check failed");
   const cards = page!.ids.length
     ? await tx
         .selectFrom("transcriptItems")
@@ -855,7 +892,7 @@ async function convertBatch(
   tx: Tx,
   deployment: Deployment | null,
 ): Promise<{ stage: UpgradeCursor["stage"]; done: boolean }> {
-  if (deployment?.kind !== "personal") {
+  if (!deployment || !deploymentPolicy(deployment).services.personal) {
     const unexpected = (
       await sql<{ present: boolean }>`select
       (exists(select 1 from deployment_events limit 1) or exists(select 1 from client_sync_state limit 1)) as present`.execute(
@@ -942,7 +979,7 @@ async function convertBatch(
       next = await deriveAttentionLinks(tx, source, cursor);
       break;
     case "verify":
-      next = await verifyConversion(tx, cursor);
+      next = await verifyConversion(tx, source, cursor);
       break;
     case "index": {
       const name = await createNextPersonalTranscriptOrderIndex(tx, cursor.key);
@@ -1025,7 +1062,8 @@ export async function completePersonalStateConversion(
       signal.throwIfAborted();
       return result;
     });
-    if (startup.deployment?.kind === "personal") options?.afterBatch?.(batch.stage);
+    if (startup.deployment && deploymentPolicy(startup.deployment).services.personal)
+      options?.afterBatch?.(batch.stage);
     if (batch.done) break;
   }
 }

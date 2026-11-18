@@ -312,7 +312,10 @@ export class HttpHostClient {
   readonly #environmentAuth = new Map<string, boolean>();
   readonly #scopeReaders = new Map<string, ScopedThreadReader>();
   readonly #bodies = new TranscriptBodies();
-  readonly #resourceRevisions = new Map<PersonalResourceKind, string>();
+  readonly #resourceRevisions = new Map<
+    PersonalResourceKind,
+    { revision: string; complete: boolean }
+  >();
   readonly #returnHintRevisions = new Map<PersonalResourceKind, string>();
   readonly #threadReaders = new Map<string, () => void>();
   readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
@@ -1816,7 +1819,7 @@ export class HttpHostClient {
       read.controller.abort();
       this.#resourceReads.delete(kind);
     }
-    const details = this.#resourceRevisions.get(kind);
+    const details = this.#resourceRevisions.get(kind)?.revision;
     if (
       details &&
       (!installed ||
@@ -1921,6 +1924,7 @@ export class HttpHostClient {
   #readResource(kind: PersonalResourceKind) {
     if (pluginChangeResources.some((resource) => resource === kind)) return;
     const installed = this.#stream.resources.get(kind);
+    const loaded = this.#resourceRevisions.get(kind);
     if (
       !installed ||
       !this.#stream.resources.isObserved(kind) ||
@@ -1928,7 +1932,7 @@ export class HttpHostClient {
       BigInt(installed.revision) < BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0") ||
       this.#visibility === "background" ||
       this.#resourceReads.has(kind) ||
-      this.#resourceRevisions.get(kind) === installed.revision
+      (loaded?.complete && loaded.revision === installed.revision)
     )
       return;
     const controller = new AbortController();
@@ -1958,9 +1962,12 @@ export class HttpHostClient {
           (result.data.next && cursors.has(result.data.next))
         )
           return;
-        this.#resourceRevisions.set(kind, result.data.revision);
         retainedBytes += utf8ByteLength(JSON.stringify(result.data));
         if (retainedBytes > resourceInventoryByteBudget) return;
+        this.#resourceRevisions.set(kind, {
+          revision: result.data.revision,
+          complete: result.data.next === null,
+        });
         this.#applyResource(result.data.data, cursor !== undefined, result.data.next !== null);
         cursor = result.data.next ?? undefined;
         if (cursor) cursors.add(cursor);

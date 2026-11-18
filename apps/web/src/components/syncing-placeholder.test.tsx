@@ -32,11 +32,15 @@ afterEach(() => {
 });
 
 describe("useSyncingPlaceholder", () => {
-  it("shows a syncing list's skeleton only once it has had no rows for the delay", () => {
+  it("shows a syncing list's skeleton only once it has had no rows for the delay", async () => {
     render(true, 0);
-    act(() => vi.advanceTimersByTime(syncingPlaceholderDelayMs - 1));
+    await act(async () => {
+      vi.advanceTimersByTime(syncingPlaceholderDelayMs - 1);
+    });
     expect(shown.at(-1)).toBe(false);
-    act(() => vi.advanceTimersByTime(1));
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
     expect(shown.at(-1)).toBe(true);
     // Rows arriving take the skeleton away at once, as does the sync ending.
     render(true, 3);
@@ -44,18 +48,26 @@ describe("useSyncingPlaceholder", () => {
     render(true, 0);
     expect(shown.at(-1)).toBe(false);
     render(false, 0);
-    act(() => vi.advanceTimersByTime(syncingPlaceholderDelayMs * 2));
+    await act(async () => {
+      vi.advanceTimersByTime(syncingPlaceholderDelayMs * 2);
+    });
     expect(shown.at(-1)).toBe(false);
   });
 
-  it("never covers rows that are there, and a quick sync never flashes it", () => {
+  it("never covers rows that are there, and a quick sync never flashes it", async () => {
     render(true, 5);
-    act(() => vi.advanceTimersByTime(syncingPlaceholderDelayMs * 2));
+    await act(async () => {
+      vi.advanceTimersByTime(syncingPlaceholderDelayMs * 2);
+    });
     expect(shown.every((value) => !value)).toBe(true);
     render(true, 0);
-    act(() => vi.advanceTimersByTime(syncingPlaceholderDelayMs - 100));
+    await act(async () => {
+      vi.advanceTimersByTime(syncingPlaceholderDelayMs - 100);
+    });
     render(false, 4);
-    act(() => vi.advanceTimersByTime(syncingPlaceholderDelayMs));
+    await act(async () => {
+      vi.advanceTimersByTime(syncingPlaceholderDelayMs);
+    });
     expect(shown.every((value) => !value)).toBe(true);
   });
 });

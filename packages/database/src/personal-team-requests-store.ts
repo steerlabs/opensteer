@@ -713,6 +713,13 @@ export class PersonalTeamRequestsStore {
         .orderBy("runOrdinal", "desc")
         .forNoKeyUpdate()
         .executeTakeFirst();
+      if (run)
+        await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("id", "=", run.threadId)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
       const row = await tx
         .selectFrom("personalTeamRequests")
         .selectAll()
