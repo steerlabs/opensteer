@@ -113,6 +113,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
             const host = new HttpHostClient({
               baseUrl: origin,
               capabilities,
+              prepareSocket: () => authorization.current(),
               ...network,
             });
             const dispose = host.dispose.bind(host);
@@ -154,6 +155,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         await vi.waitFor(() => expect(observed.length).toBeGreaterThan(0));
         if (typeof read! !== "function") throw new Error("No capability reader");
         const initialRead = read!;
+        await initialRead();
         agreement = "unreachable";
         await expect(initialRead({ revalidate: true })).rejects.toThrow("unreachable");
         expect(disposed).toBe(0);
