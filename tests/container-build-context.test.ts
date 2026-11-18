@@ -376,7 +376,7 @@ it("lets Host app frame headers and streaming responses pass through the gateway
 
 it("builds and stages the plugin child and native runtime for the container's own architecture", async () => {
   const recipe = await readFile(resolve("deploy/container/Containerfile"), "utf8");
-  expect(recipe).toContain("COPY vendor/plugin-engine ./vendor/plugin-engine");
+  expect(recipe).toContain("COPY packages ./packages");
   const build = recipe
     .split(/^FROM /mu)
     .find((stage) => stage.split("\n", 1)[0]?.endsWith(" AS host-build"));

@@ -46,7 +46,5 @@ packages/protocol/src/personal-wire.baseline.json
 # Frozen from main at v60 for the historical Device projection proofs.
 packages/protocol/src/device-wire-v60.fixture.json
 
-# Repeatable third-party source import.
-vendor/plugin-engine
-scripts/plugin-engine/overlay
+# Dependency patches pnpm applies to the plugin engine's packages.
 patches/plugin-engine-*.patch

@@ -159,27 +159,26 @@ COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
 COPY packages/plugin-source/package.json ./packages/plugin-source/package.json
-COPY vendor/plugin-engine/app-cache/package.json ./vendor/plugin-engine/app-cache/package.json
-COPY vendor/plugin-engine/app-data/package.json ./vendor/plugin-engine/app-data/package.json
-COPY vendor/plugin-engine/app-source/package.json ./vendor/plugin-engine/app-source/package.json
-COPY vendor/plugin-engine/app-templates/package.json ./vendor/plugin-engine/app-templates/package.json
-COPY vendor/plugin-engine/apps/package.json ./vendor/plugin-engine/apps/package.json
-COPY vendor/plugin-engine/authorization/package.json ./vendor/plugin-engine/authorization/package.json
-COPY vendor/plugin-engine/catalog/package.json ./vendor/plugin-engine/catalog/package.json
-COPY vendor/plugin-engine/database/package.json ./vendor/plugin-engine/database/package.json
-COPY vendor/plugin-engine/mcp-auth/package.json ./vendor/plugin-engine/mcp-auth/package.json
-COPY vendor/plugin-engine/mcp/package.json ./vendor/plugin-engine/mcp/package.json
-COPY vendor/plugin-engine/reactivity/package.json ./vendor/plugin-engine/reactivity/package.json
-COPY vendor/plugin-engine/sdk/package.json ./vendor/plugin-engine/sdk/package.json
-COPY vendor/plugin-engine/telemetry/package.json ./vendor/plugin-engine/telemetry/package.json
-COPY vendor/plugin-engine/utils/package.json ./vendor/plugin-engine/utils/package.json
+COPY packages/plugin-engine/app-cache/package.json ./packages/plugin-engine/app-cache/package.json
+COPY packages/plugin-engine/app-data/package.json ./packages/plugin-engine/app-data/package.json
+COPY packages/plugin-engine/app-source/package.json ./packages/plugin-engine/app-source/package.json
+COPY packages/plugin-engine/app-templates/package.json ./packages/plugin-engine/app-templates/package.json
+COPY packages/plugin-engine/apps/package.json ./packages/plugin-engine/apps/package.json
+COPY packages/plugin-engine/authorization/package.json ./packages/plugin-engine/authorization/package.json
+COPY packages/plugin-engine/catalog/package.json ./packages/plugin-engine/catalog/package.json
+COPY packages/plugin-engine/database/package.json ./packages/plugin-engine/database/package.json
+COPY packages/plugin-engine/mcp-auth/package.json ./packages/plugin-engine/mcp-auth/package.json
+COPY packages/plugin-engine/mcp/package.json ./packages/plugin-engine/mcp/package.json
+COPY packages/plugin-engine/reactivity/package.json ./packages/plugin-engine/reactivity/package.json
+COPY packages/plugin-engine/sdk/package.json ./packages/plugin-engine/sdk/package.json
+COPY packages/plugin-engine/telemetry/package.json ./packages/plugin-engine/telemetry/package.json
+COPY packages/plugin-engine/utils/package.json ./packages/plugin-engine/utils/package.json
 RUN pnpm install --offline --frozen-lockfile
 
 FROM dependencies AS sources
 COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
 COPY packages ./packages
 COPY scripts ./scripts
-COPY vendor/plugin-engine ./vendor/plugin-engine
 
 FROM sources AS host-build
 COPY apps/desktop ./apps/desktop
@@ -314,25 +313,24 @@ COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
 COPY packages/plugin-source/package.json ./packages/plugin-source/package.json
-COPY vendor/plugin-engine/app-cache/package.json ./vendor/plugin-engine/app-cache/package.json
-COPY vendor/plugin-engine/app-data/package.json ./vendor/plugin-engine/app-data/package.json
-COPY vendor/plugin-engine/app-source/package.json ./vendor/plugin-engine/app-source/package.json
-COPY vendor/plugin-engine/app-templates/package.json ./vendor/plugin-engine/app-templates/package.json
-COPY vendor/plugin-engine/apps/package.json ./vendor/plugin-engine/apps/package.json
-COPY vendor/plugin-engine/authorization/package.json ./vendor/plugin-engine/authorization/package.json
-COPY vendor/plugin-engine/catalog/package.json ./vendor/plugin-engine/catalog/package.json
-COPY vendor/plugin-engine/database/package.json ./vendor/plugin-engine/database/package.json
-COPY vendor/plugin-engine/mcp-auth/package.json ./vendor/plugin-engine/mcp-auth/package.json
-COPY vendor/plugin-engine/mcp/package.json ./vendor/plugin-engine/mcp/package.json
-COPY vendor/plugin-engine/reactivity/package.json ./vendor/plugin-engine/reactivity/package.json
-COPY vendor/plugin-engine/sdk/package.json ./vendor/plugin-engine/sdk/package.json
-COPY vendor/plugin-engine/telemetry/package.json ./vendor/plugin-engine/telemetry/package.json
-COPY vendor/plugin-engine/utils/package.json ./vendor/plugin-engine/utils/package.json
+COPY packages/plugin-engine/app-cache/package.json ./packages/plugin-engine/app-cache/package.json
+COPY packages/plugin-engine/app-data/package.json ./packages/plugin-engine/app-data/package.json
+COPY packages/plugin-engine/app-source/package.json ./packages/plugin-engine/app-source/package.json
+COPY packages/plugin-engine/app-templates/package.json ./packages/plugin-engine/app-templates/package.json
+COPY packages/plugin-engine/apps/package.json ./packages/plugin-engine/apps/package.json
+COPY packages/plugin-engine/authorization/package.json ./packages/plugin-engine/authorization/package.json
+COPY packages/plugin-engine/catalog/package.json ./packages/plugin-engine/catalog/package.json
+COPY packages/plugin-engine/database/package.json ./packages/plugin-engine/database/package.json
+COPY packages/plugin-engine/mcp-auth/package.json ./packages/plugin-engine/mcp-auth/package.json
+COPY packages/plugin-engine/mcp/package.json ./packages/plugin-engine/mcp/package.json
+COPY packages/plugin-engine/reactivity/package.json ./packages/plugin-engine/reactivity/package.json
+COPY packages/plugin-engine/sdk/package.json ./packages/plugin-engine/sdk/package.json
+COPY packages/plugin-engine/telemetry/package.json ./packages/plugin-engine/telemetry/package.json
+COPY packages/plugin-engine/utils/package.json ./packages/plugin-engine/utils/package.json
 RUN pnpm install --offline --frozen-lockfile
 COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
 COPY packages ./packages
 COPY scripts ./scripts
-COPY vendor/plugin-engine ./vendor/plugin-engine
 COPY apps/web ./apps/web
 COPY apps/browser-extension ./apps/browser-extension
 ARG OPENSTEER_SOURCE_REVISION

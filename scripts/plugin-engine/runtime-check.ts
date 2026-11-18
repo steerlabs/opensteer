@@ -6,7 +6,7 @@ import { Context, Deferred, Effect, Layer, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Digest, SecureRandom } from "effect/crypto";
 import { SqlClient } from "effect/sql";
-import { pgliteLayer } from "../../vendor/plugin-engine/database/src/pglite.ts";
+import { pgliteLayer } from "../../packages/plugin-engine/database/src/pglite.ts";
 import {
   createPluginEngine,
   makePluginEngineStorage,
@@ -69,7 +69,7 @@ export const startRuntimeCheck = (options: {
   });
 
 export async function catalogCheck() {
-  const { feed } = await import("../../vendor/plugin-engine/catalog/src/published-compat.ts");
+  const { feed } = await import("../../packages/plugin-engine/catalog/src/published-compat.ts");
   const get = async (url: string) => {
     const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);

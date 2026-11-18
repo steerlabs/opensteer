@@ -10,24 +10,24 @@ export async function checkNames(root) {
   const excluded = new Set([
     "THIRD_PARTY_NOTICES.md",
     "scripts/plugin-engine/renames.mjs",
-    "vendor/plugin-engine/apps/src/published-compat.ts",
-    "vendor/plugin-engine/catalog/src/published-compat.ts",
+    "packages/plugin-engine/apps/src/published-compat.ts",
+    "packages/plugin-engine/catalog/src/published-compat.ts",
   ]);
   const scopes = [
     [`@${project}(?:-js|[.])|${project}[.](?:sh|community)(?:/|["'])|${first}[ -]${last}`, [""]],
     [
       forbidden.map(escape).join("|"),
-      ["vendor/plugin-engine/", "scripts/plugin-engine/", "patches/"],
+      ["packages/plugin-engine/", "scripts/plugin-engine/", "patches/"],
     ],
   ];
   const violations = [];
   const allNames = new RegExp(forbidden.map(escape).join("|"), "i");
   for (const [file, values] of [
     [
-      "vendor/plugin-engine/apps/src/published-compat.ts",
+      "packages/plugin-engine/apps/src/published-compat.ts",
       { ...compatibility.apps, ...compatibility.sdk },
     ],
-    ["vendor/plugin-engine/catalog/src/published-compat.ts", compatibility.catalog],
+    ["packages/plugin-engine/catalog/src/published-compat.ts", compatibility.catalog],
   ]) {
     const remaining = Object.values(values).reduce(
       (source, value) => source.replaceAll(JSON.stringify(value), '""'),
@@ -53,7 +53,7 @@ export async function checkNames(root) {
   violations.push(
     ...files.filter(
       (path) =>
-        (path.startsWith("vendor/plugin-engine/") || path.startsWith("scripts/plugin-engine/")) &&
+        (path.startsWith("packages/plugin-engine/") || path.startsWith("scripts/plugin-engine/")) &&
         allNames.test(path),
     ),
   );

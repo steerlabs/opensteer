@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { cp, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import framework from "../../vendor/plugin-engine/apps/package.json" with { type: "json" };
+import framework from "../../packages/plugin-engine/apps/package.json" with { type: "json" };
 export const pluginFixtureFiles = (revision: number, sites?: string[]) => [
   {
     path: "skills/demo/SKILL.md",
@@ -54,7 +54,7 @@ export async function pluginFixtureRegistry(
   catalogFiles?: ReturnType<typeof pluginFixtureFiles>,
   handle?: (request: IncomingMessage, response: ServerResponse) => boolean,
 ) {
-  await cp(resolve("vendor/plugin-engine/apps/dist"), join(directory, "package"), {
+  await cp(resolve("packages/plugin-engine/apps/dist"), join(directory, "package"), {
     recursive: true,
   });
   const archive = join(directory, "framework.tgz");
