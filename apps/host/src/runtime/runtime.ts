@@ -2554,7 +2554,6 @@ export async function createHostRuntime(
       maxQueuedBytes: 64 * 1_024 * 1_024,
       maxQueuedCommands: 10_000,
       onDispatchError: (error, command) => reportDispatchError(error, command.id),
-
       store,
     });
     // Registration is the earliest proof that queued execution can make
