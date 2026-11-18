@@ -45,16 +45,20 @@ function Row({ id = tab }: { readonly id?: TabId }) {
   );
 }
 
-function Group() {
+function Group({ ids = [tab, anotherTab] }: { readonly ids?: readonly TabId[] }) {
   const close = useTabGroupCloser();
   return (
-    <button type="button" onClick={() => close([tab, anotherTab])}>
+    <button type="button" onClick={() => close(ids)}>
       Close group
     </button>
   );
 }
 
-function setup(closeTabs: HostClient["closeTabs"], open: (id: TabId) => boolean, group = false) {
+function setup(
+  closeTabs: HostClient["closeTabs"],
+  open: (id: TabId) => boolean,
+  group: boolean | readonly TabId[] = false,
+) {
   const listeners = new Set<() => void>();
   let state: ClientConnectionState = localSession.connection.getSnapshot();
   const connection: ClientConnection = {
@@ -86,7 +90,9 @@ function setup(closeTabs: HostClient["closeTabs"], open: (id: TabId) => boolean,
     root!.render(
       <TabCloserProvider hostClient={hostClient}>
         <Row />
-        {group ? (
+        {Array.isArray(group) ? (
+          <Group ids={group} />
+        ) : group ? (
           <>
             <Row id={anotherTab} />
             <Group />
@@ -97,6 +103,7 @@ function setup(closeTabs: HostClient["closeTabs"], open: (id: TabId) => boolean,
   );
   return {
     hostClient,
+    watchers: () => listeners.size,
     line: (id = tab) => node.querySelector(`[data-line="${id}"]`)?.textContent ?? "",
     checks: () => [...node.querySelectorAll("button")].filter((b) => b.textContent === "Check"),
     button: (name: string) =>
@@ -179,4 +186,27 @@ it("keeps each tab's outcome when a group close or a check has mixed results", a
     { signal: expect.any(AbortSignal) },
   );
   expect(view.hostClient.closeTabs).toHaveBeenCalledTimes(2);
+});
+
+it("lets go of refused closes of tabs no row shows, keeping only the newest", async () => {
+  const ids = Array.from(
+    { length: 40 },
+    (_, i) => `tab_00000000-0000-4000-8000-${String(i + 100).padStart(12, "0")}` as TabId,
+  );
+  const view = setup(
+    async (tabIds) => ({
+      closed: [],
+      failed: tabIds.map((tabId) => ({
+        tabId,
+        error: { code: "conflict", message: "busy", next: null },
+      })),
+    }),
+    () => true,
+    ids,
+  );
+  await act(async () => view.button("Close group")!.click());
+  expect(view.watchers()).toBe(40);
+  await act(async () => view.button("Close")!.click());
+  expect(view.watchers()).toBe(32);
+  expect(view.line()).not.toBe("");
 });

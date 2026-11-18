@@ -22,7 +22,7 @@ import {
   type ClientReadSpec,
   type ClientReadState,
 } from "@opensteer/client/reads";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NativeSettingsFooter } from "../screens/native-settings-page.types.js";
 import type { ActionLineValue } from "./action-line.js";
 
@@ -249,9 +249,14 @@ export type ScreenActionSpec<I, O> = Omit<ClientActionSpec<I, O>, "key">;
 interface HeldAction {
   readonly action: ClientAction<unknown, unknown>;
   spec: ScreenActionSpec<unknown, unknown>;
+  observers: number;
+  sweep: ReturnType<typeof setTimeout> | null;
+  disposed: boolean;
 }
 // Keyed by session and item, so a row's outcome outlives the menu or sheet that asked.
 const heldActions = new WeakMap<ClientSession, Map<string, HeldAction>>();
+/** Unwatched outcomes awaiting a Check that a session keeps; the oldest go first. */
+const keptUnwatched = 32;
 
 function heldAction<I, O>(
   session: ClientSession,
@@ -280,11 +285,77 @@ function heldAction<I, O>(
       reconcile: (input, signal) =>
         holder.current!.spec.reconcile?.(input, signal) ?? Promise.resolve(null),
     });
-    entry = { action, spec: spec as ScreenActionSpec<unknown, unknown> };
-    holder.current = entry;
-    held.set(key, entry);
+    const created: HeldAction = {
+      action,
+      spec: spec as ScreenActionSpec<unknown, unknown>,
+      observers: 0,
+      sweep: null,
+      disposed: false,
+    };
+    holder.current = entry = created;
+    held.set(key, created);
+    action.subscribe(() => scheduleSweep(session, key, created));
+    // Nothing may ever watch or run it; a later task lets the caller do either first.
+    scheduleSweep(session, key, created);
   }
   return entry;
+}
+
+/** A place showing the entry's outcome: while any is mounted, the entry stays. */
+function observe(session: ClientSession, key: string, entry: HeldAction): () => void {
+  entry.observers += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    entry.observers -= 1;
+    scheduleSweep(session, key, entry);
+  };
+}
+
+// A task later, so React's development remount and a run started right after
+// `screenAction` both land before the entry is judged unwatched.
+function scheduleSweep(session: ClientSession, key: string, entry: HeldAction): void {
+  if (entry.disposed || entry.sweep !== null) return;
+  entry.sweep = setTimeout(() => {
+    entry.sweep = null;
+    sweep(session, key, entry);
+  }, 0);
+}
+
+function awaitsCheck(entry: HeldAction): boolean {
+  const state = entry.action.getSnapshot();
+  return (
+    state.outcome?.kind === "unconfirmed" &&
+    state.issue !== null &&
+    entry.spec.reconcile !== undefined
+  );
+}
+
+function sweep(session: ClientSession, key: string, entry: HeldAction): void {
+  const held = heldActions.get(session);
+  if (entry.disposed || held?.get(key) !== entry) return;
+  if (entry.observers > 0 || entry.action.getSnapshot().running) return;
+  if (!awaitsCheck(entry)) {
+    release(held, key, entry);
+    return;
+  }
+  // Newest last, so the bound drops the oldest unwatched outcome.
+  held.delete(key);
+  held.set(key, entry);
+  const unwatched = [...held].filter(
+    ([, other]) => other.observers === 0 && !other.action.getSnapshot().running,
+  );
+  for (const [oldKey, old] of unwatched.slice(0, Math.max(0, unwatched.length - keptUnwatched)))
+    release(held, oldKey, old);
+}
+
+function release(held: Map<string, HeldAction>, key: string, entry: HeldAction): void {
+  entry.disposed = true;
+  if (entry.sweep !== null) clearTimeout(entry.sweep);
+  entry.sweep = null;
+  held.delete(key);
+  entry.action.dispose();
 }
 
 /**
@@ -299,6 +370,20 @@ export function screenAction<I, O>(
   const entry = heldAction(session, key, spec);
   entry.spec = spec as ScreenActionSpec<unknown, unknown>;
   return entry.action as ClientAction<I, O>;
+}
+
+/**
+ * A place showing one item's outcome outside React, as `useScreenAction`
+ * holds it: the action stays while watched, running, or awaiting a Check.
+ */
+export function observeScreenAction<I, O>(
+  session: ClientSession,
+  key: string,
+  spec: ScreenActionSpec<I, O>,
+): { readonly action: ClientAction<I, O>; readonly release: () => void } {
+  const entry = heldAction(session, key, spec);
+  entry.spec = spec as ScreenActionSpec<unknown, unknown>;
+  return { action: entry.action as ClientAction<I, O>, release: observe(session, key, entry) };
 }
 
 /** How long a line saying an action never went out stays, unless tapped again first. */
@@ -323,11 +408,12 @@ export function useScreenAction<I, O>(
   /** Settles an unconfirmed outcome from what the client now holds, as Check does. */
   readonly reconcile: () => Promise<void>;
 } {
+  const [generation, renew] = useState(0);
   const entry = useMemo(
     () => (session === null ? null : heldAction(session, key, spec)),
     // The spec's words and callbacks are refreshed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session, key],
+    [session, key, generation],
   );
   if (entry !== null) entry.spec = spec as ScreenActionSpec<unknown, unknown>;
   const action = (entry?.action ?? idleAction) as ClientAction<I, O>;
@@ -342,12 +428,19 @@ export function useScreenAction<I, O>(
   }, [dismiss, kind, state.issue]);
   const kept = useRef(false);
   kept.current = kind === "unconfirmed" && checkable;
-  useEffect(
-    () => () => {
-      if (!kept.current) action.dismiss();
-    },
-    [action],
-  );
+  useEffect(() => {
+    if (session === null || entry === null) return;
+    // Released while this render waited to commit: hold a fresh one.
+    if (entry.disposed) {
+      renew((value) => value + 1);
+      return;
+    }
+    const unobserve = observe(session, key, entry);
+    return () => {
+      if (!kept.current) entry.action.dismiss();
+      unobserve();
+    };
+  }, [session, key, entry]);
   const retry = spec.retry;
   const { reconcile } = action;
   const line = useMemo(

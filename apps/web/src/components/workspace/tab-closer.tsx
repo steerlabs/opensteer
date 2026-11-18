@@ -109,6 +109,8 @@ export function TabCloserProvider({
   return <TabCloserContext.Provider value={closer}>{children}</TabCloserContext.Provider>;
 }
 
+const keptOutcomes = 32;
+
 function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void } {
   const latest = new Map<TabId, ClientAction<TabId, void>>();
   const listeners = new Set<() => void>();
@@ -151,14 +153,25 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
           },
         });
         latest.get(tabId)?.dispose();
+        latest.delete(tabId);
         latest.set(tabId, action);
         return { tabId, action };
       });
+      // Outcomes of tabs no row shows any more must not pile up; the oldest go first.
+      const stale = [...latest].filter(
+        ([tabId, action]) => !ids.includes(tabId) && !action.getSnapshot().running,
+      );
+      for (const [tabId, action] of stale.slice(0, Math.max(0, latest.size - keptOutcomes))) {
+        latest.delete(tabId);
+        action.dispose();
+      }
       publish();
       for (const { tabId, action } of rows) {
+        // Held only while it has something to say: closed or dismissed lets it go.
         const settle = () => {
-          if (latest.get(tabId) !== action || action.getSnapshot().outcome?.kind !== "confirmed")
-            return;
+          const state = action.getSnapshot();
+          if (latest.get(tabId) !== action || state.running) return;
+          if (state.outcome?.kind !== "confirmed" && state.issue !== null) return;
           release(action);
           publish();
         };
