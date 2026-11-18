@@ -254,7 +254,10 @@ describe("the draft's places", () => {
   it.each(["held", "handed back"] as const)(
     "lets its automatic page go when that tab closes, but keeps an explicit pick, greyed (%s)",
     async (how) => {
-      await mount((source) => `/${tabSearch(pageTab(source))}`);
+      await mount((source) => {
+        source.scriptPlaces();
+        return `/${tabSearch(pageTab(source))}`;
+      });
       const place = pageTab();
       const other = placeList(client.getSnapshot()).find(
         (item) => item.key !== place.key && isMockPage(item),
@@ -263,24 +266,38 @@ describe("the draft's places", () => {
         [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
       const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About this");
-      await click(element('.composer__attach[aria-label="Attach"]'));
-      await click(
-        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
-          (button) => button.textContent?.includes(other.title),
-        )!,
+      act(() => element<HTMLButtonElement>('.composer__attach[aria-label="Attach"]').click());
+      act(() =>
+        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")]
+          .find((button) => button.textContent?.includes(other.title))!
+          .click(),
       );
       await vi.waitFor(() => expect(titles()).toEqual([place.title, other.title]), {
         timeout: 1000,
       });
       if (how === "handed back") {
-        // A refused message comes back with its places exactly as they were sent.
-        vi.spyOn(client, "dispatch").mockRejectedValueOnce(
-          new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
+        await vi.waitFor(
+          () => expect(sendEnabled(), "The explicit place read never released Send").toBe(true),
+          { timeout: 1000 },
         );
-        await click(element(".composer__send"));
-        await vi.waitFor(() => expect(titles()).toEqual([place.title, other.title]), {
-          timeout: 1000,
+        // Refusing task creation hands the draft back with both places.
+        const refused = vi
+          .spyOn(client, "dispatch")
+          .mockRejectedValueOnce(
+            new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
+          );
+        await act(async () => {
+          element<HTMLButtonElement>(".composer__send").click();
+          await vi.waitFor(
+            () =>
+              expect(refused).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ type: "thread.create" }),
+              ),
+            { timeout: 1000 },
+          );
+          await expect(refused.mock.results[0]!.value).rejects.toMatchObject({ code: "forbidden" });
         });
+        expect(titles()).toEqual([place.title, other.title]);
       }
       const close = async (closed: PlaceItem) => {
         await act(async () => client.closeTabs([closed.key]));
@@ -292,9 +309,13 @@ describe("the draft's places", () => {
       await close(other);
       expect(titles()).toEqual([other.title]);
       expect(document.querySelector(".context-chip--gone")).not.toBeNull();
+      await vi.waitFor(
+        () => expect(sendEnabled(), "The offline draft could not be kept").toBe(true),
+        { timeout: 1000 },
+      );
       const dispatch = vi.spyOn(client, "dispatch");
       dispatch.mockClear();
-      await click(element(".composer__send"));
+      await act(async () => element<HTMLButtonElement>(".composer__send").click());
       expect(sends(dispatch)).toEqual([]);
 
       await act(async () => client.load());
@@ -460,7 +481,10 @@ describe("the draft's places", () => {
     const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
-      await mount("/?panel=browser");
+      await mount((source) => {
+        source.scriptPlaces();
+        return "/?panel=browser";
+      });
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
@@ -472,7 +496,11 @@ describe("the draft's places", () => {
       await vi.waitFor(() => expect(chip()).toBe(keynote.title), { timeout: 1000 });
       const dispatch = vi.spyOn(client, "dispatch");
       await write(field(), "Can you see my screen?");
-      await click(element(".composer__send"));
+      await vi.waitFor(
+        () => expect(sendEnabled(), "The app context never released Send").toBe(true),
+        { timeout: 1000 },
+      );
+      act(() => element<HTMLButtonElement>(".composer__send").click());
       await vi.waitFor(() => expect(sent(dispatch)).toHaveLength(1), { timeout: 1000 });
       const sends = sent(dispatch);
       expect(sends).toHaveLength(1);
