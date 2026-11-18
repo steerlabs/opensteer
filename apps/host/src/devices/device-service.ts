@@ -288,7 +288,7 @@ export class DeviceService {
     readonly definitions: readonly IntegrationDefinition[];
     readonly localServers: Pick<
       LocalServerService,
-      "availability" | "clients" | "discoverServer" | "endRun" | "secrets"
+      "availability" | "clients" | "discoverServer" | "endRun" | "launchReview" | "secrets"
     >;
     readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
@@ -344,6 +344,7 @@ export class DeviceService {
       listCallableTools: (scope) => this.listCallableTools(scope),
       listConnections: this.#listConnections,
       localMcpSecrets: localServers.secrets,
+      localServerReview: (serverId, launch) => localServers.launchReview(serverId, launch),
       onConnectionsChanged: options.onConnectionsChanged,
       onInputAccessWithdrawn:
         options.onDeviceInputAccessWithdrawn ??

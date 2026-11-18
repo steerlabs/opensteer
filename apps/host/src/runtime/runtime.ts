@@ -1676,7 +1676,6 @@ export async function createHostRuntime(
       isRunnerConnected,
       onConnectionsChanged,
       onSettingsChanged,
-      personal: true,
       secretVault: integrationVault,
       store: integrationPlatformStore,
     });

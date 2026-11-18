@@ -1,4 +1,5 @@
 import { maximumSkillBytes } from "@opensteer/shared/agentSkills";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import type { Stats } from "node:fs";
@@ -324,7 +325,8 @@ async function snapshotPackage(
   files.push({
     path: "local-server-registration.json",
     mode: 0o600,
-    bytes: Buffer.from(JSON.stringify(registration)),
+    // Canonical, so the package digest does not depend on the order its keys were given in.
+    bytes: Buffer.from(canonicalJson(registration)),
   });
   files.sort((a, b) => a.path.localeCompare(b.path));
   const digest = pluginSnapshotDigest(files);

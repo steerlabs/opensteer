@@ -20,7 +20,6 @@ import { assertPersonalOwner } from "./private-resource-owner.js";
 import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import {
   type ComputerAppIdentity,
   IntegrationConnectionRequirementSchema,
@@ -269,8 +268,8 @@ export abstract class IntegrationPlatformStoreBase {
 export interface InstallIntegrationInput {
   readonly administration?: AdministrationCommandIdentity | undefined;
   /**
-   * For each server an install keeps on a computer: whether it keeps its
-   * approval for the new launch, and its secrets for it.
+   * For each server an install keeps on a computer: the secrets it keeps for
+   * the new launch. Approval never carries: it names one launch, by digest.
    */
   readonly retainedServer?: (
     existing: {
@@ -280,7 +279,7 @@ export interface InstallIntegrationInput {
       transport: IntegrationServer["transport"];
     },
     discovered: DiscoveredIntegrationServer,
-  ) => { carryApproval: boolean; secrets: LocalMcpSecretsUpdate } | null;
+  ) => { secrets: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly actorUserId: UserId | null;
@@ -929,10 +928,6 @@ export async function installIntegrationInTransaction(
         .returningAll()
         .executeTakeFirstOrThrow();
 
-  const retainedUpdates = new Map<
-    IntegrationServerId,
-    { carryApproval: boolean; secrets: LocalMcpSecretsUpdate }
-  >();
   for (const existing of existingServers) {
     const discovered = input.servers.find((s) => s.name === existing.name);
     if (!discovered) continue;
@@ -941,7 +936,6 @@ export async function installIntegrationInTransaction(
       discovered,
     );
     if (retained && discovered.transport.type === "runner" && discovered.transport.runnerId) {
-      retainedUpdates.set(existing.id, retained);
       await replaceSecrets(
         transaction,
         existing.id,
@@ -966,7 +960,6 @@ export async function installIntegrationInTransaction(
   const retainedServerIds: IntegrationServerId[] = [];
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
-    const retained = existing ? retainedUpdates.get(existing.id) : undefined;
     const previousRunner = existing ? runnerOf(existing.transport) : null;
     if (
       installation.pluginId &&
@@ -982,9 +975,6 @@ export async function installIntegrationInTransaction(
       ? await transaction
           .updateTable("integrationServers")
           .set({
-            ...(retained?.carryApproval && discovered.transport.type === "runner"
-              ? { approvedLaunchDigest: localMcpLaunchDigest(discovered.transport.launch) }
-              : {}),
             connectionRequirement: jsonValue(discovered.connectionRequirement),
             status: discovered.status,
             statusDetail: discovered.statusDetail,
