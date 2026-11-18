@@ -631,7 +631,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       }
       for (const claim of message.profiles) inventory.profiles.add(claim.binding.profileId);
       inventory.complete = message.complete;
-      this.#notifyAdmission(stream.identity.runnerId);
+      this.#notifyAdmission(message.complete ? stream.identity.runnerId : undefined);
       if (message.complete)
         void this.resumeDeletions(stream.identity.runnerId).catch(() => undefined);
       return;

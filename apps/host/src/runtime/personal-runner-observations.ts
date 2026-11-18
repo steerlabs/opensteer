@@ -27,7 +27,7 @@ type Observation = {
   readonly revision: bigint;
   readonly identityRevision: bigint;
   readonly connectionGeneration: number;
-  readonly identity: RunnerIdentity | undefined;
+  readonly identity: RunnerIdentity;
   readonly readiness: ReadonlyMap<RunnerModuleName, RunnerModuleReadiness>;
 };
 
@@ -69,7 +69,7 @@ export class PersonalRunnerObservations {
         .executeTakeFirst();
       if (!runner || (online && runner.revokedAt) || !valid()) return;
       const previous = this.#byRunner.get(id);
-      if (readinessOnly && previous?.identity?.connectionId !== identity.connectionId) return;
+      if (readinessOnly && previous?.identity.connectionId !== identity.connectionId) return;
       const readiness = new Map<RunnerModuleName, RunnerModuleReadiness>();
       if (online)
         for (const module of RunnerModuleNameSchema.options) {
@@ -93,11 +93,15 @@ export class PersonalRunnerObservations {
           (held.connectionGeneration > identity.connectionGeneration || held.revision >= revision)
         )
           return;
+        if (!online) {
+          this.#byRunner.delete(id);
+          return;
+        }
         this.#byRunner.set(id, {
           revision,
           identityRevision: readinessOnly && held ? held.identityRevision : revision,
           connectionGeneration: identity.connectionGeneration,
-          identity: online ? identity : undefined,
+          identity,
           readiness,
         });
       });
@@ -111,7 +115,7 @@ export class PersonalRunnerObservations {
     includeReadiness = false,
   ) {
     const observed = this.#byRunner.get(id);
-    return observed?.identity &&
+    return observed &&
       (includeReadiness ? observed.revision : observed.identityRevision) <= BigInt(revision) &&
       String(observed.connectionGeneration) === connectionGeneration &&
       this.#current(id)?.connectionId === observed.identity.connectionId

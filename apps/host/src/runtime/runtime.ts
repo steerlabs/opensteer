@@ -1162,15 +1162,13 @@ export async function createHostRuntime(
       onHistoryChanged: (ownerId, profileId) =>
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
       tabs: tabStore,
-      onTabsChanged: (owner, ids) => {
-        tabs?.changed(owner, ids);
-        announceResources("tab");
-      },
+      onTabsChanged: (owner, ids) => tabs?.changed(owner, ids),
       tabPlaces: {
         write: (input) => store.recordRunTabPlace(input),
         notice: (owner, notice) => realtime.sendToUsers([owner], notice),
       },
-      onSessionsChanged: () => announceResources("browser-placement", "browser-availability"),
+      onSessionsChanged: () =>
+        announceResources("browser-placement", "browser-availability", "tab"),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
       onError: (error) => reportBrowserUsageError(error),
 
