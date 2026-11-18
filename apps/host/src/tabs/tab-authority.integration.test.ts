@@ -462,7 +462,7 @@ integration("production tab authority", () => {
 });
 
 integration("tab projection database cost", () => {
-  it("uses one batched owner projection and one native RPC for a changed row across two subscribers", async () => {
+  it("uses one batched owner projection and one native RPC for a changed row across two reads", async () => {
     const f = await createStoreFixture(),
       run = await f.startRunFixture("tab-projection-cost");
     let queries = 0,
@@ -561,7 +561,8 @@ integration("tab projection database cost", () => {
       expect(targeted).toHaveBeenCalledExactlyOnceWith(run.userId, [rows[0]!]);
       expect(await targeted.mock.results[0]!.value).toHaveLength(1);
       expect(nativeRPCs, "rows projected through the native state port").toBe(1);
-      expect(queries).toBe(7);
+      // Each resource read rechecks its viewer before sharing the changed row projection.
+      expect(queries).toBe(11);
       for (const { tabs } of projections)
         expect(tabs.find((tab) => tab.tabId === rows[0])).toMatchObject({ title: "Changed" });
     } finally {
