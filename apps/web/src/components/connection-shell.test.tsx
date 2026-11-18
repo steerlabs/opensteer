@@ -63,13 +63,20 @@ it("keeps the same pill, details open, as a layout's column takes it and gives i
     render(true);
     const pill = node.querySelector(".connection-pill");
     expect(pill?.closest("[data-column]")).not.toBeNull();
-    act(() => node.querySelector<HTMLButtonElement>(".connection-pill__words")!.click());
+    const words = node.querySelector<HTMLButtonElement>(".connection-pill__words")!;
+    act(() => words.click());
     expect(document.querySelector(".connection-details")).not.toBeNull();
+    words.focus();
+    // Screen readers hear a region again when it moves: it stays where it was.
+    const spoken = node.querySelector("[aria-live]");
+    expect(spoken?.closest("[data-column]")).toBeNull();
     // The dock closes: the pill goes back over the main column, as the same element.
     render(false);
     expect(node.querySelector(".connection-pill")).toBe(pill);
     expect(pill?.closest("[data-column]")).toBeNull();
     expect(document.querySelector(".connection-details")).not.toBeNull();
+    expect(document.activeElement).toBe(words);
+    expect(node.querySelector("[aria-live]")).toBe(spoken);
     render(true);
     expect(node.querySelector(".connection-pill")).toBe(pill);
     expect(pill?.closest("[data-column]")).not.toBeNull();
