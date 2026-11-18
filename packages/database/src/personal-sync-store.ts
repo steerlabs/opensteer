@@ -255,6 +255,11 @@ export function itemView(row: Item) {
     tool,
     requestKind,
     waitedSince,
+    endedAt,
+    replyMessageId,
+    failure,
+    usage,
+    runDelivery,
     messageKind,
     messageAuthor,
     edit,
@@ -285,6 +290,15 @@ export function itemView(row: Item) {
         edit,
         delivery,
         teamSource,
+      });
+    case "run":
+      return TranscriptItemSchema.parse({
+        ...base,
+        endedAt,
+        replyMessageId,
+        failure,
+        usage,
+        delivery: runDelivery,
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });

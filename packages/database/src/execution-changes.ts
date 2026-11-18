@@ -1,10 +1,12 @@
 import { projectThreadState, publishRunQueue } from "./thread-status.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
-import type { ThreadId } from "@opensteer/core";
-import { sql, type Insertable, type Selectable } from "kysely";
+import { utf8ByteLength, utf8Prefix, type RunId, type ThreadId } from "@opensteer/core";
+import { sql, type Insertable, type Selectable, type Kysely, type InferResult } from "kysely";
 import { type PersonalMutation, type PersonalMutationTransaction } from "./personal-mutation.js";
 import { itemView } from "./personal-sync-store.js";
-import type { TranscriptItemTable } from "./personal-state-schema.js";
+import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
+import type { DatabaseSchema } from "./schema.js";
+import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
 
 export function invalidateExecution(
   mutation: PersonalMutation,
@@ -33,6 +35,92 @@ export async function updateExecutionThread(
   await publishRunQueue(tx, threadId);
 }
 
+export function transcriptRuns(database: Kysely<DatabaseSchema>) {
+  return database
+    .selectFrom("runs")
+    .select([
+      "id",
+      "threadId",
+      "status",
+      "createdAt",
+      "completedAt",
+      "terminalReplyMessageId",
+      "failure",
+      "maintenance",
+      "phase",
+      "finishIntent",
+      "inputTokens",
+      "outputTokens",
+      "cachedInputTokens",
+      "cacheWriteTokens",
+      "reasoningTokens",
+      "costUsd",
+    ])
+    .select(runDeliverySelection);
+}
+
+export function describeTranscriptRun(
+  run: InferResult<ReturnType<typeof transcriptRuns>>[number],
+): TranscriptPreview {
+  const active = run.completedAt === null;
+  const status =
+    active && run.finishIntent
+      ? "finishing"
+      : active && run.phase === "background"
+        ? "background"
+        : run.status;
+  const usage = runUsageFromRow(run);
+  const view = {
+    status,
+    ...(run.completedAt ? { endedAt: run.completedAt.toISOString() } : {}),
+    ...(run.terminalReplyMessageId ? { replyMessageId: run.terminalReplyMessageId } : {}),
+    ...(usage ? { usage } : {}),
+    ...(run.failure
+      ? { failure: { ...run.failure, message: utf8Prefix(run.failure.message, 512) } }
+      : {}),
+    ...(run.delivery ? { runDelivery: { ...run.delivery } } : {}),
+  };
+  while (utf8ByteLength(JSON.stringify(view)) > 1_920) {
+    if (view.failure?.message) {
+      view.failure.message = utf8Prefix(
+        view.failure.message,
+        Math.floor(utf8ByteLength(view.failure.message) / 2),
+      );
+    } else if (view.runDelivery?.reason) {
+      view.runDelivery.reason =
+        utf8Prefix(
+          view.runDelivery.reason,
+          Math.floor(utf8ByteLength(view.runDelivery.reason) / 2),
+        ).trim() || null;
+    } else {
+      if (view.failure) view.failure.code = utf8Prefix(view.failure.code, 128);
+      break;
+    }
+  }
+  return view;
+}
+
+export async function publishTranscriptRun(
+  tx: PersonalMutationTransaction,
+  mutation: PersonalMutation,
+  runId: RunId,
+) {
+  const run = await transcriptRuns(tx).where("id", "=", runId).executeTakeFirstOrThrow();
+  if (run.maintenance) return;
+  await writeExecutionItem(tx, mutation, {
+    id: `run:${run.id}`,
+    kind: "run",
+    runId: run.id,
+    threadId: run.threadId,
+    nodeId: null,
+    attemptId: null,
+    createdAt: run.createdAt,
+    visible: true,
+    isTurnStart: false,
+    view: describeTranscriptRun(run),
+  });
+}
+
 export async function recordExecutionRunChange(
   tx: PersonalMutationTransaction,
   mutation: PersonalMutation,
@@ -41,34 +129,13 @@ export async function recordExecutionRunChange(
     "type" | "environmentId"
   >,
 ) {
-  await tx
+  const run = await tx
     .updateTable("runs")
     .set({ revision: mutation.sequence })
     .where("id", "=", input.runId)
-    .execute();
-  const run = await tx
-    .selectFrom("runs")
-    .select(["status", "createdAt", "maintenance", "environmentId"])
-    .where("id", "=", input.runId)
+    .returning("environmentId")
     .executeTakeFirstOrThrow();
-  if (!run.maintenance && input.transition !== "usage-limit") {
-    const status =
-      input.transition === "background" || input.transition === "finishing"
-        ? input.transition
-        : run.status;
-    await writeExecutionItem(tx, mutation, {
-      id: `run:${input.runId}`,
-      kind: "run",
-      runId: input.runId,
-      threadId: input.threadId,
-      nodeId: null,
-      attemptId: null,
-      createdAt: run.createdAt,
-      visible: true,
-      isTurnStart: false,
-      view: { status },
-    });
-  }
+  if (input.transition !== "usage-limit") await publishTranscriptRun(tx, mutation, input.runId);
   await publishRunQueue(tx, input.threadId);
   mutation.react({ type: "runChanged", environmentId: run.environmentId, ...input });
 }

@@ -1,9 +1,9 @@
 import type { TranscriptItem, TranscriptItemResult } from "@opensteer/protocol/transcript";
 import type { MessageAuthor } from "@opensteer/core";
 import type { NodeDetailEntry } from "./node-detail.js";
-import type { TranscriptEntry, RunEntryStatus } from "./client.js";
+import type { MessageEntry, TranscriptEntry, RunEntryStatus } from "./client.js";
 import { executionNodeEntry } from "./subagent-model.js";
-import { toMessageEntry } from "./transcript.js";
+import { hydrateTranscriptMessage } from "./transcript.js";
 
 export function transcriptCard(
   item: TranscriptItem,
@@ -15,22 +15,11 @@ export function transcriptCard(
   const preview = view.preview ?? "";
   switch (item.kind) {
     case "message": {
-      if (body?.kind === "message") {
-        const full = toMessageEntry(body.message);
-        return full
-          ? {
-              ...full,
-              ...(item.delivery ? { delivery: item.delivery } : {}),
-              itemId: id,
-              itemRevision: item.revision,
-            }
-          : undefined;
-      }
       const messageKind =
         item.messageKind ??
         (view.author === "assistant" || !item.isTurnStart ? "assistant" : "input");
       const author: MessageAuthor = item.author ?? { kind: "platform", cause: "transcript" };
-      return {
+      const message: MessageEntry = {
         ...base,
         id: item.messageId,
         itemId: id,
@@ -46,6 +35,9 @@ export function transcriptCard(
         body: preview,
         published: view.published ?? true,
       };
+      return body?.kind === "message"
+        ? (hydrateTranscriptMessage(message, body.message) ?? undefined)
+        : message;
     }
     case "tool": {
       const detail = body?.kind === "tool" ? body : undefined;
@@ -110,6 +102,8 @@ export function transcriptCard(
         replyMessageId: item.replyMessageId ?? null,
         ...(item.endedAt ? { endedAt: item.endedAt } : {}),
         ...(item.usage ? { usage: item.usage } : {}),
+        ...(item.delivery ? { delivery: item.delivery } : {}),
+        ...(view.status === "background" ? { background: true } : {}),
         status,
       };
     }

@@ -17,6 +17,8 @@ import type {
   RunnerId,
   TabId,
   TeamSource,
+  TeamRunDelivery,
+  RunUsage,
   TeamAgentRequestId,
   ThreadId,
   ToolIdentity,
@@ -129,6 +131,11 @@ export interface TranscriptPreview {
   readonly tool?: ToolIdentity | null;
   readonly requestKind?: Request["kind"];
   readonly waitedSince?: string;
+  readonly endedAt?: string;
+  readonly replyMessageId?: MessageId;
+  readonly failure?: RunFailure;
+  readonly usage?: RunUsage;
+  readonly runDelivery?: TeamRunDelivery;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
   readonly edit?: MessageEdit;
@@ -473,15 +480,21 @@ const transcriptOrderIndexes = {
     where visible and node_id is not null and kind in ('node-message','tool')`,
 };
 
-export async function dropPersonalTranscriptOrderIndexes(database: Kysely<DatabaseSchema>) {
-  await sql`drop index if exists ${sql.join(Object.keys(transcriptOrderIndexes).map((name) => sql.id(name)))}`.execute(
-    database,
-  );
-}
+const transcriptOrderIndexEntries = Object.entries(transcriptOrderIndexes);
 
-export async function createPersonalTranscriptOrderIndexes(database: Kysely<DatabaseSchema>) {
-  for (const [name, definition] of Object.entries(transcriptOrderIndexes))
-    await sql`create index if not exists ${sql.id(name)} ${sql.raw(definition)}`.execute(database);
+export async function createNextPersonalTranscriptOrderIndex(
+  database: Kysely<DatabaseSchema>,
+  previous: string,
+): Promise<string | null> {
+  const index = previous
+    ? transcriptOrderIndexEntries.findIndex(([name]) => name === previous)
+    : -1;
+  if (previous && index === -1) throw new Error("Unknown transcript order index");
+  const entry = transcriptOrderIndexEntries[index + 1];
+  if (!entry) return null;
+  const [name, definition] = entry;
+  await sql`create index if not exists ${sql.id(name)} ${sql.raw(definition)}`.execute(database);
+  return name;
 }
 
 const currentStateIndexes = `

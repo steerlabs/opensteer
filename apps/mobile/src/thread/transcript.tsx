@@ -518,6 +518,8 @@ function ReplyBubble(props: {
       ) : (
         <MessageAttachments attachments={message.attachments ?? []} />
       )}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       {props.message.previewTruncated && !expanded ? (
         <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
           <AppText>Read full reply</AppText>
@@ -1348,6 +1350,8 @@ function AssistantMessage(props: {
     // words stay selectable, so holding them selects and its marks sit under it.
     <View style={styles.assistant}>
       {body ? <Markdown streaming={message.streaming === true} text={body} /> : null}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       {props.message.previewTruncated && !expanded ? (
         <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
           <AppText>Read full reply</AppText>
@@ -1502,7 +1506,15 @@ export function Message(props: {
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
-      {!message.body ? null : mine && !props.queued ? (
+      {!message.body ? (
+        props.message.previewTruncated && !open ? (
+          <Pressable accessibilityRole="button" onPress={props.onToggle} style={styles.foldToggle}>
+            <AppText role="secondaryMedium" tone="ember">
+              Show message
+            </AppText>
+          </Pressable>
+        ) : null
+      ) : mine && !props.queued ? (
         <MessageHold
           previewBottomEndRadius={props.conversation ? undefined : radius.xs}
           previewRadius={bubble.radius}

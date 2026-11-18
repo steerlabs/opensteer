@@ -1,5 +1,5 @@
 import type { HostClient, MessageEntry } from "../host/client.js";
-import { toMessageEntry } from "../host/transcript.js";
+import { hydrateTranscriptMessage } from "../host/transcript.js";
 import { useTranscriptBody } from "./use-transcript-body.js";
 import { useItemText, useThreadTranscript } from "./use-thread-transcript.js";
 
@@ -26,7 +26,7 @@ export function useTranscriptMessage(
   if (text)
     return { ...message, body: text.incomplete ? `…${text.text}` : text.text, streaming: true };
   if (body?.kind === "message") {
-    const full = toMessageEntry(body.message);
+    const full = hydrateTranscriptMessage(message, body.message);
     if (full) return full;
   }
   if (body?.kind === "text") return { ...message, body: body.text };

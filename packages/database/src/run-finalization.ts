@@ -13,7 +13,7 @@ import {
   publishExecutionInput,
   recordExecutionRunChange,
   updateExecutionThread,
-  writeExecutionItem,
+  publishTranscriptRun,
 } from "./execution-changes.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { sql } from "kysely";
@@ -690,24 +690,7 @@ async function finalizeRunOutcome(
         threadId: run.threadId,
         transition: "usage-limit",
       });
-    const cardId = `run:${run.id}`;
-    const existing = await transaction
-      .selectFrom("transcriptItems")
-      .select("createdAt")
-      .where("id", "=", cardId)
-      .executeTakeFirst();
-    await writeExecutionItem(transaction, mutation, {
-      id: cardId,
-      kind: "run",
-      runId: run.id,
-      threadId: run.threadId,
-      nodeId: null,
-      attemptId: null,
-      visible: true,
-      isTurnStart: false,
-      createdAt: existing?.createdAt ?? input.completedAt,
-      view: { status: input.status },
-    });
+    await publishTranscriptRun(transaction, mutation, run.id);
   }
   // Nodes and attempts rank last; the Run's lock already orders these writes.
   await endOpenAttempts(transaction, run.id, input.status);

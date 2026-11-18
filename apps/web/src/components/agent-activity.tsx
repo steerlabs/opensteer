@@ -1070,6 +1070,8 @@ function ReplyBubble({
           Read full reply
         </button>
       ) : null}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
     </div>
   );
@@ -2139,6 +2141,8 @@ function Reply({
         </Suspense>
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
       {preview.previewTruncated && !expanded ? (
         <button className="btn" onClick={() => setExpanded(true)} type="button">
@@ -2276,7 +2280,7 @@ function TranscriptEditMark({
 
 /** The reader's own message: their words in full, folded only once they run long. */
 function OwnMessage({
-  message,
+  message: previewMessage,
   queued,
   reveal,
   steered,
@@ -2288,10 +2292,13 @@ function OwnMessage({
   steered: boolean;
   viewerUserId: string | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const [arrived] = useState(() => !queued && justSent(message.createdAt, Date.now()));
   return (
     <div
@@ -2319,6 +2326,7 @@ function OwnMessage({
           <div className="msg--user">
             <MessageFold
               lines={messageFoldLines(message, viewerUserId)}
+              more={previewMessage.previewTruncated === true}
               onOpenChange={setOpen}
               open={open}
             >
@@ -2326,6 +2334,10 @@ function OwnMessage({
             </MessageFold>
           </div>
         </div>
+      ) : previewMessage.previewTruncated && !open ? (
+        <button className="btn" onClick={() => setOpen(true)} type="button">
+          Show message
+        </button>
       ) : null}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
@@ -2412,17 +2424,20 @@ type UpdateAuthor = Exclude<MessageEntry["author"], { kind: "human" }>;
  */
 function RecoveryNote({
   author,
-  message,
+  message: previewMessage,
   reveal,
 }: {
   author: Extract<MessageEntry["author"], { kind: "platform" }>;
   message: MessageEntry;
   reveal: { readonly id: string } | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const bodyId = useId();
   const name = messageAuthorName(author);
   return (
@@ -2449,6 +2464,8 @@ function RecoveryNote({
       ) : null}
       {open ? (
         <div className="update-line__body" id={bodyId}>
+          <MessagePages pages={message.pages ?? []} />
+          <MessagePlaces places={message.places ?? []} />
           <MessageAttachments attachments={message.attachments ?? []} />
           {message.body ? (
             <Suspense
@@ -2515,7 +2532,7 @@ function updateSource(author: UpdateAuthor): {
  * it holds, so a long address or a code line can never widen it.
  */
 function InputMessage({
-  message,
+  message: previewMessage,
   queued,
   reveal,
   steered,
@@ -2528,10 +2545,13 @@ function InputMessage({
   viewerUserId: string | null;
 }) {
   const conversation = useContext(ConversationMode);
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
   const source = inputSource(message);
@@ -2588,11 +2608,13 @@ function InputMessage({
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
         </header>
+        <MessagePages pages={message.pages ?? []} />
+        <MessagePlaces places={message.places ?? []} />
         <MessageAttachments attachments={message.attachments ?? []} />
         {message.body ? (
           <MessageFold
             lines={messageFoldLines(message, viewerUserId)}
-            more={preview.truncated && !open}
+            more={previewMessage.previewTruncated === true || (preview.truncated && !open)}
             onOpenChange={setOpen}
             open={open}
           >
@@ -2612,6 +2634,10 @@ function InputMessage({
               <p className="input-card__plain">{body}</p>
             )}
           </MessageFold>
+        ) : previewMessage.previewTruncated && !open ? (
+          <button className="btn" onClick={() => setOpen(true)} type="button">
+            Show message
+          </button>
         ) : null}
       </article>
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}

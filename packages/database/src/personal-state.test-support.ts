@@ -51,6 +51,7 @@ export async function preparePersonalConversion(
       create index deployment_events_run on deployment_events(run_id,sequence) where run_id is not null;
       alter table threads add column projected_input_queue_paused boolean not null default false;
       alter table client_sync_state add column upgrade_cursor jsonb;
+      drop index transcript_root, transcript_node, transcript_run_place, transcript_root_activity, transcript_node_activity;
       truncate client_changes, runner_event_receipts, transcript_items, tool_output_images,
         tool_calls, personal_attention;
       update threads set next_transcript_position=0, transcript_order_revision=0,

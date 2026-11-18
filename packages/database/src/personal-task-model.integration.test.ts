@@ -17,6 +17,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 
 // These tests exercise the personal scheduler without a browser, integration or Messaging bridge.
@@ -355,6 +356,20 @@ it("freezes publication once and preserves canonical delivery state", async () =
   ).toEqual({
     delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
   });
+  const readRunCard = (runId: RunId, threadId: ThreadId) =>
+    readTranscriptItem(f.database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId },
+      itemId: `run:${runId}`,
+    });
+  await expect(readRunCard(run.run.id, run.run.threadId)).resolves.toMatchObject({
+    kind: "item",
+    item: {
+      replyMessageId: answerMessageId,
+      endedAt: expect.any(String),
+      delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
+    },
+  });
   const cancelled = await f.ask();
   await ledger.publication(
     f.origin.teamId,
@@ -366,6 +381,12 @@ it("freezes publication once and preserves canonical delivery state", async () =
   expect(await ledger.get(f.origin.teamId, cancelled.requestId)).toMatchObject({
     publicationState: "blocked",
     blockedReason: "The team link was revoked.",
+  });
+  await expect(
+    readRunCard(cancelled.receipt.runId!, cancelled.receipt.taskId),
+  ).resolves.toMatchObject({
+    kind: "item",
+    item: { delivery: { state: "blocked", reason: "The team link was revoked." } },
   });
 });
 

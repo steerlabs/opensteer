@@ -83,7 +83,6 @@ export async function syncTranscriptMessage(
         : seed;
     const edit = messageEditFromRow(message);
     const { published, visible, isTurnStart, view } = describeTranscriptMessage({
-      id: message.id,
       kind: message.kind,
       content: MessageContentSchema.parse(message.content),
       author: message.author,

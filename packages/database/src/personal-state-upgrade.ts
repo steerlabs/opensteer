@@ -1,22 +1,27 @@
-import { TranscriptItemPreviewSchema } from "@opensteer/protocol/transcript";
+import { describeTranscriptRun, transcriptRuns } from "./execution-changes.js";
+import { describeTranscriptRequest, requestFromRow } from "./request-persistence.js";
 import { itemView } from "./personal-sync-store.js";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
   MessageIdSchema,
+  type MessageAuthor,
+  type MessageId,
+  type MessageKind,
+  type TeamSource,
+  type ThreadInputPolicy,
   ExecutionNodeIdSchema,
   type RunId,
   type ThreadId,
   nonTerminalRunStatuses,
 } from "@opensteer/core";
 import { z } from "zod";
+import { resendableControlCommandTypes } from "./command-delivery.js";
 import { checkoutSession } from "./connection.js";
-import { publishedMessagePredicate } from "./message-visibility.js";
+import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
+import { messageEditFromRow } from "./thread-row-mappers.js";
 import { runOfflineSettlement } from "./personal-transaction.js";
-import {
-  createPersonalTranscriptOrderIndexes,
-  dropPersonalTranscriptOrderIndexes,
-} from "./personal-state-schema.js";
+import { createNextPersonalTranscriptOrderIndex } from "./personal-state-schema.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks } from "./store-primitives.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -29,8 +34,8 @@ import {
 export const personalCurrentStateMigrationName = "0030_personal_current_state";
 
 const batchSize = 500;
-const messageBatchSize = 2_000;
-const verifyBatchSize = 1_500;
+const messageBatchSize = 500;
+const verifyBatchSize = 500;
 const messageIdPattern = z.toJSONSchema(MessageIdSchema, { io: "input" }).pattern!;
 const nodeIdPattern = z.toJSONSchema(ExecutionNodeIdSchema, { io: "input" }).pattern!;
 const settlementBatchSize = 128;
@@ -51,12 +56,15 @@ const cursorSchema = z.strictObject({
     "settle",
     ...canonicalKinds,
     "ledger",
+    "run-details",
     "close-tools",
     "summaries",
     "attention-requests",
     "attention-asks",
     "attention-links",
     "verify",
+    "index",
+    "analyze",
     "finalize",
   ]),
   key: z.string(),
@@ -105,11 +113,81 @@ async function countCanonical(tx: Tx) {
   return result.rows[0]!.count;
 }
 
+const offlineCommandTypes = ["run.execute", "run.steer", ...resendableControlCommandTypes];
+
+async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
+  // A team reply target is unique to its admitted Run. It cannot be admitted again.
+  const inputs = await sql<{ count: number }>`
+    with batch as materialized (
+      select i.message_id, i.policy='queue' and not (
+        i.message_id=r.seed_input_id and (r.reply_target->>'kind'='team-thread') is true
+      ) as can_requeue,
+        case
+          when c.type='run.steer' and c.status='succeeded' then 'delivered'
+          when (i.steer_command_id is null or c.type='run.restart') and
+            a.first_event_at >= i.updated_at then 'delivered'
+          when c.type='run.steer' and c.status in ('pending','failed') and c.attempts=0 then 'unsent'
+          when c.type='run.restart' and a.reason='steer_restart'
+            and a.dispatched_at is null then 'unsent'
+          when i.steer_command_id is null and i.policy<>'report'
+            and (r.binding_generation is null or (a.id is not null and a.dispatched_at is null))
+            then 'unsent'
+          else 'unknown'
+        end as delivery
+      from thread_inputs i join runs r on r.id=i.run_id
+      left join commands c on c.id=i.steer_command_id and c.run_id=i.run_id
+      left join run_attempts a on a.run_id=i.run_id and a.status='current'
+      where i.run_id=${runId} and i.state='claimed'
+      order by i.message_id limit ${settlementBatchSize} for no key update of i
+    ), settled as (
+      update thread_inputs i set
+        state=case
+          when b.delivery='delivered' then 'delivered'
+          when b.delivery='unsent' and b.can_requeue then 'pending'
+          when b.delivery='unsent' then 'cancelled'
+          else 'unknown' end,
+        delivered_at=case when b.delivery='delivered' then coalesce(i.delivered_at,${cutAt}) end,
+        cancel_reason=case when b.delivery='unsent' and not b.can_requeue
+          then case when i.steer_command_id is null then 'run-ended-before-start' else 'steer-not-delivered' end
+        end,
+        run_id=case when b.delivery='unsent' and b.can_requeue then null else i.run_id end,
+        steer_command_id=case when b.delivery='unsent' and b.can_requeue then null else i.steer_command_id end,
+        updated_at=${cutAt}
+      from batch b where i.message_id=b.message_id
+      returning i.message_id,i.state
+    ), requeued as (
+      update messages m set run_id=null
+        from settled s where m.id=s.message_id and s.state='pending'
+    )
+    select count(*)::int as count from settled
+  `.execute(tx);
+  if (inputs.rows[0]!.count) return true;
+  const commands = await sql`
+    with batch as materialized (
+      select c.id, (
+        (c.status='pending' and c.attempts=0)
+        or (c.type='run.execute' and r.binding_generation is null)
+      ) as unsent
+      from commands c join runs r on r.id=c.run_id
+      where c.run_id=${runId} and c.type=any(${offlineCommandTypes}::text[])
+        and c.status in ('pending','dispatched')
+      order by c.id limit ${settlementBatchSize} for no key update of c
+    )
+    update commands c set status=case when b.unsent then 'failed' else 'unknown' end,
+      last_error=jsonb_build_object('message',case when b.unsent then
+        'The Run ended during upgrade before dispatch' else
+        'The Run ended during upgrade before delivery could be confirmed' end),
+      updated_at=${cutAt}
+    from batch b where c.id=b.id
+  `.execute(tx);
+  return Boolean(commands.numAffectedRows);
+}
+
 async function retireOfflineChildren(tx: Tx, runId: RunId, cutAt: Date) {
   // The regular finalizer settles the same live Request set with its response commands.
   const requests = await tx
     .selectFrom("requests")
-    .select(["id", "responseCommandId"])
+    .select("id")
     .where("originatingRunId", "=", runId)
     .where(sql<boolean>`status='pending' and (mode='live' or kind='integration.input')`)
     .orderBy("id")
@@ -118,29 +196,6 @@ async function retireOfflineChildren(tx: Tx, runId: RunId, cutAt: Date) {
     .execute();
   if (requests.length) {
     const ids = requests.map(({ id }) => id);
-    const commands = requests.flatMap(({ responseCommandId }) =>
-      responseCommandId ? [responseCommandId] : [],
-    );
-    if (commands.length) {
-      await tx
-        .selectFrom("commands")
-        .select("id")
-        .where("id", "in", commands)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      await tx
-        .updateTable("commands")
-        .set({
-          lastError: { message: "The Request was cancelled before its response completed" },
-          status: "failed",
-          updatedAt: cutAt,
-        })
-        .where("id", "in", commands)
-        .where("type", "=", "request.respond")
-        .where("status", "in", ["pending", "dispatched", "unknown"])
-        .execute();
-    }
     await tx
       .updateTable("requests")
       .set({
@@ -200,9 +255,15 @@ async function retireOfflineChildren(tx: Tx, runId: RunId, cutAt: Date) {
 async function settleNextRun(tx: Tx, source: Source, cursor: UpgradeCursor) {
   const run = await tx
     .selectFrom("runs")
-    .select(["id", "seedInputId", "threadId"])
+    .select(["id", "seedInputId", "status"])
     .where("id", ">", cursor.key as RunId)
-    .where("status", "in", nonTerminalRunStatuses)
+    .where(
+      sql<boolean>`(status=any(${nonTerminalRunStatuses}::text[]) or (status='interrupted' and (
+      exists(select 1 from commands c where c.run_id=runs.id and c.type=any(${offlineCommandTypes}::text[])
+        and c.status in ('pending','dispatched'))
+      or exists(select 1 from thread_inputs i where i.run_id=runs.id and i.state='claimed')
+    )))`,
+    )
     .orderBy("id")
     .limit(1)
     .executeTakeFirst();
@@ -210,16 +271,22 @@ async function settleNextRun(tx: Tx, source: Source, cursor: UpgradeCursor) {
     const expected = await countCanonical(tx);
     return { ...stage(cursor, "message"), reserved: expected };
   }
+  if (run.status === "interrupted") {
+    return (await retireOfflineDelivery(tx, run.id, source.cutAt))
+      ? cursor
+      : { ...cursor, key: run.id };
+  }
   // Keep a marker for a seed whose input settlement will cancel it. The message
   // pass derives its actual visibility and assigns its canonical fallback.
   await sql`
     insert into transcript_items(id,thread_id,run_id,kind,visible,is_turn_start,created_at,message_id,view)
     select m.id,m.thread_id,${run.id},'message',false,false,m.created_at,m.id,'{}'
     from messages m join thread_inputs i on i.message_id = m.id
-    where m.id = ${run.seedInputId} and i.state in ('pending','claimed')
+    where m.id = ${run.seedInputId} and i.state='pending' and ${run.status}='queued'
     on conflict (id) do nothing
   `.execute(tx);
   if (await retireOfflineChildren(tx, run.id, source.cutAt)) return cursor;
+  if (await retireOfflineDelivery(tx, run.id, source.cutAt)) return cursor;
   await runOfflineSettlement(tx, () =>
     finalizeRunTransaction(tx, {
       completedAt: source.cutAt,
@@ -237,90 +304,204 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
   const key = cursor.key
     ? z.tuple([z.string(), z.string()]).parse(JSON.parse(cursor.key))
     : ["", "0"];
-  const page = await sql<{ threadId: ThreadId; sequence: string; count: number }>`
+  const textLimit = transcriptMessageTextBytes + 1;
+  type MessageGroup = {
+    ids: MessageId[];
+    offsets: number[];
+    runId: RunId | null;
+    kind: MessageKind;
+    author: MessageAuthor;
+    revision: number;
+    editedAt: string | null;
+    policy: ThreadInputPolicy | null;
+    state: string | null;
+    cancelReason: string | null;
+    teamSource: TeamSource | null;
+    admittedSeed: boolean;
+    seedInRun: boolean;
+    assigned: boolean;
+    hasContent: boolean;
+    hasRichParts: boolean;
+    text: string;
+  };
+  const {
+    rows: [page],
+  } = await sql<{
+    key: [ThreadId, string] | null;
+    count: number;
+    groups: MessageGroup[] | null;
+  }>`
     with page as materialized (
-      select id,thread_id,sequence from messages
+      select id,thread_id,sequence,
+        row_number() over (order by thread_id,sequence)::int as batch_offset
+      from messages
       where (thread_id,sequence) > (${key[0]},${key[1]}::bigint)
       order by thread_id,sequence limit ${messageBatchSize}
-    ), source as materialized (
-      select m.id, ${publishedMessagePredicate("input")} as published
-      from messages m join page using (id)
-      left join thread_inputs input on input.message_id=m.id
-      where m.published is distinct from ${publishedMessagePredicate("input")}
-      order by m.id for no key update of m
-    ), publication as (
-      update messages m set published=source.published from source
-      where m.id=source.id
-      returning m.id,m.published
     ), derived as (
-      select m.id,m.thread_id,m.sequence,coalesce(m.run_id,seed.id) as run_id,m.kind,m.author,
-        m.revision,m.created_at, input.policy,
-        coalesce(publication.published,m.published) as published,
-        seed.id is not null and input.state in ('pending','claimed') or marker.id is not null as admitted,
-        seed.id is not null as is_seed,
-        exists (
-          select 1 from jsonb_array_elements(m.content) part
-          where part->>'type' in ('artifact','browser-page','computer-app','phone')
-            or (part->>'type' = 'text' and btrim(part->>'text',${messageWhitespace}) <> '')
-          limit 1
-        ) as has_content,
-        coalesce((
-          select left(part->>'text',200) from jsonb_array_elements(m.content) part
-          where part->>'type' = 'text' and btrim(part->>'text',${messageWhitespace}) <> '' limit 1
-        ),'') as preview
-      from messages m join page using (id)
-      left join publication on publication.id=m.id
-      left join thread_inputs input on input.message_id=m.id
-      left join transcript_items marker on marker.id=m.id
-      left join lateral (
-        select id from runs where seed_input_id=m.id and thread_id=m.thread_id
-        order by run_ordinal desc limit 1
-      ) seed on true
-    ), cards as (
-      select *, (
-        has_content and (published or coalesce(admitted,false))
-        and (author->>'cause') is distinct from 'claude-compaction'
-        and (kind in ('input','assistant')
-          or (kind='continuation' and coalesce(author->>'cause' = 'run-recovery',false)))
-      ) as shown,
-      ${cursor.position}::bigint + row_number() over(order by thread_id,sequence) as fallback
-      from derived
-    ), written as (
-      insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
-      select id,thread_id,run_id,'message',case when shown then fallback end,shown,
-          shown and kind='input' and policy is distinct from 'report'
-            and (author->>'kind'='human' or run_id is null or is_seed),
-          created_at,id,jsonb_build_object('author',author->>'kind','preview',preview,'published',published,
-            'edited',revision>0,'truncated',length(preview)=200)
-        from cards
-        order by id
-        on conflict (id) do update set position=excluded.position,visible=excluded.visible,
-          is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
+    select m.id,page.batch_offset,
+      placement.run_id as "runId",m.kind,m.author,m.revision,m.edited_at as "editedAt",
+      i.policy,i.state,i.cancel_reason as "cancelReason",i.team_source as "teamSource",
+      (seed.status in ('queued','starting','running','waiting')) is true
+        or marker.id is not null as "admittedSeed",
+      (placement.run_id=seed.id) is true as "seedInRun",
+      r.assignment_id is not null as assigned,
+      content.has_content as "hasContent",content.has_rich_parts as "hasRichParts",content.text
+    from page join messages m using (id)
+    left join thread_inputs i on i.message_id=m.id
+    left join transcript_items marker on marker.id=m.id
+    left join lateral (
+      select id,status from runs where seed_input_id=m.id and thread_id=m.thread_id
+      order by run_ordinal desc limit 1
+    ) seed on true
+    cross join lateral (
+      values (coalesce(m.run_id,i.run_id,marker.run_id,
+        case when i.state in ('pending','claimed') then seed.id end))
+    ) placement(run_id)
+    left join runs r on r.id=placement.run_id
+    cross join lateral (
+      select coalesce(bool_or(part->>'type' in ('artifact','browser-page','computer-app','phone')),false)
+          as has_rich_parts,
+        coalesce(bool_or(part->>'type' in ('artifact','browser-page','computer-app','phone')
+          or (part->>'type'='text' and btrim(part->>'text',${messageWhitespace})<>'')),false)
+          as has_content,
+        coalesce(left(string_agg(left(part->>'text',${textLimit}),E'\\n' order by n)
+          filter (where part->>'type'='text'),${textLimit}),'') as text
+      from jsonb_array_elements(m.content) with ordinality as parts(part,n)
+    ) content
+    ), groups as (
+      select array_agg(id order by batch_offset) as ids,
+        array_agg(batch_offset order by batch_offset) as offsets,
+        "runId",kind,author,revision,"editedAt",policy,state,"cancelReason","teamSource",
+        "admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text
+      from derived group by "runId",kind,author,revision,"editedAt",policy,state,"cancelReason",
+        "teamSource","admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text
     )
-    select thread_id,sequence,(select count(*)::int from page) as count
-    from page order by thread_id desc,sequence desc limit 1
+    select (select json_build_array(thread_id,sequence::text) from page
+        order by batch_offset desc limit 1) as key,
+      (select count(*)::int from page) as count,
+      (select json_agg(groups) from groups) as groups
+  `.execute(tx.withoutPlugins());
+  if (!page?.key) return stage(cursor, "run");
+  const projected = page.groups!.map((row) => {
+    const edit = messageEditFromRow({
+      author: row.author,
+      revision: row.revision,
+      editedAt: row.editedAt ? new Date(row.editedAt) : null,
+    });
+    const card = describeTranscriptMessage({
+      kind: row.kind,
+      content: row,
+      author: row.author,
+      ...(row.policy && row.state ? { policy: row.policy, state: row.state } : {}),
+      cancelReason: row.cancelReason,
+      ...(row.teamSource ? { teamSource: row.teamSource } : {}),
+      ...(edit ? { edit } : {}),
+      edited: row.revision > 0,
+      admittedSeed: row.admittedSeed,
+      seedInRun: row.seedInRun,
+      assigned: row.assigned,
+    });
+    return {
+      ids: row.ids,
+      offsets: row.offsets,
+      run_id: row.runId,
+      visible: card.visible,
+      published: card.published,
+      turn_start: card.isTurnStart,
+      view: card.view,
+    };
+  });
+  await sql`
+    with cards as materialized (
+      select item.id,card.run_id,
+        case when card.visible then ${cursor.position}::bigint + item.batch_offset end as position,
+        card.visible,card.published,card.turn_start,card.view
+      from jsonb_to_recordset(${JSON.stringify(projected)}::jsonb)
+        as card(ids text[],offsets int[],run_id text,visible boolean,published boolean,turn_start boolean,view jsonb)
+      cross join lateral unnest(card.ids,card.offsets) as item(id,batch_offset)
+    ), changed as materialized (
+      select m.id,c.published from messages m join cards c on c.id=m.id
+      where m.published is distinct from c.published order by m.id for no key update of m
+    ), publication as (
+      update messages m set published=c.published from changed c where m.id=c.id
+    )
+    insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
+    select m.id,m.thread_id,c.run_id,'message',c.position,c.visible,c.turn_start,m.created_at,m.id,c.view
+    from cards c join messages m on m.id=c.id order by m.id
+    on conflict (id) do update set position=excluded.position,visible=excluded.visible,
+      is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
   `.execute(tx);
-  const last = page.rows[0];
-  if (!last) return stage(cursor, "run");
   return {
     ...cursor,
-    key: JSON.stringify([last.threadId, last.sequence]),
-    position: (BigInt(cursor.position) + BigInt(last.count)).toString(),
+    key: JSON.stringify(page.key),
+    position: (BigInt(cursor.position) + BigInt(page.count)).toString(),
   };
 }
 
-function canonicalSource(kind: Exclude<CanonicalKind, "message">, key: string) {
+async function deriveRequests(tx: Tx, cursor: UpgradeCursor) {
+  const rows = await tx
+    .selectFrom("requests")
+    .leftJoin("executionNodes", "executionNodes.id", "requests.originatingNodeId")
+    .selectAll("requests")
+    .select("executionNodes.attemptId")
+    .where(sql<boolean>`requests.id > ${cursor.key}`)
+    .orderBy("requests.id")
+    .limit(settlementBatchSize)
+    .execute();
+  const last = rows.at(-1);
+  if (!last) return stage(cursor, "node");
+  const position = BigInt(cursor.position);
+  await tx
+    .insertInto("transcriptItems")
+    .values(
+      rows.map((row, index) => {
+        const request = requestFromRow(row);
+        const visible = request.status !== "pending";
+        return {
+          id: `request:${row.id}`,
+          threadId: row.originatingThreadId,
+          runId: row.originatingRunId,
+          attemptId: row.attemptId,
+          nodeId: row.originatingNodeId,
+          kind: "request" as const,
+          position: visible ? (position + BigInt(index + 1)).toString() : null,
+          visible,
+          isTurnStart: false,
+          createdAt: row.resolvedAt ?? row.createdAt,
+          requestId: row.id,
+          view: describeTranscriptRequest(request),
+        };
+      }),
+    )
+    .execute();
+  return {
+    ...cursor,
+    key: last.id,
+    position: (position + BigInt(rows.length)).toString(),
+  };
+}
+
+async function deriveRunDetails(tx: Tx, cursor: UpgradeCursor) {
+  const runs = await transcriptRuns(tx)
+    .where("id", ">", cursor.key as RunId)
+    .orderBy("id")
+    .limit(batchSize)
+    .execute();
+  const last = runs.at(-1);
+  if (!last) return stage(cursor, "close-tools");
+  const cards = runs.map((run) => ({ id: `run:${run.id}`, view: describeTranscriptRun(run) }));
+  await sql`update transcript_items i set view=c.view
+    from jsonb_to_recordset(${JSON.stringify(cards)}::jsonb) as c(id text,view jsonb)
+    where i.id=c.id`.execute(tx);
+  return { ...cursor, key: last.id };
+}
+
+function canonicalSource(kind: Exclude<CanonicalKind, "message" | "request">, key: string) {
   switch (kind) {
     case "run":
       return sql`select id as source_id,thread_id,id as run_id,created_at,status,
         null::text as attempt_id,null::text as node_id,null::text as title,true as visible
         from runs where id > ${key} order by id limit ${batchSize}`;
-    case "request":
-      return sql`select r.id as source_id,r.originating_thread_id as thread_id,r.originating_run_id as run_id,
-        coalesce(r.resolved_at,r.created_at) as created_at,r.status,n.attempt_id,r.originating_node_id as node_id,left(r.presentation->>'title',192) as title,
-        r.status <> 'pending' as visible
-        from requests r left join execution_nodes n on n.id=r.originating_node_id
-        where r.id > ${key} order by r.id limit ${batchSize}`;
     case "node":
       return sql`select n.id as source_id,r.thread_id,n.run_id,n.started_at as created_at,n.status,
         n.attempt_id,n.parent_node_id as node_id,left(n.title,192) as title,true as visible
@@ -340,7 +521,11 @@ function canonicalSource(kind: Exclude<CanonicalKind, "message">, key: string) {
   }
 }
 
-async function deriveCards(tx: Tx, cursor: UpgradeCursor, kind: Exclude<CanonicalKind, "message">) {
+async function deriveCards(
+  tx: Tx,
+  cursor: UpgradeCursor,
+  kind: Exclude<CanonicalKind, "message" | "request">,
+) {
   const page = await sql<{ id: string }>`
       insert into transcript_items(id,thread_id,run_id,attempt_id,node_id,kind,position,visible,is_turn_start,created_at,
         request_id,execution_node_id,delegation_id,app_id,view)
@@ -527,41 +712,31 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
 }
 
 async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
-  // The table constrains ordered card fields. Read just the preview for
-  // common card shapes once their remaining wire fields are known valid.
-  const page = (
-    await sql<{
-      lastId: string | null;
-      previews: { id: string; view: unknown }[] | null;
-      fullIds: string[];
-    }>`
-      with page as materialized (
-        select id,view,not visible or (
-          (
-            (kind='message' and id=message_id and id collate "C" ~* ${messageIdPattern})
-            or (kind='reasoning' and octet_length(id) between 1 and 600
-              and octet_length(block_id) between 1 and 255)
-          )
-            and (run_id is null or run_id collate "C" ~* ${legacyRunIdPattern})
-            and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
-            and (node_id is null or node_id collate "C" ~* ${nodeIdPattern})
-            and created_at >= '0001-01-01 00:00:00+00'::timestamptz
-            and created_at < '10000-01-01 00:00:00+00'::timestamptz
-        ) as preview_only
-        from transcript_items where id > ${cursor.key} order by id limit ${verifyBatchSize}
-      )
-      select (select max(id) from page) as last_id,
-        (select json_agg(preview) from (
-          select distinct on (view) id,view from page where preview_only order by view,id
-        ) preview) as previews,
-        array(select id from page where preview_only is not true) as full_ids
-    `.execute(tx)
-  ).rows[0]!;
-  for (const preview of page.previews ?? []) {
-    if (!TranscriptItemPreviewSchema.safeParse(preview.view).success)
-      throw new Error(`Personal conversion parity check failed at card ${preview.id}`);
-  }
-  const cards = page.fullIds.length
+  const {
+    rows: [page],
+  } = await sql<{ lastId: string | null; ids: string[] }>`
+    with page as materialized (
+      select id,kind,view,case
+        when kind='message' then id=message_id and id collate "C" ~* ${messageIdPattern}
+        when kind='reasoning' then octet_length(id) between 1 and 600
+          and octet_length(block_id) between 1 and 255
+        else false
+      end and (run_id is null or run_id collate "C" ~* ${legacyRunIdPattern})
+        and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
+        and (node_id is null or node_id collate "C" ~* ${nodeIdPattern})
+        and created_at >= '0001-01-01 00:00:00+00'::timestamptz
+        and created_at < '10000-01-01 00:00:00+00'::timestamptz as shape_checked
+      from transcript_items where id > ${cursor.key} order by id limit ${verifyBatchSize}
+    )
+    select (select max(id) from page) as "lastId",
+      array(select id from page where shape_checked is not true
+        union all
+        select id from (
+          select distinct on (kind,view) id from page where shape_checked
+          order by kind,view,id
+        ) checked) as ids
+  `.execute(tx.withoutPlugins());
+  const cards = page!.ids.length
     ? await tx
         .selectFrom("transcriptItems")
         .select([
@@ -569,7 +744,6 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           "threadId",
           "kind",
           "revision",
-          "position",
           "runId",
           "attemptId",
           "nodeId",
@@ -585,7 +759,8 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           "blockId",
           "bindingGeneration",
         ])
-        .where(sql<boolean>`id=any(${page.fullIds}::text[])`)
+        .select(sql<string>`coalesce(position,1)::text`.as("position"))
+        .where(sql<boolean>`id=any(${page!.ids}::text[])`)
         .execute()
     : [];
   for (const card of cards) {
@@ -595,7 +770,7 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
       throw new Error(`Personal conversion parity check failed at card ${card.id}`);
     }
   }
-  if (page.lastId) return { ...cursor, key: page.lastId };
+  if (page!.lastId) return { ...cursor, key: page!.lastId };
   const parity = (
     await sql<{
       canonical: string;
@@ -625,10 +800,18 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           and not exists(select 1 from transcript_items where id='app:'||a.id limit 1) limit 1)
         or exists(select 1 from transcript_items i join messages m on m.id=i.message_id
           where i.thread_id<>m.thread_id limit 1)
+        or exists(select 1 from thread_inputs t join transcript_items i on i.message_id=t.message_id
+          where i.view#>>'{delivery,status}' is distinct from case
+            when t.state='unknown' then 'unconfirmed'
+            when t.state='cancelled' and t.cancel_reason is distinct from 'withdrawn' then 'failed' end
+          limit 1)
         or exists(select 1 from transcript_items i join requests r on r.id=i.request_id
-          where (i.thread_id,i.run_id,i.node_id) is distinct from (r.originating_thread_id,r.originating_run_id,r.originating_node_id) limit 1)
+          where (i.thread_id,i.run_id,i.node_id) is distinct from (r.originating_thread_id,r.originating_run_id,r.originating_node_id)
+            or i.view->>'requestKind' is distinct from r.kind
+            or (r.mode='live') is distinct from (i.view ? 'waitedSince') limit 1)
         or exists(select 1 from transcript_items i join runs r on r.id=i.run_id
-          where i.kind='run' and i.thread_id<>r.thread_id limit 1)
+          where i.kind='run' and (i.thread_id<>r.thread_id
+            or i.view->>'replyMessageId' is distinct from r.terminal_reply_message_id) limit 1)
         or exists(select 1 from transcript_items i join execution_nodes n on n.id=i.execution_node_id
           join runs r on r.id=n.run_id
           where (i.thread_id,i.run_id,i.attempt_id,i.node_id)
@@ -637,6 +820,11 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           where (i.thread_id,i.run_id,i.node_id,i.attempt_id) is distinct from (c.thread_id,c.run_id,c.node_id,c.attempt_id) limit 1)
         or exists(select 1 from tool_output_images i join tool_calls c on c.id=i.tool_call_id
           where (i.thread_id,i.node_id) is distinct from (c.thread_id,c.node_id) limit 1)
+        or exists(select 1 from commands c join runs r on r.id=c.run_id
+          where r.status='interrupted' and c.type=any(${offlineCommandTypes}::text[])
+            and c.status in ('pending','dispatched') limit 1)
+        or exists(select 1 from thread_inputs i join runs r on r.id=i.run_id
+          where r.status='interrupted' and i.state='claimed' limit 1)
         or exists(select 1 from runner_event_receipts limit 1)) as invalid
   `.execute(tx)
   ).rows[0]!;
@@ -651,11 +839,11 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
   ) {
     throw new Error("Personal conversion parity check failed");
   }
-  return stage(cursor, "finalize");
+  return stage(cursor, "index");
 }
 
 async function dropOldState(tx: Tx) {
-  await createPersonalTranscriptOrderIndexes(tx);
+  await sql`set local transaction_timeout = '10s'; set local lock_timeout = '5s'`.execute(tx);
   await sql`drop table deployment_events,thread_state_pending;
     alter table threads drop column projected_input_queue_paused;
     alter table client_sync_state drop column upgrade_cursor`.execute(tx);
@@ -674,6 +862,12 @@ async function convertBatch(
     ).rows[0];
     if (unexpected?.present)
       throw new Error("Unexpected personal event history outside a personal Deployment");
+    let previous = "";
+    for (;;) {
+      const next = await createNextPersonalTranscriptOrderIndex(tx, previous);
+      if (next === null) break;
+      previous = next;
+    }
     await dropOldState(tx);
     return { stage: "finalize", done: true };
   }
@@ -706,6 +900,9 @@ async function convertBatch(
     case "message":
       next = await deriveMessages(tx, cursor);
       break;
+    case "request":
+      next = await deriveRequests(tx, cursor);
+      break;
     case "ledger": {
       const page = await convertLegacyActivityBatch(
         tx,
@@ -715,7 +912,7 @@ async function convertBatch(
         cursor.reserved,
       );
       if (!page.through) {
-        next = stage(cursor, "close-tools");
+        next = stage(cursor, "run-details");
       } else {
         const counts = { ...cursor.counts };
         for (const key of Object.keys(counts) as (keyof typeof counts)[])
@@ -724,6 +921,9 @@ async function convertBatch(
       }
       break;
     }
+    case "run-details":
+      next = await deriveRunDetails(tx, cursor);
+      break;
     case "close-tools":
       next = await closeOpenTools(tx, source, cursor);
       break;
@@ -742,13 +942,21 @@ async function convertBatch(
     case "verify":
       next = await verifyConversion(tx, cursor);
       break;
-    case "finalize":
-      await sql`update client_sync_state set ready=true,pruned_through_sequence=sequence
-        where deployment_id=${source.id} and sequence=${source.sequence}::bigint`.execute(tx);
-      await dropOldState(tx);
+    case "index": {
+      const name = await createNextPersonalTranscriptOrderIndex(tx, cursor.key);
+      next = name ? { ...cursor, key: name } : stage(cursor, "analyze");
+      break;
+    }
+    case "analyze":
       await sql`analyze threads,messages,runs,transcript_items,tool_calls,tool_output_images,personal_attention`.execute(
         tx,
       );
+      next = stage(cursor, "finalize");
+      break;
+    case "finalize":
+      await dropOldState(tx);
+      await sql`update client_sync_state set ready=true,pruned_through_sequence=sequence
+        where deployment_id=${source.id} and sequence=${source.sequence}::bigint`.execute(tx);
       return { stage: cursor.stage, done: true };
     default:
       next = await deriveCards(tx, cursor, cursor.stage);
@@ -796,23 +1004,18 @@ export async function withPersonalStateStartupLock<Result>(
 export async function completePersonalStateConversion(
   database: Kysely<DatabaseSchema>,
   signal: AbortSignal,
-  options?: { readonly afterBatch?: (stage: UpgradeCursor["stage"]) => void },
+  options?: { readonly afterBatch?: ((stage: UpgradeCursor["stage"]) => void) | undefined },
 ): Promise<void> {
   signal.throwIfAborted();
   const startup = (
-    await sql<{ legacy: boolean; deployment: Deployment | null; unready: boolean }>`
+    await sql<{ legacy: boolean; deployment: Deployment | null }>`
       select to_regclass('deployment_events') is not null as legacy, (
         select json_build_object('id',id,'kind',deployment_shape->>'kind')
         from deployments where singleton_key='primary'
-      ) as deployment, exists(select 1 from client_sync_state where not ready) as unready
+      ) as deployment
     `.execute(database)
   ).rows[0]!;
   if (!startup.legacy) return;
-  // An unready database from an earlier binary may already have these indexes.
-  if (startup.deployment?.kind === "personal" && startup.unready) {
-    signal.throwIfAborted();
-    await dropPersonalTranscriptOrderIndexes(database);
-  }
   for (;;) {
     signal.throwIfAborted();
     const batch = await database.transaction().execute(async (tx) => {
@@ -820,7 +1023,7 @@ export async function completePersonalStateConversion(
       signal.throwIfAborted();
       return result;
     });
-    options?.afterBatch?.(batch.stage);
+    if (startup.deployment?.kind === "personal") options?.afterBatch?.(batch.stage);
     if (batch.done) break;
   }
 }

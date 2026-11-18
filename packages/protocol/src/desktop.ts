@@ -180,10 +180,13 @@ export const DesktopPersonalDeploymentStateSchema = z.enum([
 ]);
 export type DesktopPersonalDeploymentState = z.infer<typeof DesktopPersonalDeploymentStateSchema>;
 
+export const personalUpgradeProgressLine = "Opensteer Personal database upgrade committed a batch";
+
 export const DesktopPersonalDeploymentStepSchema = z.enum([
   "checking-computer",
   "preparing-database",
   "starting-host",
+  "upgrading-database",
   "preparing-agent-home",
   "starting-local-agents",
   "connecting-computer",

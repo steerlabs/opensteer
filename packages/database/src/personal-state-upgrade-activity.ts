@@ -12,7 +12,7 @@ import {
   type ThreadId,
   utf8Prefix,
 } from "@opensteer/core";
-import { sql, type Insertable, type Selectable, type Transaction } from "kysely";
+import { CompiledQuery, sql, type Insertable, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import type {
@@ -63,20 +63,13 @@ const emptyCounts: LegacyImportCounts = {
   skipped: 0,
 };
 
-export async function convertLegacyActivityBatch(
-  tx: Tx,
-  deploymentId: DeploymentId,
-  after: string,
-  through: string,
-  reservedPosition: string,
-): Promise<{ through: string | null; counts: LegacyImportCounts }> {
-  const page = await sql<LegacyActivity & { importedInSql: boolean; reasoning: number }>`
+const legacyBatchSql = `
     with sized as materialized (
       select sequence,
         case when type in ('tool.started','tool.completed','reasoning.completed','node.message')
           then octet_length(data::text) else 256 end as bytes
       from deployment_events
-      where deployment_id=${deploymentId} and sequence>${after}::bigint and sequence<=${through}::bigint
+      where deployment_id=$1 and sequence>$2::bigint and sequence<=$3::bigint
       order by sequence limit ${maxLegacyBatchRows}
     ), bounded as (
       select sequence,bytes,sum(bytes) over(order by sequence) as batch_bytes,
@@ -108,7 +101,7 @@ export async function convertLegacyActivityBatch(
           else null
         end end as data
       from bounded b
-      join deployment_events e on e.deployment_id=${deploymentId} and e.sequence=b.sequence
+      join deployment_events e on e.deployment_id=$1 and e.sequence=b.sequence
       where b.batch_bytes <= ${maxLegacyBatchBytes} or b.row_no=1
     ), resolved as materialized (
       select b.*,node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id
@@ -126,9 +119,9 @@ export async function convertLegacyActivityBatch(
         type in ('message.created','message.placed','assistant.message')
       ),false) as message_only, coalesce(bool_and((
         type='reasoning.completed' and not (data ? 'nodeId')
-          and run_id collate "C" ~* ${legacyRunIdPattern}
-          and thread_id collate "C" ~* ${threadIdPattern}
-          and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
+          and run_id collate "C" ~* $5
+          and thread_id collate "C" ~* $6
+          and (attempt_id is null or attempt_id collate "C" ~* $7)
           and (runner_binding_generation is null or runner_binding_generation >= 0)
           and (runner_ordinal is null or (attempt_id is not null and runner_binding_generation is not null))
           and jsonb_typeof(data->'blockId')='string'
@@ -145,9 +138,9 @@ export async function convertLegacyActivityBatch(
       select distinct on (id) id,thread_id,sequence,move from markers
       order by id,move desc,case when move then sequence end desc,sequence
     ), locked as materialized (
-      select i.id,${reservedPosition}::bigint + p.sequence as position
+      select i.id,$4::bigint + p.sequence as position
       from placements p join transcript_items i on i.id=p.id and i.thread_id=p.thread_id
-      where i.visible and (p.move or i.position <= ${reservedPosition}::bigint)
+      where i.visible and (p.move or i.position <= $4::bigint)
       order by i.id for no key update of i
     ), placed as (
       update transcript_items i set position=locked.position from locked where i.id=locked.id
@@ -163,7 +156,7 @@ export async function convertLegacyActivityBatch(
       insert into transcript_items(id,thread_id,run_id,attempt_id,binding_generation,kind,position,
         visible,is_turn_start,created_at,block_id,body,view)
       select distinct on (id) id,thread_id,run_id,attempt_id,runner_binding_generation,'reasoning',
-        ${reservedPosition}::bigint + sequence,true,false,date_trunc('milliseconds',created_at),
+        $4::bigint + sequence,true,false,date_trunc('milliseconds',created_at),
         block_id,to_jsonb(body),jsonb_build_object('preview',body)
       from blocks order by id,sequence desc
       on conflict (id) do nothing returning 1
@@ -180,7 +173,28 @@ export async function convertLegacyActivityBatch(
       (select count(*)::int from imported_blocks)
     from batch where message_only or reasoning_only
     order by sequence
-  `.execute(tx.withoutPlugins());
+`;
+
+export async function convertLegacyActivityBatch(
+  tx: Tx,
+  deploymentId: DeploymentId,
+  after: string,
+  through: string,
+  reservedPosition: string,
+): Promise<{ through: string | null; counts: LegacyImportCounts }> {
+  const page = await tx.executeQuery<
+    LegacyActivity & { importedInSql: boolean; reasoning: number }
+  >(
+    CompiledQuery.raw(legacyBatchSql, [
+      deploymentId,
+      after,
+      through,
+      reservedPosition,
+      legacyRunIdPattern,
+      threadIdPattern,
+      legacyAttemptIdPattern,
+    ]),
+  );
   const last = page.rows.at(-1);
   return {
     through: last?.sequence ?? null,

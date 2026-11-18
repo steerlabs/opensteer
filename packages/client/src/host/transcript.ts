@@ -242,6 +242,24 @@ export function toMessageEntry(
   };
 }
 
+export function hydrateTranscriptMessage(
+  card: MessageEntry,
+  body: MessageView,
+): MessageEntry | null {
+  const full = toMessageEntry(body);
+  if (!full) return null;
+  return {
+    ...full,
+    runId: card.runId ?? full.runId,
+    published: card.published ?? full.published ?? true,
+    ...(card.itemId ? { itemId: card.itemId } : {}),
+    ...(card.itemRevision ? { itemRevision: card.itemRevision } : {}),
+    ...(card.teamSource ? { teamSource: card.teamSource } : {}),
+    ...(card.delivery ? { delivery: card.delivery } : {}),
+    ...(card.edit ? { edit: card.edit } : {}),
+  };
+}
+
 export function isTranscriptMessageKind(kind: MessageKind): kind is TranscriptMessageKind {
   return kind === "assistant" || kind === "input";
 }

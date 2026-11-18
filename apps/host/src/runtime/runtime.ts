@@ -446,6 +446,9 @@ export interface TeamHostRuntime {
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
+  readonly onPersonalUpgradeBatch?: NonNullable<
+    Parameters<typeof migrateToLatest>[2]
+  >["afterBatch"];
   readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
   /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
   readonly teamDrainDelayMs?: number;
@@ -543,7 +546,9 @@ export async function createHostRuntime(
     if (!deploymentPolicy(config.deploymentShape).services.team)
       authorityLease = await acquireDeploymentAuthorityLease(database);
     // Conversion must finish before startup reads or creates a Deployment.
-    await migrateToLatest(database).catch((error: unknown) => {
+    await migrateToLatest(database, undefined, {
+      afterBatch: options.onPersonalUpgradeBatch,
+    }).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
     const deployment = await ensureDeployment(database, {

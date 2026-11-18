@@ -19,6 +19,7 @@ import {
 } from "@opensteer/integration-core";
 import {
   DesktopPersonalDeploymentStatusSchema,
+  personalUpgradeProgressLine,
   type DesktopPersonalComponentState,
   type DesktopPersonalDeploymentIssue,
   type DesktopPersonalDeploymentStatus,
@@ -959,6 +960,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#log("browser-extension-sync-failed", { error: safeErrorDetail(error) });
       }
     }
+    let renewDeadline: (() => void) | undefined;
     const host = this.#spawn(
       hostSpec(
         release,
@@ -972,14 +974,27 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         extensionDirectory,
         await this.#personFullName(),
       ),
+      (line) => {
+        if (line !== personalUpgradeProgressLine || !renewDeadline || signal.aborted) return;
+        renewDeadline();
+        if (this.#status.step === "starting-host") this.#setStatus({ step: "upgrading-database" });
+      },
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
+    const readiness = new AbortController();
+    const readinessSignal = AbortSignal.any([signal, readiness.signal]);
     const verifiedHost = await this.#raceChild(
       host,
-      this.#host.waitForHost(origin, manifest, signal),
-      signal,
+      this.#host.waitForHost(origin, manifest, readinessSignal),
+      readinessSignal,
       "Host",
-    );
+      (refresh) => {
+        renewDeadline = refresh;
+        return () => {
+          renewDeadline = undefined;
+        };
+      },
+    ).finally(() => readiness.abort());
     if (!verifiedHost.discoveryEnvelope) {
       throw new Error("Personal Host canonical discovery did not include its signed envelope.");
     }
@@ -1349,14 +1364,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     });
   }
 
-  #spawn(spec: PersonalProcessSpec): RunningChild {
+  #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {
     if (this.#shutdownRequested) throw new Error("Personal deployment is stopping.");
     if (this.#children.has(spec.component)) {
       throw new Error(`Personal ${spec.component} process is already running.`);
     }
     const child = this.#processes.spawn(spec);
     this.#diagnosticLogs.delete(spec.component);
-    const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec));
+    const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec), onLine);
     const stderr = new BoundedPersonalLog(16 * 1_024, processSensitiveValues(spec));
     logs.attach(child.stdout);
     logs.attach(child.stderr);
@@ -1403,6 +1418,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     readiness: Promise<T>,
     signal: AbortSignal,
     label: string,
+    refreshOn?: (refresh: () => void) => () => void,
   ): Promise<T> {
     this.#assertExpectedStack(target.component);
     let result: T;
@@ -1411,7 +1427,13 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         withTimeout(readiness, this.#startupTimeoutMs, {
           abortFallback: "Personal setup was cancelled.",
           signal,
-          timeoutError: () => new Error(`${label} did not become ready.`),
+          ...(refreshOn ? { refreshOn } : {}),
+          timeoutError: () =>
+            new Error(
+              label === "Host" && this.#status.step === "upgrading-database"
+                ? "The Personal database upgrade stopped making progress."
+                : `${label} did not become ready.`,
+            ),
         }),
         // Messaging is still running during a Host-only restart, but nothing
         // waits on it and its own crash path owns its exit.
@@ -2218,7 +2240,7 @@ function classifyFailure(
   const component =
     step === "preparing-database"
       ? "postgresql"
-      : step === "starting-host" || step === "preparing-agent-home"
+      : step === "starting-host" || step === "upgrading-database" || step === "preparing-agent-home"
         ? "host"
         : step === "starting-local-agents"
           ? "runner"

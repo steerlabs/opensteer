@@ -31,6 +31,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishTranscriptRun } from "./execution-changes.js";
 import { refreshTeamAskAttention } from "./personal-attention-store.js";
 
 export class PersonalTeamRequestsStore {
@@ -707,6 +708,8 @@ export class PersonalTeamRequestsStore {
         .where("seedInputId", "=", observed.localInputId)
         .where(sql<string>`reply_target->>'requestId'`, "=", requestId)
         .where(sql<string>`reply_target->>'teamId'`, "=", teamId)
+        .$if(observed.runId !== null, (query) => query.where("id", "=", observed.runId!))
+        .orderBy("runOrdinal", "desc")
         .forNoKeyUpdate()
         .executeTakeFirst();
       const row = await tx
@@ -738,16 +741,7 @@ export class PersonalTeamRequestsStore {
         .returningAll()
         .executeTakeFirstOrThrow();
       if (saved.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
-      if (run)
-        mutation.change(
-          {
-            scopeKey: `thread:${run.threadId}`,
-            entityKind: "collection",
-            entityId: "run-delivery",
-            operation: "invalidate",
-          },
-          () => ({ revision: mutation.sequence }),
-        );
+      if (run) await publishTranscriptRun(tx, mutation, run.id);
       if (saved.publicationState === "accepted" && saved.acceptedMessageId && this.#onPublished) {
         const taskId = saved.localTaskId!;
         mutation.reaction(() => this.#onPublished?.(taskId));

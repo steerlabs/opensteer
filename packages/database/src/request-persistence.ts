@@ -26,6 +26,16 @@ export function assertRequestRevision(row: Pick<RequestRow, "revision">, expecte
     });
 }
 
+export function describeTranscriptRequest(request: Request) {
+  return transcriptPreview({
+    title: request.presentation.title,
+    status: request.status,
+    preview: requestOutcomeText(request),
+    requestKind: request.kind,
+    ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
+  });
+}
+
 export function refreshRequestState(
   transaction: Transaction<DatabaseSchema>,
   requestId: RequestId,
@@ -47,13 +57,7 @@ export function refreshRequestState(
     const title = utf8Prefix(row.presentation.title, 240);
     const request = requestFromRow(row);
     if (request.status !== "pending") {
-      const view = transcriptPreview({
-        title,
-        status: row.status,
-        preview: requestOutcomeText(request),
-        requestKind: row.kind,
-        ...(row.mode === "live" ? { waitedSince: row.createdAt.toISOString() } : {}),
-      });
+      const view = describeTranscriptRequest(request);
       const prior = await tx
         .selectFrom("transcriptItems")
         .select("position")

@@ -19,6 +19,7 @@ import { resolvePersonalToolImages } from "./personal-tool-images.js";
 import { liveRequest } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-persistence.js";
 import { transcriptIdentity } from "./transcript-store.js";
+import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 
 function legacyState(database: Kysely<DatabaseSchema>) {
   return sql<{ legacy: boolean; cursor: boolean }>`
@@ -233,7 +234,14 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
         jsonb_build_object('message',jsonb_build_object('id',${prompt.id}::text))
       from generate_series(12,1011) seq
       where seq not in (850,851,899,900,902,904)`.execute(database);
-    for (const boundary of ["settle", "message", "ledger", "verify", "finalize"] as const) {
+    for (const boundary of [
+      "settle",
+      "message",
+      "ledger",
+      "verify",
+      "index",
+      "finalize",
+    ] as const) {
       await expect(
         finishPersonalStateUpgrade(database, {
           afterBatch(stage) {
@@ -276,6 +284,26 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .where("id", "=", active.runId)
       .executeTakeFirstOrThrow();
     expect(storedReply.terminalReplyMessageId).toBe(assistantMessageId);
+
+    expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(seed.command?.id);
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", seed.command!.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "failed" });
+    const next = await store.enqueueThreadInput({
+      requestedBy: active.userId,
+      threadId: active.threadId,
+      content: [{ type: "text", text: "New work after the upgrade" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "migration:new-work",
+    });
+    expect((await store.listPendingCommands()).map(({ id }) => id)).toContain(next.command!.id);
+    const started = await startPersonalQueuedRunFixture(store, next.run!.id);
+    expect(started.runId).toBe(next.run!.id);
 
     const seedCard = await target
       .selectFrom("transcriptItems")
@@ -335,25 +363,18 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .executeTakeFirstOrThrow();
     const current = createDatabase<DatabaseSchema>({ connectionString: fixture.databaseUrl });
     try {
-      const newRunId = createId("run");
-      const newAttemptId = createId("runAttempt");
-      await sql`insert into runs
-        select (jsonb_populate_record(null::runs, to_jsonb(source) || jsonb_build_object(
-          'id',${newRunId}::text,'status','running','run_ordinal',source.run_ordinal+1,
-          'terminal_reply_message_id',null,'completed_at',null,'next_runner_ordinal',0
-        ))).* from runs source where source.id=${active.runId}`.execute(current);
-      await sql`insert into run_attempts
-        select (jsonb_populate_record(null::run_attempts, to_jsonb(source) || jsonb_build_object(
-          'id',${newAttemptId}::text,'run_id',${newRunId}::text,'ended_at',null,'outcome',null
-        ))).* from run_attempts source where source.run_id=${active.runId} and source.status='current'`.execute(
-        current,
-      );
+      const newAttempt = await current
+        .selectFrom("runAttempts")
+        .select("id")
+        .where("runId", "=", started.runId)
+        .where("status", "=", "current")
+        .executeTakeFirstOrThrow();
       const fresh = await commitPersonalMutation(current, (tx, mutation) =>
         completePersonalToolCall(tx, mutation, {
-          runId: newRunId,
+          runId: started.runId,
           threadId: active.threadId,
-          attemptId: newAttemptId,
-          bindingGeneration: active.bindingGeneration,
+          attemptId: newAttempt.id,
+          bindingGeneration: started.bindingGeneration,
           origin: "runner",
           nodeId: null,
           callId: "new-image",
@@ -478,6 +499,91 @@ test("conversion rebuilds pending Requests without moving an idle task into Acti
         .where("id", "=", request.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "pending" });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("settles proven, unsent and uncertain deliveries under the upgrade cursor", async () => {
+  const fixture = await createStoreFixture();
+  const { database, store } = fixture;
+  try {
+    const run = await fixture.startRunFixture("offline-delivery");
+    const deliveries = [
+      {
+        type: "run.steer",
+        commandStatus: "succeeded",
+        attempts: 1,
+        expectedCommand: "succeeded",
+        expectedInput: "delivered",
+      },
+      {
+        type: "run.steer",
+        commandStatus: "pending",
+        attempts: 0,
+        expectedCommand: "failed",
+        expectedInput: "pending",
+      },
+      {
+        type: "run.restart",
+        commandStatus: "dispatched",
+        attempts: 1,
+        expectedCommand: "unknown",
+        expectedInput: "unknown",
+      },
+    ] as const;
+    const controls = [];
+    for (const delivery of deliveries) {
+      const pending = await store.enqueueThreadInput({
+        requestedBy: run.userId,
+        threadId: run.threadId,
+        content: [{ type: "text", text: delivery.expectedInput }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: `migration:${delivery.expectedInput}`,
+      });
+      const commandId = createId("command");
+      await sql`insert into commands(id,environment_id,thread_id,run_id,requested_by,actor_principal_id,
+        authority_source,idempotency_key,type,payload,status,attempts)
+        select ${commandId},environment_id,thread_id,run_id,requested_by,actor_principal_id,authority_source,
+          ${commandId},${delivery.type},jsonb_build_object('messageId',${pending.message.id}::text),
+          ${delivery.commandStatus},${delivery.attempts} from commands where id=${run.turn.command.id}`.execute(
+        database,
+      );
+      await database
+        .updateTable("threadInputs")
+        .set({ runId: run.runId, state: "claimed", steerCommandId: commandId })
+        .where("messageId", "=", pending.message.id)
+        .execute();
+      await database
+        .updateTable("messages")
+        .set({ runId: run.runId })
+        .where("id", "=", pending.message.id)
+        .execute();
+      controls.push({ ...delivery, commandId, messageId: pending.message.id });
+    }
+    await preparePersonalConversion(database);
+    await finishPersonalStateUpgrade(database);
+
+    for (const control of controls) {
+      const input = await database
+        .selectFrom("threadInputs")
+        .select(["state", "runId", "steerCommandId"])
+        .where("messageId", "=", control.messageId)
+        .executeTakeFirstOrThrow();
+      expect(input).toEqual({
+        state: control.expectedInput,
+        runId: control.expectedInput === "pending" ? null : run.runId,
+        steerCommandId: control.expectedInput === "pending" ? null : control.commandId,
+      });
+      const command = await database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", control.commandId)
+        .executeTakeFirstOrThrow();
+      expect(command.status).toBe(control.expectedCommand);
+    }
+    expect(await store.listPendingCommands()).toEqual([]);
   } finally {
     await fixture.close();
   }

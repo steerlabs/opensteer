@@ -6,7 +6,10 @@ import path from "node:path";
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId, type RunnerId } from "@opensteer/core";
-import type { DesktopPersonalDeploymentStatus } from "@opensteer/protocol/desktop";
+import {
+  personalUpgradeProgressLine,
+  type DesktopPersonalDeploymentStatus,
+} from "@opensteer/protocol/desktop";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
@@ -193,6 +196,68 @@ describe("PersonalDeploymentSupervisor", () => {
     });
     expect(fixture.release).not.toHaveBeenCalled();
     expect(fixture.processes.specs).toHaveLength(0);
+  });
+
+  it("waits past the normal Host deadline while upgrade batches commit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    const finish = deferred<void>();
+    const verify = fixture.host.waitForHost.getMockImplementation()!;
+    fixture.host.waitForHost.mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await finish.promise;
+      return verify(...args);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      await vi.advanceTimersByTimeAsync(400);
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      await vi.advanceTimersByTimeAsync(400);
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fixture.processes.kills).toEqual([]);
+      finish.resolve();
+      await expect(starting).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["crash", "stall"] as const)("relaunches after an upgrade %s", async (failure) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow(
+        failure === "stall" ? /stopped making progress/u : /Host stopped unexpectedly \(exit 1\)/u,
+      );
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      if (failure === "crash") host.emit("exit", 1, null);
+      else await vi.advanceTimersByTimeAsync(500);
+      await rejected;
+      await expect(fixture.supervisor.start()).resolves.toMatchObject({ state: "ready" });
+      expect(childrenOf(fixture, "host")).toHaveLength(2);
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("resumes a returning Personal deployment through Host readiness", async () => {

@@ -355,6 +355,7 @@ export class MigrationLineageError extends Error {
 export async function migrateToLatest(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider = migrationProvider(),
+  conversion?: Parameters<typeof completePersonalStateConversion>[2],
 ): Promise<MigrationResultSet> {
   const migrations = await provider.getMigrations();
   const resolved: MigrationProvider = { getMigrations: async () => migrations };
@@ -363,7 +364,7 @@ export async function migrateToLatest(
   return withPersonalStateStartupLock(database, async (signal) => {
     const result = await migrateRegisteredLineage(database, resolved, Object.keys(migrations));
     signal.throwIfAborted();
-    await completePersonalStateConversion(database, signal);
+    await completePersonalStateConversion(database, signal, conversion);
     return result;
   });
 }

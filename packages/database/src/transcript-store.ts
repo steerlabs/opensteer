@@ -8,7 +8,6 @@ import {
   type ContentPart,
   type MessageAuthor,
   type MessageKind,
-  type MessageId,
   type ToolOutputImage,
   type TeamSource,
   utf8ByteLength,
@@ -55,10 +54,19 @@ export function transcriptPreview(input: TranscriptPreview): TranscriptPreview {
   };
 }
 
+export const transcriptMessageTextBytes = 1024;
+
+function transcriptMessageContent(content: readonly ContentPart[]) {
+  return {
+    hasContent: contentSaysSomething(content),
+    hasRichParts: content.some((part) => part.type !== "text"),
+    text: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+  };
+}
+
 export function describeTranscriptMessage(input: {
-  readonly id: MessageId;
   readonly kind: MessageKind;
-  readonly content: readonly ContentPart[];
+  readonly content: readonly ContentPart[] | ReturnType<typeof transcriptMessageContent>;
   readonly author: MessageAuthor;
   readonly policy?: "queue" | "steer" | "report";
   readonly state?: string;
@@ -70,6 +78,7 @@ export function describeTranscriptMessage(input: {
   readonly seedInRun: boolean;
   readonly assigned: boolean;
 }) {
+  const content = "text" in input.content ? input.content : transcriptMessageContent(input.content);
   const published =
     !input.policy ||
     input.state === "delivered" ||
@@ -81,8 +90,7 @@ export function describeTranscriptMessage(input: {
     (input.kind === "continuation" && cause === "run-recovery")
       ? input.kind
       : undefined;
-  const drawable =
-    cause !== "claude-compaction" && messageKind && contentSaysSomething(input.content);
+  const drawable = cause !== "claude-compaction" && messageKind && content.hasContent;
   const delivery =
     input.policy &&
     (input.state === "unknown" ||
@@ -99,6 +107,9 @@ export function describeTranscriptMessage(input: {
     input.kind === "input" &&
     input.policy !== "report" &&
     (input.author.kind === "human" || !input.assigned || input.seedInRun);
+  const text = utf8Prefix(content.text, transcriptMessageTextBytes);
+  const preview = stripRefs(text).trim();
+  const truncated = content.hasRichParts || text !== content.text || preview !== text.trim();
   return {
     published,
     visible,
@@ -111,9 +122,8 @@ export function describeTranscriptMessage(input: {
       ...(input.teamSource ? { teamSource: input.teamSource } : {}),
       edited: input.edited,
       published,
-      preview: input.content
-        .flatMap((part) => (part.type === "text" ? [stripRefs(part.text)] : []))
-        .join("\n"),
+      preview,
+      ...(truncated ? { truncated } : {}),
     }),
   };
 }

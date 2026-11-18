@@ -122,7 +122,9 @@ function threadValueFromRow(row: ThreadReadRow) {
     updatedAt: row.updatedAt.toISOString(),
   };
 }
-export function messageEditFromRow(row: Selectable<MessageTable>) {
+export function messageEditFromRow(
+  row: Pick<Selectable<MessageTable>, "revision" | "editedAt" | "author">,
+) {
   return row.revision > 0 && row.editedAt
     ? {
         revision: row.revision,
@@ -224,6 +226,7 @@ export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDeliver
   from personal_team_requests p where p.local_task_id=runs.thread_id and p.local_input_id=runs.seed_input_id
     and runs.reply_target->>'kind'='team-thread' and runs.reply_target->>'teamId'=p.team_deployment_id
     and runs.reply_target->>'requestId'=p.request_id
+    and (p.run_id is null or p.run_id=runs.id)
     and (p.answer_payload is not null or p.publication_state in ('accepted','blocked'))
 )`.as("delivery");
 export function runFromRow(row: {
