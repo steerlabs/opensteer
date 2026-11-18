@@ -591,7 +591,7 @@ async function runSeed(seed: number, clock: { now: number }) {
 const replay = process.env.OPENSTEER_OUTBOX_MODEL_SEED;
 const batches =
   replay === undefined
-    ? Array.from({ length: 4 }, (_, batch) => ({ first: batch * 512 + 1, last: (batch + 1) * 512 }))
+    ? Array.from({ length: 32 }, (_, batch) => ({ first: batch * 64 + 1, last: (batch + 1) * 64 }))
     : [{ first: Number(replay), last: Number(replay) }];
 
 it.each(batches)(
