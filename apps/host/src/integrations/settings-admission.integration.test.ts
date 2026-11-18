@@ -101,7 +101,6 @@ describeStore("Settings invocation admission", (test) => {
     } as unknown as IntegrationPlatformService;
     const handlers = new IntegrationToolHandlers({
       definitions: [],
-      onEvent: () => undefined,
       platform,
     });
     if (!issued) throw new Error("Issued tool missing");

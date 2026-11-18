@@ -27,7 +27,7 @@ import {
 } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore, TriggerStore } from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { withPersonalTransaction } from "@opensteer/database";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import {
   CommandService,
@@ -1242,7 +1242,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               triggerId: created.trigger.id,
               nextFireAt: plusThirty,
             };
-      const downgrade = withPersonalTransaction(database, async (transaction) => {
+      const downgrade = commitPersonalMutation(database, async (transaction) => {
         fence.resolve();
         await withTimeout(release.promise, 5_000, {
           timeoutError: () => new Error("Authority race did not release the personal event fence"),
@@ -1259,7 +1259,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
       void mutation.catch(() => undefined);
       try {
-        await blockedQuery("deployment_event_state", mutation);
+        await blockedQuery("client_sync_state", mutation);
         release.resolve();
         await downgrade;
         await denied(`A10/F15 ${change}`, actor.id, input.operation, "forbidden", () => mutation);
@@ -1318,7 +1318,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("deployment_event_state", mutation);
+      await blockedQuery("client_sync_state", mutation);
       barrier.release();
       await check(
         "A10 delegation and mutation overlap",
@@ -1439,7 +1439,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("deployment_event_state", mutation);
+      await blockedQuery("client_sync_state", mutation);
       barrier.release();
       await check(
         "A11 claim commits before reschedule",
@@ -2767,7 +2767,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
 
   // Observe PostgreSQL's actual wait graph; ordering never depends on a timer.
   async function blockedQuery(
-    table: "threads" | "triggers" | "deployment_event_state",
+    table: "threads" | "triggers" | "client_sync_state",
     mutation: Promise<unknown>,
   ) {
     const observed = vi.waitFor(

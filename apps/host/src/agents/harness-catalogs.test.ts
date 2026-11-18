@@ -12,7 +12,6 @@ import {
   HarnessCatalogReconciliationOwner,
   harnessCatalogMaxAgeMs,
   inspectHarnessCatalogsAfterUsageLimit,
-  notifyingHarnessCatalogRecorder,
   reconcileHarnessCatalogs,
   type HarnessCatalogConvergenceStore,
   type HarnessCatalogInspector,
@@ -453,53 +452,6 @@ describe("mutation-owned harness catalog reconciliation", () => {
     inventory.resolve([harness]);
     await closing;
     expect(reconcileHarnesses).not.toHaveBeenCalled();
-  });
-});
-describe("catalog commit notifications", () => {
-  it("publishes only committed catalogs, without an observer, and skips empty records", async () => {
-    const commit = Promise.withResolvers<void>();
-    let stored: readonly HarnessInstanceCatalog[] = [];
-    let accept = true;
-    const rereads: (readonly HarnessInstanceCatalog[])[] = [];
-    const broadcast = vi.fn(() => {
-      rereads.push(stored);
-    });
-    const recorder = notifyingHarnessCatalogRecorder(
-      {
-        recordHarnessCatalogs: async ({ catalogs }) => {
-          await commit.promise;
-          if (!accept) return [];
-          stored = catalogs;
-          return stored;
-        },
-      },
-      {
-        broadcast,
-      },
-    );
-    const input = {
-      catalogs: [readyCatalog()],
-      environmentId: harnessEnvironmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    };
-    const recording = recorder.recordHarnessCatalogs(input);
-    expect(broadcast).not.toHaveBeenCalled();
-    commit.resolve();
-    await recording;
-    expect(broadcast).toHaveBeenCalledWith(
-      {
-        type: "host.machines.changed",
-      },
-      "harness.catalog",
-    );
-    expect(rereads).toEqual([[readyCatalog()]]);
-    await recorder.recordHarnessCatalogs({
-      ...input,
-      catalogs: [],
-    });
-    accept = false;
-    await recorder.recordHarnessCatalogs(input);
-    expect(broadcast).toHaveBeenCalledTimes(1);
   });
 });
 describe("harness catalog re-inspection after a usage limit", () => {

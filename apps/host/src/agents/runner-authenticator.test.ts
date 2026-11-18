@@ -304,7 +304,7 @@ describe("RunnerAuthenticator identity refusals", () => {
     const environmentId = createId("environment");
     const descriptor = {
       bootId: RunnerBootIdSchema.parse("rbt_11111111-1111-4111-8111-111111111111"),
-      capabilities: [],
+      capabilities: ["run-events-v2"],
       modules: {
         agents: {
           environmentIds: [environmentId],

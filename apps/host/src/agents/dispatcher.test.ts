@@ -169,8 +169,8 @@ describe("HostCommandDispatcher steering", () => {
     const dispatcher = steerDispatcher({
       dispatchChannelCommand,
       runnersDispatch,
-      refuseSteer: vi.fn(async () => []),
-      succeedCommand: vi.fn(async () => []),
+      refuseSteer: vi.fn(async () => undefined),
+      succeedCommand: vi.fn(async () => undefined),
     });
     const command = {
       ...steerCommand(),
@@ -187,14 +187,9 @@ describe("HostCommandDispatcher steering", () => {
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {
-      const requeuedEvent = {
-        type: "run.queued",
-      } as never;
-      const refuseSteer = vi.fn(async () => [requeuedEvent]);
-      const succeedCommand = vi.fn(async () => []);
-      const onDeploymentEvent = vi.fn();
+      const refuseSteer = vi.fn(async () => undefined);
+      const succeedCommand = vi.fn(async () => undefined);
       const dispatcher = steerDispatcher({
-        onDeploymentEvent,
         refuseSteer,
         runnersDispatch: vi.fn(async () => {
           throw new CommandDispatchError(
@@ -223,18 +218,17 @@ describe("HostCommandDispatcher steering", () => {
         "Harness does not support steering",
         reason,
       );
-      expect(onDeploymentEvent).toHaveBeenCalledWith(requeuedEvent);
       expect(succeedCommand).not.toHaveBeenCalled();
     },
   );
   it("leaves a retryable steer to the coordinator", async () => {
-    const refuseSteer = vi.fn(async () => []);
+    const refuseSteer = vi.fn(async () => undefined);
     const dispatcher = steerDispatcher({
       refuseSteer,
       runnersDispatch: vi.fn(async () => {
         throw new CommandDispatchError("Runner acknowledgement timed out", "uncertain");
       }),
-      succeedCommand: vi.fn(async () => []),
+      succeedCommand: vi.fn(async () => undefined),
     });
     await expect(
       dispatcher.dispatch(steerCommand(), new AbortController().signal),
@@ -1200,11 +1194,10 @@ describe("HostCommandDispatcher run planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly onDeploymentEvent?: () => void;
   readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
-  readonly refuseSteer: () => Promise<readonly never[]>;
+  readonly refuseSteer: OpensteerStore["refuseSteer"];
   readonly runnersDispatch: () => Promise<undefined>;
-  readonly succeedCommand: () => Promise<readonly never[]>;
+  readonly succeedCommand: OpensteerStore["succeedCommand"];
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
     teamRequestContext: async () => {

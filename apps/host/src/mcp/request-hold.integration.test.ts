@@ -81,9 +81,10 @@ async function setup(storeFixture: StoreFixture, suffix: string) {
     limitMs: 45_000,
     signal: controller.signal,
   };
-  const answer = (id: RequestId = opened.request.id) =>
+  const answer = async (id: RequestId = opened.request.id) =>
     store.requests.resolveBrowserRequest({
       requestId: id,
+      expectedRevision: (await store.requests.revision(id))!,
       resolvedBy: fixture.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });

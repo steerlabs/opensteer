@@ -6,7 +6,6 @@ import {
   testReadyHarnessCatalog,
   testRunnerDescriptor,
 } from "@opensteer/database/test-support/store";
-import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 import {
   createId,
   HarnessIdSchema,
@@ -22,6 +21,7 @@ import {
   AttachmentStore,
   createDatabase,
   migrateToLatest,
+  readPersonalShellSnapshot,
   OpensteerStore,
   TriggerStore,
 } from "@opensteer/database";
@@ -63,9 +63,7 @@ integration.sequential("Thread title lifecycle", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 6,
   });
-  const store = new OpensteerStore(database, {
-    readPersonalResources: readEmptyPersonalResources,
-  });
+  const store = new OpensteerStore(database);
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
       maxInFlight: 6,
@@ -1018,12 +1016,12 @@ integration.sequential("Thread title lifecycle", () => {
     expect((await row(both.thread.id)).icon).toBe("plane");
   });
 
-  it("carries marks through snapshots, task pages, catalog and history without unread or notifications", async () => {
+  it("stores a task mark and advances its shell revision without unread or notifications", async () => {
     const f = await fixture();
     const { thread } = await f.create({
       generateTitle: true,
     });
-    const before = await store.deploymentSnapshot({
+    const before = await readPersonalShellSnapshot(database, {
       viewerId: f.userId,
     });
     const result = await commands.setThreadIcon({
@@ -1036,21 +1034,17 @@ integration.sequential("Thread title lifecycle", () => {
       icon: "plane",
       color: thread.color,
     });
-    const snapshot = await store.deploymentSnapshot({
+    const snapshot = await readPersonalShellSnapshot(database, {
       viewerId: f.userId,
     });
-    expect(snapshot.threads.find((value) => value.id === thread.id)).toMatchObject({
-      icon: "plane",
-      color: thread.color,
-    });
-    const unread = (value: typeof snapshot) =>
-      value.threads.map(({ id, lastVisitedAt, latestRunCompletedAt }) => ({
-        id,
-        lastVisitedAt,
-        latestRunCompletedAt,
-      }));
-    expect(unread(snapshot)).toEqual(unread(before));
-    expect(snapshot.messages).toEqual(before.messages);
+    if (before.kind !== "snapshot" || snapshot.kind !== "snapshot")
+      throw new Error("Expected shell snapshots");
+    const beforeTask = before.snapshot.tasks.find((value) => value.id === thread.id);
+    const revised = snapshot.snapshot.tasks.find((value) => value.id === thread.id);
+    expect(revised).toMatchObject({ id: thread.id, title: thread.title });
+    expect(BigInt(revised!.revision)).toBeGreaterThan(BigInt(beforeTask!.revision));
+    expect(snapshot.snapshot.visits).toEqual(before.snapshot.visits);
+    expect(snapshot.snapshot.counts).toEqual(before.snapshot.counts);
     expect(
       await database
         .selectFrom("clientChanges")
@@ -1062,16 +1056,16 @@ integration.sequential("Thread title lifecycle", () => {
     expect(
       (
         await store.taskPageForUser({
-          userId: f.userId,
+          viewerId: f.userId,
+          window: "recent",
         })
-      ).tasks.find((value) => value.thread.id === thread.id)?.thread,
+      ).tasks.find((value) => value.id === thread.id),
     ).toMatchObject({
-      icon: "plane",
-      color: thread.color,
+      revision: revised!.revision,
     });
     const current = await store.getThreadForOwner(thread.id, f.userId);
     expect(current).toMatchObject({ icon: "plane", color: thread.color });
-    expect(await taskChanges(thread.id, before.sequence)).toMatchObject([
+    expect(await taskChanges(thread.id, before.state.sequence)).toMatchObject([
       { sequence: result.asOfSequence, payload: { title: thread.title } },
     ]);
   });

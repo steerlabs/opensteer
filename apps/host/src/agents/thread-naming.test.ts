@@ -71,7 +71,6 @@ function fixture() {
   const naming = new ThreadNaming({
     store: store as unknown as OpensteerStore,
     runners: runners as unknown as RunnerRegistry,
-    publish: vi.fn(),
     onError: vi.fn(),
   });
   return { naming, store, runners, input, fallback, ranked, threadId };

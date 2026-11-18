@@ -22,7 +22,6 @@ import {
   createId,
   HarnessIdSchema,
   placeInputFailure,
-  SequenceSchema,
   type ContentPart,
   type EnvironmentId,
   type HarnessInstanceId,
@@ -51,6 +50,7 @@ import {
   KeyedAdmissionQueue,
   RealtimeHub,
   type RealtimeSink,
+  type PersonalSyncSocket,
   type RunnerAuxiliaryStream,
 } from "@opensteer/orchestration";
 import {
@@ -285,6 +285,16 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     }
   });
 
+  const computerCalls = (database: OpensteerStore["database"], runId: RunId) =>
+    database
+      .selectFrom("toolCalls")
+      .selectAll()
+      .where("runId", "=", runId)
+      .where("origin", "=", "host-computer")
+      .orderBy("startedAt")
+      .orderBy("completionOrder")
+      .execute();
+
   it("persists Host computer operation pairs without Runner ordinals and finalizes after restart", async () => {
     const world = await createWorld(database);
     try {
@@ -306,27 +316,30 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         operation: "observe",
         subject,
       });
-      expect(started.type).toBe("tool.started");
-      const recovered = await new IntegrationPlatformStore(database).computerOperations.finalize();
-      expect(recovered).toHaveLength(1);
-      expect(recovered[0]).toMatchObject({
-        type: "tool.completed",
-        data: { callId: started.data.callId, isError: true },
-      });
-      const completed = recovered[0];
-      if (completed?.type !== "tool.completed") throw new Error("Missing completion");
-      expect(completed.data.output.text).toBe("Stopped. This step was cancelled.");
-      expect(await world.persistence.computerOperations.finalize()).toEqual([]);
+      await new IntegrationPlatformStore(database).computerOperations.finalize();
+      await world.persistence.computerOperations.finalize();
       const rows = await database
         .selectFrom("toolCalls")
-        .select(["origin", "status", "startedAt", "completedAt", "bindingGeneration"])
+        .select([
+          "id",
+          "origin",
+          "status",
+          "startedAt",
+          "completedAt",
+          "bindingGeneration",
+          "isError",
+          "output",
+        ])
         .where("runId", "=", run.runId)
         .where("origin", "=", "host-computer")
         .execute();
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
+        id: started.toolCallId,
         origin: "host-computer",
-        status: "completed",
+        status: "interrupted",
+        isError: null,
+        output: null,
         startedAt: expect.any(Date),
         completedAt: expect.any(Date),
       });
@@ -362,12 +375,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         ).isError,
       ).toBeUndefined();
       const store = new OpensteerStore(database);
-      const hostEvents = (await store.eventsAfter(SequenceSchema.parse("0"))).flatMap((event) =>
-        event.type === "tool.started" && event.data.tool.name.startsWith("computer.")
-          ? [event]
-          : [],
-      );
-      expect(hostEvents.map((event) => event.data.tool.name)).toEqual([
+      const hostCalls = await computerCalls(database, first.runId);
+      expect(hostCalls.map((call) => call.tool?.name)).toEqual([
         "computer.bind",
         "computer.observe",
         "computer.act",
@@ -411,10 +420,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         runnerId: first.agentRunnerId,
         threadId: first.threadId,
       });
-      const delivered = await commit(outer);
-      expect(
-        hostEvents.every((event) => BigInt(event.sequence) < BigInt(delivered.event.sequence)),
-      ).toBe(true);
+      await commit(outer);
+      const byPosition = await database
+        .selectFrom("transcriptItems")
+        .select("toolCallId")
+        .where("runId", "=", first.runId)
+        .where("kind", "=", "tool")
+        .orderBy("position")
+        .execute();
+      expect(byPosition.map(({ toolCallId }) => toolCallId)).toEqual([
+        ...hostCalls.map(({ id }) => id),
+        expect.any(String),
+      ]);
       await commit({
         ...outer,
         ordinal: 2,
@@ -432,8 +449,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           })
         ).isError,
       ).toBeUndefined();
-      const subject =
-        hostEvents[0]?.type === "tool.started" ? hostEvents[0].data.integration : undefined;
+      const subject = hostCalls[0]?.integration;
       if (!subject) throw new Error("Missing admitted phone subject");
       const unfinished = await world.persistence.computerOperations.start({
         context: second.claims,
@@ -473,19 +489,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(new Set(paged.map(({ runId }) => runId))).toEqual(
         new Set([first.runId, second.runId]),
       );
-      const calls = await database
-        .selectFrom("toolCalls")
-        .select(["id", "callId", "status"])
-        .where("runId", "=", first.runId)
-        .where("origin", "=", "host-computer")
-        .execute();
-      for (const event of hostEvents) {
-        if (event.type !== "tool.started") throw new Error("Not a start");
-        const call = calls.find(({ callId }) => callId === event.data.callId);
-        expect(call).toMatchObject({ status: "completed" });
-        expect(paged.filter(({ id }) => id === `tool:${call?.id}`)).toHaveLength(1);
-        expect(event.data.arguments).toEqual({});
-        expect(event.data.integration?.phone?.computer).toBe(phone);
+      for (const call of hostCalls) {
+        expect(call.status).toBe("completed");
+        expect(paged.filter(({ id }) => id === `tool:${call.id}`)).toHaveLength(1);
+        expect(call.arguments).toEqual({});
+        expect(call.integration?.phone?.computer).toBe(phone);
       }
       await host.runtime.close();
       restarted = await createHostRuntime(host.config, { logger: { level: "error" } });
@@ -495,16 +503,28 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         .selectFrom("toolCalls")
         .select(["status", "output", "isError"])
         .where("runId", "=", second.runId)
-        .where("callId", "=", unfinished.data.callId)
+        .where("id", "=", unfinished.toolCallId)
         .executeTakeFirstOrThrow();
       expect(cancelled).toMatchObject({
-        status: "completed",
-        isError: true,
-        output: { text: "Stopped. This step was cancelled." },
+        status: "interrupted",
+        isError: null,
+        output: null,
       });
-      expect(await new IntegrationPlatformStore(database).computerOperations.finalize()).toEqual(
-        [],
-      );
+      expect(
+        await database
+          .selectFrom("transcriptItems")
+          .select("view")
+          .where("id", "=", `tool:${unfinished.toolCallId}`)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ view: { status: "stopped" } });
+      await new IntegrationPlatformStore(database).computerOperations.finalize();
+      expect(
+        await database
+          .selectFrom("toolCalls")
+          .select(["status", "output", "isError"])
+          .where("id", "=", unfinished.toolCallId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual(cancelled);
       const dir = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (dir) {
         await mkdir(dir, { recursive: true });
@@ -812,10 +832,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           abort.signal,
         );
         await vi.waitFor(() => expect(world.fakeMac.completedActions).toBe(1));
-        const started = (await world.store.eventsAfter(SequenceSchema.parse("0"))).find(
-          (event) => event.type === "tool.started" && event.data.tool.name === "computer.act",
+        const started = (await computerCalls(database, run.runId)).find(
+          (call) => call.tool?.name === "computer.act",
         );
-        if (started?.type !== "tool.started") throw new Error("Missing admitted batch");
+        if (!started) throw new Error("Missing admitted batch");
         if (termination === "MCP cancellation") abort.abort();
         else ending = world.platform.endComputerRun(run.runId);
         const cancelled = await pending;
@@ -830,27 +850,25 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
             },
           });
         ending ??= world.platform.endComputerRun(run.runId);
-        const before = (await world.store.eventsAfter(SequenceSchema.parse("0"))).filter(
-          (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
-        );
-        expect(before).toEqual([]);
+        const operation = () =>
+          database
+            .selectFrom("toolCalls")
+            .selectAll()
+            .where("id", "=", started.id)
+            .executeTakeFirstOrThrow();
+        expect(await operation()).toMatchObject({ status: "open", output: null });
         resume();
         await ending;
-        const events = await world.store.eventsAfter(SequenceSchema.parse("0"));
-        const completed = events.filter(
-          (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
-        );
-        expect(completed).toHaveLength(1);
+        const completed = await operation();
         const receipt = saved ? "Typed saved password" : "Clicked element 1";
-        expect(completed[0]).toMatchObject({
-          type: "tool.completed",
-          data: {
-            isError: true,
-            output: { text: `${receipt}, then stopped. This step was cancelled.\n${receipt}` },
-          },
+        expect(completed).toMatchObject({
+          status: "completed",
+          isError: true,
+          output: { text: `${receipt}, then stopped. This step was cancelled.\n${receipt}` },
         });
-        expect(JSON.stringify(events)).not.toContain("secret-not-in-transcript");
-        expect(JSON.stringify(events)).not.toContain(loginRef);
+        const calls = await computerCalls(database, run.runId);
+        expect(JSON.stringify(calls)).not.toContain("secret-not-in-transcript");
+        expect(JSON.stringify(calls)).not.toContain(loginRef);
         expect(JSON.stringify(cancelled)).not.toContain("guest-resumed");
         expect(JSON.stringify(cancelled)).not.toContain(receipt);
         expect(world.fakeMac.actReceivedCount).toBe(1);
@@ -1618,7 +1636,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         scope: { kind: "thread", threadId: run.threadId },
       });
       if (cut.kind !== "snapshot") throw new Error("Expected a task detail snapshot");
-      const recovered = cut.snapshot.thread.latestPlace;
+      const recovered = cut.snapshot.items.findLast((item) => item.kind === "place")?.place;
       expect(recovered).toEqual(before);
       expect(await restarted.store.latestRunPlace(run.runId)).toEqual(before);
       const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
@@ -1906,7 +1924,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         commands,
         execution: personalTestExecution(store, world.owner),
         isEnvironmentConnected: () => true,
-        onEvent: () => undefined,
         store,
         placeContext: places,
         tokens: {
@@ -1934,9 +1951,24 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ]);
       await database
         .updateTable("threadInputs")
-        .set({ state: "delivered", deliveredAt: new Date(), runId: run.runId })
+        .set({ state: "claimed", runId: run.runId })
         .where("messageId", "=", sent.message.id)
         .execute();
+      await store.commitRunnerEvent({
+        environmentId: run.environmentId,
+        runnerBootId: run.runnerBootId,
+        runnerId: run.agentRunnerId,
+        event: {
+          type: "message.injected",
+          bindingGeneration: run.claims.bindingGeneration,
+          emittedAt: new Date().toISOString(),
+          environmentId: run.environmentId,
+          ordinal: 1,
+          runId: run.runId,
+          threadId: run.threadId,
+          data: { messageId: sent.message.id },
+        },
+      });
       const olderRead = await control.handle("test-token", {
         type: "thread.read",
         requestId: randomUUID(),
@@ -1977,7 +2009,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
             bindingGeneration: run.claims.bindingGeneration,
             emittedAt: new Date().toISOString(),
             environmentId: run.environmentId,
-            ordinal: 1,
+            ordinal: 2,
             runId: run.runId,
             threadId: run.threadId,
 
@@ -2152,7 +2184,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
   it("tells only the Mac's owner which apps an agent is acting in, and when it stops", async () => {
     const actingWindowMs = 600;
     const store = new OpensteerStore(database);
-    const realtime = new RealtimeHub({ store });
+    const realtime = new RealtimeHub();
     const received = new Map<string, Record<string, unknown>[]>();
     const sink = (name: string): RealtimeSink => {
       received.set(name, []);
@@ -2166,9 +2198,20 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     };
     const world = await createWorld(database, { actingWindowMs, realtime });
     const stranger = await store.createUser("Not the Mac's owner");
-    realtime.registerConnection(world.owner.userId, createId("authSession"), sink("owner-web"));
-    realtime.registerConnection(world.owner.userId, createId("authSession"), sink("owner-phone"));
-    realtime.registerConnection(stranger, createId("authSession"), sink("stranger"));
+    const release = (
+      [
+        [world.owner.userId, "owner-web"],
+        [world.owner.userId, "owner-phone"],
+        [stranger, "stranger"],
+      ] as const
+    ).map(([userId, name]) =>
+      realtime.registerConnection({
+        userId,
+        sessionId: createId("authSession"),
+        sink: sink(name),
+        sync: { attached: true, wake: () => undefined } as unknown as PersonalSyncSocket,
+      }),
+    );
     const run = await world.startRun("Plan the week");
     const context = run.claims;
     const presence = (name: string) =>
@@ -2225,6 +2268,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         );
       }
     } finally {
+      for (const unregister of release) unregister();
       await world.close();
     }
   });
@@ -2655,6 +2699,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const { request: declined } =
       await world.platform.computerAppApprovals.declineComputerAppAccess({
         requestId: widen.requestId,
+        expectedRevision: (await world.store.requests.revision(widen.requestId))!,
         resolvedBy: world.owner.userId,
         response: { kind: "external", value: { decision: "declined" } },
       });
@@ -5430,7 +5475,6 @@ async function openGateway(
   const service = createIntegrationMcpFixture({
     definitions,
 
-    onEvent: () => undefined,
     platform,
     publicUrl: new URL("https://opensteer.example.test"),
     runTokens: {

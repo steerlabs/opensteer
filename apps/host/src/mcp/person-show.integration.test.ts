@@ -44,7 +44,6 @@ integration("explicit show_to_person", () => {
       canRunHarness: () => true,
       harnessAccessModes: () => ["full-access"],
       isEnvironmentConnected: () => true,
-      onEvent: () => {},
       execution: {} as never,
       tabs: {
         get: async () => {

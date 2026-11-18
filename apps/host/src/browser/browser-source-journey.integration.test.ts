@@ -636,6 +636,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       const response = await rpc.command({
         decision: { decision: "allow", sourceId },
         requestId: pendingRequestId,
+        expectedRevision: (await runtime.store.requests.revision(pendingRequestId))!,
         type: "browser.sign-in.respond",
       });
       expect(response.outcome).toMatchObject({ site: "https://beta.test", status: "applied" });
@@ -802,8 +803,19 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       );
       const settings = await everyday.context.newPage();
       await settings.setViewportSize({ height: 900, width: 1_200 });
-      await settings.goto(`${hostOrigin}/settings/chrome`);
-      await settings.getByText("Everyday Chrome").first().waitFor({ timeout: 20_000 });
+      const navigation = await settings.goto(`${hostOrigin}/settings/chrome`);
+      await settings
+        .getByText("Everyday Chrome")
+        .first()
+        .waitFor({ timeout: 20_000 })
+        .catch(async (error: unknown) => {
+          const route = new URL(settings.url()).pathname;
+          const body = await settings.evaluate(() => document.body?.innerText ?? "");
+          throw new Error(
+            `Chrome settings at ${route} returned ${navigation?.status()}: ${redact(body).slice(0, 500)}`,
+            { cause: error },
+          );
+        });
       await settings.getByText("alpha.test").first().waitFor();
       await settings.getByText("beta.test").first().waitFor();
       await shoot(settings, "07-web-settings-chrome");

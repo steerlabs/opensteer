@@ -721,8 +721,17 @@ describeStore("agents answering task questions", (it) => {
   }) => {
     let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
     const s = await questionTask(storeFixture, "question-notice-wait", async (task) => {
+      const registered = Promise.withResolvers<void>();
+      const wait = task.questionNotices.wait.bind(task.questionNotices);
+      vi.spyOn(task.questionNotices, "wait").mockImplementationOnce((...args) => {
+        const finish = wait(...args);
+        registered.resolve();
+        return finish;
+      });
       waiting = task.wait();
-      await vi.waitFor(() => expect(task.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+      await withTimeout(registered.promise, 1_000, {
+        timeoutError: () => new Error("The parent wait never registered for question delivery"),
+      });
     });
     s.questionNotices.requestChanged(s.opened);
     expect(await waiting).toMatchObject({ pendingRequest: { id: s.request.id } });
@@ -1453,24 +1462,48 @@ describeStore("shaped agent task tools", (it) => {
       storeFixture,
     }) => {
       const s = await waitingTask(storeFixture, `wait-held-${ending}`);
+      const read = Promise.withResolvers<void>();
+      const releaseRead = Promise.withResolvers<void>();
+      if (ending === "abort") {
+        s.checkLive.mockImplementationOnce(async () => {
+          read.resolve();
+          await releaseRead.promise;
+        });
+      } else {
+        s.checkLive
+          .mockImplementationOnce(async () => {})
+          .mockImplementationOnce(async () => read.resolve());
+      }
       const abort = new AbortController();
-      const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
-        s.wait(2_000, s.caller, abort.signal),
-      );
-      const outcome = pending.then(
-        (value) => ({ value }),
-        (error) => ({ error }),
-      );
-      await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
-      await s.settle();
-      await storeFixture.store.drainAssignmentReturn(s.assignmentId);
-      const during = await s.returns();
-      if (ending === "abort") abort.abort(new Error("Tool call cut off"));
-      const result = await outcome;
-      if (ending === "abort")
-        expect(result).toMatchObject({ error: new Error("Tool call cut off") });
-      else expect(result).toMatchObject({ value: { status: "timed_out" } });
-      expect(during).toEqual([]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
+          s.wait(2_000, s.caller, abort.signal),
+        );
+        const outcome = pending.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        await withTimeout(read.promise, 1_000, {
+          signal: AbortSignal.timeout(1_000),
+          timeoutError: () => new Error("Task result wait did not read its initial state"),
+        });
+        await s.settle();
+        await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+        expect(await s.returns()).toEqual([]);
+        if (ending === "abort") {
+          abort.abort(new Error("Tool call cut off"));
+          releaseRead.resolve();
+        } else await vi.advanceTimersByTimeAsync(2_000);
+        const result = await outcome;
+        if (ending === "abort")
+          expect(result).toMatchObject({ error: new Error("Tool call cut off") });
+        else expect(result).toMatchObject({ value: { status: "timed_out" } });
+      } finally {
+        abort.abort();
+        releaseRead.resolve();
+        vi.useRealTimers();
+      }
       await storeFixture.store.drainPendingAssignmentReturns();
       expect(await s.returns()).toHaveLength(1);
     });

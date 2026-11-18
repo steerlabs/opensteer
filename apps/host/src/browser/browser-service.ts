@@ -315,6 +315,7 @@ export interface BrowserSessionRepository {
     get(id: RequestId): Promise<Request | null>;
     resolveBrowserRequest(input: {
       readonly requestId: RequestId;
+      readonly expectedRevision: string;
       readonly resolvedBy: UserId;
       readonly settlementSessionId?: string;
       readonly response: RequestResponse;
@@ -620,7 +621,11 @@ interface BrowserServiceOptions {
   readonly onProfilesChanged?: (ownerId: UserId) => void;
   readonly tabs?: TabStore;
   readonly tabPlaces?: TabPlaceHooks;
-  readonly onTabsChanged?: (ownerId?: UserId, tabIds?: readonly BrowserSurfaceId[]) => void;
+  readonly onTabsChanged?: (
+    ownerId?: UserId,
+    tabIds?: readonly BrowserSurfaceId[],
+    stateChanged?: boolean,
+  ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
@@ -691,7 +696,7 @@ export class BrowserService {
   readonly #historyTails = new Map<BrowserProfileId, Promise<unknown>>();
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
   readonly #workspaceTabs: TabStore | undefined;
-  readonly #onTabsChanged: (ownerId?: UserId, tabIds?: readonly BrowserSurfaceId[]) => void;
+  readonly #onTabsChanged: NonNullable<BrowserServiceOptions["onTabsChanged"]>;
   /**
    * Pages whose saved URL is a destination their runtime has not committed yet (an intended
    * open or a restore); the runtime's interim about:blank must not replace it.
@@ -2386,7 +2391,11 @@ export class BrowserService {
           tabs: changes.tabs.filter((tab) => !pending.has(tab.id)),
         });
         if (record)
-          this.#onTabsChanged(ownerId, [...changes.tabs.map((tab) => tab.id), ...changes.closed]);
+          this.#onTabsChanged(
+            ownerId,
+            [...changes.tabs.map((tab) => tab.id), ...changes.closed],
+            changes.stateDirty,
+          );
       }
     });
   }
@@ -4020,6 +4029,7 @@ export class BrowserService {
 
   async resolveRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
@@ -4042,6 +4052,7 @@ export class BrowserService {
     }
     const resolved = await this.#repository.requests.resolveBrowserRequest({
       requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
       resolvedBy: input.resolvedBy,
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response: await this.#profileRequestResponse(input.response, pending),

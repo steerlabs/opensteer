@@ -4,6 +4,7 @@ import {
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   excludedBackgroundAccounts,
+  runnerAgentToolsFailure,
   utf8Prefix,
   type AuthenticatedSession,
   type UserId,
@@ -378,6 +379,7 @@ export class PersonalResources {
             ? generations.get(environment.runnerId)
             : undefined;
           const runner = this.#runnerAt(environment.id, revision, generation);
+          const toolFailure = runner && runnerAgentToolsFailure([...runner.capabilities]);
           return {
             ...environment,
             capabilities: [...environment.capabilities],
@@ -389,11 +391,20 @@ export class PersonalResources {
                 ...catalog,
                 capturedAt: capturedAt.toISOString(),
               })),
-            harnessDrivers: [...(runner?.modules.agents?.harnessDrivers ?? [])],
+            harnessDrivers: (runner?.modules.agents?.harnessDrivers ?? []).map((driver) =>
+              toolFailure
+                ? {
+                    driverKind: driver.driverKind,
+                    readiness: "unavailable" as const,
+                    reason: toolFailure,
+                  }
+                : driver,
+            ),
             providerStateModes: [...(runner?.modules.agents?.providerStateModes ?? [])],
             status: runner ? ("connected" as const) : ("disconnected" as const),
             can: {
-              executeTasks: !!runner && this.#dependencies.execution.canExecute(environment.id),
+              executeTasks:
+                !!runner && !toolFailure && this.#dependencies.execution.canExecute(environment.id),
             },
           };
         }),

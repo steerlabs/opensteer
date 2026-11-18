@@ -448,6 +448,7 @@ async function proposeAndInstall(
     {
       idempotencyKey: "integration-schemas-install",
       requestId: proposed.request.id,
+      expectedRevision: (await host.store.requests.revision(proposed.request.id))!,
       response: { kind: "choice", optionId: "installed" },
       type: "request.respond",
     },

@@ -1,3 +1,4 @@
+import { openVerticalViewer } from "./vertical-stack.test-support.js";
 import { readTestResource } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -868,13 +869,31 @@ async function clientView(
     if (nodeId) stepsByNode.set(nodeId, (stepsByNode.get(nodeId) ?? 0) + 1);
   }
   const run = await runRow(active, runId);
-  const live = await active.api["thread.live.get"]({ threadId });
-  if (!live.ok) throw new Error(live.error.message);
+  const client = await openVerticalViewer(active, threadId);
+  let composing: boolean;
+  try {
+    const entries = await vi.waitFor(() => {
+      const view = client.getThreadTranscript(threadId)?.getSnapshot();
+      expect(
+        view?.entries.some(
+          (entry) => entry.kind === "message" && entry.messageKind === "assistant",
+        ),
+      ).toBe(true);
+      return view!.entries;
+    });
+    composing = entries.some(
+      (entry) =>
+        entry.kind === "message" &&
+        entry.runId === runId &&
+        entry.messageKind === "assistant" &&
+        entry.streaming === true,
+    );
+  } finally {
+    client.dispose();
+  }
   return {
     activity: run.phase,
-    composing: live.data.runs
-      .flatMap((entry) => entry.progress.items)
-      .some((item) => item.stream === "assistant"),
+    composing,
     replies: replies.map((item) => item.view.preview),
     subagentSteps: [...stepsByNode.values()],
     replyPositions: replies.map((item) => item.position),

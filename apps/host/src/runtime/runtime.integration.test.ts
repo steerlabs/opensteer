@@ -248,17 +248,21 @@ integration("Host vertical slice", () => {
       deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
-    let harnessInstanceId = "";
-    await waitForCondition(async () => {
-      const connectedBootstrap = await testResourceData(origin, "harness", {
-        headers: authorization(accessToken),
-      });
-      harnessInstanceId =
-        (connectedBootstrap.harnesses.find(
-          (harness: { driverKind: string }) => harness.driverKind === "codex",
-        )?.id as string | undefined) ?? "";
-      return harnessInstanceId.length > 0;
-    });
+    const harness = await seededHarness(runtime.store, environmentId);
+    // The durable default can exist while the Runner is still reporting its models.
+    await vi.waitFor(
+      async () => {
+        const captured = await runtime!.store.database
+          .selectFrom("harnessCatalogs")
+          .select("catalog")
+          .where("environmentId", "=", environmentId)
+          .where("harnessInstanceId", "=", harness.id)
+          .executeTakeFirst();
+        expect(captured?.catalog.status).toBe("ready");
+      },
+      { timeout: 10_000 },
+    );
+    const harnessInstanceId = harness.id;
 
     const threadResult = await testRpcData(
       origin,
@@ -294,6 +298,7 @@ integration("Host vertical slice", () => {
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
     await attachThreadSocket(realtimeSocket, threadId);
     const terminal = waitForRunItem(realtimeSocket, "completed");
+    void terminal.catch(() => undefined);
 
     let resolveRunnerCommand!: () => void;
     let rejectRunnerCommand!: (error: unknown) => void;
@@ -1038,7 +1043,8 @@ integration("Host vertical slice", () => {
     ]);
 
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    const disconnected = observeRunnerDisconnect(realtimeSocket, environmentId);
+    const { connected, disconnected } = observeRunnerDisconnect(realtimeSocket, environmentId);
+    await connected;
     runnerSocket.close();
     await disconnected;
     const exactRetry = await testRpcRequest(
@@ -1489,7 +1495,8 @@ integration("Host vertical slice", () => {
     const disconnectRecovery = vi.spyOn(runtime.store, "failActiveRunsForRunnerDisconnect");
     stopCatalogResponder();
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    const disconnected = observeRunnerDisconnect(realtimeSocket, environmentId);
+    const { connected, disconnected } = observeRunnerDisconnect(realtimeSocket, environmentId);
+    await connected;
     runnerSocket.terminate();
     await disconnected;
     const runStatus = async () =>
@@ -3433,6 +3440,7 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
 }
 
 function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId) {
+  const connected = Promise.withResolvers<void>();
   const disconnected = waitForMessage(socket, (raw) => {
     const parsed = ScopedHostMessageSchema.safeParse(raw);
     if (!parsed.success) return false;
@@ -3451,11 +3459,11 @@ function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId
             "resources" in frame.snapshot
           ? (frame.snapshot.resources ?? [])
           : [];
-    return resources.some(
-      ({ kind, view }) =>
-        kind === "environment" &&
-        view.entries.some(({ id, status }) => id === environmentId && status === "disconnected"),
-    );
+    const observation = resources
+      .find(({ kind }) => kind === "environment")
+      ?.view.entries.find(({ id }) => id === environmentId);
+    if (observation?.status === "connected") connected.resolve();
+    return observation?.status === "disconnected";
   });
   socket.send(
     JSON.stringify({
@@ -3466,9 +3474,13 @@ function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId
       installed: {},
     }),
   );
-  return disconnected.catch((cause: unknown) => {
-    throw new Error(`No disconnected observation arrived for ${environmentId}`, { cause });
+  const outcome = disconnected.catch((cause: unknown) => {
+    const error = new Error(`No disconnected observation arrived for ${environmentId}`, { cause });
+    connected.reject(error);
+    throw error;
   });
+  void outcome.catch(() => undefined);
+  return { connected: connected.promise, disconnected: outcome };
 }
 
 async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {

@@ -22,6 +22,7 @@ import {
   RuntimeChannelRequestSchema,
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   HarnessIdSchema,
   MessageContentSchema,
@@ -1006,7 +1007,7 @@ integration("messaging pipeline", () => {
           (grant) => grant.bindingId === updated.id,
         )?.status,
       ).toBe("revoked");
-      // The send boundary holds admission until the Runner accepts the command.
+      // A committed policy change fences the receipt even after the command was sent.
       let entered!: () => void;
       let allowAcceptance!: () => void;
       const atSend = new Promise<void>((resolve) => {
@@ -1020,27 +1021,28 @@ integration("messaging pipeline", () => {
         await receipt;
         await beforeAck();
       });
-      await atSend;
-      let policyChanged = false;
-      const changePolicy = service
-        .updateBinding({
+      const refused = expect(handoff).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining("Messaging access changed"),
+      });
+      try {
+        await withTimeout(atSend, 5_000, {
+          timeoutError: () => new Error("The messaging dispatch did not reach the Runner"),
+        });
+        await service.updateBinding({
           bindingId: updated.id,
           ownerUserId,
           expectedRevision: updated.revision,
           accessPolicy: { ...accessPolicy, channels: { ...accessPolicy.channels, scope: "off" } },
-        })
-        .then(() => {
-          policyChanged = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(policyChanged).toBe(false);
-      allowAcceptance();
-      await Promise.all([handoff, changePolicy]);
-      expect(policyChanged).toBe(true);
+      } finally {
+        allowAcceptance();
+        await refused;
+      }
       const neverSend = vi.fn(async (beforeAck: () => Promise<void>) => beforeAck());
       await expect(
         store.dispatchChannelCommand(channelCommand.id, neverSend),
-      ).rejects.toMatchObject({ code: "conflict" });
+      ).rejects.toMatchObject({ code: "forbidden" });
       expect(neverSend).not.toHaveBeenCalled();
       // A policy change after planning is fenced again when the Runner asks to bind.
       await expect(

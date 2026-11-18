@@ -1,3 +1,5 @@
+import { installPersonalMutationHooks } from "@opensteer/database/personal-mutation";
+import { RealtimeHub } from "@opensteer/orchestration";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
@@ -48,6 +50,14 @@ export async function linkedPersonalHost(
       return { database, close: () => database.destroy() };
     });
     const owner = await seedPersonalFixture(database, tmpdir());
+    const realtime = new RealtimeHub();
+    installPersonalMutationHooks(database, {
+      wake: ({ head, changedScopes }) => realtime.wake(head, changedScopes),
+      suspend: (scopes) => realtime.suspendAuthority(scopes),
+      onFailure: (error) => {
+        throw error;
+      },
+    });
     await team.database
       .updateTable("teamLinks")
       .set({ personalDeploymentId: owner.deploymentId })

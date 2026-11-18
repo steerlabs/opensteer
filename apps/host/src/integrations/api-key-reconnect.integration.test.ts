@@ -149,6 +149,7 @@ integration("API-key reconnect incident", () => {
         {
           idempotencyKey: "api-key-reconnect-install",
           requestId: originalRequestId,
+          expectedRevision: (await host.store.requests.revision(originalRequestId))!,
           response: { kind: "choice", optionId: "installed" },
           type: "request.respond",
         },

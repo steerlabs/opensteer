@@ -1,3 +1,4 @@
+import type { VerticalToolCall } from "../agents/vertical-stack.test-support.js";
 import { DeviceIdSchema } from "@opensteer/core";
 /**
  * A real agent uses an Android phone, end to end: the shipped engine named by
@@ -34,7 +35,7 @@ import { DeviceIdSchema } from "@opensteer/core";
  *     shows.
  *
  * The artifact directory (OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR, else a new
- * temporary directory) receives the Run's events (`events.json`), the
+ * temporary directory) receives the Run's retained tool calls (`tool-calls.json`), the
  * fixture's receipts (`receipts.json`), the phone's screen before and after
  * (`before.png`, `after.png`), `run.json` with the engine, model, versions,
  * device, APK, prompt and answer, the app's logcat, and `SHA256SUMS` over all
@@ -57,7 +58,6 @@ import {
   ModelSelectionSchema,
   harnessRuntimeExpectedVersion,
   shippedHarnessCatalogEntry,
-  type AgentEventView as AgentEvent,
   type RunnerId,
 } from "@opensteer/core";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -413,7 +413,7 @@ describe.skipIf(requestedEngine === undefined)(
         const receipts = await readReceipts(phone());
         for (const pid of await agentPhonePids(phone())) appPids.add(pid);
         // Scan original engine output and receipts, before any export redaction.
-        await passwordsEvidence.write("events.json", turn.events);
+        await passwordsEvidence.write("tool-calls.json", turn.tools);
         await passwordsEvidence.write(
           "transcript.txt",
           `Person: ${prompt}\nAssistant: ${turn.assistantText}\n`,
@@ -425,10 +425,8 @@ describe.skipIf(requestedEngine === undefined)(
           device: facts,
           apk: build!.manifest,
         });
-        const calls = turn.events.flatMap((event) =>
-          event.type === "tool.started" ? [event.data] : [],
-        );
-        const signIns = calls.filter((call) => call.tool.name === "saved_login_request");
+        const calls = turn.tools.filter((call) => call.startedAt !== null);
+        const signIns = calls.filter((call) => call.tool?.name === "saved_login_request");
         expect(
           signIns,
           "the real engine discovers first-class saved_login_request",
@@ -482,11 +480,11 @@ describe.skipIf(requestedEngine === undefined)(
             .filter(({ kind }) => kind === "login_predicate")
             .map(({ detail }) => JSON.parse(detail)),
         ).toEqual(expectedAttempts.map((attempt) => ({ ...attempt, matches: true })));
-        expect(turn.events.map(({ type }) => type)).toContain("run.completed");
+        expect(turn.status).toBe("completed");
         expect(turn.assistantText).toContain(passwordFixture.username);
-        expect(JSON.stringify(turn.events)).toContain("Typed saved username");
-        expect(JSON.stringify(turn.events)).toContain("Typed saved password");
-        expect(calls.filter((call) => call.tool.name === "browser_session_open")).toEqual([]);
+        expect(JSON.stringify(turn.tools)).toContain("Typed saved username");
+        expect(JSON.stringify(turn.tools)).toContain("Typed saved password");
+        expect(calls.filter((call) => call.tool?.name === "browser_session_open")).toEqual([]);
         expect(
           await active.host.store.listBrowserSessions((await active.host.store.firstUser())!.id),
         ).toEqual([]);
@@ -572,10 +570,10 @@ describe.skipIf(requestedEngine === undefined)(
           for (const pid of await agentPhonePids(phone())) appPids.add(pid);
           const receipts = await readReceipts(phone());
           await writeArtifact("after.png", await phone().screencap());
-          const audit = auditPhoneTurn(turn.events, runnerId);
+          const audit = auditPhoneTurn(turn.tools, runnerId);
           await writeArtifact(
-            "events.json",
-            `${JSON.stringify(locked ? audit.events : turn.events, null, 2)}\n`,
+            "tool-calls.json",
+            `${JSON.stringify(locked ? audit.tools : turn.tools, null, 2)}\n`,
           );
           await writeArtifact(
             "observations.json",
@@ -588,9 +586,7 @@ describe.skipIf(requestedEngine === undefined)(
           );
           await writeArtifact("receipts.json", `${JSON.stringify(receipts, null, 2)}\n`);
 
-          const calls = turn.events.flatMap((event) =>
-            event.type === "tool.started" ? [toolCall(event)] : [],
-          );
+          const calls = turn.tools.filter((call) => call.startedAt !== null).map(toolCall);
           const listedApps = calls.filter(
             (call) => call.name === "integration_search" && call.runnerId === runnerId,
           );
@@ -626,9 +622,7 @@ describe.skipIf(requestedEngine === undefined)(
                 ).trim(),
                 runId: turn.runId,
                 startedAt,
-                terminalEvent: turn.events.findLast((event) =>
-                  ["run.completed", "run.failed", "run.interrupted"].includes(event.type),
-                )?.type,
+                status: turn.status,
               },
               null,
               2,
@@ -636,7 +630,7 @@ describe.skipIf(requestedEngine === undefined)(
           );
 
           // The Run completed.
-          expect(turn.events.map(({ type }) => type)).toContain("run.completed");
+          expect(turn.status).toBe("completed");
           phases.push({ name: "real-engine-completed", status: "passed" });
           if (locked && (journey !== "pin-missing" || audit.observations.length > 0)) {
             expect(
@@ -764,15 +758,15 @@ interface ToolCallSeen {
 
 const SearchArgumentsSchema = z.object({ runnerId: z.string().optional() }).loose();
 
-function toolCall(event: Extract<AgentEvent, { type: "tool.started" }>): ToolCallSeen {
+function toolCall(call: VerticalToolCall): ToolCallSeen {
   const search =
-    event.data.tool.name === "integration_search"
-      ? SearchArgumentsSchema.safeParse(event.data.arguments)
+    call.tool?.name === "integration_search"
+      ? SearchArgumentsSchema.safeParse(call.arguments)
       : null;
   return {
-    name: event.data.tool.name,
-    operation: event.data.integration?.phone ? event.data.integration.operation.name : null,
-    phoneRunnerId: event.data.integration?.phone?.runnerId ?? null,
+    name: call.tool?.name ?? "",
+    operation: call.integration?.phone ? call.integration.operation.name : null,
+    phoneRunnerId: call.integration?.phone?.runnerId ?? null,
     runnerId: search?.success ? (search.data.runnerId ?? null) : null,
   };
 }
@@ -818,7 +812,7 @@ const ActArgumentsSchema = z.object({
 const WrappedActArgumentsSchema = z.object({ arguments: ActArgumentsSchema });
 
 /** Audit raw calls in memory; save classes/counts, never reconstructable PIN targets. */
-function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
+function auditPhoneTurn(calls: readonly VerticalToolCall[], runnerId: RunnerId) {
   const sources = new Map<string, PhoneObservationText>();
   const observations: {
     observationId: string;
@@ -827,7 +821,6 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
     screen: string;
     rejected: boolean;
   }[] = [];
-  const phoneCalls = new Map<string, string>();
   const actions: {
     callId: string;
     type: string;
@@ -835,29 +828,22 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
     target: string;
     count: number;
   }[] = [];
-  const safeEvents: unknown[] = [];
+  const safeTools: unknown[] = [];
   let digitEntries = 0;
   let confirmTaps = 0;
   let credentialInteractions = 0;
   let rejections = 0;
   let rejecting = false;
   let unclassifiedLockedTaps = 0;
-  for (const event of events) {
-    if (
-      event.type === "tool.started" &&
-      event.data.integration?.phone?.runnerId === DeviceIdSchema.parse(runnerId)
-    ) {
-      const operation = event.data.integration.operation.name;
-      phoneCalls.set(event.data.callId, operation);
-      safeEvents.push({
-        type: event.type,
-        callId: event.data.callId,
-        operation,
-        arguments: "[redacted: phone targets can reconstruct the PIN]",
-      });
-      if (operation !== "act") continue;
-      const raw = ActArgumentsSchema.safeParse(event.data.arguments);
-      const wrapped = WrappedActArgumentsSchema.safeParse(event.data.arguments);
+  for (const call of calls) {
+    if (call.integration?.phone?.runnerId !== DeviceIdSchema.parse(runnerId)) {
+      safeTools.push({ tool: call.tool, status: call.status });
+      continue;
+    }
+    const operation = call.integration.operation.name;
+    if (operation === "act" && call.startedAt !== null) {
+      const raw = ActArgumentsSchema.safeParse(call.arguments);
+      const wrapped = WrappedActArgumentsSchema.safeParse(call.arguments);
       const parsed = raw.success ? raw.data : wrapped.success ? wrapped.data.arguments : null;
       if (!parsed)
         throw new Error("Recorded phone act arguments do not match the pinned action contract");
@@ -934,15 +920,16 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
           if (action.submit) confirmTaps++;
         }
         actions.push({
-          callId: event.data.callId,
+          callId: call.callId,
           type: action.type,
           locked: source.locked,
           target: targetClass,
           count,
         });
       }
-    } else if (event.type === "tool.completed" && phoneCalls.has(event.data.callId)) {
-      const text = event.data.output.text;
+    }
+    if (call.output) {
+      const text = call.output.text;
       const lines = text.split("\n");
       const at = lines.findIndex((line) => line.startsWith("Observation "));
       if (at > 0) {
@@ -961,23 +948,18 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
           rejected,
         });
       }
-      safeEvents.push({
-        type: event.type,
-        callId: event.data.callId,
-        isError: event.data.isError,
-        output: "[redacted: performed key labels can reconstruct the PIN]",
-      });
-    } else {
-      // Reasoning and intermediate messages can narrate each digit/index as well.
-      safeEvents.push({
-        type: event.type,
-        runId: event.runId,
-        data: "[redacted intermediate transcript; final answer is in transcript.txt]",
-      });
     }
+    safeTools.push({
+      callId: call.callId,
+      operation,
+      status: call.status,
+      isError: call.isError,
+      arguments: "[redacted: phone targets can reconstruct the PIN]",
+      output: "[redacted: performed key labels can reconstruct the PIN]",
+    });
   }
   return {
-    events: safeEvents,
+    tools: safeTools,
     observations,
     actions,
     counts: { digitEntries, confirmTaps, rejections, credentialInteractions },

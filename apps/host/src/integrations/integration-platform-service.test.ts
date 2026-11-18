@@ -2558,9 +2558,8 @@ describe("IntegrationPlatformService Request resolution", () => {
           ? { ...pending.payload, requestedServerId }
           : pending.payload,
     };
-    const event = { type: "request.updated" } as AgentEvent;
     const selectIntegrationAccessServer = vi.fn(async () => ({
-      events: [event],
+      replayed: false,
       request: updated,
     }));
     const resolveIntegrationAccessRequest = vi.fn();
@@ -2590,6 +2589,7 @@ describe("IntegrationPlatformService Request resolution", () => {
       request: { id: pending.id, status: "pending" },
     });
     expect(selectIntegrationAccessServer).toHaveBeenCalledWith({
+      expectedRevision: "1",
       requestId: pending.id,
       requestedServerId,
       resolvedBy: pending.requestedBy,
