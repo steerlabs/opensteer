@@ -1047,7 +1047,6 @@ it("offers transient Passwords choices and settles the pinned shared command in 
 it("opens its own connection only once its Host state has loaded", async () => {
   const client = new MockHostClient({ latencyMs: 50 });
   try {
-    void client.load();
     await vi.waitFor(
       () => expect(client.connection.getSnapshot().phase, "never connected").toBe("ready"),
       { timeout: 2000 },

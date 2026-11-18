@@ -2,7 +2,9 @@ import { nameConnectionFromHost } from "../host/host-connection.js";
 import { disposeMessageOutbox } from "../host/message-outbox.js";
 import {
   createConnectionController,
+  type ClientScope,
   type ConnectionAttempt,
+  type ConnectionController,
   type ConnectionLease,
 } from "../connections/connection-controller.js";
 import { classifyClientFailure } from "../connections/operation-error.js";
@@ -1798,6 +1800,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  readonly connectionController?: ConnectionController;
+  readonly clientScope?: () => ClientScope | null;
   /** Fail the first metadata batch containing this ID, then resolve normally. */
   referenceResolveFailureId?: ReferenceId;
   teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
@@ -3822,19 +3826,13 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
-  #ownsConnection = true;
-  #scopeProvider:
-    (() => import("../connections/connection-controller.js").ClientScope | null) | undefined;
-  #connectionController = createConnectionController({
-    driver: { connect: (attempt) => this.openConnection(attempt) },
-  });
+  #ownsConnection: boolean;
+  #scopeProvider: (() => ClientScope | null) | undefined;
+  #connectionController: ConnectionController;
   get connection() {
     return this.#connectionController;
   }
-  adoptConnection(
-    connection: import("../connections/connection-controller.js").ConnectionController,
-    scope?: () => import("../connections/connection-controller.js").ClientScope | null,
-  ): void {
+  adoptConnection(connection: ConnectionController, scope?: () => ClientScope | null): void {
     if (this.#ownsConnection) this.#connectionController.dispose();
     this.#ownsConnection = false;
     this.#connectionController = connection;
@@ -4032,6 +4030,13 @@ export class MockHostClient implements HostClient {
   readonly #lifecycle: ClientLifecycle | null;
 
   constructor(options: MockHostClientOptions = {}) {
+    this.#ownsConnection = options.connectionController === undefined;
+    this.#scopeProvider = options.clientScope;
+    this.#connectionController =
+      options.connectionController ??
+      createConnectionController({
+        driver: { connect: (attempt) => this.openConnection(attempt) },
+      });
     this.desktopUpdates = new MockDesktopUpdates(options.desktopUpdates);
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
@@ -4263,7 +4268,7 @@ export class MockHostClient implements HostClient {
       )
         this.connection.retry();
     });
-    this.connection.start();
+    if (this.#ownsConnection) this.connection.start();
   }
 
   applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {

@@ -126,9 +126,12 @@ function testPort(options: {
       // A real client, so the attachment this port hands back is the shape
       // `MobileClient` actually owns and disposes.
       // No latency: `connected` is a real crossing these tests wait for.
-      const hostClient = new MockHostClient({ latencyMs: 0 });
+      const hostClient = new MockHostClient({
+        latencyMs: 0,
+        ...(connectionController ? { connectionController } : {}),
+        ...(clientScope ? { clientScope } : {}),
+      });
       options.configureClient?.(hostClient, authorization);
-      if (connectionController) hostClient.adoptConnection(connectionController, clientScope);
       const release = hostClient.dispose.bind(hostClient);
       hostClient.dispose = () => {
         disposed.push(deploymentId);
@@ -2602,6 +2605,10 @@ describe("MobileClient cold saved launch", () => {
     expect(client.savedViews.getSnapshot().tasks).toMatchObject({
       source: "saved",
       label: "Updating…",
+    });
+    expect(client.getSnapshot().selection.hostClient?.getSnapshot()).toMatchObject({
+      connection: "connecting",
+      session: "checking",
     });
     expect(load).toHaveBeenCalled();
     expect(port.attached).toHaveLength(1);
