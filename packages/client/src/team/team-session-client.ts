@@ -6,7 +6,7 @@ import {
   type ConnectionLease,
   type ConnectionController,
 } from "../connections/connection-controller.js";
-import { classifyClientFailure } from "../connections/operation-error.js";
+import { classifyClientFailure, unrefTimer } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
 import { mergeTeamPeople, type TeamRemotePeople } from "./shared-channels.js";
@@ -150,7 +150,7 @@ export class TeamSessionClient {
   readonly #loginId = globalThis.crypto.randomUUID();
   readonly connection: ConnectionController;
   readonly #releaseAuthentication: () => void;
-  #synchronize: ((key: string) => void) | null = null;
+  #synchronize: ((cut?: "sidebar" | number) => void) | null = null;
   #needsRevalidation = false;
   readonly #probeAnswers = new Set<() => void>();
   readonly rpc: HostApiClient;
@@ -365,18 +365,7 @@ export class TeamSessionClient {
   async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
     attempt.signal.throwIfAborted();
     if (!this.#snapshot.bootstrap) await this.load(false);
-    else if (this.#needsRevalidation && !(await this.#revalidate())) {
-      if (this.#removed)
-        throw new OpensteerError({ code: "unauthorized", message: "Sign in to continue." });
-      if (this.#snapshot.versionRefusal)
-        throw new OpensteerError({
-          code: "bad_request",
-          reason:
-            this.#snapshot.versionRefusal === "update-app" ? "client-too-old" : "host-too-old",
-          message: "An update is needed.",
-        });
-      throw new HostTransportError("unreachable");
-    }
+    else if (this.#needsRevalidation) await this.#revalidate(attempt.signal);
     attempt.signal.throwIfAborted();
     attempt.acceptScope({
       authorityKey: this.#options.authorityKey ?? this.scope.teamDeploymentId,
@@ -385,37 +374,34 @@ export class TeamSessionClient {
       loginId: this.#options.loginId ?? this.owner?.id ?? this.#loginId,
     });
     return new Promise((resolve, reject) => {
-      const required = new Set([
-        "sidebar",
-        ...[this.#snapshot.channel, this.#snapshot.thread].flatMap((view) =>
-          view ? [teamScopeKey(view.scope)] : [],
-        ),
-      ]);
+      const synchronized = new Set<"sidebar" | number>();
+      const socket = this.#options.connect();
+      this.#socket = socket;
       let admitted = false;
       let finish!: (failure: ReturnType<typeof classifyClientFailure>) => void;
       const closed = new Promise<ReturnType<typeof classifyClientFailure>>((done) => {
         finish = done;
       });
-      const release = () => {
+      const close = () => {
+        if (this.#socket !== socket) return;
+        clearTimeout(handshake);
         attempt.signal.removeEventListener("abort", abort);
         this.#synchronize = null;
-      };
-      const close = () => {
-        release();
-        const current = this.#socket;
         this.#socket = null;
-        current?.close();
+        socket.close();
         this.#update({ connection: "offline", typing: {}, presence: {} });
       };
       const fail = (error: unknown) => {
+        if (this.#socket !== socket) return;
         close();
-        attempt.fail?.(classifyClientFailure(error));
-        if (admitted) finish(classifyClientFailure(error));
+        const failure = classifyClientFailure(error);
+        attempt.fail?.(failure);
+        if (admitted) finish(failure);
         else reject(error);
       };
       const abort = () => fail(attempt.signal.reason);
-      const socket = this.#options.connect();
-      this.#socket = socket;
+      const handshake = setTimeout(() => fail(new HostTransportError("timed-out")), 15_000);
+      unrefTimer(handshake);
       let progressAt = Date.now();
       const lease: ConnectionLease = {
         closed,
@@ -438,9 +424,17 @@ export class TeamSessionClient {
           }),
       };
       attempt.signal.addEventListener("abort", abort, { once: true });
-      this.#synchronize = (key) => {
-        required.delete(key);
-        if (required.size || admitted || this.#socket !== socket) return;
+      this.#synchronize = (cut) => {
+        if (this.#socket !== socket || admitted) return;
+        if (cut !== undefined) synchronized.add(cut);
+        if (
+          !synchronized.has("sidebar") ||
+          [this.#snapshot.channel, this.#snapshot.thread].some(
+            (view) => view && !synchronized.has(view.generation),
+          )
+        )
+          return;
+        clearTimeout(handshake);
         admitted = true;
         this.#needsRevalidation = false;
         const resumed = this.#opened;
@@ -480,24 +474,10 @@ export class TeamSessionClient {
         this.#connectionGeneration++;
         this.#needsRevalidation = event.code !== restartingCloseCode;
         if (event.code === 1008) {
-          void this.#revalidate().then((accepted) => {
-            if (accepted) fail(new HostTransportError("unreachable"));
-            else
-              fail(
-                new OpensteerError({
-                  code: this.#removed ? "unauthorized" : "bad_request",
-                  message: "Access needs to be checked.",
-                  ...(this.#snapshot.versionRefusal
-                    ? {
-                        reason:
-                          this.#snapshot.versionRefusal === "update-app"
-                            ? "client-too-old"
-                            : "host-too-old",
-                      }
-                    : {}),
-                }),
-              );
-          }, fail);
+          void this.#revalidate(attempt.signal).then(
+            () => fail(new HostTransportError("unreachable")),
+            fail,
+          );
         } else fail(new HostTransportError("unreachable"));
       });
       socket.addEventListener("error", () => {
@@ -505,11 +485,18 @@ export class TeamSessionClient {
       });
     });
   }
-  async #bootstrap() {
+  async #bootstrap(signal?: AbortSignal) {
     try {
-      return await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+      return await this.rpc["team.bootstrap.get"]({}, signal ? { signal } : undefined).then(
+        unwrapRpcResult,
+      );
     } catch (error) {
-      if (error instanceof OpensteerError && !error.reason && bootstrapMembershipRefused(error))
+      if (
+        !signal?.aborted &&
+        error instanceof OpensteerError &&
+        !error.reason &&
+        bootstrapMembershipRefused(error)
+      )
         await this.remove("removed");
       throw error;
     }
@@ -528,18 +515,18 @@ export class TeamSessionClient {
       await this.remove("removed");
     } else if (error.code === "unauthorized") await this.remove("sign-in");
   }
-  /** Whether the viewer still belongs here; a failed check settles false. */
-  async #revalidate(): Promise<boolean> {
+  async #revalidate(signal: AbortSignal): Promise<void> {
     const lifetime = this.#lifetime;
     try {
-      const bootstrap = await this.#bootstrap();
-      if (lifetime !== this.#lifetime) return false;
+      const bootstrap = await this.#bootstrap(signal);
+      signal.throwIfAborted();
+      if (lifetime !== this.#lifetime) return;
       if (
         bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
         bootstrap.member.userId !== this.#options.scope.userId
       ) {
         await this.remove("viewer-changed");
-        return false;
+        return;
       }
       if (this.#snapshot.sidebar?.accessRevision !== bootstrap.sidebar.accessRevision) {
         this.receive({
@@ -549,18 +536,21 @@ export class TeamSessionClient {
         const selected = this.#snapshot.channel;
         if (selected) {
           try {
-            await this.rpc["team.channel.get"]({ channelId: selected.scope.channelId }).then(
-              unwrapRpcResult,
-            );
+            await this.rpc["team.channel.get"](
+              { channelId: selected.scope.channelId },
+              { signal },
+            ).then(unwrapRpcResult);
           } catch (error) {
-            if (lifetime !== this.#lifetime) return false;
+            signal.throwIfAborted();
+            if (lifetime !== this.#lifetime) return;
             if (
               !(error instanceof OpensteerError) ||
               !["forbidden", "not_found"].includes(error.code)
             )
               throw error;
             const channelId = selected.scope.channelId;
-            this.selectChannel(null);
+            if (this.#snapshot.channel?.generation === selected.generation)
+              this.selectChannel(null);
             this.#update({
               pending: this.#snapshot.pending.filter((row) => row.command.channelId !== channelId),
               drafts: Object.fromEntries(
@@ -578,6 +568,7 @@ export class TeamSessionClient {
           }
         }
       }
+      signal.throwIfAborted();
       if (lifetime === this.#lifetime) {
         this.#update({
           bootstrap: this.#withNewerOwnName(bootstrap),
@@ -588,10 +579,10 @@ export class TeamSessionClient {
         // A relay that failed or was missed while away is tried again.
         void this.#relayProfile();
       }
-      return true;
     } catch (error) {
+      signal.throwIfAborted();
       if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
-      return false;
+      throw error;
     }
   }
   #subscribe(view: TeamTimeline | null): void {
@@ -633,6 +624,7 @@ export class TeamSessionClient {
         scope: null,
         sinceSeq: null,
       });
+    this.#synchronize?.();
   }
   selectThread(channelId: TeamChannelId, rootId: TeamMessageId | null): void {
     const thread = rootId
@@ -676,6 +668,7 @@ export class TeamSessionClient {
         scope: null,
         sinceSeq: null,
       });
+    this.#synchronize?.();
   }
   async loadPage(
     view: "channel" | "thread",
@@ -865,7 +858,7 @@ export class TeamSessionClient {
             [view]: next,
           });
           this.#applyRecipients(frame.cut.agentRecipients);
-          this.#synchronize?.(teamScopeKey(frame.cut.scope));
+          this.#synchronize?.(frame.cut.generation);
           if (
             frame.cut.type === "snapshot" &&
             held.anchorId &&

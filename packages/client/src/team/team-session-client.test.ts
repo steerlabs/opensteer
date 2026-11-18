@@ -16,7 +16,7 @@ import {
   mockTeamId,
   mockTeamUserId,
   mockTeamChannelId,
-  type MockTeamSocket,
+  MockTeamSocket,
 } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
 import { teamScopeKey } from "./reducers.js";
@@ -904,4 +904,157 @@ it("evicts a team's admitted content on 401 headers before a stalled body", asyn
     host.dispose();
     vi.useRealTimers();
   }
+});
+
+describe("team attempt fencing", () => {
+  it("admits the current channel when selection changes before the first cut", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    const nextChannelId = createId("teamChannel");
+    host.channels.set(nextChannelId, {
+      ...host.channels.get(mockTeamChannelId)!,
+      id: nextChannelId,
+    });
+    const subscriptions = new Map<string, { subscriptionId: string; generation: number }>();
+    let socket!: MockTeamSocket;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () =>
+        (socket = new MockTeamSocket((frame) => {
+          if (frame.type === "team.subscribe" && frame.scope)
+            subscriptions.set(frame.scope.channelId, frame);
+        })),
+    });
+    try {
+      client.selectChannel(mockTeamChannelId);
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const old = subscriptions.get(mockTeamChannelId)!;
+      client.selectChannel(nextChannelId);
+      const current = subscriptions.get(nextChannelId)!;
+      socket.deliver({ type: "team.sidebar", sidebar: host.bootstrap.sidebar });
+      socket.deliver({
+        type: "team.cut",
+        cut: host.cut(channelScope, old.subscriptionId, old.generation, null),
+      });
+      expect(client.connection.getSnapshot().phase).toBe("connecting");
+      socket.deliver({
+        type: "team.cut",
+        cut: host.cut(
+          { kind: "channel", channelId: nextChannelId },
+          current.subscriptionId,
+          current.generation,
+          null,
+        ),
+      });
+      expect(client.connection.getSnapshot().phase).toBe("ready");
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons an open team socket that never delivers the initial cut", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost();
+    let socket!: MockTeamSocket;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => (socket = new MockTeamSocket(() => {})),
+    });
+    try {
+      client.selectChannel(mockTeamChannelId);
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      socket.deliver({ type: "team.sidebar", sidebar: host.bootstrap.sidebar });
+      expect(client.connection.getSnapshot().phase).toBe("connecting");
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(socket.readyState).toBe(3);
+      expect(client.connection.getSnapshot().phase).toBe("recovering");
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["superseded", "current"] as const)(
+    "preserves recovery when a %s refused socket's HTTP check gets a 503",
+    async (visit) => {
+      vi.useFakeTimers();
+      const host = new MockTeamHost();
+      const sockets: MockTeamSocket[] = [];
+      const temporary = {
+        ok: false as const,
+        error: {
+          code: "internal" as const,
+          reason: "proxy-unavailable",
+          retryable: true,
+          message: "Unavailable",
+        },
+      };
+      const held = Promise.withResolvers<typeof temporary>();
+      const boot = host.rpc["team.bootstrap.get"];
+      const read = vi
+        .fn(boot)
+        .mockImplementationOnce(boot)
+        .mockImplementationOnce(() => held.promise);
+      const rpc = new Proxy(host.rpc, {
+        get: (target, key, receiver) =>
+          key === "team.bootstrap.get" ? read : Reflect.get(target, key, receiver),
+      });
+      let networkChanged!: (state: "online", path: "changed") => void;
+      const client = new TeamSessionClient({
+        scope,
+        persistence: createMemoryTeamPersistence(),
+        rpc,
+        connect: () => {
+          const socket = host.connect();
+          sockets.push(socket);
+          return socket;
+        },
+        lifecycle: {
+          getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+          onNetworkChange: (listener) => {
+            networkChanged = listener;
+            return () => {};
+          },
+          onForeground: () => () => {},
+          onBackground: () => () => {},
+        },
+      });
+      try {
+        await client.load();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.connection.getSnapshot().phase).toBe("ready");
+        sockets[0]!.close(1008);
+        expect(read).toHaveBeenCalledTimes(2);
+        if (visit === "superseded") {
+          networkChanged("online", "changed");
+          await vi.advanceTimersByTimeAsync(0);
+          expect(sockets).toHaveLength(2);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        }
+        held.resolve(temporary);
+        await vi.advanceTimersByTimeAsync(0);
+        if (visit === "superseded") {
+          expect(sockets[1]!.readyState).toBe(1);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        } else {
+          expect(client.connection.getSnapshot().phase).toBe("recovering");
+          await vi.advanceTimersByTimeAsync(300);
+          expect(client.connection.getSnapshot().phase).toBe("ready");
+        }
+      } finally {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
