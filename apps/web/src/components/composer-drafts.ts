@@ -7,6 +7,7 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
+import { TaskStartSchema } from "./home/task-start.js";
 
 /**
  * What a person has written and not sent, kept on this device so leaving a
@@ -47,6 +48,8 @@ const DraftSchema = z.object({
   /** Why a send was refused after its composer closed, until the draft is opened. */
   refusal: z.string().optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
+  /** A new task being started from this draft; see `startTask`. */
+  start: TaskStartSchema.optional().catch(undefined),
   text: z.string(),
   updatedAt: z.number(),
 });

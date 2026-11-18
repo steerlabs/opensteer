@@ -155,7 +155,7 @@ function NewTaskComposer({
     const thread = await act(
       hostClient,
       { label: "start this task", done: "started", happened: "this task started" },
-      () => createThreadAndSend(message, selection, accessMode),
+      () => createThreadAndSend(message, selection, accessMode, draftKey),
     );
     nav.openConversation(nav.threadPath(thread.id));
   };
