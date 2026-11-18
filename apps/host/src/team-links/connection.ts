@@ -51,6 +51,7 @@ export class TeamLinkConnection implements TeamLinkRpc {
   #heartbeat: ReturnType<typeof setInterval> | undefined;
   #lastPong = Date.now();
   #opening = false;
+  #stateWrites = Promise.resolve();
   constructor(options: TeamLinkConnectionOptions) {
     this.options = options;
   }
@@ -135,16 +136,13 @@ export class TeamLinkConnection implements TeamLinkRpc {
               if (this.#ready) throw linkError("bad_request");
               if (!acceptsTeamApiVersion(frame.teamApiVersion)) {
                 paused = true;
-                await this.options.onState(
-                  "needs_update",
-                  teamLinkVersionError(frame.teamApiVersion),
-                );
+                await this.#writeState("needs_update", teamLinkVersionError(frame.teamApiVersion));
                 socket.terminate();
                 return;
               }
               this.#ready = true;
               this.#attempt = 0;
-              await this.options.onState("active");
+              await this.#writeState("active");
               await this.options.onReady();
             } else {
               if (!this.#ready) throw linkError("bad_request");
@@ -206,7 +204,7 @@ export class TeamLinkConnection implements TeamLinkRpc {
         return;
       }
       if (error instanceof OpensteerError && error.reason === "unsupported-version") {
-        await this.options.onState("needs_update", error);
+        await this.#writeState("needs_update", error);
         this.#schedule(true);
         return;
       }
@@ -218,7 +216,7 @@ export class TeamLinkConnection implements TeamLinkRpc {
 
   #schedule(preserveState = false): void {
     if (this.#lifetime.signal.aborted || this.#retry) return;
-    if (!preserveState) void this.options.onState("unreachable").catch(() => undefined);
+    if (!preserveState) void this.#writeState("unreachable").catch(() => undefined);
     const ceiling = Math.min(30_000, 500 * 2 ** Math.min(this.#attempt++, 6));
     this.#retry = setTimeout(
       () => {
@@ -228,6 +226,13 @@ export class TeamLinkConnection implements TeamLinkRpc {
       Math.floor(ceiling * (0.5 + Math.random() * 0.5)),
     );
     this.#retry.unref();
+  }
+
+  // A close's state write is not awaited, so a reconnect's must not commit before it.
+  #writeState(...args: Parameters<TeamLinkConnectionOptions["onState"]>): Promise<void> {
+    const write = this.#stateWrites.then(() => this.options.onState(...args));
+    this.#stateWrites = write.catch(() => undefined);
+    return write;
   }
 
   call(input: TeamLinkCallInput): Promise<TeamLinkResult> {
