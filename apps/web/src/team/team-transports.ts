@@ -69,6 +69,14 @@ function ownedSignal(owner: TeamRuntimeOwner | undefined) {
     owner ? AbortSignal.any([owner.signal, ...(signal ? [signal] : [])]) : signal;
 }
 
+/** What a refused team file transfer tells the person: too large, too busy, or gone. */
+function teamFileRefusal(response: Response, otherwise: string): Error {
+  if (response.status === 413) return new Error("Files can be up to 100 MB.");
+  if (response.status === 429)
+    return new Error("Too many files are moving at once. Try again in a moment.");
+  return new Error(otherwise);
+}
+
 /** Team file bytes over one fetch: the browser's own, or desktop main's route to the team. */
 function teamFiles(
   fetch: typeof globalThis.fetch,
@@ -88,7 +96,7 @@ function teamFiles(
       });
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error("The team file is no longer available.");
+        throw teamFileRefusal(response, "The team file is no longer available.");
       }
       const bytes = await readBoundedResponse(response, {
         maximumBytes: part === "preview" ? teamPreviewMaxBytes : teamUploadMaxBytes,
@@ -115,7 +123,7 @@ function teamFiles(
       });
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error("The team file could not be uploaded.");
+        throw teamFileRefusal(response, "The team file could not be uploaded.");
       }
       const uploaded = TeamFileSchema.parse(await response.json());
       owner?.assertCurrent();

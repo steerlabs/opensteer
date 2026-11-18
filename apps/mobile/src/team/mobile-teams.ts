@@ -1119,7 +1119,8 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof HostClientRequestError) {
     if (teamEntryRefusalOutcome(error.reason) === "membership")
       return error.reason === "removed" ? "removed" : "join";
-    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "offline";
+    // The team answered: a refusal entry may pass on a fresh try is no outage.
+    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "failed";
     const version = teamVersionRefusal(error.reason);
     if (version) return version;
     if (error.code === "unauthorized") return "signed-out";

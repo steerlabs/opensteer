@@ -45,7 +45,12 @@ export interface HostTransportRequest {
   /** The initiating client identity must survive a newer main-process selection. */
   readonly expectedDeploymentId?: DeploymentId | undefined;
   readonly expectedAttachmentKey?: string;
-  readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
+  /**
+   * The authorization a caller admitted this request under (`retainAuthorization`),
+   * checked again before every send, a replay after recovery included.
+   */
+  readonly admitted?: () => void;
+  readonly body?: string | Blob | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array> | undefined;
   readonly credentials?: "omit";
   readonly redirect?: "manual";
   readonly headers: {
@@ -230,6 +235,7 @@ export class HostTransport {
       const selected = await this.current();
       if (sessionGeneration !== this.#sessionGeneration)
         throw new HostTransportError("deployment-changed");
+      request.admitted?.();
       const assertCurrent = this.retainAuthorization(selected);
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
@@ -463,6 +469,7 @@ export class HostTransport {
   ): Promise<Response> {
     signal.throwIfAborted();
     resolved.teamRuntime?.assertCurrent();
+    request.admitted?.();
     let response: Response;
     try {
       response = await this.#network.request({

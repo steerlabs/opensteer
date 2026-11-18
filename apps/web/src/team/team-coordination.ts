@@ -204,7 +204,6 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
   const links = new PersonalTeamLinks(hostClient.rpc);
   return {
     join: async (_personal, offer) => {
-      if (hostClient.getSnapshot().connection !== "connected") return { kind: "offline" };
       try {
         return { kind: "joined", link: await links.join(offer) };
       } catch (error) {

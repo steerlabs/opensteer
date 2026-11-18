@@ -1,7 +1,8 @@
 import { createId } from "@opensteer/core";
-import type {
-  DesktopHostWebSocketEvent,
-  OpensteerDesktopBridge,
+import {
+  desktopHostUploadConcurrency,
+  type DesktopHostWebSocketEvent,
+  type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -158,6 +159,48 @@ describe("Desktop Host renderer adapter", () => {
       "other than the selected Deployment",
     );
     expect(route).toHaveBeenCalledOnce();
+  });
+
+  it("queues uploads beyond the few main admits, passing each freed slot to the next", async () => {
+    const origin = "https://home.test";
+    const answers: ((response: Response) => void)[] = [];
+    const route = vi.fn<typeof globalThis.fetch>(
+      () => new Promise((resolve) => answers.push(resolve)),
+    );
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      origin,
+      deploymentId,
+      route,
+    );
+    const upload = (signal?: AbortSignal) =>
+      fetch(`${origin}/v1/rpc/attachment.upload?input=%7B%7D`, {
+        body: new Blob(["bytes"]),
+        method: "POST",
+        ...(signal ? { signal } : {}),
+      });
+    const admitted = Array.from({ length: desktopHostUploadConcurrency }, () => upload());
+    const leaving = new AbortController();
+    const abandoned = upload(leaving.signal);
+    const waiting = upload();
+    await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency), {
+      timeout: 1_000,
+    });
+    // Ordinary requests never wait behind uploads.
+    const read = fetch(`${origin}/v1/rpc/bootstrap.get`);
+    await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1), {
+      timeout: 1_000,
+    });
+    leaving.abort(new Error("Composer closed"));
+    await expect(abandoned).rejects.toThrow("Composer closed");
+    answers[0]!(new Response("{}"));
+    await admitted[0];
+    await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 2), {
+      timeout: 1_000,
+    });
+    for (const answer of answers.slice(1)) answer(new Response("{}"));
+    await Promise.all([...admitted, read, waiting]);
+    expect(route).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 2);
   });
 
   it("raises the transport failure main names instead of returning its placeholder", async () => {

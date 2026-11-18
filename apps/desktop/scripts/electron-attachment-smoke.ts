@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain, protocol } from "electron";
+import { app, BrowserWindow, protocol } from "electron";
 import { createId, type HostInstanceId } from "@opensteer/core";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
@@ -16,9 +16,6 @@ import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { forwardHostRoute } from "../src/app/host-route.js";
-import type { DesktopBridgeContext } from "../src/bridge/context.js";
-import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
-import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
 
 const profile = mkdtempSync(path.join(tmpdir(), "opensteer-attachment-electron-"));
@@ -95,7 +92,6 @@ async function run(): Promise<object> {
     }
     if (url.pathname === "/v1/rpc/file.content") {
       const stall = url.searchParams.get("case");
-      if (stall === "before-headers") return;
       response.writeHead(200, {
         "content-type": "image/png",
         etag: '"smoke"',
@@ -158,14 +154,6 @@ async function run(): Promise<object> {
         read: async () => ({ deployments: [], revision: 1, selectedDeploymentId: deploymentId }),
       },
     });
-    const bridgeToken = randomBytes(32).toString("base64url");
-    // Electron's protocol handler never sees the renderer's abort; this call carries it.
-    ipcMain.handle(
-      desktopBridgeChannels.cancelHostRequest,
-      handleCancelHostRequest({
-        options: { bridgeToken, hostTransport: transport },
-      } as unknown as DesktopBridgeContext),
-    );
     protocol.handle("app", (request) =>
       new URL(request.url).pathname.startsWith("/host/")
         ? forwardHostRoute(request, transport)
@@ -177,20 +165,18 @@ async function run(): Promise<object> {
       show: false,
       webPreferences: desktopWebPreferences(
         { mode: "production" },
-        bridgeToken,
+        randomBytes(32).toString("base64url"),
         path.resolve("dist/preload.cjs"),
       ),
     });
     try {
       await window.loadURL("app://opensteer/");
-      // As the bundled app's adapter does: an id on each request, cancelled by it until headers arrive.
+      // Main admits a request by the id the bundled app's adapter gives it. Cancelling one
+      // before headers is the adapter's own, proved by electron-host-transport-smoke.
       await window.webContents.executeJavaScript(`window.hostFetch = (url, init = {}) => {
-        const requestId = crypto.randomUUID();
         const headers = new Headers(init.headers);
-        headers.set("${desktopHostRequestIdHeader}", requestId);
-        const cancel = () => window.opensteerDesktop.cancelHostRequest({ requestId });
-        init.signal?.addEventListener("abort", cancel, { once: true });
-        return fetch(url, { ...init, headers }).finally(() => init.signal?.removeEventListener("abort", cancel));
+        headers.set("${desktopHostRequestIdHeader}", crypto.randomUUID());
+        return fetch(url, { ...init, headers });
       }; undefined`);
       const route = `app://opensteer/host/${deploymentId}`;
       const result: {
@@ -236,21 +222,16 @@ async function run(): Promise<object> {
         "x-opensteer-file-size": String(source.byteLength),
       });
       assert.equal(result.staleStatus, 502);
-      for (const stall of ["mid-body", "before-headers"] as const) {
-        await window.webContents.executeJavaScript(`(async () => {
-          const controller = new AbortController();
-          const pending = hostFetch("${route}/v1/rpc/file.content?case=${stall}", { signal: controller.signal });
-          if ("${stall}" === "mid-body") {
-            const reader = (await pending).body.getReader();
-            await reader.read();
-            controller.abort();
-          } else {
-            setTimeout(() => controller.abort(), 200);
-          }
-          await pending.then((response) => response.arrayBuffer()).catch(() => undefined);
-        })()`);
-        await waitUntil(() => closed.has(stall), `the ${stall} Host request was not cancelled`);
-      }
+      // Once headers arrive, Chromium's own cancellation of the body reaches the Host.
+      await window.webContents.executeJavaScript(`(async () => {
+        const controller = new AbortController();
+        const pending = hostFetch("${route}/v1/rpc/file.content?case=mid-body", { signal: controller.signal });
+        const reader = (await pending).body.getReader();
+        await reader.read();
+        controller.abort();
+        await reader.read().catch(() => undefined);
+      })()`);
+      await waitUntil(() => closed.has("mid-body"), "the mid-body Host request was not cancelled");
       return {
         event: "electron-attachment-smoke.passed",
         bytes: source.byteLength,
@@ -261,7 +242,6 @@ async function run(): Promise<object> {
     } finally {
       if (!window.isDestroyed()) window.destroy();
       protocol.unhandle("app");
-      ipcMain.removeHandler(desktopBridgeChannels.cancelHostRequest);
       transport.dispose();
     }
   } finally {

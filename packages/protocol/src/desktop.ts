@@ -1133,6 +1133,15 @@ export const DesktopCancelHostRequestInputSchema = z.strictObject({
   requestId: DesktopHostRequestIdSchema,
 });
 export type DesktopCancelHostRequestInput = z.infer<typeof DesktopCancelHostRequestInputSchema>;
+/**
+ * Main holds an upload's bytes in memory until the Host answers it, so it
+ * admits this many at once (at most 3 × 100 MiB) and the renderer queues the rest.
+ */
+export const desktopHostUploadConcurrency = 3;
+/** The routes whose bodies are file bytes: the Host API's binary requests and team uploads. */
+export function isDesktopHostUploadPath(pathname: string): boolean {
+  return pathname === "/v1/rpc/attachment.upload" || pathname.startsWith("/v1/team/files/upload/");
+}
 
 export function desktopHostRouteUrl(deploymentId: DeploymentId, hostUrl: URL): string {
   return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}${deploymentId}${hostUrl.pathname}${hostUrl.search}`;

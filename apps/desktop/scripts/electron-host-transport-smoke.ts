@@ -102,6 +102,8 @@ async function run(): Promise<void> {
       url.pathname === "/v1/oversized-unauthorized" ||
       url.pathname === "/v1/stalled-unauthorized";
     const session = url.pathname === "/v1/auth/session-exchange";
+    // No headers at all, so only the renderer's cancel can end it.
+    if (url.pathname === "/v1/withheld") return;
     const stall =
       url.pathname === "/v1/stall" ||
       url.pathname === "/v1/stalled-unauthorized" ||
@@ -573,7 +575,9 @@ async function run(): Promise<void> {
           "utf8",
         ),
       );
-      const execute = (action: "rpc" | "abort" | "binary"): Promise<unknown> =>
+      const execute = (
+        action: "rpc" | "abort-start" | "abort-finish" | "binary",
+      ): Promise<unknown> =>
         window.webContents.executeJavaScript(
           `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(connection.authority.document.deploymentId)}, ${JSON.stringify(action)})`,
         );
@@ -615,11 +619,14 @@ async function run(): Promise<void> {
         })
         .parse(await execute("binary"));
       cases.push({ case: "renderer-binary-error", ...binary });
+      // The production adapter's cancel before headers: the Host must see the request end.
+      await execute("abort-start");
+      await waitUntil(() => pending.has("/v1/withheld?renderer=1"));
       const aborted = z
         .strictObject({ callerReasonPreserved: z.literal(true) })
-        .parse(await execute("abort"));
-      cases.push({ case: "renderer-caller-abort", ...aborted });
-      await waitUntil(() => !pending.has("/v1/stall?renderer=1"));
+        .parse(await execute("abort-finish"));
+      await waitUntil(() => !pending.has("/v1/withheld?renderer=1"));
+      cases.push({ case: "renderer-cancel-before-headers", ...aborted, upstreamClosed: true });
       rpcMode = "normal";
       const final = z
         .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })

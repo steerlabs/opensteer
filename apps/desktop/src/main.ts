@@ -1401,6 +1401,14 @@ async function runDesktop(
         });
       });
       window.webContents.once("destroyed", () => detachMcpAuthorization());
+      // Electron never tells main's Host route its page went away, so neither does the page's
+      // cancel; what that page asked for ends with it. The bundled app runs in this one window.
+      const abandonHostRequests = () => hostTransport.cancelForwardedRequests();
+      window.webContents.on("did-start-navigation", (event) => {
+        if (event.isMainFrame && !event.isSameDocument) abandonHostRequests();
+      });
+      window.webContents.on("render-process-gone", abandonHostRequests);
+      window.webContents.once("destroyed", abandonHostRequests);
       browserPresentation.attachWindow(window);
       passkeys.attachWindow(window);
       window.on("focus", () => {

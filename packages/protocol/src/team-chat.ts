@@ -26,6 +26,12 @@ export const teamResumeMaxRows = 200;
 export const teamResumeMaxBytes = 256 * 1024;
 export const teamUploadMaxBytes = 100 * 1024 * 1024;
 export const teamPreviewMaxBytes = 64 * 1024;
+/**
+ * How long a client waits for a team file's response headers: a team Host
+ * fetches and verifies a partner team's file before it answers, and an upload's
+ * bytes go out before its answer can come back.
+ */
+export const teamFileHeadersTimeoutMs = 120_000;
 export const TeamMarkdownSchema = TeamRequestTextSchema;
 export const TeamMentionSchema = z.strictObject({
   userId: UserIdSchema,

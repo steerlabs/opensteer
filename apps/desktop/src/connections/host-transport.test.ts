@@ -7,6 +7,7 @@ import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
 import {
   desktopHostRequestIdHeader,
   desktopHostTransportErrorHeader,
+  desktopHostUploadConcurrency,
   type DesktopHostWebSocketEvent,
 } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
@@ -301,6 +302,44 @@ describe("DesktopHostTransport", () => {
     await dispatch();
     expect(observeCommand).toHaveBeenCalledOnce();
     transport.dispose();
+  });
+
+  it("refuses a buffered command whose session changed on the same route while main prepared it", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = selected.authority.document.deploymentId;
+    const preparing = Promise.withResolvers<void>();
+    const prepared = Promise.withResolvers<void>();
+    const request = vi.fn(async () => Response.json({ ok: true, data: {} }));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], id),
+      network: { openWebSocket: () => socket(), request },
+      withPreparedEnrollment: async (_deploymentId, _command, operation) => {
+        preparing.resolve();
+        await prepared.promise;
+        return operation();
+      },
+    });
+    try {
+      const pending = send(transport, id, "/v1/rpc/commands.dispatch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "runner.enrollment.createLocal",
+          allowedModules: ["shell"],
+          name: "Mac",
+          idempotencyKey: "enroll-this-mac",
+        }),
+      });
+      await preparing.promise;
+      // Signed in again: the same Host and route, another session.
+      transport.closeDeploymentConnections(id);
+      prepared.resolve();
+      await expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      prepared.resolve();
+      transport.dispose();
+    }
   });
 
   it("notifies session loss before a renderer can recover the closed realtime socket", async () => {
@@ -1409,8 +1448,7 @@ describe("DesktopHostTransport", () => {
         network: {
           openWebSocket: () => socket(),
           request: async (input) => {
-            if (input.request.body instanceof Blob)
-              bodies.push(new Uint8Array(await input.request.body.arrayBuffer()).join(","));
+            if (input.request.body instanceof Uint8Array) bodies.push(input.request.body.join(","));
             return ++requests === 1
               ? new Response('{"error":"unauthorized"}', { status: 401 })
               : new Response('{"ok":true}');
@@ -1718,11 +1756,17 @@ function desktopHostTransport(options: {
   readonly sessions?: HostSessionRecovery;
   readonly supervisedDeploymentId?: DeploymentId;
   readonly observeCommand?: ConstructorParameters<typeof DesktopHostTransport>[0]["observeCommand"];
+  readonly withPreparedEnrollment?: ConstructorParameters<
+    typeof DesktopHostTransport
+  >[0]["withPreparedEnrollment"];
 }): DesktopHostTransport {
   const localRuntime = options.localRuntime ?? { current: async () => null };
   return new DesktopHostTransport({
     catalog: options.catalog,
     ...(options.observeCommand ? { observeCommand: options.observeCommand } : {}),
+    ...(options.withPreparedEnrollment
+      ? { withPreparedEnrollment: options.withPreparedEnrollment }
+      : {}),
     ...(options.credentials ? { credentials: options.credentials } : {}),
     localRuntime,
     network: options.network,
@@ -2166,7 +2210,7 @@ describe("Desktop Host route", () => {
         request: async (input) => {
           requests.push(input);
           if (input.request.path.startsWith("/v1/rpc/attachment.upload")) {
-            uploads.push(new Uint8Array(await (input.request.body as Blob).arrayBuffer()));
+            uploads.push(input.request.body as Uint8Array);
             return Response.json({ ok: false, error: { code: "conflict", message: "seen" } });
           }
           return new Response(image, {
@@ -2285,6 +2329,28 @@ describe("Desktop Host route admission", () => {
       );
     return { gate, id, request, route, transport };
   };
+  /** A body as Electron builds one from a Blob: pulled at once, its bytes arriving as one chunk. */
+  const electronBody = (bytes: Uint8Array, blobData: Promise<void> = Promise.resolve()) => {
+    const pulled = vi.fn();
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        pulled();
+        await blobData;
+        controller.enqueue(bytes);
+        controller.close();
+      },
+      cancel: cancelled,
+    });
+    return { body, cancelled, pulled };
+  };
+  const upload = (bytes: Uint8Array | ReadableStream<Uint8Array>) =>
+    ({
+      body: bytes,
+      duplex: "half",
+      headers: { "content-type": "application/octet-stream" },
+      method: "POST",
+    }) as RequestInit;
 
   it("refuses a request its renderer already cancelled, or one it can't cancel, before sending it", async () => {
     const { gate, request, route, transport } = fixture();
@@ -2316,41 +2382,87 @@ describe("Desktop Host route admission", () => {
         ok: false,
         error: { code: "bad_request", retryable: false },
       });
-      // An attachment larger than any JSON body is within its own route's limit.
-      const upload = await route(
+      // An attachment larger than any JSON body is within its own route's limit, and the
+      // bytes Electron handed over are the replayable body itself, not a copy of them.
+      const bytes = new Uint8Array(2 * 1_024 * 1_024);
+      const uploaded = await route(
         `/v1/rpc/attachment.upload?input=${encodeURIComponent('{"attachmentId":"a"}')}`,
-        {
-          body: new Uint8Array(2 * 1_024 * 1_024),
-          headers: { "content-type": "application/octet-stream" },
-          method: "POST",
-        },
+        upload(electronBody(bytes).body),
       );
-      expect(upload.status).toBe(200);
-      await upload.body?.cancel();
+      expect(uploaded.status).toBe(200);
+      await uploaded.body?.cancel();
       expect(request).toHaveBeenCalledOnce();
-      expect((request.mock.calls[0]![0].request.body as Blob).size).toBe(2 * 1_024 * 1_024);
+      expect(request.mock.calls[0]![0].request.body).toBe(bytes);
     } finally {
       transport.dispose();
     }
   });
 
-  it("refuses a request over the transport's limit before reading its body", async () => {
+  it("admits only a few uploads at once, refusing the next before Electron's eager read is used", async () => {
     const { gate, request, route, transport } = fixture();
     try {
-      const held = Array.from({ length: 32 }, () => route("/v1/rpc/bootstrap.get"));
-      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(32), { timeout: 1_000 });
-      const pull = vi.fn();
-      const refused = await route("/v1/rpc/attachment.upload", {
-        body: new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 }),
-        duplex: "half",
-        method: "POST",
-      } as RequestInit);
-      expect(refused.status).toBe(429);
-      expect(pull).not.toHaveBeenCalled();
+      const path = "/v1/rpc/attachment.upload";
+      const held = Array.from({ length: desktopHostUploadConcurrency }, () =>
+        route(path, upload(electronBody(new Uint8Array(8)).body)),
+      );
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency), {
+        timeout: 1_000,
+      });
+      // Electron starts reading a Blob's bytes as soon as it builds the Request.
+      const blobData = Promise.withResolvers<void>();
+      const next = electronBody(new Uint8Array(8), blobData.promise);
+      await vi.waitFor(() => expect(next.pulled).toHaveBeenCalledOnce(), { timeout: 1_000 });
+      expect((await route(path, upload(next.body))).status).toBe(429);
+      expect(next.cancelled).toHaveBeenCalledOnce();
+      blobData.resolve();
       gate.resolve();
       for (const response of await Promise.all(held)) expect(response.status).toBe(200);
+      expect((await route(path, upload(electronBody(new Uint8Array(8)).body))).status).toBe(200);
+      expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1);
     } finally {
       gate.resolve();
+      transport.dispose();
+    }
+  });
+
+  it("ends a forwarded request when its page goes, the transport is disposed, or its body stalls", async () => {
+    const { request, route, transport } = fixture();
+    try {
+      const abandoned = route("/v1/rpc/bootstrap.get");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledOnce(), { timeout: 1_000 });
+      transport.cancelForwardedRequests();
+      expect((await abandoned).headers.get(desktopHostTransportErrorHeader)).toBe("cancelled");
+      expect(request.mock.calls[0]![0].signal.aborted).toBe(true);
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const stalled = route("/v1/rpc/attachment.upload", upload(new ReadableStream()));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect((await stalled).headers.get(desktopHostTransportErrorHeader)).toBe("timed-out");
+      vi.useRealTimers();
+
+      const disposed = route("/v1/rpc/bootstrap.get");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+      transport.dispose();
+      expect((await disposed).headers.get(desktopHostTransportErrorHeader)).toBe("cancelled");
+      expect(request.mock.calls[1]![0].signal.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      transport.dispose();
+    }
+  });
+
+  it("gives a team file a bounded header budget whatever its size", async () => {
+    const { gate, request, route, transport } = fixture();
+    gate.resolve();
+    try {
+      // Above ~75 KiB a size-scaled budget would pass 120 s and keep growing to hours.
+      const large = await route(
+        "/v1/team/files/upload/channel_1",
+        upload(new Uint8Array(100 * 1_024)),
+      );
+      await large.body?.cancel();
+      expect(request.mock.calls[0]![0].request.timeoutMs).toBe(120_000);
+    } finally {
       transport.dispose();
     }
   });
@@ -2383,7 +2495,7 @@ describe("joined team routing", () => {
         request: async (input) => {
           requests.push(input);
           return new Response(
-            input.request.body instanceof Blob ? input.request.body : "team-file",
+            input.request.body instanceof Uint8Array ? input.request.body : "team-file",
           );
         },
         openWebSocket: (input) => {

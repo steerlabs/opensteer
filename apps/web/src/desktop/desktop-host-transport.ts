@@ -5,6 +5,8 @@ import {
   desktopHostRequestIdHeader,
   desktopHostRouteUrl,
   desktopHostTransportErrorHeader,
+  desktopHostUploadConcurrency,
+  isDesktopHostUploadPath,
   type DesktopCloseHostWebSocketInput,
   type DesktopHostWebSocketEvent,
   type OpensteerDesktopBridge,
@@ -31,16 +33,20 @@ export function createDesktopHostFetch(
       throw new Error("The bundled UI cannot contact a Host other than the selected Deployment.");
     }
     const { signal } = request;
-    // A Blob is handed on by reference rather than read into this renderer again.
-    const body = request.body ? await request.blob() : null;
-    signal.throwIfAborted();
+    const release = isDesktopHostUploadPath(url.pathname) ? await uploadSlot(signal) : null;
     const requestId = crypto.randomUUID();
-    const headers = new Headers(request.headers);
-    headers.set(desktopHostRequestIdHeader, requestId);
     // Main never sees this signal; until headers arrive, it learns of an abort only here.
-    const cancel = () => void bridge.cancelHostRequest({ requestId }).catch(() => undefined);
-    signal.addEventListener("abort", cancel, { once: true });
+    let cancelled: Promise<void> | null = null;
+    const cancel = () => {
+      cancelled = bridge.cancelHostRequest({ requestId }).catch(() => undefined);
+    };
     try {
+      // A Blob is handed on by reference rather than read into this renderer again.
+      const body = request.body ? await request.blob() : null;
+      signal.throwIfAborted();
+      const headers = new Headers(request.headers);
+      headers.set(desktopHostRequestIdHeader, requestId);
+      signal.addEventListener("abort", cancel, { once: true });
       const response = await fetch(desktopHostRouteUrl(deploymentId, url), {
         ...(body ? { body } : {}),
         headers,
@@ -54,7 +60,42 @@ export function createDesktopHostFetch(
       return response;
     } finally {
       signal.removeEventListener("abort", cancel);
+      // A cancelled upload's slot is free in main once main has heard the cancel.
+      if (release) void (cancelled ?? Promise.resolve()).then(release);
     }
+  };
+}
+
+const uploads = { active: 0, waiting: [] as (() => void)[] };
+
+/**
+ * One of the few uploads main admits at once, waited for here, where a queued
+ * Blob is only a reference. A released slot passes straight to the next waiter.
+ */
+async function uploadSlot(signal: AbortSignal): Promise<() => void> {
+  signal.throwIfAborted();
+  if (uploads.active < desktopHostUploadConcurrency) uploads.active += 1;
+  else
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => {
+        signal.removeEventListener("abort", abandon);
+        resolve();
+      };
+      const abandon = () => {
+        const index = uploads.waiting.indexOf(ready);
+        if (index !== -1) uploads.waiting.splice(index, 1);
+        reject(signal.reason);
+      };
+      uploads.waiting.push(ready);
+      signal.addEventListener("abort", abandon, { once: true });
+    });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = uploads.waiting.shift();
+    if (next) next();
+    else uploads.active -= 1;
   };
 }
 

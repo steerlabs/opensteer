@@ -8,27 +8,41 @@ declare global {
     hostTransportSmoke: (
       origin: string,
       deploymentId: string,
-      action: "rpc" | "abort" | "binary",
+      action: "rpc" | "abort-start" | "abort-finish" | "binary",
     ) => Promise<unknown>;
   }
 }
+
+let held: { readonly abort: () => void; readonly outcome: Promise<unknown> } | null = null;
 
 window.hostTransportSmoke = async (origin, deploymentId, action) => {
   const bridge = desktopBridge();
   if (!bridge) throw new Error("The desktop preload bridge is missing.");
   const fetch = createDesktopHostFetch(bridge, origin, DeploymentIdSchema.parse(deploymentId));
-  if (action === "abort") {
+  // Started here and aborted only once main's Host has the request and has sent no headers.
+  if (action === "abort-start") {
     const controller = new AbortController();
     const reason = new DOMException("Caller stopped this request.", "AbortError");
-    const pending = fetch(`${origin}/v1/stall?renderer=1`, { signal: controller.signal });
-    setTimeout(() => controller.abort(reason), 30);
-    try {
-      await pending;
-      throw new Error("Caller abort was ignored.");
-    } catch (error) {
-      if (error !== reason) throw error;
-      return { callerReasonPreserved: true };
-    }
+    held = {
+      abort: () => controller.abort(reason),
+      outcome: fetch(`${origin}/v1/withheld?renderer=1`, { signal: controller.signal }).then(
+        () => {
+          throw new Error("Caller abort was ignored.");
+        },
+        (error: unknown) => {
+          if (error !== reason) throw error;
+          return { callerReasonPreserved: true };
+        },
+      ),
+    };
+    return null;
+  }
+  if (action === "abort-finish") {
+    if (!held) throw new Error("No request is being held.");
+    const { abort, outcome } = held;
+    held = null;
+    abort();
+    return outcome;
   }
   const client = createHttpHostApiClient({
     baseUrl: new URL(origin),

@@ -565,9 +565,8 @@ it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
         ? "join"
         : reason === "removed"
           ? "removed"
-          : reason === undefined
-            ? "failed"
-            : "offline",
+          : // The team answered: a refusal is never the team being out of reach.
+            "failed",
     );
   },
 );

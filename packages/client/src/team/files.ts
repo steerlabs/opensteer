@@ -4,6 +4,7 @@ import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-auth
 import {
   TeamUploadMetadataSchema,
   TeamFileSchema,
+  teamFileHeadersTimeoutMs,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
@@ -43,6 +44,7 @@ export function teamFileTransport(
           path: `/v1/team/files/${metadata.id}/${part}`,
           method: "GET",
           headers: { additional: version },
+          timeoutMs: teamFileHeadersTimeoutMs,
           ...(signal ? { signal } : {}),
         },
         async (response, progress) => {
@@ -84,6 +86,7 @@ export function teamFileTransport(
             contentType: "application/octet-stream",
             additional: { ...version, "x-opensteer-team-upload": JSON.stringify(metadata) },
           },
+          timeoutMs: teamFileHeadersTimeoutMs,
           ...(input.signal ? { signal: input.signal } : {}),
         },
         async (response, progress) => {
