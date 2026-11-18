@@ -282,7 +282,14 @@ export class PluginOAuthService {
         scopes,
         configurationDigest: oauthReviewDigest(configuration),
       };
-      return { ...method, review: digest };
+      const setup =
+        method.setup.kind === "oauth2" && !method.oneClick
+          ? {
+              ...method.setup,
+              oneClickUnavailable: session.account ? "no-provider-app" : "account-not-linked",
+            }
+          : method.setup;
+      return { ...method, setup, review: digest };
     });
     if (!(await this.options.store.savePending(session.connection, owner, session)))
       throw new OpensteerError({

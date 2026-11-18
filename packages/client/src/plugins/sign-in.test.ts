@@ -129,6 +129,26 @@ const flowOf = (client: never, sign: ReturnType<typeof surface>) =>
   });
 
 describe("plugin sign-in choices", () => {
+  it.each([
+    ["account-not-linked", "One-click sign-in needs a linked Opensteer Account."],
+    ["no-provider-app", "Opensteer has no sign-in app for Linear."],
+  ])("explains why one-click sign-in is unavailable (%s)", (reason, message) => {
+    const input = prepared();
+    const method = input.methods[0]!;
+    const result = pluginSignInChoices(
+      {
+        ...input,
+        methods: [
+          { ...method, oneClick: false, setup: { ...method.setup, oneClickUnavailable: reason } },
+        ],
+      },
+      "Linear",
+    );
+    expect(result.oneClickUnavailable).toBe(message);
+    expect(result.ownApp).not.toBeNull();
+    expect(result.options.some(({ kind }) => kind === "one-click")).toBe(false);
+  });
+
   it("offers one-click, saved apps and automatic setup, and an own app with its exact address", () => {
     const choices = pluginSignInChoices(prepared(), "Linear");
     expect(choices.options.map(({ kind, client }) => [kind, client])).toEqual([

@@ -36,7 +36,6 @@ export class PluginWorkflowRuns {
   #generation = 0;
   #running: Promise<void> | null = null;
   #dirty = false;
-  #disposed = false;
   #state: PluginWorkflowRunsState = {
     visible: [],
     more: false,
@@ -60,7 +59,6 @@ export class PluginWorkflowRuns {
 
   /** Overlapping calls coalesce into one more head and live-run read. */
   refresh = (): Promise<void> => {
-    if (this.#disposed) return Promise.resolve();
     this.#dirty = true;
     this.#running ??= this.#drain();
     return this.#running;
@@ -68,7 +66,7 @@ export class PluginWorkflowRuns {
 
   /** Shows more finished runs, reading the next page when the loaded ones run out. */
   showMore = async (): Promise<void> => {
-    if (this.#disposed || this.#state.loadingMore) return;
+    if (this.#state.loadingMore) return;
     this.#shown += 10;
     const finished = this.#runs.filter((run) => !pluginWorkflowRunLive(run)).length;
     if (finished >= this.#shown || !this.#cursor || this.#running) return this.#publish({});
@@ -76,32 +74,31 @@ export class PluginWorkflowRuns {
     this.#publish({ loadingMore: true, error: null });
     try {
       const page = await this.#read(this.#cursor);
-      if (generation !== this.#generation || this.#disposed) return;
+      if (generation !== this.#generation) return;
       this.#runs = merge(this.#runs, page.runs);
       this.#cursor = page.cursor;
       this.#paged = true;
       this.#publish({ loadingMore: false });
     } catch (error) {
-      if (generation === this.#generation && !this.#disposed)
-        this.#publish({ loadingMore: false, error });
+      if (generation === this.#generation) this.#publish({ loadingMore: false, error });
     }
   };
 
-  dispose() {
-    this.#disposed = true;
+  /** Discard an in-flight read when the consumer detaches, including during StrictMode replay. */
+  cancelRefresh() {
     this.#generation += 1;
-    this.#listeners.clear();
+    this.#dirty = false;
   }
 
   async #drain() {
     try {
-      while (this.#dirty && !this.#disposed) {
+      while (this.#dirty) {
         this.#dirty = false;
         const generation = ++this.#generation;
         this.#publish({ loading: true, loadingMore: false, error: null });
         try {
           const head = await this.#read(null);
-          if (generation !== this.#generation || this.#disposed) continue;
+          if (generation !== this.#generation) continue;
           const seen = new Set(head.runs.map(({ id }) => id));
           const olderLive = this.#runs
             .filter((run) => pluginWorkflowRunLive(run) && !seen.has(run.id))
@@ -110,7 +107,7 @@ export class PluginWorkflowRuns {
           for (let offset = 0; offset < olderLive.length; offset += pluginRunsMax)
             reads.push(this.#read(null, olderLive.slice(offset, offset + pluginRunsMax)));
           const updates = await Promise.all(reads);
-          if (generation !== this.#generation || this.#disposed) continue;
+          if (generation !== this.#generation) continue;
           const terminal = this.#runs.filter((run) => !pluginWorkflowRunLive(run));
           this.#runs = merge(
             merge(
@@ -122,8 +119,7 @@ export class PluginWorkflowRuns {
           if (!this.#paged) this.#cursor = head.cursor;
           this.#publish({ loaded: true, loading: false });
         } catch (error) {
-          if (generation === this.#generation && !this.#disposed)
-            this.#publish({ loading: false, error });
+          if (generation === this.#generation) this.#publish({ loading: false, error });
         }
       }
     } finally {

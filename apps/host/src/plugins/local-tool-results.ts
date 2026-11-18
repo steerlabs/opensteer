@@ -1,4 +1,4 @@
-import { BlockedSchema } from "@opensteer/core";
+import { BlockedSchema, type Blocked } from "@opensteer/core";
 import { agentToolFailureResult, agentToolRecordResult } from "@opensteer/agent-tools";
 import { ContentBlockSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -19,13 +19,26 @@ function isLocalPath(path: string) {
   return path.startsWith('tools["local-');
 }
 
-/** Only the direct catalog bridge can emit Host presentation; a plug-in owns its value JSON. */
-export function projectDirectLocalTools(result: unknown) {
+/** The direct backend envelopes its values before handing them to the engine. */
+export function projectDirectPluginTools(
+  result: unknown,
+  blockedNamespace?: (path: string) => Blocked | undefined,
+) {
   const parsed = z.object({ execution }).passthrough().safeParse(result);
   if (!parsed.success) return result;
   let kind: "blocked" | "mcp" | undefined;
   const project = (call: Outcome): Outcome => {
-    if (!call.ok || !isLocalPath(call.path)) return call;
+    const blocked = call.ok ? undefined : blockedNamespace?.(call.path);
+    if (blocked) {
+      kind ??= "blocked";
+      return {
+        path: call.path,
+        ok: false,
+        error: blocked,
+        ...("callLog" in call ? { callLog: call.callLog } : {}),
+      };
+    }
+    if (!call.ok) return call;
     const local = HostToolResultSchema.safeParse(call.value);
     if (!local.success) return call;
     const { value: _value, ...rest } = call;
@@ -54,7 +67,7 @@ export function presentPluginToolResult(record: Record<string, unknown>) {
   if (!parsed.success) return agentToolRecordResult(record);
   const { value } = parsed.data.execution;
   const blocked = Array.isArray(value) ? null : BlockedSchema.safeParse(value.error);
-  if (blocked?.success && !Array.isArray(value) && !value.ok && isLocalPath(value.path))
+  if (blocked?.success && !Array.isArray(value) && !value.ok)
     return agentToolFailureResult(blocked.data);
 
   const blocks = (call: Outcome) => {

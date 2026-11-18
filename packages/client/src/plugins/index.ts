@@ -622,6 +622,18 @@ export function pluginRequirementIssue(
   return null;
 }
 
+export function pluginEmptyToolsText(data: {
+  plugin: Pick<PluginSummaryView, "access" | "status">;
+  tools: InstalledPluginView["tools"];
+}) {
+  if (data.plugin.access === "off") return "Tools are off for agents.";
+  if (data.tools === null)
+    return data.plugin.status === "not-built"
+      ? "Tools appear once a version builds."
+      : "Tools appear once its accounts are connected.";
+  return data.tools.length === 0 ? "This plugin has no tools." : null;
+}
+
 /* ---- Device data apps and local servers beside plugins ---- */
 
 export type { PluginLocalToolSummaryView, PluginLocalToolView } from "@opensteer/protocol";
@@ -632,6 +644,7 @@ export function pluginLocalToolStatus(tool: PluginLocalToolSummaryView): {
   readonly tone: PluginTone;
 } {
   if (tool.access === "off") return { label: "Off for agents", tone: "muted" };
+  if (tool.waitingForLaunchApproval) return { label: "Waiting for approval", tone: "attention" };
   if (tool.unavailable) return { label: "Unavailable", tone: "attention" };
   if (tool.access === "read-only") return { label: "Read-only", tone: "ok" };
   return { label: "On", tone: "ok" };

@@ -440,7 +440,7 @@ function foldTranscriptOwnEvent(
         createdAt: event.createdAt,
         id,
         kind: "request",
-        outcome: `Cancelled · ${event.data.reason}`,
+        outcome: requestCancellationOutcome(event.data.reason),
         requestId: event.data.requestId,
         requestKind: null,
         runId: event.runId,
@@ -1330,9 +1330,20 @@ export function requestReceipt(
   };
 }
 
+function requestCancellationOutcome(reason: Request["cancellationReason"]): string {
+  switch (reason) {
+    case "plugin-interrupted":
+      return "Cancelled · Plugin execution was interrupted";
+    case "plugin-expired":
+      return "Cancelled · Plugin request expired";
+    default:
+      return `Cancelled · ${reason}`;
+  }
+}
+
 function requestOutcome(request: Request): string {
   if (request.status === "pending") return "Pending";
-  if (request.status === "cancelled") return `Cancelled · ${request.cancellationReason}`;
+  if (request.status === "cancelled") return requestCancellationOutcome(request.cancellationReason);
   if (request.status === "withdrawn") return "Withdrawn";
   if (request.settlementProvenance && "kind" in request.settlementProvenance)
     return requestSettlementLabel(request)!;

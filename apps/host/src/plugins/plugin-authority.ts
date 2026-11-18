@@ -240,6 +240,7 @@ export class PluginAuthority {
     if (
       input.plugin &&
       ((grants[input.plugin] === "off" &&
+        !discovery.has(input.operation) &&
         !["cancel", "resourcesStop", "resourcesRead"].includes(input.operation)) ||
         (input.operation === "resourcesUpdate" && (grants[input.plugin] ?? "all") !== "all"))
     )

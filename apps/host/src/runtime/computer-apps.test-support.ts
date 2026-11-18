@@ -758,3 +758,34 @@ export async function pluginCall(
 export function failureMessage(failure: string): string {
   return /^\S+ \(HTTP \d+\): ([\s\S]*?) Recovery:/u.exec(failure)?.[1] ?? failure;
 }
+
+export async function expectPluginSettingRefusal(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  namespace: string,
+  path: string,
+  input: Record<string, unknown>,
+  label: "Read-only" | "Off",
+) {
+  const blocked = {
+    code: "access_denied",
+    message: expect.stringContaining(label),
+    next: expect.stringMatching(/person.*Plugins/u),
+  };
+  expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
+    items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
+  });
+  expect(await gateway.call("plugin_describe", { paths: [path] })).toMatchObject({
+    items: [expect.objectContaining({ path, blocked })],
+  });
+  expect((await pluginCall(gateway, path, input)).raw).toMatchObject({
+    isError: true,
+    structuredContent: { error: blocked },
+  });
+  expect(
+    await gateway.call("plugin_execute", {
+      code: `return await ${path}(${JSON.stringify(input)})`,
+    }),
+  ).toMatchObject({
+    result: { execution: { value: { kind: "blocked", blocked } } },
+  });
+}

@@ -34,10 +34,10 @@ export function slugify(value: string): string {
 }
 
 // The engine renders canonical tool names as JavaScript dot/bracket expressions.
-export function localToolPath(slug: string, tool: string): string {
+export function localToolPath(slug: string, tool?: string): string {
   return (
     "tools" +
-    `${slug}.${tool}`
+    (tool === undefined ? slug : `${slug}.${tool}`)
       .split(".")
       .map((segment) =>
         /^[A-Za-z_$][\w$]*$/u.test(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`,

@@ -1603,7 +1603,11 @@ export const makeTools = (
     list: (input: Parameters<PluginEngine["tools"]["list"]>[0], options?: ToolListOptions) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
-        const listing = yield* listings.read(state, listingOf(state), options);
+        const listing =
+          options?.storedOnly === true
+            ? yield* (yield* listings.kept(state))
+            : yield* listings.read(state, listingOf(state), options);
+        if (listing === undefined) return yield* new StorageError();
         // Pages share the listing's item objects, so a caller can recognise a kept listing.
         const start = pageStart(listing, input.cursor);
         const selected = yield* pageTools(

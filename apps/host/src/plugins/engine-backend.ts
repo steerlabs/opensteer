@@ -18,11 +18,13 @@ import {
   type PluginEngine,
   type ToolSearchInput,
   type ToolSearchPage,
+  type ToolListOptions,
 } from "@opensteer/plugin-engine-sdk/core";
 import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-error";
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
+import { pluginAccessBlocked } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
@@ -80,22 +82,44 @@ export function compositeBackend(
   context: PluginCaller,
   host: EngineHostCallbacks,
   direct = false,
-): McpBackend<Error> {
-  const checked = (operation: string, plugin?: string, tool?: string) =>
-    Effect.gen(function* () {
-      const execution = yield* CurrentMcpExecution;
-      const permission = yield* host.authorize({
+) {
+  const namespaces = new Map<string, string>();
+  const appBlockers = new Map<string, Blocked>();
+  const toolBlockers = new Map<string, Blocked>();
+  const retained = new Map<string, readonly Tool[]>();
+  const toolPath = (app: string, tool: string) => {
+    const namespace = namespaces.get(app);
+    return namespace === undefined ? undefined : localToolPath(namespace, tool);
+  };
+  const projectTool = (tool: Tool, blocked: Blocked | undefined, annotate = true): Tool => {
+    if (!blocked) return tool;
+    const path = toolPath(tool.app, tool.name);
+    if (path) toolBlockers.set(path, blocked);
+    return annotate
+      ? { ...tool, description: `${blocked.message} ${blocked.next}\n${tool.description ?? ""}` }
+      : tool;
+  };
+  const projectLocalTool = (tool: Tool, setting: Blocked | undefined, local: PluginHostProvider) =>
+    setting
+      ? projectTool(tool, setting)
+      : projectTool(tool, local.toolBlockers?.[tool.name], false);
+
+  const permissionFor = (operation: string, plugin?: string, tool?: string) =>
+    Effect.flatMap(CurrentMcpExecution, (execution) =>
+      host.authorize({
         operation,
         ...(plugin === undefined ? {} : { plugin }),
         ...(tool === undefined ? {} : { tool }),
         ...(execution === undefined ? {} : { execution }),
-      });
-      if (!permission.allowed)
-        return yield* Effect.fail(
-          new PluginServiceError("forbidden", "Plugin operation is not authorized"),
-        );
-      return permission;
-    });
+      }),
+    );
+  const forbidden = () => new PluginServiceError("forbidden", "Plugin operation is not authorized");
+  const checked = (operation: string, plugin?: string, tool?: string) =>
+    permissionFor(operation, plugin, tool).pipe(
+      Effect.flatMap((permission) =>
+        permission.allowed ? Effect.succeed(permission) : Effect.fail(forbidden()),
+      ),
+    );
   const provider = (app: string) =>
     isLocalProviderId(app)
       ? Effect.map(host.providers(), (providers) =>
@@ -112,6 +136,10 @@ export function compositeBackend(
     provider.tools.map((tool) =>
       Schema.decodeUnknownSync(Tool)({ ...tool, app: provider.id, version: provider.version }),
     );
+  const wrapDirectResult = <T extends { status: string }>(result: T): T =>
+    direct && result.status === "completed" && "value" in result
+      ? { ...result, value: { kind: "value", value: result.value } }
+      : result;
   const selected = (input: { app: AppId; version?: VersionId | undefined }) =>
     Effect.map(accounts.accounts(input.app, input.version), (accounts) => ({ ...input, accounts }));
   const userLinks = (app: AppId, version?: VersionId) =>
@@ -119,15 +147,27 @@ export function compositeBackend(
       Effect.flatMap((app) => accounts.resolved(app, version)),
       Effect.map((links) => links.userLinks),
     );
+  const listCloud = (
+    input: Parameters<McpBackend<Error>["listTools"]>[0],
+    options: ToolListOptions | undefined,
+    off: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const selection = yield* accounts.accounts(input.app, input.version);
+      return yield* engine.tools.list(
+        { ...input, accounts: selection },
+        off ? { ...options, storedOnly: true } : options,
+      );
+    });
   const searchHost = (
     input: ToolSearchInput,
-    providers: readonly PluginHostProvider[],
+    providers: ReadonlyMap<string, { name: string; tools: readonly Tool[] }>,
   ): ToolSearchPage => {
     const words = input.query.toLowerCase().split(/\W+/u).filter(Boolean);
     const items = input.targets.flatMap((target, index) => {
-      const provider = providers.find((item) => item.id === target.app);
-      if (!provider || provider.unavailable) return [];
-      return hostTools(provider)
+      const provider = providers.get(target.app);
+      if (!provider) return [];
+      return provider.tools
         .filter(
           (tool) =>
             (!target.below ||
@@ -152,7 +192,7 @@ export function compositeBackend(
   const raw: McpBackend<Error> = {
     listApps: (input) =>
       Effect.gen(function* () {
-        yield* checked("listApps");
+        const { grants } = yield* checked("listApps");
         const installed = yield* engine.apps.list({
           owner,
           ...(input?.ids === undefined ? {} : { ids: input.ids }),
@@ -163,7 +203,7 @@ export function compositeBackend(
             : (yield* host.providers()).filter(
                 (entry) => input?.ids === undefined || input.ids.includes(AppId.make(entry.id)),
               );
-        return [
+        const listing = [
           ...installed.map((app) => ({ ...app, slug: AppSlug.make(pluginNamespace(app.slug)) })),
           ...providers.map((entry) => ({
             id: AppId.make(entry.id),
@@ -172,43 +212,69 @@ export function compositeBackend(
             activeVersion: version(entry),
           })),
         ];
+        for (const { id, slug } of listing) {
+          namespaces.set(id, slug);
+          const blocked = pluginAccessBlocked(grants?.[id], false);
+          if (blocked) appBlockers.set(id, blocked);
+        }
+        for (const provider of providers) {
+          if (provider.blocked && !appBlockers.has(provider.id))
+            appBlockers.set(provider.id, provider.blocked);
+        }
+        return listing;
       }),
     listAccounts: (input) =>
       Effect.gen(function* () {
-        yield* checked("listAccounts", input.app);
-        return (yield* provider(input.app)) ? {} : yield* userLinks(input.app, input.version);
+        const { grants } = yield* checked("listAccounts", input.app);
+        return grants?.[input.app] === "off" || (yield* provider(input.app))
+          ? {}
+          : yield* userLinks(input.app, input.version);
       }),
     listTools: (input, options) =>
       Effect.gen(function* () {
-        yield* checked("listTools", input.app);
+        const { grants } = yield* checked("listTools", input.app);
+        const access = grants?.[input.app];
         const local = yield* provider(input.app);
         if (local) {
-          if (!direct) yield* available(local);
+          if (!direct && access !== "off") yield* available(local);
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
-            items: hostTools(local),
+            items: hostTools(local).map((tool) =>
+              projectLocalTool(tool, pluginAccessBlocked(access, tool.readOnly !== true), local),
+            ),
             routers: [],
           };
         }
-        return yield* engine.tools.list(
-          { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
-          options,
-        );
+        const page = yield* listCloud(input, options, access === "off");
+        return {
+          ...page,
+          items: page.items.map((tool) =>
+            projectTool(tool, pluginAccessBlocked(access, tool.readOnly !== true)),
+          ),
+        };
       }),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
-        yield* checked("searchableTools", input.app);
+        const { grants } = yield* checked("searchableTools", input.app);
         const local = yield* provider(input.app);
-        if (local)
-          return yield* available(local).pipe(
-            Effect.as({
-              listing: ToolSearchListing.make(`host:${local.id}:${local.version}`),
-              version: version(local),
-              accounts: { app: {}, user: {} },
-              routers: [],
-            }),
-          );
+        if (local) {
+          if (grants?.[input.app] !== "off") yield* available(local);
+          return {
+            listing: ToolSearchListing.make(`host:${local.id}:${local.version}`),
+            version: version(local),
+            accounts: { app: {}, user: {} },
+            routers: [],
+          };
+        }
+        if (grants?.[input.app] === "off") {
+          const page = yield* listCloud(input, { unboundedPages: true }, true);
+          retained.set(input.app, page.items);
+          return {
+            ...page,
+            listing: ToolSearchListing.make(`host:${input.app}:${page.version}`),
+          };
+        }
         return yield* engine.tools.searchable(
           { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
           options,
@@ -216,13 +282,15 @@ export function compositeBackend(
       }),
     searchTools: (input) =>
       Effect.gen(function* () {
-        yield* checked("searchTools");
+        const { grants } = yield* checked("searchTools");
         const providers = input.targets.some(({ app }) => isLocalProviderId(app))
           ? yield* host.providers()
           : [];
         const remoteTargets = input.targets
           .map((target, index) => ({ target, index }))
-          .filter(({ target }) => !providers.some((provider) => provider.id === target.app));
+          .filter(
+            ({ target }) => !isLocalProviderId(target.app) && !target.listing.startsWith("host:"),
+          );
         const remote = remoteTargets.length
           ? yield* engine.tools.search({
               ...input,
@@ -231,10 +299,36 @@ export function compositeBackend(
               limit: input.offset + input.limit,
             })
           : { items: [], remaining: 0, missing: [] };
-        const local = searchHost(input, providers);
+        const hostCatalog = new Map(
+          providers
+            .filter((entry) => !entry.unavailable || grants?.[entry.id] === "off")
+            .map((entry) => [
+              entry.id,
+              {
+                name: entry.name,
+                tools: hostTools(entry).map((tool) =>
+                  projectLocalTool(
+                    tool,
+                    pluginAccessBlocked(grants?.[entry.id], tool.readOnly !== true),
+                    entry,
+                  ),
+                ),
+              },
+            ]),
+        );
+        for (const [app, tools] of retained)
+          hostCatalog.set(app, {
+            name: namespaces.get(app) ?? app,
+            tools: tools.map((tool) => projectTool(tool, pluginAccessBlocked("off", false))),
+          });
+        const local = searchHost(input, hostCatalog);
         const all = [
           ...remote.items.map((item) => ({
             ...item,
+            tool: projectTool(
+              item.tool,
+              pluginAccessBlocked(grants?.[item.tool.app], item.tool.readOnly !== true),
+            ),
             target: remoteTargets[item.target]!.index,
             also: item.also.map((index) => remoteTargets[index]!.index),
           })),
@@ -248,7 +342,11 @@ export function compositeBackend(
       }),
     callTool: (input, options) =>
       Effect.gen(function* () {
-        yield* checked("callTool", input.app, input.tool);
+        const permission = yield* permissionFor("callTool", input.app, input.tool);
+        const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
+        if (blocked)
+          return { status: "completed", value: { kind: "blocked", blocked }, toolError: true };
+        if (!permission.allowed) return yield* Effect.fail(forbidden());
         const local = yield* provider(input.app);
         if (local) {
           if (!direct) yield* available(local);
@@ -298,10 +396,9 @@ export function compositeBackend(
               return { status: "completed", value: direct ? result : result.value };
           }
         }
-        return yield* engine.tools.call(
-          { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
-          options,
-        );
+        return yield* engine.tools
+          .call({ ...input, accounts: yield* accounts.accounts(input.app, input.version) }, options)
+          .pipe(Effect.map(wrapDirectResult));
       }),
     resumeInvocation: (pending, response, options) =>
       Effect.gen(function* () {
@@ -318,7 +415,9 @@ export function compositeBackend(
               "Linked accounts changed while approval was pending",
             ),
           );
-        return yield* engine.tools.resume({ requestId: pending.requestId, response }, options);
+        return yield* engine.tools
+          .resume({ requestId: pending.requestId, response }, options)
+          .pipe(Effect.map(wrapDirectResult));
       }),
     authorizeElicitation: (input) =>
       checked("authorizeElicitation", input.app, input.tool).pipe(
@@ -403,46 +502,55 @@ export function compositeBackend(
   // A named operation already has the ids its live setting applies to.
   const restricted = (ids?: readonly AppId[]) => restrictMcpBackend(raw, grant(ids));
   const named = (id: AppId) => restricted([id]);
-  return {
+  const backend: McpBackend<Error> = {
     ...restricted(),
-    listApps: (input) => restricted(input?.ids).listApps(input),
-    listAccounts: (input) => named(input.app).listAccounts(input),
-    listTools: (input, options) => named(input.app).listTools(input, options),
-    searchableTools: (input, options) => named(input.app).searchableTools(input, options),
-    searchTools: (input) => restricted(input.targets.map(({ app }) => app)).searchTools(input),
-    callTool: (input, options) => named(input.app).callTool(input, options),
+    listApps: raw.listApps,
+    listAccounts: raw.listAccounts,
+    listTools: raw.listTools,
+    searchableTools: raw.searchableTools,
+    searchTools: raw.searchTools,
+    callTool: raw.callTool,
     resumeInvocation: (pending, response, options) =>
       named(pending.invocation.app).resumeInvocation(pending, response, options),
     authorizeElicitation: (input) => named(input.app).authorizeElicitation(input),
     listSkills: (input, options) => named(input.app).listSkills(input, options),
     readSkill: (input) => named(input.app).readSkill(input),
   };
+  return {
+    ...backend,
+    toolBlockers,
+    appBlockers,
+    blockedNamespace: (path: string) => {
+      for (const [app, blocked] of appBlockers) {
+        const namespace = namespaces.get(app);
+        if (blocked.code !== "access_denied" || !namespace) continue;
+        const root = localToolPath(namespace);
+        if (path.startsWith(root + ".") || path.startsWith(root + "[")) return blocked;
+      }
+      return undefined;
+    },
+  };
 }
 
-export function withLocalBlockers<
+export function withCatalogBlockers<
   Result extends {
     readonly items: readonly { readonly path: string }[];
     readonly unavailableApps?: readonly { readonly app: string }[];
   },
->(result: Result, providers: readonly PluginHostProvider[]) {
-  const appBlockers = new Map<string, Blocked>();
-  const toolBlockers = new Map<string, Blocked>();
-  for (const provider of providers) {
-    if (provider.blocked) appBlockers.set(provider.id, provider.blocked);
-    const namespace = localNamespace(provider.slug, provider.id);
-    for (const [name, blocked] of Object.entries(provider.toolBlockers ?? {}))
-      toolBlockers.set(localToolPath(namespace, name), blocked);
-  }
+>(
+  result: Result,
+  backend: Pick<ReturnType<typeof compositeBackend>, "appBlockers" | "toolBlockers">,
+) {
   return {
     ...result,
     items: result.items.map((item) => {
-      const blocked = toolBlockers.get(item.path);
+      const blocked = backend.toolBlockers.get(item.path);
       return blocked ? { ...item, blocked } : item;
     }),
     ...(result.unavailableApps
       ? {
           unavailableApps: result.unavailableApps.map((app) => {
-            const blocked = appBlockers.get(app.app);
+            const blocked = backend.appBlockers.get(app.app);
             return blocked ? { ...app, blocked } : app;
           }),
         }

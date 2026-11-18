@@ -549,24 +549,35 @@ test.each(["background", "voice", "team"] as const)(
   },
 );
 
-test("read-only hides and refuses writes; off hides the plugin from discovery and list", async () => {
+test("plugin access settings keep known tools visible with typed refusals", async () => {
   const caller = await run();
-  await records.setAccess(personal.userId, plugin, "read-only");
-  expect(await call(caller, "plugin_search", {})).toMatchObject({
-    items: expect.arrayContaining([expect.objectContaining({ path: "tools.fixture.read" })]),
-  });
-  expect(JSON.stringify(await call(caller, "plugin_search", {}))).not.toContain(
-    "tools.fixture.reviewed",
-  );
-  const refused = await call(caller, "plugin_call", {
-    calls: { path: "tools.fixture.reviewed", input: { amount: 2 } },
-  });
-  expect(refused).toMatchObject({
-    status: "completed",
-    result: { execution: { value: { ok: false } } },
-  });
-  await records.setAccess(personal.userId, plugin, "off");
-  expect(await call(caller, "plugin_search", {})).toMatchObject({ items: [] });
+  for (const [access, path, input, label] of [
+    ["read-only", "tools.fixture.reviewed", { amount: 2 }, "Read-only"],
+    ["off", "tools.fixture.read", { amount: 1 }, "Off"],
+  ] as const) {
+    await records.setAccess(personal.userId, plugin, access);
+    const blocked = {
+      code: "access_denied",
+      message: expect.stringContaining(label),
+      next: expect.stringMatching(/person.*Plugins/u),
+    };
+    expect(await call(caller, "plugin_search", { namespace: "fixture" })).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
+    });
+    expect(await call(caller, "plugin_describe", { paths: [path] })).toMatchObject({
+      items: [expect.objectContaining({ path, blocked })],
+    });
+    expect(await call(caller, "plugin_call", { calls: { path, input } }, true)).toMatchObject({
+      error: blocked,
+    });
+    expect(
+      await call(caller, "plugin_execute", {
+        code: `return await ${path}(${JSON.stringify(input)})`,
+      }),
+    ).toMatchObject({
+      result: { execution: { value: { kind: "blocked", blocked } } },
+    });
+  }
   expect(await call(caller, "opensteer_plugin_list", {})).toEqual({
     plugins: [],
     local: [],

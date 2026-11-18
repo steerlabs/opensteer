@@ -30,7 +30,7 @@ export const plugin_search = defineAgentTool({
   access: "read",
   callers: discoveryCallers,
   description:
-    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; blocked namespaces and tool items carry code, message and next; follow the target's next step. Read tools remain usable when a write needs more access. A task's ceiling and the person's access are separate.",
+    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; blocked namespaces and tool items carry code, message and next; follow the target's next step. Read tools remain usable when a write needs more access. A task's ceiling and the person's access are separate. Only the person can change Read-only or Off in Plugins.",
   input: searchInput,
   output: z.object({
     items: z.array(
@@ -56,7 +56,7 @@ export const plugin_describe = defineAgentTool({
   access: "read",
   callers: discoveryCallers,
   description:
-    "Read the whole description and TypeScript signature, including input and output types, for exact paths from plugin_search. Unknown paths appear in missing with closest paths.",
+    "Read the whole description and TypeScript signature, including input and output types, for exact paths from plugin_search. Blocked tools explain why. Unknown paths appear in missing with closest paths.",
   input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
   output: z.object({
     items: z.array(
@@ -91,7 +91,7 @@ export const plugin_execute = defineAgentTool({
   access: "write",
   callers: executionCallers,
   openWorld: true,
-  description: `Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. Return only the result needed. No filesystem, process or direct network APIs. ${pending}`,
+  description: `Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. No filesystem, process or direct network APIs. ${pending}`,
   input: z.strictObject({ code: z.string().min(1).max(65536) }),
   output: executionOutput,
 });
@@ -159,7 +159,7 @@ export const opensteer_plugin_install = defineAgentTool({
   access: "settings",
   callers: ["run"],
   description:
-    "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data: fix the draft and install again. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
+    "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data. OpenAPI warnings explain which operations were left out. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
   input: z.strictObject({
     source: z.enum(["catalog", "mcp", "openapi", "graphql", "folder"]),
     catalogId: id.optional(),
@@ -173,6 +173,7 @@ export const opensteer_plugin_install = defineAgentTool({
     plugin: object.optional(),
     version: object.optional(),
     error: object.optional(),
+    warnings: z.array(z.string()).optional(),
     next: z.string().optional(),
   }),
 });

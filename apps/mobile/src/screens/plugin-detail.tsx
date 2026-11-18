@@ -1,4 +1,5 @@
 import {
+  pluginEmptyToolsText,
   activatePluginVersion,
   answerPluginScheduledRun,
   configurePluginSchedule,
@@ -289,6 +290,15 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
               },
             ]
           : []),
+        ...(data.importWarnings?.length
+          ? data.importWarnings.map((warning, index) => ({
+              key: `import-warning:${index}`,
+              kind: "status" as const,
+              tone: "attention" as const,
+              label: "Operation left out of this import",
+              detail: warning,
+            }))
+          : []),
         ...(data.page
           ? [
               {
@@ -376,32 +386,21 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
         ];
       }),
     });
+  const emptyTools = pluginEmptyToolsText(data);
   sections.push({
     key: "tools",
     title: data.toolCount ? `Tools · ${data.toolCount}` : "Tools",
-    rows:
-      data.tools === null
-        ? [
-            {
-              key: "none",
-              kind: "text",
-              label:
-                plugin.status === "not-built"
-                  ? "Tools appear once a version builds."
-                  : "Tools appear once its accounts are connected.",
-            },
-          ]
-        : data.tools.length === 0
-          ? [{ key: "none", kind: "text", label: "This plugin has no tools." }]
-          : [
-              ...tools.items.map((tool) => ({
-                key: tool.name,
-                kind: "text" as const,
-                label: `${tool.name} · ${tool.readOnly ? "Reads" : "Writes"}`,
-                ...(tool.description ? { detail: tool.description } : {}),
-              })),
-              ...sectionRows("tools", tools, `Show all ${data.toolCount} tools`),
-            ],
+    rows: emptyTools
+      ? [{ key: "none", kind: "text", label: emptyTools }]
+      : [
+          ...tools.items.map((tool) => ({
+            key: tool.name,
+            kind: "text" as const,
+            label: `${tool.name} · ${tool.readOnly ? "Reads" : "Writes"}`,
+            ...(tool.description ? { detail: tool.description } : {}),
+          })),
+          ...sectionRows("tools", tools, `Show all ${data.toolCount} tools`),
+        ],
   });
   if (data.skills?.length)
     sections.push({

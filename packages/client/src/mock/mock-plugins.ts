@@ -303,6 +303,8 @@ interface MockPlugin {
   workflows: InstalledPluginView["workflows"];
   webhooks: InstalledPluginView["webhooks"];
   hasPage: boolean;
+  importWarnings?: string[];
+  apiKeyOnly?: true;
 }
 
 function consentOf(plugin: MockPlugin, requirement: MockRequirement): PluginConsentView {
@@ -961,6 +963,7 @@ export class MockPlugins {
             current: !link.stale,
           })),
       })),
+      ...(plugin.importWarnings ? { importWarnings: plugin.importWarnings } : {}),
       tools:
         ready && plugin.activeVersion
           ? byName(plugin.tools).slice(0, pluginDetailPreview.tools)
@@ -1036,7 +1039,7 @@ export class MockPlugins {
         cardinality: requirement.cardinality,
       },
       consent: consentOf(plugin, requirement),
-      signIn: requirement.provider !== "resend",
+      signIn: requirement.provider !== "resend" && !plugin.apiKeyOnly,
       methods: [
         {
           method: "apiKey",
@@ -1120,7 +1123,9 @@ export class MockPlugins {
       issuer,
       clients,
       // Stripe has no one-click app here: it signs in only with an app of the person's own.
-      ...(provider === "stripe" ? {} : { firstParty: { label: "Opensteer" } }),
+      ...(provider === "stripe"
+        ? { oneClickUnavailable: "no-provider-app" }
+        : { firstParty: { label: "Opensteer" } }),
     };
     return {
       connection,
@@ -1571,7 +1576,11 @@ export class MockPlugins {
         const id = this.#id("plg");
         const versionId = this.#id("ver");
         const provider = (entry?.id ?? id).split("-")[0]!;
-        const needsAccount = entry ? entry.auth.length > 0 : false;
+        const needsAccount = entry ? entry.auth.length > 0 : source.kind === "openapi";
+        const warnings =
+          source.kind === "openapi" && source.url.includes("partial")
+            ? ["GET /restricted — Unsupported authentication: legacy (oauth2)."]
+            : undefined;
         this.plugins.push({
           id,
           name,
@@ -1588,11 +1597,15 @@ export class MockPlugins {
           requirements: needsAccount
             ? [
                 {
-                  name: provider,
-                  scope: "app",
+                  name: source.kind === "openapi" ? "service" : provider,
+                  scope: source.kind === "openapi" ? "user" : "app",
                   provider,
                   providerName: name,
-                  sites: [`https://api.${provider}.example`],
+                  sites: [
+                    source.kind === "openapi"
+                      ? new URL(source.url).origin
+                      : `https://api.${provider}.example`,
+                  ],
                   credential: "sealed",
                   cardinality: "one",
                 },
@@ -1605,9 +1618,19 @@ export class MockPlugins {
           workflows: [],
           webhooks: [],
           hasPage: false,
+          ...(warnings ? { importWarnings: warnings } : {}),
+          ...(source.kind === "openapi" ? { apiKeyOnly: true as const } : {}),
         });
         this.#changed();
-        return { type: command.type, result: { status: "installed", pluginId: id, versionId } };
+        return {
+          type: command.type,
+          result: {
+            status: "installed",
+            pluginId: id,
+            versionId,
+            ...(warnings ? { warnings } : {}),
+          },
+        };
       }
       case "plugins.version.activate": {
         const plugin = this.#plugin(command.pluginId);

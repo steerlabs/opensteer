@@ -18,6 +18,7 @@ import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   contractOf,
+  expectPluginSettingRefusal,
   grantAccess,
   integrationGateway,
   pluginCall,
@@ -375,8 +376,13 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       ]),
     );
     const create = `tools[${JSON.stringify(reminderNamespace)}].create_reminder`;
-    const refused = await pluginCall(gateway, create, { title: "Renew passport" });
-    expect(refused.failure).toBeDefined();
+    await expectPluginSettingRefusal(
+      gateway,
+      reminderNamespace,
+      create,
+      { title: "Renew passport" },
+      "Read-only",
+    );
     expect(helper.invocations).toHaveLength(sent);
     await setAccess("off");
     const whileOff = await testRpcData(
@@ -394,7 +400,13 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
         { headers: host.ownerHeaders },
       ),
     ).toMatchObject({ access: "off" });
-    expect((await pluginCall(gateway, create, { title: "Renew passport" })).failure).toBeDefined();
+    await expectPluginSettingRefusal(
+      gateway,
+      reminderNamespace,
+      create,
+      { title: "Renew passport" },
+      "Off",
+    );
     expect(helper.invocations).toHaveLength(sent);
     await setAccess("all");
     expect(

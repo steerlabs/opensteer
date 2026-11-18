@@ -62,6 +62,7 @@ export interface PluginSignInChoices {
   readonly consent: PluginOAuthMethods["consent"];
   readonly options: readonly PluginSignInOption[];
   readonly ownApp: PluginOwnAppForm | null;
+  readonly oneClickUnavailable: string | null;
 }
 
 const text = (value: unknown) => (typeof value === "string" && value ? value : null);
@@ -75,9 +76,14 @@ export function pluginSignInChoices(
 ): PluginSignInChoices {
   const options: PluginSignInOption[] = [];
   let ownApp: PluginOwnAppForm | null = null;
+  let oneClickUnavailable: string | null = null;
   for (const entry of prepared.methods) {
     const setup = entry.setup;
     if (setup.kind !== "oauth2" || setup.grant !== "authorization_code") continue;
+    if (setup.oneClickUnavailable === "account-not-linked")
+      oneClickUnavailable = "One-click sign-in needs a linked Opensteer Account.";
+    else if (setup.oneClickUnavailable === "no-provider-app")
+      oneClickUnavailable = `Opensteer has no sign-in app for ${providerName}.`;
     const scopes = strings(setup.scopes);
     const base = { method: entry.method, review: entry.review, scopes };
     if (entry.oneClick) {
@@ -132,7 +138,15 @@ export function pluginSignInChoices(
             : "required",
     };
   }
-  return { connection: prepared.connection, consent: prepared.consent, options, ownApp };
+  return {
+    connection: prepared.connection,
+    consent: prepared.consent,
+    options,
+    ownApp,
+    oneClickUnavailable: options.some(({ kind }) => kind === "one-click")
+      ? null
+      : oneClickUnavailable,
+  };
 }
 
 /* ---- How a surface opens the provider and brings it back ---- */
