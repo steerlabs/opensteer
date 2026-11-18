@@ -7,7 +7,6 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
-import { TaskStartSchema } from "./home/task-start.js";
 
 /**
  * What a person has written and not sent, kept on this device so leaving a
@@ -48,8 +47,7 @@ const DraftSchema = z.object({
   /** Why a send was refused after its composer closed, until the draft is opened. */
   refusal: z.string().optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
-  /** A new task being started from this draft; see `startTask`. */
-  start: TaskStartSchema.optional().catch(undefined),
+  startGeneration: z.string().optional(),
   text: z.string(),
   updatedAt: z.number(),
 });
@@ -224,8 +222,12 @@ export function createComposerDraftStore(
   };
 
   /** False when storage refused it: the draft then lasts only as long as this window. */
-  const write = (key: string, draft: ComposerDraft): boolean => {
-    const value = JSON.stringify(draft);
+  const write = (key: string, draft: ComposerDraft, keepUnsaved = true): boolean => {
+    const value = JSON.stringify(
+      key.includes(":task:") && !draft.startGeneration && holdsContent(draft)
+        ? { ...draft, startGeneration: globalThis.crypto.randomUUID() }
+        : draft,
+    );
     try {
       const store = storage();
       if (!store) throw new Error("No storage.");
@@ -233,7 +235,7 @@ export function createComposerDraftStore(
       unsaved.delete(key);
       return true;
     } catch {
-      unsaved.set(key, value);
+      if (keepUnsaved) unsaved.set(key, value);
       return false;
     }
   };
@@ -306,6 +308,16 @@ export function createComposerDraftStore(
       };
     },
 
+    taskStartGeneration(key: string): string | null {
+      const current = read(key) ?? blank();
+      if (current.startGeneration && !unsaved.has(key)) return current.startGeneration;
+      // Windows looking at the same saved draft give that draft the same generation.
+      const startGeneration =
+        current.startGeneration ??
+        (current.updatedAt ? `legacy:${current.updatedAt}` : globalThis.crypto.randomUUID());
+      return write(key, { ...current, startGeneration }, false) ? startGeneration : null;
+    },
+
     read,
 
     /**
@@ -313,7 +325,7 @@ export function createComposerDraftStore(
      * it holds, or else the whole draft, exactly as it was.
      */
     restore(key: string, draft: ComposerDraft, returned?: ReturnedToDraft): boolean {
-      const saved = write(key, draft);
+      const saved = write(key, draft, false);
       if (saved)
         receivers.get(key)?.(
           returned ?? {
@@ -377,7 +389,15 @@ export function createComposerDraftStore(
       if (!holdsContent(draft)) {
         if (current === null) return true;
         if (draft.recoveredSendKeys?.length)
-          write(key, { ...draft, text: "", files: [], places: [], quote: null, updatedAt: now() });
+          write(key, {
+            ...draft,
+            startGeneration: undefined,
+            text: "",
+            files: [],
+            places: [],
+            quote: null,
+            updatedAt: now(),
+          });
         else remove(key);
         if (!open || refusal !== undefined) publish();
         return true;

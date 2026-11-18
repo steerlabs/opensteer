@@ -171,11 +171,13 @@ describe("the draft's places", () => {
         });
         await write(field, "What is this?");
         await click(element(".composer__send"));
-        await act(async () => {
-          await vi.waitFor(() => expect(history.at(-1)?.path).toMatch(/^\/tasks\//), {
-            timeout: 1000,
-          });
-        });
+        await vi.waitFor(
+          async () => {
+            await act(async () => {});
+            expect(history.at(-1)?.path).toMatch(/^\/tasks\//);
+          },
+          { timeout: 1000 },
+        );
       }
       await settle(100);
       expect(chipTitle()).toBe(expected);

@@ -1,8 +1,14 @@
 import { MenuView, type MenuAction } from "@expo/ui/community/menu";
-import type { HostClient, WaitingInput } from "@opensteer/client/host";
+import {
+  waitingMessageRows,
+  type HostClient,
+  type MessageEntry,
+  type TranscriptEntry,
+  type WaitingInput,
+} from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
 import Animated, { LinearTransition } from "react-native-reanimated";
 import {
@@ -39,6 +45,9 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
   readonly editing: WaitingEditController;
   readonly hostClient: HostClient;
   readonly items: readonly WaitingInput[];
+  readonly local: readonly MessageEntry[];
+  readonly transcript: readonly TranscriptEntry[];
+  readonly onOpenThread: React.ComponentProps<typeof Message>["onOpenThread"];
   readonly paused: boolean;
   /** The Host runs this task's queue again on Resume: not while it is archived. */
   readonly resumable: boolean;
@@ -53,7 +62,15 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
   const edit = editing.edit;
   // An edit outlives its message leaving the list, so the words are never lost.
   const orphan = edit?.gone === true;
-  if (!props.paused && items.length === 0 && !orphan) return null;
+  const rows = useMemo(
+    () => waitingMessageRows(items, props.local, props.transcript),
+    [items, props.local, props.transcript],
+  );
+  const localKeys = useRef(new Set<string>());
+  localKeys.current = new Set(
+    rows.flatMap((row) => (row.input === null || localKeys.current.has(row.key) ? [row.key] : [])),
+  );
+  if (!props.paused && rows.length === 0 && !orphan) return null;
 
   const act = async (id: string, run: () => Promise<void>, fallback: string): Promise<void> => {
     if (busy.current || !props.canRespond) return;
@@ -98,11 +115,14 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
 
   // Asks wait behind every message, so the fold sits between the two. A
   // message being edited stays drawn however the list is folded.
-  const foldable = (item: WaitingInput, index: number): boolean =>
-    items.length > 3 && index >= 2 && item.kind !== "ask" && item.messageId !== edit?.messageId;
-  const hidden = items.filter(foldable).length;
-  const shown =
-    hidden > 0 && !expanded ? items.filter((item, index) => !foldable(item, index)) : items;
+  const foldable = (row: (typeof rows)[number]): boolean =>
+    items.length > 3 &&
+    row.input?.kind === "message" &&
+    items.indexOf(row.input) >= 2 &&
+    row.input.messageId !== edit?.messageId &&
+    !localKeys.current.has(row.key);
+  const hidden = rows.filter(foldable).length;
+  const shown = hidden > 0 && !expanded ? rows.filter((row) => !foldable(row)) : rows;
   const fold =
     hidden > 0 ? (
       <Pressable
@@ -118,7 +138,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
         </AppText>
       </Pressable>
     ) : null;
-  const firstAsk = shown.findIndex((item) => item.kind === "ask");
+  const firstAsk = shown.findIndex(({ input }) => input?.kind === "ask");
   return (
     <View accessibilityLabel="Queued messages" style={styles.section}>
       {props.paused ? (
@@ -154,73 +174,77 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
           </Pressable>
         </View>
       ) : null}
-      {shown.flatMap((item, at) => {
-        const index = items.indexOf(item);
-        const actions = menuActions(item, editable(item));
+      {shown.flatMap(({ input: item, entry, key }, at) => {
+        const index = item ? items.indexOf(item) : -1;
+        const actions = item ? menuActions(item, editable(item)) : [];
         const row = (
           <Animated.View
-            key={item.messageId}
+            key={key}
             entering={enter}
             exiting={exit}
             layout={LinearTransition.duration(duration.enter)}
           >
-            {edit?.messageId === item.messageId ? (
+            {edit && edit.messageId === item?.messageId ? (
               <WaitingEditor edit={edit} editing={editing} />
             ) : (
               <>
                 <WaitingBubble
                   actions={actions}
-                  item={item}
-                  onAction={(id) => choose(item, id)}
-                  onEdit={editable(item) ? () => editing.open(item) : undefined}
+                  message={entry}
+                  queued={item !== null}
+                  onAction={item ? (id) => choose(item, id) : undefined}
+                  onEdit={item && editable(item) ? () => editing.open(item) : undefined}
+                  onOpenThread={props.onOpenThread}
                   viewerUserId={props.viewerUserId}
                 />
-                <View style={styles.controls}>
-                  {busyId === item.messageId ? (
-                    <ActivityIndicator size="small" color={color.muted} />
-                  ) : (
-                    <WaitingStatus count={items.length} index={index} item={item} />
-                  )}
-                  {item.edit === null ? null : <EditedMark messageId={item.messageId} />}
-                  {item.lease.kind === "other" ? (
-                    <TextAction
-                      blocked={blocked}
-                      label="Release"
-                      hint={`Stops the edit on ${item.lease.deviceLabel}, so this message can go on`}
-                      onPress={() => release(item)}
-                    />
-                  ) : null}
-                  {item.kind === "message" && item.canSteer && item.lease.kind !== "other" ? (
-                    <TextAction
-                      blocked={blocked}
-                      label="Steer"
-                      onPress={() => choose(item, "steer")}
-                    />
-                  ) : null}
-                  {actions.length > 0 ? (
-                    <MenuView
-                      actions={actions.map((action): MenuAction => ({
-                        attributes: {
-                          destructive: action.id === "remove",
-                          disabled: blocked,
-                        },
-                        id: action.id,
-                        image: action.image,
-                        title: action.title,
-                      }))}
-                      colorScheme="dark"
-                      onPressAction={({ nativeEvent }) => choose(item, nativeEvent.event)}
-                    >
-                      <View
-                        accessibilityLabel="Message actions"
-                        accessibilityRole="button"
-                        style={styles.menu}
+                {item ? (
+                  <View style={styles.controls}>
+                    {busyId === item.messageId ? (
+                      <ActivityIndicator size="small" color={color.muted} />
+                    ) : (
+                      <WaitingStatus count={items.length} index={index} item={item} />
+                    )}
+                    {item.edit === null ? null : <EditedMark messageId={item.messageId} />}
+                    {item.lease.kind === "other" ? (
+                      <TextAction
+                        blocked={blocked}
+                        label="Release"
+                        hint={`Stops the edit on ${item.lease.deviceLabel}, so this message can go on`}
+                        onPress={() => release(item)}
+                      />
+                    ) : null}
+                    {item.kind === "message" && item.canSteer && item.lease.kind !== "other" ? (
+                      <TextAction
+                        blocked={blocked}
+                        label="Steer"
+                        onPress={() => choose(item, "steer")}
+                      />
+                    ) : null}
+                    {actions.length > 0 ? (
+                      <MenuView
+                        actions={actions.map((action): MenuAction => ({
+                          attributes: {
+                            destructive: action.id === "remove",
+                            disabled: blocked,
+                          },
+                          id: action.id,
+                          image: action.image,
+                          title: action.title,
+                        }))}
+                        colorScheme="dark"
+                        onPressAction={({ nativeEvent }) => choose(item, nativeEvent.event)}
                       >
-                        <Symbol name="ellipsis" size={17} tint={color.muted} />
-                      </View>
-                    </MenuView>
-                  ) : null}
-                </View>
+                        <View
+                          accessibilityLabel="Message actions"
+                          accessibilityRole="button"
+                          style={styles.menu}
+                        >
+                          <Symbol name="ellipsis" size={17} tint={color.muted} />
+                        </View>
+                      </MenuView>
+                    ) : null}
+                  </View>
+                ) : null}
               </>
             )}
           </Animated.View>
@@ -261,27 +285,34 @@ function menuActions(item: WaitingInput, editable: boolean): WaitingAction[] {
 
 function WaitingBubble(props: {
   readonly actions: readonly LinkAction[];
-  readonly item: WaitingInput;
-  readonly onAction: (id: string) => void;
+  readonly message: MessageEntry;
+  readonly queued: boolean;
+  readonly onAction: ((id: string) => void) | undefined;
   readonly onEdit: (() => void) | undefined;
+  readonly onOpenThread: React.ComponentProps<typeof Message>["onOpenThread"];
   readonly viewerUserId: string | null;
 }): ReactNode {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!props.queued);
   return (
     <Message
-      queued
+      queued={props.queued}
       conversation={false}
-      hold={{ actions: props.actions, onAction: props.onAction, onPress: props.onEdit }}
+      hold={{
+        actions: props.actions,
+        onAction: props.onAction ?? ignoreAction,
+        onPress: props.onEdit ?? ignoreAction,
+      }}
       onReply={undefined}
-      message={props.item.entry}
+      message={props.message}
       open={open}
       onToggle={() => setOpen(!open)}
-      onOpenThread={ignoreThread}
+      onOpenThread={props.onOpenThread}
       viewerUserId={props.viewerUserId}
     />
   );
 }
-const ignoreThread = (): void => undefined;
+
+const ignoreAction = () => {};
 
 /** Where the item stands: next, queued, held on another device, or waiting for an answer. */
 function WaitingStatus(props: {

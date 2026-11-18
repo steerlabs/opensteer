@@ -61,6 +61,46 @@ describe("createThreadDraftStore", () => {
     expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe(referenced);
   });
 
+  it("keeps the queued message when the draft has its own quote and page", async () => {
+    const { drafts } = open();
+    const scope = { authorityKey: "host", deploymentId, viewerId: userId, loginId: "login" };
+    const firstQuote = "msg_0192f4a1-1111-4000-8000-000000000001";
+    const draftQuote = "msg_0192f4a1-2222-4000-8000-000000000002";
+    await drafts.writeDraft(deploymentId, userId, threadId, "current draft");
+    await drafts.writeDraftQuote(deploymentId, userId, threadId, {
+      messageId: draftQuote,
+      attribution: "Current",
+      excerpt: "Current",
+    });
+    await drafts.writeDraftPage(deploymentId, userId, threadId, page);
+    const restore = (quotedMessageId: string, tabId: string) =>
+      drafts.restoreMessage(scope, {
+        localId: "waiting",
+        createdAt: new Date().toISOString(),
+        order: 1,
+        phase: "waiting",
+        attempted: false,
+        command: {
+          type: "thread.sendMessage",
+          delivery: "queue",
+          idempotencyKey: "waiting",
+          threadId,
+          quotedMessageId,
+          content: [
+            { type: "text", text: "queued" },
+            { ...page, tabId },
+          ],
+        },
+      });
+    await expect(restore(firstQuote, page.tabId)).resolves.toBe("occupied");
+    await expect(restore(draftQuote, "another-tab")).resolves.toBe("occupied");
+    expect(drafts.readDraft(deploymentId, userId, threadId)).toMatchObject({
+      text: "current draft",
+      quote: { messageId: draftQuote },
+      page,
+    });
+  });
+
   it("never exposes one signed-in user's draft or pending work to another", async () => {
     const { drafts } = open();
     await drafts.load();

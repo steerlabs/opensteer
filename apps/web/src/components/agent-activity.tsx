@@ -27,6 +27,7 @@ import { taskMark, threadMark } from "@opensteer/client/host";
 import {
   createContext,
   useContext,
+  useCallback,
   Fragment,
   Suspense,
   lazy,
@@ -355,7 +356,7 @@ export function AgentTranscript({
    * after its live status, inside the transcript so it reads like messages.
    */
   queued?: ReactNode;
-  /** This device's messages sent behind work, drawn after the queue they will join. */
+  /** Local sends drawn by the queue, with status grouped with the transcript. */
   afterQueue?: readonly MessageEntry[];
   /** Draws an offer of Opensteer Passwords; a screen that has none shows no offer. */
   renderPasswordsSuggestion?: (offer: PasswordsSetupOffer) => ReactNode;
@@ -380,6 +381,20 @@ export function AgentTranscript({
       own.flatMap((entry, index) => (shown[index] ? [entry.clientSendKey ?? entry.id] : [])),
     );
   }, [afterQueue, entries]);
+  const [deliveryNotes, setDeliveryNotes] = useState<ReadonlyMap<string, string>>(new Map());
+  const noteDelivery = useCallback((key: string, words: string | null) => {
+    setDeliveryNotes((current) => {
+      if ((current.get(key) ?? null) === words) return current;
+      const next = new Map(current);
+      if (words === null) next.delete(key);
+      else next.set(key, words);
+      return next;
+    });
+  }, []);
+  const deliveryFeedback = useMemo(
+    () => ({ shown: deliveryStatus, notes: deliveryNotes, note: noteDelivery }),
+    [deliveryStatus, deliveryNotes, noteDelivery],
+  );
   const activities = useMemo(() => {
     const byTurn = new Map<string, ReplyActivity>();
     if (!conversation) return byTurn;
@@ -444,7 +459,7 @@ export function AgentTranscript({
   );
 
   return (
-    <DeliveryStatusShown value={deliveryStatus}>
+    <DeliveryFeedback value={deliveryFeedback}>
       <TranscriptLive value={live}>
         <AgentsLive value={live}>
           <AgentReader value={agents}>
@@ -524,21 +539,6 @@ export function AgentTranscript({
                                             ? null
                                             : renderPasswordsSuggestion?.(passwordsOffer)}
                                           {queued}
-                                          {afterQueue.map((message) => (
-                                            <div
-                                              className="transcript__row"
-                                              data-transcript-row={
-                                                message.clientSendKey ?? message.id
-                                              }
-                                              key={message.clientSendKey ?? message.id}
-                                            >
-                                              <TranscriptMessage
-                                                message={message}
-                                                reveal={null}
-                                                viewerUserId={viewerUserId}
-                                              />
-                                            </div>
-                                          ))}
                                         </TranscriptImageContext>
                                       </Speakers>
                                     </TranscriptBrowsers>
@@ -557,7 +557,7 @@ export function AgentTranscript({
           </AgentReader>
         </AgentsLive>
       </TranscriptLive>
-    </DeliveryStatusShown>
+    </DeliveryFeedback>
   );
 }
 
@@ -2221,7 +2221,11 @@ export function TranscriptMessage({
  * status line: a run of waiting messages says it once, under the last.
  */
 const noLocalMessages: readonly MessageEntry[] = [];
-const DeliveryStatusShown = createContext<ReadonlySet<string>>(new Set());
+const DeliveryFeedback = createContext<{
+  readonly shown: ReadonlySet<string>;
+  readonly notes: ReadonlyMap<string, string>;
+  readonly note: (key: string, words: string | null) => void;
+} | null>(null);
 
 /** Above a message that joined the turn under way rather than waiting for the next. */
 function SteerMark() {
@@ -2280,7 +2284,9 @@ function OwnMessage({
   const outbox = client ? hostMessageOutbox(client) : null;
   const local = message.localDelivery;
   const sendKey = message.clientSendKey ?? message.id;
-  const statusShown = useContext(DeliveryStatusShown).has(sendKey);
+  const deliveryFeedback = useContext(DeliveryFeedback);
+  const statusShown = deliveryFeedback?.shown.has(sendKey) ?? false;
+  const note = deliveryFeedback?.notes.get(sendKey);
   // The quiet first second of a send counts from when this bubble appeared.
   const [since] = useState(() => Date.now());
   const labels = presentDeliveryActions();
@@ -2295,17 +2301,22 @@ function OwnMessage({
       happened: "this message changed",
       execute: async (action: MessageDeliveryAction) => {
         if (!outbox) return;
-        if (action === "retry") return outbox.retry(sendKey);
+        deliveryFeedback?.note(sendKey, null);
         let words: string | null;
         try {
           words =
             action === "edit"
               ? presentMessageTakeBack(await outbox.restoreDraft(sendKey))
-              : (await outbox.discard(sendKey), null);
+              : action === "retry"
+                ? (await outbox.retry(sendKey)) === "settled"
+                  ? presentMessageTakeBack("sent")
+                  : null
+                : (await outbox.discard(sendKey), null);
         } catch (error) {
           words = presentMessageActionFailure(error);
         }
-        if (words) throw new Refusal(words);
+        if (deliveryFeedback) deliveryFeedback.note(sendKey, words);
+        else if (words) throw new Refusal(words);
       },
     },
     `delivery:${sendKey}`,
@@ -2381,7 +2392,11 @@ function OwnMessage({
           </div>
         ) : null}
         {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
-        {takeBack.line ? <ActionLine line={takeBack.line} /> : null}
+        {note ? (
+          <ActionLine line={{ key: sendKey, tone: "danger", text: note }} />
+        ) : takeBack.line ? (
+          <ActionLine line={takeBack.line} />
+        ) : null}
         {message.delivery ? (
           <p className="form-actions__error" role="alert">
             {message.delivery.reason}

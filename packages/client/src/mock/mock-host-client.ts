@@ -3453,7 +3453,7 @@ async function executeMockCommand(
       await client.stopNode(command.threadId, command.nodeId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "run.interrupt":
-      await client.stopRun(command.threadId);
+      await client.stopRun(command.threadId, command.runId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "request.respond":
       await client.resolveRequest(command);
@@ -5199,11 +5199,12 @@ export class MockHostClient implements HostClient {
     await this.#state.stopNode(threadId, nodeId);
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
-    if (!run) throw new Error("This Thread has nothing to stop.");
+    if (!run || (expectedRunId && run.id !== expectedRunId))
+      throw new Error("This Thread has nothing to stop.");
     await this.dispatch({
       idempotencyKey: `mock-interrupt:${crypto.randomUUID()}`,
       runId: run.id,
@@ -12360,7 +12361,7 @@ class MockHostState {
     });
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const active = this.activeRuns.get(threadId);
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     // A seeded Run has no script behind it, but the Host interrupts any Run it
@@ -12368,7 +12369,8 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
-    if (runId === undefined) throw new Error("This Thread has nothing to stop.");
+    if (runId === undefined || (expectedRunId && runId !== expectedRunId))
+      throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
 

@@ -1809,8 +1809,7 @@ export class MobileClient {
       let viewLoginId = await this.#viewLoginId(attachment.connection);
       if (!viewLoginId && attachment.connection.kind === "personal" && sameCredential()) {
         try {
-          await this.sessions.initializeViewLoginId?.(id, sameCredential);
-          viewLoginId = await this.#viewLoginId(attachment.connection);
+          viewLoginId = await this.sessions.initializeViewLoginId?.(id, sameCredential);
         } catch {
           this.#cacheIdentityFailureAttempt = attempt;
         }
@@ -1818,6 +1817,23 @@ export class MobileClient {
       if (attachment.connection.source.kind === "account")
         await this.oauth.initializeViewLoginIds(attachment.connection, sameCredential).catch(noop);
       if (!sameCredential()) continue;
+      if (
+        (!viewLoginId && this.#host.credentials.viewLoginId) ||
+        (attachment.connection.source.kind === "account" && !this.oauth.accountViewLoginId())
+      ) {
+        this.#attachmentState = "offline";
+        this.#sessionFailures.set(id, "unavailable");
+        await this.#republish();
+        return {
+          kind: "session-failed",
+          error: new ClientOperationError("Could not save this phone's login.", "blocked", {
+            kind: "local",
+            provenance: "local",
+            reason: "login-storage-unavailable",
+            retryable: false,
+          }),
+        };
+      }
       const loginId = viewLoginId;
       const accountOwned = attachment.connection.source.kind === "account";
       const accountLoginId = accountOwned ? this.oauth.accountViewLoginId() : undefined;
@@ -1907,13 +1923,7 @@ export class MobileClient {
               this.drafts.legacyMessages.load(scope).catch(() => []),
               ...fallback.map((prior) => this.#messageStorage.load(prior).catch(() => [])),
             ]);
-            return [
-              ...drafts,
-              ...pending.flat().map(({ command, localAttachmentUris }) => ({
-                command,
-                ...(localAttachmentUris ? { localAttachmentUris } : {}),
-              })),
-            ];
+            return [...drafts, ...pending.flat()];
           },
           remove: async (scope, key) => {
             const fallback = this.#priorOutboxScopes(hostClient, scope, attachment);

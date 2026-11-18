@@ -30,6 +30,7 @@ const defaultCopy = {
   edit: "Edit",
   retry: "Send again",
   sending: "Sending…",
+  restoring: "Returning to draft",
   waiting: "Waiting to send",
 };
 
@@ -125,13 +126,15 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   const links =
     props.onAction === undefined
       ? []
-      : props.phase === "rejected" || (props.inline === true && props.phase === "waiting")
+      : props.phase === "rejected" ||
+          props.phase === "restoring" ||
+          (props.inline === true && props.phase === "waiting")
         ? messageDeliveryActions(props.phase, props.attempted, unconfirmed)
         : [];
   const onAction = props.onAction;
   const status =
-    props.phase === "rejected"
-      ? "rejected"
+    props.phase === "rejected" || props.phase === "restoring"
+      ? props.phase
       : !props.showStatus || props.phase === "delivered"
         ? null
         : props.phase === "waiting"
@@ -167,7 +170,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
             </AppText>
           ) : (
             <AppText role="caption" tone="muted">
-              {status === "waiting" ? copy.waiting : copy.sending}
+              {copy[status]}
             </AppText>
           )}
           {onAction === undefined

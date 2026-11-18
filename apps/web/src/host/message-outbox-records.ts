@@ -1,3 +1,4 @@
+import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import type { MessageRecordStorage } from "@opensteer/client/host";
 
 let opened: Promise<IDBDatabase> | null = null;
@@ -30,48 +31,61 @@ function database(): Promise<IDBDatabase> {
       resolve(db);
     };
   });
+  opened = opened.catch((error: unknown) => {
+    opened = null;
+    throw error;
+  });
   return opened;
 }
+export async function mutateBrowserMessageRecord(
+  key: string,
+  change: (raw: string | null) => string | null,
+): Promise<boolean> {
+  const db = await database();
+  let committed = false;
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction("scopes", "readwrite", { durability: "strict" });
+    const store = transaction.objectStore("scopes");
+    let failure: unknown;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      try {
+        const raw: unknown = request.result;
+        if (raw !== undefined && typeof raw !== "string")
+          throw new Error("Message storage is invalid.");
+        const value = change(raw ?? null);
+        if (value === (raw ?? null)) return;
+        committed = true;
+        if (value === null) store.delete(key);
+        else store.put(value, key);
+      } catch (error) {
+        failure = error;
+        transaction.abort();
+      }
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = transaction.onabort = () =>
+      reject(failure ?? transaction.error ?? new Error("Message storage failed."));
+  });
+  return committed;
+}
+const localLocks = new KeyedMutationQueue();
+const changeSignal = "opensteer:message-outbox:changed";
+
 export function browserMessageRecords(): MessageRecordStorage {
   const locks = globalThis.navigator?.locks;
-  if (!locks) {
-    const unavailable = async () => {
-      throw new Error("Message storage requires Web Locks.");
-    };
-    return { read: unavailable, write: unavailable, remove: unavailable };
-  }
   const channel =
     typeof BroadcastChannel === "undefined"
       ? null
       : new BroadcastChannel("opensteer-message-outbox");
-  const mutate = async (
-    key: string,
-    change: (raw: string | null) => string | null,
-  ): Promise<void> => {
-    const db = await database();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction("scopes", "readwrite", { durability: "strict" });
-      const store = transaction.objectStore("scopes");
-      let failure: unknown;
-      const request = store.get(key);
-      request.onsuccess = () => {
-        try {
-          const raw: unknown = request.result;
-          if (raw !== undefined && typeof raw !== "string")
-            throw new Error("Message storage is invalid.");
-          const value = change(raw ?? null);
-          if (value === null) store.delete(key);
-          else store.put(value, key);
-        } catch (error) {
-          failure = error;
-          transaction.abort();
-        }
-      };
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = transaction.onabort = () =>
-        reject(failure ?? transaction.error ?? new Error("Message storage failed."));
-    });
-    channel?.postMessage(key);
+  const mutate: NonNullable<MessageRecordStorage["mutate"]> = async (key, change) => {
+    const committed = await mutateBrowserMessageRecord(key, change);
+    // A closed subscriber never turns a committed write into a failed send.
+    try {
+      if (!committed) return;
+      if (channel) channel.postMessage(key);
+      else globalThis.localStorage?.setItem(changeSignal, globalThis.crypto.randomUUID());
+    } catch {}
   };
   return {
     async read(key) {
@@ -90,11 +104,12 @@ export function browserMessageRecords(): MessageRecordStorage {
     mutate,
     write: (key, value) => mutate(key, () => value),
     remove: (key) => mutate(key, () => null),
-    exclusive: (key, work) => locks.request(`opensteer:${key}`, work),
+    exclusive: (key, work) => locks?.request(`opensteer:${key}`, work) ?? localLocks.run(key, work),
     subscribe(listener) {
       const changed = () => listener();
       const legacyChanged = (event: StorageEvent) => {
-        if (event.key?.startsWith("opensteer:pending-send:")) listener();
+        if (event.key === changeSignal || event.key?.startsWith("opensteer:pending-send:"))
+          listener();
       };
       channel?.addEventListener("message", changed);
       window.addEventListener("storage", legacyChanged);

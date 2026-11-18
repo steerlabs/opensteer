@@ -1,3 +1,4 @@
+import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
@@ -230,6 +231,7 @@ export async function claimFirstMessage(input: {
   readonly drafts: ThreadDraftStore;
   readonly idempotencyKey: string;
   readonly quote: ThreadDraftQuote | null;
+  readonly ownerScope: string;
   readonly staged: DraftAttachments;
   readonly start?: TaskStartParameters;
   readonly text: string;
@@ -249,6 +251,7 @@ export async function claimFirstMessage(input: {
       : {}),
     ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
     idempotencyKey: input.idempotencyKey,
+    ownerScope: input.ownerScope,
     // Only the source id travels: the Host resolves the quoted update under
     // this reader's authority, never from an excerpt.
     ...(input.quote === null ? {} : { quotedMessageId: input.quote.messageId }),
@@ -274,6 +277,7 @@ export async function claimFirstMessage(input: {
  */
 export async function handOverFirstMessage(input: {
   readonly claimed: TaskStartRecord;
+  readonly scope: ClientScope;
   readonly hostClient: HostClient;
   readonly deploymentId: string;
   readonly draftKey: string;
@@ -289,29 +293,43 @@ export async function handOverFirstMessage(input: {
   readonly threadId: string;
   readonly userId: string;
 }): Promise<TaskStartRecord> {
-  const { claimed, deploymentId, drafts, threadId, userId } = input;
-  const threadFiles: AttachmentDraftScope = { deploymentId, threadId, userId };
-  const firstUris = claimed.localUris;
-  const threadUris =
-    firstUris === undefined ? undefined : await copyFiles(input.files, threadFiles, firstUris);
+  const { claimed, deploymentId, drafts, scope, threadId, userId } = input;
+  const scopeKey = clientScopeKey(scope);
+  const assertCurrent = () => {
+    if (
+      claimed.ownerScope !== scopeKey ||
+      clientScopeKey(input.hostClient.connection.getSnapshot().scope) !== scopeKey
+    )
+      throw new Error("This message belongs to another sign-in.");
+  };
   const outbox = hostMessageOutbox(input.hostClient);
   if (!outbox) throw new Error("Message storage is unavailable.");
-  await outbox.enqueue(
-    {
-      type: "thread.sendMessage",
-      threadId,
-      delivery: claimed.delivery,
-      idempotencyKey: claimed.idempotencyKey,
-      content: [
-        ...(claimed.text ? [{ type: "text" as const, text: claimed.text }] : []),
-        ...(claimed.browserPage ? [claimed.browserPage] : []),
-        ...(claimed.attachments ?? []),
-      ],
-      ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
-      ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
-    },
-    threadUris ? { localAttachmentUris: threadUris } : undefined,
-  );
+  assertCurrent();
+  const firstUris = claimed.localUris;
+  let threadUris: (string | null)[] | undefined;
+  if (!(await outbox.hasHandoff(scope, claimed.idempotencyKey))) {
+    assertCurrent();
+    const threadFiles: AttachmentDraftScope = { deploymentId, threadId, userId };
+    threadUris = firstUris && (await copyFiles(input.files, threadFiles, firstUris));
+    assertCurrent();
+    await outbox.enqueue(
+      {
+        type: "thread.sendMessage",
+        threadId,
+        delivery: claimed.delivery,
+        idempotencyKey: claimed.idempotencyKey,
+        content: [
+          ...(claimed.text ? [{ type: "text" as const, text: claimed.text }] : []),
+          ...(claimed.browserPage ? [claimed.browserPage] : []),
+          ...(claimed.attachments ?? []),
+        ],
+        ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
+        ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
+      },
+      { handoff: true, ...(threadUris ? { localAttachmentUris: threadUris } : {}) },
+    );
+  }
+  assertCurrent();
   const owed = { ...claimed, threadId, ...(threadUris ? { localUris: threadUris } : {}) };
   await input.onReady();
   const cleared = await drafts.clearTaskStart(
@@ -320,7 +338,10 @@ export async function handOverFirstMessage(input: {
     input.draftKey,
     claimed.idempotencyKey,
   );
-  if (cleared) forgetDraftFiles(input.files, firstUris ?? []);
+  if (cleared) {
+    forgetDraftFiles(input.files, firstUris ?? []);
+    await outbox.forgetHandoff(scope, claimed.idempotencyKey).catch(() => {});
+  }
   return owed;
 }
 

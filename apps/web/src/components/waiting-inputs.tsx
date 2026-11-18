@@ -21,6 +21,9 @@ import {
   setWaitingDraftText,
   waitingDraftContent,
   waitingDraftSave,
+  waitingMessageRows,
+  type MessageEntry,
+  type TranscriptEntry,
   type HostClient,
   type WaitingAsk,
   type WaitingDraft,
@@ -41,6 +44,7 @@ import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
 const foldAfter = 3;
+const noLocalMessages: readonly MessageEntry[] = [];
 
 /**
  * Everything waiting to reach the task's agent, at the foot of its
@@ -53,6 +57,8 @@ export const WaitingInputs = memo(function WaitingInputs({
   client,
   disabled,
   inputs,
+  local = noLocalMessages,
+  transcript,
   onError,
   paused,
   resumable,
@@ -63,6 +69,8 @@ export const WaitingInputs = memo(function WaitingInputs({
   /** The reader can't act here at all. Each action is otherwise the Host's to offer. */
   readonly disabled: boolean;
   readonly inputs: readonly WaitingInput[];
+  readonly local?: readonly MessageEntry[];
+  readonly transcript?: readonly TranscriptEntry[];
   readonly onError: (error: unknown) => void;
   readonly paused: boolean;
   /** Where words sent as a new message are kept until the Host answers them, as the composer's are. */
@@ -84,16 +92,37 @@ export const WaitingInputs = memo(function WaitingInputs({
     // Taken while open: it was at the head of the line, so it stays on top.
     const gone = [...editing].flatMap((id) => {
       const last = here.has(id) ? undefined : seen.current.get(id);
-      return last ? [{ gone: true, input: last }] : [];
+      return last
+        ? [
+            {
+              gone: true,
+              input: last,
+              entry: last.entry,
+              key: last.entry.clientSendKey ?? last.messageId,
+            },
+          ]
+        : [];
     });
-    return [...gone, ...inputs.map((input) => ({ gone: false, input }))];
-  }, [editing, inputs]);
+    return [
+      ...gone,
+      ...waitingMessageRows(inputs, local, transcript).map((row) => ({ ...row, gone: false })),
+    ];
+  }, [editing, inputs, local, transcript]);
+  const localKeys = useRef(new Set<string>());
+  localKeys.current = new Set(
+    rows.flatMap((row) => (row.input === null || localKeys.current.has(row.key) ? [row.key] : [])),
+  );
 
   if (!paused && rows.length === 0) return null;
 
-  const folded = !expanded && rows.length > foldAfter;
+  const folded = !expanded && inputs.length > foldAfter;
   const visible = folded
-    ? rows.filter((row, index) => index < foldAfter - 1 || editing.has(row.input.messageId))
+    ? rows.filter(
+        (row, index) =>
+          index < foldAfter - 1 ||
+          localKeys.current.has(row.key) ||
+          (row.input && editing.has(row.input.messageId)),
+      )
     : rows;
 
   const act = (messageId: string, run: () => Promise<void>) => {
@@ -136,24 +165,27 @@ export const WaitingInputs = memo(function WaitingInputs({
       ) : null}
       {visible.length > 0 ? (
         <ol className="queued__list">
-          {visible.map(({ gone, input }, index) => (
+          {visible.map(({ gone, input, entry, key }, index) => (
             <WaitingRow
               act={act}
               blocked={disabled || busyId !== null}
-              busy={busyId === input.messageId}
+              busy={input !== null && busyId === input.messageId}
               client={client}
               disabled={disabled}
               gone={gone}
               input={input}
-              key={input.messageId}
-              onOpenChange={(open) => setOpen(input.messageId, open)}
+              message={entry}
+              key={key}
+              onOpenChange={(open) => {
+                if (input) setOpen(input.messageId, open);
+              }}
               position={`${index + 1} of ${rows.length}`}
               viewerUserId={viewerUserId}
             />
           ))}
         </ol>
       ) : null}
-      {rows.length > foldAfter ? (
+      {inputs.length > foldAfter && (expanded || visible.length < rows.length) ? (
         <button
           aria-expanded={expanded}
           className="queued__more"
@@ -204,7 +236,7 @@ function release(session: EditSession): void {
  */
 function useInPlaceEdit(
   client: HostClient,
-  input: WaitingInput,
+  input: WaitingInput | null,
   gone: boolean,
   onOpenChange: (open: boolean) => void,
   trigger: RefObject<HTMLButtonElement | null>,
@@ -217,7 +249,7 @@ function useInPlaceEdit(
   const returnFocus = useRef(false);
   const row = useRef<HTMLLIElement | null>(null);
   const draft =
-    kept && !gone && !saving
+    kept && input && !gone && !saving
       ? followWaitingDraft(kept, { content: input.item.message.content, revision: input.revision })
       : kept;
 
@@ -238,7 +270,7 @@ function useInPlaceEdit(
   }, [draft, trigger]);
 
   const open = () => {
-    if (session.current) return;
+    if (!input || session.current) return;
     const held: EditSession = {
       closed: false,
       opening: client.editWaitingMessage(input.threadId, input.messageId),
@@ -284,7 +316,7 @@ function useInPlaceEdit(
   /** Saves the edit in place; an unchanged one just ends. Resolves to the version now waiting. */
   const save = async (): Promise<number | null> => {
     const held = session.current;
-    if (!held || !draft || held.saving) return null;
+    if (!input || !held || !draft || held.saving) return null;
     held.saving = true;
     const current = await typed();
     held.saving = false;
@@ -328,7 +360,7 @@ function useInPlaceEdit(
    */
   const sendAsNew = async (): Promise<void> => {
     const held = session.current;
-    if (!held || !draft) return;
+    if (!input || !held || !draft) return;
     const outbox = hostMessageOutbox(client);
     if (!outbox) throw storageUnavailable();
     let submission = held.sending;
@@ -400,6 +432,7 @@ function WaitingRow({
   disabled,
   gone,
   input,
+  message,
   onOpenChange,
   position,
   viewerUserId,
@@ -411,7 +444,8 @@ function WaitingRow({
   readonly disabled: boolean;
   /** No longer waiting, kept only for the edit still open on it. */
   readonly gone: boolean;
-  readonly input: WaitingInput;
+  readonly input: WaitingInput | null;
+  readonly message: MessageEntry;
   readonly onOpenChange: (open: boolean) => void;
   readonly position: string;
   readonly viewerUserId: string | null;
@@ -419,11 +453,11 @@ function WaitingRow({
   const trigger = useRef<HTMLButtonElement | null>(null);
   const edit = useInPlaceEdit(client, input, gone, onOpenChange, trigger);
   const [deciding, setDeciding] = useState<"approve" | "decline" | null>(null);
-  const id = input.messageId;
-  const otherDevice = input.lease.kind === "other" ? input.lease.deviceLabel : null;
+  const id = input?.messageId ?? message.id;
+  const otherDevice = input?.lease.kind === "other" ? input.lease.deviceLabel : null;
   const editable =
-    input.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
-  const ask = input.kind === "ask" ? input : null;
+    input?.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
+  const ask = input?.kind === "ask" ? input : null;
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -459,13 +493,15 @@ function WaitingRow({
       }
     });
 
-  const files = input.entry.attachments?.length ?? 0;
+  const files = message.attachments?.length ?? 0;
   const label =
-    input.kind === "ask"
-      ? `Ask from ${input.asker}, ${position}: ${input.text}`
-      : `Queued message ${position}: ${input.text}${
-          files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
-        }`;
+    input === null
+      ? undefined
+      : input.kind === "ask"
+        ? `Ask from ${input.asker}, ${position}: ${input.text}`
+        : `Queued message ${position}: ${input.text}${
+            files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
+          }`;
   const approving = ask !== null && (ask.approving || deciding === "approve");
   const editButton = (name: string) => (
     <button
@@ -494,7 +530,7 @@ function WaitingRow({
       onClick={clickWords}
       ref={edit.row}
     >
-      {edit.draft ? (
+      {edit.draft && input ? (
         <InPlaceEditor
           asker={
             ask?.asker ??
@@ -513,7 +549,12 @@ function WaitingRow({
           onText={edit.setText}
         />
       ) : (
-        <TranscriptMessage message={input.entry} queued reveal={null} viewerUserId={viewerUserId} />
+        <TranscriptMessage
+          message={message}
+          queued={input !== null}
+          reveal={null}
+          viewerUserId={viewerUserId}
+        />
       )}
       {edit.draft ? (
         <EditStatus
@@ -529,7 +570,7 @@ function WaitingRow({
           saving={edit.saving}
         />
       ) : null}
-      {ask ? (
+      {input === null ? null : ask ? (
         <div className="queued__row waiting-ask">
           {approving ? (
             <span className="waiting-ask__line" data-approving role="status">

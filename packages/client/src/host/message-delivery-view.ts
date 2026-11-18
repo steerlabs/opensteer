@@ -1,7 +1,8 @@
 import type { MessageEntry, TranscriptEntry } from "./client.js";
+import type { WaitingInput } from "./waiting-inputs.js";
 
 /** Where a message a device holds is on its way to the computer, as its transcript draws it. */
-export type MessageDeliveryPhase = "waiting" | "sending" | "rejected" | "delivered";
+export type MessageDeliveryPhase = "waiting" | "sending" | "rejected" | "restoring" | "delivered";
 
 export type MessageDeliveryAction = "edit" | "delete" | "dont-send" | "retry";
 
@@ -17,6 +18,7 @@ export function messageDeliveryActions(
   attempted: boolean,
   unconfirmed = false,
 ): readonly MessageDeliveryAction[] {
+  if (phase === "restoring") return ["edit"];
   if (phase === "rejected") return unconfirmed ? ["retry"] : ["edit", "delete"];
   if (phase === "waiting" && !attempted) return ["edit", "dont-send"];
   return [];
@@ -35,44 +37,54 @@ export function messageDeliveryStatusShown(
   );
 }
 
-/**
- * Where a task's messages still on this device stand. Sent behind a turn at
- * work, the Host will hold a message in its queue, so it is drawn after the
- * queue, where it will join it; sent to a task at rest, it starts the next turn
- * in the transcript. Each is placed when it first appears and stays put, so it
- * never jumps between the two. `placed` is the previous answer, returned as is
- * when nothing changed.
- */
-export function placeLocalMessages(
-  placed: ReadonlyMap<string, boolean>,
-  entries: readonly TranscriptEntry[],
-  behindWork: boolean,
-): ReadonlyMap<string, boolean> {
-  const keys = entries.flatMap((entry) =>
-    entry.kind === "message" && entry.localDelivery ? [entry.clientSendKey ?? entry.id] : [],
-  );
-  if (keys.length === placed.size && keys.every((key) => placed.has(key))) return placed;
-  return new Map(keys.map((key) => [key, placed.get(key) ?? behindWork]));
-}
+const noLocalMessages: readonly MessageEntry[] = [];
 
-/** The transcript without the messages drawn after the queue, and those messages in order. */
+/** A work task draws its local sends in the same list as the Host's queue. */
 export function splitLocalMessages(
   entries: readonly TranscriptEntry[],
-  placed: ReadonlyMap<string, boolean>,
+  workTask: boolean,
 ): {
   readonly transcript: readonly TranscriptEntry[];
   readonly afterQueue: readonly MessageEntry[];
 } {
+  if (!workTask) return { transcript: entries, afterQueue: noLocalMessages };
   const afterQueue = entries.filter(
-    (entry): entry is MessageEntry =>
-      entry.kind === "message" &&
-      entry.localDelivery !== undefined &&
-      placed.get(entry.clientSendKey ?? entry.id) === true,
+    (entry): entry is MessageEntry => entry.kind === "message" && entry.localDelivery !== undefined,
   );
   return afterQueue.length === 0
-    ? { transcript: entries, afterQueue }
+    ? { transcript: entries, afterQueue: noLocalMessages }
     : {
-        transcript: entries.filter((entry) => !afterQueue.includes(entry as MessageEntry)),
+        transcript: entries.filter((entry) => entry.kind !== "message" || !entry.localDelivery),
         afterQueue,
       };
+}
+
+export function waitingMessageRows(
+  inputs: readonly WaitingInput[],
+  local: readonly MessageEntry[],
+  transcript: readonly TranscriptEntry[] = [],
+): readonly {
+  readonly key: string;
+  readonly input: WaitingInput | null;
+  readonly entry: MessageEntry;
+}[] {
+  const aliases = new Map(
+    transcript.flatMap((entry) =>
+      entry.kind === "message" && entry.clientSendKey ? [[entry.id, entry.clientSendKey]] : [],
+    ),
+  );
+  const rows = inputs.map((input) => ({
+    key: input.entry.clientSendKey ?? aliases.get(input.messageId) ?? input.messageId,
+    input,
+    entry: input.entry,
+  }));
+  const admitted = new Set(rows.map(({ key }) => key));
+  return [
+    ...rows.filter(({ input }) => input.kind !== "ask"),
+    ...local.flatMap((entry) => {
+      const key = entry.clientSendKey ?? entry.id;
+      return admitted.has(key) ? [] : [{ key, input: null, entry }];
+    }),
+    ...rows.filter(({ input }) => input.kind === "ask"),
+  ];
 }
