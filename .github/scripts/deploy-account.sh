@@ -22,6 +22,17 @@ if [[ -n $live ]]; then
   ((status == 0)) || { echo "Cannot compare $source with live $live" >&2; exit 1; }
 fi
 
+if [[ -n $live ]]; then
+  # A rollback restores the old pod spec without kubectl's record of it. Record what is live, or
+  # this apply cannot remove fields a rollback brought back (such as retired secret files).
+  kubectl -n "$namespace" get deployment account -o json |
+    jq '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace,
+      labels: .metadata.labels, annotations: (.metadata.annotations // {} | del(
+        ."kubectl.kubernetes.io/last-applied-configuration", ."deployment.kubernetes.io/revision"))},
+      spec}' |
+    kubectl apply set-last-applied --create-annotation=true -f -
+fi
+
 root=$(git rev-parse --show-toplevel)
 kubectl kustomize "$root/deploy/account" |
   sed -e "s|@ACCOUNT_IMAGE@|$image|g" -e "s|@SOURCE_REVISION@|$source|g" |
