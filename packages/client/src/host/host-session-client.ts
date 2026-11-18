@@ -2217,21 +2217,23 @@ export class HttpHostClient {
       const closed = new Promise<ReturnType<typeof classifyClientFailure>>((done) => {
         closeLease = done;
       });
-      const release = () => {
+      const close = () => {
+        if (this.#connectionFailed !== fail) return;
+        this.#connectionFailed = null;
         unsubscribe();
         attempt.signal.removeEventListener("abort", abort);
-        if (this.#connectionFailed === fail) this.#connectionFailed = null;
+        for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
+        this.#recomputeConnection();
       };
       const fail = (error: unknown) => {
-        release();
-        attempt.fail?.(classifyClientFailure(error));
-        if (admitted) closeLease(classifyClientFailure(error));
+        if (this.#connectionFailed !== fail) return;
+        close();
+        const failure = classifyClientFailure(error);
+        attempt.fail?.(failure);
+        if (admitted) closeLease(failure);
         else reject(error);
       };
-      const abort = () => {
-        fail(attempt.signal.reason);
-        for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-      };
+      const abort = () => fail(attempt.signal.reason);
       const observe = () => {
         if (this.#snapshot.session !== "authenticated") {
           fail(
@@ -2262,11 +2264,7 @@ export class HttpHostClient {
               signal.throwIfAborted();
               if (this.#tasksStale) this.#rereadTasks();
             }),
-          close: () => {
-            release();
-            for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-            this.#recomputeConnection();
-          },
+          close,
         };
         attempt.admit?.(lease);
         resolve(lease);
