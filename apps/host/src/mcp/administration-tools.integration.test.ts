@@ -155,7 +155,7 @@ function fixture() {
       new AdministrationToolHandlers(service, (id) => id === environmentId),
     ),
     ...localServerToolHandlers({
-      remove: vi.fn(),
+      remove: vi.fn(async () => ({ ok: true as const })),
       list: async () => [],
     } as unknown as LocalServerRegistry),
   };

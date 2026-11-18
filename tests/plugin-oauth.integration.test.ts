@@ -864,8 +864,9 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
   expect(refreshIds.length).toBeGreaterThan(1);
   expect(new Set(refreshIds).size).toBe(1);
   const detail = await service.detail({ plugin: target.plugin }, ownerContext);
-  expect(detail.links).toMatchObject([
-    { account: connected.account, consent: started.prepared.consent },
+  expect(detail.links).toMatchObject([{ account: connected.account, current: true }]);
+  expect(Object.values(detail.readiness)).toEqual([
+    { state: "usable", consent: started.prepared.consent },
   ]);
   await service.unlinkAccount({ ...target, account: connected.account! }, ownerContext);
   revokeFails = true;

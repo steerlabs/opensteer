@@ -89,11 +89,6 @@ describeStore("plugin devices", (test) => {
       const pluginId = installed.installation.pluginId!;
       expect(installed.installation.title).toBe("Main Bedroom Apple TV");
       expect((await platform.plugins.list())[0]?.setupThreadId).toBe(run.thread.id);
-      const row = await platform.settings.row(run.userId, { kind: "plugin", pluginId });
-      expect(row).toMatchObject({
-        device: { name: "Main Bedroom Apple TV", kind: "tv" },
-        permissions: { canRemove: true },
-      });
       const devices = await platform.settings.otherDevices(run.userId, [
         { id: pluginComputerId, name: "Computer", status: "offline" },
       ]);
@@ -105,6 +100,8 @@ describeStore("plugin devices", (test) => {
       expect(devices).toMatchObject([
         {
           pluginId,
+          name: "Main Bedroom Apple TV",
+          kind: "tv",
           computer: { id: pluginComputerId, status: "offline" },
           issue: serverStatus.statusDetail,
           setupThreadId: run.thread.id,
@@ -327,14 +324,12 @@ describeStore("plugin devices", (test) => {
           requestId: randomUUID(),
         });
       const installed = await install(),
-        pluginId = installed.installation.pluginId!,
-        target = { kind: "plugin", pluginId } as const;
+        pluginId = installed.installation.pluginId!;
       const data = join(directory, "plugins", "data", pluginId, "pairing");
       await writeFile(data, "retained");
-      expect((await platform.settings.row(run.userId, target)).permissions.canRemove).toBe(true);
-      await expect(platform.settings.row(foreign, target)).rejects.toMatchObject({
-        code: "forbidden",
-      });
+      await expect(
+        platform.plugins.assertCanRemove(pluginId, { userId: run.userId }),
+      ).resolves.toBeUndefined();
       await expect(
         platform.plugins.assertCanRemove(pluginId, { userId: foreign }),
       ).rejects.toMatchObject({ code: "forbidden" });
