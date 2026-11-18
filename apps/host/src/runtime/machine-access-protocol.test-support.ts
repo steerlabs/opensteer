@@ -733,6 +733,8 @@ export async function connectCallerMachine(
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
     readonly runnerKind?: "local" | "main";
+    /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
+    readonly triggerPrograms?: boolean;
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -759,6 +761,7 @@ export async function connectCallerMachine(
       "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),
