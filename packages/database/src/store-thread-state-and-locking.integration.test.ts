@@ -1345,8 +1345,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Retirement never waited on creation",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Retirement never waited on the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },
@@ -1422,8 +1422,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Creation never waited on retirement",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Creation never waited on the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },
@@ -1514,8 +1514,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Messaging creation and retirement never met at the environment fence",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Messaging creation and retirement never met at the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },

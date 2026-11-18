@@ -11,7 +11,7 @@ import "./connection.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { readThreadWaitSnapshot } from "./thread-wait.js";
 describeStore("agent Thread history", (it) => {
-  it("keeps model-control messages out of both history and point reads", async ({
+  it("keeps model-control messages hidden and preserves the recovery continuation", async ({
     storeFixture,
   }) => {
     const { database, startRunFixture } = storeFixture;
@@ -26,6 +26,7 @@ describeStore("agent Thread history", (it) => {
         { kind: "run-result", cause: "assignment-result" },
         { kind: "continuation", cause: "context-window" },
         { kind: "input", cause: "claude-compaction" },
+        { kind: "continuation", cause: "run-recovery" },
       ] as const;
       const ids = [];
       for (const [index, { kind, cause }] of controls.entries()) {
@@ -44,18 +45,27 @@ describeStore("agent Thread history", (it) => {
           })
           .execute();
         await syncTranscriptMessage(tx, id);
-        ids.push(id);
+        ids.push({ id, visible: cause === "run-recovery" });
       }
       return ids;
     });
     const read = { viewerId: f.userId, scope: { kind: "thread", threadId: f.thread.id } as const };
     const page = await readTranscriptPage(database, read);
     if (page.kind !== "page") throw new Error("Expected model task history");
-    for (const id of ids) {
-      expect(page.items.map((item) => item.id)).not.toContain(id);
-      await expect(readTranscriptItem(database, { ...read, itemId: id })).resolves.toEqual({
-        kind: "unavailable",
-      });
+    for (const { id, visible } of ids) {
+      const item = page.items.find((item) => item.id === id);
+      const body = await readTranscriptItem(database, { ...read, itemId: id });
+      if (visible) {
+        expect(item).toMatchObject({
+          kind: "message",
+          messageKind: "continuation",
+          isTurnStart: false,
+        });
+        expect(body).toMatchObject({ kind: "item", item, body: { kind: "message" } });
+      } else {
+        expect(item).toBeUndefined();
+        expect(body).toEqual({ kind: "unavailable" });
+      }
     }
   });
   it("orders published messages by their retained item and reads the canonical body", async ({
