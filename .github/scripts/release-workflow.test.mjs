@@ -1051,3 +1051,76 @@ test("stable refuses an insider reachable only through a merged side branch", ()
     f.close();
   }
 });
+test("stable is gated only by the full run's jobs for what a release ships", async () => {
+  const { releaseGateStep, releaseGating, notReleaseGating } =
+    await import("./ci-release-gate.mjs");
+  const f = fixture();
+  try {
+    f.state.releases = [published(f.source)];
+    const options = { root: f.root, channel: "stable", insiderTag: f.source.tag };
+    const message = /stable needs a green full CI run/;
+    const green = { status: "completed", conclusion: "success" };
+    const red = { status: "completed", conclusion: "failure" };
+    // Matrix jobs carry their shard or task in parentheses.
+    const names = Object.keys(releaseGating).flatMap((lane) =>
+      ["tests", "integration", "native-mac"].includes(lane)
+        ? [`${lane} (1)`, `${lane} (2)`]
+        : [lane],
+    );
+    const gate = (step) => ({
+      name: "Check",
+      ...red,
+      steps: [
+        { name: "Set up job", ...green },
+        { name: releaseGateStep, ...step },
+        { name: "Run pnpm exec tsx scripts/ci-check.ts", ...red },
+      ],
+    });
+    const jobs = ({ check = gate(green), gating = {}, windows = red } = {}) => [
+      ...names.map((name) => ({ name, ...green, ...gating[name] })),
+      ...Object.keys(notReleaseGating).map((name) => ({ name, ...windows })),
+      check,
+    ];
+    // Full run green.
+    f.state.fullJobs = jobs({ check: { name: "Check", ...green }, windows: green });
+    assert.equal(preflight(options, f.run).sha, f.source.sha);
+    // Red only in a job for a platform no release publishes: promotion proceeds.
+    f.state.fullRuns[0].conclusion = "failure";
+    f.state.fullJobs = jobs();
+    assert.equal(preflight(options, f.run).sha, f.source.sha);
+    // Red in a gating job, or Check's gating verification red, missing or still running.
+    for (const name of ["tests (2)", "native-mac (1)", "android", "changes"]) {
+      f.state.fullJobs = jobs({ gating: { [name]: red } });
+      assert.throws(() => preflight(options, f.run), message, name);
+    }
+    for (const check of [
+      gate(red),
+      gate({ status: "in_progress", conclusion: null }),
+      { name: "Check", ...red, steps: [] },
+      { name: "Check", ...red },
+    ]) {
+      f.state.fullJobs = jobs({ check });
+      assert.throws(() => preflight(options, f.run), message);
+    }
+    f.state.fullJobs = jobs().filter((job) => job.name !== "Check");
+    assert.throws(() => preflight(options, f.run), message);
+    // A gating job missing, skipped or cancelled.
+    for (const lane of Object.keys(releaseGating)) {
+      f.state.fullJobs = jobs().filter((job) => job.name.replace(/ \(.*\)$/u, "") !== lane);
+      assert.throws(() => preflight(options, f.run), message, lane);
+    }
+    for (const conclusion of ["skipped", "cancelled"]) {
+      f.state.fullJobs = jobs({ gating: { "browser-journeys": { conclusion } } });
+      assert.throws(() => preflight(options, f.run), message, conclusion);
+    }
+    // The newest full run still decides; an older one cannot stand in for it.
+    f.state.fullJobs = jobs({ gating: { lint: red } });
+    f.state.fullRuns = [
+      { ...f.state.fullRuns[0], id: 41, run_number: 6, conclusion: "success" },
+      f.state.fullRuns[0],
+    ];
+    assert.throws(() => preflight(options, f.run), message);
+  } finally {
+    f.close();
+  }
+});

@@ -472,3 +472,21 @@ test("real-browser command fails its existing job and Check and uploads inventor
   assert.match(aggregate, /inventory.discovered/);
   assert.match(aggregate, /realBrowserTests/);
 });
+test("the release-gating verification ignores only the named lanes' results", () => {
+  const red = structuredClone(everything.needs);
+  red["native-windows"] = { result: "failure" };
+  const ignore = new Set(["native-windows"]);
+  assert.throws(() => validateResults(everything.plan, red, "schedule"), /native-windows/);
+  assert.doesNotThrow(() => validateResults(everything.plan, red, "schedule", "", { ignore }));
+  // Another lane still fails it, and a full run must still select the ignored lane.
+  red.tests = { result: "failure" };
+  assert.throws(() => validateResults(everything.plan, red, "schedule", "", { ignore }), /tests/);
+  const skipped = structuredClone(everything);
+  skipped.plan.lanes["native-windows"] = false;
+  skipped.needs.changes.outputs["native-windows"] = "false";
+  skipped.needs["native-windows"] = { result: "skipped" };
+  assert.throws(
+    () => validateResults(skipped.plan, skipped.needs, "schedule", "", { ignore }),
+    /forbid skips/,
+  );
+});

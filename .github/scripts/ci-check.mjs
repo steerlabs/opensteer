@@ -17,7 +17,14 @@ export function timedOutLanes(jobs, limits) {
   }
   return lanes;
 }
-export function validateResults(plan, needs, event, sha, { timedOut = new Map() } = {}) {
+/** `ignore` names lanes whose results do not count; their planning rules still apply. */
+export function validateResults(
+  plan,
+  needs,
+  event,
+  sha,
+  { timedOut = new Map(), ignore = new Set() } = {},
+) {
   if (!events.has(event)) throw new Error(`Unknown CI event: ${event}`);
   if (needs.changes?.result !== "success" || plan?.version !== 2 || plan.detectionError === true)
     throw new Error("Change detection failed");
@@ -89,6 +96,7 @@ export function validateResults(plan, needs, event, sha, { timedOut = new Map() 
       throw new Error(`Missing/invalid plan output: ${lane}`);
     if (lane === "lint" && !flag) throw new Error("Lint must run");
     if (!flag && full) throw new Error("Scheduled/manual runs forbid skips");
+    if (ignore.has(lane)) continue;
     const result = needs[lane]?.result;
     if (result !== "success" && !(flag === false && result === "skipped"))
       failures.push(
