@@ -1272,7 +1272,8 @@ export class HttpHostClient {
         detailGeneration = state.generation;
         this.#ensureAssignments(threadId);
         this.#ensureAutomations(threadId, reattached);
-        this.#ensureBrowserUsage(threadId, "missing");
+        // Browser usage notices only reach synchronized details.
+        this.#ensureBrowserUsage(threadId, reattached ? "full" : "missing");
       }
     });
     this.#threadReaders.set(threadId, () => {
