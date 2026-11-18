@@ -130,12 +130,17 @@ export type IntegrationRequester = {
   | { readonly threadId?: never; readonly connectionId?: never }
 );
 
+type IntegrationReadinessTarget = {
+  readonly access: IntegrationAccess;
+  readonly connectionId: IntegrationConnectionId | null;
+};
+
 /** Scope readiness to the account and access a resolved Request actually granted. */
 export type IntegrationDiscoveryRequester = IntegrationRequester & {
-  readonly target?: {
-    readonly access: IntegrationAccess;
-    readonly connectionId: IntegrationConnectionId | null;
-  };
+  readonly target?: IntegrationReadinessTarget;
+  readonly includeTargetReadiness?: true;
+  readonly provider?:
+    { readonly serverId: IntegrationServerId } | { readonly connectionId: IntegrationConnectionId };
 };
 
 export interface DiscoveredIntegrationServer {
@@ -1201,6 +1206,10 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       }[];
       readonly installation: IntegrationInstallation;
       readonly readiness: {
+        readonly forTarget?: (
+          serverId: IntegrationServerId,
+          target: IntegrationReadinessTarget,
+        ) => IntegrationReadiness | undefined;
         readonly servers: readonly IntegrationReadiness[];
         readonly tools: readonly {
           readonly readiness: IntegrationReadiness;
@@ -1211,10 +1220,29 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       readonly tools: readonly IntegrationTool[];
     }[]
   > {
+    const provider = input.provider;
     const [installations, authority, grants] = await Promise.all([
       this.database
         .selectFrom("integrationInstallations")
         .selectAll()
+        .$if(provider !== undefined, (query) =>
+          query.where(({ exists, selectFrom }) => {
+            let server = selectFrom("integrationServers")
+              .select("integrationServers.id")
+              .whereRef("integrationServers.installationId", "=", "integrationInstallations.id");
+            if (provider && "serverId" in provider)
+              server = server.where("integrationServers.id", "=", provider.serverId);
+            else if (provider)
+              server = server.where("integrationServers.id", "=", (eb) =>
+                eb
+                  .selectFrom("integrationConnections")
+                  .select("integrationServerId")
+                  .where("id", "=", provider.connectionId)
+                  .where("ownerUserId", "=", input.ownerUserId),
+              );
+            return exists(server);
+          }),
+        )
         .orderBy("title", "asc")
         .limit(1_000)
         .execute(),
@@ -1287,7 +1315,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
           };
           const readinessFor = (
             server: IntegrationServer,
-            tool: IntegrationTool | null,
+            requiredAccess: IntegrationAccess,
+            requiredConnectionId: IntegrationConnectionId | null,
           ): IntegrationReadiness =>
             resolveIntegrationReadiness({
               connectionRequirement: server.connectionRequirement,
@@ -1295,12 +1324,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
               hasAccess: hasInstallationAccess,
               runAccess: requesterAccess.runAccess,
               installationStatus: installation.status,
-              requiredAccess:
-                input.target?.access ??
-                (tool === null || integrationToolEffect(tool.annotations) === "read"
-                  ? "read"
-                  : "read-write"),
-              requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
+              requiredAccess,
+              requiredConnectionId,
               serverId: server.id,
               serverStatus: server.status,
               statusDetail: server.statusDetail,
@@ -1321,23 +1346,41 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             }),
             installation,
             readiness: {
+              ...(input.includeTargetReadiness
+                ? {
+                    forTarget: (
+                      serverId: IntegrationServerId,
+                      target: IntegrationReadinessTarget,
+                    ) => {
+                      const server = serverById.get(serverId);
+                      return server && readinessFor(server, target.access, target.connectionId);
+                    },
+                  }
+                : {}),
               servers: servers.map((server) =>
-                resolveIntegrationReadiness({
-                  connectionRequirement: server.connectionRequirement,
-                  connections,
-                  hasAccess: hasInstallationAccess,
-                  runAccess: requesterAccess.runAccess,
-                  installationStatus: installation.status,
-                  requiredAccess: input.target?.access ?? "read",
-                  requiredConnectionId: input.target?.connectionId ?? null,
-                  serverId: server.id,
-                  serverStatus: server.status,
-                  statusDetail: server.statusDetail,
-                }),
+                readinessFor(
+                  server,
+                  input.target?.access ?? "read",
+                  input.target?.connectionId ?? null,
+                ),
               ),
               tools: tools.flatMap((tool) => {
                 const server = serverById.get(tool.serverId);
-                return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
+                return server
+                  ? [
+                      {
+                        readiness: readinessFor(
+                          server,
+                          input.target?.access ??
+                            (integrationToolEffect(tool.annotations) === "read"
+                              ? "read"
+                              : "read-write"),
+                          tool.connectionId ?? input.target?.connectionId ?? null,
+                        ),
+                        toolId: tool.id,
+                      },
+                    ]
+                  : [];
               }),
             },
             servers,

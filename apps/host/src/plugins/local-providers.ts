@@ -5,7 +5,7 @@ import {
 } from "../devices/target-blocked.js";
 import type { Blocked } from "@opensteer/core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
-import { localToolPath, localNamespace, slugify } from "./provider-names.js";
+import { isLocalProviderId, localNamespace, slugify } from "./provider-names.js";
 import { createHash } from "node:crypto";
 import { localToolBlocked, type LocalToolResponse } from "../local-servers/mcp-clients.js";
 import type { DeviceId, UserId } from "@opensteer/core";
@@ -14,7 +14,10 @@ import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import type { IntegrationInstallation } from "@opensteer/integration-core";
-import { IntegrationConnectionIdSchema } from "@opensteer/integration-core";
+import {
+  IntegrationConnectionIdSchema,
+  IntegrationServerIdSchema,
+} from "@opensteer/integration-core";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import { dataAppName } from "../devices/access-requests.js";
 import type { DeviceService } from "../devices/device-service.js";
@@ -87,8 +90,6 @@ export class LocalProviders {
         connectionId: _c,
         transport: _t,
         requestName: _r,
-        blocked: _b,
-        toolBlockers: _tb,
         ...provider
       }) => ({
         ...provider,
@@ -97,28 +98,12 @@ export class LocalProviders {
     );
   }
 
-  async blockers(context: PluginCaller) {
-    const caller = this.#options.authority.caller(context.caller);
-    const result: { id: string; slug: string; path?: string; blocked: Blocked }[] = [];
-    if (!caller) return result;
-    for (const provider of (await this.#list(caller)).providers) {
-      if (provider.blocked)
-        result.push({ id: provider.id, slug: provider.slug, blocked: provider.blocked });
-      for (const [tool, blocked] of Object.entries(provider.toolBlockers))
-        result.push({
-          id: provider.id,
-          slug: provider.slug,
-          path: localToolPath(provider.slug, tool),
-          blocked,
-        });
-    }
-    return result;
-  }
-
   /** The person-facing name of a provider this caller can see, for its Requests. */
   async name(context: PluginCaller, plugin: string): Promise<string | undefined> {
-    if (!plugin.startsWith("app_device_") && !plugin.startsWith("app_server_")) return undefined;
-    return (await this.providers(context)).find(({ id }) => id === plugin)?.name ?? "Local tool";
+    if (!isLocalProviderId(plugin)) return undefined;
+    const caller = this.#options.authority.caller(context.caller);
+    if (!caller) return "Local tool";
+    return (await this.#list(caller, plugin)).providers[0]?.name ?? "Local tool";
   }
 
   async call(
@@ -129,8 +114,8 @@ export class LocalProviders {
     const caller = this.#options.authority.caller(input.caller);
     if (!caller || caller.kind === "connection")
       throw failure("Local tools are called only from a task or its programs.");
-    const { providers, callables } = await this.#list(caller);
-    const provider = providers.find(({ id }) => id === input.plugin);
+    const { providers, callables } = await this.#list(caller, input.plugin);
+    const [provider] = providers;
     if (!provider) throw failure("This local tool was removed or changed; search again.");
     if (provider.blocked) {
       const access =
@@ -164,8 +149,8 @@ export class LocalProviders {
         const liveCaller = this.#options.authority.caller(input.caller);
         if (!liveCaller)
           throw failure("Local tool caller is no longer active; the call was not sent.");
-        const live = await this.#list(liveCaller);
-        const current = live.providers.find((entry) => entry.id === input.plugin);
+        const live = await this.#list(liveCaller, input.plugin);
+        const [current] = live.providers;
         if (
           !current ||
           current.unavailable ||
@@ -249,8 +234,8 @@ export class LocalProviders {
    * Every local provider of the personal owner as Settings shows it: what agents type, where it
    * runs, why it is unavailable, and its tools. No task's ceiling applies.
    */
-  async owned(owner: UserId) {
-    return (await this.#list({ kind: "owner", userId: owner })).providers.map((entry) => ({
+  async owned(owner: UserId, id?: string) {
+    return (await this.#list({ kind: "owner", userId: owner }, id)).providers.map((entry) => ({
       id: entry.id,
       kind: entry.kind,
       name: entry.slug,
@@ -263,13 +248,12 @@ export class LocalProviders {
     }));
   }
 
-  async #withToolBlockers(
+  #withToolBlockers(
     provider: Located,
     inventory: Awaited<ReturnType<IntegrationPlatformStore["listDiscoveryInventory"]>>,
     callables: Awaited<ReturnType<IntegrationPlatformStore["listCallableTools"]>>,
-    requester: IntegrationRequester,
     readOnlyConnections: ReadonlyMap<string, boolean>,
-  ): Promise<Located> {
+  ): Located {
     if (provider.unavailable) return provider;
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
     const stateFor = (tool: string) => {
@@ -295,56 +279,37 @@ export class LocalProviders {
       );
     });
     if (!needed.length) return provider;
-    const scopes = new Map<
-      "read" | "read-write",
-      Promise<Awaited<ReturnType<IntegrationPlatformStore["listDiscoveryInventory"]>>>
-    >();
-    const scoped = (access: "read" | "read-write") => {
-      let result = scopes.get(access);
-      if (!result) {
-        result = this.#options.store.listDiscoveryInventory({
-          ...requester,
-          target: {
-            connectionId: provider.connectionId
-              ? IntegrationConnectionIdSchema.parse(provider.connectionId)
-              : null,
-            access,
-          },
+    const blockers = needed.map((tool) => {
+      let state = stateFor(tool.name);
+      if (!state || state.code === "READY")
+        state = entry?.readiness.forTarget?.(IntegrationServerIdSchema.parse(provider.serverId), {
+          connectionId: provider.connectionId
+            ? IntegrationConnectionIdSchema.parse(provider.connectionId)
+            : null,
+          access: tool.readOnly ? "read" : "read-write",
         });
-        scopes.set(access, result);
-      }
-      return result;
-    };
-    const blockers = await Promise.all(
-      needed.map(async (tool) => {
-        let state = stateFor(tool.name);
-        if (!state || state.code === "READY")
-          state = (await scoped(tool.readOnly === true ? "read" : "read-write"))
-            .find((entry) => entry.installation.id === provider.installationId)
-            ?.readiness.servers.find((state) => state.serverId === provider.serverId);
-        const blocked =
-          provider.kind === "device-app" && provider.computer
-            ? deviceAppBlocked(state, {
-                name: provider.name,
-                dataApp: provider.requestName,
-                computerId: provider.computer.id,
-                readOnlyGrant:
-                  !tool.readOnly &&
-                  !!provider.connectionId &&
-                  readOnlyConnections.get(provider.connectionId) === true,
-                operation: tool.name,
-              })
-            : localTargetBlocked(state, provider.name, { server: provider.requestName });
-        return [
-          tool.name,
-          blocked ?? {
-            code: "unavailable",
-            message: `${provider.name} has no usable ${tool.name} operation.`,
-            next: "Use plugin_search for current tools; continue other work.",
-          },
-        ] as const;
-      }),
-    );
+      const blocked =
+        provider.kind === "device-app" && provider.computer
+          ? deviceAppBlocked(state, {
+              name: provider.name,
+              dataApp: provider.requestName,
+              computerId: provider.computer.id,
+              readOnlyGrant:
+                !tool.readOnly &&
+                !!provider.connectionId &&
+                readOnlyConnections.get(provider.connectionId) === true,
+              operation: tool.name,
+            })
+          : localTargetBlocked(state, provider.name, { server: provider.requestName });
+      return [
+        tool.name,
+        blocked ?? {
+          code: "unavailable",
+          message: `${provider.name} has no usable ${tool.name} operation.`,
+          next: "Use plugin_search for current tools; continue other work.",
+        },
+      ] as const;
+    });
     const toolBlockers = Object.fromEntries(blockers);
     return {
       ...provider,
@@ -365,7 +330,13 @@ export class LocalProviders {
     };
   }
 
-  async #list(caller: AgentCaller | { readonly kind: "owner"; readonly userId: UserId }) {
+  async #list(
+    caller: AgentCaller | { readonly kind: "owner"; readonly userId: UserId },
+    id?: string,
+  ) {
+    const requested = id === undefined ? undefined : providerTarget(id);
+    if (id !== undefined && !requested) return { providers: [], callables: [] };
+    const metadataOnly = caller.kind === "owner";
     const store = this.#options.store;
     const requester: IntegrationRequester =
       caller.kind === "owner"
@@ -379,9 +350,13 @@ export class LocalProviders {
     const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store
-        .listDiscoveryInventory(requester)
+        .listDiscoveryInventory({
+          ...requester,
+          ...(!metadataOnly ? { includeTargetReadiness: true } : {}),
+          ...(requested ? { provider: requested } : {}),
+        })
         .then((entries) => this.#options.devices.withAvailability(entries, requester, facts)),
-      store.listCallableTools(requester),
+      metadataOnly ? [] : store.listCallableTools(requester),
     ]);
     const localServers = inventory.some((entry) =>
       entry.servers.some(({ transport }) => transport.type === "runner"),
@@ -406,6 +381,8 @@ export class LocalProviders {
             continue;
           // Server readiness names one connection; each connection's own state is on its tool rows.
           for (const account of entry.accounts) {
+            const providerId = `app_device_${account.connectionId}`;
+            if (id !== undefined && providerId !== id) continue;
             const states = entry.tools.flatMap((tool) =>
               tool.serverId === server.id && tool.connectionId === account.connectionId
                 ? entry.readiness.tools
@@ -421,7 +398,7 @@ export class LocalProviders {
             readOnlyConnections.set(account.connectionId, connection.access === "read");
             located.push(
               provider({
-                id: `app_device_${account.connectionId}`,
+                id: providerId,
                 kind: "device-app",
                 base: dataAppName(definition),
                 computer: { id: connection.deviceId, name: connection.runnerName },
@@ -448,18 +425,22 @@ export class LocalProviders {
                     0,
                     2000,
                   ),
-                  inputSchema: JSON.parse(JSON.stringify(operation.inputSchema)),
+                  inputSchema: metadataOnly
+                    ? {}
+                    : JSON.parse(JSON.stringify(operation.inputSchema)),
                   readOnly: operation.effect === "read",
                 })),
               }),
             );
           }
         } else if (server.transport.type === "runner") {
+          const providerId = `app_server_${server.id}`;
+          if (id !== undefined && providerId !== id) continue;
           const state = readiness[0];
           const tools = entry.tools.filter((tool) => tool.serverId === server.id);
           const listed = await Promise.all(
             tools.map(async (tool) => {
-              const schemas = await store.getToolSchemas(tool.id);
+              const schemas = metadataOnly ? null : await store.getToolSchemas(tool.id);
               return {
                 name: tool.name,
                 description: (tool.description || tool.title).slice(0, 2000),
@@ -474,7 +455,7 @@ export class LocalProviders {
           const localServer = localServers.find(({ id }) => id === server.id);
           located.push(
             provider({
-              id: `app_server_${server.id}`,
+              id: providerId,
               kind: "local-server",
               base: serverName(entry.installation),
               computer:
@@ -516,23 +497,36 @@ export class LocalProviders {
         }
       }
     }
-    const assessed = await Promise.all(
-      located.map((provider) =>
-        this.#withToolBlockers(provider, inventory, callables, requester, readOnlyConnections),
-      ),
-    );
+    const assessed = metadataOnly
+      ? located
+      : located.map((provider) =>
+          this.#withToolBlockers(provider, inventory, callables, readOnlyConnections),
+        );
     const providers = assessed
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))
       .map((entry) => ({
         ...entry,
-        version: `dpl_${createHash("sha256")
-          .update(JSON.stringify([entry.slug, entry.unavailable ?? null, entry.tools]))
-          .digest("hex")
-          .slice(0, 32)}`,
+        version: metadataOnly
+          ? entry.version
+          : `dpl_${createHash("sha256")
+              .update(JSON.stringify([entry.slug, entry.unavailable ?? null, entry.tools]))
+              .digest("hex")
+              .slice(0, 32)}`,
       }));
     return { providers, callables };
   }
+}
+
+function providerTarget(id: string) {
+  if (id.startsWith("app_device_")) {
+    const connectionId = IntegrationConnectionIdSchema.safeParse(id.slice("app_device_".length));
+    if (connectionId.success) return { connectionId: connectionId.data };
+  } else if (id.startsWith("app_server_")) {
+    const serverId = IntegrationServerIdSchema.safeParse(id.slice("app_server_".length));
+    if (serverId.success) return { serverId: serverId.data };
+  }
+  return undefined;
 }
 
 function provider(input: {

@@ -4,7 +4,7 @@ import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
-import { OpensteerError, type UserId } from "@opensteer/core";
+import { OpensteerError, type Blocked, type UserId } from "@opensteer/core";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
@@ -22,7 +22,7 @@ export class PluginToolHandlers {
   readonly options: {
     service: PluginService;
     /** Device data apps and local servers, which list beside plugins. */
-    localProviders?: Pick<LocalProviders, "providers" | "blockers">;
+    localProviders?: Pick<LocalProviders, "providers">;
     authority: PluginAuthority;
     executions: PluginExecutions;
     store: OpensteerStore;
@@ -56,10 +56,9 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(c.caller);
     const first = !c.input.cursor && !c.input.pluginId;
     const settings = await this.options.settings.settings(c.caller.userId);
-    const [plugins, local, localBlockers] = await Promise.all([
+    const [plugins, local] = await Promise.all([
       this.options.service.list({}, context, c.signal),
       first ? (this.options.localProviders?.providers(context) ?? []) : [],
-      first ? (this.options.localProviders?.blockers(context) ?? []) : [],
     ]);
     const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
     const page = c.input.pluginId
@@ -84,7 +83,7 @@ export class PluginToolHandlers {
           ...(provider.unavailable
             ? {
                 unavailable: provider.unavailable,
-                blocked: localBlockers.find((target) => target.id === provider.id)?.blocked,
+                blocked: provider.blocked,
               }
             : {}),
           toolCount: provider.tools.length,
@@ -165,53 +164,38 @@ export class PluginToolHandlers {
       cursor: c.input.pluginId ? versionCursor : page.cursor,
     };
   }
-  async discoveryResult<T extends object>(context: PluginCaller, result: T) {
-    const { unavailableApps: unavailable } = z
-      .object({
-        unavailableApps: z
-          .array(z.object({ app: z.string(), name: z.string(), reason: z.string() }).passthrough())
-          .optional(),
-      })
-      .parse(result);
-    const local = (await this.options.localProviders?.blockers(context)) ?? [];
+  async discoveryResult<
+    T extends {
+      unavailableApps?:
+        | readonly { app: string; name: string; reason: string; blocked?: Blocked | undefined }[]
+        | undefined;
+    },
+  >(context: PluginCaller, result: T) {
+    const unavailable = result.unavailableApps;
+    if (!unavailable?.length) return result;
     return {
       ...result,
-      items: z
-        .array(z.object({ path: z.string() }).passthrough())
-        .parse(z.object({ items: z.unknown() }).parse(result).items)
-        .map((item) => {
-          const blocked = local.find((target) => target.path === item.path)?.blocked;
-          return blocked ? { ...item, blocked } : item;
+      unavailableApps: await Promise.all(
+        unavailable.map(async (entry) => {
+          if (entry.blocked) return entry;
+          const detail = await this.options.service
+            .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
+            .catch(() => null);
+          return {
+            ...entry,
+            blocked: pluginTargetBlocked({
+              id: entry.app,
+              name: entry.name,
+              reason: entry.reason,
+              canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+              requirements: detail?.plugin.requirements.accounts ?? {},
+              links: z
+                .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
+                .parse(detail?.links ?? []),
+            }),
+          };
         }),
-      ...(unavailable?.length
-        ? {
-            unavailableApps: await Promise.all(
-              unavailable.map(async (entry) => {
-                const known = local.find(
-                  (target) => target.id === entry.app && !target.path,
-                )?.blocked;
-                if (known) return { ...entry, blocked: known };
-                const detail = await this.options.service
-                  .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
-                  .catch(() => null);
-                return {
-                  ...entry,
-                  blocked: pluginTargetBlocked({
-                    id: entry.app,
-                    name: entry.name,
-                    reason: entry.reason,
-                    canRequestAccount:
-                      this.options.authority.caller(context.caller)?.kind === "run",
-                    requirements: detail?.plugin.requirements.accounts ?? {},
-                    links: z
-                      .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
-                      .parse(detail?.links ?? []),
-                  }),
-                };
-              }),
-            ),
-          }
-        : {}),
+      ),
     };
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {

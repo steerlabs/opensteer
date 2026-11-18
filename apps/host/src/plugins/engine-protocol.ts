@@ -219,6 +219,14 @@ const management = z.enum([
   "webhookSetup.complete",
 ]);
 
+const unavailableApp = z.object({
+  app: id,
+  name: id,
+  reason: z.string(),
+  router: z.string().optional(),
+  blocked: BlockedSchema.optional(),
+});
+
 export const operations = {
   health: {
     input: z.strictObject({}),
@@ -377,21 +385,30 @@ export const operations = {
             description: z.string(),
             input: z.string(),
             inputTruncated: z.literal(true).optional(),
+            blocked: BlockedSchema.optional(),
           }),
         ),
         namespaces: z.array(object),
         remaining: z.number().int(),
         next: search.nullable(),
+        unavailableApps: z.array(unavailableApp).optional(),
       })
       .catchall(JsonSchema),
   },
   describe: {
     input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
     output: z.object({
-      items: z.array(z.strictObject({ path: id, description: z.string(), signature: z.string() })),
+      items: z.array(
+        z.strictObject({
+          path: id,
+          description: z.string(),
+          signature: z.string(),
+          blocked: BlockedSchema.optional(),
+        }),
+      ),
       namespaces: z.array(object),
       missing: z.array(z.strictObject({ path: id, matches: z.array(z.string()) })),
-      unavailableApps: z.array(object).optional(),
+      unavailableApps: z.array(unavailableApp).optional(),
     }),
   },
   call: {
@@ -463,6 +480,8 @@ export const HostProviderSchema = z.strictObject({
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
   version: id,
   tools: z.array(HostToolSchema),
+  blocked: BlockedSchema.optional(),
+  toolBlockers: z.record(z.string(), BlockedSchema).optional(),
   /** Discovery hides tools while the provider is unavailable. */
   unavailable: z.string().min(1).max(2000).optional(),
 });

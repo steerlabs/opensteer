@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createId, ToolBlockedError } from "@opensteer/core";
 import { resolveIntegrationReadiness } from "@opensteer/integration-core/readiness";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
@@ -87,7 +87,7 @@ it.each([false, true])(
       },
     });
     if (!fails)
-      expect(await providers.blockers(context)).toMatchObject([
+      expect(await providers.providers(context)).toMatchObject([
         {
           blocked: {
             code: "access_required",
@@ -141,7 +141,7 @@ it.each([false, true])(
         serverStatus: "active",
       });
     const store = {
-      listDiscoveryInventory: async (request: { target?: { access: "read" | "read-write" } }) => [
+      listDiscoveryInventory: vi.fn(async () => [
         {
           installation: callable.installation,
           servers: [computerServer],
@@ -149,14 +149,16 @@ it.each([false, true])(
           // A read-approved data app has no persisted write row; a server has all its tool rows.
           tools: server ? [read, write] : [read],
           readiness: {
-            servers: [ready(request.target?.access ?? "read")],
+            servers: [ready("read")],
+            forTarget: (_server: string, target: { access: "read" | "read-write" }) =>
+              ready(target.access),
             tools: [
               { toolId: read.id, readiness: ready("read") },
               ...(server ? [{ toolId: write.id, readiness: ready("read-write") }] : []),
             ],
           },
         },
-      ],
+      ]),
       listCallableTools: async () => [
         {
           ...callable,
@@ -193,6 +195,7 @@ it.each([false, true])(
     } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
     const context = { caller: "test", mode: "automatic" as const };
     const [provider] = await providers.providers(context);
+    expect(store.listDiscoveryInventory).toHaveBeenCalledTimes(1);
     expect(provider?.unavailable).toBeUndefined();
     expect(provider?.tools.find((tool) => tool.name === read.name)?.description).not.toContain(
       "Blocked",
@@ -200,19 +203,13 @@ it.each([false, true])(
     expect(provider?.tools.find((tool) => tool.name === "create_event")?.description).toContain(
       "another app or server grant cannot raise this task's ceiling",
     );
-    const blockers = await providers.blockers(context);
-    expect(blockers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: expect.stringContaining("create_event"),
-          blocked: expect.objectContaining({
-            code: "read_only_task",
-            next: expect.stringContaining("task's access mode"),
-          }),
-        }),
-      ]),
-    );
-    expect(blockers.some((blocker) => blocker.path?.endsWith(read.name))).toBe(false);
+    expect(provider?.toolBlockers).toMatchObject({
+      create_event: {
+        code: "read_only_task",
+        next: expect.stringContaining("task's access mode"),
+      },
+    });
+    expect(provider?.toolBlockers).not.toHaveProperty(read.name);
     await expect(
       providers.call(
         {
@@ -292,4 +289,38 @@ it.each([
     },
   );
   expect(result).toEqual({ kind: "mcp", result: mcp });
+});
+
+it("lists the owner’s tool metadata without loading tool schemas", async () => {
+  const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+  const base = computerCallable("read", definition);
+  const server = { ...base.server, transport: { type: "runner", runnerId: "run_mac" } };
+  const tool = { ...base.tool, connectionId: null };
+  const readiness = { code: "READY", serverId: server.id };
+  const getToolSchemas = vi.fn(async () => null);
+  const providers = new LocalProviders({
+    store: {
+      listDiscoveryInventory: async () => [
+        {
+          installation: base.installation,
+          servers: [server],
+          accounts: [],
+          tools: [tool],
+          readiness: { servers: [readiness], tools: [{ toolId: tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [
+        { ...base, server, tool, grant: { ...base.grant, connectionId: null } },
+      ],
+      getToolSchemas,
+    },
+    devices: {
+      withAvailability: async (entries: unknown) => entries,
+      localDiscoveryFacts: () => ({ localServers: async () => [] }),
+    },
+  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+  expect(await providers.owned(createId("user"))).toMatchObject([
+    { id: `app_server_${server.id}`, tools: [{ name: tool.name, readOnly: true }] },
+  ]);
+  expect(getToolSchemas).not.toHaveBeenCalled();
 });

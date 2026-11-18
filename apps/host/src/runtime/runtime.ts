@@ -2736,7 +2736,7 @@ export async function createHostRuntime(
       settings: pluginAgentStore,
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),
-      localTools: (owner) => providerNames.owned(owner),
+      localTools: (owner, id) => providerNames.owned(owner, id),
       cancelPlugin: (owner, plugin) =>
         pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
       changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),

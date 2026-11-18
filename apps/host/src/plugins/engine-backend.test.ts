@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Effect, Schema } from "effect";
 import {
   AppId,
@@ -48,30 +48,34 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
   const accounts = {
     accounts: () => Effect.succeed({ app: {}, user: {} }),
   } as unknown as ReturnType<typeof engineAccounts>;
+  const localProviderReads = vi.fn();
   const backend = compositeBackend(
     engine,
     accounts,
     OwnerId.make("owner"),
     { caller: "fixture", mode: "automatic" },
     {
-      authorize: () => Effect.succeed({ allowed: true }),
+      authorize: () => Effect.succeed({ allowed: true, grants: {} }),
       providers: () =>
-        Effect.succeed([
-          {
-            id: "app_server_fixture",
-            name: "github",
-            slug: "github",
-            version: "dpl_fixture",
-            tools: [
-              {
-                name: "read",
-                description: "Read",
-                inputSchema: { type: "object" },
-                readOnly: true,
-              },
-            ],
-          },
-        ]),
+        Effect.sync(() => {
+          localProviderReads();
+          return [
+            {
+              id: "app_server_fixture",
+              name: "github",
+              slug: "github",
+              version: "dpl_fixture",
+              tools: [
+                {
+                  name: "read",
+                  description: "Read",
+                  inputSchema: { type: "object" },
+                  readOnly: true,
+                },
+              ],
+            },
+          ];
+        }),
       call: () => Effect.succeed({ kind: "value", value: "local" }),
     },
   );
@@ -99,6 +103,7 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
   expect(updated.find(({ id }) => id === local.id)?.slug).toBe(local.slug);
   expect(new Set(updated.map(({ slug }) => slug)).size).toBe(updated.length);
   for (const app of listed) {
+    localProviderReads.mockClear();
     const result = await Effect.runPromise(
       backend
         .callTool({ app: app.id, tool: ToolName.make("read"), input: {} })
@@ -108,5 +113,6 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
       status: "completed",
       value: app.id === "app_server_fixture" ? "local" : app.id,
     });
+    if (app.id !== "app_server_fixture") expect(localProviderReads).not.toHaveBeenCalled();
   }
 });

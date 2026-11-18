@@ -543,6 +543,7 @@ export class DeviceService {
             }),
           ),
           readiness: {
+            ...entry.readiness,
             servers: await Promise.all(
               entry.readiness.servers.map(async (readiness) => {
                 const serverTools = tools.filter(

@@ -98,7 +98,7 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, migrateEngineProduct } from "./engine-accounts.js";
-import { compositeBackend } from "./engine-backend.js";
+import { compositeBackend, withLocalBlockers, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { enginePages } from "./engine-pages.js";
 import {
@@ -595,7 +595,12 @@ export async function startEngine(
               ),
         ),
       );
-    const backend = (context: PluginCaller, execution?: string, direct = false) =>
+    const backend = (
+      context: PluginCaller,
+      execution?: string,
+      direct = false,
+      providers: EngineHostCallbacks["providers"] = () => callback("providers", context),
+    ) =>
       compositeBackend(
         engine,
         accountAdapter,
@@ -608,7 +613,7 @@ export async function startEngine(
               ...input,
               ...(execution === undefined ? {} : { execution }),
             }),
-          providers: () => callback("providers", context),
+          providers,
           call: (input, elicitation) =>
             callback(
               "providerCall",
@@ -1108,12 +1113,16 @@ export async function startEngine(
               owner,
             });
           case "search":
-            return yield* searchCatalog(
-              backend(context),
-              Schema.decodeUnknownSync(SearchInput)(raw),
-            );
-          case "describe":
-            return yield* describeCatalog(backend(context), operations.describe.input.parse(raw));
+          case "describe": {
+            // The catalog and its blocker projection share this response's inventory.
+            const providers = yield* Effect.cached(callback("providers", context));
+            const discovery = backend(context, undefined, false, () => providers);
+            const result =
+              operation === "search"
+                ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
+                : yield* describeCatalog(discovery, operations.describe.input.parse(raw));
+            return withLocalBlockers(result, yield* providers);
+          }
           case "skills":
             return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
           case "skillFiles": {

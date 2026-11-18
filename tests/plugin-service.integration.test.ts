@@ -4,7 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "vitest";
-import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
+import {
+  PluginService,
+  type PluginServiceOptions,
+} from "../apps/host/src/plugins/plugin-service.js";
 import {
   PluginServiceError,
   type PluginExecution,
@@ -27,6 +30,26 @@ const caller = { caller: "owner:task", mode: "ask" as const };
 const deadline = <T>(promise: Promise<T>, message: string) =>
   withTimeout(promise, 15_000, { timeoutError: () => new Error(message) });
 
+const hostProvider: PluginHostProvider = {
+  id: "app_server_fixture",
+  name: "Local fixture",
+  slug: "local",
+  version: "dpl_host_fixture",
+  tools: [
+    {
+      name: "double",
+      description: "Double a number",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { value: { type: "number" } },
+        required: ["value"],
+      },
+    },
+  ],
+};
+const localPath = `tools[${JSON.stringify(localNamespace(hostProvider.slug, hostProvider.id))}].double`;
+
 test("supervises plugins, consent, mixed codemode, approvals and lost executions through the Promise service", async (context) => {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-service-"));
@@ -38,25 +61,6 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   let refused = false;
   const interrupted: PluginExecution[] = [];
   const calls: { caller: string; execution: string }[] = [];
-  const hostProvider: PluginHostProvider = {
-    id: "app_host_fixture",
-    name: "Local fixture",
-    slug: "local",
-    version: "dpl_host_fixture",
-    tools: [
-      {
-        name: "double",
-        description: "Double a number",
-        readOnly: true,
-        inputSchema: {
-          type: "object",
-          properties: { value: { type: "number" } },
-          required: ["value"],
-        },
-      },
-    ],
-  };
-  const localPath = `tools[${JSON.stringify(localNamespace(hostProvider.slug, hostProvider.id))}].double`;
   const service = new PluginService({
     onDiagnostic: (phase) => console.log("Engine phase", phase),
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
@@ -262,13 +266,17 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   for (const row of final) expect(() => process.kill(row.pid, 0)).toThrow();
 });
 
-async function outputFixture(context: import("vitest").TestContext) {
+async function outputFixture(
+  context: import("vitest").TestContext,
+  options: Pick<PluginServiceOptions, "providers"> = {},
+) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
   const registry = await pluginFixtureRegistry(directory);
   context.onTestFinished(() => registry.close());
   const service = new PluginService({
+    ...options,
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "owner",
@@ -283,6 +291,30 @@ async function outputFixture(context: import("vitest").TestContext) {
   context.onTestFinished(() => service.close());
   return service;
 }
+
+test("search and describe project local blockers from one inventory per answer", async (context) => {
+  const blocked = {
+    code: "read_only_task",
+    message: "This task runs read-only.",
+    next: "Use read operations.",
+  };
+  let reads = 0;
+  const service = await outputFixture(context, {
+    providers: async () => {
+      reads++;
+      return [{ ...hostProvider, toolBlockers: { double: blocked } }];
+    },
+  });
+
+  await expect(service.search({ query: "double" }, caller)).resolves.toMatchObject({
+    items: [{ path: localPath, blocked }],
+  });
+  expect(reads).toBe(1);
+  await expect(service.describe({ paths: [localPath] }, caller)).resolves.toMatchObject({
+    items: [{ path: localPath, blocked }],
+  });
+  expect(reads).toBe(2);
+});
 
 test("consent discloses a raw secret that reaches plugin code", async (context) => {
   const service = await outputFixture(context);
