@@ -412,7 +412,7 @@ test("consent discloses a raw secret that reaches plugin code", async (context) 
     (await service.call({ calls: { path: "tools.exposed.read", input: { amount: 0 } } }, caller))
       .result,
   ).toMatchObject({
-    execution: { value: { ok: true, value: { receivedRawValue: true, token: "[redacted]" } } },
+    execution: { value: { ok: true, value: { receivedRawValue: true, token: syntheticKey } } },
   });
 });
 
