@@ -1,3 +1,4 @@
+import { presentPluginToolResult } from "../plugins/local-tool-results.js";
 import { productToolOutput } from "./tool-output.js";
 import { ComputerUseOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
@@ -417,6 +418,10 @@ export class OpensteerMcpService {
     },
   ) {
     const tool = agentTools.find((spec) => spec.name === name);
+    const present =
+      name === "plugin_call" || name === "plugin_resume"
+        ? presentPluginToolResult
+        : agentToolRecordResult;
     const admittedAt = Date.now();
     const signal = identity.signal ?? new AbortController().signal;
     try {
@@ -467,7 +472,7 @@ export class OpensteerMcpService {
               ? requestHoldLimitMs
               : shortRequestHoldMs,
         });
-        return agentToolRecordResult(held);
+        return present(held);
       }
       if (hold && typeof result.requestId === "string") {
         const held = await hold.service.wait({
@@ -482,9 +487,9 @@ export class OpensteerMcpService {
               ? requestHoldLimitMs
               : shortRequestHoldMs,
         });
-        if (held) return agentToolRecordResult(held.record);
+        if (held) return present(held.record);
       }
-      return agentToolRecordResult(result);
+      return present(result);
     } catch (error) {
       const parsed = tool?.input.safeParse(args);
       const access =

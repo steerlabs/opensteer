@@ -297,6 +297,20 @@ function setup(
   };
   const accountLinked = vi.fn(async () => {});
   const changed = vi.fn();
+  const localTools = vi.fn(async () =>
+    Array.from({ length: options.local ?? 1 }, (_, index) => ({
+      id: `app_device_con${index}`,
+      kind: "device-app" as const,
+      name: `calendar-mac-${String(index).padStart(3, "0")}`,
+      title: "Calendar on Mac",
+      computer: { id: "run_1", name: "Mac" },
+      unavailable: index === 0 ? null : "Mac is offline.",
+      tools: Array.from({ length: 600 }, (_, tool) => ({
+        name: `tool_${tool}`,
+        readOnly: tool % 2 === 0,
+      })),
+    })),
+  );
   const api = new PluginOwnerApi({
     service: service as never,
     settings: store as never,
@@ -305,22 +319,10 @@ function setup(
       if (userId !== ownerId)
         throw new OpensteerError({ code: "forbidden", message: "Owner only" });
     },
-    localTools: async () =>
-      Array.from({ length: options.local ?? 1 }, (_, index) => ({
-        id: `app_device_con${index}`,
-        kind: "device-app" as const,
-        name: `calendar-mac-${String(index).padStart(3, "0")}`,
-        title: "Calendar on Mac",
-        computer: { id: "run_1", name: "Mac" },
-        unavailable: index === 0 ? null : "Mac is offline.",
-        tools: Array.from({ length: 600 }, (_, tool) => ({
-          name: `tool_${tool}`,
-          readOnly: tool % 2 === 0,
-        })),
-      })),
+    localTools,
     changed,
   });
-  return { api, service, store, settings, accountLinked, changed };
+  return { api, service, store, settings, accountLinked, changed, localTools };
 }
 
 type Unkeyed = PluginCommand extends infer C
@@ -472,6 +474,14 @@ describe("the person's plugin API", () => {
     await expect(
       api.reads()["plugins.local.get"]({ id: "app_device_gone" }, context(ownerId)),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("skips local inventory when the owner requests a cloud plugin id as a local tool", async () => {
+    const { api, localTools } = setup();
+    await expect(
+      api.reads()["plugins.local.get"]({ id: "app_cloud" }, context(ownerId)),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(localTools).not.toHaveBeenCalled();
   });
 
   it("keeps local tools listed while the engine is down", async () => {

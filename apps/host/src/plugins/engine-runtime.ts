@@ -4,6 +4,7 @@ import {
   type PluginResourceCategory,
 } from "@opensteer/protocol";
 import { CurrentPluginRequest } from "./engine-authority.js";
+import { projectDirectLocalTools } from "./local-tool-results.js";
 import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
@@ -78,7 +79,11 @@ import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/n
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
-import { startScheduleWorker, deliverEvents } from "@opensteer/plugin-engine-sdk/scheduling";
+import {
+  startScheduleWorker,
+  ScheduleAccessRevoked,
+  deliverEvents,
+} from "@opensteer/plugin-engine-sdk/scheduling";
 import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource, openapiAppSource } from "@opensteer/plugin-engine-app-templates";
 import { safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
@@ -96,7 +101,7 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, migrateEngineProduct } from "./engine-accounts.js";
-import { compositeBackend } from "./engine-backend.js";
+import { compositeBackend, withLocalBlockers, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { enginePages } from "./engine-pages.js";
 import {
@@ -105,6 +110,7 @@ import {
   PluginServiceError,
   PluginBrokerError,
   executionResultBytes,
+  directMcpResultBytes,
   interactionBytes,
   jsonBytes,
   pluginResultTooLarge,
@@ -345,18 +351,19 @@ export async function startEngine(
           Redacted.make(config.secret),
           globalThis.crypto,
         );
-        const check = (input: import("./engine-protocol.js").PluginAuthorization) =>
+        const check = (
+          input: import("./engine-protocol.js").PluginAuthorization,
+          refusal: () => Error = () =>
+            new PluginServiceError("forbidden", "Plugin authority changed before dispatch"),
+        ) =>
           callback("authorize", input).pipe(
-            Effect.flatMap(({ allowed }) =>
-              allowed
-                ? Effect.void
-                : Effect.fail(
-                    new PluginServiceError("forbidden", "Plugin authority changed before dispatch"),
-                  ),
-            ),
+            Effect.flatMap(({ allowed }) => (allowed ? Effect.void : Effect.fail(refusal()))),
           );
-        const standing = (plugin: string) =>
-          check({ caller: config.owner, mode: "automatic", operation: "background", plugin });
+        const standing = (plugin: string, refusal?: () => Error) =>
+          check(
+            { caller: config.owner, mode: "automatic", operation: "background", plugin },
+            refusal,
+          );
         const beforeResourceWrite = (
           plugin: string,
           action: "deploy" | "activate" | "schedule" | "workflow",
@@ -496,11 +503,11 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        const scheduler = yield* startScheduleWorker(engine, ({ app }) => standing(app), {
-          runner: "host",
-          concurrency: 2,
-          pollMilliseconds: 1000,
-        });
+        const scheduler = yield* startScheduleWorker(
+          engine,
+          ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
+          { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+        );
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
         const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? officialCatalogUrl });
@@ -511,6 +518,7 @@ export async function startEngine(
             context: PluginCaller;
             controller: AbortController;
             driving: boolean;
+            direct: boolean;
           }
         >();
         const manager = yield* makeExecutions(
@@ -573,32 +581,44 @@ export async function startEngine(
       }).pipe(
         Effect.flatMap((result) =>
           result.allowed
-            ? Effect.void
+            ? Effect.succeed(result)
             : Effect.fail(
                 new PluginServiceError("forbidden", "Plugin operation is not authorized"),
               ),
         ),
       );
-    const backend = (context: PluginCaller, execution?: string) =>
-      compositeBackend(engine, accountAdapter, owner, context, {
-        authorize: (input) =>
-          callback("authorize", {
-            ...context,
-            ...input,
-            ...(execution === undefined ? {} : { execution }),
-          }),
-        providers: () => callback("providers", context),
-        call: (input, elicitation) =>
-          callback(
-            "providerCall",
-            {
+    const backend = (
+      context: PluginCaller,
+      execution?: string,
+      direct = false,
+      providers: EngineHostCallbacks["providers"] = () => callback("providers", context),
+    ) =>
+      compositeBackend(
+        engine,
+        accountAdapter,
+        owner,
+        context,
+        {
+          authorize: (input) =>
+            callback("authorize", {
               ...context,
               ...input,
               ...(execution === undefined ? {} : { execution }),
-            },
-            elicitation,
-          ),
-      });
+            }),
+          providers,
+          call: (input, elicitation) =>
+            callback(
+              "providerCall",
+              {
+                ...context,
+                ...input,
+                ...(execution === undefined ? {} : { execution }),
+              },
+              elicitation,
+            ),
+        },
+        direct,
+      );
     const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
       record.view = { ...record.view, ...value };
       if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
@@ -608,10 +628,19 @@ export async function startEngine(
         executions.delete(record.view.id);
       return record.view;
     };
-    const completed = (record: { view: PluginExecution }, result: McpExecutionResult) =>
+    const completed = (
+      record: { view: PluginExecution; direct: boolean },
+      result: McpExecutionResult,
+    ) =>
       Effect.gen(function* () {
         const pending = result.status === "approval-required" || result.status === "input-required";
-        if (jsonBytes(result) > (pending ? interactionBytes : executionResultBytes)) {
+        const presented = record.direct && !pending ? projectDirectLocalTools(result) : result;
+        const sizeLimit = pending
+          ? interactionBytes
+          : z.object({ hostPresentation: z.literal("mcp") }).safeParse(presented).success
+            ? directMcpResultBytes
+            : executionResultBytes;
+        if (jsonBytes(presented) > sizeLimit) {
           if (pending)
             yield* manager.discard(
               record.view.caller,
@@ -626,7 +655,9 @@ export async function startEngine(
         return update(record, {
           state: pending ? "waiting" : "completed",
           interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
-          result: operations.execute.output.shape.result.parse(JSON.parse(JSON.stringify(result))),
+          result: operations.execute.output.shape.result.parse(
+            JSON.parse(JSON.stringify(presented)),
+          ),
         });
       });
     const perform = (
@@ -653,7 +684,7 @@ export async function startEngine(
         (change?.action === "schedule.configure" && !change.enabled);
       const authorityOperation = stop ? "resourcesStop" : operation;
       return Effect.gen(function* () {
-        yield* authorize(context, authorityOperation, plugin, fields.execution);
+        const permission = yield* authorize(context, authorityOperation, plugin, fields.execution);
         switch (operation) {
           case "health":
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
@@ -941,12 +972,11 @@ export async function startEngine(
             );
           }
           case "removeAccount":
-            return yield* engine.accounts.remove({
-              owner,
-              account: Schema.decodeUnknownSync(AccountId)(
+            return yield* accountAdapter.removeAccount(
+              Schema.decodeUnknownSync(AccountId)(
                 operations.removeAccount.input.parse(raw).account,
               ),
-            });
+            );
           case "reviewAccountLink":
             return yield* accountAdapter.review(operations.reviewAccountLink.input.parse(raw));
           case "linkAccount": {
@@ -1105,12 +1135,16 @@ export async function startEngine(
               owner,
             });
           case "search":
-            return yield* searchCatalog(
-              backend(context),
-              Schema.decodeUnknownSync(SearchInput)(raw),
-            );
-          case "describe":
-            return yield* describeCatalog(backend(context), operations.describe.input.parse(raw));
+          case "describe": {
+            // The catalog and its blocker projection share this response's inventory.
+            const providers = yield* Effect.cached(callback("providers", context));
+            const discovery = backend(context, undefined, false, () => providers);
+            const result =
+              operation === "search"
+                ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
+                : yield* describeCatalog(discovery, operations.describe.input.parse(raw));
+            return withLocalBlockers(result, yield* providers);
+          }
           case "skills":
             return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
           case "skillFiles": {
@@ -1154,6 +1188,7 @@ export async function startEngine(
               context,
               controller,
               driving: true,
+              direct: operation === "call",
             };
             executions.set(id, record);
             report(record.view);
@@ -1170,7 +1205,7 @@ export async function startEngine(
                     manager
                       .execute(
                         context.caller,
-                        backend(context, id),
+                        backend(context, id, record.direct),
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
@@ -1249,7 +1284,7 @@ export async function startEngine(
             const requestId = Schema.decodeUnknownSync(InteractionId)(interaction.requestId);
             const pending = yield* manager.pendingInteraction(context.caller, requestId);
             if (pending)
-              yield* backend(context, record.view.id).authorizeElicitation(
+              yield* backend(context, record.view.id, record.direct).authorizeElicitation(
                 pending.status === "approval-required"
                   ? { app: pending.invocation.app, tool: pending.invocation.tool }
                   : pending.tool,
@@ -1281,7 +1316,7 @@ export async function startEngine(
                   try: () =>
                     run(
                       manager
-                        .resume(context.caller, backend(context, record.view.id), {
+                        .resume(context.caller, backend(context, record.view.id, record.direct), {
                           requestId,
                           response,
                         })
@@ -1320,7 +1355,9 @@ export async function startEngine(
               const page = yield* workflowRunPage(composed.sql, { app, limit: 10, ...cursor });
               return {
                 items: yield* Effect.forEach(page.runs, (run) =>
-                  input.outputs && (run.status === "complete" || run.status === "errored")
+                  input.outputs &&
+                  permission.grants?.[app] !== "off" &&
+                  (run.status === "complete" || run.status === "errored")
                     ? engine.apps.workflowRuns
                         .get({
                           app,

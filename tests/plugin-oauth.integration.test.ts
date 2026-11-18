@@ -84,6 +84,7 @@ let providerRevocations = 0;
 let expiresIn = 3600;
 let relayAvailable = true;
 let metadataUnavailable = false;
+let beforeStartResult: (() => Promise<void>) | undefined;
 let beforePullResult: (() => Promise<void>) | undefined;
 const refreshIds: string[] = [];
 const tokenRedirects: string[] = [];
@@ -491,6 +492,7 @@ beforeAll(async () => {
     oauthConfiguration: (linked) => oauth.configuration(linked),
     oauthBroker: async (operation, input) => {
       const result = await oauth.broker(operation, input);
+      if (operation === "oauthStart" && beforeStartResult) await beforeStartResult();
       if (operation === "oauthPull" && beforePullResult) {
         const change = beforePullResult;
         beforePullResult = undefined;
@@ -644,7 +646,30 @@ test("repeating a sign-in begin returns its one attempt and launch to that comma
         .execute()
     ).length;
   const [attemptsBefore, brokerBefore] = [await attempts(), createdRequests.length];
-  const first = await oauth.begin(input, personal.userId, "canonical", key);
+  const brokerEntered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  beforeStartResult = async () => {
+    brokerEntered.resolve();
+    await deadline(release.promise, "Sign-in start was never released");
+  };
+  const original = oauth.begin(input, personal.userId, "canonical", key);
+  void original.catch(() => {});
+  let first: Awaited<typeof original>;
+  try {
+    await deadline(brokerEntered.promise, "Sign-in never reached the broker");
+    const repeat = oauth.begin(input, personal.userId, "canonical", key);
+    void repeat.catch(() => {});
+    await expect(
+      oauth.begin(input, personal.userId, "canonical", command(randomUUID())),
+    ).rejects.toMatchObject({ code: "conflict" });
+    release.resolve();
+    [first] = await deadline(Promise.all([original, repeat]), "Both begins did not finish");
+    expect(await repeat).toEqual(first);
+  } finally {
+    beforeStartResult = undefined;
+    release.resolve();
+    await original.catch(() => {});
+  }
   expect(await oauth.begin(input, personal.userId, "canonical", key)).toEqual(first);
   expect([await attempts(), createdRequests.length]).toEqual([
     attemptsBefore + 1,
@@ -830,7 +855,7 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
   );
   expect(result.result?.execution?.value, JSON.stringify(result)).toMatchObject({
     ok: true,
-    value: { token: "[redacted]", refused: "blocked" },
+    value: { token: expect.stringMatching(/^oscred/u), refused: "blocked" },
   });
   expect(JSON.stringify(result)).not.toContain("renewed-test-token");
   expect(apiTokens).toEqual(["Bearer renewed-test-token"]);

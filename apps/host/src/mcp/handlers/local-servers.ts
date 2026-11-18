@@ -6,9 +6,10 @@ export function localServerToolHandlers(registry: LocalServerRegistry): Partial<
   return {
     local_server_add: async (c) => {
       const run = requireRun(c.caller);
+      const { operationKey: _operationKey, ...registration } = c.input;
       return registry.add(
         { userId: run.userId, threadId: run.thread.id },
-        c.input,
+        registration,
         operationId(c.caller, c.operationKey, "local_server_add"),
         c.checkLive,
       );
@@ -16,13 +17,12 @@ export function localServerToolHandlers(registry: LocalServerRegistry): Partial<
     local_server_list: async (c) => ({ servers: await registry.list(c.caller.userId) }),
     local_server_remove: async (c) => {
       const run = requireRun(c.caller);
-      await registry.remove(
+      return registry.remove(
         { userId: run.userId },
         c.input.name,
         operationId(c.caller, c.operationKey, "local_server_remove"),
         c.checkLive,
       );
-      return { ok: true as const };
     },
   };
 }

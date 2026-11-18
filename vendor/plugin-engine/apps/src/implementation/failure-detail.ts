@@ -1,4 +1,3 @@
-import type { JsonValue } from "../contracts/schema.ts";
 import { Match, Option, Predicate, Redacted, Schema } from "effect";
 import { CacheError, cacheLimits } from "@opensteer/plugin-engine-app-cache/contracts";
 import { OpenapiError } from "../contracts/openapi.ts";
@@ -159,18 +158,6 @@ const replaceSecrets = (text: string, secrets: readonly string[]) => {
   for (const secret of secretSpellings(secrets))
     redacted = redacted.split(secret).join("[redacted]");
   return redacted;
-};
-
-export const redactOutput = (value: JsonValue, secrets: readonly string[]): JsonValue => {
-  if (!secrets.length) return value;
-  if (typeof value === "string") return replaceSecrets(value, secrets);
-  if (Array.isArray(value)) return value.map((item) => redactOutput(item, secrets));
-  if (value !== null && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      replaceSecrets(key, secrets),
-      redactOutput(item, secrets),
-    ]));
-  return value;
 };
 
 const bound = (text: string, maximum: number) =>

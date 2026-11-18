@@ -7,6 +7,8 @@ import {
   OpensteerError,
   UserIdSchema,
   refused,
+  type Blocked,
+  type DeviceId,
   type RunId,
   type RunnerId,
   type UserId,
@@ -39,10 +41,13 @@ import {
   connectMcpClient,
   emptyToolCatalog,
   listTools,
+  localToolBlocked,
+  type LocalToolResponse,
   safeMessageOptions,
   sanitizeToolResult,
   type UpstreamClient,
 } from "./mcp-clients.js";
+import { deviceAccessBlocked } from "../devices/target-blocked.js";
 import { ServerInput, serverInputTimeoutMs } from "./server-input.js";
 
 /** A server a plugin declares, as the Host stores it before anything has started it. */
@@ -51,6 +56,29 @@ export interface PendingLocalServer extends DiscoveredIntegrationServer {
 }
 
 type LocalServerRow = Awaited<ReturnType<IntegrationPlatformStore["localMcp"]["list"]>>[number];
+
+export function localServerStatus(server: LocalServerRow) {
+  const state: "approved" | "waiting" | "declined" | "unavailable" = server.declined
+    ? "declined"
+    : server.status === "disabled" || server.deviceId === null
+      ? "unavailable"
+      : server.approvedLaunchDigest === server.launchDigest
+        ? "approved"
+        : "waiting";
+  const detail = server.statusDetail ?? undefined;
+  const blocked: Blocked | undefined =
+    state === "approved"
+      ? undefined
+      : {
+          code: state === "waiting" ? "setup_required" : "unavailable",
+          message: detail ?? `${server.installationTitle} is unavailable.`,
+          next:
+            state === "waiting"
+              ? "Wait for the person to review it on the computer that runs it."
+              : "Continue without it and tell the person what the message says.",
+        };
+  return { state, detail, blocked };
+}
 
 /**
  * The MCP servers computers run for their owners: a program a computer
@@ -70,6 +98,7 @@ export class LocalServerService {
     | "openMcpSession"
     | "removePluginData"
     | "requireAgentAccess"
+    | "withDeviceAdmission"
     | "withRunnerAdmission"
   >;
   readonly #dataDirectory: string;
@@ -94,6 +123,7 @@ export class LocalServerService {
       | "openMcpSession"
       | "removePluginData"
       | "requireAgentAccess"
+      | "withDeviceAdmission"
       | "withRunnerAdmission"
     >;
     readonly dataDirectory: string;
@@ -300,19 +330,32 @@ export class LocalServerService {
     args: Readonly<Record<string, unknown>>,
     caller: ToolCaller,
     signal?: AbortSignal,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
+  ): Promise<LocalToolResponse> {
     const server = await this.#store.localMcp.get(callable.server.id);
     let responseRedactor = createCredentialResponseRedactor([]);
-    const refusal = (text: string) =>
-      sanitizeToolResult(
-        { content: [{ text, type: "text" as const }], isError: true },
-        responseRedactor,
-      );
+    const refusal = (
+      text: string,
+      code: Blocked["code"] = "unavailable",
+      next = "Continue without this tool and tell the person what the message says.",
+    ): LocalToolResponse => {
+      const message = responseRedactor.redactText(text).slice(0, 2_000);
+      return {
+        ...sanitizeToolResult(
+          { content: [{ text: message, type: "text" as const }], isError: true },
+          responseRedactor,
+        ),
+        [localToolBlocked]: { code, message, next },
+      };
+    };
     let upstream: UpstreamClient;
     try {
       upstream = await this.#client(callable);
     } catch (error) {
-      return refusal(await this.#refusal(callable, server, error));
+      const blocked =
+        deviceAccessBlocked(error) ?? (server ? localServerStatus(server).blocked : undefined);
+      return blocked
+        ? refusal(blocked.message, blocked.code, blocked.next)
+        : refusal(await this.#refusal(callable, server, error));
     }
     let release: () => void;
     try {
@@ -375,9 +418,13 @@ export class LocalServerService {
       return sanitizeToolResult(result, call.redactor());
     } catch (error) {
       responseRedactor = call.redactor();
+      const blocked = deviceAccessBlocked(error);
+      if (blocked) return refusal(blocked.message, blocked.code, blocked.next);
       if (admissionError)
         return refusal(
-          "Local tool authority changed or the call was cancelled while queued; the call was not sent. Do not retry until access is restored.",
+          "Local tool authority changed or the call was cancelled while queued; the call was not sent.",
+          "access_denied",
+          "Do not retry until access is restored.",
         );
       if (answeredMcpError(error)) {
         // The server answered, with an error: nothing about it is uncertain.
@@ -397,6 +444,8 @@ export class LocalServerService {
           `${computer} did not confirm this${
             closed?.code === "too-large" ? ": its answer was too large to carry" : ""
           }. Check whether it happened before trying again.`,
+          "outcome_unknown",
+          "Check current state before repeating the write.",
         );
       }
       return refusal(
@@ -419,9 +468,7 @@ export class LocalServerService {
     error: unknown,
   ): Promise<string> {
     const title = callable.installation.title;
-    if (!server || server.status === "disabled") {
-      return `${title} was removed or changed; find its tools again.`;
-    }
+    if (!server) return `${title} was removed or changed; find its tools again.`;
     if (!server.runnerId || !server.runnerName) {
       return `${title} has no computer to run on. Register it again with local_server_add, choosing one.`;
     }
@@ -471,17 +518,21 @@ export class LocalServerService {
   async #assertServerCurrent(
     serverId: IntegrationServerId,
     transport: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId },
-  ): Promise<void> {
+    deviceId?: DeviceId,
+  ): Promise<DeviceId> {
     const current = await this.#store.localMcp.get(serverId);
     if (
       !current ||
       current.status === "disabled" ||
       current.runnerId !== transport.runnerId ||
+      current.deviceId === null ||
+      (deviceId !== undefined && current.deviceId !== deviceId) ||
       current.launchDigest !== localMcpLaunchDigest(transport.launch) ||
       current.approvedLaunchDigest !== current.launchDigest
     ) {
       throw refused("conflict", "It was removed or changed as this started; find its tools again.");
     }
+    return current.deviceId;
   }
 
   /**
@@ -510,7 +561,7 @@ export class LocalServerService {
     // Every open is held in the pool before it gets here, so a removal or
     // change either finds it and ends it or is read here first: nothing
     // starts on the computer for a server as it no longer is.
-    await this.#assertServerCurrent(server.id, {
+    const deviceId = await this.#assertServerCurrent(server.id, {
       launch: transport.launch,
       runnerId: transport.runnerId,
     });
@@ -522,11 +573,17 @@ export class LocalServerService {
     );
     signal?.throwIfAborted();
     const computer = new ComputerMcpTransport(this.#computerApps, {
-      authorize: () =>
-        this.#assertServerCurrent(server.id, {
-          launch: transport.launch,
-          runnerId: transport.runnerId!,
-        }),
+      authorize: async () => {
+        await this.#assertServerCurrent(
+          server.id,
+          {
+            launch: transport.launch,
+            runnerId: transport.runnerId!,
+          },
+          deviceId,
+        );
+      },
+      deviceId,
       launch: transport.launch,
       runnerId: transport.runnerId,
       secrets,

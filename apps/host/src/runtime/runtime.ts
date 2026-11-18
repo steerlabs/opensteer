@@ -1186,7 +1186,7 @@ export async function createHostRuntime(
         if (!pluginOAuth) throw new Error("Plugin sign-in is unavailable");
         return pluginOAuth.broker(operation, input);
       },
-      providers: async (caller) => (await localProviders?.providers(caller)) ?? [],
+      providers: async (caller) => (await localProviders?.providers(caller, true)) ?? [],
       providerCall: async (input, signal, elicit) => {
         if (!localProviders)
           throw new PluginServiceError("unavailable", "Local tools are starting");
@@ -2739,7 +2739,7 @@ export async function createHostRuntime(
       settings: pluginAgentStore,
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),
-      localTools: (owner) => providerNames.owned(owner),
+      localTools: (owner, id) => providerNames.owned(owner, id),
       cancelPlugin: (owner, plugin) =>
         pluginExecutions?.cancelPlugin(owner, plugin) ?? Promise.resolve(),
       changed: (owner, change) =>

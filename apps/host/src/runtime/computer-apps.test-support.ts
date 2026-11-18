@@ -736,14 +736,22 @@ export async function pluginCall(
   gateway: Awaited<ReturnType<typeof integrationGateway>>,
   path: string,
   input: Record<string, unknown>,
-): Promise<{ readonly value?: unknown; readonly failure?: string; readonly raw: unknown }> {
-  const raw = await gateway.call("plugin_call", { calls: { path, input } });
-  const execution = (raw.result as { execution?: { ok?: boolean; value?: unknown } })?.execution;
+): Promise<{
+  readonly value?: unknown;
+  readonly failure?: string;
+  readonly raw: Awaited<ReturnType<typeof gateway.callRaw>>;
+}> {
+  const raw = await gateway.callRaw("plugin_call", { calls: { path, input } });
+  const result = raw.structuredContent as Record<string, unknown> | undefined;
+  const execution = (result?.result as { execution?: { ok?: boolean; value?: unknown } })
+    ?.execution;
   // One direct call answers { ok, path, value } or { ok: false, path, error }.
   const call = execution?.value as { ok?: boolean; value?: unknown; error?: unknown } | undefined;
   if (execution?.ok && call?.ok) return { value: call.value, raw };
-  const error = call?.error ?? raw;
-  return { failure: typeof error === "string" ? error : JSON.stringify(error), raw };
+  const error = call?.error ?? result?.error ?? raw;
+  const message =
+    typeof error === "object" && error !== null && "message" in error ? error.message : error;
+  return { failure: typeof message === "string" ? message : JSON.stringify(message), raw };
 }
 
 /** The explanation inside a failed call's one-line summary, as the agent reads it. */

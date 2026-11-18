@@ -1,5 +1,5 @@
 /** Effect-only host lifecycle. These privileged operations are not mounted on the SDK HTTP API. */
-import { Context, Effect } from "effect";
+import { Context, Data, Effect } from "effect";
 import type { ScheduledRun } from "./schedules.ts";
 import type { AppId, OwnerId, StorageError } from "./shared.ts";
 
@@ -11,6 +11,7 @@ export interface ScheduleAuthority {
   readonly actor: string | null;
   readonly phase: "start" | "resume";
 }
+export class ScheduleAccessRevoked extends Data.TaggedError("ScheduleAccessRevoked") {}
 /** A host owns the named runner for its whole lifetime. Recovery requires the old runner to have stopped. */
 export interface ScheduleDispatcher {
   readonly tick: (options: {

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
+import { OperationKeySchema } from "./inputs.js";
 import { defineAgentTool } from "../registry.js";
 
 const name = z
@@ -20,7 +21,7 @@ const server = z.object({
   pluginId: z.string(),
   path: z.string(),
   computer: z.string().nullable(),
-  computerId: z.string().nullable(),
+  computerId: DeviceIdSchema.nullable(),
   kind: z.enum(["program", "loopback"]),
   state: z.enum(["approved", "waiting", "declined", "unavailable"]),
   detail: z.string().optional(),
@@ -37,9 +38,10 @@ export const local_server_add = defineAgentTool({
   input: z
     .strictObject({
       name,
+      operationKey: OperationKeySchema.optional(),
       description: z.string().trim().max(500).optional(),
-      computerId: RunnerIdSchema.optional().describe(
-        "Computer that runs it; omit to keep its computer, or for a new one the computer hosting tasks.",
+      computerId: DeviceIdSchema.optional().describe(
+        "Computer ID from computer_list. For a new server, omit to use the computer hosting tasks. An update keeps its existing computer while enrolled.",
       ),
       launch: z
         .strictObject({
@@ -97,7 +99,7 @@ export const local_server_remove = defineAgentTool({
   destructive: true,
   description:
     "Remove a local server and its data, such as a device pairing, on the Host and on every computer that ran it. A computer that is offline removes it when it reconnects.",
-  input: z.strictObject({ name }),
+  input: z.strictObject({ name, operationKey: OperationKeySchema.optional() }),
   output: z.object({ ok: z.literal(true) }),
 });
 export const localServerTools = [local_server_add, local_server_list, local_server_remove] as const;

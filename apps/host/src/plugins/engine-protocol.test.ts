@@ -130,7 +130,7 @@ test("source and HTTP payloads keep their own limits instead of the agent result
 
 test.each(["cancelled", "expired", "interrupted", "failed"] as const)(
   "does not return a pending form as a %s execution result",
-  async (state) => {
+  (state) => {
     const executions = new PluginExecutions(
       {} as ConstructorParameters<typeof PluginExecutions>[0],
     );

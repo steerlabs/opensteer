@@ -4,6 +4,10 @@ import { createHash } from "node:crypto";
 // The short identity suffix keeps a local tool's address stable when another one shares its name.
 const suffix = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 8);
 
+export function isLocalProviderId(id: string): boolean {
+  return id.startsWith("app_device_") || id.startsWith("app_server_");
+}
+
 export function pluginNamespace(slug: string): string {
   return /^(?:local|plugin)-/u.test(slug) ? `plugin-${slug.slice(0, 45)}-${suffix(slug)}` : slug;
 }

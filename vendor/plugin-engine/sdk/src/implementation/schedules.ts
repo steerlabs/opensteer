@@ -26,7 +26,7 @@ import {
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
 import { CallFailureSources, InvocationRun, type CallFailureSource } from "../contracts/runtime.ts";
-import { ScheduleObservation } from "../contracts/scheduler.ts";
+import { ScheduleAccessRevoked, ScheduleObservation } from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { PluginEngineDatabase } from "./storage.ts";
@@ -745,8 +745,10 @@ export const makeSchedules = (
                 }
                 if (pending.requestId === null || pending.answer === null) return;
                 const settings = yield* readSettings(pending.scheduleId);
-                if (Result.isFailure(yield* Effect.result(authorize({ ...settings, phase: "resume" })))) {
-                  yield* finish(pending, "interrupted", "AccessRevoked", "runtime");
+                const admission = yield* Effect.result(authorize({ ...settings, phase: "resume" }));
+                if (Result.isFailure(admission)) {
+                  if (admission.failure instanceof ScheduleAccessRevoked)
+                    yield* finish(pending, "interrupted", "AccessRevoked", "runtime");
                   return;
                 }
                 const requestId = pending.requestId;
@@ -832,7 +834,9 @@ export const makeSchedules = (
                 // account its actor has not linked. Skip the occurrence without recording a run or
                 // contacting the service; the owner sees why on the schedule, and the first
                 // occurrence after reconnecting or linking runs as usual.
-                const refused = Result.isFailure(yield* Effect.result(authorize({ ...setting, phase: "start" })));
+                const admission = yield* Effect.result(authorize({ ...setting, phase: "start" }));
+                const refused = Result.isFailure(admission);
+                if (refused && !(admission.failure instanceof ScheduleAccessRevoked)) return;
                 const waiting = refused ? undefined : yield* waitingOn(setting);
                 if (refused || waiting !== undefined) {
                   // Invalid timing is left to the run path, which pauses the schedule.
@@ -960,8 +964,18 @@ export const makeSchedules = (
                       : finish(claim, "succeeded");
                     return;
                   }
-                  if (setting.approvalMode === "automatic") {
-                    yield* authorize({ ...setting, phase: "resume" });
+                  const readClaim = readSettings(setting.id).pipe(
+                    Effect.catchTag("ScheduleNotFound", () => Effect.succeed(null)),
+                    Effect.map((current) =>
+                      current?.enabled && current.activeRun === claim.id ? current : null,
+                    ),
+                  );
+                  let current = yield* readClaim;
+                  if (current?.approvalMode === "automatic") {
+                    yield* authorize({ ...current, phase: "resume" });
+                    current = yield* readClaim;
+                  }
+                  if (current?.approvalMode === "automatic") {
                     yield* complete(
                       claim,
                       yield* tools.resume({
@@ -981,7 +995,11 @@ export const makeSchedules = (
                           db.findFirst("schedules", {
                             select: ["id"],
                             where: (b) =>
-                              b.and(b("id", "=", setting.id), b("activeRun", "=", claim.id)),
+                              b.and(
+                                b("id", "=", setting.id),
+                                b("activeRun", "=", claim.id),
+                                b("enabled", "=", true),
+                              ),
                           }),
                         );
                         if (saved === null) return false;
@@ -999,16 +1017,14 @@ export const makeSchedules = (
                         return true;
                       }),
                     );
-                    if (!waiting)
-                      yield* complete(
-                        claim,
-                        yield* tools.resume({
-                          requestId: response.requestId,
-                          owner: setting.owner,
-                          response: { action: "decline" },
-                        }),
-                        sources.source,
-                      );
+                    if (!waiting) {
+                      yield* tools.resume({
+                        requestId: response.requestId,
+                        owner: setting.owner,
+                        response: { action: "decline" },
+                      });
+                      yield* finish(claim, "cancelled");
+                    }
                   }
                 }).pipe(
                   // The account's sign-in ended during this run. That is an account state the

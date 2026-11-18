@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { isLocalProviderId } from "./provider-names.js";
 import {
   ownerManagementResults,
   EngineScheduledRunSchema,
@@ -96,7 +97,7 @@ export interface PluginOwnerApiOptions {
   }) => Promise<void>;
   readonly assertOwner: (userId: UserId) => Promise<void>;
   /** The owner's device data apps and local servers in the plugin namespace, read live. */
-  readonly localTools?: (owner: UserId) => Promise<readonly LocalTool[]>;
+  readonly localTools?: (owner: UserId, id?: string) => Promise<readonly LocalTool[]>;
   readonly cancelPlugin?: (owner: UserId, plugin: string) => Promise<void>;
   /** Tells the owner's clients to reread what they show. */
   readonly changed: (owner: UserId, change?: PluginChange) => void;
@@ -709,7 +710,9 @@ export class PluginOwnerApi {
       "plugins.local.get": async (input, context) => {
         const session = await this.#owner(context);
         const [local, settings] = await Promise.all([
-          this.#options.localTools?.(session.user.id) ?? [],
+          isLocalProviderId(input.id)
+            ? (this.#options.localTools?.(session.user.id, input.id) ?? [])
+            : [],
           this.#settings(session.user.id),
         ]);
         const tool = local.find((entry) => entry.id === input.id);
@@ -1106,10 +1109,16 @@ export class PluginOwnerApi {
           },
         };
       }
-      case "plugins.account.remove":
-        await this.#call(service.removeAccount({ account: command.accountId }, owner));
+      case "plugins.account.remove": {
+        const { affectedPlugins } = await this.#call(
+          service.removeAccount({ account: command.accountId }, owner),
+        );
+        await Promise.all(
+          affectedPlugins.map((plugin) => this.#options.cancelPlugin?.(userId, plugin)),
+        );
         changed();
         return { type: command.type };
+      }
       case "plugins.account.link":
         await this.#link(command, userId, sessionId);
         changed();

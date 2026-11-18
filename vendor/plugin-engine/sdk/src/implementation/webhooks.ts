@@ -110,6 +110,7 @@ const handlerError = (tag: keyof typeof handlerErrors) => tag;
 const refused = (refusal: string, attributes: Record<string, string> = {}) =>
   Effect.annotateCurrentSpan({ "pluginEngine.webhook.refusal": refusal, ...attributes });
 
+const stoppedWebhookLimit = 50;
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscriptionFields.fields,
   registeredActor: Schema.NullOr(Schema.NonEmptyString),
@@ -1044,13 +1045,23 @@ export const makeWebhooks = (
     list: (input: typeof WebhookApp.Type) =>
       Effect.gen(function* () {
         yield* storedApp(db, input);
-        const rows = yield* query(() =>
+        const stopped = yield* query(() =>
           db.findMany("webhooks", {
-            where: (b) => b("app", "=", input.app),
+            where: (b) => b.and(b("app", "=", input.app), b("status", "=", "stopped")),
+            orderBy: [["createdAt", "desc"], ["id", "desc"]],
+            limit: stoppedWebhookLimit,
+          }),
+        );
+        const current = yield* query(() =>
+          db.findMany("webhooks", {
+            where: (b) => b.and(b("app", "=", input.app), b("status", "!=", "stopped")),
             orderBy: ["id", "asc"],
           }),
         );
-        return yield* Schema.decodeUnknownEffect(Schema.Array(WebhookSubscription))(rows).pipe(
+        return yield* Schema.decodeUnknownEffect(Schema.Array(WebhookSubscription))([
+          ...current,
+          ...stopped,
+        ]).pipe(
           Effect.mapError(() => new StorageError()),
         );
       }),

@@ -5,6 +5,7 @@ import { OpensteerError, type UserId } from "@opensteer/core";
 import { requirePersonalOwner } from "@opensteer/database";
 import {
   PluginOAuthBeginSchema,
+  type PluginOAuthStartSchema,
   PluginOAuthTargetSchema,
   PluginOAuthStatusSchema,
   type HostApiServerContext,
@@ -125,6 +126,13 @@ interface PluginOAuthServiceOptions {
 }
 
 export class PluginOAuthService {
+  readonly #starting = new Map<
+    string,
+    {
+      command: string | undefined;
+      result: Promise<z.infer<typeof PluginOAuthStartSchema>>;
+    }
+  >();
   readonly #finishing = new Map<string, Promise<void>>();
   readonly options: PluginOAuthServiceOptions;
   constructor(options: PluginOAuthServiceOptions) {
@@ -300,6 +308,30 @@ export class PluginOAuthService {
           .update(JSON.stringify([owner, key, surface, input]))
           .digest("hex")
       : undefined;
+    const connectionKey = JSON.stringify([owner, input.connection]);
+    const pending = this.#starting.get(connectionKey);
+    if (pending) {
+      if (command !== undefined && pending.command === command) return pending.result;
+      throw new OpensteerError({
+        code: "conflict",
+        message:
+          "This connection already has a sign-in. Read its status or prepare a new connection.",
+      });
+    }
+    const result = this.#beginCommand(input, owner, surface, command);
+    this.#starting.set(connectionKey, { command, result });
+    try {
+      return await result;
+    } finally {
+      this.#starting.delete(connectionKey);
+    }
+  }
+  async #beginCommand(
+    input: z.infer<typeof PluginOAuthBeginSchema>,
+    owner: UserId,
+    surface: Exclude<HostApiServerContext["surface"], null>,
+    command: string | undefined,
+  ) {
     const replayed = command ? await this.#replay(input.connection, owner, command) : undefined;
     if (replayed) return replayed;
     const started = await this.#begin(input, owner, surface);
