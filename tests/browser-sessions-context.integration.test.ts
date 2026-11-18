@@ -644,19 +644,21 @@ run("Browser Sessions through a whole deployment", () => {
         parameters: { targetId: created.targetId, flatten: true },
       }),
     );
-    await waitFor(
-      async () =>
-        client
-          .getSnapshot()
-          .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId) ===
-          true &&
-        runtimeRows()
-          .find((tab) => tab.id === babbage.surfaceId)
-          ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) ===
-          true &&
-        pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
-      10_000,
-      "Run B must hold and act on the exact Babbage tab",
+    await vi.waitFor(
+      () =>
+        expect(
+          {
+            used: client
+              .getSnapshot()
+              .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId),
+            occupied: runtimeRows()
+              .find((tab) => tab.id === babbage.surfaceId)
+              ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting),
+            acting: pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
+          },
+          "Run B must hold and act on the exact Babbage tab",
+        ).toEqual({ used: true, occupied: true, acting: true }),
+      { timeout: 10_000, interval: 50 },
     );
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
