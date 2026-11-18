@@ -28,6 +28,7 @@ import {
   OAuthBrokerRevocationCredentialSchema,
   OAuthBrokerSealedEnvelopeSchema,
   OAuthBrokerTokenBundleSchema,
+  oauthBrokerManagedTokenContextVersion,
   PullHostedOAuthRefreshResponseSchema,
   PullHostedOAuthResultResponseSchema,
   ReturnHostedOAuthAttemptResponseSchema,
@@ -37,8 +38,9 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   buildDeclarativeAuthorizationUrl,
-  missingRequiredScopes,
   exchangeDeclarativeAuthorizationToken,
+  missingRequiredScopes,
+  normalizeGrantedScopes,
   refreshDeclarativeCredential,
   revokeDeclarativeCredential,
 } from "./provider-oauth-flow.js";
@@ -595,9 +597,9 @@ export class HostedOAuthBrokerService {
         providerError: failure.providerError,
       };
     }
-    let exchanged: Awaited<ReturnType<typeof exchangeDeclarativeAuthorizationToken>>;
+    let response: Awaited<ReturnType<typeof exchangeDeclarativeAuthorizationToken>>;
     try {
-      exchanged = await exchangeDeclarativeAuthorizationToken({
+      response = await exchangeDeclarativeAuthorizationToken({
         clientId: application.clientId,
         clientSecret: application.clientSecret,
         code: authorizationResponse.code,
@@ -611,24 +613,11 @@ export class HostedOAuthBrokerService {
       await this.#store.failAttempt(attemptId, "failed", failure.failureCode, now);
       return { ...authorizationCompletion(attemptId, "failed", returnUrl), ...failure };
     }
-    const response = exchanged.tokenResponse;
-    const grantedScopes = tokenScopes(
-      response.scope,
-      oauth.scopeSeparator,
-      context.requestedScopes,
+    const grantedScopes = normalizeGrantedScopes(
       oauth,
+      response.scope?.split(oauth.scopeSeparator) ?? oauth.scopes,
     );
-    if (
-      grantedScopes.some(
-        (scope) =>
-          !context.requestedScopes.includes(scope) || !application.allowedScopes.includes(scope),
-      ) ||
-      missingRequiredScopes({
-        config: oauth,
-        requiredScopes: context.requestedScopes.filter((scope) => scope !== "offline_access"),
-        grantedScopes: grantedScopes,
-      }).length > 0
-    ) {
+    if (grantScopeRefusal(application, oauth, grantedScopes)) {
       await this.#store.failAttempt(attemptId, "failed", "scope-escalation", now);
       return authorizationCompletion(attemptId, "failed", returnUrl, "scope-escalation");
     }
@@ -637,18 +626,14 @@ export class HostedOAuthBrokerService {
         ...pluginProvider(context),
         attemptId,
         expiresAt: row.expiresAt.toISOString(),
-        schemaVersion: 2,
+        schemaVersion: oauthBrokerManagedTokenContextVersion,
       });
       const bundle = OAuthBrokerTokenBundleSchema.parse({
         accessToken: response.access_token,
-        ...(exchanged.tokenResponseIdentity
-          ? { tokenResponseIdentity: exchanged.tokenResponseIdentity }
-          : {}),
         ...(typeof response.expires_in === "number"
           ? { expiresAt: now.getTime() + Math.max(0, response.expires_in) * 1_000 }
           : {}),
         grantedScopes,
-        ...(typeof response.id_token === "string" ? { idToken: response.id_token } : {}),
         ...(response.refresh_token ? { refreshToken: response.refresh_token } : {}),
         tokenType:
           oauth.tokenResponseProfile === "slack-bot" ? "Bearer" : (response.token_type ?? "Bearer"),
@@ -827,32 +812,14 @@ export class HostedOAuthBrokerService {
       throw new ControlPlaneError("bad_request", "Hosted OAuth refresh expiry is invalid");
     }
     const { application, oauth } = this.#qualifiedProvider(input);
-    const reviewedScopes = oauth.scopes;
-    const priorGrantedScopes = normalizeScopes(oauth, input.grantedScopes);
-    if (
-      priorGrantedScopes.some(
-        (scope) =>
-          !input.requestedScopes.includes(scope) || !application.allowedScopes.includes(scope),
-      )
-    )
-      throw new ControlPlaneError("forbidden", "Hosted OAuth refresh scope exceeds consent");
-    if (
-      missingRequiredScopes({
-        config: oauth,
-        requiredScopes: reviewedScopes.filter((scope) => scope !== "offline_access"),
-        grantedScopes: priorGrantedScopes,
-      }).length > 0
-    ) {
-      throw new ControlPlaneError(
-        "forbidden",
-        "Hosted OAuth refresh is missing required functional scopes",
-      );
-    }
+    const priorGrantedScopes = normalizeGrantedScopes(oauth, input.grantedScopes);
+    const priorScopeRefusal = grantScopeRefusal(application, oauth, priorGrantedScopes);
+    if (priorScopeRefusal) throw new ControlPlaneError("forbidden", priorScopeRefusal);
     const context = OAuthBrokerPluginRefreshContextSchema.parse({
       ...pluginProvider(input),
       expiresAt: input.expiresAt,
       transactionId: input.transactionId,
-      schemaVersion: 2,
+      schemaVersion: oauthBrokerManagedTokenContextVersion,
     });
     const claim = await this.#store.claimRefresh(
       {
@@ -914,24 +881,11 @@ export class HostedOAuthBrokerService {
         transactionId: input.transactionId,
       };
     }
-    const refreshedScopes = normalizeScopes(oauth, refreshed.grantedScopes);
-    const grantedScopes = refreshedScopes;
-    if (
-      grantedScopes.some(
-        (scope) =>
-          !input.requestedScopes.includes(scope) || !application.allowedScopes.includes(scope),
-      ) ||
-      missingRequiredScopes({
-        config: oauth,
-        requiredScopes: reviewedScopes.filter((scope) => scope !== "offline_access"),
-        grantedScopes: grantedScopes,
-      }).length > 0
-    ) {
+    const grantedScopes = normalizeGrantedScopes(oauth, refreshed.grantedScopes);
+    const refreshedScopeRefusal = grantScopeRefusal(application, oauth, grantedScopes);
+    if (refreshedScopeRefusal) {
       await this.#store.failRefresh(input.transactionId, "scope-escalation", null, now);
-      throw new ControlPlaneError(
-        "forbidden",
-        "Hosted OAuth refresh is missing required functional scopes",
-      );
+      throw new ControlPlaneError("forbidden", refreshedScopeRefusal);
     }
     const sealed = OAuthBrokerSealedEnvelopeSchema.parse(
       sealOAuthBrokerPayload(
@@ -1215,28 +1169,25 @@ export function assertHostedOAuthAccountLink(
   }
 }
 
-function tokenScopes(
-  value: string | undefined,
-  separator: string,
-  requested: readonly string[],
+function grantScopeRefusal(
+  application: HostedOAuthProviderApplication,
   oauth: OAuthMethodConfig,
-): readonly string[] {
-  return normalizeScopes(oauth, value === undefined ? requested : value.split(separator));
-}
-
-function normalizeScopes(oauth: OAuthMethodConfig, scopes: readonly string[]): readonly string[] {
-  const aliases = new Map<string, string>();
-  for (const [canonical, values] of Object.entries(oauth.scopeAliases ?? {})) {
-    aliases.set(canonical, canonical);
-    for (const alias of values) aliases.set(alias, canonical);
+  grantedScopes: readonly string[],
+): string | undefined {
+  if (grantedScopes.some((scope) => !application.allowedScopes.includes(scope))) {
+    return "Hosted OAuth grant scope exceeds the provider registry";
   }
-  return [
-    ...new Set(
-      scopes
-        .map((scope) => aliases.get(scope.trim()) ?? scope.trim())
-        .filter((scope) => scope.length > 0),
-    ),
-  ];
+  // offline_access requests renewal, so providers may omit it from access-token scopes.
+  if (
+    missingRequiredScopes({
+      config: oauth,
+      requiredScopes: oauth.scopes.filter((scope) => scope !== "offline_access"),
+      grantedScopes,
+    }).length > 0
+  ) {
+    return "Hosted OAuth grant is missing required functional scopes";
+  }
+  return undefined;
 }
 
 function secretDigest(value: string): string {

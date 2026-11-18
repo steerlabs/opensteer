@@ -23,6 +23,26 @@ Remove old `relayOnly` entries before deploying: registry entries now describe c
 apps only. Retired built-in service requests receive HTTP 400 with an update instruction; they do
 not fall back to plugin consent.
 
+**Production registry**: [deploy/account/oauth-providers.json](../../../../deploy/account/oauth-providers.json)
+holds every entry except credentials. Its `allowedScopes` and `placement.hosts` are the union of
+what the catalog plugins for that provider request and where they send tokens; change it only with
+that check, and remember a changed entry makes existing grants reconnect. Credentials live only in
+the runtime secret's registry. After any change to the template, with gcloud signed in to the
+project:
+
+1. Run `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run`. It reads the version
+   `deploy/account/account.yaml` pins, rebuilds the registry from the template with each provider's
+   held credentials, validates it and lists the providers included and skipped.
+2. Run it again without `--dry-run`. It adds a runtime secret version and prints its number; the
+   other runtime settings carry over. To add a provider, first put its `clientId` and
+   `clientSecret` in a registry entry of the secret by hand.
+3. Set that number in the `opensteer-account-runtime` `resourceName` line of
+   `deploy/account/account.yaml`, and give its SecretProviderClass and the Deployment's reference
+   the next `account-runtime-v<N>` name. Deploy the Account image and manifest together. To roll
+   back, restore the previous image with its secret pin and class.
+4. Check `/v1/oauth-broker/metadata?version=4` lists each provider with its placement, then qualify
+   sign-in and renewal with an updated Host.
+
 **Custom apps**: prepare the plugin account connection, review its sites, credential exposure and
 scopes, then save or select the owner's OAuth client. With an Account
 link, register the exact Account relay callback the Host shows (also on independent HTTPS Hosts);
@@ -55,7 +75,7 @@ without switching accounts.
 
 ## Plugin broker cutover
 
-Deploy Account and its plugin-only registry/metadata first, verify metadata v3 and the registered
+Deploy Account and its plugin-only registry/metadata first, verify metadata v4 and the registered
 placement, then qualify the plugin-capable Beta Host and matching web/mobile builds. Promote
 Stable only after that qualification. Update separately installed clients to the Host's API
 window. This order deliberately interrupts old built-in sign-ins; Account does not upgrade Hosts.

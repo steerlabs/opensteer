@@ -1,7 +1,6 @@
 import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import { describe, expect, it, vi } from "vitest";
 import { providerScenario } from "./hosted-oauth-broker-provider.test-support.js";
-import { extractDeclarativeCredential } from "./provider-oauth-flow.js";
 import {
   assertHostedOAuthAccountLink,
   HostedOAuthBrokerService,
@@ -57,34 +56,17 @@ describe("HostedOAuthBrokerService authority", () => {
 });
 
 describe("plugin provider grants", () => {
-  const microsoftScopes = [
-    "offline_access",
-    "openid",
-    "profile",
-    "email",
-    "User.Read",
-    "Mail.ReadWrite",
-    "Mail.Send",
-    "MailboxSettings.ReadWrite",
-  ];
-  const qualifiedMicrosoftScopes = microsoftScopes
-    .filter((scope) => scope !== "offline_access")
-    .map((scope) => (scope.includes(".") ? `https://graph.microsoft.com/${scope}` : scope))
+  const microsoftScopes = ["offline_access", "Mail.ReadWrite", "Mail.Send"];
+  const microsoftGrantedScopes = ["Mail.ReadWrite", "Mail.Send", "User.Read"];
+  const qualifiedMicrosoftScopes = microsoftGrantedScopes
+    .map((scope) => `https://graph.microsoft.com/${scope}`)
     .join(" ");
 
-  it("uses Microsoft's common authority, PKCE and delegated scopes, with userinfo as identity authority", async () => {
+  it("completes API-only Microsoft sign-in with previously consented Graph scopes", async () => {
     const calls: Request[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
       const request = new Request(input, init);
       calls.push(request);
-      if (request.url === "https://graph.microsoft.com/oidc/userinfo") {
-        expect(request.headers.get("authorization")).toBe("Bearer microsoft-access");
-        return Response.json({
-          sub: "userinfo-person",
-          email: "person@example.test",
-          name: "Person",
-        });
-      }
       return Response.json({
         access_token: "microsoft-access",
         refresh_token: "rotated-refresh",
@@ -120,24 +102,14 @@ describe("plugin provider grants", () => {
     expect(s.verifierDigest(body.get("code_verifier")!)).toBe(
       started.url.searchParams.get("code_challenge"),
     );
-    const bundle = s.authorizationBundle();
-    expect(bundle).toMatchObject({
+    expect(s.authorizationBundle()).toEqual({
       accessToken: "microsoft-access",
+      expiresAt: s.now.getTime() + 3600_000,
       refreshToken: "rotated-refresh",
-      grantedScopes: microsoftScopes.filter((scope) => scope !== "offline_access"),
+      grantedScopes: microsoftGrantedScopes,
+      tokenType: "bearer",
     });
-    expect(bundle).not.toHaveProperty("idToken");
-    expect(bundle).not.toHaveProperty("tokenResponseIdentity");
-    const identity = await extractDeclarativeCredential({
-      config: s.application.oauth,
-      fetch,
-      tokenResponse: { access_token: bundle.accessToken, token_type: bundle.tokenType },
-    });
-    expect(identity).toMatchObject({
-      externalIdentityId: "userinfo-person",
-      accountIdentifier: "person@example.test",
-      displayName: "Person",
-    });
+    expect(fetch).toHaveBeenCalledOnce();
     expect(s.broker.metadata().pluginProviders?.microsoft).not.toHaveProperty("revocationUrl");
     const before = calls.length;
     await expect(s.broker.revoke(s.authority, s.revocationRequest())).rejects.toMatchObject({
@@ -147,7 +119,7 @@ describe("plugin provider grants", () => {
     expect(calls).toHaveLength(before);
   });
 
-  it("renews Microsoft with the exact consent scopes, canonicalizes Graph aliases, and retains the rotated token", async () => {
+  it("renews Microsoft with the exact requested scopes and keeps allowed cumulative grants", async () => {
     let request: Request | undefined;
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
       request = new Request(input, init);
@@ -161,7 +133,7 @@ describe("plugin provider grants", () => {
       });
     });
     const s = providerScenario("microsoft", fetch, microsoftScopes);
-    const refresh = s.refreshRequest();
+    const refresh = s.refreshRequest(qualifiedMicrosoftScopes.split(" "));
     expect(await s.broker.refresh(s.authority, refresh)).toMatchObject({ status: "sealed" });
     expect(request!.url).toBe(s.application.oauth.tokenUrl);
     expect(request!.headers.has("authorization")).toBe(false);
@@ -176,29 +148,50 @@ describe("plugin provider grants", () => {
       accessToken: "new-access",
       refreshToken: "rotated-refresh",
       expiresAt: s.now.getTime() + 3600_000,
-      grantedScopes: microsoftScopes.filter((scope) => scope !== "offline_access"),
+      grantedScopes: microsoftGrantedScopes,
       tokenType: "bearer",
     });
   });
 
-  it("refuses missing Microsoft functional grants before and after refresh", async () => {
+  it("records the scopes sent on refresh when the provider omits an unchanged scope", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({ access_token: "new-access", token_type: "Bearer" }),
+    );
+    const s = providerScenario("microsoft", fetch, microsoftScopes);
+    const refresh = s.refreshRequest(microsoftGrantedScopes);
+    expect(await s.broker.refresh(s.authority, refresh)).toMatchObject({ status: "sealed" });
+    expect(s.refreshBundle(refresh).grantedScopes).toEqual(microsoftScopes);
+  });
+
+  it.each([
+    ["outside the registry", [...microsoftGrantedScopes, "Directory.ReadWrite.All"]],
+    ["missing a requested permission", ["Mail.ReadWrite", "User.Read"]],
+  ])("refuses a grant %s at sign-in and refresh", async (_reason, scopes) => {
     const fetch = vi.fn(async () =>
       Response.json({
-        access_token: "narrowed-access",
-        refresh_token: "rotated-refresh",
-        scope: "openid profile email User.Read",
+        access_token: "rejected-access",
+        refresh_token: "rejected-refresh",
+        scope: scopes.map((scope) => `https://graph.microsoft.com/${scope}`).join(" "),
         token_type: "Bearer",
       }),
     );
     const s = providerScenario("microsoft", fetch, microsoftScopes);
-    await expect(
-      s.broker.refresh(s.authority, s.refreshRequest(["openid", "profile", "email", "User.Read"])),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(fetch).not.toHaveBeenCalled();
-    const refresh = s.refreshRequest();
+    const started = await s.begin();
+    expect(await started.complete()).toMatchObject({
+      status: "failed",
+      failureCode: "scope-escalation",
+    });
+    expect(s.store.sealAttempt).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+    await expect(s.broker.refresh(s.authority, s.refreshRequest(scopes))).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    const refresh = s.refreshRequest(microsoftGrantedScopes);
     await expect(s.broker.refresh(s.authority, refresh)).rejects.toMatchObject({
       code: "forbidden",
     });
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(s.store.failRefresh).toHaveBeenCalledWith(
       refresh.transactionId,
       "scope-escalation",

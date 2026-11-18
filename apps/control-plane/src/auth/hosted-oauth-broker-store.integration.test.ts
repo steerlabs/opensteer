@@ -13,6 +13,7 @@ import {
   OAuthBrokerPluginRevocationContextSchema,
   HostedOAuthRevocationTransactionIdSchema,
   OAuthBrokerTokenBundleSchema,
+  oauthBrokerManagedTokenContextVersion,
   ControlPlaneAccountIdSchema,
   HostedOAuthAttemptIdSchema,
   HostedOAuthRefreshTransactionIdSchema,
@@ -837,7 +838,7 @@ integration("hosted OAuth broker durable boundary", () => {
           redirectUrl: broker.callbackUrl("google"),
         },
         expiresAt: new Date(now.getTime() + 60_000).toISOString(),
-        schemaVersion: 2,
+        schemaVersion: oauthBrokerManagedTokenContextVersion,
         transactionId: refreshIdAt(0),
       });
       const { schemaVersion: _version, ...fields } = context;
@@ -981,11 +982,6 @@ integration("hosted OAuth broker durable boundary", () => {
           scopeSeparator: " ",
           usesPkce: true,
           clientAuth: "body" as const,
-          identity: {
-            source: "userinfo" as const,
-            identityPath: "id",
-            userinfoUrl: "https://provider.example.test/userinfo",
-          },
           revocation: {
             clientAuth: "body" as const,
             method: "post-form" as const,
@@ -1118,7 +1114,7 @@ integration("hosted OAuth broker durable boundary", () => {
         binding: input.binding,
         attemptId: input.attemptId,
         expiresAt: input.expiresAt,
-        schemaVersion: 2,
+        schemaVersion: oauthBrokerManagedTokenContextVersion,
       });
       const bundle = OAuthBrokerTokenBundleSchema.parse(
         openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, context),
@@ -1162,7 +1158,7 @@ integration("hosted OAuth broker durable boundary", () => {
         binding: input.binding,
         transactionId: refreshIdAt(101),
         expiresAt: input.expiresAt,
-        schemaVersion: 2,
+        schemaVersion: oauthBrokerManagedTokenContextVersion,
       });
       const { schemaVersion: _refreshVersion, ...refreshFields } = refreshContext;
       const refresh = CreatePluginOAuthRefreshRequestSchema.parse({
@@ -1217,7 +1213,8 @@ integration("hosted OAuth broker durable boundary", () => {
       });
       await broker.acknowledgeRefresh(authority, refresh.transactionId);
       const revokeContext = OAuthBrokerPluginRevocationContextSchema.parse({
-        ...refreshContext,
+        ...refreshFields,
+        schemaVersion: 2,
         transactionId: HostedOAuthRevocationTransactionIdSchema.parse(`hov_${crypto.randomUUID()}`),
       });
       const { schemaVersion: _revokeVersion, ...revokeFields } = revokeContext;

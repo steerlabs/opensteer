@@ -9,7 +9,9 @@ import {
   HostedOAuthAttemptIdSchema,
   OAuthBrokerPluginAuthorizationContextSchema,
   OAuthBrokerPluginRelayContextSchema,
+  OAuthBrokerPluginRefreshContextSchema,
   OAuthBrokerPluginRevocationContextSchema,
+  OAuthBrokerTokenBundleSchema,
   PullHostedOAuthRefreshResponseSchema,
 } from "./oauth-broker.js";
 
@@ -84,6 +86,49 @@ describe("plugin OAuth broker protocol", () => {
         attemptId: attempt.attemptId,
         expiresAt: attempt.expiresAt,
         schemaVersion: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only version 3 for managed token sealing contexts", () => {
+    const pins = {
+      provider: attempt.provider,
+      registryRevision: attempt.registryRevision,
+      requestedScopes: attempt.requestedScopes,
+      binding: attempt.binding,
+      expiresAt: attempt.expiresAt,
+    };
+    const authorization = { ...pins, attemptId: attempt.attemptId };
+    const refresh = { ...pins, transactionId: `hor_${crypto.randomUUID()}` };
+    expect(
+      OAuthBrokerPluginAuthorizationContextSchema.parse({ ...authorization, schemaVersion: 3 }),
+    ).toMatchObject(authorization);
+    expect(
+      OAuthBrokerPluginRefreshContextSchema.parse({ ...refresh, schemaVersion: 3 }),
+    ).toMatchObject(refresh);
+    expect(
+      OAuthBrokerPluginAuthorizationContextSchema.safeParse({ ...authorization, schemaVersion: 2 })
+        .success,
+    ).toBe(false);
+    expect(
+      OAuthBrokerPluginRefreshContextSchema.safeParse({ ...refresh, schemaVersion: 2 }).success,
+    ).toBe(false);
+  });
+
+  it("carries access-token scopes without provider identity", () => {
+    const bundle = {
+      accessToken: "test-token",
+      grantedScopes: ["read", "write"],
+      tokenType: "Bearer",
+    };
+    expect(OAuthBrokerTokenBundleSchema.parse(bundle)).toEqual(bundle);
+    expect(
+      OAuthBrokerTokenBundleSchema.safeParse({ ...bundle, idToken: "unused-id-token" }).success,
+    ).toBe(false);
+    expect(
+      OAuthBrokerTokenBundleSchema.safeParse({
+        ...bundle,
+        tokenResponseIdentity: { externalIdentityId: "bot", externalTenantId: "team" },
       }).success,
     ).toBe(false);
   });

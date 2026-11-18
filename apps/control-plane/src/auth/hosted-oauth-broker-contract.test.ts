@@ -8,6 +8,7 @@ import {
   OAuthBrokerPluginAuthorizationContextSchema,
   HostedOAuthAttemptIdSchema,
   OAuthBrokerTokenBundleSchema,
+  oauthBrokerManagedTokenContextVersion,
   type OAuthBrokerSealedEnvelope,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -381,7 +382,7 @@ describe("managed provider authorization contract", () => {
   });
 
   it.each(["desktop", "web", "native"] as const)(
-    "preserves Slack bot and workspace identity for %s",
+    "seals only the Slack bot grant for %s",
     async (surface) => {
       const s = await scenario(validResponse, surface);
       const result = await s.complete();
@@ -407,19 +408,14 @@ describe("managed provider authorization contract", () => {
             binding: s.request.binding,
             attemptId: s.attemptId,
             expiresAt: s.request.expiresAt,
-            schemaVersion: 2,
+            schemaVersion: oauthBrokerManagedTokenContextVersion,
           }),
         ),
       );
       expect(bundle).toEqual({
         accessToken: "synthetic-access",
         tokenType: "Bearer",
-        grantedScopes: expect.any(Array),
-        tokenResponseIdentity: {
-          externalIdentityId: "U_BOT",
-          externalTenantId: "T_TEAM",
-          displayName: "Test workspace",
-        },
+        grantedScopes: oauth.scopes,
       });
       expect(JSON.stringify(bundle)).not.toContain("must-not-select-user");
       await expect(s.complete()).rejects.toThrow();
@@ -427,10 +423,14 @@ describe("managed provider authorization contract", () => {
     },
   );
 
+  it("accepts a Slack bot token without bot or workspace identity fields", async () => {
+    const s = await scenario({ ...validResponse, bot_user_id: undefined, team: undefined }, "web");
+    expect(await s.complete()).toMatchObject({ status: "sealed" });
+    expect(s.current().sealedCiphertext).not.toBeNull();
+  });
+
   it.each([
     [{ ...validResponse, scope: "" }, "scope-escalation"],
-    [{ ...validResponse, bot_user_id: undefined }, "invalid-provider-response"],
-    [{ ...validResponse, team: undefined }, "invalid-provider-response"],
     [{ ...validResponse, token_type: "user" }, "invalid-provider-response"],
     [{ ...validResponse, token_type: "bearer" }, "invalid-provider-response"],
     [{ ...validResponse, token_type: "dpop" }, "invalid-provider-response"],
