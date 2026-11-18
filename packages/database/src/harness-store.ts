@@ -950,6 +950,63 @@ export async function listHarnessCatalogs(
   return query.execute();
 }
 
+/** Models use their source array order within the revision of each catalog. */
+export async function readHarnessCatalogModelPage(
+  tx: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  input: {
+    readonly environmentId?: EnvironmentId;
+    readonly after?: readonly [string, string, number];
+    readonly limit: number;
+  },
+) {
+  const [environment, harness, model] = input.after ?? ["", "", 0];
+  return (
+    await sql<{
+      environmentId: EnvironmentId;
+      harnessInstanceId: HarnessInstanceId;
+      ordinal: number;
+      capturedAt: Date;
+      catalog: HarnessInstanceCatalog;
+    }>`
+      with candidates as materialized (
+        select c.environment_id, c.harness_instance_id,
+          case when (c.environment_id, c.harness_instance_id) = (${environment}, ${harness})
+            then ${model}::integer + 1 else 1 end as first,
+          greatest(1, coalesce(jsonb_array_length(c.catalog->'models'), 0)) as last
+        from harness_catalogs c
+        join execution_environments e on e.id = c.environment_id
+        join personal_settings s on s.agent_home_computer_id = e.runner_id
+        join runners r on r.id = e.runner_id and r.revoked_at is null
+        join users u on u.id = s.owner_id and u.disabled_at is null
+        where s.owner_id = ${ownerId}
+          and (c.environment_id, c.harness_instance_id) >= (${environment}, ${harness})
+          ${input.environmentId ? sql`and c.environment_id = ${input.environmentId}` : sql``}
+        order by c.environment_id, c.harness_instance_id
+        limit ${input.limit + 1}
+      ), spans as (
+        select *, coalesce(sum(greatest(0, last - first + 1)) over (
+          order by environment_id, harness_instance_id rows between unbounded preceding and 1 preceding
+        ), 0)::integer as skipped
+        from candidates
+      ), page as materialized (
+        select environment_id, harness_instance_id, m.ordinal
+        from spans
+        cross join lateral generate_series(
+          first, least(last, first + ${input.limit}::integer - skipped - 1)
+        ) m(ordinal)
+      )
+      select p.environment_id, p.harness_instance_id, p.ordinal, c.captured_at,
+        case when c.catalog ? 'models' then jsonb_set(c.catalog, '{models}',
+          case when jsonb_array_length(c.catalog->'models') = 0 then '[]'::jsonb
+            else jsonb_build_array(c.catalog->'models'->(p.ordinal - 1)) end)
+          else c.catalog end as catalog
+      from page p join harness_catalogs c using (environment_id, harness_instance_id)
+      order by p.environment_id, p.harness_instance_id, p.ordinal
+    `.execute(tx)
+  ).rows;
+}
+
 export async function getHarnessCatalog(
   database: Kysely<DatabaseSchema>,
   environmentId: EnvironmentId,

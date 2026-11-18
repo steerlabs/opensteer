@@ -695,26 +695,29 @@ export async function reserveShellSession(
     readonly threadTitle: string;
   },
 ): Promise<void> {
-  await database
-    .insertInto("machineAccessSessions")
-    .values({
-      bytesIn: 0,
-      bytesOut: 0,
-      callerMachineName: input.callerMachineName,
-      callerRunnerId: input.callerRunnerId,
-      endReason: null,
-      endedAt: null,
-      id: input.sessionId,
-      policyRevision: input.policyRevision,
-      requestedBy: input.requestedBy,
-      runId: input.runId,
-      runnerId: input.runnerId,
-      startedAt: input.startedAt,
-      state: "pending",
-      threadId: input.threadId,
-      threadTitle: input.threadTitle,
-    })
-    .executeTakeFirstOrThrow();
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    await tx
+      .insertInto("machineAccessSessions")
+      .values({
+        bytesIn: 0,
+        bytesOut: 0,
+        callerMachineName: input.callerMachineName,
+        callerRunnerId: input.callerRunnerId,
+        endReason: null,
+        endedAt: null,
+        id: input.sessionId,
+        policyRevision: input.policyRevision,
+        requestedBy: input.requestedBy,
+        runId: input.runId,
+        runnerId: input.runnerId,
+        startedAt: input.startedAt,
+        state: "pending",
+        threadId: input.threadId,
+        threadTitle: input.threadTitle,
+      })
+      .executeTakeFirstOrThrow();
+    mutation.bumpResource("machine");
+  });
 }
 
 /** Promotes a paired session; a session that already ended stays ended. */
@@ -722,14 +725,17 @@ export async function activateShellSession(
   database: Kysely<DatabaseSchema>,
   sessionId: ShellSessionId,
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("machineAccessSessions")
-    .set({ state: "active" })
-    .where("id", "=", sessionId)
-    .where("state", "=", "pending")
-    .where("endedAt", "is", null)
-    .executeTakeFirst();
-  return result.numUpdatedRows === 1n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const result = await tx
+      .updateTable("machineAccessSessions")
+      .set({ state: "active" })
+      .where("id", "=", sessionId)
+      .where("state", "=", "pending")
+      .where("endedAt", "is", null)
+      .executeTakeFirst();
+    if (result.numUpdatedRows === 1n) mutation.bumpResource("machine");
+    return result.numUpdatedRows === 1n;
+  });
 }
 
 /**
@@ -754,7 +760,7 @@ export async function endShellSession(
   },
 ): Promise<{ readonly ended: boolean }> {
   const request = { sessionId: input.sessionId };
-  return withDatabaseTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -788,6 +794,7 @@ export async function endShellSession(
         .where("id", "=", input.sessionId)
         .where("endedAt", "is", null)
         .executeTakeFirstOrThrow();
+      mutation.bumpResource("machine");
     }
     if (input.idempotency) {
       await recordMachineAccessCommand(transaction, {

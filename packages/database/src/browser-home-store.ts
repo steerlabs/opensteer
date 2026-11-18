@@ -33,6 +33,17 @@ export async function listEligibleBrowserRunners(
     .execute(databaseOperationOptions());
 }
 
+export async function readBrowserHomeResourcePage(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  page: { readonly after?: RunnerId; readonly id?: RunnerId; readonly limit: number },
+) {
+  let query = (await eligibleBrowserRunners(database, ownerId)).orderBy("id");
+  if (page.after) query = query.where("id", ">", page.after);
+  if (page.id) query = query.where("id", "=", page.id);
+  return query.select("connectionGeneration").limit(page.limit).execute(databaseOperationOptions());
+}
+
 export async function isEligibleBrowserRunner(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
@@ -40,6 +51,24 @@ export async function isEligibleBrowserRunner(
 ): Promise<boolean> {
   const eligible = await eligibleBrowserRunners(database, ownerId);
   return !!(await eligible.where("id", "=", runnerId).executeTakeFirst());
+}
+
+export async function hasEligibleBrowserPlacement(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  candidates: readonly { id: RunnerId; generation: string }[],
+) {
+  if (candidates.length === 0) return false;
+  const eligible = await eligibleBrowserRunners(database, ownerId);
+  return !!(await eligible
+    .where(
+      sql<boolean>`(id, connection_generation) in (
+    select * from unnest(${candidates.map(({ id }) => id)}::text[],
+      ${candidates.map(({ generation }) => generation)}::bigint[])
+  )`,
+    )
+    .limit(1)
+    .executeTakeFirst(databaseOperationOptions()));
 }
 
 export async function lockBrowserHomeRunner(

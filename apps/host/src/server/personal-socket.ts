@@ -73,6 +73,7 @@ export function attachPersonalSocket(options: {
     onFailure: options.logFailure,
     readResources: (kinds, installed, signal) =>
       resources.watched(session, kinds, installed, signal),
+    isResourceCurrent: (kind, revision) => resources.isCurrent(kind, revision),
     send,
     close: (reason) => {
       if (socket.readyState === socket.OPEN)

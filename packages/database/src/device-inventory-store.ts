@@ -22,7 +22,7 @@ import {
   type RunnerDevice,
   type RunnerModuleName,
 } from "@opensteer/protocol";
-import type { Kysely, Selectable } from "kysely";
+import { sql, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -51,6 +51,7 @@ export async function listDevices(
     readonly ownerId: UserId;
     readonly includeDeployment: boolean;
     readonly includeRemoved?: boolean;
+    readonly ids?: readonly DeviceId[];
     readonly after?: DeviceId;
     readonly limit: number;
   },
@@ -60,6 +61,7 @@ export async function listDevices(
 }> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100)
     throw new OpensteerError({ code: "bad_request", message: "Device page limit is invalid" });
+  if (input.ids?.length === 0) return { devices: [], nextCursor: null };
   const rows = await database
     .selectFrom("devices")
     .selectAll()
@@ -70,6 +72,7 @@ export async function listDevices(
       ]),
     )
     .$if(!input.includeRemoved, (q) => q.where("removedAt", "is", null))
+    .$if(input.ids !== undefined, (q) => q.where("id", "in", input.ids!))
     .$if(input.after !== undefined, (q) => q.where("id", ">", input.after!))
     .orderBy("id")
     .limit(input.limit + 1)
@@ -81,6 +84,42 @@ export async function listDevices(
     nextCursor: rows.length > input.limit ? rows[input.limit - 1]!.id : null,
   };
 }
+export function readMachineResourceKeys(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  input: {
+    readonly asOf: Date;
+    readonly limit: number;
+    readonly after?: string;
+    readonly id?: string;
+  },
+) {
+  const devices = database
+    .selectFrom("devices")
+    .select([
+      sql<string>`id`.as("id"),
+      "name",
+      sql<string>`kind`.as("status"),
+      sql<"device" | "pending">`'device'`.as("source"),
+    ])
+    .where("removedAt", "is", null)
+    .where((eb) => eb.or([eb("ownerUserId", "=", ownerId), eb("ownerKind", "=", "deployment")]));
+  const pending = database
+    .selectFrom("runnerEnrollments")
+    .select(["id", "name", sql<string>`'pending'`.as("status")])
+    .select(sql<"pending">`'pending'`.as("source"))
+    .where("consumedAt", "is", null)
+    .where("expiresAt", ">", input.asOf)
+    .where((eb) => eb.or([eb("ownerUserId", "=", ownerId), eb("ownerKind", "=", "deployment")]));
+  const query = database.selectFrom(devices.unionAll(pending).as("machine")).selectAll();
+  return query
+    .$if(input.after !== undefined, (q) => q.where("id", ">", input.after!))
+    .$if(input.id !== undefined, (q) => q.where("id", "=", input.id!))
+    .orderBy("id")
+    .limit(input.limit)
+    .execute();
+}
+
 export async function getSelfDeviceId(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
@@ -135,14 +174,17 @@ export async function listDeviceDrivers(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly deviceId?: DeviceId;
+    readonly deviceIds?: readonly DeviceId[];
     readonly runnerId?: RunnerId;
     readonly includeDetached?: boolean;
   } = {},
 ): Promise<readonly DeviceDriverRecord[]> {
+  if (input.deviceIds?.length === 0) return [];
   const rows = await database
     .selectFrom("deviceDrivers")
     .selectAll()
     .$if(input.deviceId !== undefined, (q) => q.where("deviceId", "=", input.deviceId!))
+    .$if(input.deviceIds !== undefined, (q) => q.where("deviceId", "in", input.deviceIds!))
     .$if(input.runnerId !== undefined, (q) => q.where("runnerId", "=", input.runnerId!))
     .$if(!input.includeDetached, (q) => q.where("detachedAt", "is", null))
     .orderBy("deviceId")

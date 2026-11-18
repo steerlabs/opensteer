@@ -540,11 +540,9 @@ export class OpensteerStore {
   }> {
     return machineStore.listShellHistory(this.#database, input);
   }
-  async listPendingRunnerEnrollments(input: {
-    readonly includeDeployment: boolean;
-    readonly limit: number;
-    readonly ownerId: UserId;
-  }): Promise<readonly PendingRunnerEnrollmentRecord[]> {
+  async listPendingRunnerEnrollments(
+    input: Parameters<typeof runnerStore.listPendingRunnerEnrollments>[1],
+  ): Promise<readonly PendingRunnerEnrollmentRecord[]> {
     return runnerStore.listPendingRunnerEnrollments(this.#database, input);
   }
   async retireRunnerEnrollment(input: {
@@ -1011,10 +1009,7 @@ export class OpensteerStore {
   async listEnvironmentsForUser(
     userId: UserId,
     limit = 1_000,
-    page?: {
-      readonly afterId?: EnvironmentId;
-      readonly id?: EnvironmentId;
-    },
+    page?: Parameters<typeof environmentStore.listEnvironmentsForUser>[3],
   ): Promise<readonly ExecutionEnvironmentRecord[]> {
     return environmentStore.listEnvironmentsForUser(this.#database, userId, limit, page);
   }

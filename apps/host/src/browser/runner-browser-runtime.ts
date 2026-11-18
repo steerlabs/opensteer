@@ -123,6 +123,7 @@ interface RunnerBrowserRuntimeRouterOptions {
     "reconcileInventory" | "jobs" | "acknowledgeDeletion"
   >;
   readonly onDeletionsChanged?: (runnerId: RunnerId) => Promise<void>;
+  readonly onPlacementChanged?: (runnerId: RunnerId) => void;
 }
 
 /**
@@ -153,15 +154,17 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   >();
   readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
+  readonly #onPlacementChanged: RunnerBrowserRuntimeRouterOptions["onPlacementChanged"];
 
   constructor(options: RunnerBrowserRuntimeRouterOptions) {
     this.#localProfiles = options.localProfiles;
     this.#onDeletionsChanged = options.onDeletionsChanged;
+    this.#onPlacementChanged = options.onPlacementChanged;
     this.#now = options.now ?? Date.now;
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
     const hooks: RunnerBrowserHooks = {
-      onAttached: () => this.#notifyAdmission(),
+      onAttached: (stream) => this.#notifyAdmission(stream.identity.runnerId),
       onFrame: (stream, frame) => this.#handleFrame(stream, frame.header, frame.frame),
       onLost: (stream) => this.#handleDisconnect(stream),
       onMessage: (stream, message) => this.#handleMessage(stream, message),
@@ -169,9 +172,15 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#unsubscribe = this.#registry.subscribe(hooks);
   }
 
-  placements(): readonly BrowserRuntimePlacement[] {
+  placements(runnerIds?: readonly RunnerId[]): readonly BrowserRuntimePlacement[] {
     if (this.#closed) return [];
-    return this.#registry.browserStreams().flatMap((stream): BrowserRuntimePlacement[] => {
+    const streams = runnerIds
+      ? runnerIds.flatMap((id) => {
+          const stream = this.#registry.stream(id);
+          return stream ? [stream] : [];
+        })
+      : this.#registry.browserStreams();
+    return streams.flatMap((stream): BrowserRuntimePlacement[] => {
       const browser = stream.identity.modules.browser;
       if (!browser) return [];
       const incompatibility = this.#admissionReason(stream);
@@ -229,7 +238,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     });
   }
 
-  #notifyAdmission(): void {
+  #notifyAdmission(runnerId?: RunnerId): void {
+    if (runnerId) this.#onPlacementChanged?.(runnerId);
     for (const check of this.#admissionWaiters) check();
   }
 
@@ -609,19 +619,19 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         message.profiles.some((claim) => inventory.profiles.has(claim.binding.profileId))
       ) {
         inventory.failed = true;
-        this.#notifyAdmission();
+        this.#notifyAdmission(stream.identity.runnerId);
         throw relayError("Browser profile inventory is duplicated or already complete.");
       }
       try {
         await this.#localProfiles.reconcileInventory(stream, message);
       } catch (error) {
         inventory.failed = true;
-        this.#notifyAdmission();
+        this.#notifyAdmission(stream.identity.runnerId);
         throw error;
       }
       for (const claim of message.profiles) inventory.profiles.add(claim.binding.profileId);
       inventory.complete = message.complete;
-      this.#notifyAdmission();
+      this.#notifyAdmission(stream.identity.runnerId);
       if (message.complete)
         void this.resumeDeletions(stream.identity.runnerId).catch(() => undefined);
       return;
@@ -777,6 +787,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       this.#dropChannel(channel, 1011, "Browser stream lost");
       channel.placementLease.released = true;
     }
+    this.#notifyAdmission(stream.identity.runnerId);
   }
 
   async #closeChannel(channel: RoutedChannel, code: number, reason: string): Promise<void> {
