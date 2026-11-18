@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
-import { opensteerAppleTeamId } from "./developer-id.js";
+import { codesignRequirementArguments, opensteerAppleTeamId } from "./developer-id.js";
 
 /**
  * The install, lock and launch primitives every separately signed helper app
@@ -358,12 +358,10 @@ export async function verifySignedHelperSignature(
     throw new Error(`${identity.label} has the wrong bundle identifier.`);
   }
   if (!adHoc) {
-    await run("/usr/bin/codesign", [
-      "--verify",
-      "--strict",
-      `-R=${identity.requirement(policy.expectedTeamId)}`,
-      appPath,
-    ]).catch((error: unknown) => {
+    await run(
+      "/usr/bin/codesign",
+      codesignRequirementArguments(appPath, identity.requirement(policy.expectedTeamId)),
+    ).catch((error: unknown) => {
       throw new Error(`${identity.label} is not signed by Opensteer.`, { cause: error });
     });
   }

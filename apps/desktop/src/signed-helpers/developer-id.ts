@@ -21,3 +21,8 @@ export function opensteerDeveloperIdRequirement(teamId: string, identifier: stri
     `and identifier "${identifier}"`
   );
 }
+
+/** `codesign` reads `-R <arg>` as a requirement file path; only `-R=<text>` is the requirement itself. */
+export function codesignRequirementArguments(target: string, requirement: string): string[] {
+  return ["--verify", "--strict", `-R=${requirement}`, target];
+}
