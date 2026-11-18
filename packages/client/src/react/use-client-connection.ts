@@ -26,3 +26,9 @@ export function useClientConnectionName(connection: ClientConnection | null): st
   const read = useCallback(() => connection?.getSnapshot().name ?? null, [connection]);
   return useSyncExternalStore(connection?.subscribe ?? noConnection, read, read);
 }
+
+/** Whether this connection has been ready at least once in this session. */
+export function useClientConnectionEverReady(connection: ClientConnection | null): boolean {
+  const read = useCallback(() => (connection?.getSnapshot().readyRevision ?? 0) > 0, [connection]);
+  return useSyncExternalStore(connection?.subscribe ?? noConnection, read, read);
+}

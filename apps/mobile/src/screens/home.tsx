@@ -1,8 +1,10 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { useCallback, type ReactNode } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import { Gated } from "../ui/connection-gate.js";
+import { useSavedSurface } from "../ui/mobile-client-context.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
@@ -19,12 +21,19 @@ export type HomeScreenProps = StaticScreenProps<{
  * A task once started becomes the place, in front of Home. The live tasks are
  * in the sidebar; the rest are in Done. It is the root of every computer's
  * stack and stays mounted under every place.
+ *
+ * Until the computer has answered once, or a saved view of it is on this
+ * phone, a task can't start and there is nothing to show: the gate explains,
+ * as it does on the web.
  */
 export function HomeScreen(props: HomeScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
+  const answered = useClientConnectionEverReady(hostClient?.connection ?? null);
+  const saved = useSavedSurface(deploymentId, "tasks").source === "saved";
+  const usable = hostClient !== null && (answered || saved);
   const setupDue = usePhoneSetup(hostClient, deploymentId);
   useNotificationsIntro(setupDue ? null : hostClient);
   const onStarted = useCallback(
@@ -39,12 +48,10 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   return (
     <Gated
       gate={
-        hostClient === null ? (
-          <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />
-        ) : null
+        usable ? null : <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />
       }
     >
-      {hostClient === null ? null : (
+      {!usable ? null : (
         <Screen edgeToEdge>
           <NewTaskPane
             autoFocus={false}

@@ -43,7 +43,8 @@ import {
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
-import { ConnectionGateView, useConnectionEverReady } from "../components/connection-shell.js";
+import { ConnectionGateView } from "../components/connection-shell.js";
+import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 
 const SignedInApp = lazy(async () => {
@@ -278,7 +279,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   }, [bridge, hostTransportIdentity, passkeyMode]);
 
   // Only whether this window's connection was ever ready; the surface never redraws per publish.
-  const everReady = useConnectionEverReady(hostClient?.connection ?? null);
+  const everReady = useClientConnectionEverReady(hostClient?.connection ?? null);
   useEffect(
     () => () => {
       if (!hostClient) return;

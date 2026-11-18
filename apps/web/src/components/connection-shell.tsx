@@ -276,16 +276,6 @@ export function useConnectionInterrupted(connection: ClientConnection): boolean 
   return useSyncExternalStore(connection.subscribe, read, read);
 }
 
-/** Whether this connection has ever been ready in this session. */
-export function useConnectionEverReady(connection: ClientConnection | null): boolean {
-  const read = useCallback(() => (connection?.getSnapshot().readyRevision ?? 0) > 0, [connection]);
-  const subscribe = useCallback(
-    (listener: () => void) => connection?.subscribe(listener) ?? (() => {}),
-    [connection],
-  );
-  return useSyncExternalStore(subscribe, read, read);
-}
-
 /** Whether live marks (breathing dots, typing) may keep moving for this connection. */
 export function useConnectionLive(connection: ClientConnection): boolean {
   const read = useCallback(() => showsClientLive(connection.getSnapshot()), [connection]);
