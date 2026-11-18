@@ -3112,6 +3112,24 @@ button.start-apps__row--away:focus-visible {
 .side-tab--grouped {
   margin-left: var(--space-14);
 }
+
+/* A close that didn't happen is said on its own line under the title, which
+   stays; the row grows by that line only while it is said. */
+.side-tab:has(> .side-tab__outcome .action-line) {
+  flex-wrap: wrap;
+}
+.side-tab__outcome:has(.action-line) {
+  flex-basis: 100%;
+  min-width: 0;
+  margin-top: calc(-1 * var(--space-6));
+  padding: 0 var(--space-8) var(--space-6) calc(var(--space-8) + 20px + var(--space-10));
+}
+.side-tab__outcome .action-line__words {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
 .side-tab--grouped::before,
 .side-tab[data-sort-place="group"]::before {
   position: absolute;

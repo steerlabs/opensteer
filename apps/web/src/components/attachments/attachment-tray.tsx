@@ -1,9 +1,11 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { Icon } from "../icon.js";
 import { attachmentDetail } from "./attachment-parts.js";
 import type { StagedAttachment } from "./use-staged-attachments.js";
 
+const filesWait = presentClientIssue({ code: "preparation-required" });
 /** The composer's one line while files wait for the connection; each chip says its own part. */
-export const filesWaitLine = "Sends once your files upload.";
+export const filesWaitLine = filesWait.detail ?? "";
 
 /**
  * The files riding on the message being written, above its words. Each says
@@ -98,7 +100,7 @@ function StagedChip({
       : item.status === "checking"
         ? "Checking…"
         : item.status === "waiting"
-          ? "Waiting to upload"
+          ? filesWait.title
           : item.status === "failed"
             ? (item.error ?? "Could not be attached.")
             : sending
