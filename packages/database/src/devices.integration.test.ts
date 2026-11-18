@@ -417,7 +417,11 @@ it("cancels only the prepared self-setup enrollment before first redemption", as
   await leave(target);
   await leave(target);
   await expect(
-    readMachineResourceKeys(db, fixture.userId, { asOf, limit: 1, id: target.request.id }),
+    readMachineResourceKeys(db, fixture.userId, {
+      asOf: new Date(),
+      limit: 1,
+      id: target.request.id,
+    }),
   ).resolves.toEqual([]);
   await expect(store.enrollRunnerConnection(target.connection)).rejects.toMatchObject({
     reason: "runner-enrollment-expired",

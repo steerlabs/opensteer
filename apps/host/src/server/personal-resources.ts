@@ -86,7 +86,6 @@ const resourceCursor = z.strictObject({
   kind: z.string(),
   id: z.string().nullable(),
   after: z.string(),
-  asOf: z.iso.datetime().optional(),
 });
 
 export class PersonalResources {
@@ -337,7 +336,6 @@ export class PersonalResources {
       if (revision !== input.expectedRevision || !this.isCurrent(input.kind, revision))
         return conflict();
       let after: string | undefined;
-      let asOf = new Date();
       if (input.cursor) {
         try {
           const cursor = resourceCursor.parse(
@@ -351,7 +349,6 @@ export class PersonalResources {
           )
             return conflict();
           after = cursor.after;
-          if (cursor.asOf) asOf = new Date(cursor.asOf);
         } catch (error) {
           if (error instanceof OpensteerError) throw error;
           throw new OpensteerError({ code: "bad_request", message: "Invalid resource cursor." });
@@ -373,7 +370,6 @@ export class PersonalResources {
               kind: input.kind,
               id: input.id ?? null,
               after: id,
-              ...(input.kind === "machine" ? { asOf: asOf.toISOString() } : {}),
             }),
           ).toString("base64url");
         const candidate = (count: number) => ({
@@ -406,6 +402,7 @@ export class PersonalResources {
       };
       const kind = input.kind;
       if (kind === "machine") {
+        const asOf = new Date();
         const rows = await readMachineResourceKeys(tx, ownerId, {
           ...afterId,
           ...targetId,
