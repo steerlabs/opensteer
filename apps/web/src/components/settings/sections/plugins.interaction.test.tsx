@@ -51,7 +51,6 @@ const view: SettingsView = {
   machineOwner: true,
   name: "My Mac",
   facts: { desktop: false, onThisComputer: false, remote: false },
-  statusInfo: { status: "ready", reason: null },
 };
 async function mount(
   path = "/settings/plugins",

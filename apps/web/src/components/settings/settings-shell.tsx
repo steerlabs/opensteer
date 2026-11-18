@@ -9,14 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
-import {
-  deploymentStatusLabel,
-  type DeploymentStatusInfo,
-} from "@opensteer/protocol/deployment-status";
-import {
-  deploymentConnectionStatusInfo,
-  selectedDeploymentFrom,
-} from "../../desktop/desktop-deployment-selection.js";
+import { selectedDeploymentFrom } from "../../desktop/desktop-deployment-selection.js";
 import { useMediaQuery } from "../../ui-utils.js";
 import { ShellContext, useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
@@ -65,7 +58,6 @@ export function SettingsShell() {
   const openNavigation = useCallback(() => setNavigationOpen(true), []);
   const deployment = selectedDeploymentFrom(shell.deploymentAccess, shell.desktopDeployment);
   const identity = shell.snapshot.identityConfig;
-  const connection = shell.deploymentAccess?.deployments.find(({ id }) => id === deployment?.id);
   const kind = deployment?.kind ?? identity?.deployment.kind;
   const view = useMemo<SettingsView | null>(
     () =>
@@ -84,19 +76,13 @@ export function SettingsShell() {
                 (shell.desktopBridge === null &&
                   shell.snapshot.sessionSurface === "personal-remote"),
             },
-            statusInfo: settingsStatus({
-              connection: shell.snapshot.connection,
-              desktopStatus: connection ? deploymentConnectionStatusInfo(connection) : null,
-            }),
           }
         : null,
     [
-      connection,
       deployment,
       identity,
       kind,
       shell.desktopBridge,
-      shell.snapshot.connection,
       shell.snapshot.sessionSurface,
     ],
   );
@@ -219,11 +205,6 @@ export function SettingsShell() {
             <span className="settings-navigation__connection-name">{view.name}</span>
             <span className="settings-navigation__connection-detail">{placeDetail}</span>
           </Link>
-          {view.statusInfo.status !== "ready" ? (
-            <p className="settings-navigation__status" role="status">
-              {view.statusInfo.reason ?? deploymentStatusLabel(view.statusInfo.status)}
-            </p>
-          ) : null}
         </div>
       </aside>
       <div
@@ -364,14 +345,4 @@ export function SettingsNotFound() {
       </Link>
     </SettingsPage>
   );
-}
-
-export function settingsStatus(input: {
-  readonly connection: "connected" | "connecting" | "offline";
-  readonly desktopStatus?: DeploymentStatusInfo | null;
-}): DeploymentStatusInfo {
-  if (input.desktopStatus) return input.desktopStatus;
-  if (input.connection === "connected") return { reason: null, status: "ready" };
-  if (input.connection === "connecting") return { reason: null, status: "starting" };
-  return { reason: "This connection could not be reached.", status: "offline" };
 }

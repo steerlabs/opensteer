@@ -23,7 +23,6 @@ import {
   SettingsRow,
   SettingsSegmented,
   SettingsSwitch,
-  StatusText,
   type SettingsView,
 } from "../primitives.js";
 
@@ -49,17 +48,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
               </button>
             ) : undefined
           }
-          detail={
-            view.statusInfo.status === "ready" ? (
-              view.deployment?.onThisComputer ? (
-                "Running here"
-              ) : (
-                placeDetail
-              )
-            ) : (
-              <StatusText info={view.statusInfo} />
-            )
-          }
+          detail={view.deployment?.onThisComputer ? "Running here" : placeDetail}
           title={view.name}
         />
       </SettingsGroup>

@@ -19,7 +19,6 @@ import {
   SettingsNotFound,
   SettingsSectionRoute,
   SettingsShell,
-  settingsStatus,
 } from "./settings-shell.js";
 
 const noOp = () => undefined;
@@ -143,20 +142,6 @@ describe("Settings identity honesty", () => {
     expect(html).not.toContain("Signed in to this deployment");
     expect(html).not.toContain("Remove from Account list");
     expect(renderSettings(context, "/settings/general")).toContain("Running here");
-  });
-});
-
-describe("Settings status", () => {
-  it("reads the supervisor status on Desktop and the socket status in a browser", () => {
-    expect(
-      settingsStatus({
-        connection: "offline",
-        desktopStatus: { reason: null, status: "ready" },
-      }).status,
-    ).toBe("ready");
-    expect(settingsStatus({ connection: "connected" }).status).toBe("ready");
-    expect(settingsStatus({ connection: "connecting" }).status).toBe("starting");
-    expect(settingsStatus({ connection: "offline" }).status).toBe("offline");
   });
 });
 
