@@ -1,5 +1,6 @@
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { presentMessageDelivery } from "@opensteer/client/feedback";
+import { useClientConnectionName } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
@@ -52,6 +53,7 @@ import { ReferenceVisibility } from "../markdown/reference-context.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
 import { useScreenAction } from "../ui/client-feedback.js";
+import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
@@ -1536,6 +1538,7 @@ function OwnMessage(props: {
   readonly waiting?: React.ComponentProps<typeof Message>["hold"];
 }) {
   const controls = useContext(MessageDeliveryContext);
+  const computer = useClientConnectionName(useSelectedHostClient()?.connection ?? null);
   const { entry } = props;
   const delivery = entry.localDelivery;
   const key = entry.clientSendKey ?? entry.id;
@@ -1573,7 +1576,9 @@ function OwnMessage(props: {
       }
       phase={delivery?.phase ?? "delivered"}
       rejection={
-        delivery?.phase === "rejected" ? presentMessageDelivery("rejected", delivery.issue) : null
+        delivery?.phase === "rejected"
+          ? presentMessageDelivery("rejected", delivery.issue, computer)
+          : null
       }
       showStatus={controls?.statusShown(key) ?? true}
       since={Number.isNaN(since) ? Date.now() : since}

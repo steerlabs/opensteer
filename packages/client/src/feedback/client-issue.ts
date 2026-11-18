@@ -96,9 +96,15 @@ function rejectionDetail(reason: string | undefined): string | undefined {
   return reason && Object.hasOwn(rejectionReasons, reason) ? rejectionReasons[reason] : undefined;
 }
 
+/**
+ * The name a sentence says, or "your computer" / "your team" when there is no
+ * safe one. `sentenceStart` capitalizes only that fallback: a real name like
+ * "iMac" is said as written.
+ */
 export function clientDisplayName(
   name: string | null | undefined,
   target: "computer" | "team" = "computer",
+  sentenceStart = false,
 ): string {
   const safe = name
     ? Array.from(name)
@@ -106,15 +112,14 @@ export function clientDisplayName(
         .join("")
         .trim()
     : undefined;
-  return safe && (target === "team" ? safe.length <= 80 : safe.length <= 18)
-    ? safe
-    : target === "team"
-      ? "your team"
-      : "your computer";
+  if (safe && (target === "team" ? safe.length <= 80 : safe.length <= 18)) return safe;
+  const fallback = target === "team" ? "your team" : "your computer";
+  return sentenceStart ? `Y${fallback.slice(1)}` : fallback;
 }
 
 export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation {
   const name = clientDisplayName(issue.name, issue.target);
+  const subject = clientDisplayName(issue.name, issue.target, true);
   const team = issue.target === "team";
   const result = (
     title: string,
@@ -133,7 +138,7 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
     case "update-app":
       return result(team ? `Update Opensteer to use ${name}` : "Update Opensteer", "update");
     case "update-server":
-      return result(team ? `${name}'s server needs an update` : `${name} needs an update`);
+      return result(team ? `${subject}'s server needs an update` : `${subject} needs an update`);
     case "web-outdated":
       return result("Opensteer was updated", "reload");
     case "access-lost":
@@ -182,21 +187,25 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
   }
 }
 
+/** `computer` is the verified name of the computer the message went to, when the issue has none. */
 export function presentMessageDelivery(
   phase: "waiting" | "sending" | "rejected",
   issue?: ClientIssue,
+  computer?: string | null,
 ): string {
   if (issue?.code === "unconfirmed")
     return presentClientIssue({ happened: "this message was sent", ...issue }).title;
   if (phase === "sending") return "Sending…";
   if (phase === "waiting") return "Waiting to send";
-  return `Not sent. ${presentMessageRejection(issue)}`;
+  return `Not sent. ${presentMessageRejection(
+    issue && !issue.name && computer ? { ...issue, name: computer } : issue,
+  )}`;
 }
 
 export function presentMessageRejection(issue?: ClientIssue): string {
   return (
     rejectionDetail(issue?.reason) ??
-    `${clientDisplayName(issue?.name, issue?.target)} didn't accept it.`
+    `${clientDisplayName(issue?.name, issue?.target, true)} didn't accept it.`
   );
 }
 
@@ -250,6 +259,7 @@ export function presentConnectionGate(
   state: import("../connections/connection-controller.js").ClientConnectionState,
 ): ClientIssuePresentation {
   const name = clientDisplayName(state.name, state.target);
+  const subject = clientDisplayName(state.name, state.target, true);
   if (!state.showInterruption)
     return {
       title: presentConnectionStarting(state.name, state.target),
@@ -284,12 +294,12 @@ export function presentConnectionGate(
   if (issue.code === "update-app")
     return {
       title: "Update Opensteer",
-      detail: `${name} needs a newer version of this app.`,
+      detail: `${subject} needs a newer version of this app.`,
       action: "update",
     };
   if (issue.code === "update-server")
     return {
-      title: `${name} needs an update`,
+      title: `${subject} needs an update`,
       detail: "Update Opensteer on it to use it from here.",
       action: null,
     };
@@ -300,6 +310,7 @@ export function presentConnectionDetail(
   device: "phone" | "device" = "device",
 ): ClientIssuePresentation {
   const name = clientDisplayName(issue.name, issue.target);
+  const subject = clientDisplayName(issue.name, issue.target, true);
   switch (issue.code) {
     case "connection":
       return issue.reason === "offline"
@@ -329,7 +340,7 @@ export function presentConnectionDetail(
     case "update-app":
       return {
         title: "This app needs an update",
-        detail: `${name} runs a newer Opensteer.`,
+        detail: `${subject} runs a newer Opensteer.`,
         action: "update",
       };
     case "update-server":

@@ -13,7 +13,7 @@ import {
 import { ActionLine } from "./action-line.js";
 import { MessageDelivery } from "./message-delivery.js";
 import { Refusal, useAction } from "./use-action.js";
-import { TranscriptImageContext } from "@opensteer/client/react";
+import { TranscriptImageContext, useClientConnectionName } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
@@ -2282,6 +2282,7 @@ function OwnMessage({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const outbox = client ? hostMessageOutbox(client) : null;
+  const computer = useClientConnectionName(client?.connection ?? null);
   const local = message.localDelivery;
   const sendKey = message.clientSendKey ?? message.id;
   const deliveryFeedback = useContext(DeliveryFeedback);
@@ -2349,7 +2350,9 @@ function OwnMessage({
       onAction={(action) => void takeBack.run(action)}
       phase={local?.phase ?? "delivered"}
       rejection={
-        local?.phase === "rejected" ? presentMessageDelivery("rejected", local.issue) : null
+        local?.phase === "rejected"
+          ? presentMessageDelivery("rejected", local.issue, computer)
+          : null
       }
       showStatus={statusShown}
       since={since}

@@ -18,3 +18,11 @@ export function useConnectionNotice(connection: ClientConnection): string | null
   }, [connection]);
   return useSyncExternalStore(connection.subscribe, snapshot, snapshot);
 }
+
+const noConnection = () => () => {};
+
+/** The connection's display name, redrawing only when it changes. */
+export function useClientConnectionName(connection: ClientConnection | null): string | null {
+  const read = useCallback(() => connection?.getSnapshot().name ?? null, [connection]);
+  return useSyncExternalStore(connection?.subscribe ?? noConnection, read, read);
+}

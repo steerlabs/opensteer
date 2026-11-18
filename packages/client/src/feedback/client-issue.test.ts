@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { HostClientRequestError } from "../host/client.js";
-import { clientIssue, presentClientIssue } from "./client-issue.js";
+import {
+  clientIssue,
+  presentClientIssue,
+  presentConnectionDetail,
+  presentConnectionGate,
+  presentMessageDelivery,
+  type ClientIssue,
+  type ClientIssueCode,
+} from "./client-issue.js";
+import type { ClientConnectionState } from "../connections/connection-controller.js";
 
 describe("safe client issues", () => {
   // The words come whole from the action: a stitched "{thing} {done}" read
@@ -33,5 +42,64 @@ describe("safe client issues", () => {
       const presented = issue && JSON.stringify(presentClientIssue(issue));
       expect(presented).not.toMatch(/PRIVATE_|unknown-reason|Users/u);
     }
+  });
+  // "Not sent. your computer didn't accept it." and "your computer needs an update"
+  // started sentences in lowercase when the computer had no name to say.
+  it("starts every sentence with a capital, with or without a name", () => {
+    const codes: readonly ClientIssueCode[] = [
+      "connection",
+      "sign-in",
+      "update-app",
+      "update-server",
+      "web-outdated",
+      "access-lost",
+      "open-failed",
+      "read-failed",
+      "refresh-failed",
+      "not-sent",
+      "unconfirmed",
+      "rejected",
+      "login-storage-unavailable",
+      "storage-unavailable",
+      "queue-full",
+      "preparation-required",
+    ];
+    const said: string[] = [];
+    for (const name of [undefined, "Mac mini"])
+      for (const target of ["computer", "team"] as const)
+        for (const code of codes)
+          for (const reason of [undefined, "offline", "unreachable"]) {
+            const issue: ClientIssue = {
+              code,
+              target,
+              ...(name ? { name } : {}),
+              ...(reason ? { reason } : {}),
+            };
+            const state = {
+              issue,
+              name: name ?? null,
+              target,
+              showInterruption: true,
+            } as ClientConnectionState;
+            for (const words of [
+              presentClientIssue(issue),
+              presentConnectionDetail(issue),
+              presentConnectionGate(state),
+            ])
+              said.push(words.title, ...(words.detail ? [words.detail] : []));
+            said.push(presentMessageDelivery("rejected", issue));
+          }
+    const lowercase = said.filter((words) =>
+      words.split(/(?<=[.?!]) /u).some((sentence) => /^[a-z]/u.test(sentence)),
+    );
+    expect(lowercase).toEqual([]);
+  });
+  it("names the computer a refused message went to", () => {
+    expect(presentMessageDelivery("rejected", { code: "rejected" }, "Mac mini")).toBe(
+      "Not sent. Mac mini didn't accept it.",
+    );
+    expect(presentMessageDelivery("rejected", { code: "rejected" })).toBe(
+      "Not sent. Your computer didn't accept it.",
+    );
   });
 });
