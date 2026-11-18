@@ -142,7 +142,10 @@ interface ComposerProps {
    * Keeps or sends the message. A rejection from `act` is said in the
    * action owner's words; anything else as a message this device couldn't keep.
    */
-  onSend: (body: string, submission: ComposerSubmission) => Promise<void>;
+  onSend: (
+    body: string,
+    submission: ComposerSubmission,
+  ) => Promise<void | { readonly draftGeneration: string }>;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -467,7 +470,7 @@ export function Composer({
       setSubmitting(true);
       setError(null);
       try {
-        await onSend(submission.body, {
+        const result = await onSend(submission.body, {
           attachments: submission.attachments,
           places: submission.places ?? [],
           ...(submission.compaction ? { compaction: submission.compaction } : {}),
@@ -478,14 +481,17 @@ export function Composer({
           draftKey &&
           saved !== undefined &&
           (latestDraft.current !== text || !composerDrafts.matches(draftKey, saved))
-        )
+        ) {
+          if (result) composerDrafts.finishTaskStart(draftKey, result.draftGeneration);
           return;
+        }
         setDraft((current) => (current.trim() === text.trim() ? "" : current));
         setQuote((current) => (current === carriedQuote ? null : current));
         staged.release(carried.map((item) => item.localId));
         if (JSON.stringify(context?.parts() ?? []) === JSON.stringify(places)) context?.reset();
         if (draftKey && latestDraft.current.trim() === text.trim())
           composerDrafts.update(draftKey, { text: "", places: [], quote: null });
+        if (draftKey && result) composerDrafts.finishTaskStart(draftKey, result.draftGeneration);
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
         const issue = clientIssue(error, { operation: "action", label: "save this message" });

@@ -150,7 +150,7 @@ export interface ShellContext {
     /** The draft the task starts from, which keeps the start across retries. */
     draftKey: string | null,
     confirmLegacy?: boolean,
-  ) => Promise<{ readonly id: string }>;
+  ) => Promise<{ readonly id: string; readonly draftGeneration: string }>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
    * The Desktop's deployment-access state, already filtered by one revision
@@ -684,7 +684,7 @@ export function AppShell({
       accessMode: ThreadAccessMode,
       draftKey: string | null,
       confirmLegacy?: boolean,
-    ): Promise<{ readonly id: string }> => {
+    ) => {
       // The first message is kept, under the login the Host confirmed, before
       // anything sends it; the new task's composer is no part of its delivery.
       const outbox = hostMessageOutbox(hostClient);
@@ -701,7 +701,7 @@ export function AppShell({
           throw storageUnavailable();
       };
       const prepared = sendMessageCommand("", message);
-      return startTask({
+      const thread = await startTask({
         records: draftTaskStart(JSON.stringify([scopeKey, draftKey]), generation),
         message: {
           content: prepared.content,
@@ -725,6 +725,7 @@ export function AppShell({
         enqueue: (command) => outbox.enqueue(command, { handoff: true, assertCurrent }),
         hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });
+      return { ...thread, draftGeneration: generation };
     },
     [hostClient],
   );

@@ -49,6 +49,7 @@ const DraftSchema = z.object({
   refusal: z.string().optional(),
   recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   startGeneration: z.string().optional(),
+  startPending: z.boolean().optional(),
   start: SavedTaskStartSchema.optional().catch(undefined),
   text: z.string(),
   updatedAt: z.number(),
@@ -129,6 +130,11 @@ export function holdsContent(draft: ComposerDraft): boolean {
     draft.files.length > 0 ||
     (draft.places ?? []).some((place) => !isAutomatic(place))
   );
+}
+
+function holdsTaskStart(draft: ComposerDraft): boolean {
+  // An older draft can have a journal without an explicit pending flag.
+  return Boolean(draft.start || (draft.startGeneration && draft.startPending !== false));
 }
 
 /** Whether two drafts say the same thing; being looked at is not an edit. */
@@ -228,7 +234,7 @@ export function createComposerDraftStore(
   const write = (key: string, draft: ComposerDraft, keepUnsaved = true): boolean => {
     const value = JSON.stringify(
       key.includes(":task:") && !draft.startGeneration && holdsContent(draft)
-        ? { ...draft, startGeneration: globalThis.crypto.randomUUID() }
+        ? { ...draft, startGeneration: globalThis.crypto.randomUUID(), startPending: false }
         : draft,
     );
     try {
@@ -259,8 +265,9 @@ export function createComposerDraftStore(
     const replies = new Set<string>();
     for (const key of keys(start)) {
       const draft = read(key);
-      if (!draft || !holdsContent(draft)) continue;
       const name = key.slice(start.length);
+      if (!draft || (!holdsContent(draft) && !(name.startsWith("task:") && holdsTaskStart(draft))))
+        continue;
       const open = opened.has(key);
       if (name.startsWith("thread:")) {
         if (!open) replies.add(decodeURIComponent(name.slice("thread:".length)));
@@ -285,8 +292,8 @@ export function createComposerDraftStore(
       if (expected.startGeneration && expected.startGeneration !== held.startGeneration)
         return false;
       return sameDraft(
-        { ...expected, startGeneration: undefined },
-        { ...held, startGeneration: undefined },
+        { ...expected, startGeneration: undefined, startPending: undefined },
+        { ...held, startGeneration: undefined, startPending: undefined },
       );
     },
 
@@ -324,12 +331,34 @@ export function createComposerDraftStore(
 
     taskStartGeneration(key: string): string | null {
       const current = read(key) ?? blank();
-      if (current.startGeneration && !unsaved.has(key)) return current.startGeneration;
+      if (current.startGeneration && current.startPending && !unsaved.has(key))
+        return current.startGeneration;
       // Windows looking at the same saved draft give that draft the same generation.
       const startGeneration =
         current.startGeneration ??
         (current.updatedAt ? `legacy:${current.updatedAt}` : globalThis.crypto.randomUUID());
-      return write(key, { ...current, startGeneration }, false) ? startGeneration : null;
+      return write(key, { ...current, startGeneration, startPending: true }, false)
+        ? startGeneration
+        : null;
+    },
+
+    finishTaskStart(key: string, generation: string): void {
+      const draft = read(key);
+      if (draft?.startGeneration !== generation) return;
+      if (!holdsContent(draft)) {
+        clear(key);
+        return;
+      }
+      if (
+        write(
+          key,
+          { ...draft, start: undefined, startGeneration: undefined, startPending: undefined },
+          false,
+        )
+      ) {
+        publish();
+        onRetire?.(key);
+      }
     },
 
     read,
@@ -402,21 +431,24 @@ export function createComposerDraftStore(
       };
       if (!holdsContent(draft)) {
         if (current === null) return true;
-        if (draft.recoveredSendKeys?.length)
-          write(key, {
+        const preserveStart = key.includes(":task:") && holdsTaskStart(draft);
+        let saved = true;
+        if (preserveStart || draft.recoveredSendKeys?.length) {
+          saved = write(key, {
             ...draft,
-            startGeneration: undefined,
-            start: undefined,
+            ...(preserveStart
+              ? {}
+              : { startGeneration: undefined, start: undefined, startPending: undefined }),
             text: "",
             files: [],
             places: [],
             quote: null,
             updatedAt: now(),
           });
-        else remove(key);
+        } else remove(key);
         if (!open || refusal !== undefined) publish();
-        if (key.includes(":task:")) onRetire?.(key);
-        return true;
+        if (!preserveStart && key.includes(":task:")) onRetire?.(key);
+        return saved;
       }
       if (current !== null && sameDraft(draft, current) && !unsaved.has(key)) return true;
       const saved = write(key, { ...draft, updatedAt: now() });

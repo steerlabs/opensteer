@@ -161,6 +161,7 @@ function NewTaskComposer({
       () => createThreadAndSend(message, selection, accessMode, draftKey, legacyStart),
     );
     nav.openConversation(nav.threadPath(thread.id));
+    return { draftGeneration: thread.draftGeneration };
   };
   return (
     <>

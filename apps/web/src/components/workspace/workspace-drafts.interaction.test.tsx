@@ -84,6 +84,8 @@ it("keeps another window's revised task draft and files after the earlier start 
     await write(element("[data-composer-input]"), "Earlier first message");
     await click(element(".composer__send"));
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce(), { timeout: 1000 });
+    const startedGeneration = composerDrafts.read(key)?.startGeneration;
+    expect(startedGeneration).toBeDefined();
     const file = {
       mediaType: "text/plain",
       name: "revision.txt",
@@ -109,10 +111,18 @@ it("keeps another window's revised task draft and files after the earlier start 
       text: "Earlier first message",
     });
     await vi.waitFor(() => expect(history.at(-1)?.path).toMatch(/^\/tasks\//u), { timeout: 1000 });
-    expect(composerDrafts.read(key)).toMatchObject({
-      text: "Revised in another window",
-      files: [file],
-    });
+    await vi.waitFor(
+      () => {
+        const revised = composerDrafts.read(key);
+        expect(revised).toMatchObject({
+          text: "Revised in another window",
+          files: [file],
+          startPending: false,
+        });
+        expect(revised?.startGeneration).not.toBe(startedGeneration);
+      },
+      { timeout: 1000 },
+    );
   } finally {
     answer.resolve();
   }

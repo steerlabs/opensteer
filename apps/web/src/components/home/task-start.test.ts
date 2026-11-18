@@ -80,7 +80,7 @@ let keys = 0;
 async function attempt(
   drafts: ReturnType<typeof createComposerDraftStore>,
   fake: ReturnType<typeof host>,
-  saved: ReturnType<typeof journal>,
+  saved: { mutate: NonNullable<Parameters<typeof draftTaskStart>[2]> },
   enqueue = async (threadId: string, key: string, _content: PendingSendCommand["content"]) => {
     if (!fake.queued.some((entry) => entry.key === key)) fake.queued.push({ threadId, key });
   },
@@ -286,6 +286,45 @@ describe("starting a new task from a draft", () => {
     expect(enqueue).toHaveBeenCalledOnce();
   });
 
+  it("keeps the original task after a failed first send, clearing the draft and retyping after reload", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+    const storage = memoryStorage();
+    const drafts = createComposerDraftStore(() => storage);
+    const fake = host();
+    const scope = controlledClientSession().connection.getSnapshot().scope!;
+    const journalKey = `task-start:${JSON.stringify([clientScopeKey(scope), draftKey])}`;
+    const saved: Parameters<typeof attempt>[2] = {
+      mutate: (_key, change) => mutateBrowserMessageRecord(journalKey, change),
+    };
+    drafts.update(draftKey, { text: "First attempt" });
+    const failEnqueue = vi.fn(
+      async (_id: string, _key: string, _content: PendingSendCommand["content"]) => {
+        throw new Error("Couldn't enqueue the first message.");
+      },
+    );
+    await expect(attempt(drafts, fake, saved, failEnqueue)).rejects.toThrow("Couldn't enqueue");
+    const firstMessageKey = failEnqueue.mock.calls[0]![1];
+
+    drafts.update(draftKey, { text: "" });
+    await retireTaskStarts((key) => drafts.read(key)?.startGeneration, draftKey);
+    const reloaded = createComposerDraftStore(() => storage);
+    expect(reloaded.index({ deploymentId: "deployment", userId: "user" }).tasks).toMatchObject([
+      { draftId: "home" },
+    ]);
+    reloaded.update(draftKey, { text: "Rewritten first message" });
+    const enqueue = vi.fn(
+      async (_id: string, _key: string, _content: PendingSendCommand["content"]) => {},
+    );
+    await expect(attempt(reloaded, fake, saved, enqueue)).resolves.toEqual({ id: "thr_1" });
+    expect(fake.createThread).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith("thr_1", firstMessageKey, [
+      { type: "text", text: "Rewritten first message" },
+    ]);
+    reloaded.clear(draftKey);
+    await retireTaskStarts((key) => reloaded.read(key)?.startGeneration, draftKey);
+  });
+
   it("imports a previous-format draft's confirmed task and message keys before sending", async () => {
     const store = memoryStorage();
     const drafts = createComposerDraftStore(() => store);
@@ -305,6 +344,8 @@ describe("starting a new task from a draft", () => {
         },
       }),
     );
+    drafts.update(draftKey, { text: "" });
+    drafts.update(draftKey, { text: "Rewritten after upgrade" });
     await expect(attempt(drafts, fake, saved)).resolves.toEqual({ id: "previous-task" });
     expect(fake.createThread).not.toHaveBeenCalled();
     expect(fake.queued).toEqual([{ threadId: "previous-task", key: "previous-message" }]);
