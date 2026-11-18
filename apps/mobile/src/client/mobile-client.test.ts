@@ -2602,10 +2602,7 @@ describe("MobileClient cold saved launch", () => {
       deploymentId: serverId,
       status: "ready",
     });
-    expect(client.savedViews.getSnapshot().tasks).toMatchObject({
-      source: "saved",
-      label: "Updating…",
-    });
+    expect(client.savedViews.getSnapshot().tasks).toMatchObject({ source: "saved" });
     expect(client.getSnapshot().selection.hostClient?.getSnapshot()).toMatchObject({
       connection: "connecting",
       session: "checking",

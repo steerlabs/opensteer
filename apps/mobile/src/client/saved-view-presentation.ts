@@ -1,5 +1,4 @@
-import { connectionNotice, type ClientConnectionState } from "@opensteer/client/connections";
-import { presentSavedViewConnection } from "@opensteer/client/feedback";
+import type { UserId } from "@opensteer/core";
 import type { SavedViewCache } from "./saved-view-cache.js";
 import {
   projectSavedTasks,
@@ -18,7 +17,8 @@ export type SavedSurface<T> =
       readonly source: "saved";
       readonly content: T;
       readonly capturedAt: string;
-      readonly label: string;
+      /** Whose view it is: the person a draft written over it belongs to. */
+      readonly userId: UserId;
     };
 export interface SavedPresentationState {
   readonly tasks: SavedSurface<readonly SavedTask[]>;
@@ -51,7 +51,6 @@ export class SavedViewPresentation {
   #userId: string | null = null;
   #savedUserId: string | null = null;
   #tasks: SavedTask[] | undefined;
-  #label = presentSavedViewConnection(null);
 
   constructor(options: { readonly cache: SavedViewCache; readonly now?: () => Date }) {
     this.#cache = options.cache;
@@ -141,7 +140,7 @@ export class SavedViewPresentation {
                 source: "saved",
                 content: view.tasks,
                 capturedAt: view.capturedAt,
-                label: this.#label,
+                userId: view.userId,
               }
             : pending,
           failure: null,
@@ -187,19 +186,6 @@ export class SavedViewPresentation {
     this.#savedUserId = null;
     this.#userId = null;
     this.#publish({ tasks: blocked, failure: this.#state.failure });
-  }
-  connection(state: ClientConnectionState | null): void {
-    const label = presentSavedViewConnection(state ? connectionNotice(state) : null);
-    if (label === this.#label) return;
-    this.#label = label;
-    this.#relabel();
-  }
-  #relabel(): void {
-    const tasks = this.#state.tasks;
-    this.#publish({
-      ...this.#state,
-      tasks: tasks.source === "saved" ? { ...tasks, label: this.#label } : tasks,
-    });
   }
   retryInvalidation(): Promise<void> {
     return this.#cache.retryInvalidation();
@@ -268,7 +254,6 @@ export class SavedViewPresentation {
     const client = this.#client;
     if (!client || this.#blocked || this.#disposed || !this.#lease()) return;
     const snapshot = client.getSnapshot();
-    this.connection(client.connection.getSnapshot());
     if (snapshot.session === "authentication-required") {
       this.#invalidate();
       this.#detach?.();

@@ -100,7 +100,7 @@ it("loads in parallel, replaces surfaces independently with fresh-empty and neve
   controller.dispose();
   f.dispose();
 });
-it("debounces projection changes for two seconds and distinguishes offline/unavailable labels without claiming health", async () => {
+it("debounces projection changes for two seconds", async () => {
   const f = await fixture(),
     store = createMemorySavedViews();
   await store.write(f.saved, () => true);
@@ -109,34 +109,7 @@ it("debounces projection changes for two seconds and distinguishes offline/unava
   controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
   controller.attach(f.client);
   await vi.waitFor(() => expect(controller.getSnapshot().tasks.source).toBe("saved"));
-  const base = f.client.connection.getSnapshot();
-  controller.connection({
-    ...base,
-    phase: "recovering",
-    network: "offline",
-    showInterruption: false,
-    issue: { code: "connection", reason: "offline" },
-  });
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
-  controller.connection({
-    ...base,
-    phase: "recovering",
-    network: "offline",
-    showInterruption: true,
-    issue: { code: "connection", reason: "offline" },
-  });
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Offline · Saved view" });
-  controller.connection({
-    ...base,
-    phase: "recovering",
-    showInterruption: true,
-    issue: { code: "connection", reason: "unreachable" },
-  });
-  expect(controller.getSnapshot().tasks).toMatchObject({
-    label: "Can't reach Mac mini · Saved view",
-  });
-  controller.connection(base);
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
+  expect(controller.getSnapshot().tasks).toMatchObject({ userId: f.saved.userId });
   vi.useFakeTimers();
   f.publish({
     savedViewReadiness: { tasksReady: true },

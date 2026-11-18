@@ -4,10 +4,10 @@ import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { useCallback, type ReactNode } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import { Gated } from "../ui/connection-gate.js";
-import { useSavedSurface } from "../ui/mobile-client-context.js";
+import { useMobileState, useSavedSurface } from "../ui/mobile-client-context.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { NewTaskPane } from "./new-task.js";
+import { HeldNewTaskPane, NewTaskPane } from "./new-task.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
 import { usePhoneSetup } from "../phone-setup/use-phone-setup.js";
 
@@ -24,7 +24,7 @@ export type HomeScreenProps = StaticScreenProps<{
  *
  * Until the computer has answered once, or a saved view of it is on this
  * phone, a task can't start and there is nothing to show: the gate explains,
- * as it does on the web.
+ * as it does on the web. Over a saved view the composer stays, under the pill.
  */
 export function HomeScreen(props: HomeScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
@@ -32,8 +32,17 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
   const answered = useClientConnectionEverReady(hostClient?.connection ?? null);
-  const saved = useSavedSurface(deploymentId, "tasks").source === "saved";
-  const usable = hostClient !== null && (answered || saved);
+  const view = useSavedSurface(deploymentId, "tasks");
+  const { rows, selection } = useMobileState();
+  // A saved view stands in for the first answer, also while it hands over to
+  // the live list, and before this launch has reached the computer at all.
+  const savedUserId = view.source === "saved" ? view.userId : null;
+  const live = hostClient !== null && (answered || savedUserId !== null || view.source === "live");
+  const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
+  const held =
+    !live && savedUserId !== null && row?.signIn === null && selection.deploymentId === deploymentId
+      ? savedUserId
+      : null;
   const setupDue = usePhoneSetup(hostClient, deploymentId);
   useNotificationsIntro(setupDue ? null : hostClient);
   const onStarted = useCallback(
@@ -48,10 +57,12 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   return (
     <Gated
       gate={
-        usable ? null : <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />
+        live || held !== null ? null : (
+          <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />
+        )
       }
     >
-      {!usable ? null : (
+      {live ? (
         <Screen edgeToEdge>
           <NewTaskPane
             autoFocus={false}
@@ -59,11 +70,24 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
             hostClient={hostClient}
             key={deploymentId}
             onStarted={onStarted}
+            savedUserId={savedUserId}
             underHeader
             voice
           />
         </Screen>
-      )}
+      ) : held !== null ? (
+        <Screen edgeToEdge>
+          <HeldNewTaskPane
+            connection={selection.session?.connection ?? null}
+            deploymentId={deploymentId}
+            key={deploymentId}
+            name={row?.name ?? null}
+            underHeader
+            userId={held}
+            voice
+          />
+        </Screen>
+      ) : null}
     </Gated>
   );
 }

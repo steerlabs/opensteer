@@ -384,8 +384,10 @@ export function FirstMessageComposer(props: {
   readonly children: ReactNode;
   readonly held: boolean;
   readonly execution: FirstMessageExecution;
-  /** Where the references an `@` offers come from. */
-  readonly hostClient: HostClient;
+  /** Where the references an `@` offers come from; none before the computer has answered. */
+  readonly hostClient: HostClient | null;
+  /** Whether files can be added: not while nothing can upload them. */
+  readonly attach?: boolean;
   readonly inputRef: RefObject<ComposerEditorHandle | null>;
   readonly onChangeText: (text: string) => void;
   readonly onChooseAI: (pickerAttemptId?: string, conversation?: boolean) => void;
@@ -555,20 +557,24 @@ export function FirstMessageComposer(props: {
     props.onChooseAI();
   };
   const menuOptions: readonly NativeMenuOption[] = [
-    {
-      disabled: held,
-      icon: "paperclip",
-      id: "attach-file",
-      label: "Attach file…",
-      onPress: () => void staged.pick("file"),
-    },
-    {
-      disabled: held,
-      icon: "photo",
-      id: "attach-photo",
-      label: "Attach photo…",
-      onPress: () => void staged.pick("photo"),
-    },
+    ...(props.attach === false
+      ? []
+      : ([
+          {
+            disabled: held,
+            icon: "paperclip",
+            id: "attach-file",
+            label: "Attach file…",
+            onPress: () => void staged.pick("file"),
+          },
+          {
+            disabled: held,
+            icon: "photo",
+            id: "attach-photo",
+            label: "Attach photo…",
+            onPress: () => void staged.pick("photo"),
+          },
+        ] as const)),
     { icon: "gearshape", id: "model", label: "Choose AI…", onPress: chooseManually },
   ];
   const fieldMaxHeight =
@@ -641,7 +647,7 @@ export function FirstMessageComposer(props: {
               {blocker.reason}
             </AppText>
           )}
-          {referenceQuery === null ? null : (
+          {referenceQuery === null || props.hostClient === null ? null : (
             <ComposerReferencePicker
               onPick={(row) =>
                 insertReference(props.inputRef.current, referenceQuery, caret, row.markdown)

@@ -1,11 +1,16 @@
-import { clientScopeKey } from "@opensteer/client/connections";
+import { clientScopeKey, type ClientConnection } from "@opensteer/client/connections";
 import { clientIssue, clientIssueActions } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine } from "../ui/client-feedback.js";
-import { notSentIssue } from "../ui/connection-live.js";
+import { notSent, notSentIssue } from "../ui/connection-live.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";
+import {
+  emptyExecutionPreferences,
+  provisionalThreadTitle,
+  type BrowserPageContentPart,
+  type UserId,
+} from "@opensteer/core";
 import {
   accessModeConflict,
   placementForSelection,
@@ -42,6 +47,7 @@ import {
   draftAttachmentPart,
   forgetDraftFiles,
   useDraftAttachments,
+  type DraftAttachments,
 } from "../thread/draft-attachments.js";
 import {
   claimFirstMessage,
@@ -95,8 +101,10 @@ export function NewTaskPane(props: {
   readonly underHeader: boolean;
   /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
+  /** Whose saved view is on screen, until the Host has said who is signed in. */
+  readonly savedUserId?: UserId | null;
 }): ReactNode {
-  const userId = useHostSelector(props.hostClient, selectUserId);
+  const userId = useHostSelector(props.hostClient, selectUserId) ?? props.savedUserId ?? null;
   if (userId === null) {
     return (
       <View style={styles.waiting}>
@@ -610,6 +618,104 @@ function NewTask(props: {
     </FirstMessageComposer>
   );
 }
+
+/**
+ * Home over a saved view, before this computer has answered on this launch:
+ * the composer keeps the person's draft, and Send says why no task started.
+ * The live composer takes over, reading the same draft, once the Host is here.
+ */
+export function HeldNewTaskPane(props: {
+  readonly deploymentId: string;
+  /** Whose saved view this is, and so whose draft. */
+  readonly userId: UserId;
+  readonly connection: ClientConnection | null;
+  readonly name: string | null;
+  readonly underHeader: boolean;
+  readonly voice?: boolean;
+}): ReactNode {
+  const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
+  const { drafts } = useMobileClient();
+  const { connection, deploymentId, userId } = props;
+  const draftKey = newTaskDraftKey(homeDraftId);
+  useSyncExternalStore(drafts.subscribe, drafts.getVersion);
+  const text = drafts.readDraft(deploymentId, userId, draftKey)?.text ?? "";
+  const input = useRef<ComposerEditorHandle>(null);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
+  const changeText = (next: string): void => {
+    setLine(null);
+    void drafts.writeDraft(deploymentId, userId, draftKey, next).catch(noop);
+  };
+  const send = (): void => {
+    const state = connection?.getSnapshot() ?? null;
+    const issue = notSent("started", {
+      name: state?.name ?? props.name,
+      network: state?.network ?? "unknown",
+      target: "computer",
+    });
+    setLine(issueLine(issue, `not-started:${Date.now()}`));
+  };
+  return (
+    <FirstMessageComposer
+      attach={false}
+      blocker={null}
+      execution={heldExecution}
+      held={false}
+      hostClient={null}
+      inputRef={input}
+      onChangeText={changeText}
+      onChooseAI={() => navigation.navigate("NewThread", { deploymentId })}
+      onRemoveQuote={noop}
+      onSend={send}
+      onVoiceLine={setLine}
+      placeholder="Ask your agent to…"
+      quote={null}
+      savedAttachmentKeys={[]}
+      selectionLabel="Choose AI"
+      sending={false}
+      staged={noAttachments}
+      text={text}
+      underHeader={props.underHeader}
+      usageScope={{ deploymentId, userId }}
+      voice={props.voice === true}
+    >
+      <View style={styles.invitation}>
+        <FirstMessageInvitation
+          detail="Your agent works on this computer."
+          title="What should your agent do?"
+        />
+        {text.trim() === "" ? (
+          <FirstMessageExamples
+            examples={examples}
+            onPick={(example) => {
+              changeText(example);
+              input.current?.focus();
+            }}
+          />
+        ) : null}
+        {line === null ? null : (
+          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+        )}
+      </View>
+    </FirstMessageComposer>
+  );
+}
+
+const heldExecution = firstMessageExecution({
+  environments: [],
+  executionPreferences: emptyExecutionPreferences,
+  harnesses: [],
+});
+const noAttachments: DraftAttachments = {
+  items: [],
+  notice: null,
+  waiting: false,
+  pick: async () => undefined,
+  paste: async () => undefined,
+  release: noop,
+  remove: noop,
+  restore: noop,
+  retry: noop,
+};
 
 function noop(): void {}
 

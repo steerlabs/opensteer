@@ -487,11 +487,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           style={styles.scroll}
         >
           {savedTasks.source === "saved" ? (
-            <SavedTasks
-              tasks={savedTasks.content}
-              label={savedTasks.label}
-              capturedAt={savedTasks.capturedAt}
-            />
+            <SavedTasks tasks={savedTasks.content} capturedAt={savedTasks.capturedAt} />
           ) : null}
           {model === null || list === null || deploymentId === null ? null : !model.loaded ? (
             <View style={styles.loading}>

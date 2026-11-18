@@ -9,6 +9,7 @@ import { resetToDeployments } from "../navigation-ref.js";
 import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { useShellGate } from "../ui/shell-gate.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
@@ -91,6 +92,8 @@ export function DeploymentGate(props: {
   const top = { paddingTop: props.paddingTop ?? 0 };
   const iphone = useOptionalIphoneApps();
   const removedFrom = useRemovedFrom(iphone);
+  // Every branch below explains this computer, so the pill would only repeat it.
+  useShellGate(true);
 
   // Removed by its Host: nothing signs back in until the person sets it up again.
   if (iphone !== null && removedFrom?.deploymentId === deploymentId) {

@@ -371,8 +371,25 @@ export const clientIssueActions = {
   check: "Check",
 } as const;
 
-export function presentSavedViewConnection(issue: ClientIssue | null): string {
-  return issue ? `${presentClientIssue(issue).title} · Saved view` : "Updating…";
+/**
+ * A saved view's own fact: when it was captured. The connection's words are
+ * the pill's alone, so this never repeats them.
+ */
+export function presentSavedView(capturedAt: string, now = new Date()): string {
+  const then = new Date(capturedAt);
+  if (Number.isNaN(then.getTime())) return "Saved view";
+  const day = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((day(now) - day(then)) / 86_400_000);
+  const when =
+    days <= 0
+      ? then.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+      : days === 1
+        ? "yesterday"
+        : days < 7
+          ? then.toLocaleDateString(undefined, { weekday: "long" })
+          : then.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return `Saved view · Last updated ${when}`;
 }
 
 export const clientReadPlaceholderLabel = "Not loaded yet";

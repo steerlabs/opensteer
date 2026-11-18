@@ -7,10 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 /*
  * Home is a new task's composer, and a task can't start before the computer
  * has answered. A first launch with no connection showed the composer under
- * the pill on iOS while the web showed the gate.
+ * the pill on iOS while the web showed the gate. A saved view keeps the
+ * composer: on a cold offline launch, before any Host client exists, and as
+ * the saved list hands over to the live one.
  */
 
 const harness = vi.hoisted(() => ({
+  attached: true,
   readyRevision: 0,
   saved: "pending" as "pending" | "saved" | "live",
 }));
@@ -25,18 +28,29 @@ vi.mock("../ui/connection-gate.js", () => ({
 }));
 vi.mock("../ui/screen.js", () => ({ Screen: (props: { children: unknown }) => props.children }));
 vi.mock("../ui/mobile-client-context.js", () => ({
-  useSavedSurface: () => ({ source: harness.saved }),
+  useMobileState: () => ({
+    rows: [{ deploymentId: "dep_1", name: "Mac mini", signIn: null }],
+    selection: { deploymentId: "dep_1", session: null },
+  }),
+  useSavedSurface: () =>
+    harness.saved === "saved" ? { source: "saved", userId: "usr_1" } : { source: harness.saved },
 }));
 vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => "gate",
-  useAttachedHost: () => ({
-    connection: {
-      getSnapshot: () => ({ readyRevision: harness.readyRevision }),
-      subscribe: () => () => undefined,
-    },
-  }),
+  useAttachedHost: () =>
+    harness.attached
+      ? {
+          connection: {
+            getSnapshot: () => ({ readyRevision: harness.readyRevision }),
+            subscribe: () => () => undefined,
+          },
+        }
+      : null,
 }));
-vi.mock("./new-task.js", () => ({ NewTaskPane: () => "composer" }));
+vi.mock("./new-task.js", () => ({
+  HeldNewTaskPane: () => "held composer",
+  NewTaskPane: () => "composer",
+}));
 vi.mock("./notifications-intro.js", () => ({ useNotificationsIntro: () => undefined }));
 vi.mock("../phone-setup/use-phone-setup.js", () => ({ usePhoneSetup: () => false }));
 
@@ -61,12 +75,16 @@ function home(): string {
 
 describe("Home", () => {
   it.each([
-    { readyRevision: 0, saved: "pending", shows: "gate" },
-    { readyRevision: 0, saved: "saved", shows: "composer" },
-    { readyRevision: 1, saved: "pending", shows: "composer" },
+    { attached: true, readyRevision: 0, saved: "pending", shows: "gate" },
+    { attached: true, readyRevision: 0, saved: "saved", shows: "composer" },
+    { attached: true, readyRevision: 0, saved: "live", shows: "composer" },
+    { attached: true, readyRevision: 1, saved: "pending", shows: "composer" },
+    { attached: false, readyRevision: 0, saved: "saved", shows: "held composer" },
+    { attached: false, readyRevision: 0, saved: "pending", shows: "gate" },
   ] as const)(
-    "shows the $shows when ever ready is $readyRevision and the saved view is $saved",
-    ({ readyRevision, saved, shows }) => {
+    "shows the $shows when attached is $attached, ever ready is $readyRevision and the saved view is $saved",
+    ({ attached, readyRevision, saved, shows }) => {
+      harness.attached = attached;
       harness.readyRevision = readyRevision;
       harness.saved = saved;
       expect(home()).toBe(shows);

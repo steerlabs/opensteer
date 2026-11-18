@@ -377,9 +377,6 @@ export class MobileClient {
         options.lifecycle.onBackground(() => {
           void this.savedViews.flush();
         }),
-        options.lifecycle.onNetworkChange(() =>
-          this.savedViews.connection(this.#connection?.getSnapshot() ?? null),
-        ),
       );
     this.#detach.push(
       this.#savedViewCache.subscribe(() => {
@@ -2850,7 +2847,6 @@ export class MobileClient {
         : (catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === attachedId,
           ) ?? null);
-    this.savedViews.connection(this.#connection?.getSnapshot() ?? null);
     this.#state = {
       pendingComputer: this.#pendingComputer,
       account,
