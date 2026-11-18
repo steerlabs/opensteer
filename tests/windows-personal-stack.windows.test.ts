@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { on, once } from "node:events";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,14 +9,19 @@ import { pathToFileURL } from "node:url";
 import { CompiledQuery } from "kysely";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import WebSocket, { type RawData } from "ws";
 import {
   createId,
   HarnessInstanceIdSchema,
+  zeroSequence,
+  type DeploymentId,
   type EnvironmentId,
+  type RunId,
+  type ThreadId,
 } from "../packages/core/src/index.js";
 import { createDatabase } from "../packages/database/src/connection.js";
 import { hostApiVersion } from "../packages/deployment-authority/src/index.js";
-import { hostApiVersionHeader } from "../packages/protocol/src/index.js";
+import { HostToClientMessageSchema, hostApiVersionHeader } from "../packages/protocol/src/index.js";
 import {
   spawnSupervised,
   type SupervisedProcess,
@@ -452,7 +458,12 @@ describe("the personal stack from source", () => {
           throw new Error(`Codex on PATH was never inspected: ${JSON.stringify(driver)}`);
         if (catalog?.status !== "ready" || !catalog.models[0])
           throw new Error(`The Codex account never became ready: ${JSON.stringify(catalog)}`);
-        return { account: account!, driver, model: catalog.models[0] };
+        return {
+          account: account!,
+          deploymentId: view.deploymentId,
+          driver,
+          model: catalog.models[0],
+        };
       },
       { interval: 250, timeout: 60_000 },
     );
@@ -478,29 +489,29 @@ describe("the personal stack from source", () => {
     if (created.type !== "thread.create") throw new Error("thread.create returned another receipt");
     const threadId = created.thread.id;
     const turn = async (text: string, reply: string) => {
-      const sent = await dispatch({
-        content: [{ text, type: "text" }],
-        delivery: "queue",
-        idempotencyKey: randomUUID(),
+      const terminal = await awaitTurnEnd(
+        origin,
+        headers,
+        engines.deploymentId,
         threadId,
-        type: "thread.sendMessage",
-      });
-      if (sent.type !== "thread.sendMessage")
-        throw new Error("thread.sendMessage returned another receipt");
-      return vi.waitFor(
         async () => {
-          const { messages } = await rpc("thread.messages.list", { limit: 100, threadId });
-          const answered = messages.find(
-            (message) => message.kind === "assistant" && textOf(message).includes(reply),
-          );
-          if (!answered)
-            throw new Error(
-              `The turn never answered "${reply}": ${JSON.stringify(messages.map(textOf))}`,
-            );
-          return messages;
+          const sent = await dispatch({
+            content: [{ text, type: "text" }],
+            delivery: "queue",
+            idempotencyKey: randomUUID(),
+            threadId,
+            type: "thread.sendMessage",
+          });
+          if (sent.type !== "thread.sendMessage" || !sent.run)
+            throw new Error("thread.sendMessage did not start a Run");
+          return sent.run.id;
         },
-        { interval: 250, timeout: 60_000 },
       );
+      const { messages } = await rpc("thread.messages.list", { limit: 100, threadId });
+      expect(
+        messages.some((message) => message.kind === "assistant" && textOf(message).includes(reply)),
+        `The turn ended with ${terminal.type} before answering "${reply}": ${JSON.stringify(messages.map(textOf))}`,
+      ).toBe(true);
     };
     const start = windows
       ? `set "GREETING=hello from cmd" && node server.cjs`
@@ -628,6 +639,58 @@ describe("the personal stack from source", () => {
 });
 
 const connected = (line: string) => line.includes("Runner connected to Host");
+
+async function awaitTurnEnd(
+  origin: string,
+  headers: Record<string, string>,
+  deploymentId: DeploymentId,
+  threadId: ThreadId,
+  dispatch: () => Promise<RunId>,
+) {
+  const url = new URL(`/v1/realtime?opensteer_api_version=${hostApiVersion}`, origin);
+  url.protocol = "ws:";
+  const signal = AbortSignal.timeout(60_000);
+  const socket = new WebSocket(url, { headers });
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  const messages = on(socket, "message", { signal, close: ["close"] });
+  try {
+    await once(socket, "open", { signal });
+    socket.send(
+      JSON.stringify({
+        apiVersion: hostApiVersion,
+        cursor: { deploymentId, apiVersion: hostApiVersion, afterSequence: zeroSequence },
+        threadId,
+        type: "client.subscribe",
+      }),
+    );
+    let runId: RunId | undefined;
+    // The iterator buffers frames while dispatch awaits the receipt, including a
+    // terminal frame from a fast engine. Synchronize before starting the Run.
+    for await (const [raw] of messages) {
+      const frame = HostToClientMessageSchema.parse(JSON.parse((raw as RawData).toString()));
+      if (frame.type === "host.synchronized" && !runId) runId = await dispatch();
+      if (frame.type === "host.events" && runId) {
+        const terminal = frame.events.find(
+          (event) =>
+            event.runId === runId &&
+            (event.type === "run.completed" ||
+              event.type === "run.failed" ||
+              event.type === "run.interrupted"),
+        );
+        if (terminal) return terminal;
+      }
+      if (frame.type === "host.error" || frame.type === "host.resync-required")
+        throw new Error(`Turn subscription failed: ${JSON.stringify(frame)}`);
+    }
+    throw new Error("Turn subscription closed before the Run ended");
+  } finally {
+    // A failed handshake can emit an error while termination closes the socket.
+    socket.on("error", () => {});
+    socket.terminate();
+    await closed;
+    await messages.return?.();
+  }
+}
 
 function runnerOf(line: string): string {
   return z.object({ runnerId: z.string().min(1) }).parse(JSON.parse(line)).runnerId;

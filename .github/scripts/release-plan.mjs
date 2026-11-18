@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseGateStep, releaseGating } from "./ci-release-gate.mjs";
 const { deriveReleaseVersion } = createRequire(import.meta.url)(
   "../../scripts/release-version.cjs",
 );
@@ -290,7 +291,7 @@ function requireFullChecks(source, { git, pages, newest }) {
       `stable needs a green full CI run that includes ${source.sha}; dispatch a full CI run on main (gh workflow run ci.yml --ref main) or wait for the scheduled run`,
     );
   };
-  if (!latest || latest.conclusion !== "success" || !Number.isSafeInteger(latest.id)) refuse();
+  if (!latest || !Number.isSafeInteger(latest.id)) refuse();
   // Push qualification may have waited while main and its full CI advanced.
   // Refresh ancestry without resolving or changing the selected release source.
   git("fetch", "origin", "main", "--no-tags");
@@ -298,12 +299,17 @@ function requireFullChecks(source, { git, pages, newest }) {
   const sourceIndex = main.indexOf(source.sha);
   const fullIndex = main.indexOf(latest.head_sha);
   if (sourceIndex < 0 || fullIndex < 0 || fullIndex > sourceIndex) refuse();
-  if (
-    !pages(`actions/runs/${latest.id}/jobs?filter=latest&per_page=100`, "jobs").some(
-      (job) => job.name === "Check" && job.status === "completed" && job.conclusion === "success",
-    )
-  )
-    refuse();
+  // A green run qualifies whole. Otherwise only jobs for what a release ships gate it
+  // (ci-release-gate.mjs): each must have run and passed, and Check must have verified them.
+  const jobs = pages(`actions/runs/${latest.id}/jobs?filter=latest&per_page=100`, "jobs");
+  const green = (item) => item.status === "completed" && item.conclusion === "success";
+  const check = jobs.find((job) => job.name === "Check");
+  if (latest.conclusion === "success" && check && green(check)) return;
+  if (!check?.steps?.some((step) => step.name === releaseGateStep && green(step))) refuse();
+  for (const lane of Object.keys(releaseGating)) {
+    const laneJobs = jobs.filter((job) => job.name.replace(/ \(.*\)$/u, "") === lane);
+    if (!laneJobs.length || !laneJobs.every(green)) refuse();
+  }
 }
 /** A dispatch may start alongside main CI. Keep the selected SHA fixed while it qualifies. */
 export async function qualifiedPreflight(

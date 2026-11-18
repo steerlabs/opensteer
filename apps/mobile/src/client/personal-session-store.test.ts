@@ -62,6 +62,19 @@ describe("createPersonalSessionStore", () => {
     expect(await sessions.authorization(deploymentId, new Date("2026-09-14T00:00:01Z"))).toBeNull();
   });
 
+  it("retains the storage error if a new credential cannot be saved", async () => {
+    const { sessions, secureStore } = store();
+    const failure = new Error("Keychain refused the write.");
+    secureStore.interrupt = () => {
+      throw failure;
+    };
+    await expect(sessions.save(session("2026-09-15T00:00:00.000Z"))).rejects.toMatchObject({
+      cause: failure,
+      failure: { reason: "login-storage-unavailable" },
+    });
+    expect(await sessions.authorization(deploymentId, new Date("2026-09-14T00:00:00Z"))).toBeNull();
+  });
+
   it("keeps the credential out of the deployment catalog's namespace", async () => {
     const { secureStore, sessions } = store();
     await sessions.save(session("2026-09-15T00:00:00.000Z"));
@@ -122,11 +135,9 @@ describe("Personal saved-view login lifetime", () => {
     await store.clear(id);
     expect(await store.load(id)).toBeNull();
   });
-  it("initializes legacy records only after current bootstrap and cannot resurrect a cleared record", async () => {
-    const records = createSecureRecordStore({
-      keyPrefix: "test",
-      secureStore: new MemorySecureStore(),
-    });
+  it("normalizes a legacy session once under concurrent loads and never resurrects a cleared record", async () => {
+    const secureStore = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "test", secureStore });
     const id = createId("deployment");
     await records.write(
       `personal.${id}`,
@@ -138,9 +149,12 @@ describe("Personal saved-view login lifetime", () => {
       }),
     );
     const store = createPersonalSessionStore(records);
-    await store.initializeViewLoginId!(id, () => false);
-    expect((await store.load(id))!.viewLoginId).toBeUndefined();
-    await Promise.all([store.clear(id), store.initializeViewLoginId!(id, () => false)]);
+    const [left, right] = await Promise.all([store.load(id), store.load(id)]);
+    expect(left?.viewLoginId).toEqual(expect.any(String));
+    expect(right).toEqual(left);
+    expect(JSON.parse((await records.read(`personal.${id}`))!)).toEqual(left);
+    expect(secureStore.keys).toEqual([`test.personal.${id}`, `test.personal.${id}.g1.0`]);
+    await Promise.all([store.clear(id), store.load(id)]);
     expect(await store.load(id)).toBeNull();
   });
 });

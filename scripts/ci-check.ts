@@ -5,6 +5,8 @@ import { parse } from "yaml";
 import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { timedOutLanes, validateResults } from "../.github/scripts/ci-check.mjs";
 import { checkInventories } from "../.github/scripts/ci-inventories.mjs";
+import { notReleaseGating } from "../.github/scripts/ci-release-gate.mjs";
+import { verifyReuse } from "../.github/scripts/ci-reuse.mjs";
 import {
   darwinOnlyTests,
   realBrowserTests,
@@ -21,11 +23,28 @@ const read = (artifact: string, name: string) =>
   JSON.parse(readFileSync(owned(artifact, name), "utf8"));
 const plan = read("plan", "ci-plan.json");
 const needs = JSON.parse(process.env.CI_NEEDS!) as Record<string, { result?: string }>;
+// `--release-gating` verifies only the jobs that gate a Stable release (ci-release-gate.mjs).
+const ignore = new Set<string>(
+  process.argv.includes("--release-gating") ? Object.keys(notReleaseGating) : [],
+);
+const verifies = (lane: string) => plan.lanes[lane] === true && !ignore.has(lane);
 validateResults(plan, needs, process.env.CI_EVENT, process.env.GITHUB_SHA, {
+  ignore,
   timedOut: Object.values(needs).some((job) => job.result === "cancelled")
     ? await timeouts()
     : new Map(),
 });
+// A reused pull request run must still be green and have tested this exact tree and parent.
+if (plan.reused) {
+  await verifyReuse(plan.reused, {
+    sha: process.env.GITHUB_SHA,
+    repository: process.env.GITHUB_REPOSITORY,
+    token: process.env.GITHUB_TOKEN,
+  });
+  console.log(
+    `${plan.reused.lanes.join(", ")} passed in pull request #${plan.reused.pullRequest} run ${plan.reused.run} on this tree`,
+  );
+}
 /** Lanes this run attempt cut at their time limit; an unreadable API only loses the detail. */
 async function timeouts() {
   try {
@@ -54,7 +73,7 @@ async function timeouts() {
 }
 // Every shard discovered exactly the files the plan selected, and together ran them all.
 for (const lane of ["tests", "integration"] as const) {
-  if (!plan.lanes[lane]) continue;
+  if (!verifies(lane)) continue;
   const count: number = plan.shards[lane];
   const inventories = Array.from({ length: count }, (_, i) =>
     read(`${lane}-${i + 1}`, `${lane}-${i + 1}.inventory.json`),
@@ -66,7 +85,7 @@ for (const lane of ["tests", "integration"] as const) {
   )
     throw new Error(`${lane} discovery differs from the planned files`);
 }
-if (plan.lanes["browser-journeys"]) {
+if (verifies("browser-journeys")) {
   const inventory = read("browser-journeys", "browser-1.inventory.json");
   checkInventories([inventory], 1, "browser");
   if (
@@ -76,7 +95,7 @@ if (plan.lanes["browser-journeys"]) {
     throw new Error("Browser discovery differs from the required files");
 }
 // One task runs the Darwin-only files; Swift-only tasks upload no inventory.
-if (plan.nativeMac?.includes(darwinTask)) {
+if (verifies("native-mac") && plan.nativeMac?.includes(darwinTask)) {
   const inventory = read(`native-mac-${darwinTask}`, "darwin-1.inventory.json");
   checkInventories([inventory], 1, "darwin");
   if (
@@ -85,7 +104,7 @@ if (plan.nativeMac?.includes(darwinTask)) {
     throw new Error("Darwin discovery differs from the required files");
 }
 // The Windows lane must have run every tracked Windows-real file, and at least one.
-if (plan.lanes["native-windows"]) {
+if (verifies("native-windows")) {
   const inventory = read("native-windows", "windows-1.inventory.json");
   checkInventories([inventory], 1, "windows");
   const expected = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
@@ -98,7 +117,7 @@ if (plan.lanes["native-windows"]) {
   )
     throw new Error("Windows discovery differs from the tracked Windows-real files");
 }
-if (plan.lanes.integration) {
+if (verifies("integration")) {
   writeLockGraph(
     join(directory, "combined-lock-graph.json"),
     mergeLockGraphs(

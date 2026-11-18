@@ -26,6 +26,31 @@ interface DatabaseConnectionOptions {
 const databaseHolders = new WeakMap<object, () => string>();
 const databasePools = new WeakMap<object, Pool>();
 
+class DrainingPostgresDialect extends PostgresDialect {
+  override createDriver() {
+    const driver = super.createDriver();
+    const acquire = driver.acquireConnection.bind(driver);
+    const destroy = driver.destroy.bind(driver);
+    const acquiring = new Set<ReturnType<typeof acquire>>();
+    let closing = false;
+    driver.acquireConnection = (options) => {
+      if (closing) return Promise.reject(new Error("Database is shutting down"));
+      const pending = acquire(options);
+      acquiring.add(pending);
+      return pending.finally(() => acquiring.delete(pending));
+    };
+    driver.destroy = async (options) => {
+      closing = true;
+      // Kysely clears its pool reference before ending the pool. A new client
+      // still entering acquireConnection needs that reference to finish checkout
+      // and become releasable. pg drains the resulting checked-out clients.
+      await Promise.allSettled(acquiring);
+      await destroy(options);
+    };
+    return driver;
+  }
+}
+
 /**
  * A raw session from the database's own pool, for a caller that must hold
  * session state and see the session end: Kysely hides its client's events.
@@ -70,11 +95,16 @@ export function createDatabase<Schema = DatabaseSchema>(
   };
   pool.on("release", (_error, client) => forget(client));
   pool.on("remove", forget);
+  // pg's idle listener is removed at checkout. A server can end a checked-out
+  // client between queries, when there is no query promise to receive the error.
+  // Keep an error listener through that interval so the driver can finish closing
+  // the socket. The client will reject further queries and be discarded on release.
+  pool.on("connect", (client) => client.on("error", () => {}));
   // An idle client the server ends (restart, failover) is dropped by the pool; without a
   // listener the error would crash the process.
   pool.on("error", () => {});
   const database = new Kysely<Schema>({
-    dialect: new PostgresDialect({
+    dialect: new DrainingPostgresDialect({
       controlClient: Client,
       onCreateConnection: async (connection) => {
         const execute = connection.executeQuery.bind(connection);

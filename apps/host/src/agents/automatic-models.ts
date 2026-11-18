@@ -2,6 +2,7 @@ import {
   backgroundModelWants,
   excludedBackgroundAccounts,
   ExecutionPreferencesSchema,
+  modelEffortLabel,
   resolveModelCandidates,
   type AgentHomeSettings,
   type AuthorizedModelAccountSnapshot,
@@ -267,14 +268,15 @@ export async function readAutomaticModelPreview(
     const { modelId, providerId } = chosen.storedModelSelection;
     const harness = snapshot.harnesses.find(({ id }) => id === chosen.harnessInstanceId);
     const computer = snapshot.environments.find(({ id }) => id === chosen.environmentId);
+    const model = chosen.account.catalog?.models.find(
+      (entry) => entry.modelId === modelId && entry.providerId === providerId,
+    );
     return {
       harnessInstanceId: chosen.harnessInstanceId,
       accountDisplayName: harness?.name ?? "AI account",
       computerDisplayName: computer?.name ?? "Computer",
-      modelDisplayName:
-        chosen.account.catalog?.models.find(
-          (model) => model.modelId === modelId && model.providerId === providerId,
-        )?.displayName ?? modelId,
+      modelDisplayName: model?.displayName ?? modelId,
+      effortDisplayName: model ? modelEffortLabel(model, chosen.runModelSelection.options) : null,
       usageLimited: chosen.usageLimited,
     };
   };

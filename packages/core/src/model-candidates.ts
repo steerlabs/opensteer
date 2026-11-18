@@ -3,6 +3,7 @@ import type { EnvironmentId, HarnessInstanceId } from "./ids.js";
 import type { HarnessId, ModelSelection } from "./models.js";
 import type { ModelWant } from "./background-models.js";
 import { canonicalModelReference } from "./model-registry.js";
+import { modelEffortOption, withModelEffort } from "./model-effort.js";
 import {
   matchModelSelection,
   modelOptionUnavailableMessage,
@@ -23,7 +24,7 @@ export interface SelectionModelDescriptor {
     | {
         readonly type: "select";
         readonly defaultValue?: string | undefined;
-        readonly values: readonly { readonly value: string }[];
+        readonly values: readonly { readonly value: string; readonly label?: string }[];
       }
   ))[];
 }
@@ -262,7 +263,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         selection = { ...light, options: light.options ?? {} };
       } else if (exact === null) {
         if (!("kind" in want) || want.kind !== "model") continue;
-        selection = { providerId: want.providerId, modelId: want.modelId, options: want.options };
+        selection = { providerId: want.providerId, modelId: want.modelId, options: {} };
       } else {
         const models = account.catalog?.models ?? [];
         // The catalog's own provider/model pair is exact for any lab, listed or not.
@@ -293,6 +294,24 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
           });
           continue;
         }
+      }
+      const model = account.catalog?.models.find(
+        (entry) => entry.providerId === selection.providerId && entry.modelId === selection.modelId,
+      );
+      const effort = "effort" in want ? want.effort : undefined;
+      if (model && effort !== undefined) {
+        const tuned = withModelEffort(selection, model, effort);
+        if (!tuned) {
+          const offered = modelEffortOption(model)?.values.map(({ value }) => value) ?? [];
+          skip(
+            account,
+            want,
+            "options-unavailable",
+            `${model.displayName} has no ${effort} effort; it takes ${offered.join(", ")}`,
+          );
+          continue;
+        }
+        selection = tuned;
       }
       const candidate = inspect(account, selection, want, false);
       if (!candidate) continue;

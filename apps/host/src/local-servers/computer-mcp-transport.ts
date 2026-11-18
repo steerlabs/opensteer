@@ -27,7 +27,7 @@ export class ComputerMcpTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   /** Why the computer ended the session, when it said. */
   closeError: ComputerMcpSessionError | null = null;
-  beforeToolCall: (() => Promise<void>) | undefined;
+  handoffToolCall: ((send: () => Promise<void>) => Promise<void>) | undefined;
   readonly #hub: Pick<
     ComputerAppHub,
     "openMcpSession" | "withDeviceAdmission" | "withRunnerAdmission" | "requireAgentAccess"
@@ -108,14 +108,23 @@ export class ComputerMcpTransport implements Transport {
     if (!this.#session || this.#closed) {
       throw new ComputerMcpSessionError("offline", "That MCP session has ended.");
     }
+    // The SDK can cancel a queued call and let the next caller take its turn
+    // while this frame is still waiting for Runner admission.
+    const handoff =
+      "method" in message && message.method === "tools/call" ? this.handoffToolCall : undefined;
     // The SDK builds messages with fields left `undefined`, which JSON drops:
     // what the computer is sent is the JSON the message is.
     await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
       await this.#hub.requireAgentAccess(this.#target.runnerId);
-      if ("method" in message && message.method === "tools/call") await this.beforeToolCall?.();
-      await this.#session?.send(
-        JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"],
-      );
+      const payload = JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"];
+      const send = async () => {
+        if (!this.#session || this.#closed) {
+          throw new ComputerMcpSessionError("offline", "That MCP session has ended.");
+        }
+        await this.#session.send(payload);
+      };
+      if (handoff) await handoff(send);
+      else await send();
     });
   }
 

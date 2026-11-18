@@ -2084,8 +2084,13 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
 
   it("sleeps its only page and wakes by address while the Chromium context survives", async () => {
     let requests = 0;
+    const pendingRequest = Promise.withResolvers<void>();
     const site = createServer((request, response) => {
       requests++;
+      if (request.url === "/pending") {
+        pendingRequest.resolve();
+        return;
+      }
       if (request.method === "POST" && request.url === "/redirect") {
         response.writeHead(303, { location: "/get" }).end();
         return;
@@ -2118,6 +2123,8 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       sessionId: claims.sessionId,
       storage: { kind: "guest" },
     });
+    // Close Chromium before the HTTP fixture, which may have active requests.
+    cleanup.push(() => browser.close());
     if (!browser.context.pages().length) await browser.context.createPage();
     const router = new SessionCdpRouter(browser.cdp);
     const files = new SessionFiles(testSessionFilesRoot());
@@ -2220,6 +2227,12 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     expect(await ledger.sleep(id, () => null)).toBe(false);
     await post("/redirect");
     expect(await binding.page.keepAwake?.()).toBeNull();
+    // Hold a connection open through teardown so it cannot depend on Chrome
+    // happening to finish its requests before the HTTP fixture closes.
+    await binding.cdp.send("Runtime.evaluate", {
+      expression: 'void fetch("/pending")',
+    });
+    await pendingRequest.promise;
   });
   it("navigates, streams, inputs, handles dialogs, tracks popups, and closes cleanly", async () => {
     const site = createServer((request, response) => {

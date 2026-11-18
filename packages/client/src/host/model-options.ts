@@ -1,4 +1,4 @@
-import type { ModelSelection } from "@opensteer/core";
+import { modelEffortOption, type ModelSelection } from "@opensteer/core";
 import type { HarnessModelDescriptor } from "@opensteer/protocol";
 
 /**
@@ -61,19 +61,13 @@ export type ModelSetting = ChoiceSetting | LadderSetting | SwitchSetting;
 export type SettingChange =
   { readonly id: string; readonly value: string } | { readonly id: string; readonly on: boolean };
 
-const ladderOptionIds = new Set(["effort", "reasoning", "thinking"]);
 /** The engine choosing for itself. It is a choice, never a rung. */
 const automaticValues = new Set(["auto", "default"]);
 const savedLabel = "Saved configuration";
 
 /** The select that sets how hard the model reasons, when it has one. */
 export function reasoningOption(model: HarnessModelDescriptor): SelectOption | null {
-  return (
-    model.options.find(
-      (option): option is SelectOption =>
-        option.type === "select" && ladderOptionIds.has(option.id),
-    ) ?? null
-  );
+  return modelEffortOption(model) ?? null;
 }
 
 /**

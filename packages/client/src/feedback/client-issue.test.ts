@@ -43,6 +43,25 @@ describe("safe client issues", () => {
       expect(presented).not.toMatch(/PRIVATE_|unknown-reason|Users/u);
     }
   });
+  it("offers Account sign-in for a lost Account and no retry for unavailable credential storage", () => {
+    const say = (issue: ClientIssue) =>
+      presentConnectionGate({
+        issue,
+        name: "Mac mini",
+        showInterruption: true,
+      } as ClientConnectionState);
+    expect(say({ code: "sign-in", reason: "account-required" })).toEqual({
+      title: "Sign in to your Opensteer Account",
+      detail: "Use the Account linked to Mac mini.",
+      action: "sign-in",
+    });
+    expect(say({ code: "login-storage-unavailable" })).toEqual({
+      title: "Couldn't access sign-in storage on this device.",
+      detail: null,
+      action: null,
+    });
+  });
+
   it.each([
     ["device-offline", "Open Opensteer on the device and keep it open, then try again."],
     [
