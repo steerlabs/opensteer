@@ -4876,7 +4876,7 @@ export async function endAssignmentResultWait(
     },
     (error) => error instanceof TransactionScopeChanged,
   );
-  return drainAssignmentReturn(database, input.assignmentId);
+  await drainAssignmentReturn(database, input.assignmentId);
 }
 
 /** Startup holds the Deployment's exclusive Host lease; no waiter survived it. */
@@ -4971,18 +4971,19 @@ export function readAssignmentResult(
 /**
  * Delivers one Assignment's return if it is still pending. A failed attempt is
  * recorded so the row waits behind the others; a full parent inbox is an
- * ordinary wait, anything else also surfaces to the caller.
+ * ordinary wait (`"waiting"`), anything else also surfaces to the caller.
  */
 export async function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<void> {
+): Promise<"settled" | "waiting"> {
   try {
-    return await commitPersonalMutation(
+    await commitPersonalMutation(
       database,
       (transaction) => deliverAssignmentReturnTransaction(transaction, assignmentId),
       (error) => error instanceof TransactionScopeChanged,
     );
+    return "settled";
   } catch (error) {
     await database
       .updateTable("delegations")
@@ -4992,7 +4993,7 @@ export async function drainAssignmentReturn(
       .where("id", "=", assignmentId)
       .where("resultStatus", "=", "pending")
       .execute();
-    if (error instanceof OpensteerError && error.code === "resource_exhausted") return;
+    if (error instanceof OpensteerError && error.code === "resource_exhausted") return "waiting";
     throw error;
   }
 }
@@ -5001,6 +5002,8 @@ export interface AssignmentReturnDrain {
     readonly assignmentId: AssignmentId;
     readonly error: unknown;
   }[];
+  /** Returns still pending behind a full parent inbox. */
+  readonly waiting: number;
 }
 
 /** The outbox retry: one return that cannot be delivered never holds back the rest. */
@@ -5022,9 +5025,10 @@ export async function drainPendingAssignmentReturns(
     readonly assignmentId: AssignmentId;
     readonly error: unknown;
   }[] = [];
+  let waiting = 0;
   for (const candidate of candidates) {
     try {
-      await drainAssignmentReturn(database, candidate.id);
+      if ((await drainAssignmentReturn(database, candidate.id)) === "waiting") waiting++;
     } catch (error) {
       failures.push({
         assignmentId: candidate.id,
@@ -5032,7 +5036,7 @@ export async function drainPendingAssignmentReturns(
       });
     }
   }
-  return { failures };
+  return { failures, waiting };
 }
 function canonicalDelegateThreadRequest(
   input: DelegateThreadRequest,

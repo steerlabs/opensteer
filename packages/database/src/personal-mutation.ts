@@ -8,6 +8,7 @@ import type {
   RequestId,
   RunAttemptId,
   RunId,
+  RunnerId,
   ThreadId,
 } from "@opensteer/core";
 import {
@@ -98,6 +99,7 @@ export type PersonalCommitReaction =
   | { readonly type: "automationFailuresChanged" }
   | { readonly type: "deadlinesChanged" }
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
+  | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";

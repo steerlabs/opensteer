@@ -1198,7 +1198,7 @@ export class OpensteerStore {
   onAssignmentReturnReady(wake: (assignmentId: AssignmentId) => void | Promise<void>) {
     return installAssignmentReturnWake(this.#database, wake);
   }
-  drainAssignmentReturn(assignmentId: AssignmentId): Promise<void> {
+  drainAssignmentReturn(assignmentId: AssignmentId): Promise<"settled" | "waiting"> {
     return threadStore.drainAssignmentReturn(this.#database, assignmentId);
   }
   async updateThreadExecutionSelection(input: {

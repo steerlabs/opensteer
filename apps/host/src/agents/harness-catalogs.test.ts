@@ -135,6 +135,38 @@ describe("harness catalog convergence", () => {
     expect(recorded).toEqual([[readyCatalog()]]);
     expect(revisions).toEqual([new Map([[harnessInstanceId, harness.runtimeRevision]])]);
   });
+  it("answers when the oldest ready catalog goes stale, so a deadline can refresh it", async () => {
+    const now = Date.now();
+    const { catalogs, inspectHarnesses } = convergence({
+      capturedAt: new Date(now - 10 * 60_000),
+      stored: readyCatalog(),
+    });
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
+        runners: { inspectHarnesses },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toEqual({
+      staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs),
+      unsettled: false,
+    });
+    expect(inspectHarnesses).not.toHaveBeenCalled();
+  });
+  it("reports an inspected error as unsettled so the caller retries it", async () => {
+    const { catalogs, inspectHarnesses } = convergence({ stored: null });
+    inspectHarnesses.mockResolvedValueOnce([errorCatalog()]);
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        runners: { inspectHarnesses },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toEqual({ staleAt: null, unsettled: true });
+  });
   it("re-inspects a stored error, because that is the answer looking again can change", async () => {
     const { catalogs, inspectHarnesses } = convergence({
       stored: errorCatalog(),
