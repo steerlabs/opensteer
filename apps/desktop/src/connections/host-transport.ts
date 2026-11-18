@@ -289,6 +289,7 @@ export class DesktopHostTransport extends HostTransport {
       (response, progress) =>
         readBoundedText(response, {
           ...progress,
+          fatalUtf8: true,
           maximumBytes: 16 * 1_024 * 1_024,
           sizeError: () => new HostTransportError("response-too-large"),
         }),
@@ -327,8 +328,12 @@ export class DesktopHostTransport extends HostTransport {
     const controller = new AbortController();
     this.#forwarded.set(id, controller);
     if (this.#cancelledEarly.delete(id)) controller.abort(new HostTransportError("cancelled"));
-    // Taken before anything awaits: a sign-in again during the lookups below is another session.
+    // Taken before anything awaits: a sign-in again during the lookups below is another
+    // session, and a personal selection that moves away and back is another attachment. A
+    // request for a Deployment main hadn't yet resolved as selected is held from resolution.
     const epoch = this.#sessionEpoch(deploymentId);
+    const selection =
+      this.#selectedDeploymentId === deploymentId ? this.retainSelection() : () => undefined;
     const sameSession = () => {
       if (this.#sessionEpoch(deploymentId) !== epoch)
         throw new HostTransportError("deployment-changed");
@@ -340,6 +345,7 @@ export class DesktopHostTransport extends HostTransport {
       request,
       controller.signal,
       sameSession,
+      selection,
       (exchange) => {
         settled = exchange;
       },
@@ -354,6 +360,7 @@ export class DesktopHostTransport extends HostTransport {
     request: Request,
     signal: AbortSignal,
     sameSession: () => void,
+    sameSelection: () => void,
     relaying: (settled: Promise<void>) => void,
   ): Promise<Response> {
     const pathname = path.split("?", 1)[0]!;
@@ -368,10 +375,18 @@ export class DesktopHostTransport extends HostTransport {
       request.method === "POST" &&
       (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
     const transport = await this.#transport(deploymentId, summary);
-    sameSession();
+    // Only the personal selection's own requests answer to it; team and chooser reads don't.
+    const arrived =
+      transport === this
+        ? () => {
+            sameSession();
+            sameSelection();
+          }
+        : sameSession;
+    arrived();
     let body: Uint8Array<ArrayBuffer> | undefined;
     let attachment: SelectedAttachment | undefined;
-    let admitted = sameSession;
+    let admitted = arrived;
     if (request.body) {
       // The body can take a while; the Account, route and attachment it was sent under are
       // fixed first, and every send of it, a replay included, is checked against them.
@@ -380,7 +395,7 @@ export class DesktopHostTransport extends HostTransport {
         throw new HostTransportError("deployment-changed");
       const retained = transport.retainAuthorization(attachment);
       admitted = () => {
-        sameSession();
+        arrived();
         retained();
       };
       admitted();

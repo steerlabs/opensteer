@@ -189,6 +189,19 @@ export class HostTransport {
   }
 
   /**
+   * Holds a caller to this transport's session and attachment as they are now,
+   * before anything has resolved; `retainAuthorization` also pins the route.
+   */
+  retainSelection(): () => void {
+    const generation = this.#sessionGeneration;
+    const attachmentGeneration = this.#fence.generation;
+    return () => {
+      if (generation !== this.#sessionGeneration || attachmentGeneration !== this.#fence.generation)
+        throw new HostTransportError("deployment-changed");
+    };
+  }
+
+  /**
    * Holds a caller to the session and attachment it resolved. The attachment
    * generation is monotone, so a selection that moves away and back still
    * fails; a refreshed token on the same session and route does not.

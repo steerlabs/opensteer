@@ -431,6 +431,8 @@ export interface HttpHostClientOptions {
    * no document to read one from, and a renderer may address another Host. */
   readonly baseUrl: string | URL;
   readonly fetch?: Fetch;
+  /** See `HttpHostApiClientOptions.pacedUploads`. */
+  readonly pacedUploads?: boolean;
   /** Absent means the platform reports nothing, and the client never suspends. */
   readonly lifecycle?: ClientLifecycle;
   readonly random?: () => number;
@@ -965,6 +967,7 @@ export class HttpHostClient {
     this.rpc = createHttpHostApiClient({
       baseUrl: this.#baseUrl,
       fetch: this.#fetch,
+      ...(options.pacedUploads ? { pacedUploads: true } : {}),
       onAuthenticationRequired: () => {
         this.#expireSession();
         this.#reverifyCapabilities();

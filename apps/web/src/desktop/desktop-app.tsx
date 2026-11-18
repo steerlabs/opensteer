@@ -251,6 +251,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       baseUrl: selected.canonicalOrigin,
       capabilities: selectedConnection?.capabilities ?? null,
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),
+      pacedUploads: true,
       // Desktop main holds the sockets; hiding or covering the window never closes them.
       lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
       webSocketFactory: createDesktopHostWebSocketFactory(

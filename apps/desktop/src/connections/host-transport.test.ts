@@ -342,6 +342,75 @@ describe("DesktopHostTransport", () => {
     }
   });
 
+  it("refuses a personal write whose selection left and came back while main was finding it", async () => {
+    const home = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const work = deployment("Work", "https://work.connect.opensteer.test", "personal");
+    const homeId = home.authority.document.deploymentId;
+    const store = catalogStore([home, work], homeId);
+    const looking = Promise.withResolvers<void>();
+    const found = Promise.withResolvers<void>();
+    let hold = false;
+    const request = vi.fn(async () => Response.json({ ok: true, data: {} }));
+    const transport = desktopHostTransport({
+      catalog: {
+        ...store,
+        load: async () => {
+          if (hold) {
+            hold = false;
+            looking.resolve();
+            await found.promise;
+          }
+          return store.load();
+        },
+      },
+      network: { openWebSocket: () => socket(), request },
+    });
+    try {
+      await transport.current();
+      hold = true;
+      const pending = send(transport, homeId, "/v1/rpc/commands.dispatch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"type":"thread.create"}',
+      });
+      await looking.promise;
+      await transport.select({ deploymentId: work.authority.document.deploymentId });
+      await transport.select({ deploymentId: homeId });
+      found.resolve();
+      await expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      found.resolve();
+      transport.dispose();
+    }
+  });
+
+  it("reads a team's bootstrap as strict UTF-8, refusing a byte a lenient decode would repair", async () => {
+    const team = deployment("Team", "https://team.example");
+    const id = team.authority.document.deploymentId;
+    const transport = desktopHostTransport({
+      catalog: catalogStore([team], id),
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            Uint8Array.from([
+              ...new TextEncoder().encode(
+                '{"ok":false,"error":{"code":"conflict","retryable":false,"message":"Ada',
+              ),
+              0xff,
+              ...new TextEncoder().encode('"}}'),
+            ]),
+          ),
+      },
+    });
+    try {
+      await expect(transport.bootstrapTeam(id)).rejects.toBeInstanceOf(TypeError);
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it("holds an upload to its attachment through a token refresh, not a selection that left and came back", async () => {
     const home = deployment("Home", "https://home.connect.opensteer.test", "personal");
     const work = deployment("Work", "https://work.connect.opensteer.test", "personal");
@@ -2522,32 +2591,46 @@ describe("Desktop Host route admission", () => {
     }
   });
 
-  it("ends an upload whose answer never comes after a bounded wait, freeing its slot", async () => {
+  it("starts a queued upload's wait for its answer only once it is sent, and bounds it", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { id, request, transport } = fixture();
     try {
-      const fetch = hostFetch(transport, id);
-      const sent = Array.from({ length: desktopHostUploadConcurrency + 1 }, () =>
-        fetch(`${routeOrigin}/v1/rpc/attachment.upload?input=%7B%7D`, {
-          body: new Blob(["bytes"]),
-          headers: { "content-type": "application/octet-stream" },
-          method: "POST",
-        }).catch((error: unknown) => error),
+      // The bundled app's own client, as desktop-app.tsx makes it, over the real adapter.
+      const rpc = createHttpHostApiClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: hostFetch(transport, id),
+        onAuthenticationRequired: () => undefined,
+        pacedUploads: true,
+      });
+      const settled: unknown[] = [];
+      const sent = Array.from({ length: desktopHostUploadConcurrency + 1 }, (_, index) =>
+        rpc["attachment.upload"](
+          { attachmentId: createId("attachment") },
+          { body: new Blob(["bytes"]) },
+        ).then((result) => {
+          settled[index] = result;
+          return result;
+        }),
       );
       await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency), {
         timeout: 1_000,
       });
-      expect(request.mock.calls[0]![0].request.timeoutMs).toBe(120_000);
-      await vi.advanceTimersByTimeAsync(120_000);
-      for (const failed of await Promise.all(sent.slice(0, desktopHostUploadConcurrency)))
-        expect(failed).toMatchObject({ code: "timed-out" });
-      // The queued upload goes as soon as one of those settles.
+      // Well past what a 5-byte upload's own clock would allow: the queued one is still waiting.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toEqual([]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      for (const result of await Promise.all(sent.slice(0, desktopHostUploadConcurrency)))
+        expect(result).toMatchObject({ ok: false, error: { reason: "transport-timed-out" } });
       await vi.waitFor(
         () => expect(request).toHaveBeenCalledTimes(desktopHostUploadConcurrency + 1),
         { timeout: 1_000 },
       );
+      expect(settled[desktopHostUploadConcurrency]).toBeUndefined();
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(await sent.at(-1)).toMatchObject({ code: "timed-out" });
+      expect(await sent.at(-1)).toMatchObject({
+        ok: false,
+        error: { reason: "transport-timed-out" },
+      });
     } finally {
       vi.useRealTimers();
       transport.dispose();

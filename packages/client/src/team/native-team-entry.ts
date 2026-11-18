@@ -30,7 +30,8 @@ import {
   type DeploymentConnection,
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
-import { HostTransportError } from "../connections/host-transport-error.js";
+import { HostTransportError, isGatewayFailure } from "../connections/host-transport-error.js";
+import { HostClientRequestError } from "../host/client.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
@@ -88,10 +89,17 @@ export async function previewTeamInvite(
   const error = z.object({ error: HostApiErrorSchema }).safeParse(body).data?.error;
   const reason = TeamEntryRefusalReasonSchema.safeParse(error?.reason).data;
   if (error && reason) throw new TeamEntryRefusedError(reason, error.message);
-  throw new ClientOperationError(
-    error?.message ?? "The team couldn’t be reached. Try again.",
-    response.status >= 500 ? "transient" : "blocked",
-  );
+  // The team answered, whatever its status; only a gateway's page means it didn't.
+  if (error)
+    throw new HostClientRequestError({
+      code: error.code,
+      message: error.message,
+      ...(error.reason === undefined ? {} : { reason: error.reason }),
+      retryable: error.retryable,
+      status: response.status,
+    });
+  if (isGatewayFailure(response.status)) throw new HostTransportError("unreachable");
+  throw new ClientOperationError("The team’s answer couldn’t be read. Try again.", "blocked");
 }
 
 type TeamEntryOAuth = Pick<

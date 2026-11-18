@@ -1,5 +1,6 @@
 import type { DeploymentId } from "@opensteer/core";
 import { HostTransportError } from "@opensteer/client/connections";
+import { fileTransferHeadersTimeoutMs } from "@opensteer/protocol";
 import {
   DesktopHostTransportErrorCodeSchema,
   desktopHostRequestIdHeader,
@@ -31,8 +32,17 @@ export function createDesktopHostFetch(
     if (url.origin !== origin) {
       throw new Error("The bundled UI cannot contact a Host other than the selected Deployment.");
     }
-    const { signal } = request;
-    const release = isDesktopHostUploadPath(url.pathname) ? await uploadSlot(signal) : null;
+    const caller = request.signal;
+    const release = isDesktopHostUploadPath(url.pathname) ? await uploadSlot(caller) : null;
+    // An upload's wait for headers starts once it holds a slot, not while it queues.
+    const unanswered = new AbortController();
+    const deadline = release
+      ? setTimeout(
+          () => unanswered.abort(new HostTransportError("timed-out")),
+          fileTransferHeadersTimeoutMs,
+        )
+      : undefined;
+    const signal = release ? AbortSignal.any([caller, unanswered.signal]) : caller;
     const requestId = crypto.randomUUID();
     // Main never sees this signal; until headers arrive, it learns of an abort only here.
     const cancel = () => void bridge.cancelHostRequest({ requestId }).catch(() => undefined);
@@ -52,13 +62,14 @@ export function createDesktopHostFetch(
           signal,
         });
       } finally {
+        clearTimeout(deadline);
         signal.removeEventListener("abort", cancel);
       }
       const failure = DesktopHostTransportErrorCodeSchema.safeParse(
         response.headers.get(desktopHostTransportErrorHeader),
       );
       if (failure.success) throw new HostTransportError(failure.data);
-      return release ? releasedWhenSettled(response, signal, release) : response;
+      return release ? releasedWhenSettled(response, caller, release) : response;
     } catch (error) {
       release?.();
       throw error;

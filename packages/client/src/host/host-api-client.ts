@@ -52,6 +52,11 @@ export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly kind?: "personal" | "team";
   readonly fetch: Fetch;
+  /**
+   * The fetch queues uploads and bounds each one's wait for headers from when
+   * it is sent, so the client's own header clock doesn't count the queue.
+   */
+  readonly pacedUploads?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
@@ -202,11 +207,13 @@ async function request<Name extends keyof typeof hostApi>(
     (payload.type === "tab.open" || payload.type === "tab.activate")
       ? 25_000
       : "binaryRequest" in declaration
-        ? bufferedHostResponseTimeoutMs(
-            call?.body instanceof Uint8Array
-              ? call.body.byteLength
-              : (call?.body?.size ?? attachmentMaxBytes),
-          )
+        ? options.pacedUploads
+          ? null
+          : bufferedHostResponseTimeoutMs(
+              call?.body instanceof Uint8Array
+                ? call.body.byteLength
+                : (call?.body?.size ?? attachmentMaxBytes),
+            )
         : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
   // Losing the connection before the whole body arrives says the Host is out of
@@ -214,7 +221,7 @@ async function request<Name extends keyof typeof hostApi>(
   let answered = false;
   try {
     call?.signal?.throwIfAborted();
-    deadline.reset(headersTimeoutMs);
+    if (headersTimeoutMs !== null) deadline.reset(headersTimeoutMs);
     const response = await deadline.wait(
       options.fetch(url, {
         ...(declaration.method === "POST"
