@@ -1918,10 +1918,27 @@ export class HttpHostClient {
         break;
       case "harness-catalog":
       case "harness-auth":
-        for (const row of data.environments)
-          if (data.kind === "harness-catalog")
-            this.#environmentCatalogs.set(row.id, row.harnessCatalogs);
-          else this.#environmentAuth.set(row.id, row.harnessAuthenticationAllowed);
+        if (data.kind === "harness-catalog") {
+          if (!append) this.#environmentCatalogs.clear();
+          for (const row of data.environments) {
+            const held = this.#environmentCatalogs.get(row.id) ?? [];
+            const page = row.harnessCatalogs.map((catalog) => {
+              const previous = held.find(
+                ({ harnessInstanceId }) => harnessInstanceId === catalog.harnessInstanceId,
+              );
+              return previous?.status === "ready" && catalog.status === "ready"
+                ? { ...catalog, models: [...previous.models, ...catalog.models] }
+                : catalog;
+            });
+            this.#environmentCatalogs.set(
+              row.id,
+              mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
+            );
+          }
+        } else {
+          for (const row of data.environments)
+            this.#environmentAuth.set(row.id, row.harnessAuthenticationAllowed);
+        }
         this.#update({
           ...snapshot,
           environments: snapshot.environments.map((row) => this.#withEnvironmentCapabilities(row)),

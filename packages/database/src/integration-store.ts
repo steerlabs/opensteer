@@ -854,13 +854,16 @@ export class IntegrationStore {
   }
   async listDeviceConnections(
     ownerUserId: UserId,
+    deviceIds?: readonly DeviceId[],
   ): Promise<readonly DeviceIntegrationConnectionSummary[]> {
+    if (deviceIds?.length === 0) return [];
     const rows = await this.#database
       .selectFrom("integrationConnections")
       .selectAll()
       .where("ownerUserId", "=", ownerUserId)
       .where("connectionKind", "in", ["provider-account", "computer"])
       .where("status", "!=", "revoked")
+      .$if(deviceIds !== undefined, (q) => q.where("deviceId", "in", deviceIds!))
       .orderBy("updatedAt", "desc")
       .limit(500)
       .execute();

@@ -184,6 +184,74 @@ export class TabStore {
       };
     });
   }
+
+  async resourceTabs(
+    database: TabDatabase,
+    ownerId: UserId,
+    input: { readonly after?: TabId; readonly id?: TabId; readonly limit: number },
+  ) {
+    const rows = await database
+      .selectFrom("personalTabs")
+      .selectAll()
+      .where("ownerId", "=", ownerId)
+      .where("closedAt", "is", null)
+      .$if(input.after !== undefined, (q) => q.where("id", ">", input.after!))
+      .$if(input.id !== undefined, (q) => q.where("id", "=", input.id!))
+      .orderBy("id")
+      .limit(input.limit)
+      .execute(databaseOperationOptions());
+    return rows.map((row) => this.#parse(row));
+  }
+
+  async resourceLayout(
+    database: TabDatabase,
+    ownerId: UserId,
+    input: { readonly after: number; readonly id?: string; readonly limit: number },
+  ) {
+    const end = input.id ? tabsMaxPerOwner + tabGroupsMaxPerOwner : input.after + input.limit;
+    const { rows } = await sql<{
+      revision: string;
+      ordinal: number | null;
+      item: TabLayout["items"][number] | null;
+    }>`
+      select l.revision, p.ordinal, p.item
+      from tab_layouts l
+      left join lateral (
+        select ordinal, l.items->(ordinal - 1) as item
+        from generate_series(${input.after}::integer + 1,
+          least(jsonb_array_length(l.items), ${end}::integer)) positions(ordinal)
+        ${
+          input.id
+            ? sql`where (l.items->(ordinal - 1)->>'tabId') = ${input.id}
+          or (l.items->(ordinal - 1)->'group'->>'groupId') = ${input.id}
+          or (l.items->(ordinal - 1)->'group'->'tabIds') ? ${input.id}`
+            : sql``
+        }
+        order by ordinal
+        limit ${input.limit}
+      ) p on true
+      where l.owner_id = ${ownerId}
+      order by p.ordinal
+    `.execute(database);
+    return {
+      revision: Number(rows[0]?.revision ?? 0),
+      entries: rows.flatMap(({ ordinal, item }) =>
+        ordinal === null || item === null ? [] : [{ ordinal, item }],
+      ),
+    };
+  }
+
+  async resourceTabGroups(database: TabDatabase, ownerId: UserId, ids: readonly TabId[]) {
+    if (!ids.length) return new Map<TabId, TabGroupId>();
+    const result = await sql<{ tabId: TabId; groupId: TabGroupId }>`
+      select t.id as tab_id, item->'group'->>'groupId' as group_id
+      from tab_layouts l
+      cross join lateral jsonb_array_elements(l.items) entries(item)
+      join unnest(${ids}::text[]) t(id) on item->'group'->'tabIds' ? t.id
+      where l.owner_id = ${ownerId} and item->>'kind' = 'group'
+    `.execute(database);
+    return new Map(result.rows.map(({ tabId, groupId }) => [tabId, groupId]));
+  }
   #parse(row: TabRecord): TabRecord {
     return {
       ...row,

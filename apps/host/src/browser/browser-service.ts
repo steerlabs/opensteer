@@ -496,7 +496,7 @@ export type BrowserRuntimePlacement = BrowserPlacement & { readonly agents?: boo
 export interface BrowserRuntimeTargetResolver {
   pendingAdmission?(runnerId: RunnerId): boolean;
   waitForTarget?(runnerId: RunnerId, signal: AbortSignal): Promise<void>;
-  placements(): readonly BrowserRuntimePlacement[];
+  placements(runnerIds?: readonly RunnerId[]): readonly BrowserRuntimePlacement[];
   resolve(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined;
 }
 
@@ -928,6 +928,14 @@ export class BrowserService {
         ? { profileDeletions: await this.#localProfiles.pendingDeletions(ownerId) }
         : {}),
     };
+  }
+
+  resourcePlacements(ids?: readonly RunnerId[]): BrowserPlacement[] {
+    if (this.#closed) return [];
+    const allowed = ids && new Set(ids);
+    return (this.#targetResolver?.placements(ids) ?? [])
+      .filter(({ runnerId }) => !allowed || allowed.has(runnerId))
+      .map(publicPlacement);
   }
 
   #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {

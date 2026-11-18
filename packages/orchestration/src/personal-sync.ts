@@ -47,6 +47,7 @@ interface PersonalSyncPort {
     installed: Watch["installed"],
     signal: AbortSignal,
   ): Promise<readonly Resource[]>;
+  isResourceCurrent?(kind: PersonalResourceKind, revision: string): boolean;
   readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
   onFailure?(error: unknown): void;
   close(reason: string): void;
@@ -503,6 +504,11 @@ export class PersonalSyncSocket {
     for (const view of views) {
       if (current.resources !== watch || !this.#matches(current)) return;
       if (!watch.interests.includes(view.kind)) continue;
+      const isCurrent = () => this.#port.isResourceCurrent?.(view.kind, view.revision) ?? true;
+      if (!isCurrent()) {
+        watch.dirty = true;
+        continue;
+      }
       const sent = await this.#send(
         current,
         {
@@ -511,9 +517,13 @@ export class PersonalSyncSocket {
           generation: current.request.generation,
           ...view,
         },
-        () => current.resources === watch,
+        () => current.resources === watch && isCurrent(),
       );
       if (!sent) {
+        if (!isCurrent()) {
+          watch.dirty = true;
+          continue;
+        }
         watch.dirty = true;
         return;
       }

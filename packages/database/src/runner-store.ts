@@ -1296,6 +1296,8 @@ export async function listPendingRunnerEnrollments(
     readonly includeDeployment: boolean;
     readonly limit: number;
     readonly ownerId: UserId;
+    readonly ids?: readonly string[];
+    readonly asOf?: Date;
   },
 ): Promise<readonly PendingRunnerEnrollmentRecord[]> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
@@ -1304,6 +1306,7 @@ export async function listPendingRunnerEnrollments(
       message: "Runner enrollment page limit is invalid",
     });
   }
+  if (input.ids?.length === 0) return [];
   return database
     .selectFrom("runnerEnrollments")
     .select([
@@ -1316,7 +1319,8 @@ export async function listPendingRunnerEnrollments(
       "runnerKind",
     ])
     .where("consumedAt", "is", null)
-    .where("expiresAt", ">", new Date())
+    .where("expiresAt", ">", input.asOf ?? new Date())
+    .$if(input.ids !== undefined, (query) => query.where("id", "in", input.ids!))
     .where((expression) =>
       expression.or([
         expression.and([

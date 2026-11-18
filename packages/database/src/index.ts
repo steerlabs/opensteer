@@ -65,7 +65,12 @@ export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export { personalDeploymentOwner } from "./machine-store.js";
 export * from "./team-knowledge-store.js";
 
-export { listEligibleBrowserRunners } from "./browser-home-store.js";
+export {
+  hasEligibleBrowserPlacement,
+  listEligibleBrowserRunners,
+  readBrowserHomeResourcePage,
+} from "./browser-home-store.js";
+export { readHarnessCatalogModelPage } from "./harness-store.js";
 export * from "./request-agent-response.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
 

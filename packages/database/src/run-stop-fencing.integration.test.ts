@@ -32,6 +32,8 @@ import { afterAll, describe, expect, it as baseIt } from "vitest";
 import "./connection.js";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { revokeRunGrants } from "./run-grants.js";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import { readTranscriptOverlays } from "./personal-overlay-store.js";
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -174,11 +176,12 @@ integration.sequential("Run stop fencing", () => {
         readonly id: RunId;
       },
       index: number,
+      createdAt = new Date().toISOString(),
     ) {
       const request = PendingRequestSchema.parse({
         callId: `call-${index}`,
         cancellationReason: null,
-        createdAt: new Date().toISOString(),
+        createdAt,
         id: createId("request"),
         kind: "harness.approval",
         mode: "live",
@@ -525,6 +528,55 @@ integration.sequential("Run stop fencing", () => {
       request: "cancelled",
       runStatus: "running",
     };
+  });
+  it("shows the settlement time of a one-hour wait across two history pages after Stop", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, openRequest, stop, database } = storeFixture;
+    const f = await fixture("one-hour-stop");
+    const run = await running(f, "one-hour-stop");
+    const read = { viewerId: f.userId, scope: { kind: "thread", threadId: f.thread.id } as const };
+    const waitingSince = new Date(Date.now() - 60 * 60_000).toISOString();
+    const request = await openRequest(f, run, 1, waitingSince);
+    const before = await readTranscriptPage(database, { ...read, limit: 1 });
+    if (before.kind !== "page") throw new Error("Expected history before Stop");
+    expect(before.items).toHaveLength(1);
+    expect(before.items[0]?.kind).not.toBe("request");
+    await expect(
+      readTranscriptOverlays(database, { ...read, kind: "requests" }),
+    ).resolves.toMatchObject({
+      entries: [expect.objectContaining({ id: request.id, status: "pending" })],
+    });
+
+    await stop(f, run.id, "one-hour-stop");
+    const newest = await readTranscriptPage(database, { ...read, limit: 1 });
+    if (newest.kind !== "page" || !newest.nextBefore)
+      throw new Error("Expected a second history page");
+    const { resolvedAt } = await database
+      .selectFrom("requests")
+      .select("resolvedAt")
+      .where("id", "=", request.id)
+      .executeTakeFirstOrThrow();
+    expect(resolvedAt!.getTime() - Date.parse(waitingSince)).toBeGreaterThanOrEqual(60 * 60_000);
+    expect(newest.items).toEqual([
+      expect.objectContaining({
+        id: `request:${request.id}`,
+        kind: "request",
+        createdAt: resolvedAt!.toISOString(),
+        waitedSince: waitingSince,
+        view: { status: "cancelled", title: "Continue?", preview: "Cancelled · run-ended" },
+      }),
+    ]);
+    const older = await readTranscriptPage(database, { ...read, cursor: newest.nextBefore });
+    if (older.kind !== "page") throw new Error("Expected older history after Stop");
+    expect(older.items.map(({ id }) => id)).toContain(before.items[0]?.id);
+    expect(older.items.filter(({ kind }) => kind === "request")).toEqual([]);
+    await expect(
+      readTranscriptItem(database, { ...read, itemId: newest.items[0]!.id }),
+    ).resolves.toMatchObject({ item: newest.items[0] });
+    await expect(
+      readTranscriptOverlays(database, { ...read, kind: "requests" }),
+    ).resolves.toMatchObject({ entries: [] });
   });
   it("refuses a steer into a Run whose authority ended while it still runs", async ({
     storeFixture,

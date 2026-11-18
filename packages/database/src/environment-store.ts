@@ -59,8 +59,13 @@ export async function listEnvironmentsForUser(
   database: Kysely<DatabaseSchema>,
   userId: UserId,
   limit = 1_000,
-  page?: { readonly afterId?: EnvironmentId; readonly id?: EnvironmentId },
+  page?: {
+    readonly afterId?: EnvironmentId;
+    readonly id?: EnvironmentId;
+    readonly ids?: readonly EnvironmentId[];
+  },
 ): Promise<readonly ExecutionEnvironmentRecord[]> {
+  if (page?.ids?.length === 0) return [];
   let query = database
     .selectFrom("executionEnvironments")
     .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
@@ -80,6 +85,7 @@ export async function listEnvironmentsForUser(
     .limit(boundedLimit(limit, 1_000));
   if (page?.afterId) query = query.where("executionEnvironments.id", ">", page.afterId);
   if (page?.id) query = query.where("executionEnvironments.id", "=", page.id);
+  if (page?.ids) query = query.where("executionEnvironments.id", "in", page.ids);
   return query.execute();
 }
 

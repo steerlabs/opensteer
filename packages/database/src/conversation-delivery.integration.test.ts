@@ -33,6 +33,7 @@ import { beforeAll, describe, expect, it as baseIt } from "vitest";
 import { AttachmentStore } from "./attachment-store.js";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { jsonValue } from "./store-primitives.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 
 /**
  * A person's message in their conversation contributes to the reply under way
@@ -1324,11 +1325,25 @@ integration.sequential("conversation delivery", () => {
     const bCommand = await steerCommand(b.message.id);
     await stop(f, runId, "stop-reply");
     expect((await thread(f)).inputQueuePaused).toBe(false);
-    for (const id of [b.message.id, c.message.id])
+    for (const id of [b.message.id, c.message.id]) {
       expect(await input(id)).toMatchObject({
         cancelReason: "stopped",
         state: "cancelled",
       });
+      await expect(
+        readTranscriptItem(database, {
+          viewerId: f.ownerId,
+          scope: { kind: "thread", threadId: f.thread.id },
+          itemId: id,
+        }),
+      ).resolves.toMatchObject({
+        kind: "item",
+        item: {
+          messageId: id,
+          delivery: { status: "failed", reason: "Not sent: you stopped the reply." },
+        },
+      });
+    }
     expect(
       await database
         .selectFrom("commands")

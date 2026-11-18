@@ -80,6 +80,7 @@ interface CommitNotice {
   readonly floor: string;
   readonly nextExpiryAt: number | null;
   readonly changedScopes: ReadonlySet<string>;
+  readonly resourceKinds: ReadonlySet<PersonalResourceKind>;
 }
 
 export type PersonalCommitReaction =
@@ -448,6 +449,7 @@ class Mutation {
       deploymentId,
       head,
       floor,
+      resourceKinds: this.resourceKinds,
       changedScopes: new Set([
         ...this.#scopes.keys(),
         ...this.authorityScopes,

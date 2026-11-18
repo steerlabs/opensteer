@@ -55,7 +55,7 @@ describeStore("on-demand tool output", (it) => {
           data: {
             nodeId,
             callId: "call",
-            isError: false,
+            isError: true,
             output: {
               text: `child ${text}`,
             },
@@ -79,16 +79,16 @@ describeStore("on-demand tool output", (it) => {
     }
     const threadScope = { kind: "thread", threadId: f.thread.id } as const;
     const nodeScope = { kind: "node", threadId: f.thread.id, nodeId } as const;
-    for (const [scope, expected] of [
-      [threadScope, text],
-      [nodeScope, `child ${text}`],
+    for (const [scope, expected, status] of [
+      [threadScope, text, "done"],
+      [nodeScope, `child ${text}`, "failed"],
     ] as const) {
       const page = await readTranscriptPage(database, { viewerId: f.userId, scope });
       if (page.kind !== "page") throw new Error("Expected transcript page");
       const items = page.items.filter((item) => item.kind === "tool");
       expect(items).toHaveLength(1);
       const item = items[0]!;
-      expect(item.view.status).toBe("completed");
+      expect(item).toMatchObject({ view: { status }, completedAt: expect.any(String) });
       expect(Buffer.byteLength(JSON.stringify(item))).toBeLessThan(Buffer.byteLength(expected));
       expect(
         await readTranscriptItem(database, { viewerId: f.userId, scope, itemId: item.id }),

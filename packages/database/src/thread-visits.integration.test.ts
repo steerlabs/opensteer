@@ -1,8 +1,12 @@
 import { createId } from "@opensteer/core";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
 
 describeStore("thread visits", (it) => {
+  const databaseTime = async (db: Parameters<typeof count>[0]) =>
+    (await sql<{ now: Date }>`select clock_timestamp() as now`.execute(db)).rows[0]!.now.getTime();
+
   const count = async (db: import("kysely").Kysely<import("./schema.js").DatabaseSchema>) =>
     (await db.selectFrom("clientSyncState").select("unreadTaskCount").executeTakeFirstOrThrow())
       .unreadTaskCount;
@@ -44,7 +48,7 @@ describeStore("thread visits", (it) => {
     "makes an empty $0 completion readable, with Host time and a newer active run hiding it",
     async (status, { storeFixture: f }) => {
       const task = await f.startRunFixture(`visit-${status}`);
-      const lower = Date.now();
+      const lower = await databaseTime(f.database);
       const common = {
         environmentId: task.environmentId,
         threadId: task.thread.id,
@@ -71,7 +75,9 @@ describeStore("thread visits", (it) => {
       });
       const thread = (await f.store.getThreadForOwner(task.thread.id, task.userId))!;
       expect(Date.parse(thread.latestRunCompletedAt!)).toBeGreaterThanOrEqual(lower);
-      expect(Date.parse(thread.latestRunCompletedAt!)).toBeLessThanOrEqual(Date.now());
+      expect(Date.parse(thread.latestRunCompletedAt!)).toBeLessThanOrEqual(
+        await databaseTime(f.database),
+      );
       expect(await count(f.database)).toBe(1);
       await f.store.recordThreadVisit({
         threadId: thread.id,
@@ -128,7 +134,7 @@ describeStore("thread visits", (it) => {
       .where("id", "=", messageId)
       .executeTakeFirstOrThrow();
     expect(message.createdAt.getTime()).toBeLessThanOrEqual(Date.now());
-    const beforeFinish = Date.now();
+    const beforeFinish = await databaseTime(f.database);
     await f.store.commitRunnerEvent({
       environmentId: task.environmentId,
       runnerId: task.runnerId,
@@ -150,6 +156,6 @@ describeStore("thread visits", (it) => {
       .executeTakeFirstOrThrow();
     expect(run.terminalReplyMessageId).toBe(messageId);
     expect(run.completedAt!.getTime()).toBeGreaterThanOrEqual(beforeFinish);
-    expect(run.completedAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(run.completedAt!.getTime()).toBeLessThanOrEqual(await databaseTime(f.database));
   });
 });

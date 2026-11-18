@@ -13,7 +13,7 @@ import {
   type StoreFixture,
 } from "./store.integration.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
-import { listEligibleBrowserRunners } from "./browser-home-store.js";
+import { listEligibleBrowserRunners, readBrowserHomeResourcePage } from "./browser-home-store.js";
 
 async function computer(
   fixture: StoreFixture,
@@ -89,6 +89,12 @@ describeStore("browser profile homes", (it) => {
     expect(
       (await listEligibleBrowserRunners(fixture.database, run.userId)).map((row) => row.id).sort(),
     ).toEqual([run.runnerId, own].sort());
+    const [first] = await readBrowserHomeResourcePage(fixture.database, run.userId, { limit: 1 });
+    const next = await readBrowserHomeResourcePage(fixture.database, run.userId, {
+      limit: 1,
+      after: first!.id,
+    });
+    expect([first!.id, ...next.map(({ id }) => id)]).toEqual([run.runnerId, own].sort());
     expect(
       (await fixture.store.listEligibleBrowserRunners(run.userId)).map((row) => row.id),
     ).not.toContain(withoutBrowser);

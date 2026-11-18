@@ -21,6 +21,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { readMachineResourceKeys } from "./device-inventory-store.js";
 
 let clone: TestDatabase;
 let db: Kysely<DatabaseSchema>;
@@ -398,8 +399,30 @@ it("retires a prepared key even when issuance never committed and refuses a late
 it("cancels only the prepared self-setup enrollment before first redemption", async () => {
   const target = await enrollment();
   const generic = await enrollment(undefined, identity(), false);
+  const asOf = new Date();
+  const [first] = await readMachineResourceKeys(db, fixture.userId, { asOf, limit: 1 });
+  const next = await readMachineResourceKeys(db, fixture.userId, {
+    asOf,
+    limit: 10,
+    after: first!.id,
+  });
+  const entries = [first!, ...next];
+  expect(entries.map(({ id }) => id)).toEqual(entries.map(({ id }) => id).sort());
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: target.request.id, source: "pending" }),
+      expect.objectContaining({ id: generic.request.id, source: "pending" }),
+    ]),
+  );
   await leave(target);
   await leave(target);
+  await expect(
+    readMachineResourceKeys(db, fixture.userId, {
+      asOf: new Date(),
+      limit: 1,
+      id: target.request.id,
+    }),
+  ).resolves.toEqual([]);
   await expect(store.enrollRunnerConnection(target.connection)).rejects.toMatchObject({
     reason: "runner-enrollment-expired",
   });

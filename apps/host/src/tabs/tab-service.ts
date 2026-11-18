@@ -283,7 +283,7 @@ export class TabService implements TabServicePort {
     rows: TabRecord[],
     layout: TabLayout,
     database: TabDatabase,
-    catalog?: ReadonlyMap<TabId, Tab>,
+    catalog?: ReadonlyMap<TabId, Pick<Tab, "groupId">>,
   ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
     const ownerId = owner(actor);
     const canRead = this.options.readAuthority
@@ -876,6 +876,38 @@ export class TabService implements TabServicePort {
     }
     result.complete = result.tabs.length === tabs.length;
     return result;
+  }
+  async resourceTabs(
+    ownerId: UserId,
+    database: TabDatabase,
+    input: Parameters<TabStore["resourceTabs"]>[2],
+  ) {
+    const store = this.options.store;
+    const rows = await store.resourceTabs(database, ownerId, input);
+    const groups = await store.resourceTabGroups(
+      database,
+      ownerId,
+      rows.map(({ id }) => id),
+    );
+    const catalog = new Map(rows.map(({ id }) => [id, { groupId: groups.get(id) ?? null }]));
+    const { tabs } = await this.#projectRows(
+      { kind: "person", ownerId },
+      rows,
+      { revision: 0, items: [] },
+      database,
+      catalog,
+    );
+    const byId = new Map(tabs.map((tab) => [tab.tabId, tab]));
+    return rows.map(({ id }) => ({ id, tab: byId.get(id) }));
+  }
+
+  async resourceLayout(
+    ownerId: UserId,
+    database: TabDatabase,
+    input: Parameters<TabStore["resourceLayout"]>[2],
+  ) {
+    await this.options.authorizeMembership({ kind: "person", ownerId }, database);
+    return this.options.store.resourceLayout(database, ownerId, input);
   }
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
     const actor = { kind: "run", claims } as const,

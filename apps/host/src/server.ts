@@ -1,5 +1,8 @@
 import { createPersonalReads } from "./server/personal-reads.js";
 import { PersonalResources } from "./server/personal-resources.js";
+import { IntegrationPlatformStore, IntegrationStore, OpensteerStore } from "@opensteer/database";
+import { DeviceIdSchema } from "@opensteer/core";
+import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";
 import type { AuthenticatedHostSession } from "./identity/auth.js";
@@ -112,7 +115,6 @@ import {
   personalRemoteAccessRequiredRefusal,
   runnerIdentityRevokedReason,
   type MachineOwnershipRecord,
-  type OpensteerStore,
 } from "@opensteer/database";
 import {
   HostDescriptorSchema,
@@ -429,6 +431,15 @@ export interface HostServerDependencies {
   readonly runnerAuthenticator: RunnerAuthenticator;
   readonly runners: RunnerRegistry;
   readonly runnerObservations?: import("./runtime/personal-runner-observations.js").PersonalRunnerObservations;
+  readonly resourceObservations?: import("./runtime/personal-resource-observations.js").PersonalResourceObservations;
+  readonly browserPlacementObservations?: ReadonlyMap<
+    RunnerId,
+    {
+      readonly revision: bigint;
+      readonly generation: string;
+      readonly placement: import("@opensteer/protocol").BrowserPlacement;
+    }
+  >;
   /** The Host's end of every `shell` module control stream. */
   readonly shellControl: ShellControlStreamHandler;
   /** Present when web distribution is packaged. */
@@ -447,10 +458,13 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
-  const markMachine = () =>
-    commitPersonalMutation(dependencies.store.database, async (_tx, mutation) =>
-      mutation.bumpResource("machine"),
-    );
+  const markMachine = () => {
+    const finish = dependencies.resourceObservations?.begin(["machine"]);
+    return commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
+      mutation.bumpResource("machine");
+      if (finish) mutation.observation(finish);
+    }).finally(finish);
+  };
   const threadService = new ThreadService(dependencies);
   const app = Fastify({
     routerOptions: { maxParamLength: 8192 },
@@ -935,21 +949,30 @@ export async function createHostServer(
 
   const machineRegistryRows = async (
     session: NonNullable<HostApiServerContext["session"]>,
+    store: OpensteerStore,
+    page?: {
+      readonly runnerIds: readonly RunnerId[];
+      readonly pendingIds: readonly string[];
+      readonly asOf: Date;
+      readonly revision: string;
+    },
   ): Promise<Omit<MachineProjectionInput, "deploymentOwnsMainComputer">> => {
     const ownerId = session.user.id;
-    await requirePersonalOwner(dependencies.store.database, ownerId);
+    await requirePersonalOwner(store.database, ownerId);
     const includeDeployment = true;
     const [runnerPage, pendingRunners] = await Promise.all([
-      dependencies.store.listRunners({
+      store.listRunners({
         includeDeployment,
         includeOtherOwners: includeDeployment,
         limit: machinePageLimit,
         ownerId,
+        ...(page ? { ids: page.runnerIds } : {}),
       }),
-      dependencies.store.listPendingRunnerEnrollments({
+      store.listPendingRunnerEnrollments({
         includeDeployment,
         limit: machinePageLimit,
         ownerId,
+        ...(page ? { ids: page.pendingIds, asOf: page.asOf } : {}),
       }),
     ]);
     // A revoked computer has no row to report against, so its directories are
@@ -958,8 +981,7 @@ export async function createHostServer(
     const environmentIds = [
       ...new Set(active.flatMap((runner) => runner.moduleDescriptors.agents?.environmentIds ?? [])),
     ];
-    const threadsByEnvironment =
-      await dependencies.store.countLiveThreadsByEnvironment(environmentIds);
+    const threadsByEnvironment = await store.countLiveThreadsByEnvironment(environmentIds);
     // Access is read only for the machines this viewer manages and only for the
     // ones that can have any: reach is not disclosed to anyone else, and a
     // machine that does not advertise `shell` — an older Runner, a Windows one,
@@ -979,7 +1001,7 @@ export async function createHostServer(
     const ownership =
       manageable.length === 0
         ? new Map<RunnerId, MachineOwnershipRecord>()
-        : await dependencies.store.effectiveMachineOwners(manageable.map((runner) => runner.id));
+        : await store.effectiveMachineOwners(manageable.map((runner) => runner.id));
     const managed = manageable.filter((runner) => {
       const owners = ownership.get(runner.id);
       return owners !== undefined && machineIsManagedBy(owners, ownerId);
@@ -992,6 +1014,7 @@ export async function createHostServer(
     const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
     const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
+    const policyStore = page && new IntegrationPlatformStore(store.database);
     for (const runner of manageable) {
       if (ownership.get(runner.id)?.effectiveOwner !== ownerId) continue;
       const reported = dependencies.computerApps.status(runner.id);
@@ -1018,18 +1041,16 @@ export async function createHostServer(
         runner.moduleDescriptors.shell?.platform !== "darwin"
       )
         continue;
-      computerUsePolicies.set(
-        runner.id,
-        await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy({
-          deviceId: await dependencies.store.requireSelfDeviceId(runner.id),
-          ownerUserId: ownerId,
-        }),
-      );
+      const target = { deviceId: await store.requireSelfDeviceId(runner.id), ownerUserId: ownerId };
+      const policy = policyStore
+        ? await policyStore.getDeviceComputerUsePolicy(target)
+        : await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy(target);
+      computerUsePolicies.set(runner.id, { appApproval: policy.appApproval });
     }
     const access = new Map<string, MachineAccessView>(
       await Promise.all(
         managed.map(async (runner): Promise<[string, MachineAccessView]> => {
-          const stored = await dependencies.store.listActiveShellSessions(runner.id);
+          const stored = await store.listActiveShellSessions(runner.id);
           // The row's counters are zero until a session ends, so the live ones
           // are overlaid from the hub; a session the hub no longer holds is
           // one whose final counters are already written.
@@ -1058,31 +1079,48 @@ export async function createHostServer(
       computerUseDisplayStreamSupported,
       computerUsePolicies,
       pendingRunners,
-      runners: runnerPage.runners.map((runner) => ({
-        updateRequired: runner.updateRequired,
-        phoneUpdate: phoneUpdates.projection(
-          runner.id,
-          runner.connectionGeneration,
-          dependencies.runners.isRunnerConnected(runner.id),
-        ),
-        allowedModules: runner.allowedModules,
-        connected: dependencies.runners.isRunnerConnected(runner.id),
-        device: runner.device,
-        enrollmentId: runner.enrollmentId,
-        id: runner.id,
-        kind: runner.kind,
-        lastSeenAt: runner.lastSeenAt,
-        modules: runner.moduleDescriptors,
-        name: runner.name,
-        ownerKind: runner.ownerKind,
-        ownerName: runner.ownerName,
-        deviceProfile: runner.deviceProfile,
-        ownedByViewer: runner.ownerUserId === ownerId,
-        readiness: moduleReadiness(runner.id, runner.moduleDescriptors.browser?.wireVersion),
-        revokedAt: runner.revokedAt,
-        // Only a live connection says which build it runs.
-        runtimeVersion: dependencies.runners.identityForRunner(runner.id)?.runtimeVersion ?? null,
-      })),
+      runners: runnerPage.runners.map((runner) => {
+        const observation =
+          page && dependencies.runnerObservations
+            ? dependencies.runnerObservations.readRunner(
+                runner.id,
+                page.revision,
+                String(runner.connectionGeneration),
+                true,
+              )
+            : undefined;
+        const live =
+          page && dependencies.runnerObservations
+            ? observation?.identity
+            : dependencies.runners.identityForRunner(runner.id);
+        return {
+          updateRequired: runner.updateRequired,
+          phoneUpdate: phoneUpdates.projection(runner.id, runner.connectionGeneration, !!live),
+          allowedModules: runner.allowedModules,
+          connected: !!live,
+          device: runner.device,
+          enrollmentId: runner.enrollmentId,
+          id: runner.id,
+          kind: runner.kind,
+          lastSeenAt: runner.lastSeenAt,
+          modules: runner.moduleDescriptors,
+          name: runner.name,
+          ownerKind: runner.ownerKind,
+          ownerName: runner.ownerName,
+          deviceProfile: runner.deviceProfile,
+          ownedByViewer: runner.ownerUserId === ownerId,
+          readiness: live
+            ? moduleReadiness(
+                runner.id,
+                runner.moduleDescriptors.browser?.wireVersion,
+                observation?.readiness,
+              )
+            : new Map(),
+          revokedAt: runner.revokedAt,
+          // Only a live connection says which build it runs.
+          runtimeVersion: live?.runtimeVersion ?? null,
+        };
+      }),
       threadsByEnvironment,
     };
   };
@@ -1092,10 +1130,18 @@ export async function createHostServer(
    * connection has an answer, so a disconnected computer reports nothing and
    * the projection shows its modules as unavailable rather than as ready.
    */
-  const moduleReadiness = (runnerId: RunnerId, browserSnapshotVersion: number | undefined) => {
+  const moduleReadiness = (
+    runnerId: RunnerId,
+    browserSnapshotVersion: number | undefined,
+    observed?: NonNullable<
+      ReturnType<NonNullable<HostServerDependencies["runnerObservations"]>["readRunner"]>
+    >["readiness"],
+  ) => {
     const readiness = new Map<RunnerModuleName, MachineModuleSummary>();
     for (const module of RunnerModuleNameSchema.options) {
-      const reported = dependencies.runners.moduleReadiness(runnerId, module);
+      const reported = observed
+        ? observed.get(module)
+        : dependencies.runners.moduleReadiness(runnerId, module);
       if (reported === undefined) continue;
       const browserIncompatibility =
         module === "browser" ? browserRuntimeCompatibilityReason(browserSnapshotVersion) : null;
@@ -1112,22 +1158,56 @@ export async function createHostServer(
     return readiness;
   };
 
-  const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) => {
-    const [registry, devices, drivers] = await Promise.all([
-      machineRegistryRows(session),
-      dependencies.store.listDevices({
+  const machineSummaries = async (
+    session: NonNullable<HostApiServerContext["session"]>,
+    page?: {
+      readonly tx: PersonalMutationTransaction;
+      readonly deviceIds: readonly string[];
+      readonly pendingIds: readonly string[];
+      readonly asOf: Date;
+      readonly revision: string;
+    },
+  ) => {
+    const store = page ? new OpensteerStore(page.tx) : dependencies.store;
+    const ids = page?.deviceIds.map((id) => DeviceIdSchema.parse(id));
+    const [devices, drivers] = await Promise.all([
+      store.listDevices({
         ownerId: session.user.id,
         includeDeployment: true,
         limit: machinePageLimit,
+        ...(ids ? { ids } : {}),
       }),
-      dependencies.store.listDeviceDrivers({ includeDetached: true }),
+      store.listDeviceDrivers({ includeDetached: true, ...(ids ? { deviceIds: ids } : {}) }),
     ]);
-    const connections = await dependencies.integrations.platform.deviceConnections(session.user.id);
+    const registry = await machineRegistryRows(
+      session,
+      store,
+      page && {
+        runnerIds: [
+          ...new Set(drivers.filter(({ role }) => role === "self").map(({ runnerId }) => runnerId)),
+        ],
+        pendingIds: page.pendingIds,
+        asOf: page.asOf,
+        revision: page.revision,
+      },
+    );
+    const connections = ids
+      ? await new IntegrationStore(store.database).listDeviceConnections(session.user.id, ids)
+      : await dependencies.integrations.platform.deviceConnections(session.user.id);
     const access = new Map(registry.access);
     const computerViews = new Map(registry.computerViews);
     const computerUseSessions = new Map(registry.computerUseSessions);
     const computerUseDisplayStreamSupported = new Map(registry.computerUseDisplayStreamSupported);
-    const runnerNames = new Map(registry.runners.map((runner) => [runner.id, runner.name]));
+    const driverIds = [...new Set(drivers.map(({ runnerId }) => runnerId))];
+    const named =
+      page && driverIds.length
+        ? await store.database
+            .selectFrom("runners")
+            .select(["id", "name"])
+            .where("id", "in", driverIds)
+            .execute()
+        : registry.runners;
+    const runnerNames = new Map(named.map((runner) => [runner.id, runner.name]));
     const inputs = await Promise.all(
       devices.devices.map(async (device) => {
         const bindings = drivers.filter((binding) => binding.deviceId === device.id);
