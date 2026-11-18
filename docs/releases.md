@@ -53,19 +53,22 @@ together.
 
 ## Public desktop releases
 
-When a main push's CI succeeds, that exact commit builds an insider: a signed, notarized Beta
-prerelease, never Latest. A red CI releases nothing, and rerunning it to green releases then.
-Preflight still requires that commit's newest main push CI and `Check` to be green. It skips when
-a newer main commit's CI already succeeded (that commit releases instead) or when everything since
-the newest published insider is documentation or CI (`unreleasedPaths` in
-[release-plan.mjs](../.github/scripts/release-plan.mjs)). Shipped notices and agent skills are
-build inputs, so never exclude all Markdown. A newer automatic release cancels an older one's
-macOS and team image builds, which publish nothing; Account rollouts and insider publication run
-one at a time and are never cancelled. An automatic release publishes its insider; a dispatch waits
-for its commit's CI, queues per channel and stops at the draft unless `publish=true`. A dispatched
-insider's build waits behind an automatic one, which can replace it. Never publish an older
-insider after a newer one: the updater takes the first eligible feed entry, and the publisher
-refuses one.
+When a main push's CI succeeds, an insider release starts: a signed, notarized Beta prerelease,
+never Latest. A red CI releases nothing, and rerunning it to green releases then. Insider runs,
+automatic or dispatched, run one at a time and nothing cancels a started one; GitHub keeps only the
+newest run waiting behind it, so the merges that land during a release ship together in the next
+one. An automatic run releases the newest first-parent main commit whose newest main push CI and
+`Check` are green, from the commit that started it up to main when it started (whose tooling drafts
+and publishes). It skips when a published insider already holds that commit or everything since is
+documentation or CI (`unreleasedPaths` in [release-plan.mjs](../.github/scripts/release-plan.mjs)).
+Shipped notices and agent skills are build inputs, so never exclude all Markdown. A CI completion
+that cannot release (red, not a main push, a fork) never takes a waiting run's place. An automatic
+release publishes its insider; a dispatch waits for its commit's CI, queues with automatic runs and
+stops at the draft unless `publish=true`, and a later run for that commit reuses its draft. A
+waiting dispatch and a waiting automatic run replace each other: a replaced dispatch needs
+redispatch, and a dispatch without `publish=true` that replaced an automatic run leaves its
+commit to the next merge's release. Never publish an older insider after a newer one: the updater takes the first eligible
+feed entry, discovery refuses a backfill and the publisher refuses one.
 
 Key files and the ephemeral keychain are private and always deleted; release caches never hold
 signing material, and CI needs no private checkout or signing JSON. A [launch

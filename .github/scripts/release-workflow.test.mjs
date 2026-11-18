@@ -15,16 +15,80 @@ const render = (template, context) =>
   String(template).replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_, body) =>
     String(runInNewContext(body, context) ?? ""),
   );
-const auto = (runId, extra = {}) => ({
-  github: { event_name: "workflow_run", run_id: runId, ...extra },
+const format = (template, ...values) =>
+  template.replace(/\{(\d+)\}/g, (_, index) => String(values[index]));
+const greenMainPush = {
+  conclusion: "success",
+  event: "push",
+  head_branch: "main",
+  head_repository: { full_name: "steerlabs/opensteer" },
+};
+const auto = (runId, workflowRun = {}) => ({
+  github: {
+    event_name: "workflow_run",
+    run_id: runId,
+    repository: "steerlabs/opensteer",
+    event: { workflow_run: { ...greenMainPush, ...workflowRun } },
+  },
   inputs: {},
   needs: { preflight: { outputs: { channel: "beta" } } },
+  format,
 });
 const dispatch = (channel, runId = 1) => ({
-  github: { event_name: "workflow_dispatch", run_id: runId },
+  github: {
+    event_name: "workflow_dispatch",
+    run_id: runId,
+    repository: "steerlabs/opensteer",
+    event: {},
+  },
   inputs: { channel },
   needs: { preflight: { outputs: { channel: channel === "insider" ? "beta" : channel } } },
+  format,
 });
+// GitHub's concurrency: a group runs one entry and keeps one waiting. A newer waiting entry
+// cancels the older waiting one, and cancel-in-progress also cancels the running one.
+function concurrency() {
+  const groups = new Map();
+  const cancelled = [];
+  const enter = (name, cancelInProgress, id) => {
+    const group = groups.get(name) ?? {};
+    groups.set(name, group);
+    if (group.pending) cancelled.push(group.pending);
+    group.pending = undefined;
+    if (group.running && cancelInProgress) cancelled.push(group.running);
+    if (group.running && cancelInProgress) group.running = undefined;
+    if (group.running) group.pending = id;
+    else group.running = id;
+  };
+  const leave = (name, id) => {
+    const group = groups.get(name);
+    if (group?.running !== id) return;
+    group.running = group.pending;
+    group.pending = undefined;
+  };
+  const running = (name, id) => groups.get(name)?.running === id;
+  // A release run enters the run-level group, then any group its jobs declare.
+  const release = (id, context) => {
+    const runGroup = render(workflow.concurrency.group, context);
+    const live = () => running(runGroup, id) && !cancelled.includes(id);
+    return {
+      start: () => enter(runGroup, workflow.concurrency["cancel-in-progress"] === true, id),
+      running: live,
+      // Whether the job runs now; a job that waits or was cancelled does not.
+      job: (name, matrix = {}) => {
+        if (!live()) return false;
+        const declared = workflow.jobs[name].concurrency;
+        if (!declared) return true;
+        const group = render(declared.group, { ...context, matrix });
+        const job = `${id}:${name}`;
+        enter(group, render(declared["cancel-in-progress"], context) === "true", job);
+        return running(group, job);
+      },
+      finish: () => leave(runGroup, id),
+    };
+  };
+  return { release, cancelled };
+}
 test("only green main push CI and explicit dispatch can release", () => {
   assert.deepEqual(doc.errors, []);
   assert.deepEqual(doc.warnings, []);
@@ -76,72 +140,121 @@ test("only green main push CI and explicit dispatch can release", () => {
   ])
     assert.equal(starts("workflow_run", { ...run, ...mutation }), false, JSON.stringify(mutation));
 });
-test("a newer automatic release cancels an older one only before it deploys, drafts or publishes", () => {
-  // Dispatches keep their per-channel run queue; automatic runs have no run-level group.
+test("insider runs, automatic or dispatched, run one at a time and nothing cancels a started one", () => {
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  assert.equal(render(workflow.concurrency.group, auto(1)), "release-desktop-insider");
+  assert.equal(render(workflow.concurrency.group, auto(2)), "release-desktop-insider");
   assert.equal(render(workflow.concurrency.group, dispatch("insider")), "release-desktop-insider");
   assert.equal(render(workflow.concurrency.group, dispatch("stable")), "release-desktop-stable");
-  assert.notEqual(
-    render(workflow.concurrency.group, auto(1)),
-    render(workflow.concurrency.group, auto(2)),
+  // A job-level group would also drop a waiting job, so the run-level queue is the only one.
+  assert.deepEqual(
+    Object.keys(workflow.jobs).filter((name) => workflow.jobs[name].concurrency),
+    [],
   );
-  const cancellable = Object.entries(workflow.jobs)
-    .filter(([, job]) => job.concurrency?.["cancel-in-progress"] !== undefined)
-    .filter(([, job]) =>
-      [auto(1), dispatch("insider"), dispatch("stable")].some(
-        (context) => render(job.concurrency["cancel-in-progress"], context) !== "false",
-      ),
-    )
-    .map(([name]) => name);
-  assert.deepEqual(cancellable, ["build", "team-image-build"]);
-  for (const name of cancellable) {
-    const { concurrency, steps } = workflow.jobs[name];
-    assert.equal(render(concurrency["cancel-in-progress"], auto(1)), "true", name);
-    // A dispatch waits for, and never cancels, a running build.
-    assert.equal(render(concurrency["cancel-in-progress"], dispatch("insider")), "false", name);
-    assert.equal(render(concurrency["cancel-in-progress"], dispatch("stable")), "false", name);
-    assert.notEqual(
-      render(concurrency.group, { ...dispatch("stable"), matrix: { platform: "p" } }),
-      render(concurrency.group, { ...auto(1), matrix: { platform: "p" } }),
-      name,
-    );
-    // Cancellable work only builds: it never deploys, drafts, publishes or tags.
-    assert.doesNotMatch(
-      JSON.stringify(steps),
-      /deploy-account|kubectl|public-release (draft|publish)|team-images\.sh publish|gh release|--tag "\$IMAGE:\$VERSION"/,
-      name,
-    );
-  }
-  // Each architecture's image build is cancelled only by the same architecture of a newer run.
-  const images = workflow.jobs["team-image-build"].concurrency.group;
-  assert.notEqual(
-    render(images, { ...auto(1), matrix: { platform: "linux/amd64" } }),
-    render(images, { ...auto(1), matrix: { platform: "linux/arm64" } }),
-  );
-  assert.equal(
-    render(images, { ...auto(1), matrix: { platform: "linux/amd64" } }),
-    render(images, { ...auto(2), matrix: { platform: "linux/amd64" } }),
-  );
-  assert.equal(
-    render(workflow.jobs.build.concurrency.group, auto(1)),
-    render(workflow.jobs.build.concurrency.group, auto(2)),
-  );
-  // Rollouts and insider publication never overlap, across automatic and dispatched runs.
-  for (const name of ["account", "publish-insider"]) {
-    const { concurrency } = workflow.jobs[name];
-    assert.equal(concurrency["cancel-in-progress"], false, name);
+});
+test("a CI completion that cannot release never replaces a release waiting in the queue", () => {
+  const preflight = workflow.jobs.preflight;
+  for (const mutation of [
+    {},
+    { conclusion: "failure" },
+    { conclusion: "cancelled" },
+    { conclusion: "skipped" },
+    { event: "pull_request" },
+    { event: "schedule" },
+    { event: "workflow_dispatch" },
+    { head_branch: "other" },
+    { head_repository: { full_name: "someone/fork" } },
+  ]) {
+    const context = auto(3, mutation);
+    const group = render(workflow.concurrency.group, context);
+    // The queue admits exactly the runs whose preflight starts.
     assert.equal(
-      render(concurrency.group, auto(1)),
-      render(concurrency.group, dispatch("insider", 2)),
-      name,
+      group === "release-desktop-insider",
+      Boolean(runInNewContext(preflight.if, context)),
+      JSON.stringify(mutation),
     );
+    if (group === "release-desktop-insider") continue;
+    assert.notEqual(group, render(workflow.concurrency.group, auto(4, mutation)));
+    const github = concurrency();
+    const releasing = github.release("releasing", auto(1));
+    const waiting = github.release("waiting", auto(2));
+    releasing.start();
+    waiting.start();
+    github.release("ignored", context).start();
+    assert.deepEqual(github.cancelled, [], JSON.stringify(mutation));
+    releasing.finish();
+    assert.equal(waiting.running(), true, JSON.stringify(mutation));
   }
-  // Everything that deploys, drafts or publishes depends on the cancellable builds having
-  // succeeded, or runs only in a group that never cancels.
-  assert.ok(workflow.jobs.draft.needs.includes("build"));
-  assert.match(workflow.jobs.draft.if, /needs\.build\.result == 'success'/);
-  assert.deepEqual(workflow.jobs["team-images"].needs, ["preflight", "team-image-build"]);
-  assert.doesNotMatch(workflow.jobs["team-images"].if, /always\(\)|cancelled\(\)/);
+});
+test("an older automatic run never cancels, overtakes or publishes over a newer one", () => {
+  // The older commit's run passed preflight and stalled in discovery; meanwhile the newer
+  // commit's run started, and then the older one reached its build.
+  const github = concurrency();
+  const older = github.release("older", auto(1));
+  const newer = github.release("newer", auto(2));
+  const builds = [];
+  older.start();
+  newer.start();
+  if (newer.job("build")) builds.push("newer");
+  if (older.job("build")) builds.push("older");
+  for (const platform of ["linux/amd64", "linux/arm64"]) {
+    newer.job("team-image-build", { platform });
+    older.job("team-image-build", { platform });
+  }
+  assert.deepEqual(github.cancelled, []);
+  assert.equal(newer.running(), false);
+  // The newer run builds only once the older one has published and left the queue.
+  older.finish();
+  if (newer.job("build")) builds.push("newer");
+  assert.deepEqual(builds, ["older", "newer"]);
+  assert.deepEqual(github.cancelled, []);
+});
+test("an automatic run and a dispatched insider for the same commit never build or draft at once", () => {
+  for (const automaticFirst of [true, false]) {
+    const github = concurrency();
+    const automatic = github.release("automatic", auto(1));
+    const manual = github.release("manual", dispatch("insider", 2));
+    const [first, second] = automaticFirst ? [automatic, manual] : [manual, automatic];
+    first.start();
+    second.start();
+    // Both runs could otherwise discover no release, then build and draft different bytes.
+    assert.equal(first.job("discover"), true);
+    assert.equal(second.job("discover"), false);
+    assert.equal(first.job("build") && first.job("draft"), true);
+    assert.equal(second.job("build"), false);
+    first.finish();
+    assert.equal(second.running(), true);
+    assert.deepEqual(github.cancelled, []);
+  }
+  // The second run then finds the first one's draft and reuses it, or skips its publication.
+  const f = fixture({ publishedInsider: false });
+  try {
+    f.state.releases = [{ ...published(f.source), draft: true }];
+    assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
+    const needs = {
+      preflight: { outputs: { channel: "beta", team_images: "false" } },
+      discover: { result: "success", outputs: { reuse: "true", skip: "false" } },
+      build: { result: "skipped" },
+      draft: { result: "skipped" },
+      account: { result: "success" },
+      "team-images": { result: "skipped" },
+    };
+    const enabled = (job) =>
+      Boolean(
+        runInNewContext(workflow.jobs[job].if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+          ...auto(1),
+          needs,
+          cancelled: () => false,
+        }),
+      );
+    assert.equal(enabled("build"), false);
+    assert.equal(enabled("draft"), false);
+    assert.equal(enabled("publish-insider"), true);
+    f.state.releases = [published(f.source)];
+    assert.deepEqual(discover(f.source, f.run, f.root), { skip: true, reuse: false });
+  } finally {
+    f.close();
+  }
 });
 test("read-only preflight, secret-free discovery and only stable publication approval", () => {
   assert.deepEqual(workflow.permissions, { contents: "read" });
@@ -406,6 +519,8 @@ function fixture({ publishedInsider = true } = {}) {
     jobs: [{ name: "Check", status: "completed", conclusion: "success" }],
     fullJobs: [{ name: "Check", status: "completed", conclusion: "success" }],
     fullQueries: 0,
+    // Tags published on GitHub after this checkout last fetched its tags.
+    remoteTags: {},
   };
   const releases = () =>
     state.releases.filter(
@@ -426,10 +541,21 @@ function fixture({ publishedInsider = true } = {}) {
   };
   const run = (exe, args) => {
     if (exe === "git") {
-      if (args[0] === "fetch") return "";
+      if (args[0] === "fetch") {
+        // Only a fetch that names a tag brings one published since the checkout.
+        const tag = /^refs\/tags\/([^:]+):refs\/tags\/\1$/u.exec(args.at(-1))?.[1];
+        if (tag && state.remoteTags[tag]) git("tag", "--no-sign", tag, state.remoteTags[tag]);
+        if (tag) delete state.remoteTags[tag];
+        return "";
+      }
       // Only a published release has its tag, which this repository's tags stand for.
       if (args[0] === "ls-remote")
-        return git("for-each-ref", "--format=%(objectname)%09%(refname)", args.at(-1));
+        return [
+          git("for-each-ref", "--format=%(objectname)%09%(refname)", args.at(-1)),
+          ...Object.entries(state.remoteTags).map(([tag, sha]) => `${sha}\trefs/tags/${tag}`),
+        ]
+          .filter(Boolean)
+          .join("\n");
       return git(...args);
     }
     assert.equal(exe, "gh");
@@ -456,7 +582,7 @@ function fixture({ publishedInsider = true } = {}) {
       return JSON.stringify(paged ? [{ workflow_runs: runs }] : { workflow_runs: runs });
     }
     if (url.includes("/actions/runs/43/jobs?")) return JSON.stringify([{ jobs: state.fullJobs }]);
-    if (url.includes("/actions/runs/42/jobs?")) return JSON.stringify([{ jobs: state.jobs }]);
+    if (/\/actions\/runs\/\d+\/jobs\?/.test(url)) return JSON.stringify([{ jobs: state.jobs }]);
     const id = Number(/\/releases\/(\d+)$/.exec(url)?.[1]);
     const release = releases().find((item) => item.id === id);
     if (!release) throw Error(`gh: Not Found (HTTP 404): ${url}`);
@@ -465,6 +591,15 @@ function fixture({ publishedInsider = true } = {}) {
   return {
     root,
     git,
+    // Main when the release run started (github.sha).
+    main: () => git("rev-parse", "refs/remotes/origin/main"),
+    // The CI completion of this source started an automatic release.
+    automatic: () => ({
+      root,
+      event: "workflow_run",
+      mainSha: git("rev-parse", "refs/remotes/origin/main"),
+      sourceSha: sha,
+    }),
     source,
     state,
     run,
@@ -485,10 +620,7 @@ function published(source) {
 test("automatic insiders take the green CI's exact SHA, manual ones resolve main; both derive the version", () => {
   const f = fixture({ publishedInsider: false });
   try {
-    assert.deepEqual(
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      f.source,
-    );
+    assert.deepEqual(preflight(f.automatic(), f.run), f.source);
     assert.deepEqual(
       preflight({ root: f.root, event: "workflow_dispatch", channel: "insider" }, f.run),
       f.source,
@@ -497,11 +629,11 @@ test("automatic insiders take the green CI's exact SHA, manual ones resolve main
     f.close();
   }
 });
-test("CI completing red, rerun green, or out of order releases only the newest green main commit", () => {
+test("CI completing red, rerun green, or out of order releases main's newest green commit", () => {
   const f = fixture({ publishedInsider: false });
   try {
-    const automatic = (sourceSha = f.source.sha) =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha }, f.run);
+    const automatic = (sourceSha = f.source.sha, mainSha = f.main()) =>
+      preflight({ root: f.root, event: "workflow_run", sourceSha, mainSha }, f.run);
     const valid = f.state.runs[0];
     // A rerun keeps its run id and number; GitHub reports its latest attempt.
     f.state.runs = [{ ...valid, conclusion: "failure" }];
@@ -509,44 +641,90 @@ test("CI completing red, rerun green, or out of order releases only the newest g
     f.state.runs = [{ ...valid, run_attempt: 2 }];
     assert.deepEqual(automatic(), f.source);
     assert.throws(() => automatic(""), /exact SHA/);
+    assert.throws(() => automatic(f.source.sha, ""), /main commit/);
     assert.throws(() => automatic("b".repeat(40)));
-    // Main moved on while this commit's CI ran; the newer commit's CI decides.
+    // Main moved on while this commit's CI ran; a newer commit takes over only once green.
     writeFileSync(path.join(f.root, "change"), "second");
     f.git("commit", "-am", "second");
     const newer = f.git("rev-parse", "HEAD");
     f.git("update-ref", "refs/remotes/origin/main", newer);
     const newerRun = { ...valid, id: 44, run_number: 8, head_sha: newer };
-    for (const mutation of [
-      { status: "in_progress", conclusion: null },
-      { conclusion: "failure" },
-      { conclusion: "cancelled" },
-      { event: "pull_request" },
-      { head_branch: "other" },
+    for (const runs of [
+      [{ ...newerRun, status: "in_progress", conclusion: null }],
+      [{ ...newerRun, conclusion: "failure" }],
+      [{ ...newerRun, conclusion: "cancelled" }],
+      [{ ...newerRun, event: "pull_request" }],
+      [{ ...newerRun, head_branch: "other" }],
+      // Its newest CI run decides, not an older green one.
+      [newerRun, { ...newerRun, id: 46, run_number: 9, conclusion: "failure" }],
     ]) {
-      f.state.runs = [valid, { ...newerRun, ...mutation }];
-      assert.deepEqual(automatic(), f.source, JSON.stringify(mutation));
+      f.state.runs = [valid, ...runs];
+      assert.deepEqual(automatic(), f.source, JSON.stringify(runs));
     }
-    // The newer commit went green first, so its release holds this one.
+    // The newer commit went green: whichever of the two runs starts releases it.
+    const newerSource = { sha: newer, version: "1.2.5", channel: "beta", tag: "v1.2.5-insider" };
     f.state.runs = [valid, newerRun];
-    assert.deepEqual(automatic(), { ...f.source, superseded: true, supersededBy: newer });
-    // An older green commit never supersedes a newer one.
+    assert.deepEqual(automatic(), newerSource);
+    assert.deepEqual(automatic(newer), newerSource);
+    // Never past main as it stood when the run started, whose tooling drafts and publishes.
+    assert.deepEqual(automatic(f.source.sha, f.source.sha), f.source);
+    // An older green commit never replaces a newer one.
     f.state.runs = [
       { ...valid, id: 42, run_number: 9, head_sha: newer },
       { ...valid, id: 45, run_number: 10, head_sha: f.git("rev-parse", "HEAD~2") },
     ];
-    assert.deepEqual(automatic(newer), {
-      sha: newer,
-      version: "1.2.5",
-      channel: "beta",
-      tag: "v1.2.5-insider",
-    });
+    assert.deepEqual(automatic(newer), newerSource);
     // A source off first-parent main never releases.
     f.git("switch", "-c", "side", "HEAD~1");
     writeFileSync(path.join(f.root, "change"), "side");
     f.git("commit", "-am", "side");
     const side = f.git("rev-parse", "HEAD");
     f.state.runs = [{ ...valid, head_sha: side }];
-    assert.throws(() => automatic(side));
+    assert.throws(() => automatic(side), /first-parent main/);
+    assert.throws(() => automatic(side, side), /merge-base --is-ancestor/);
+  } finally {
+    f.close();
+  }
+});
+test("the run that replaced a newer commit's waiting release releases that newer commit", () => {
+  const f = fixture({ publishedInsider: false });
+  try {
+    const older = f.source.sha;
+    writeFileSync(path.join(f.root, "change"), "second");
+    f.git("commit", "-am", "second");
+    const newer = f.git("rev-parse", "HEAD");
+    f.git("update-ref", "refs/remotes/origin/main", newer);
+    f.state.runs = [
+      f.state.runs[0],
+      { ...f.state.runs[0], id: 44, run_number: 8, head_sha: newer },
+    ];
+    // The newer commit's CI completed first, then the older one's: the older commit's run
+    // replaced the newer one's in the queue.
+    const github = concurrency();
+    github.release("releasing", auto(1)).start();
+    github.release("newer", auto(2)).start();
+    const survivor = github.release("older", auto(3));
+    survivor.start();
+    assert.deepEqual(github.cancelled, ["newer"]);
+    assert.deepEqual(
+      preflight({ root: f.root, event: "workflow_run", sourceSha: older, mainSha: newer }, f.run),
+      { sha: newer, version: "1.2.5", channel: "beta", tag: "v1.2.5-insider" },
+    );
+  } finally {
+    f.close();
+  }
+});
+test("an insider published while preflight runs is fetched before it is compared", () => {
+  const f = fixture({ publishedInsider: false });
+  try {
+    // Another release published this commit after the checkout fetched its tags.
+    f.state.remoteTags = { "v1.2.4-insider": f.source.sha };
+    assert.deepEqual(preflight(f.automatic(), f.run), {
+      ...f.source,
+      superseded: true,
+      supersededBy: "v1.2.4-insider",
+    });
+    assert.equal(f.git("rev-parse", "v1.2.4-insider^{commit}"), f.source.sha);
   } finally {
     f.close();
   }
@@ -555,7 +733,7 @@ test("a commit whose releasable files a published insider already holds does not
   const f = fixture();
   try {
     const automatic = (sourceSha) =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha }, f.run);
+      preflight({ root: f.root, event: "workflow_run", mainSha: sourceSha, sourceSha }, f.run);
     const valid = f.state.runs[0];
     assert.deepEqual(automatic(f.source.sha), {
       ...f.source,
@@ -705,10 +883,7 @@ test("insiders never query full CI, even when the newest full run failed or is a
   const f = fixture({ publishedInsider: false });
   try {
     f.state.fullRuns[0].conclusion = "failure";
-    assert.deepEqual(
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      f.source,
-    );
+    assert.deepEqual(preflight(f.automatic(), f.run), f.source);
     f.state.fullRuns = [];
     assert.deepEqual(preflight({ root: f.root, channel: "insider" }, f.run), f.source);
     assert.equal(f.state.fullQueries, 0);
@@ -822,40 +997,22 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { event: "workflow_dispatch" },
     ]) {
       f.state.runs = [{ ...valid, ...mutation }];
-      assert.throws(() =>
-        preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      );
+      assert.throws(() => preflight(f.automatic(), f.run));
     }
     f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
-    assert.throws(() =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-    );
+    assert.throws(() => preflight(f.automatic(), f.run));
     // A rerun keeps its run number/id; GitHub exposes only its latest attempt.
     f.state.runs = [{ ...valid, run_attempt: 2, conclusion: "failure" }];
-    assert.throws(
-      () => preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      /must succeed/,
-    );
+    assert.throws(() => preflight(f.automatic(), f.run), /must succeed/);
     f.state.runs = [{ ...valid, run_attempt: 2, status: "in_progress", conclusion: null }];
-    assert.throws(
-      () => preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      /Waiting for main CI/,
-    );
+    assert.throws(() => preflight(f.automatic(), f.run), /Waiting for main CI/);
     f.state.runs = [{ ...valid, run_attempt: 2 }];
     f.state.jobs = [{ ...job, conclusion: "failure" }];
-    assert.throws(
-      () => preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      /Check must succeed/,
-    );
+    assert.throws(() => preflight(f.automatic(), f.run), /Check must succeed/);
     f.state.jobs = [job];
-    assert.deepEqual(
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      f.source,
-    );
+    assert.deepEqual(preflight(f.automatic(), f.run), f.source);
     f.state.runs = [];
-    assert.throws(() =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-    );
+    assert.throws(() => preflight(f.automatic(), f.run));
     f.state.runs = [valid];
     for (const mutation of [
       { name: "another" },
@@ -863,18 +1020,12 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { conclusion: "failure" },
     ]) {
       f.state.jobs = [{ ...job, ...mutation }];
-      assert.throws(() =>
-        preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-      );
+      assert.throws(() => preflight(f.automatic(), f.run));
     }
     f.state.jobs = [];
-    assert.throws(() =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-    );
+    assert.throws(() => preflight(f.automatic(), f.run));
     f.state.apiFailure = true;
-    assert.throws(() =>
-      preflight({ root: f.root, event: "workflow_run", sourceSha: f.source.sha }, f.run),
-    );
+    assert.throws(() => preflight(f.automatic(), f.run));
   } finally {
     f.close();
   }

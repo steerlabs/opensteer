@@ -4,8 +4,8 @@ Release builders consume a green main SHA; there is no local release requalifica
 journeys run in a VM after merge or on maintainer request.
 
 Main's green CI starts each insider release itself. After a red main CI, rerun that CI rather than
-dispatching a release. A newer merge's release cancels an older one's builds on its own; never
-cancel a release run by hand once it deploys, drafts or publishes.
+dispatching a release. Releases run one at a time and the next one takes main's newest green
+commit, so never cancel a release run by hand to let a newer merge through.
 
 ## Practice insider
 

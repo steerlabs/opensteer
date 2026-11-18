@@ -110,7 +110,7 @@ function sameManifest(manifest, source) {
     throw Error("Release manifest disagrees with selected source/version/channel/tag");
 }
 export function preflight(
-  { root = process.cwd(), channel, event, insiderTag = "", sourceSha = "" },
+  { root = process.cwd(), channel, event, insiderTag = "", sourceSha = "", mainSha = "" },
   run = execute,
 ) {
   const github = client(root, run);
@@ -119,10 +119,11 @@ export function preflight(
   let sha;
   let version;
   if (event === "workflow_run") {
-    // The main push whose CI just succeeded, not whatever main is now.
     channel = "beta";
-    sha = sourceSha;
-    if (!exactSha.test(sha)) throw Error("Expected the exact SHA of the CI run that succeeded");
+    if (!exactSha.test(sourceSha))
+      throw Error("Expected the exact SHA of the CI run that succeeded");
+    if (!exactSha.test(mainSha)) throw Error("Expected the main commit this release started from");
+    sha = newestGreen(sourceSha, mainSha, github);
     version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
   } else if (channel === "insider") {
     channel = "beta";
@@ -170,35 +171,45 @@ function qualify(source, github, event) {
   );
 }
 /**
- * CI completions on main can arrive close together and out of order. Only the newest green
- * commit releases, and a commit whose releasable files a published insider already holds does
- * not release again. A skipped source is reported as superseded, so nothing downstream runs.
+ * Automatic releases run one at a time, and GitHub keeps only the newest of the runs waiting
+ * behind the running one. That survivor was started by whichever CI completion arrived last,
+ * not necessarily by the newest commit's, so it releases the newest first-parent main commit
+ * whose CI is green, between the commit that started it and main when it started. Main then
+ * already held every commit whose CI completion it replaced, and the draft and publish tooling
+ * comes from that main commit, so it is never older than the source.
  */
-function coveredElsewhere(source, { git, newest, publishedVersions }) {
-  git("fetch", "origin", "main", "--no-tags");
-  const main = git("rev-list", "--first-parent", "refs/remotes/origin/main").split("\n");
-  const index = main.indexOf(source.sha);
+function newestGreen(sourceSha, mainSha, { git, newest }) {
+  // Preflight fetched main after this run started, so it holds mainSha.
+  const main = git("rev-list", "--first-parent", mainSha).split("\n");
+  const index = main.indexOf(sourceSha);
   if (index < 0) throw Error("Release source must be on first-parent main");
-  const newer = newest(
+  const newestRun = new Map();
+  for (const item of newest(
     "actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100",
     "workflow_runs",
-  ).find(
-    (item) =>
+  ))
+    if (
       item.head_branch === "main" &&
       item.event === "push" &&
-      item.conclusion === "success" &&
       exactSha.test(item.head_sha) &&
-      main.indexOf(item.head_sha) >= 0 &&
-      main.indexOf(item.head_sha) < index,
+      !(newestRun.get(item.head_sha)?.run_number > item.run_number)
+    )
+      newestRun.set(item.head_sha, item);
+  // requireSourceChecks then verifies the chosen commit's newest CI run and Check in full.
+  return (
+    main.slice(0, index).find((sha) => newestRun.get(sha)?.conclusion === "success") ?? sourceSha
   );
-  // That commit's own CI completion started its release, which holds this source.
-  if (newer) return { ...source, superseded: true, supersededBy: newer.head_sha };
+}
+/** A commit whose releasable files a published insider already holds does not release again. */
+function coveredElsewhere(source, { git, publishedVersions }) {
   const latest = publishedVersions(insiderPattern, "refs/tags/v*-insider").reduce(
     (best, version) => (best === undefined || isNewer(version, best) ? version : best),
     undefined,
   );
   if (latest === undefined) return undefined;
   const tag = `v${latest}-insider`;
+  // The remote listed a tag that may have been published after this run fetched its tags.
+  git("fetch", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`);
   const released = git("rev-parse", "--verify", `refs/tags/${tag}^{commit}`);
   const changed = git("diff", "--name-only", released, source.sha).split("\n").filter(Boolean);
   if (
@@ -361,6 +372,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
             event: process.env.EVENT,
             insiderTag: process.env.INSIDER_TAG,
             sourceSha: process.env.SOURCE_SHA,
+            mainSha: process.env.MAIN_SHA,
           })
         : process.argv[2] === "discover"
           ? discover({
