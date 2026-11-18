@@ -86,6 +86,49 @@ describe("session recovery owner", () => {
       expect(vi.getTimerCount()).toBe(0);
     },
   );
+  it("replaces a dead quiet socket within idle plus deadline, pauses in background and probes fast on return", async () => {
+    vi.useFakeTimers();
+    const life = lifecycle();
+    let connects = 0,
+      probes = 0;
+    const connection = createConnectionController({
+      lifecycle: life.port,
+      liveness: { idleMs: 25_000, deadlineMs: 10_000 },
+      random: () => 0,
+      driver: {
+        async connect() {
+          connects++;
+          const openedAt = Date.now();
+          // A half-open socket: it never answers and never closes.
+          return {
+            ...lease(),
+            lastProgressAt: () => openedAt,
+            probe: () => (probes++, new Promise<void>(() => {})),
+          };
+        },
+      },
+    });
+    connection.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connects).toBe(1);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(probes).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(connects).toBe(2);
+    await vi.advanceTimersByTimeAsync(20_000);
+    // Background pauses the probe, even past its idle time.
+    life.background();
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(probes).toBe(1);
+    // A short trip away keeps the socket and checks it with the fast deadline.
+    life.foreground();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probes).toBe(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(connects).toBe(3);
+    connection.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("has one automatic 5 s clock, resets in background, and exposes explicit failure immediately", async () => {
     vi.useFakeTimers();
     const life = lifecycle();

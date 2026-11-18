@@ -15,7 +15,11 @@ import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay
 
 import { AuthSessionIdSchema, DeploymentKindSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
-import { chromeConnectPagePath } from "@opensteer/client/host";
+import {
+  chromeConnectPagePath,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+} from "@opensteer/client/host";
 
 document.documentElement.dataset.opensteerWebBuild = personalWebBuildId;
 
@@ -331,6 +335,8 @@ async function renderOpensteer(): Promise<void> {
         )
       : import("./host/browser-host-client.js").then(({ createBrowserHostClient }) =>
           createBrowserHostClient({
+            // The same quiet-socket probe as Desktop and the phone; a hidden tab pauses it.
+            realtimeLiveness: { idleMs: realtimeIdleProbeMs, deadlineMs: realtimeIdleProbeDeadlineMs },
             capabilities: async () => {
               const { verifyAccessEndpoint } = await import("@opensteer/client/connections");
               const verified = await verifyAccessEndpoint({

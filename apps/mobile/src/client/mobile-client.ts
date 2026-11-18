@@ -3,6 +3,8 @@ import {
   createMessageOutboxStorage,
   disposeMessageOutbox,
   initializeMessageOutbox,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
   type MessageOutboxStorage,
 } from "@opensteer/client/host";
 import {
@@ -1466,8 +1468,11 @@ export class MobileClient {
     const selected = this.#state.catalog.deployments.find(
       (row) => row.authority.document.deploymentId === id,
     );
+    // A phone on a weak link can sit on a dead socket; a quiet foreground
+    // socket is probed and replaced within idle + deadline (35 s). Background
+    // pauses the probe.
     const connection = createConnectionController({
-      idleProbes: false,
+      liveness: { idleMs: realtimeIdleProbeMs, deadlineMs: realtimeIdleProbeDeadlineMs },
       ...(this.#lifecycle ? { lifecycle: this.#lifecycle } : {}),
       presentation: {
         name: this.#state.rows.find((row) => row.deploymentId === id)?.name ?? null,
