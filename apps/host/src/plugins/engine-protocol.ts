@@ -705,6 +705,8 @@ const engineMessage = z.union([
     categories: z.array(PluginResourceCategorySchema).min(1).max(5),
   }),
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
+  /** Whether the engine is rebuilding installed plugins for the Host's framework. */
+  z.strictObject({ type: z.literal("rebuilding"), running: z.boolean() }),
   z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
   z.strictObject({
     type: z.literal("result"),

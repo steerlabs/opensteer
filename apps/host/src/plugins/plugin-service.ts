@@ -162,6 +162,8 @@ export class PluginService {
   #streams = 0;
   #activity = 0;
   #lastActivity = Date.now();
+  /** The engine is rebuilding installed plugins; it is not idle until it finishes. */
+  #rebuilding = false;
   readonly #idleMs: number;
   constructor(options: PluginServiceOptions) {
     this.#options = options;
@@ -199,6 +201,10 @@ export class PluginService {
   }
   webhookOrigin(): Promise<string | undefined> {
     return this.#options.webhookOrigin?.() ?? Promise.resolve(undefined);
+  }
+  /** Whether the running engine is rebuilding installed plugins for the Host's framework. */
+  rebuilding(): boolean {
+    return this.#rebuilding;
   }
   state(): PluginServiceState {
     return { ...this.#state };
@@ -282,6 +288,7 @@ export class PluginService {
           ).unref();
   }
   #quiet() {
+    if (this.#rebuilding) return false;
     if (this.#pending.size > 0 || this.#callbacks.size > 0 || this.#streams > 0) return false;
     for (const execution of this.#executions.values())
       if (liveExecution.has(execution.state)) return false;
@@ -391,6 +398,8 @@ export class PluginService {
       const message = parsed.data;
       if (message.type === "resourcesChanged") {
         this.#options.onResourcesChanged?.(message.categories);
+      } else if (message.type === "rebuilding") {
+        this.#rebuilding = message.running;
       } else if (message.type === "diagnostic") {
         this.#options.onDiagnostic?.(message.phase);
       } else if (message.type === "ready") {
@@ -437,6 +446,7 @@ export class PluginService {
       );
       rejectReady(error);
       this.#child = undefined;
+      this.#rebuilding = false;
       for (const pending of this.#pending.values()) {
         pending.cleanup();
         pending.reject(error);

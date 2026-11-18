@@ -6,7 +6,7 @@ import { CurrentActor, type ResourceLifecycle } from "../contracts/pluginEngine.
 import type { WorkflowHostControls } from "apps/contracts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
-import { Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
+import { Clock, Effect, Exit, Option, Redacted, Result, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import {
   ManualWebhookDescriptor,
@@ -390,6 +390,15 @@ export const makeWebhooks = (
       Effect.flatMap((value) => Schema.decodeUnknownEffect(PrivateState)(Redacted.value(value))),
       Effect.mapError(() => new StorageError()),
     );
+  /**
+   * The saved state, or none when it decrypts but this engine cannot read it, such as a manual
+   * setup saved with a signing-secret source this engine no longer declares.
+   */
+  const readable = (row: typeof StoredWebhook.Type) =>
+    credentials.decrypt(row.id, row.encrypted).pipe(
+      Effect.mapError(() => new StorageError()),
+      Effect.map((value) => Schema.decodeUnknownOption(PrivateState)(Redacted.value(value))),
+    );
   /** The subscription's pinned version and source, with the actor's accounts for the rest. */
   const subscriptionState = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
@@ -589,7 +598,20 @@ export const makeWebhooks = (
         // has no actor, and a user-account webhook's follows its source's actor.
         if (!row.key.startsWith("setup-") || (row.actor === null) !== (input.actor === null))
           continue;
-        const saved = yield* decrypt(row);
+        const stored = yield* readable(row);
+        if (Option.isNone(stored)) {
+          // Nothing a person set up from it can be read or carried: they set the new one up
+          // again, and this one, which has no registration to remove, stops.
+          yield* query(() =>
+            db.updateMany("webhooks", {
+              where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
+              set: { status: "stopped" },
+            }),
+          );
+          replaced = true;
+          continue;
+        }
+        const saved = stored.value;
         if (saved.setup === undefined || !serves({ setup: saved.setup, config: saved.config })) {
           replaced = true;
           continue;

@@ -28,7 +28,7 @@ import type {
   ToolSearchPage,
   ToolSearchUnavailable,
 } from "./tools.ts";
-import type { AccountScope, App, AppRequirements } from "./apps.ts";
+import type { AccountScope, App, AppNotFound, AppRequirements } from "./apps.ts";
 import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
 import type { Account } from "./account.ts";
 import type {
@@ -471,6 +471,14 @@ export type PluginEngine = Omit<
       },
     ) => ReturnType<FlatPluginEngine["apps"]["copy"]>;
     /**
+     * Host-only: leave the app with no active version, as one whose build failed has, keeping its
+     * versions, accounts and data. A person or agent activates or deploys a version again.
+     */
+    readonly deactivate: (input: {
+      readonly owner: OwnerId;
+      readonly app: AppId;
+    }) => Effect.Effect<void, StorageError | AppNotFound>;
+    /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
      * cached. For checks that must not create anything. Fails
@@ -531,6 +539,6 @@ export type PromisePluginEngine = Promisify<
     | "apps"
   > & {
     readonly tools: Omit<PluginEngine["tools"], "approval" | "searchable" | "search">;
-    readonly apps: Omit<PluginEngine["apps"], "copyAs" | "build">;
+    readonly apps: Omit<PluginEngine["apps"], "copyAs" | "build" | "deactivate">;
   }
 >;

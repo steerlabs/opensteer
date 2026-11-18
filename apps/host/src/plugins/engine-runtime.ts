@@ -73,9 +73,15 @@ import {
   CompleteWebhookSetup,
   WebhookSetupView,
   RuntimeProtocolFailed,
+  BlobStore,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
-import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/node";
+import {
+  filesystemBlobStore,
+  linkedFramework,
+  workerdApps,
+} from "@opensteer/plugin-engine-sdk/node";
+import { rebuildInstalledPlugins } from "./plugin-rebuild.js";
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
@@ -165,6 +171,7 @@ export async function startEngine(
   report: (execution: PluginExecution) => void,
   phase: (name: string) => void = () => {},
   changed: (categories: PluginResourceCategory[]) => void = () => {},
+  rebuilding: (running: boolean) => void = () => {},
 ) {
   const started = performance.now();
   const scope = Scope.makeUnsafe();
@@ -519,6 +526,25 @@ export async function startEngine(
           { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
         );
         yield* Effect.forkScoped(deliverEvents(engine));
+        // Off the request path: each installed plugin built against another framework is rebuilt
+        // against the Host's, one at a time, its old build serving until its new one activates.
+        // Reported before the engine is ready, so the service never finds it idle mid-pass.
+        rebuilding(true);
+        yield* Effect.forkScoped(
+          rebuildInstalledPlugins({
+            engine,
+            owner,
+            framework: local.framework,
+            linkedFramework: (build) =>
+              linkedFramework(build).pipe(Effect.provideService(BlobStore, blobs)),
+          }).pipe(
+            Effect.ensuring(Effect.sync(() => rebuilding(false))),
+            Effect.provideService(CurrentPluginRequest, undefined),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Plugin rebuild pass stopped").pipe(Effect.annotateLogs({ cause })),
+            ),
+          ),
+        );
         phase("catalog");
         const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? officialCatalogUrl });
         const executions = new Map<

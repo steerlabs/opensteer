@@ -131,6 +131,16 @@ export const retainWorkerBuild = (
  * A build's stored record: its own modules, UI manifest and framework identity. Until the
  * migration finishes, a build without a record may still be stored with its framework inlined.
  */
+/**
+ * The framework a stored build links, or none for one that cannot be read or that inlines its
+ * framework, as builds stored before frameworks were kept apart do.
+ */
+export const linkedFramework = (build: BuildId) =>
+  loadStoredWorkerBuild(build).pipe(
+    Effect.map((stored) => (stored.format === 2 ? stored.framework : undefined)),
+    Effect.orElseSucceed(() => undefined),
+  );
+
 export const loadStoredWorkerBuild = (build: BuildId) =>
   Effect.gen(function* () {
     const blobs = yield* BlobStore;

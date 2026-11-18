@@ -870,6 +870,25 @@ export const makeApps = (
         Effect.map(({ app }) => ({ app })),
         Effect.withSpan("sdk.apps.remove"),
       ),
+    deactivate: (input: Parameters<PluginEngine["apps"]["deactivate"]>[0]) =>
+      transaction(db, (tx) =>
+        Effect.gen(function* () {
+          const app = yield* lockApp(tx, input);
+          if (app.activeVersion === null) return;
+          // Activation's own sequence: a source reconciling an earlier activation stands down.
+          yield* query(() =>
+            tx.updateMany("apps", {
+              where: (b) => b("id", "=", app.id),
+              set: {
+                activeDeployment: null,
+                deploySequence: app.deploySequence + 1,
+                activatedSequence: app.deploySequence + 1,
+              },
+            }),
+          );
+          yield* webhookSourcesPending(tx, app.id);
+        }),
+      ).pipe(Effect.withSpan("sdk.apps.deactivate")),
     activate: (input: Parameters<PluginEngine["apps"]["activate"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {

@@ -3,6 +3,8 @@ import { build } from "esbuild";
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { Module } from "@alchemy.run/cloudflare-runtime/core";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
+import { PublishedAppFramework } from "../contracts/worker-build.ts";
+import { frameworkIdentity } from "./worker-build-storage.ts";
 
 const HostBundle = Schema.mutable(
   Schema.Array(
@@ -64,6 +66,17 @@ export const workerdHostModules = Effect.gen(function* () {
  * fetched from a registry. Declared for the entry in framework-module.d.ts.
  */
 const frameworkModule = "plugin-engine-framework";
+
+/** The framework a trusted host bundle gives every build, identified as a build that links it records it. */
+export const hostFramework = (modules: ReadonlyArray<Module>) =>
+  Effect.gen(function* () {
+    const module = modules.find((candidate) => candidate.name === frameworkModule);
+    if (module?.type !== "Text") return yield* new RuntimeBuildFailed({ stage: "compile" });
+    const framework = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(PublishedAppFramework),
+    )(module.content).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
+    return yield* frameworkIdentity({ version: framework.version, modules: framework.server });
+  });
 
 /** Build the trusted Worker entry point, and with `sourceMap` each JavaScript module's map. */
 const buildWorkerdHost = (sourceMap: boolean) =>

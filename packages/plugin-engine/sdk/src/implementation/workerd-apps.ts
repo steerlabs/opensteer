@@ -49,7 +49,8 @@ import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
-import { workerdHostModules } from "./workerd-bundle.ts";
+import { hostFramework, workerdHostModules } from "./workerd-bundle.ts";
+import type { FrameworkIdentity } from "../contracts/worker-build.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
 import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
@@ -173,6 +174,8 @@ export const workerdApps = (options: {
     readonly runtime: ReturnType<typeof runtimeAdapter>;
     readonly workflows: WorkflowRuntime;
     readonly declarations: DurableDeclarations;
+    /** The framework every build this process compiles links. */
+    readonly framework: FrameworkIdentity;
   },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
   Scope.Scope
@@ -215,6 +218,8 @@ export const workerdApps = (options: {
       ),
     );
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
+    const modules = yield* workerdHostModules;
+    const framework = yield* hostFramework(modules);
     // A workerd that exits on its own, such as when V8 runs out of heap, is replaced on the same
     // ports, and every RPC session into it breaks. Record each replacement so a failed call can be
     // matched to one. Only the exit's code and signal are kept: its stderr can quote app output.
@@ -245,7 +250,7 @@ export const workerdApps = (options: {
         compatibilityDate: "2026-07-30",
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
-        modules: yield* workerdHostModules,
+        modules,
         durableObjectNamespaces: [
           { className: "AppDataSupervisor", sql: true, uniqueKey: "pluginEngine-app-data" },
         ],
@@ -435,7 +440,10 @@ export const workerdApps = (options: {
           );
         }),
       ).pipe(Effect.mapError(protocolFailure));
-    return yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
+    return {
+      ...(yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend })),
+      framework,
+    };
   }).pipe(
     Effect.provide(NodeServices.layer),
     Effect.provide(FetchHttpClient.layer),
