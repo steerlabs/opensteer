@@ -111,6 +111,12 @@ function rejectionDetail(reason: string | undefined): string | undefined {
   return reason && Object.hasOwn(rejectionReasons, reason) ? rejectionReasons[reason] : undefined;
 }
 
+/** How a sentence names what it is about, by who the person is talking to. */
+const clientTargets = {
+  computer: { fallback: "your computer", longestName: 18, team: false },
+  team: { fallback: "your team", longestName: 80, team: true },
+} as const;
+
 /**
  * The name a sentence says, or "your computer" / "your team" when there is no
  * safe one. `sentenceStart` capitalizes only that fallback: a real name like
@@ -127,15 +133,16 @@ export function clientDisplayName(
         .join("")
         .trim()
     : undefined;
-  if (safe && (target === "team" ? safe.length <= 80 : safe.length <= 18)) return safe;
-  const fallback = target === "team" ? "your team" : "your computer";
+  const words = clientTargets[target];
+  if (safe && safe.length <= words.longestName) return safe;
+  const fallback = words.fallback;
   return sentenceStart ? `Y${fallback.slice(1)}` : fallback;
 }
 
 export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation {
   const name = clientDisplayName(issue.name, issue.target);
   const subject = clientDisplayName(issue.name, issue.target, true);
-  const team = issue.target === "team";
+  const team = clientTargets[issue.target ?? "computer"].team;
   const result = (
     title: string,
     action: ClientIssuePresentation["action"] = null,
@@ -328,10 +335,9 @@ export function presentConnectionGate(
         }
       : {
           title: `Can't reach ${name}`,
-          detail:
-            state.target === "team"
-              ? "Your own tasks still work."
-              : "Make sure it's on and connected to the internet.",
+          detail: clientTargets[state.target ?? "computer"].team
+            ? "Your own tasks still work."
+            : "Make sure it's on and connected to the internet.",
           action: "retry",
         };
   if (issue.code === "sign-in")

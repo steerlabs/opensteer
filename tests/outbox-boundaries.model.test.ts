@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { classifyClientFailure, clientScopeKey } from "@opensteer/client/connections";
-import { hostApiVersionHeader } from "@opensteer/protocol";
+import { classifyClientFailure, clientScopeKey } from "../packages/client/src/connections/index.js";
+import { hostApiVersionHeader } from "../packages/protocol/src/index.js";
 import {
   createMessageOutbox,
   createMessageOutboxStorage,
@@ -10,27 +10,34 @@ import {
   type ConsumedDraftRevision,
   type MessageRecordStorage,
   type PendingSendCommand,
-} from "@opensteer/client/host";
-import { controlledClientSession, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { BrowserPageContentPartSchema, createId, ModelSelectionSchema } from "@opensteer/core";
+} from "../packages/client/src/host/index.js";
+import {
+  controlledClientSession,
+  MemoryPrivateFilesystem,
+} from "../packages/client/src/test-support/index.js";
+import {
+  BrowserPageContentPartSchema,
+  createId,
+  ModelSelectionSchema,
+} from "../packages/core/src/index.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
-import { insertDictationText } from "@opensteer/client/dictation";
+import { insertDictationText } from "../packages/client/src/dictation/index.js";
 import { afterEach, it, vi } from "vitest";
 import {
   createThreadDraftStore,
   newTaskDraftKey,
   threadDraftRevision,
   type ThreadDraft,
-} from "../../../../mobile/src/client/thread-drafts.js";
+} from "../apps/mobile/src/client/thread-drafts.js";
 import {
   composerDraftKey,
   createComposerDraftStore,
   reserveComposerTaskStart,
   transactionalComposerDrafts,
-} from "../composer-drafts.js";
-import { restoreComposerDraft } from "../../host/message-outbox.js";
-import { browserDraftHandoffKey } from "../../host/message-outbox-records.js";
-import { draftTaskStart, startTask } from "./task-start.js";
+} from "../apps/web/src/components/composer-drafts.js";
+import { restoreComposerDraft } from "../apps/web/src/host/message-outbox.js";
+import { browserDraftHandoffKey } from "../apps/web/src/host/message-outbox-records.js";
+import { draftTaskStart, startTask } from "../apps/web/src/components/home/task-start.js";
 
 const original = controlledClientSession().connection.getSnapshot().scope!;
 const replacement = { ...original, loginId: "replacement" };

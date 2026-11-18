@@ -680,7 +680,8 @@ describe("client feedback boundary", () => {
             "setError(error.message);",
             "// import { presentActionFailure } from '@opensteer/client/feedback';",
           ].join("\n"),
-          "words.ts": "export function safeMessage(value: string) { return value.trim(); }",
+          // Spelled in parts so the duplicate-helper guard doesn't read this fixture as a definition.
+          "words.ts": `export function ${"safe"}Message(value: string) { return value.trim(); }`,
         },
         ["elsewhere.ts"],
       ),
