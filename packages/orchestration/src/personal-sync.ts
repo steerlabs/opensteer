@@ -218,11 +218,19 @@ export class PersonalSyncSocket {
     return kept < previous;
   }
 
-  wake(head: string) {
+  wake(head: string, changedScopes?: ReadonlySet<string>) {
     const sequence = BigInt(head);
-    if (sequence <= this.#head || this.#closed) return;
-    this.#head = sequence;
+    if (this.#closed) return;
+    if (sequence > this.#head) this.#head = sequence;
     for (const current of this.#subscriptions.values()) {
+      const { scope } = current.request;
+      const key =
+        scope.kind === "shell"
+          ? "shell"
+          : scope.kind === "thread"
+            ? `thread:${scope.threadId}`
+            : `node:${scope.nodeId}`;
+      if (changedScopes && !changedScopes.has("deployment") && !changedScopes.has(key)) continue;
       if (sequence > current.pendingHead) current.pendingHead = sequence;
       this.#schedule(current);
     }
@@ -316,13 +324,23 @@ export class PersonalSyncSocket {
   }
 
   #queueLive(current: Subscription, update: PersonalLiveUpdate, options?: LiveDeliveryOptions) {
+    // The global head includes unrelated work the slot never needs to read.
+    // Its pending head already includes every commit affecting this scope.
+    const delivered = BigInt(current.cursor?.afterSequence ?? 0);
+    const scopeHead = delivered > current.pendingHead ? delivered : current.pendingHead;
+    const barrier = BigInt(update.afterSequence);
+    if (barrier > scopeHead && barrier <= this.#head)
+      update = { ...update, afterSequence: scopeHead.toString() };
     const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
     const previous = current.live.get(key);
     current.live.delete(key);
     const entry = {
       update,
       immediate: options?.immediate ?? false,
-      replace: options?.replace === true || previous?.replace === true,
+      replace:
+        update.itemId.startsWith("node:") ||
+        options?.replace === true ||
+        previous?.replace === true,
     };
     current.live.set(key, entry);
     let bytes = [...current.live.values()].reduce(

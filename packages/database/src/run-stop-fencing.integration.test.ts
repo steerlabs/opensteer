@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { jsonValue } from "./store-primitives.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -513,6 +514,37 @@ integration.sequential("Run stop fencing", () => {
       lateAnswer: "refused",
       pendingRequests: "cancelled",
     };
+  });
+  it("refuses to enqueue a claimed answer when Stop commits during frame preparation", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, openRequest, answer, store, stop } = storeFixture;
+    const f = await fixture("prepare-answers");
+    const run = await running(f, "prepare-answers");
+    const request = await openRequest(f, run, 1);
+    const admitted = await answer(f, run.id, request.id, "admitted");
+    await store.claimCommand(admitted.command.id, "answers-dispatcher");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const runnerResolves: string[] = [];
+    const delivery = store.dispatchRequestResponse(admitted.command.id, async (_ack, fenceSend) => {
+      entered.resolve();
+      await withTimeout(release.promise, 2_000, {
+        timeoutError: () => new Error("Request frame preparation was never released"),
+      });
+      await fenceSend(() => runnerResolves.push(request.id));
+    });
+    const refused = expect(delivery).rejects.toMatchObject({ code: "conflict" });
+    try {
+      await withTimeout(entered.promise, 2_000, {
+        timeoutError: () => new Error("The Request dispatch intent did not commit"),
+      });
+      await stop(f, run.id, "while-preparing");
+    } finally {
+      release.resolve();
+      await refused;
+    }
+    expect(runnerResolves).toEqual([]);
   });
   it("records an engine's question asked after Stop as cancelled, leaving the Run running", async ({
     storeFixture,

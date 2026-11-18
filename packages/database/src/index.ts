@@ -130,8 +130,9 @@ export * from "./device-driver-store.js";
 export { deviceOwnershipIn } from "./machine-ownership.js";
 
 export type { DeviceRemovalEffects } from "./device-removal-store.js";
-export { readPersonalTaskPage } from "./personal-task-store.js";
-export { drainRunFinish } from "./run-finalization.js";
+export { readPersonalTaskPage, readTaskPageThreads } from "./personal-task-store.js";
+export type { RequestResponseSendFence } from "./command-store.js";
+export { drainRunFinish, drainPersistedRunFinishes } from "./run-finalization.js";
 export { transcriptIdentity, toolCallId } from "./transcript-store.js";
 export { getThreadForOwner } from "./thread-store.js";
 export { requestFromRow } from "./request-persistence.js";

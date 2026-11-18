@@ -1,4 +1,4 @@
-const maxTimerMs = 2 ** 31 - 1;
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 
 interface RequestDeadlineOptions {
   readonly next: () => Promise<Date | null>;
@@ -7,64 +7,23 @@ interface RequestDeadlineOptions {
   readonly now?: () => number;
 }
 
-export class RequestDeadlines {
-  readonly #options: RequestDeadlineOptions;
-  readonly #now: () => number;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  #work: Promise<void> | undefined;
-  #dirty = false;
-  #closed = false;
-
+export class RequestDeadlines extends DeadlineDrain {
   constructor(options: RequestDeadlineOptions) {
-    this.#options = options;
-    this.#now = options.now ?? Date.now;
-  }
-
-  changed(): void {
-    void this.settle().catch(this.#options.onError);
-  }
-
-  settle(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
-    this.#dirty = true;
-    this.#work ??= this.#plan().finally(() => {
-      this.#work = undefined;
-      if (this.#dirty && !this.#closed) this.changed();
+    const now = options.now ?? Date.now;
+    super({
+      onError: options.onError,
+      drain: async () => {
+        const next = await options.next();
+        const time = new Date(now());
+        if (!next || next > time) return next;
+        await options.settle(time);
+        return options.next();
+      },
     });
-    return this.#work;
   }
 
-  async close(): Promise<void> {
-    this.#closed = true;
-    clearTimeout(this.#timer);
-    await this.#work?.catch(() => undefined);
-  }
-
-  #schedule(delay: number) {
-    if (this.#closed) return;
-    this.#timer = setTimeout(() => this.changed(), Math.min(delay, maxTimerMs));
-    this.#timer.unref();
-  }
-
-  async #plan() {
-    clearTimeout(this.#timer);
-    try {
-      while (this.#dirty && !this.#closed) {
-        this.#dirty = false;
-        const next = await this.#options.next();
-        if (this.#closed) break;
-        const now = this.#now();
-        if (next && next.getTime() <= now) {
-          await this.#options.settle(new Date(now));
-          this.#dirty = true;
-        } else if (next && !this.#dirty) {
-          this.#schedule(next.getTime() - now);
-        }
-      }
-    } catch (error) {
-      this.#dirty = false;
-      this.#schedule(1_000);
-      throw error;
-    }
+  async settle(): Promise<void> {
+    this.wake();
+    await this.settled();
   }
 }

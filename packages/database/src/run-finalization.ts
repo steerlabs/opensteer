@@ -356,6 +356,23 @@ async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: 
   return conversation?.personalContext === true;
 }
 
+export async function drainPersistedRunFinishes(
+  database: Kysely<DatabaseSchema>,
+  links: ChannelLinks,
+) {
+  for (;;) {
+    const pending = await database
+      .selectFrom("runs")
+      .select("id")
+      .where("finishIntent", "is not", null)
+      .orderBy("id")
+      .limit(1)
+      .executeTakeFirst();
+    if (!pending) return;
+    await drainRunFinish(database, links, pending.id);
+  }
+}
+
 export async function drainRunFinish(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,

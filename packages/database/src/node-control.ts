@@ -1,4 +1,4 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { z } from "zod";
 import {
@@ -205,6 +205,7 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    await wakeExecutionCommands(tx);
     await tx
       .updateTable("executionNodes")
       .set({

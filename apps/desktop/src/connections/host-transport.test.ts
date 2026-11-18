@@ -1,5 +1,4 @@
 import { TeamRuntimeOwner } from "@opensteer/client/team";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import {
   createDesktopHostFetch,
@@ -1053,6 +1052,7 @@ describe("DesktopHostTransport", () => {
       log,
       network: { openWebSocket: () => socket(), request },
     });
+    const bootstrapDiagnosticHeader = "x-opensteer-bootstrap-diagnostics";
     const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
     const read = (bootstrapDiagnostics?: string) =>
       expect(

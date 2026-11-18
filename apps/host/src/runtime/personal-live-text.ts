@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { surrogateSafeCut, type RunAttemptId, type RunId, type ThreadId } from "@opensteer/core";
+import {
+  surrogateSafeCut,
+  type ExecutionNodeId,
+  type RunAttemptId,
+  type RunId,
+  type ThreadId,
+} from "@opensteer/core";
 import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import { toolCallId, transcriptIdentity } from "@opensteer/database";
 import type { PersonalLiveUpdate, RealtimeHub } from "@opensteer/orchestration";
@@ -26,6 +32,7 @@ type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
 type Resync = Extract<ScopedClientMessage, { type: "client.live.resync" }>;
 type Stream = {
   readonly scope: DetailScope;
+  readonly subject?: DetailScope;
   readonly frame: PersonalLiveUpdate;
   readonly bytes: number;
   readonly paragraph?: Paragraph;
@@ -35,6 +42,7 @@ type Binding = {
   readonly bindingGeneration: number;
   readonly threadId: ThreadId;
 };
+type TrackedBinding = Binding & { readonly nodes: Map<ExecutionNodeId, ExecutionNodeId | null> };
 
 const maxStreamText = 12 * 1024;
 const maxRunStreams = 16;
@@ -85,7 +93,7 @@ function matches(a: DetailScope, b: DetailScope) {
 
 export class PersonalLiveText {
   readonly #bootId = randomUUID();
-  readonly #bindings = new Map<RunId, Binding>();
+  readonly #bindings = new Map<RunId, TrackedBinding>();
   readonly #runs = new Map<RunId, Map<string, Stream>>();
   #bytes = 0;
   readonly #hub: Pick<RealtimeHub, "publishLive">;
@@ -108,12 +116,47 @@ export class PersonalLiveText {
     const previous = this.#bindings.get(runId);
     if (previous && previous.bindingGeneration >= binding.bindingGeneration) return;
     if (previous) this.#dropRun(runId);
-    this.#bindings.set(runId, binding);
+    this.#bindings.set(runId, { ...binding, nodes: new Map() });
     const oldest = this.#bindings.keys().next().value;
     if (this.#bindings.size > maxBindings && oldest) {
       this.#dropRun(oldest);
       this.#bindings.delete(oldest);
     }
+  }
+
+  placeNode(
+    change: Extract<PersonalCommitReaction, { type: "nodeProgressPlacement" }>,
+    afterSequence: string,
+  ) {
+    const binding = this.#bindings.get(change.runId);
+    if (!binding || binding.attemptId !== change.attemptId) return;
+    const prior = binding.nodes.get(change.nodeId);
+    const itemId = `node:${change.nodeId}`;
+    if (!change.active) {
+      binding.nodes.delete(change.nodeId);
+      this.closeItem({
+        type: "liveClosed",
+        runId: change.runId,
+        threadId: binding.threadId,
+        attemptId: change.attemptId,
+        bindingGeneration: binding.bindingGeneration,
+        nodeId: change.parentNodeId,
+        itemId,
+        afterSequence,
+      });
+      return;
+    }
+    if (prior === undefined && binding.nodes.size >= 256) return;
+    binding.nodes.set(change.nodeId, change.parentNodeId);
+    const streams = this.#runs.get(change.runId);
+    const stream = streams?.get(itemId);
+    if (!stream || prior === change.parentNodeId) return;
+    const scope: DetailScope = change.parentNodeId
+      ? { kind: "node", threadId: binding.threadId, nodeId: change.parentNodeId }
+      : { kind: "thread", threadId: binding.threadId };
+    const frame = { ...stream.frame, afterSequence };
+    streams?.set(itemId, { ...stream, scope, frame });
+    this.#hub.publishLive(scope, frame, { replace: true });
   }
 
   accept(live: RunnerLive, afterSequence: string) {
@@ -130,8 +173,9 @@ export class PersonalLiveText {
     this.#runs.delete(runId);
     this.#runs.set(runId, streams);
     for (const item of live.progress.items) {
-      if (item.stream === "node") continue;
-      const nodeId = item.stream === "tool" ? (item.nodeId ?? null) : null;
+      const parentNodeId = item.stream === "node" ? binding.nodes.get(item.nodeId) : null;
+      if (parentNodeId === undefined) continue;
+      const nodeId = item.stream === "tool" ? (item.nodeId ?? null) : parentNodeId;
       const scope: DetailScope = nodeId
         ? { kind: "node", threadId, nodeId }
         : { kind: "thread", threadId };
@@ -147,7 +191,9 @@ export class PersonalLiveText {
                 nodeId,
                 item.blockId,
               )
-            : `tool:${toolCallId({ runId, attemptId, bindingGeneration, nodeId, callId: item.callId })}`;
+            : item.stream === "node"
+              ? `node:${item.nodeId}`
+              : `tool:${toolCallId({ runId, attemptId, bindingGeneration, nodeId, callId: item.callId })}`;
       if (!itemId) continue;
       const existing = streams.get(itemId);
       const previous = existing?.frame.update;
@@ -209,7 +255,15 @@ export class PersonalLiveText {
         item.stream === "assistant" || item.stream === "reasoning"
           ? this.#paragraph(frame, continuing ? existing?.paragraph : undefined, now)
           : undefined;
-      const stream: Stream = { scope, frame, bytes, ...(paragraph ? { paragraph } : {}) };
+      const subject: DetailScope | undefined =
+        item.stream === "node" ? { kind: "node", threadId, nodeId: item.nodeId } : undefined;
+      const stream: Stream = {
+        scope,
+        frame,
+        bytes,
+        ...(paragraph ? { paragraph } : {}),
+        ...(subject ? { subject } : {}),
+      };
       streams.set(itemId, stream);
       this.#bytes += bytes;
       if (streams.size > maxRunStreams) {
@@ -226,7 +280,10 @@ export class PersonalLiveText {
       }
       if (this.#runs.get(runId) !== streams) continue;
       if (paragraph) this.#flushParagraph(stream, now, !continuing);
-      else this.#hub.publishLive(scope, frame);
+      else {
+        this.#hub.publishLive(scope, frame);
+        if (subject) this.#hub.publishLive(subject, frame);
+      }
     }
     if (streams.size === 0) this.#runs.delete(runId);
     if (!this.#pending.size) this.#clearTimer();
@@ -318,9 +375,10 @@ export class PersonalLiveText {
     let bytes = 0;
     const runs = request ? [this.#runs.get(request.runId)] : [...this.#runs.values()].reverse();
     for (const streams of runs) {
-      for (const { scope: owner, frame, bytes: size, paragraph } of streams?.values() ?? []) {
+      for (const { scope: owner, subject, frame, bytes: size, paragraph } of streams?.values() ??
+        []) {
         if (
-          !matches(owner, scope) ||
+          (!matches(owner, scope) && (!subject || !matches(subject, scope))) ||
           frame.update.operation === "close" ||
           (request && !request.streamIds.includes(frame.streamId))
         )
@@ -363,9 +421,10 @@ export class PersonalLiveText {
     const bytes = Buffer.byteLength(JSON.stringify(frame));
     this.#pending.delete(stream);
     if (!this.#pending.size) this.#clearTimer();
-    streams?.set(change.itemId, { scope: stream.scope, frame, bytes });
+    streams?.set(change.itemId, { ...stream, frame, bytes });
     this.#bytes += bytes - stream.bytes;
     this.#hub.publishLive(stream.scope, frame, { immediate: stream.paragraph !== undefined });
+    if (stream.subject) this.#hub.publishLive(stream.subject, frame);
   }
 
   finish(change: Extract<PersonalCommitReaction, { type: "runFinished" }>, afterSequence: string) {

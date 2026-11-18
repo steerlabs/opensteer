@@ -102,6 +102,7 @@ export async function startPrivateMachineHost(
     | "logger"
     | "phoneUpdateRelease"
     | "browserActivityClock"
+    | "executionClock"
     | "integrationFetch"
     | "onPersonalScopeCut"
     | "onPersonalReaction"

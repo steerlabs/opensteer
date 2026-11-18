@@ -1360,7 +1360,7 @@ export class OpensteerStore {
   }
   async dispatchRequestResponse(
     commandId: CommandRow["id"],
-    send: (beforeAck: () => Promise<void>) => Promise<void>,
+    send: Parameters<typeof commandStore.dispatchRequestResponse>[2],
   ): Promise<void> {
     this.#announceRevokedGrants(
       await commandStore.dispatchRequestResponse(this.#database, commandId, send),

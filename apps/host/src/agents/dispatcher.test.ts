@@ -42,9 +42,14 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatchRequestResponse = vi.fn(
-      async (_commandId: string, send: (beforeAck: () => Promise<void>) => Promise<void>) => {
-        await send(async () => undefined);
-        return [];
+      async (
+        _commandId: string,
+        send: Parameters<OpensteerStore["dispatchRequestResponse"]>[1],
+      ) => {
+        await send(
+          async () => undefined,
+          async () => undefined,
+        );
       },
     );
     const dispatcher = new HostCommandDispatcher({
@@ -66,6 +71,7 @@ describe("HostCommandDispatcher Request responses", () => {
       pluginsTokens: {} as never,
       publicUrl: new URL("https://host.example"),
       runners: {
+        identityForEnvironment: () => ({ connectionGeneration: 7 }),
         dispatch: runnersDispatch,
       } as never,
       store: {
@@ -93,6 +99,8 @@ describe("HostCommandDispatcher Request responses", () => {
       expect.any(AbortSignal),
       {
         beforeAck: expect.any(Function),
+        fenceRequestSend: expect.any(Function),
+        connectionGeneration: 7,
       },
     );
     expect(dispatchRequestResponse).toHaveBeenCalledWith(command.id, expect.any(Function));

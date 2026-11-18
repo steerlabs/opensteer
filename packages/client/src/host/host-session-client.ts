@@ -4,11 +4,12 @@ import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
-import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
+import { nodeCardProgress, nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
   PersonalShellSnapshotSchema,
+  personalDetailFrameMaxBytes,
   affectedPersonalSubscriptions,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
@@ -1348,6 +1349,12 @@ export class HttpHostClient {
       for (const listener of listeners) listener();
     };
     const unsubscribe = detail.transcript.subscribe(notify);
+    let progressVersion = 0;
+    let shownProgress = 0;
+    const unsubscribeProgress = detail.text.subscribeNodeProgress(() => {
+      progressVersion++;
+      notify();
+    });
     let released = false;
     let read:
       | {
@@ -1404,7 +1411,9 @@ export class HttpHostClient {
         if (released) return closed;
         const state = detail.transcript.getSnapshot();
         const page = read?.generation === state.generation ? read : undefined;
-        if (previous === state && shownRead === page) return view;
+        const progressChanged = shownProgress !== progressVersion;
+        if (previous === state && shownRead === page && !progressChanged) return view;
+        shownProgress = progressVersion;
         shownRead = page;
         const status =
           state.removed || page?.status === "missing"
@@ -1415,6 +1424,7 @@ export class HttpHostClient {
                 ? "ready"
                 : "loading";
         const structureChanged =
+          progressChanged ||
           previous?.items !== state.items ||
           previous.liveItems !== state.liveItems ||
           (view.status === "missing") !== (status === "missing");
@@ -1422,10 +1432,12 @@ export class HttpHostClient {
         const node =
           status === "missing"
             ? null
-            : subject === previous?.snapshot?.nodeSubject && view.status !== "missing"
+            : !progressChanged &&
+                subject === previous?.snapshot?.nodeSubject &&
+                view.status !== "missing"
               ? view.node
               : subject
-                ? transcriptCard(subject)
+                ? nodeCardProgress(transcriptCard(subject)!, detail.text.get(subject.id)?.text)
                 : null;
         const hasMore = status !== "missing" && state.snapshot?.nextBefore != null;
         const loadingOlder = page?.status === "loading" && page.mode === "earlier";
@@ -1452,7 +1464,8 @@ export class HttpHostClient {
                   if (!item) return [];
                   const projected = durable ? cards : liveCards;
                   if (!projected.has(item)) projected.set(item, nodeTranscriptCard(item, !durable));
-                  return projected.get(item) ?? [];
+                  const card = projected.get(item);
+                  return card ? nodeCardProgress(card, detail.text.get(id)?.text) : [];
                 });
         view = {
           ...view,
@@ -1479,6 +1492,7 @@ export class HttpHostClient {
         if (released) return;
         released = true;
         unsubscribe();
+        unsubscribeProgress();
         reader.dispose();
         release();
         notify();
@@ -3663,7 +3677,7 @@ export class HttpHostClient {
       if (this.#socket !== socket || typeof data !== "string") return;
       if (this.#realtimeLiveness) this.#lastRealtimeFrameAt = Date.now();
       const wireBytes = utf8ByteLength(data);
-      if (wireBytes > 128 * 1024) {
+      if (wireBytes > personalDetailFrameMaxBytes) {
         this.#frameRejected("frame", wireBytes);
         this.#socketFailed("Invalid Host protocol frame");
         return;

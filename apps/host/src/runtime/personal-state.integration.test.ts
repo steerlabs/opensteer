@@ -1,3 +1,4 @@
+import { ExecutionCoordinator } from "@opensteer/orchestration";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,6 +116,7 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   const store = new OpensteerStore(database);
   const channelStore = new ChannelStore(database);
   const failureStore = new AutomationFailureStore(database);
+  const coordinatorPlanned = Promise.withResolvers<void>();
   const channelPlanned = Promise.withResolvers<void>();
   const continuationPlanned = Promise.withResolvers<void>();
   const failuresPlanned = Promise.withResolvers<void>();
@@ -135,6 +137,21 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   vi.spyOn(failureStore, "nextDeadline").mockImplementation(async () => {
     const result = await nextFailureDeadline();
     failuresPlanned.resolve();
+    return result;
+  });
+  const listPendingCommands = store.listPendingCommands.bind(store);
+  const coordinator = new ExecutionCoordinator({
+    dispatcher: { isAvailable: () => false, dispatch: vi.fn() },
+    dispatcherId: "idle-fixture",
+    maxConcurrentRuns: 1,
+    maxConcurrentTriggerPrograms: 1,
+    maxQueuedBytes: 1024,
+    maxQueuedCommands: 8,
+    store,
+  });
+  vi.spyOn(store, "listPendingCommands").mockImplementation(async (...args) => {
+    const result = await listPendingCommands(...args);
+    coordinatorPlanned.resolve();
     return result;
   });
   const acquisitions = vi.fn();
@@ -170,12 +187,18 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
     await seedPersonalFixture(database, "/agent-home");
     acquisitions.mockClear();
     const planned = withTimeout(
-      Promise.all([channelPlanned.promise, continuationPlanned.promise, failuresPlanned.promise]),
+      Promise.all([
+        channelPlanned.promise,
+        continuationPlanned.promise,
+        failuresPlanned.promise,
+        coordinatorPlanned.promise,
+      ]),
       2_000,
       { timeoutError: () => new Error("Idle owners did not finish their startup reads") },
     );
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     display = new DisplayStreamHub({} as DisplayStreamHubOptions);
+    coordinator.start();
     channels.start();
     continuations.start();
     automationFailures.start();
@@ -195,6 +218,7 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
     display?.close();
     await Promise.all([
       channels.close(),
+      coordinator.stop(),
       continuations.close(),
       automationFailures.close(),
       leases.close(),

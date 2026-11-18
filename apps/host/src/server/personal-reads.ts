@@ -7,6 +7,7 @@ import {
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
   readPersonalTaskPage,
+  readTaskPageThreads,
   readTranscriptItem,
   readTranscriptOverlays,
   readTranscriptPage,
@@ -306,11 +307,16 @@ export function createPersonalReads(
           ...(input.limit ? { limit: input.limit } : {}),
           ...taskBoundary(input.before, window),
         });
+        const threads = await readTaskPageThreads(
+          tx,
+          viewerId,
+          page.tasks.map(({ id }) => id),
+        );
         const tasks = [];
         let last: { at: string; id: ThreadId; window: typeof window } | null = null;
         let byteCount = 2;
         for (const task of page.tasks) {
-          const thread = await getThreadForOwner(tx, task.id, viewerId);
+          const thread = threads.get(task.id);
           if (!thread) return unavailable();
           const entry = {
             thread,

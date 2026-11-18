@@ -9,7 +9,10 @@ import type {
   RunId,
   ThreadId,
 } from "@opensteer/core";
-import { PersonalChangeSchema } from "@opensteer/protocol/personal-sync";
+import {
+  PersonalChangeSchema,
+  personalChangesFrameMaxBytes,
+} from "@opensteer/protocol/personal-sync";
 import {
   isConstraintViolation,
   isTransactionConflict,
@@ -28,7 +31,7 @@ import type { RevokedRunGrant } from "./run-grants.js";
 const retainedRows = 4_096;
 const maxCommitRows = 128;
 const maxChangeBytes = 8 * 1024;
-const maxCommitBytes = 64 * 1024;
+const maxCommitBytes = personalChangesFrameMaxBytes;
 const scopeEnvelopeReserve = 1024;
 const retentionMs = 24 * 60 * 60 * 1000;
 
@@ -85,6 +88,7 @@ interface CommitNotice {
 
 export type PersonalCommitReaction =
   | { readonly type: "executionDeadlinesChanged" }
+  | { readonly type: "executionCommandsChanged" }
   | { readonly type: "continuationsChanged" }
   | { readonly type: "automationFailuresChanged" }
   | { readonly type: "deadlinesChanged" }
@@ -127,6 +131,14 @@ export type PersonalCommitReaction =
       readonly attemptId: RunAttemptId | null;
       readonly bindingGeneration: number | null;
       readonly outcome: "completed" | "failed" | "interrupted";
+    }
+  | {
+      readonly type: "nodeProgressPlacement";
+      readonly runId: RunId;
+      readonly attemptId: RunAttemptId;
+      readonly nodeId: ExecutionNodeId;
+      readonly parentNodeId: ExecutionNodeId | null;
+      readonly active: boolean;
     }
   | {
       readonly type: "liveClosed";
@@ -337,6 +349,11 @@ class Mutation {
     this.#reactions.add(dispatch);
   }
   react(reaction: PersonalCommitReaction) {
+    if (
+      reaction.type === "executionCommandsChanged" &&
+      this.#ownerReactions.some(({ type }) => type === reaction.type)
+    )
+      return;
     this.#ownerReactions.push(reaction);
   }
   receipt(write: (head: string) => Promise<void>) {
@@ -455,6 +472,9 @@ class Mutation {
       resourceKinds: this.resourceKinds,
       changedScopes: new Set([
         ...this.#scopes.keys(),
+        ...(this.resourceKinds.size || Object.values(this.#counters).some(Boolean)
+          ? ["shell"]
+          : []),
         ...this.authorityScopes,
         ...(this.authorityScopes.size ? ["authority"] : []),
         ...(this.#reset || this.#privacyPurge ? ["deployment"] : []),
@@ -560,4 +580,10 @@ export async function commitPersonalMutation<Result>(
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;
+}
+
+export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "executionCommandsChanged" });
+  });
 }

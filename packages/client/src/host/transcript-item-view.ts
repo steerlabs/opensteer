@@ -177,3 +177,12 @@ export function nodeTranscriptCard(
   if (card?.kind === "tool" || card?.kind === "reasoning" || card?.kind === "node") return card;
   return undefined;
 }
+
+export function nodeCardProgress<Entry extends TranscriptEntry | NodeDetailEntry>(
+  entry: Entry,
+  progress: string | undefined,
+): Entry {
+  return entry.kind === "node" && entry.status === "running" && progress !== undefined
+    ? { ...entry, progress }
+    : entry;
+}

@@ -1,6 +1,6 @@
 import { drainAssignmentCancellation } from "./assignment-store.js";
 import { drainRevokedChannelInputs } from "./channel-store.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
@@ -34,7 +34,7 @@ import {
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
 import {
-  drainRunFinish,
+  drainPersistedRunFinishes,
   endStoppedUnconfirmedRun,
   finalizeRunTransaction,
 } from "./run-finalization.js";
@@ -398,17 +398,7 @@ export async function recoverCommandsAfterHostRestart(
   links: ChannelLinks,
 ): Promise<void> {
   await drainAssignmentCancellation(database, links);
-  for (;;) {
-    const pending = await database
-      .selectFrom("runs")
-      .select("id")
-      .where("finishIntent", "is not", null)
-      .orderBy("id")
-      .limit(1)
-      .executeTakeFirst();
-    if (!pending) break;
-    await drainRunFinish(database, links, pending.id);
-  }
+  await drainPersistedRunFinishes(database, links);
 
   await commitPersonalMutation(database, async (tx) => {
     await tx
@@ -886,6 +876,7 @@ function unstoppedBackgroundRuns(database: Kysely<DatabaseSchema>) {
   return database
     .selectFrom("runs")
     .where("phase", "=", "background")
+    .where("finishIntent", "is", null)
     .where("status", "in", ["queued", "starting", "running", "waiting"])
     .where(({ not, exists, selectFrom }) =>
       not(
@@ -904,6 +895,7 @@ function leasedRuns(database: Kysely<DatabaseSchema>) {
     .selectFrom("runs")
     .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
     .where("runs.status", "in", ["starting", "running", "waiting"])
+    .where("runs.finishIntent", "is", null)
     .where("providerSessions.active", "=", true)
     .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration");
 }
@@ -962,6 +954,7 @@ export async function stopRunsPastBackgroundDeadline(
         .select([
           "runs.bindingGeneration",
           "runs.backgroundDeadlineAt",
+          "runs.finishIntent",
           "runs.environmentId",
           "runs.id",
           "runs.phase",
@@ -975,6 +968,7 @@ export async function stopRunsPastBackgroundDeadline(
         .executeTakeFirst();
       if (
         !run ||
+        run.finishIntent !== null ||
         run.phase !== "background" ||
         !["queued", "starting", "running", "waiting"].includes(run.status) ||
         run.backgroundDeadlineAt === null ||
@@ -1104,6 +1098,7 @@ async function stopRunWithoutPausing(
     })
     .returning("id")
     .executeTakeFirstOrThrow();
+  await wakeExecutionCommands(transaction);
   return {
     commandId: command.id,
     revokedGrants: await revokeRunGrants(transaction, [run.id], "stopped"),

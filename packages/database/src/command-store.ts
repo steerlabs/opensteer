@@ -1,7 +1,7 @@
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { refreshRequestState } from "./request-persistence.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { failNodeStop } from "./node-control.js";
@@ -1162,10 +1162,19 @@ export async function claimNextCommand(
  * The dispatched command is the durable intent. Authorize its handoff under
  * the commit fence, then let the Runner wait on its own transport.
  */
+export type RequestResponseSendFence = (
+  enqueue: (binding: {
+    runId: RunId;
+    threadId: ThreadId;
+    environmentId: EnvironmentId;
+    bindingGeneration: number;
+  }) => void,
+) => Promise<void>;
+
 export async function dispatchRequestResponse(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
-  send: (beforeAck: () => Promise<void>) => Promise<void>,
+  send: (beforeAck: () => Promise<void>, fenceSend: RequestResponseSendFence) => Promise<void>,
 ): Promise<SucceededCommand> {
   const lockIntent = async (transaction: Transaction<DatabaseSchema>, receipt: boolean) => {
     const observed = await transaction
@@ -1202,12 +1211,13 @@ export async function dispatchRequestResponse(
       await lockThreadCaller(transaction, agentResponder.authority, [observed.runId], true);
     const run = await transaction
       .selectFrom("runs")
-      .select(["requestedBy", "status", "threadId", "finishIntent"])
+      .select(["bindingGeneration", "environmentId", "status", "threadId", "finishIntent"])
       .where("id", "=", observed.runId)
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (
       !run ||
+      run.bindingGeneration === null ||
       run.threadId !== observed.threadId ||
       run.finishIntent !== null ||
       !["starting", "running", "waiting"].includes(run.status) ||
@@ -1263,27 +1273,60 @@ export async function dispatchRequestResponse(
     ) {
       throw requestResponseDispatchConflict();
     }
+    return {
+      runId: observed.runId,
+      threadId: observed.threadId,
+      environmentId: run.environmentId,
+      bindingGeneration: run.bindingGeneration,
+    };
   };
-  await commitPersonalMutation(database, async (tx) => {
-    await lockIntent(tx, false);
+  const binding = await commitPersonalMutation(database, async (tx) => {
+    const binding = await lockIntent(tx, false);
     await stampDispatchIntent(tx, commandId);
+    return binding;
   });
+  const checkBinding = async (tx: Transaction<DatabaseSchema>, receipt: boolean) => {
+    const current = await lockIntent(tx, receipt);
+    if (
+      current.runId !== binding.runId ||
+      current.threadId !== binding.threadId ||
+      current.environmentId !== binding.environmentId ||
+      current.bindingGeneration !== binding.bindingGeneration
+    ) {
+      throw requestResponseDispatchConflict();
+    }
+  };
   let result: SucceededCommand | undefined;
   try {
-    await send(async () => {
-      result = await commitPersonalMutation(database, async (tx) => {
-        await lockIntent(tx, true);
-        const succeeded = await succeedCommandInTransaction(tx, commandId);
-        const accepted = await tx
-          .selectFrom("commands")
-          .select("id")
-          .where("id", "=", commandId)
-          .where("status", "=", "succeeded")
-          .executeTakeFirst();
-        if (!accepted) throw requestResponseDispatchConflict();
-        return succeeded;
-      });
-    });
+    await send(
+      async () => {
+        result = await commitPersonalMutation(database, async (tx) => {
+          await checkBinding(tx, true);
+          const succeeded = await succeedCommandInTransaction(tx, commandId);
+          const accepted = await tx
+            .selectFrom("commands")
+            .select("id")
+            .where("id", "=", commandId)
+            .where("status", "=", "succeeded")
+            .executeTakeFirst();
+          if (!accepted) throw requestResponseDispatchConflict();
+          return succeeded;
+        });
+      },
+      async (enqueue) => {
+        // Cancellation and binding changes take this same fence. Keep it only
+        // through synchronous transport enqueue, never through the receipt.
+        await commitPersonalMutation(
+          database,
+          async (tx) => {
+            await checkBinding(tx, false);
+            enqueue(binding);
+          },
+          undefined,
+          "non-retrying",
+        );
+      },
+    );
   } catch (error) {
     if (!result) throw error;
   }
@@ -1407,10 +1450,14 @@ export async function listPendingCommands(
     .selectAll("commands")
     .select("runs.harnessInstanceId as runHarnessInstanceId")
     .where("commands.status", "=", "pending")
+    .where("runs.finishIntent", "is", null)
     .where((expression) =>
       expression.or([
         expression("commands.type", "!=", "run.execute"),
-        expression("threads.inputQueuePaused", "=", false),
+        expression.and([
+          expression("threads.inputQueuePaused", "=", false),
+          expression("runs.status", "=", "queued"),
+        ]),
       ]),
     )
     .where((expression) =>
@@ -1701,9 +1748,15 @@ export async function succeedCommand(
 }
 
 /** Caller owns the Run and projection fences; dispatch happens after commit. */
-export function persistRunnerControlCommand(
+export async function persistRunnerControlCommand(
   transaction: Transaction<DatabaseSchema>,
   values: InsertObject<DatabaseSchema, "commands">,
 ): Promise<CommandRow> {
-  return transaction.insertInto("commands").values(values).returningAll().executeTakeFirstOrThrow();
+  const command = await transaction
+    .insertInto("commands")
+    .values(values)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  if (command.status === "pending") await wakeExecutionCommands(transaction);
+  return command;
 }

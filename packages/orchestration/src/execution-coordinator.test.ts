@@ -158,11 +158,11 @@ describe("ExecutionCoordinator", () => {
       },
     });
     coordinator.start();
-    await waitFor(() => listPendingCommands.mock.calls.length >= 2);
+    await waitFor(() => listPendingCommands.mock.calls.length === 1);
     await coordinator.stop();
     const stoppedAt = listPendingCommands.mock.calls.length;
     coordinator.start();
-    await waitFor(() => listPendingCommands.mock.calls.length >= stoppedAt + 2);
+    await waitFor(() => listPendingCommands.mock.calls.length === stoppedAt + 1);
     await coordinator.stop();
 
     // Only a stop that really ran lets it start a third time.
@@ -449,8 +449,8 @@ describe("ExecutionCoordinator", () => {
   it("keeps pacing a command that polls cannot see while it is being dispatched", async () => {
     const command = pendingCommand();
     let clock = 1_700_000_000_000;
-    // Like the database: a claimed command leaves the pending listing until
-    // its retry commits, and polls keep running meanwhile.
+    // A claimed command leaves the pending listing until its retry commits.
+    // Other admissions may wake a read during that time.
     let listed = true;
     let releaseRetry = () => {};
     const claimCommand = vi.fn(async () => {
@@ -498,8 +498,9 @@ describe("ExecutionCoordinator", () => {
     });
     const settleWhileUnlisted = async () => {
       await waitFor(() => retryCommand.mock.calls.length === dispatch.mock.calls.length);
-      const polls = listPendingCommands.mock.calls.length;
-      await waitFor(() => listPendingCommands.mock.calls.length >= polls + 3);
+      const reads = listPendingCommands.mock.calls.length;
+      coordinator.wake();
+      await waitFor(() => listPendingCommands.mock.calls.length > reads);
       releaseRetry();
       const settled = listPendingCommands.mock.calls.length;
       await waitFor(() => listPendingCommands.mock.calls.length >= settled + 5);
@@ -578,7 +579,9 @@ describe("ExecutionCoordinator", () => {
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
-    await waitFor(() => listings === 2 && dispatch.mock.calls.length === 1);
+    await waitFor(() => dispatch.mock.calls.length === 1);
+    coordinator.wake();
+    await waitFor(() => listings === 2);
     // The second command is dispatched and rejected entirely within that read.
     secondAvailable = true;
     releaseFirst();
@@ -641,7 +644,9 @@ describe("ExecutionCoordinator", () => {
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
-    await waitFor(() => retryCommand.mock.calls.length === 1 && listings === 2);
+    await waitFor(() => retryCommand.mock.calls.length === 1);
+    coordinator.wake();
+    await waitFor(() => listings === 2);
     releaseRetry();
     await waitFor(() => !coordinator.dispatchingRunIds().includes(command.runId!));
     finishListing([]);
@@ -708,8 +713,9 @@ describe("ExecutionCoordinator", () => {
     });
     coordinator.start();
     await waitFor(() => retryCommand.mock.calls.length === 1);
-    const polls = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= polls + 5);
+    const reads = listPendingCommands.mock.calls.length;
+    coordinator.wake();
+    await waitFor(() => listPendingCommands.mock.calls.length > reads);
     expect(claimCommand).toHaveBeenCalledTimes(1);
     resumeRetry();
     const settled = listPendingCommands.mock.calls.length;
@@ -743,9 +749,10 @@ describe("ExecutionCoordinator", () => {
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
     pending = [];
-    const polls = store.listPendingCommands.mock.calls.length;
-    await waitFor(() => store.listPendingCommands.mock.calls.length >= polls + 3);
+    const reads = store.listPendingCommands.mock.calls.length;
+    await waitFor(() => store.listPendingCommands.mock.calls.length > reads);
     pending = [command];
+    coordinator.wake();
 
     // The clock never moves: only pruning can make this command eligible again.
     await waitFor(() => dispatch.mock.calls.length === 2);

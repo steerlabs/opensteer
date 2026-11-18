@@ -92,7 +92,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         { scopeKey: "shell", entityKind: "task", entityId: threadId, operation: "upsert" },
         () => view,
       );
-    } else {
+    } else if (row.listed) {
       mutation.change({
         scopeKey: "shell",
         entityKind: "task",
@@ -128,6 +128,7 @@ export async function projectLastReply(
 export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId) {
   if (isOfflineSettlement(tx)) return;
   await commitPersonalMutation(tx, async (tx, mutation) => {
+    mutation.react({ type: "executionCommandsChanged" });
     if (runId)
       await tx
         .updateTable("runs")
@@ -173,13 +174,7 @@ export async function projectThreadState(
     const before = await unreadTaskContribution(tx, threadId);
     const thread = await tx
       .selectFrom("threads")
-      .select([
-        "status",
-        "inputQueuePaused",
-        "pendingRequestCount",
-        "failurePreview",
-        "latestRunCompletedAt",
-      ])
+      .select(["status", "inputQueuePaused", "failurePreview", "latestRunCompletedAt"])
       .where("id", "=", threadId)
       .executeTakeFirstOrThrow();
     const active = await tx
@@ -210,24 +205,12 @@ export async function projectThreadState(
     const failure = last?.failure;
     const failurePreview =
       failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
-    const { pending } = await tx
-      .selectNoFrom([
-        sql<number>`((select count(*) from requests where originating_thread_id = ${threadId} and status = 'pending')
-        + (select count(*) from thread_inputs where thread_id = ${threadId} and state = 'awaiting-approval'))::integer`.as(
-          "pending",
-        ),
-      ])
-      .executeTakeFirstOrThrow();
-    const changed =
-      status !== thread.status ||
-      pending !== thread.pendingRequestCount ||
-      failurePreview !== thread.failurePreview;
+    const changed = status !== thread.status || failurePreview !== thread.failurePreview;
     if (changed || force) {
       await tx
         .updateTable("threads")
         .set({
           status,
-          pendingRequestCount: pending,
           failurePreview,
           ...(last?.maintenance ? {} : { updatedAt }),
         })
@@ -247,8 +230,7 @@ export async function projectThreadState(
     )
       await publishThreadSummary(tx, threadId);
     if (changed || force) await invalidateThreadCollection(tx, threadId, "return-hint");
-    if (status !== thread.status || pending !== thread.pendingRequestCount)
-      await refreshAssignmentWorkerSummaries(tx, threadId);
+    if (status !== thread.status) await refreshAssignmentWorkerSummaries(tx, threadId);
   });
 }
 

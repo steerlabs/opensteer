@@ -2,6 +2,7 @@ import { utf8ByteLength } from "@opensteer/core";
 import {
   scopedPersonalApiVersion,
   ScopedHostMessageSchema,
+  personalHostFrameMaxBytes,
   PersonalResumeCursorSchema,
   PersonalDetailSnapshotSchema,
   PersonalShellSnapshotSchema,
@@ -348,19 +349,9 @@ export class ScopedPersonalStream {
     const parsed = ScopedHostMessageSchema.safeParse(input);
     if (!parsed.success) return false;
     const frame = parsed.data;
-    if (!this.#send) return true;
-    if (
-      wireBytes !== undefined &&
-      wireBytes >
-        (frame.type === "host.live"
-          ? 16 * 1024
-          : frame.type === "host.resource"
-            ? 32 * 1024
-            : frame.subscriptionId === "shell"
-              ? 96 * 1024
-              : 128 * 1024)
-    )
+    if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(frame))
       throw new Error("Personal scope frame exceeds its encoded limit.");
+    if (!this.#send) return true;
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
     else if (this.#shellReady) this.#receiveDetail(frame);
     else {
@@ -548,11 +539,15 @@ export class ScopedPersonalStream {
   }
 
   #live(detail: ObservedDetail, frame: Live) {
-    const { synchronized, through, items } = detail.transcript.getSnapshot();
+    const { synchronized, through, items, snapshot } = detail.transcript.getSnapshot();
     if (
       !synchronized ||
       through === null ||
-      (frame.update.operation !== "close" && finalizedItemText(items.get(frame.itemId)))
+      (frame.update.operation !== "close" &&
+        finalizedItemText(
+          items.get(frame.itemId) ??
+            (snapshot?.nodeSubject?.id === frame.itemId ? snapshot.nodeSubject : undefined),
+        ))
     )
       return;
     const result = detail.text.apply(frame, through);

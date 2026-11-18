@@ -967,22 +967,29 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         {
           const responsePayload = payload.data;
           const encryptedResponse = command.encryptedRequestResponse;
-          await this.#store.dispatchRequestResponse(command.id, async (beforeAck) => {
-            const runnerCommand: RunnerCommand = {
-              ...base,
-              requestId: responsePayload.requestId,
-              response: await openRequestResponse(this.#requestResponseVault, encryptedResponse, {
+          await this.#store.dispatchRequestResponse(
+            command.id,
+            async (beforeAck, fenceRequestSend) => {
+              const identity = this.#runners.identityForEnvironment(base.environmentId);
+              if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
+              const runnerCommand: RunnerCommand = {
+                ...base,
                 requestId: responsePayload.requestId,
+                response: await openRequestResponse(this.#requestResponseVault, encryptedResponse, {
+                  requestId: responsePayload.requestId,
+                  runId: responsePayload.runId,
+                  threadId: responsePayload.threadId,
+                }),
                 runId: responsePayload.runId,
-                threadId: responsePayload.threadId,
-              }),
-              runId: responsePayload.runId,
-              type: "request.resolve",
-            };
-            await this.#runners.dispatch(runnerCommand, signal, {
-              beforeAck,
-            });
-          });
+                type: "request.resolve",
+              };
+              await this.#runners.dispatch(runnerCommand, signal, {
+                beforeAck,
+                fenceRequestSend,
+                connectionGeneration: identity.connectionGeneration,
+              });
+            },
+          );
           return;
         }
       case "run.steer": {
