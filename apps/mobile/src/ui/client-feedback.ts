@@ -269,11 +269,12 @@ function heldAction<I, O>(
       get label() {
         return holder.current!.spec.label;
       },
+      // Empty is unsaid: the action adds only the words it has.
       get done() {
-        return holder.current!.spec.done;
+        return holder.current!.spec.done ?? "";
       },
       get happened() {
-        return holder.current!.spec.happened;
+        return holder.current!.spec.happened ?? "";
       },
       execute: (input, signal) => holder.current!.spec.execute(input, signal),
       reconcile: (input, signal) =>
