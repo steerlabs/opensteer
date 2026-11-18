@@ -243,6 +243,9 @@ export function Composer(props: {
   }, [reconcileStop, stopEvidence, stopUnconfirmed]);
   const reopenLine = useTaskDoneLine(threadId);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
+  const draftNotice = drafts.readDraftUnsaved(deploymentId, userId, threadId)
+    ? "This draft could not be saved on this phone."
+    : draftFailure;
   const [focused, setFocused] = useState(false);
   const input = useRef<ComposerEditorHandle>(null);
   // Out of view, the field lets go of the keyboard: nothing is typed where it
@@ -265,7 +268,6 @@ export function Composer(props: {
   const inFlight = useRef(false);
   const draftText = useRef(text);
   draftText.current = text;
-  const draftWrite = useRef(0);
   /** The key already tried while this connection has been up, so a refusal is
    * not retried on a loop. A reconnection is what makes it worth trying again. */
   /** A message the Host refused, on its way back into the draft. */
@@ -355,17 +357,7 @@ export function Composer(props: {
       : personalReferenceSections(hostClient.getSnapshot(), referenceQuery.query, threadId);
   const changeText = (next: string): void => {
     draftText.current = next;
-    const write = ++draftWrite.current;
-    void drafts.writeDraft(deploymentId, userId, threadId, next).then(
-      () => {
-        if (draftWrite.current === write) setDraftFailure(null);
-      },
-      () => {
-        if (draftWrite.current === write) {
-          setDraftFailure("This draft could not be saved on this phone.");
-        }
-      },
-    );
+    void drafts.writeDraft(deploymentId, userId, threadId, next).catch(() => undefined);
   };
   /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
   const replaceText = (next: string): void => {
@@ -466,15 +458,11 @@ export function Composer(props: {
   // The update this message answers. It lives with the draft, so it survives
   // leaving the screen and relaunching the app exactly as the words do.
   const changeQuote = (next: ThreadDraftQuote | null): void => {
-    void drafts.writeDraftQuote(deploymentId, userId, threadId, next).catch(() => {
-      setDraftFailure("This quote could not be saved on this phone.");
-    });
+    void drafts.writeDraftQuote(deploymentId, userId, threadId, next).catch(() => undefined);
   };
 
   const changePage = (next: BrowserPageContentPart | null): void => {
-    void drafts.writeDraftPage(deploymentId, userId, threadId, next).catch(() => {
-      setDraftFailure("This page could not be saved on this phone.");
-    });
+    void drafts.writeDraftPage(deploymentId, userId, threadId, next).catch(() => undefined);
   };
   /** Takes the shown page off this message, the page in front included. */
   const removePage = (): void => {
@@ -805,10 +793,10 @@ export function Composer(props: {
           </AppText>
         </View>
       ) : null}
-      {draftFailure === null ? null : (
+      {draftNotice === null ? null : (
         <Animated.View entering={enter} exiting={exit} style={styles.failure}>
           <AppText role="secondary" tone="danger">
-            {draftFailure}
+            {draftNotice}
           </AppText>
         </Animated.View>
       )}
@@ -824,6 +812,7 @@ export function Composer(props: {
                 label: "Copy",
                 accessibilityLabel: "Copy dictated text",
                 onPress: () => {
+                  setDraftFailure(null);
                   void setStringAsync(dictated.text).catch(() =>
                     setDraftFailure(
                       presentClientIssue({ code: "rejected", action: "copy dictated text" }).title,
@@ -837,6 +826,7 @@ export function Composer(props: {
           <Pressable
             accessibilityRole="button"
             onPress={() => {
+              setDraftFailure(null);
               void drafts
                 .discardDictatedText(deploymentId, userId, threadId)
                 .catch(() => setDraftFailure(presentClientIssue({ code: "draft-unsaved" }).title));

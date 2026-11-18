@@ -33,7 +33,7 @@ function Row({ id = tab }: { readonly id?: TabId }) {
   return (
     <div>
       <button onClick={() => close({ key: id })} type="button">
-        Close
+        {id === tab ? "Close" : "Close other tab"}
       </button>
       <p data-line={id}>{line?.text ?? ""}</p>
       {line?.link ? (
@@ -45,7 +45,7 @@ function Row({ id = tab }: { readonly id?: TabId }) {
   );
 }
 
-function Group({ ids = [tab, anotherTab] }: { readonly ids?: readonly TabId[] }) {
+function Group({ ids }: { readonly ids: readonly TabId[] }) {
   const close = useTabGroupCloser();
   return (
     <button type="button" onClick={() => close(ids)}>
@@ -90,12 +90,10 @@ function setup(
     root!.render(
       <TabCloserProvider hostClient={hostClient}>
         <Row />
-        {Array.isArray(group) ? (
-          <Group ids={group} />
-        ) : group ? (
+        {group ? (
           <>
             <Row id={anotherTab} />
-            <Group />
+            <Group ids={group === true ? [tab, anotherTab] : group} />
           </>
         ) : null}
       </TabCloserProvider>,
@@ -188,25 +186,25 @@ it("keeps each tab's outcome when a group close or a check has mixed results", a
   expect(view.hostClient.closeTabs).toHaveBeenCalledTimes(2);
 });
 
-it("lets go of refused closes of tabs no row shows, keeping only the newest", async () => {
-  const ids = Array.from(
-    { length: 40 },
-    (_, i) => `tab_00000000-0000-4000-8000-${String(i + 100).padStart(12, "0")}` as TabId,
-  );
+it("evicts hidden close outcomes while keeping Check on a row still on screen", async () => {
+  const ids = [
+    tab,
+    ...Array.from(
+      { length: 39 },
+      (_, i) => `tab_00000000-0000-4000-8000-${String(i + 100).padStart(12, "0")}` as TabId,
+    ),
+  ];
   const view = setup(
-    async (tabIds) => ({
-      closed: [],
-      failed: tabIds.map((tabId) => ({
-        tabId,
-        error: { code: "conflict", message: "busy", next: null },
-      })),
-    }),
+    async () => {
+      throw new HostTransportError("timed-out");
+    },
     () => true,
     ids,
   );
   await act(async () => view.button("Close group")!.click());
   expect(view.watchers()).toBe(40);
-  await act(async () => view.button("Close")!.click());
+  expect(view.checks()).toHaveLength(1);
+  await act(async () => view.button("Close other tab")!.click());
   expect(view.watchers()).toBe(32);
-  expect(view.line()).not.toBe("");
+  expect(view.checks()).toHaveLength(2);
 });

@@ -8,7 +8,6 @@ import {
   type ConnectionLease,
   type ClientScope,
 } from "../connections/connection-controller.js";
-import { sessionBoundMutationApiVersion } from "@opensteer/deployment-authority";
 import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
@@ -1248,22 +1247,12 @@ export class HttpHostClient {
     const login = options?.expectedLogin;
     if (!login) return this.#dispatchCommand(commandPayload);
     assertMessageLogin(login, this.connection.getSnapshot().scope);
-    // API 60/61 use the released unbound request, including the stale-tab cookie race.
-    if (
-      !this.#bindMutationsToSession ||
-      (this.#snapshot.session === "authenticated" &&
-        this.#servedApiVersion < sessionBoundMutationApiVersion)
-    )
-      return this.#dispatchCommand(commandPayload);
+    if (!this.#bindMutationsToSession) return this.#dispatchCommand(commandPayload);
+    // The receiving Host decides whether it can check this header. API 60/61 ignore it.
     try {
       return await this.#dispatchCommand(commandPayload, login.loginId);
     } catch (error) {
       const { reason } = classifyClientFailure(error);
-      // A rollback can refuse the version before admitting the command.
-      if (reason === "unsupported-version") {
-        assertMessageLogin(login, this.connection.getSnapshot().scope);
-        return this.#dispatchCommand(commandPayload);
-      }
       if (
         clientScopeKey(this.connection.getSnapshot().scope) === clientScopeKey(login) &&
         reason === "session-changed"

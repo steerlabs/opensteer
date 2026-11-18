@@ -45,8 +45,6 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  */
 export const hostApiVersion = 62;
 export const minimumHostApiVersion = 60;
-// This version enforces the initiating login at mutation admission.
-export const sessionBoundMutationApiVersion = 62;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
@@ -78,12 +76,11 @@ export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): st
 /** What every caller that can set headers sends to a Host of `kind`. */
 export function apiVersionHeaders(
   kind: z.infer<typeof DeploymentKindSchema>,
-  personalMinimum = minimumHostApiVersion,
 ): Readonly<Record<string, string>> {
   return kind === "team"
     ? { [teamApiVersionHeader]: String(teamApiVersion) }
     : {
-        [hostApiVersionHeader]: String(personalMinimum),
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
         [hostApiCurrentHeader]: String(hostApiVersion),
       };
 }

@@ -41,6 +41,7 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,
+  expectedMutationSessionHeader,
   HostToClientMessageSchema,
   createBrowserSessionId,
   type HostToClientMessage,
@@ -530,6 +531,64 @@ function requiredString(input: Readonly<Record<string, unknown>>, key: string): 
 }
 
 describe("HttpHostClient authentication and onboarding", () => {
+  it("keeps a queued reply bound when the Host upgrades before the client sees it", async () => {
+    const initial = { ...bootstrap([]), apiVersion: 61 };
+    let apiVersion = initial.apiVersion;
+    let cookie = initial.sessionId;
+    const admitted: string[] = [];
+    const client = createHttpHostClient({
+      bindMutationsToSession: true,
+      fetch: async (input, init) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path.endsWith("/bootstrap.get"))
+          return json({ ...initial, apiVersion, sessionId: cookie });
+        expect(path).toMatch(/\/commands\.dispatch$/u);
+        // The replacement Host speaks API 62 and authenticates the current cookie.
+        const expected = new Headers(init?.headers).get(expectedMutationSessionHeader);
+        if (apiVersion >= 62 && expected !== null && expected !== cookie)
+          return json(
+            {
+              error: {
+                code: "forbidden",
+                reason: "session-changed",
+                message: "Sign-in changed",
+                retryable: false,
+              },
+            },
+            403,
+          );
+        admitted.push(cookie);
+        return json(
+          {
+            error: { code: "conflict", message: "Reply reached the wrong login", retryable: false },
+          },
+          409,
+        );
+      },
+    });
+    try {
+      await client.load();
+      const expectedLogin = client.connection.getSnapshot().scope!;
+      expect(expectedLogin.loginId).toBe(initial.sessionId);
+      apiVersion = 62;
+      cookie = createId("authSession");
+      await expect(
+        client.dispatch(
+          {
+            type: "thread.sendMessage",
+            threadId: createId("thread"),
+            idempotencyKey: "saved-reply",
+            content: [{ type: "text", text: "Saved before the upgrade" }],
+          },
+          { expectedLogin },
+        ),
+      ).rejects.toMatchObject({ reason: "session-changed" });
+      expect(admitted).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("projects and clears the authenticated session surface", async () => {
     const sessionId = createId("authSession");
     const remoteBootstrap = {

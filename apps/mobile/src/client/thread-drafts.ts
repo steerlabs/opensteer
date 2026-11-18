@@ -420,11 +420,33 @@ export function createThreadDraftStore(options: {
   const writes = new MutationQueue();
   const editOwners = new Map<string, string>();
   const unsavedDictation = new Map<string, string>();
+  const dictationRecoveries = new Map<string, ThreadDraft>();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
     `${deploymentId}:${userId}:${threadId}`;
   const dictationPrefix = (deploymentId: string, userId: string, threadId: string) =>
     key(deploymentId, userId, `${dictatedKeyPrefix}${threadId}:`);
+
+  const recoverDictation = (
+    into: Map<string, ThreadDraft>,
+    prefix: string,
+    userId: string,
+    transcript: string,
+  ): void => {
+    const saved = [...drafts.keys(), ...into.keys()].some((key) => key.startsWith(prefix));
+    const text = (saved ? "\n\n" : "") + transcript;
+    const id = globalThis.crypto.randomUUID();
+    for (let start = 0; start < text.length; start += maxDraftCharacters) {
+      into.set(
+        `${prefix}${id}:${start}`,
+        DraftSchema.parse({
+          text: text.slice(start, start + maxDraftCharacters),
+          updatedAt: options.now().toISOString(),
+          userId,
+        }),
+      );
+    }
+  };
 
   const readVisibleDraft = (
     deploymentId: string,
@@ -506,6 +528,7 @@ export function createThreadDraftStore(options: {
   ): Promise<void> =>
     writes.run(async () => {
       const nextDrafts = new Map(drafts);
+      for (const [key, recovery] of dictationRecoveries) nextDrafts.set(key, recovery);
       const nextPending = new Map(pending);
       if (change(nextDrafts, nextPending) === false) return;
       const content = JSON.stringify(
@@ -524,6 +547,7 @@ export function createThreadDraftStore(options: {
       // claim or make a retry forget its original idempotency key.
       drafts = nextDrafts;
       pending = nextPending;
+      dictationRecoveries.clear();
       committed?.();
       publish();
     });
@@ -1014,26 +1038,17 @@ export function createThreadDraftStore(options: {
             if (combined.length <= maxDraftCharacters) {
               putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: combined });
               merged = true;
-            } else {
-              const saved = [...nextDrafts.keys()].some((key) => key.startsWith(prefix));
-              const recovered = (saved ? "\n\n" : "") + transcript;
-              const id = globalThis.crypto.randomUUID();
-              // The ordinary draft limit still applies to each stored record.
-              for (let start = 0; start < recovered.length; start += maxDraftCharacters) {
-                nextDrafts.set(
-                  `${prefix}${id}:${start}`,
-                  DraftSchema.parse({
-                    text: recovered.slice(start, start + maxDraftCharacters),
-                    updatedAt: options.now().toISOString(),
-                    userId,
-                  }),
-                );
-              }
-            }
+            } else recoverDictation(nextDrafts, prefix, userId, transcript);
             return undefined;
           },
           () => {
-            if (merged && overlay && textEdits.get(entryKey) === overlay) {
+            if (!merged) return;
+            const latest = textEdits.get(entryKey);
+            if (latest && latest !== overlay) {
+              // The next edit must save a recovery copy atomically with replacing these words.
+              recoverDictation(dictationRecoveries, prefix, userId, transcript);
+              merged = false;
+            } else if (overlay) {
               textEdits.delete(entryKey);
               unsaved.get(entryKey)?.delete("text");
             }
@@ -1051,7 +1066,7 @@ export function createThreadDraftStore(options: {
 
     readDictatedText(deploymentId, userId, threadId) {
       const prefix = dictationPrefix(deploymentId, userId, threadId);
-      const saved = [...drafts]
+      const saved = [...drafts, ...dictationRecoveries]
         .filter(([key]) => key.startsWith(prefix))
         .map(([, draft]) => draft.text)
         .join("");

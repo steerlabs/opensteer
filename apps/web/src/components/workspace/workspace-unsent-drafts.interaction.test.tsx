@@ -102,6 +102,21 @@ describe("what a person has written and not sent", () => {
     expect(savedDrafts()).toHaveLength(1);
   });
 
+  it("reopens a named Home draft from the sidebar", async () => {
+    await mount("/?draft=workshop");
+    await write(field(), "Plan the workshop");
+    await newTask();
+    expect(composerText(field())).toBe("");
+
+    await click(element(".side-section--tasks summary"));
+    const reopen = [
+      ...document.querySelectorAll<HTMLButtonElement>(".side-section--tasks details button"),
+    ].find((button) => button.textContent === "Plan the workshop");
+    expect(reopen).toBeDefined();
+    await click(reopen!);
+    expect(composerText(field())).toBe("Plan the workshop");
+  });
+
   it("shows the safe refusal in the composer when the Host refuses a new task", async () => {
     await mount("/");
     await settle();

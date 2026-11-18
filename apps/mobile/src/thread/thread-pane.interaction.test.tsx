@@ -5039,6 +5039,36 @@ it("hides an unsupported mic and disables it while another composer owns dictati
   await act(async () => dictation.cancel("another"));
 });
 
+it("clears a failed draft warning when dictation saves the typed words", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const files = new MemoryPrivateFilesystem();
+  const { container, drafts } = await mount(host, workId, { files });
+  const failure = new Error("The phone's storage is full.");
+  vi.spyOn(files, "writeFileAtomic")
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure);
+  await type(container, "Message", "Typed words");
+  const warning = "This draft could not be saved on this phone.";
+  await act(async () => {
+    await vi.waitFor(
+      () => expect(drafts.readDraftUnsaved(deploymentId, userId, workId)).toBe(true),
+      {
+        timeout: 1700,
+      },
+    );
+  });
+  expect(text(container)).toContain(warning);
+  await act(async () => composerEditorFake.select?.({ start: 11, end: 11 }));
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: ["and more"], volatile: [] });
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  expect(drafts.readDraft(deploymentId, userId, workId)?.text).toBe("Typed words and more");
+  expect(text(container)).not.toContain(warning);
+});
+
 it("recovers dictation that finished after leaving a full reply draft", async () => {
   const speech = await enableDictation();
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));

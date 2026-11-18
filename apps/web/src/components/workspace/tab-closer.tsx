@@ -31,7 +31,7 @@ import { actionLine } from "../use-action.js";
 interface TabCloser {
   close(tabIds: readonly TabId[]): void;
   outcome(tabId: TabId): ClientAction<TabId, void> | null;
-  subscribe(listener: () => void): () => void;
+  subscribe(tabId: TabId, listener: () => void): () => void;
 }
 const TabCloserContext = createContext<TabCloser | null>(null);
 
@@ -70,8 +70,8 @@ export function useTabCloseLine(tabId: TabId): ActionLineValue | null {
   const closer = useContext(TabCloserContext);
   const read = useCallback(() => closer?.outcome(tabId) ?? null, [closer, tabId]);
   const subscribe = useCallback(
-    (listener: () => void) => closer?.subscribe(listener) ?? (() => {}),
-    [closer],
+    (listener: () => void) => closer?.subscribe(tabId, listener) ?? (() => {}),
+    [closer, tabId],
   );
   const owned = useSyncExternalStore(subscribe, read, read);
   const action = owned ?? noAction;
@@ -113,8 +113,8 @@ const keptOutcomes = 32;
 
 function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void } {
   const latest = new Map<TabId, ClientAction<TabId, void>>();
-  const listeners = new Set<() => void>();
-  const publish = () => listeners.forEach((listener) => listener());
+  const listeners = new Map<() => void, TabId>();
+  const publish = () => listeners.forEach((_tabId, listener) => listener());
   const release = (action: ClientAction<TabId, void>) => {
     for (const [tabId, held] of latest) if (held === action) latest.delete(tabId);
     action.dispose();
@@ -158,8 +158,10 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
         return { tabId, action };
       });
       // Outcomes of tabs no row shows any more must not pile up; the oldest go first.
+      const observed = new Set(listeners.values());
       const stale = [...latest].filter(
-        ([tabId, action]) => !ids.includes(tabId) && !action.getSnapshot().running,
+        ([tabId, action]) =>
+          !observed.has(tabId) && !ids.includes(tabId) && !action.getSnapshot().running,
       );
       for (const [tabId, action] of stale.slice(0, Math.max(0, latest.size - keptOutcomes))) {
         latest.delete(tabId);
@@ -180,8 +182,8 @@ function createTabCloser(hostClient: HostClient): TabCloser & { dispose(): void 
       }
     },
     outcome: (tabId) => latest.get(tabId) ?? null,
-    subscribe(listener) {
-      listeners.add(listener);
+    subscribe(tabId, listener) {
+      listeners.set(listener, tabId);
       return () => listeners.delete(listener);
     },
     dispose() {

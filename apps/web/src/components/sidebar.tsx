@@ -78,6 +78,7 @@ import {
   cleanTaskStartJournals,
   composerDraftKey,
   composerDrafts,
+  homeDraftId,
   useComposerDraftIndex,
   type ComposerDraftTarget,
 } from "./composer-drafts.js";
@@ -170,6 +171,7 @@ export function Sidebar({
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
   const drafts = useComposerDraftIndex(deploymentId, userId);
+  const namedDrafts = drafts.tasks.filter((draft) => draft.draftId !== homeDraftId);
   // The list arranges the layout's tab IDs; each row reads its own tab, so a title repaints one row.
   const fullStrip = useTabStrip(hostClient);
   const layout = useTabLayout(hostClient);
@@ -891,6 +893,27 @@ export function Sidebar({
                       ]}
                 </RowMotion>
               </SideList>
+              {!doneView && namedDrafts.length > 0 ? (
+                <details>
+                  <summary>Drafts</summary>
+                  <ul>
+                    {namedDrafts.map(({ draftId, title }) => (
+                      <li key={draftId}>
+                        <button
+                          className="btn btn--ghost btn--small"
+                          onClick={() => {
+                            onCloseMobile();
+                            nav.openConversation("/", { draftId });
+                          }}
+                          type="button"
+                        >
+                          {title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
             </>
           ) : (
             <TeamSideFor onNavigate={onCloseMobile} teamId={side} />

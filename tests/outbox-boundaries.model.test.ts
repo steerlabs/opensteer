@@ -491,25 +491,54 @@ function mobile(files = new ModelPrivateFilesystem()) {
   };
 }
 
-it("publishes a successful dictation over a failed text write before the next edit", async () => {
-  const { files, drafts } = mobile();
-  const args = [original.deploymentId, original.viewerId, createId("thread")] as const;
-  await drafts.load();
-  await drafts.writeDraft(...args, "Old saved words");
-  files.refuseNextWrite = true;
-  await assert.rejects(drafts.writeDraft(...args, "New typed words"), interrupted);
-  const before = drafts.readDraft(...args)!.text;
-  const transcript = "and new speech";
-  const end = before.length;
-  const merged = insertDictationText(before, { start: end, end }, transcript).text;
-  assert(await drafts.keepDictation(drafts.captureEdit(...args), before, merged, transcript));
-  assert.equal(drafts.readDraft(...args)?.text, "New typed words and new speech");
-  assert.equal(drafts.readDraftUnsaved(...args), false);
-  await drafts.writeDraft(...args, `${drafts.readDraft(...args)!.text}.`);
-  const reopened = mobile(files).drafts;
-  await reopened.load();
-  assert.equal(reopened.readDraft(...args)?.text, "New typed words and new speech.");
-});
+it.each(["after", "during"] as const)(
+  "keeps dictation when the next edit arrives %s its save",
+  async (when) => {
+    const { files, drafts } = mobile();
+    const args = [original.deploymentId, original.viewerId, createId("thread")] as const;
+    await drafts.load();
+    await drafts.writeDraft(...args, "Old saved words");
+    files.refuseNextWrite = true;
+    await assert.rejects(drafts.writeDraft(...args, "New typed words"), interrupted);
+    const before = drafts.readDraft(...args)!.text;
+    const transcript = "and new speech";
+    const end = before.length;
+    const merged = insertDictationText(before, { start: end, end }, transcript).text;
+    let edit: Promise<void> | undefined;
+    if (when === "during") {
+      const write = files.writeFileAtomic.bind(files);
+      vi.spyOn(files, "writeFileAtomic").mockImplementationOnce((path, content) => {
+        edit = drafts.writeDraft(...args, `${drafts.readDraft(...args)!.text}.`);
+        return write(path, content);
+      });
+    }
+    const keptInline = await drafts.keepDictation(
+      drafts.captureEdit(...args),
+      before,
+      merged,
+      transcript,
+    );
+    if (when === "after") {
+      assert.equal(drafts.readDraft(...args)?.text, "New typed words and new speech");
+      assert.equal(drafts.readDraftUnsaved(...args), false);
+      edit = drafts.writeDraft(...args, `${drafts.readDraft(...args)!.text}.`);
+    }
+    assert(edit);
+    await edit;
+    assert.equal(drafts.readDraftUnsaved(...args), false);
+    const reopened = mobile(files).drafts;
+    await reopened.load();
+    assert.equal(
+      reopened.readDraft(...args)?.text,
+      when === "after" ? "New typed words and new speech." : "New typed words.",
+    );
+    assert.equal(
+      reopened.readDictatedText(...args)?.text ?? "",
+      when === "after" ? "" : transcript,
+    );
+    assert.equal(keptInline, when === "after");
+  },
+);
 
 it("preserves stored and incoming mobile input when their merge would exceed a draft limit", async () => {
   await seeds(

@@ -15,7 +15,7 @@ import {
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import {
   hostApiVersionHeader,
-  sessionBoundMutationApiVersion,
+  minimumHostApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
@@ -80,22 +80,10 @@ describe("DesktopHostTransport", () => {
     const admitted: { type: string; session: string | null }[] = [];
     const answer = (headers: Headers, path: string, body: string | null) => {
       expect(path.endsWith("/commands.dispatch")).toBe(true);
-      if (Number(headers.get(hostApiVersionHeader)) > version) {
-        return Response.json(
-          {
-            ok: false,
-            error: {
-              code: "bad_request",
-              reason: "unsupported-version",
-              message: "Unsupported version",
-              retryable: false,
-            },
-          },
-          { status: 400 },
-        );
-      }
+      expect(headers.get(hostApiVersionHeader)).toBe(String(minimumHostApiVersion));
       const command = JSON.parse(body!) as { type: string };
-      admitted.push({ type: command.type, session: headers.get(expectedMutationSessionHeader) });
+      const session = version >= 62 ? headers.get(expectedMutationSessionHeader) : null;
+      admitted.push({ type: command.type, session });
       return Response.json({
         ok: true,
         data:
@@ -252,7 +240,7 @@ describe("DesktopHostTransport", () => {
       );
       expect(request.mock.lastCall?.[0].request.headers.additional).toMatchObject({
         [expectedMutationSessionHeader]: expectedSessionId,
-        [hostApiVersionHeader]: String(sessionBoundMutationApiVersion),
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
       });
     } finally {
       transport.dispose();
