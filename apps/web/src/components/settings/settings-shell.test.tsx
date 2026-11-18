@@ -15,11 +15,7 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { ShellContext, useShell } from "../app-shell.js";
 import { defaultSettingsSection, settingsSectionForPath } from "./copy.js";
-import {
-  SettingsNotFound,
-  SettingsSectionRoute,
-  SettingsShell,
-} from "./settings-shell.js";
+import { SettingsNotFound, SettingsSectionRoute, SettingsShell } from "./settings-shell.js";
 
 const noOp = () => undefined;
 

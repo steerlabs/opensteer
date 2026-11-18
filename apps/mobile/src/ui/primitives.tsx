@@ -374,7 +374,10 @@ export function StatusDot(props: {
  * of text that is still being worked on.
  */
 /** `still` holds the dots at full colour: the work is said, not claimed as happening now. */
-export function TypingDots(props: { readonly inline?: boolean; readonly still?: boolean }): ReactNode {
+export function TypingDots(props: {
+  readonly inline?: boolean;
+  readonly still?: boolean;
+}): ReactNode {
   const inline = props.inline === true;
   const still = props.still === true;
   return (

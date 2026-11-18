@@ -1173,9 +1173,7 @@ function ThreadView({
                       ) : null}
                       {/* Gone with the first message, this device's waiting ones too, so
                           their bubbles never jump when the Host takes them. */}
-                      {withOutbox.length === 0 &&
-                      historyState === undefined &&
-                      !waiting?.length ? (
+                      {withOutbox.length === 0 && historyState === undefined && !waiting?.length ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
                       <AgentTranscript

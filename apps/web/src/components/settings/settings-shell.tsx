@@ -81,13 +81,7 @@ export function SettingsShell() {
             },
           }
         : null,
-    [
-      deployment,
-      identity,
-      kind,
-      shell.desktopBridge,
-      shell.snapshot.sessionSurface,
-    ],
+    [deployment, identity, kind, shell.desktopBridge, shell.snapshot.sessionSurface],
   );
   const context = useMemo(
     () =>
