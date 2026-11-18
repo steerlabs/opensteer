@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { WebTabNotice } from "../devices/web-tab-notice.js";
 import {
   browserSiteForTab,
@@ -29,7 +30,6 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
-import { useConnectionLive } from "../connection-shell.js";
 import { Icon } from "../icon.js";
 import { LastPictureChip } from "../last-picture-chip.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
@@ -650,7 +650,7 @@ export function PlaceBrowserView({
             tabListed,
             whole,
             presentationError ??
-              viewer.error ??
+              (viewer.error ? presentClientIssue(viewer.error).title : null) ??
               retentionError ??
               mode.error ??
               nativePresentation.error,
@@ -668,10 +668,10 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [prePaint, tabId, visible]);
   const waiting = prePaint && waitingTab === tabId;
-  // While the connection is out the picture is the page as it last was: it stays, dimmed under
-  // its own chip, and takes no input until the connection is back.
-  const connectionLive = useConnectionLive(hostClient.connection);
-  const stale = !connectionLive && !native && !prePaint;
+  // Until this viewer has a fresh frame the picture is the page as it last was: it stays, dimmed
+  // under its own chip, and takes no input. The viewer's own feed decides, not the pill: either
+  // can come back first.
+  const stale = viewer.status !== "live" && !native && !prePaint;
   const [stalePulse, setStalePulse] = useState(0);
 
   const fitLabel = placement
@@ -825,7 +825,7 @@ export function PlaceBrowserView({
           {live ? <PasswordSaveBubble target={savingTarget} /> : null}
           {!native && viewer.inputError ? (
             <div className="browser-action-error" role="status">
-              {viewer.inputError}
+              {presentClientIssue(viewer.inputError).title}
             </div>
           ) : null}
           {ended ? (

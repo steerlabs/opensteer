@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
@@ -1080,7 +1081,7 @@ export function BrowserPage(props: {
                 ) : feed.inputError ? (
                   // The page refused a touch or key, and says why; the next one clears it.
                   <Notice
-                    detail={feed.inputError}
+                    detail={presentClientIssue(feed.inputError).title}
                     title="That didn’t reach the page"
                     tone="neutral"
                   />

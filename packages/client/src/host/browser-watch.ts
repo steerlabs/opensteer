@@ -12,6 +12,7 @@ import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { browserInputMode, type BrowserInputMode } from "./browser-input.js";
+import type { ClientIssue } from "../feedback/client-issue.js";
 export interface BrowserWatchState {
   readonly input?: BrowserInputMode;
   /** The current socket has received its first authorized snapshot. */
@@ -20,9 +21,14 @@ export interface BrowserWatchState {
   readonly admissionId?: string;
   readonly frame: BrowserFrameView | null;
   readonly status: "connecting" | "live" | "unavailable";
-  readonly error: string | null;
-  readonly inputError?: string | null;
+  /** Why this target can't be shown, for the presenter to word: never the failure's own text. */
+  readonly error: ClientIssue | null;
+  /** Why the page refused the last input, until the next one. */
+  readonly inputError?: ClientIssue | null;
 }
+const openFailed: ClientIssue = { code: "open-failed", resource: "this page" };
+/** A Host or Browser Runtime too old for targeted viewing: refused for good, until it updates. */
+class TargetedViewingUnsupported extends Error {}
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
 /**
  * Cleanup, layout and cursor hints are moot without a live view, so they drop
@@ -487,10 +493,7 @@ export class BrowserWatchStore {
     try {
       socket = this.connect(target.sessionId, target.surfaceId, target.asleepHolds > 0);
     } catch (error) {
-      this.#set(target, {
-        ...empty,
-        error: error instanceof Error ? error.message : "Browser unavailable.",
-      });
+      this.#set(target, { ...empty, error: openFailed });
       return;
     }
     target.socket = socket;
@@ -533,7 +536,7 @@ export class BrowserWatchStore {
       socket.close(4002, "Targeted browser protocol required");
       this.#set(target, {
         ...empty,
-        error: error instanceof Error ? error.message : "Invalid browser frame.",
+        error: error instanceof TargetedViewingUnsupported ? { code: "update-server" } : openFailed,
       });
     };
     socket.addEventListener("message", ({ data }) => {
@@ -550,7 +553,9 @@ export class BrowserWatchStore {
               message.sessionId !== target.sessionId ||
               message.targetedStreamingVersion !== 1
             )
-              throw new Error("Update the Host and Browser Runtime for targeted viewing.");
+              throw new TargetedViewingUnsupported(
+                "Update the Host and Browser Runtime for targeted viewing.",
+              );
             synchronized = true;
             target.synchronized = true;
             target.attempt = 0;
@@ -597,7 +602,7 @@ export class BrowserWatchStore {
               this.#set(target, {
                 ...this.#kept(target),
                 status: "unavailable",
-                error: "Too many browser capture targets.",
+                error: { code: "rejected", reason: "browser-capture-limit", done: "shown" },
               });
             } else if (target.pictureHolds && target.state.status !== "live")
               this.#set(target, {
@@ -615,14 +620,22 @@ export class BrowserWatchStore {
               return;
             }
             if (message.error.reason === "browser-target-control-unsupported")
-              throw new Error(message.error.message);
+              throw new TargetedViewingUnsupported(message.error.message);
             if (
               message.error.reason === "browser-input-canceled" &&
               message.inputGeneration !== undefined
             )
               target.generation = Math.max(target.generation, message.inputGeneration + 1);
             if (this.mode === "control")
-              this.#set(target, { ...target.state, inputError: message.error.message });
+              this.#set(target, {
+                ...target.state,
+                inputError: {
+                  code: "rejected",
+                  action: "send that to the page",
+                  done: "sent",
+                  ...(message.error.reason ? { reason: message.error.reason } : {}),
+                },
+              });
             this.onMessage?.(target.sessionId, message, target.surfaceId);
             return;
           }
@@ -714,7 +727,7 @@ export class BrowserWatchStore {
       if (target.terminal) this.#revoke(target);
       this.#set(target, {
         ...(target.terminal ? empty : this.#kept(target)),
-        error: target.terminal ? "The browser target is no longer available." : null,
+        error: target.terminal ? { code: "access-lost" } : null,
       });
       if (target.state.error === null) this.#retry(target);
     });

@@ -86,6 +86,8 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "thread-not-found": "This task is no longer available.",
   "thread-closed": "This task is closed.",
   "browser-session-closed": "This tab is closed.",
+  "browser-capture-limit": "Too many pages are being watched.",
+  "browser-input-owner-conflict": "Someone else is using this page.",
   "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
   "resource-exhausted": "Too many messages waiting.",
   "team-file-too-large": "Files can be up to 100 MB.",

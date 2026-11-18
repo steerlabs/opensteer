@@ -130,11 +130,17 @@ const shellAdapters: readonly { readonly prefix: string; readonly reason: string
   },
 ];
 
-/** Every non-test source a person's screen is drawn from. */
+/**
+ * Every non-test source a person's screen is drawn from. The shared client's
+ * view state outside its hooks carries typed issues, so a screen can only say
+ * it through the presenter.
+ */
 function uiModules(): string[] {
   return [
     ...sourcesUnder("apps/web/src"),
     ...sourcesUnder("apps/mobile/src"),
+    // Shared hooks hand their state straight to screens on every surface.
+    ...sourcesUnder("packages/client/src/react"),
     // Desktop main has no screens; a renderer module there would be UI.
     ...sourcesUnder("apps/desktop/src").filter((file) => file.endsWith(".tsx")),
   ].filter((file) => !/\/(?:tests|journey)\//u.test(file));

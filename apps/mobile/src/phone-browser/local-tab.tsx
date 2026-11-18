@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { classifyClientFailure } from "@opensteer/client/connections";
 import { useClientConnection } from "@opensteer/client/react";
 import { TabIdSchema } from "@opensteer/core";
@@ -110,7 +111,8 @@ export function LocalPhoneTab(props: {
   }, [fail, held, hostClient, ready]);
   // Said as a fact about the tab; why it couldn't open is the connection's to say.
   if (failed) return status("This tab could not open.");
-  if (!held || !ready || !feed.admitted) return status(feed.error ?? "Opening…");
+  if (!held || !ready || !feed.admitted)
+    return status(feed.error ? presentClientIssue(feed.error).title : "Opening…");
   return (
     <PhoneBrowserTabHost style={{ flex: 1 }} manager={manager} admission={ready} onError={fail} />
   );

@@ -8,17 +8,6 @@ export function useClientConnection(connection: ClientConnection): ClientConnect
   return useSyncExternalStore(connection.subscribe, connection.getSnapshot, connection.getSnapshot);
 }
 
-import { connectionNotice } from "../connections/connection-notice.js";
-import { presentClientIssue } from "../feedback/client-issue.js";
-
-export function useConnectionNotice(connection: ClientConnection): string | null {
-  const snapshot = useCallback(() => {
-    const issue = connectionNotice(connection.getSnapshot());
-    return issue ? presentClientIssue(issue).title : null;
-  }, [connection]);
-  return useSyncExternalStore(connection.subscribe, snapshot, snapshot);
-}
-
 const noConnection = () => () => {};
 
 /** The connection's display name, redrawing only when it changes. */

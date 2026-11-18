@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
@@ -230,7 +231,8 @@ function BrowserStreamView({
       : feed.status === "connecting"
         ? "connecting"
         : "disconnected";
-  const feedError = feed.status === "unavailable" ? feed.error : null;
+  const feedError =
+    feed.status === "unavailable" && feed.error ? presentClientIssue(feed.error).title : null;
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
   const awake = useBrowserTabAwake(hostClient, tabId);
