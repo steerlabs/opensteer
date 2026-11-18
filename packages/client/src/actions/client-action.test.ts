@@ -46,3 +46,27 @@ it("keeps an entity's outcome in its family until authoritative reconciliation",
   expect(family.for("one").getSnapshot().outcome?.kind).toBe("confirmed");
   family.dispose();
 });
+
+it.each(["scope revoked", "connection lost"] as const)(
+  "does not begin a mutation when %s before dispatch",
+  async (change) => {
+    const session = controlledClientSession();
+    let dispatched = false;
+    const action = createClientAction(session, {
+      key: "close",
+      label: "close",
+      execute: async () => {
+        dispatched = true;
+      },
+    });
+    const pending = action.run(undefined);
+    queueMicrotask(() =>
+      session.change(
+        change === "scope revoked" ? { scope: null } : { phase: "recovering", network: "offline" },
+      ),
+    );
+    expect((await pending).kind).toBe("not-sent");
+    expect(dispatched).toBe(false);
+    action.dispose();
+  },
+);

@@ -441,7 +441,10 @@ class SessionConnectionController implements ConnectionController {
     if (this.#disposed) return;
     this.#backgroundAt = Date.now();
     this.#clearHold();
-    this.#publish({ visibility: "background", showInterruption: false });
+    this.#publish({
+      visibility: "background",
+      showInterruption: this.#state.phase === "blocked" && this.#state.showInterruption,
+    });
     if (!this.#keepsAlive()) {
       if (this.#retry) clearTimeout(this.#retry);
       this.#retry = null;

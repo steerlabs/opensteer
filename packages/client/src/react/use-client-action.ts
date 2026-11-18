@@ -18,9 +18,9 @@ import { presentClientIssue } from "../feedback/client-issue.js";
 
 const operations = new WeakMap<ClientSession, ReturnType<typeof operationFamily>>();
 function operationFamily(session: ClientSession) {
-  return createClientActionFamily<() => Promise<void>, void>(session, {
+  return createClientActionFamily<(signal: AbortSignal) => Promise<void>, void>(session, {
     label: "complete this action",
-    execute: (work) => work(),
+    execute: (work, signal) => work(signal),
   });
 }
 export function useClientOperation(session: ClientSession, key: string) {
@@ -31,10 +31,14 @@ export function useClientOperation(session: ClientSession, key: string) {
   }, [session, key]);
   const state = useClientAction(action);
   const run = useCallback(
-    async <T>(work: () => Promise<T>, _label: string, done?: (value: T) => void) => {
+    async <T>(
+      work: (signal: AbortSignal) => Promise<T>,
+      _label: string,
+      done?: (value: T) => void,
+    ) => {
       let result: { value: T } | null = null;
-      const outcome = await action.run(async () => {
-        result = { value: await work() };
+      const outcome = await action.run(async (signal) => {
+        result = { value: await work(signal) };
       });
       if (outcome.kind === "confirmed" && action.getSnapshot().outcome === outcome && result)
         done?.((result as { value: T }).value);

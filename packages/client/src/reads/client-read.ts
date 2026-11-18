@@ -281,6 +281,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
       this.#attempt = 0;
       this.#publish(waiting);
     } else if (newEpoch || !this.#usable()) {
+      this.#dirty ||= this.#accepted || this.#controller !== null || this.#retry !== null;
       this.#cancel();
       this.#publish(
         this.#accepted

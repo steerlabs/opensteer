@@ -241,3 +241,33 @@ describe("session recovery owner", () => {
     connection.dispose();
   });
 });
+
+it("keeps a confirmed refusal visible after backgrounding and returning", async () => {
+  vi.useFakeTimers();
+  const life = lifecycle();
+  const connection = createConnectionController({
+    lifecycle: life.port,
+    driver: {
+      connect: async () => {
+        throw new ClientOperationError("Sign in to continue.", "blocked", {
+          code: "unauthorized",
+          reason: "sign-in-required",
+          provenance: "host",
+          kind: "session",
+          retryable: false,
+        });
+      },
+    },
+  });
+  connection.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(connection.getSnapshot().showInterruption).toBe(true);
+  life.background();
+  life.foreground();
+  expect(connection.getSnapshot()).toMatchObject({
+    phase: "blocked",
+    showInterruption: true,
+    issue: { code: "sign-in" },
+  });
+  connection.dispose();
+});

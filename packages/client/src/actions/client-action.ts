@@ -123,23 +123,24 @@ class SessionClientAction<I, O> implements ClientAction<I, O> {
         // Scope can change between a tap and the first dispatch microtask.
         if (!current()) return { kind: "not-sent" as const, issue: null };
         return Promise.resolve()
-          .then(() => this.#spec.execute(input, controller.signal))
-          .then(
-            (value) => ({ kind: "confirmed" as const, value }),
-            (error) => {
-              const failure = classifyClientFailure(error);
-              const issue = clientIssue(error, { operation: "action", label: this.#spec.label });
-              return {
-                kind:
-                  failure.kind === "rejection" ? ("rejected" as const) : ("unconfirmed" as const),
-                issue: issue && {
-                  ...issue,
-                  ...(this.#spec.done ? { done: this.#spec.done } : {}),
-                  ...(this.#spec.happened ? { happened: this.#spec.happened } : {}),
-                },
-              };
-            },
-          );
+          .then(async (): Promise<ActionOutcome<O>> => {
+            if (!current()) return { kind: "not-sent", issue: null };
+            const unavailable = this.preflight();
+            if (unavailable) return unavailable;
+            return { kind: "confirmed", value: await this.#spec.execute(input, controller.signal) };
+          })
+          .catch((error) => {
+            const failure = classifyClientFailure(error);
+            const issue = clientIssue(error, { operation: "action", label: this.#spec.label });
+            return {
+              kind: failure.kind === "rejection" ? ("rejected" as const) : ("unconfirmed" as const),
+              issue: issue && {
+                ...issue,
+                ...(this.#spec.done ? { done: this.#spec.done } : {}),
+                ...(this.#spec.happened ? { happened: this.#spec.happened } : {}),
+              },
+            };
+          });
       })
       .then((outcome) => {
         if (current())

@@ -165,3 +165,31 @@ describe("retained client reads", () => {
     read.dispose();
   });
 });
+
+it.each(["first read", "current data", "scheduled retry"] as const)(
+  "refreshes %s after a short background visit on the same lease",
+  async (interrupted) => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    const first = Promise.withResolvers<string>();
+    const readOnce = vi
+      .fn()
+      .mockImplementationOnce(async (signal: AbortSignal) => {
+        if (interrupted === "scheduled retry") throw new HostTransportError("timed-out");
+        if (interrupted === "current data") return "cached";
+        signal.addEventListener("abort", () => first.reject(signal.reason), { once: true });
+        return first.promise;
+      })
+      .mockResolvedValue("fresh");
+    const read = createClientRead(session, { key: "settings", label: "settings", read: readOnce });
+    read.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    session.change({ visibility: "background" });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(readOnce).toHaveBeenCalledTimes(1);
+    session.change({ visibility: "foreground" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.getSnapshot()).toMatchObject({ status: "ready", data: "fresh", stale: false });
+    read.dispose();
+  },
+);
