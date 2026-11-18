@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "kysely";
+import { Pool, type PoolClient } from "pg";
 import { createId } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import { createDatabase } from "@opensteer/database";
@@ -17,6 +19,7 @@ let a: TeamAccessStore, b: TeamAccessStore;
 let busA: TeamBus, busB: TeamBus;
 let chatA: TeamChatStore, chatB: TeamChatStore;
 let hubA: TeamRealtimeHub, hubB: TeamRealtimeHub;
+let busError: (error: unknown) => void;
 const cleanups: (() => void)[] = [];
 beforeEach(async () => {
   f = await createTeamKnowledgeFixture();
@@ -28,7 +31,8 @@ beforeEach(async () => {
   b = new TeamAccessStore(databaseB);
   await Promise.all([a.initialize(), b.initialize()]);
   busA = new TeamBus(f.database);
-  busB = new TeamBus(databaseB);
+  busError = () => {};
+  busB = new TeamBus(databaseB, { onError: (error) => busError(error) });
   cleanups.push(a.attach(busA), b.attach(busB));
   const identity = { teamId: f.deploymentId, teamName: "Acme" };
   chatA = new TeamChatStore(a, identity);
@@ -205,6 +209,108 @@ it("resyncs a missed channel change and full sidebar after losing LISTEN", async
     expect(frames.filter((f) => f.type === "team.sidebar").length).toBeGreaterThan(sidebars);
     expect(frames.filter((f) => f.type === "team.cut").length).toBeGreaterThan(cuts);
   }, wait);
+});
+
+it("closes a lost LISTEN session while its reconnect resync is still in progress", async () => {
+  const resyncing = Promise.withResolvers<void>();
+  const releaseResync = Promise.withResolvers<void>();
+  const off = busB.onResync(async () => {
+    resyncing.resolve();
+    await releaseResync.promise;
+  });
+  const terminate = async () => {
+    const lost = Promise.withResolvers<unknown>();
+    busError = lost.resolve;
+    const result = await sql<{ terminated: boolean }>`select pg_terminate_backend(pid) as terminated
+      from pg_stat_activity where datname=current_database()
+      and application_name='coordination-b' and query='listen opensteer_team'`.execute(f.database);
+    expect(result.rows).toEqual([{ terminated: true }]);
+    expect(await lost.promise).toMatchObject({ code: "57P01" });
+  };
+  try {
+    await terminate();
+    await resyncing.promise;
+    await terminate();
+    const closed = busB.close();
+    expect(
+      await Promise.race([closed.then(() => "closed"), setImmediate("resync still held")]),
+    ).toBe("closed");
+    expect(busB.healthy).toBe(false);
+  } finally {
+    releaseResync.resolve();
+    off();
+    await busB.close();
+  }
+});
+
+it("handles PostgreSQL terminating a checked-out reader before its next query", async () => {
+  const pool = new Pool({ connectionString: f.databaseUrl });
+  const reader = createDatabase({ connectionString: f.databaseUrl }, pool);
+  const ended = Promise.withResolvers<void>();
+  const unhandled: unknown[] = [];
+  pool.once("connect", (client) => {
+    client.once("end", ended.resolve);
+    const emit = client.emit.bind(client);
+    vi.spyOn(client, "emit").mockImplementation((event, ...args) => {
+      if (event === "error" && client.listenerCount("error") === 0) {
+        unhandled.push(args[0]);
+        return false;
+      }
+      return emit(event, ...args);
+    });
+  });
+  try {
+    await reader.connection().execute(async (connection) => {
+      const { rows } = await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(
+        connection,
+      );
+      const killed = await sql<{
+        terminated: boolean;
+      }>`select pg_terminate_backend(${rows[0]!.pid}) as terminated`.execute(f.database);
+      expect(killed.rows).toEqual([{ terminated: true }]);
+      await ended.promise;
+      await expect(sql`select 1`.execute(connection)).rejects.toThrow();
+    });
+    expect(unhandled).toEqual([]);
+  } finally {
+    await reader.destroy();
+  }
+});
+
+it("drains a new checkout that reaches the driver while the pool is closing", async () => {
+  const pool = new Pool({ connectionString: f.databaseUrl, maxUses: 1 });
+  const reader = createDatabase({ connectionString: f.databaseUrl }, pool);
+  await sql`select 1`.execute(reader);
+  const checkedOut = Promise.withResolvers<PoolClient>();
+  const deliverCheckout = Promise.withResolvers<void>();
+  const connect = pool.connect.bind(pool);
+  const heldConnect = async () => {
+    const client = await connect();
+    checkedOut.resolve(client);
+    await deliverCheckout.promise;
+    return client;
+  };
+  // pg types connect() with a callback overload that returns void; this is the promise form.
+  const checkout = vi.spyOn(pool, "connect").mockImplementation(heldConnect as never);
+  const read = sql<{ value: number }>`select 1 as value`.execute(reader);
+  void read.catch(() => undefined);
+  const client = await checkedOut.promise;
+  const closing = reader.destroy();
+  try {
+    // Let destruction reach the driver before returning the new pg client.
+    await setImmediate();
+    deliverCheckout.resolve();
+    await expect(read).resolves.toMatchObject({ rows: [{ value: 1 }] });
+  } finally {
+    deliverCheckout.resolve();
+    checkout.mockRestore();
+    await read.catch(() => {
+      // Reclaim the fixture client if the driver rejected before taking ownership.
+      if (pool.totalCount) client.release(true);
+    });
+    await closing;
+  }
+  expect(pool.totalCount).toBe(0);
 });
 it("fences a superseded link's write and keeps replacement presence during cleanup", async () => {
   const linkId = await f.link(f.userId);

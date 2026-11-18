@@ -1,6 +1,7 @@
 import type { CdpParameters } from "@opensteer/browser-core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sendAsAgent } from "./browser-harness.test-support.js";
+import { withBrowserTestSignal } from "./browser-test-lifecycle.js";
 import { describe, expect } from "vitest";
 import { z } from "zod";
 import {
@@ -145,50 +146,90 @@ describe("Browser Harness element actions / real hosted Chromium", () => {
 
   acceptance(
     "15-slow-release",
-    "a release slower than the grace on a page that still answers is awaited before the session detaches",
+    "a release slower than the grace on a responsive session finishes before it detaches",
     async (kit) => {
-      let delayed = 0;
-      kit.hooks.before = async (method) => {
-        if (method !== "Runtime.releaseObjectGroup") return;
-        delayed++;
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+      const stalledProbe = "true /* deliberately stalled session */";
+      let stalledSession: string | undefined;
+      const runWithHeldRelease = async (program: string, withStalledSession = false) => {
+        const settling = Promise.withResolvers<void>();
+        const detached = Promise.withResolvers<void>();
+        const stalledDetached = Promise.withResolvers<void>();
+        let releaseSession: string | undefined;
+        kit.hooks.before = async (method, parameters, sessionId) => {
+          if (method === "Runtime.evaluate" && parameters?.expression === stalledProbe)
+            stalledSession = sessionId;
+          if (method === "Target.detachFromTarget") {
+            if (parameters?.sessionId === releaseSession) detached.resolve();
+            if (parameters?.sessionId === stalledSession) stalledDetached.resolve();
+          }
+          if (
+            sessionId !== undefined &&
+            sessionId === stalledSession &&
+            (method === "Runtime.releaseObjectGroup" ||
+              (method === "Runtime.evaluate" && parameters?.expression === "document"))
+          ) {
+            await withBrowserTestSignal(stalledDetached.promise);
+            throw new Error("The test held this command until its session detached");
+          }
+          if (method !== "Runtime.releaseObjectGroup") return;
+          releaseSession = sessionId;
+          // The harness must be waiting to leave while the CDP reply is held.
+          await withBrowserTestSignal(settling.promise);
+          if (withStalledSession) await withBrowserTestSignal(stalledDetached.promise);
+        };
+        await kit.run(program, {
+          onStderrLine: (line) => {
+            if (line.startsWith("[opensteer] Waiting for the page")) settling.resolve();
+          },
+        });
+        expect(releaseSession).toBeDefined();
+        // Socket close drives detach in the bridge and may arrive after the
+        // harness subprocess has exited.
+        await withBrowserTestSignal(detached.promise);
+        return releaseSession;
       };
-      // Each program ends on an action whose group release is not awaited inline:
-      // one past its deadline, one interrupted by a dialog the program answers.
-      await kit.run(
-        `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/Timeout 300ms:/);`,
+
+      // The second session leaves after its own unanswered-command grace.
+      // Its detach lets the still-responsive session's pending release through.
+      const responsiveSession = await runWithHeldRelease(
+        `const stalled = await openPage(page.tabId);
+         await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/Timeout 300ms:/);
+         await cdp('Runtime.evaluate',{expression:'true'});
+         await stalled.cdp('Runtime.evaluate',{expression:${JSON.stringify(stalledProbe)}});
+         await fails(()=>stalled.getByRole('button',{name:'Still usable'}).click({timeout:300}),/Timeout 300ms:/);`,
+        true,
       );
+      expect(stalledSession).toBeDefined();
+      const slowRelease = kit.trace.find(
+        (entry) =>
+          entry.method === "Runtime.releaseObjectGroup" && entry.sessionId === responsiveSession,
+      );
+      const stalledDetach = kit.trace.find(
+        (entry) =>
+          entry.method === "Target.detachFromTarget" &&
+          entry.parameters?.sessionId === stalledSession,
+      );
+      expect(slowRelease).toBeDefined();
+      expect(stalledDetach).toBeDefined();
+      expect(stalledDetach!.at - slowRelease!.at).toBeGreaterThanOrEqual(2000);
+      expect(
+        kit.trace.some(
+          (entry) =>
+            entry.method === "Runtime.releaseObjectGroup" && entry.sessionId === stalledSession,
+        ),
+      ).toBe(true);
       await kit.navigate(kit.site.url("13"));
-      await kit.run(
+      await runWithHeldRelease(
         `await fails(()=>page.locator('#click').click(),/dialog/i);await cdp('Page.handleJavaScriptDialog',{accept:true});`,
       );
       // Replaying buffered events must not make the answered dialog look open again.
-      await kit.run(
+      await runWithHeldRelease(
         `await fails(()=>page.locator('#click').click(),/dialog/i);await cdp('Page.handleJavaScriptDialog',{accept:true});drainEvents();`,
       );
-      expect(delayed).toBeGreaterThan(0);
-      const detaches = kit.trace.filter((e) => e.method === "Target.detachFromTarget");
-      const groups = new Set(
-        kit.trace.flatMap((e) =>
-          typeof e.parameters?.objectGroup === "string" &&
-          e.parameters.objectGroup.startsWith("opensteer-op-")
-            ? [JSON.stringify([e.sessionId, e.parameters.objectGroup])]
-            : [],
-        ),
-      );
-      expect(groups.size).toBeGreaterThan(0);
-      for (const group of groups) {
-        const release = kit.trace.find(
-          (e) =>
-            e.method === "Runtime.releaseObjectGroup" &&
-            JSON.stringify([e.sessionId, e.parameters?.objectGroup]) === group,
-        );
-        expect(release, group).toBeDefined();
-        expect(release!.error, group).toBeUndefined();
-        expect(release!.finished, group).toBeDefined();
-        const detach = detaches.find((e) => e.at > release!.at);
-        expect(release!.finished!, group).toBeLessThanOrEqual(detach!.at);
-      }
+      expectGroupsReleasedBeforeDetach({
+        ...kit,
+        trace: kit.trace.filter((entry) => entry.sessionId !== stalledSession),
+      });
     },
     "12",
   );

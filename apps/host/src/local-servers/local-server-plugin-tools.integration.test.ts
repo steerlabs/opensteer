@@ -1,4 +1,4 @@
-import { IntegrationGrantStore, IntegrationInstallStore } from "@opensteer/database";
+import { IntegrationInstallStore } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -13,7 +13,6 @@ import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { DeviceService } from "../devices/device-service.js";
 import { LocalServerService } from "./local-server-service.js";
-import { ServerInput } from "./server-input.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
@@ -262,27 +261,6 @@ integration("local servers as plugin tools", () => {
   }, 60_000);
 
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {
-    const enteredInventory = Promise.withResolvers<void>();
-    const releaseInventory = Promise.withResolvers<void>();
-    let awaitingInventory = false;
-    let callableReads = 0;
-    const inventory = IntegrationGrantStore.prototype.listCallableTools;
-    const inventorySpy = vi
-      .spyOn(IntegrationGrantStore.prototype, "listCallableTools")
-      .mockImplementation(async function (this: IntegrationGrantStore, input) {
-        const result = await inventory.call(this, input);
-        if (awaitingInventory && ++callableReads === 2) {
-          awaitingInventory = false;
-          enteredInventory.resolve();
-          await withTimeout(releaseInventory.promise, 10000, {
-            timeoutError: () => new Error("Callable inventory was not released"),
-          });
-        }
-        return result;
-      });
-    closers.push(async () => {
-      inventorySpy.mockRestore();
-    });
     const work = await mkdtemp(join(tmpdir(), "opensteer-local-server-tools-"));
     closers.push(() => rm(work, { recursive: true, force: true }));
     const server = await pairingServer(work);
@@ -453,10 +431,14 @@ integration("local servers as plugin tools", () => {
       structuredContent: { ready: true },
     };
     expect(
-      await gateway.callRaw("plugin_call", { calls: { path: statusPath, input: {} } }),
+      await gateway.callRaw("plugin_call", {
+        calls: { path: statusPath, input: { caller: "pair-a", mode: "call" } },
+      }),
     ).toMatchObject(statusResult);
     expect(
-      await gateway.call("plugin_execute", { code: `return await ${statusPath}({});` }),
+      await gateway.call("plugin_execute", {
+        code: `return await ${statusPath}({caller:"pair-a",mode:"execute"});`,
+      }),
     ).toMatchObject({ result: { execution: { ok: true, value: statusResult } } });
 
     // Two tasks call it at once. Each question reaches the person for its own call only.
@@ -464,11 +446,11 @@ integration("local servers as plugin tools", () => {
     closers.unshift(() => second.complete());
     const otherGateway = await integrationGateway(second.integrationTools);
     closers.unshift(() => otherGateway.close());
-    const call = (target: typeof gateway) =>
-      target.call("plugin_call", { calls: { path: pair, input: {} } });
-    const callA = call(gateway);
+    const call = (target: typeof gateway, caller: string, mode: string) =>
+      target.call("plugin_call", { calls: { path: pair, input: { caller, mode } } });
+    const callA = call(gateway, "pair-a", "pair");
     const askedA = await pendingInput(host);
-    const callB = call(otherGateway);
+    const callB = call(otherGateway, "pair-b", "pair");
     const answers = (code: string) => ({
       code,
       count: 6723672367236723,
@@ -501,25 +483,24 @@ integration("local servers as plugin tools", () => {
       result: { execution: { value: { value: { digits: "34", ...redacted } } } },
     });
     expect(JSON.stringify([resultA, resultB])).not.toMatch(/AB89|CD34/u);
+    const localServer = host.runtime.localServers.options.localServers as LocalServerService;
     const beforeQueued = await readFile(join(work, "calls"), "utf8");
     const entered = Promise.withResolvers<void>();
     const releaseTurn = Promise.withResolvers<void>();
-    const originalTurn = ServerInput.prototype.turn;
-    const turn = vi.spyOn(ServerInput.prototype, "turn").mockImplementationOnce(async function (
-      this: ServerInput,
-      client,
-      signal,
-    ) {
-      const release = await originalTurn.call(this, client, signal);
-      entered.resolve();
-      await withTimeout(releaseTurn.promise, 10000, {
-        timeoutError: () => new Error("Queued admission was not released"),
+    const originalTurn = localServer.inputRequests.turn.bind(localServer.inputRequests);
+    const turn = vi
+      .spyOn(localServer.inputRequests, "turn")
+      .mockImplementationOnce(async (...args) => {
+        const release = await originalTurn(...args);
+        entered.resolve();
+        await withTimeout(releaseTurn.promise, 10000, {
+          timeoutError: () => new Error("Queued admission was not released"),
+        });
+        return release;
       });
-      return release;
-    });
     try {
       const queued = gateway.callRaw("plugin_call", {
-        calls: { path: pair, input: { mode: "queued" } },
+        calls: { path: pair, input: { caller: "pair-a", mode: "queue-plugin-off" } },
       });
       await withTimeout(entered.promise, 10000, {
         timeoutError: () => new Error("Call did not enter the session queue"),
@@ -549,41 +530,56 @@ integration("local servers as plugin tools", () => {
       turn.mockRestore();
     }
     const beforeNarrow = await readFile(join(work, "calls"), "utf8");
-    const nextTurn = ServerInput.prototype.turn;
-    const callSpy = vi.spyOn(ServerInput.prototype, "turn").mockImplementationOnce(async function (
-      this: ServerInput,
-      ...args
-    ) {
-      const release = await nextTurn.apply(this, args);
-      awaitingInventory = true;
-      return release;
-    });
+    expect(beforeNarrow.trimEnd().split("\n")).toEqual([
+      "pair-a status call",
+      "pair-a status execute",
+      "pair-a pair pair",
+      "pair-b pair pair",
+    ]);
+    const authorized = Promise.withResolvers<void>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    const callTool = localServer.callTool.bind(localServer);
+    const admission = vi
+      .spyOn(localServer, "callTool")
+      .mockImplementation((tool, args, caller, signal) =>
+        callTool(
+          tool,
+          args,
+          args.mode === "queue-narrow" && caller.threadId === first.threadId
+            ? {
+                ...caller,
+                authorize: async () => {
+                  await caller.authorize!();
+                  authorized.resolve();
+                  await releaseAuthorization.promise;
+                },
+              }
+            : caller,
+          signal,
+        ),
+      );
     const narrowing = gateway.callRaw("plugin_call", {
-      calls: { path: pair, input: { mode: "queued" } },
+      calls: { path: pair, input: { caller: "pair-a", mode: "queue-narrow" } },
     });
     try {
-      await withTimeout(
-        Promise.race([
-          enteredInventory.promise,
-          narrowing.then((value) => {
-            throw new Error(`Call ended before final inventory: ${JSON.stringify(value)}`);
-          }),
-        ]),
-        10000,
-        { timeoutError: () => new Error("Call did not reach final callable inventory") },
-      );
+      await Promise.race([
+        authorized.promise,
+        narrowing.then((value) => {
+          throw new Error(`Call ended before dispatch authorization: ${JSON.stringify(value)}`);
+        }),
+      ]);
       await host.store.updateThreadAccessMode({
         threadId: first.threadId,
         requestedBy: host.ownerId,
         accessMode: "approval-required",
       });
-      releaseInventory.resolve();
-      expect(JSON.stringify(await narrowing)).toMatch(/authority|unavailable/iu);
+      releaseAuthorization.resolve();
+      const refused = await narrowing;
       expect(await readFile(join(work, "calls"), "utf8")).toBe(beforeNarrow);
+      expect(JSON.stringify(refused)).toMatch(/authority|unavailable/iu);
     } finally {
-      releaseInventory.resolve();
-      callSpy.mockRestore();
-      inventorySpy.mockRestore();
+      releaseAuthorization.resolve();
+      admission.mockRestore();
       await narrowing;
     }
     await host.store.updateThreadAccessMode({
@@ -593,7 +589,7 @@ integration("local servers as plugin tools", () => {
     });
     const failed = await withTimeout(
       gateway.callRaw("plugin_call", {
-        calls: { path: pair, input: { mode: "error" } },
+        calls: { path: pair, input: { caller: "pair-a", mode: "error" } },
       }),
       30_000,
       { timeoutError: () => new Error("The server's reflected error did not return") },
@@ -673,7 +669,7 @@ integration("local servers as plugin tools", () => {
     }
 
     // Removed: its tools are gone and its data removal reaches the Mac.
-    const pendingRemoval = call(otherGateway);
+    const pendingRemoval = call(otherGateway, "pair-b", "pending-removal");
     const ending = await pendingInput(host);
     await gateway.call("local_server_remove", { name: "tv" });
     expect(await host.store.requests.get(ending.id)).toMatchObject({
@@ -767,13 +763,14 @@ const server = new Server({ name: "tv", version: "1" }, { capabilities: { tools:
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "pair", description: "Pair with the TV", inputSchema: { type: "object" } },{ name:"status",description:"Read the TV status",inputSchema:{type:"object"},annotations:{readOnlyHint:true} }] }));
 let acceptedCode;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-  require("node:fs").appendFileSync(${JSON.stringify(join(work, "calls"))}, "call\\n");
+  require("node:fs").appendFileSync(${JSON.stringify(join(work, "calls"))},
+    [params.arguments?.caller, params.name, params.arguments?.mode].join(" ") + "\\n");
   if (params.name === "status") return { content: [
     { type: "text", text: "TV status" },
     { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
     { type: "resource", resource: { uri: "tv://status", text: "ready" } },
   ], structuredContent: { ready: true } };
-  if (params.arguments?.mode === "queued") return { content: [{ type: "text", text: "queued write ran" }] };
+  if (params.arguments?.mode?.startsWith("queue-")) return { content: [{ type: "text", text: "queued write ran" }] };
   if (params.arguments?.mode === "error") throw new Error("Pairing failed with " + acceptedCode);
   const properties = { code: { type: "string", title: "Pairing code", minLength: 4, maxLength: 4 }, count: { type: "integer" }, enabled: { type: "boolean" }, ratio: { type: "number" }, room: { type: "string", enum: ["Living room", "Den"] } };
   const result = await server.elicitInput({ message: "Enter the code shown on your TV", requestedSchema: { type: "object", properties, required: Object.keys(properties) } }, { timeout: 180000, maxTotalTimeout: 180000 });

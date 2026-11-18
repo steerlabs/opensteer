@@ -114,20 +114,15 @@ it("pipelines a bounded chunk window, coalesces first downloads, and serves veri
   const starting = sharedFixture();
   let closing: Promise<void> | undefined;
   const close = () =>
-    (closing ??= withTimeout(
-      starting.then(
-        (f) => f.close(),
-        () => {},
-      ),
-      5000,
-      {
-        timeoutError: () => new Error("Chunk pipeline fixture cleanup stalled"),
-      },
+    (closing ??= starting.then(
+      (fixture) =>
+        withTimeout(fixture.close(), 5000, {
+          timeoutError: () => new Error("Chunk pipeline fixture cleanup stalled"),
+        }),
+      () => {},
     ));
   onTestFinished(close);
-  const f = await withTimeout(starting, 10000, {
-    timeoutError: () => new Error("Chunk pipeline fixture setup stalled"),
-  });
+  const f = await starting;
   const release = Promise.withResolvers<void>();
   const controller = new AbortController();
   const combined = AbortSignal.any([signal, controller.signal]);

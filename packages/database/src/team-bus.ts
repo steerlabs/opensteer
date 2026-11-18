@@ -5,7 +5,7 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { Notification, PoolClient } from "pg";
+import type { Notification } from "pg";
 import { z } from "zod";
 import { checkoutSession } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -58,7 +58,6 @@ export class TeamBus {
   readonly #handlers = new Set<(event: TeamBusEvent) => void>();
   readonly #resyncs = new Set<() => Promise<void>>();
   readonly #health = new Set<(healthy: boolean) => void>();
-  #session: PoolClient | undefined;
   #healthy = false;
   #closed = false;
   #attempt = 0;
@@ -101,25 +100,23 @@ export class TeamBus {
   async close(): Promise<void> {
     this.#closed = true;
     clearTimeout(this.#reconnect);
-    await this.#connecting?.catch(() => {});
-    const session = this.#session;
-    const end = this.#end;
-    if (!session || !end) return;
-    let failure: Error | undefined;
-    try {
-      await session.query(`unlisten ${teamBusChannel}`);
-    } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
-    }
-    end(failure, false);
+    // A lost session may have left a rescan in flight. Discard the LISTEN
+    // client without waiting for that work or another database round trip.
+    this.#end?.(undefined, false);
   }
 
   #end: ((error: Error | undefined, report: boolean) => void) | undefined;
 
   #connect(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
     this.#connecting ??= (async () => {
       const session = await checkoutSession(this.#database);
+      if (this.#closed) {
+        session.release(true);
+        return;
+      }
       let ended = false;
+      const disconnected = Promise.withResolvers<void>();
       let probe: ReturnType<typeof setInterval> | undefined;
       const end = (error: Error | undefined, report: boolean) => {
         if (ended) return;
@@ -127,15 +124,12 @@ export class TeamBus {
         clearInterval(probe);
         session.removeAllListeners("notification");
         session.off("end", lost);
-        // A terminated session can emit more errors after teardown; they are already handled.
+        // The pool's client-level listener still handles any later socket error.
         session.off("error", lost);
-        session.on("error", () => {});
-        if (this.#session === session) {
-          this.#session = undefined;
-          this.#end = undefined;
-          this.#setHealthy(false);
-        }
-        session.release(error);
+        this.#end = undefined;
+        session.release(error ?? true);
+        disconnected.resolve();
+        this.#setHealthy(false);
         if (report && error) this.#error(error);
         this.#schedule();
       };
@@ -144,18 +138,15 @@ export class TeamBus {
       session.on("error", lost);
       session.on("end", lost);
       session.on("notification", (message) => this.#notify(message));
+      this.#end = end;
       try {
         await session.query(`listen ${teamBusChannel}`);
       } catch (error) {
+        if (this.#closed) return;
         lost(error);
         throw error;
       }
-      if (this.#closed) {
-        end(undefined, false);
-        return;
-      }
-      this.#session = session;
-      this.#end = end;
+      if (ended) return;
       const interval = this.#options.probeIntervalMs ?? 5_000;
       let probing = false;
       probe = setInterval(() => {
@@ -174,11 +165,18 @@ export class TeamBus {
       probe.unref();
       // Healthy only once every missed change is recovered; a failed rescan reconnects and retries.
       try {
-        for (const resync of this.#resyncs) await resync();
+        const rescan = async () => {
+          for (const resync of this.#resyncs) {
+            if (ended) return;
+            await resync();
+          }
+        };
+        await Promise.race([rescan(), disconnected.promise]);
       } catch (error) {
         lost(error);
         return;
       }
+      if (ended) return;
       this.#attempt = 0;
       this.#setHealthy(true);
     })().finally(() => {

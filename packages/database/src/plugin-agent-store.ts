@@ -1,7 +1,8 @@
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { sql, type Kysely, type Selectable, type Insertable } from "kysely";
+import { sql, type Kysely, type Selectable, type Insertable, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 
 export type PluginAgentAccess = "all" | "read-only" | "off";
 export type PluginExecutionRecord = Selectable<DatabaseSchema["pluginExecutions"]>;
@@ -41,20 +42,22 @@ export class PluginAgentStore {
     );
   }
   async setAccess(owner: UserId, plugin: string, access: PluginAgentAccess) {
-    await requirePersonalOwner(this.database, owner);
-    if (!["all", "read-only", "off"].includes(access))
-      throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
-    await this.database
-      .insertInto("pluginAgentSettings")
-      .values({
-        ownerUserId: owner,
-        pluginId: plugin,
-        access,
-        author: "agent",
-        versionAuthors: {},
-      })
-      .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
-      .execute();
+    await withPersonalTransaction(this.database, async (transaction) => {
+      await requirePersonalOwner(transaction, owner);
+      if (!["all", "read-only", "off"].includes(access))
+        throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
+      await transaction
+        .insertInto("pluginAgentSettings")
+        .values({
+          ownerUserId: owner,
+          pluginId: plugin,
+          access,
+          author: "agent",
+          versionAuthors: {},
+        })
+        .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
+        .execute();
+    });
   }
   async recordInstall(owner: UserId, plugin: string, version: string, author: "catalog" | "agent") {
     await requirePersonalOwner(this.database, owner);
@@ -129,6 +132,22 @@ export class PluginAgentStore {
       .values(input)
       .onConflict((c) => c.column("id").doNothing())
       .execute();
+  }
+  attachInteraction(
+    transaction: Transaction<DatabaseSchema>,
+    previous: PluginExecutionRecord,
+    requestId: NonNullable<PluginExecutionRecord["requestId"]>,
+    interactionId: string,
+  ) {
+    return transaction
+      .updateTable("pluginExecutions")
+      .set({ requestId, interactionId, updatedAt: new Date() })
+      .where("id", "=", previous.id)
+      .where("state", "=", "waiting")
+      .where("runId", previous.runId === null ? "is" : "=", previous.runId)
+      .where("interactionId", previous.interactionId === null ? "is" : "=", previous.interactionId)
+      .returningAll()
+      .executeTakeFirst();
   }
   updateLive(
     id: string,
