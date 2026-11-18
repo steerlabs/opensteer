@@ -11,7 +11,7 @@ metadata:
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: account-runtime-v11
+  name: account-runtime-v12
   namespace: opensteer-system
 spec:
   provider: gke
@@ -19,7 +19,7 @@ spec:
     secrets: |
       - resourceName: "projects/opensteer-staging/secrets/opensteer-account-auth/versions/2"
         path: "account-auth"
-      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/10"
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/11"
         path: "account-runtime.json"
       - resourceName: "projects/opensteer-staging/secrets/opensteer-account-app-review/versions/1"
         path: "account-app-review"
@@ -257,7 +257,7 @@ spec:
           csi:
             driver: secrets-store-gke.csi.k8s.io
             readOnly: true
-            volumeAttributes: { secretProviderClass: account-runtime-v11 }
+            volumeAttributes: { secretProviderClass: account-runtime-v12 }
         - { name: runtime-secrets, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
 ---
