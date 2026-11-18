@@ -1,3 +1,4 @@
+import { createClientAction } from "../actions/client-action.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 interface PersonalFixture {
@@ -1222,7 +1223,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it.each(["connecting", "subscribing", "disconnected"])(
-      "rereads on load while the channel is %s",
+      "leaves bootstrap with the connection owner while the channel is %s",
       async (state) => {
         const f = fixture();
         try {
@@ -1233,39 +1234,43 @@ describe("HttpHostClient durable realtime", () => {
             f.socket.serverClose();
           }
           await f.client.load();
-          expect(f.fetch).toHaveBeenCalledTimes(2);
+          expect(f.fetch).toHaveBeenCalledTimes(1);
         } finally {
           f.client.dispose();
         }
       },
     );
 
-    it.each(["initial", "live"])("retries load after a %s bootstrap failure", async (state) => {
-      const f = fixture();
-      try {
-        if (state === "live") {
-          await f.client.load();
-          f.synchronize();
-        }
-        const reads = f.fetch.mock.calls.length;
-        f.fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
-        const reading = state === "initial" ? f.client.load() : f.client.refresh();
-        await Promise.all([
-          expect(reading).rejects.toThrow("The Host could not be reached."),
-          expect(f.client.load()).rejects.toThrow("The Host could not be reached."),
-        ]);
+    it.each(["initial", "live"])(
+      "joins a failed %s bootstrap and reads again on explicit retry",
+      async (state) => {
+        const f = fixture();
+        try {
+          if (state === "live") {
+            await f.client.load();
+            f.synchronize();
+          }
+          const reads = f.fetch.mock.calls.length;
+          f.fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
+          const reading = state === "initial" ? f.client.load() : f.client.refresh();
+          await Promise.all([
+            expect(reading).rejects.toThrow("The Host could not be reached."),
+            expect(f.client.load()).rejects.toThrow("The Host could not be reached."),
+          ]);
 
-        await f.client.load();
-        expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
-        expect(f.client.getSnapshot().session).toBe("authenticated");
-        if (state === "live") {
-          await f.client.load();
+          if (state === "initial") f.client.connection.retry();
+          await (state === "initial" ? f.client.load() : f.client.refresh());
           expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+          expect(f.client.getSnapshot().session).toBe("authenticated");
+          if (state === "live") {
+            await f.client.load();
+            expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+          }
+        } finally {
+          f.client.dispose();
         }
-      } finally {
-        f.client.dispose();
-      }
-    });
+      },
+    );
   });
 
   it("routes viewer-wide history notices to the history cache", async () => {
@@ -1896,7 +1901,7 @@ describe("HttpHostClient durable realtime", () => {
     });
     try {
       await client.load();
-      const olderRead = client.load();
+      const olderRead = client.refresh();
       await withTimeout(reading, 1_000, {
         timeoutError: () =>
           new Error("The overlapping bootstrap did not reach its stale catalog read"),
@@ -6050,6 +6055,7 @@ describe("HttpHostClient attachment discovery", () => {
     const capabilities = vi.fn(async () => [] as const);
     let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
     let bootstraps = 0;
+    const socket = new FakeSocket();
     const client = createHttpHostClient({
       capabilities,
       fetch: async () => {
@@ -6060,11 +6066,14 @@ describe("HttpHostClient attachment discovery", () => {
         }
         return json(bootstrap([workspace]));
       },
-      webSocketFactory: () => new FakeSocket(),
+      webSocketFactory: () => socket,
     });
     try {
       await client.load();
-      const notice = client.load();
+      socket.open();
+      socket.receiveRaw({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "1") });
+      socket.receiveRaw({ type: "host.synchronized", sequence: "1" });
+      socket.receiveRaw({ type: "host.browser-sessions-changed" });
       await vi.advanceTimersByTimeAsync(0);
       expect(held).not.toBeNull();
       const refreshed = client.refresh();
@@ -6072,7 +6081,6 @@ describe("HttpHostClient attachment discovery", () => {
       expect(capabilities).toHaveBeenCalledWith({ revalidate: true });
       held!.resolve(json(bootstrap([workspace])));
       await refreshed;
-      await notice;
     } finally {
       client.dispose();
       vi.useRealTimers();
@@ -7940,14 +7948,15 @@ describe("HttpHostClient lifecycle", () => {
       },
     });
 
-    const loaded = client.load();
+    const loaded = expect(client.load()).rejects.toMatchObject({ name: "AbortError" });
     platform.enterBackground();
     gate[0]?.();
     await loaded;
 
-    // The Workspace channel exists and holds its cursor; only the socket waits.
+    expect(client.getSnapshot().deploymentId).toBeNull();
     expect(sockets).toEqual([]);
     platform.enterForeground();
+    await client.load();
     expect(sockets).toHaveLength(1);
     sockets[0]?.open();
     expect(parseSent(sockets[0]!, 0)).toMatchObject({
@@ -12785,3 +12794,130 @@ it.each([60, 61])(
     }
   },
 );
+
+describe("personal connection admission", () => {
+  it("synchronizes and runs a ready-gated action after in-place password sign-in", async () => {
+    vi.useFakeTimers();
+    const workspace = makeDeployment();
+    const payload = bootstrap([workspace]);
+    let authenticated = false;
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input) => {
+        const path = new URL(input.toString()).pathname;
+        if (path.endsWith("/auth.config")) return json(payload.identityConfig);
+        if (path.endsWith("/auth.password.signIn")) {
+          authenticated = true;
+          return json({
+            redirectUrl: null,
+            session: {
+              absoluteExpiresAt: "2026-11-20T20:00:00.000Z",
+              createdAt: "2026-11-17T20:00:00.000Z",
+              expiresAt: "2026-11-18T20:00:00.000Z",
+              id: payload.sessionId,
+              user: payload.user,
+            },
+          });
+        }
+        return authenticated ? json(payload) : json({ error: unauthorizedError() }, 401);
+      },
+    });
+    try {
+      await client.load();
+      expect(client.connection.getSnapshot().phase).toBe("blocked");
+      expect(
+        await client.rpc["auth.password.signIn"]({
+          email: "owner@example.test",
+          password: "password",
+        }),
+      ).toMatchObject({ ok: true });
+      await client.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      sockets[0]!.open();
+      sockets[0]!.receiveRaw({
+        type: "host.snapshot",
+        snapshot: deploymentSnapshot(workspace, "1"),
+      });
+      sockets[0]!.receiveRaw({ type: "host.synchronized", sequence: "1" });
+      const action = createClientAction(client, {
+        key: "settings",
+        label: "read settings",
+        execute: async (_input, signal) => client.rpc["auth.config"]({}, { signal }),
+      });
+      expect(await action.run(undefined)).toMatchObject({ kind: "confirmed", value: { ok: true } });
+      action.dispose();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("reports the version refused by personal realtime instead of access loss", async () => {
+    const workspace = makeDeployment();
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      webSocketFactory: () => socket,
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receiveRaw({
+        type: "host.error",
+        error: {
+          code: "bad_message",
+          reason: "unsupported-version",
+          retryable: false,
+          message: "Unsupported",
+        },
+      });
+      expect(client.connection.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        issue: { code: "update-app" },
+      });
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("defers startup bootstrap while offline and aborts it on a subsequent path change", async () => {
+    vi.useFakeTimers();
+    const platform = fakeLifecycle({ network: "offline", visibility: "foreground" });
+    const workspace = makeDeployment();
+    const stale = Promise.withResolvers<Response>();
+    const calls: AbortSignal[] = [];
+    const client = createHttpHostClient({
+      lifecycle: platform.lifecycle,
+      fetch: async (_input, init) => {
+        calls.push(init!.signal!);
+        if (calls.length === 1) return stale.promise;
+        return json(bootstrap([workspace]));
+      },
+    });
+    try {
+      const startup = client.load().catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(0);
+      await startup;
+      platform.changeNetwork("online");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+      const joined = client.load().catch(() => undefined);
+      platform.changeNetwork("online");
+      await vi.advanceTimersByTimeAsync(0);
+      await joined;
+      expect(calls[0]!.aborted).toBe(true);
+      expect(calls).toHaveLength(2);
+      stale.resolve(json(bootstrap([makeDeployment()])));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().deploymentId).toBe(workspace.id);
+    } finally {
+      client.dispose();
+    }
+  });
+});

@@ -52,19 +52,26 @@ export interface HttpHostApiClientOptions {
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
-  readonly onAuthenticationRequired: () => void;
+  readonly onAuthenticationRequired: (method: keyof typeof hostApi) => void;
   readonly onVersionMismatch?: () => void;
 }
 
 const maximumRpcPayloadBytes = 1 * 1_024 * 1_024;
 
+function authenticationRefusal<Declaration extends RpcDeclaration>(
+  reason = "sign-in-required",
+): RpcOutput<Declaration> {
+  return rpcError(reason, "Sign in to continue.", false, "unauthorized");
+}
+
 function rpcError<Declaration extends RpcDeclaration>(
   reason: string,
   message: string,
   retryable: boolean,
+  code: z.infer<typeof HostApiErrorSchema>["code"] = "internal",
 ): RpcOutput<Declaration> {
   return {
-    error: HostApiErrorSchema.parse({ code: "internal", message, reason, retryable }),
+    error: HostApiErrorSchema.parse({ code, message, reason, retryable }),
     ok: false,
   } as RpcOutput<Declaration>;
 }
@@ -124,8 +131,8 @@ export function createHttpHostApiClient(options: HttpHostApiClientOptions): Host
   const observers = new Set<() => void>();
   const observedOptions = {
     ...options,
-    onAuthenticationRequired: () => {
-      options.onAuthenticationRequired();
+    onAuthenticationRequired: (method: keyof typeof hostApi) => {
+      options.onAuthenticationRequired(method);
       observers.forEach((listener) => listener());
     },
   };
@@ -273,7 +280,7 @@ async function request<Name extends keyof typeof hostApi>(
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) {
       authenticationRequired = true;
-      options.onAuthenticationRequired();
+      options.onAuthenticationRequired(name);
     }
     deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
     const bytes = await deadline.wait(
@@ -310,8 +317,9 @@ async function request<Name extends keyof typeof hostApi>(
         throw error;
       });
     options.assertResponseCurrent?.(response);
+    call?.signal?.throwIfAborted();
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
-    if (parsed.success) {
+    if (parsed.success && (!authenticationRequired || !parsed.data.ok)) {
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")
@@ -319,6 +327,7 @@ async function request<Name extends keyof typeof hostApi>(
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }
+    if (authenticationRequired) return authenticationRefusal();
     // A Host from before this method answers its framework's plain 404; a
     // server fault may answer without an envelope; anything else is a body
     // this client cannot read, which no retry will change.
@@ -342,26 +351,19 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
-    if (error instanceof z.ZodError || error instanceof RangeError) {
-      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
-    }
     if (
       authenticationRequired ||
       (error instanceof HostTransportError && error.failure.code === "unauthorized")
     ) {
-      if (!authenticationRequired) options.onAuthenticationRequired();
-      return {
-        ok: false,
-        error: HostApiErrorSchema.parse({
-          code: "unauthorized",
-          reason:
-            error instanceof HostTransportError && error.failure.code === "unauthorized"
-              ? error.failure.reason
-              : "sign-in-required",
-          message: "Sign in to continue.",
-          retryable: false,
-        }),
-      } as RpcOutput<(typeof hostApi)[Name]>;
+      if (!authenticationRequired) options.onAuthenticationRequired(name);
+      return authenticationRefusal(
+        error instanceof HostTransportError && error.failure.code === "unauthorized"
+          ? error.failure.reason
+          : undefined,
+      );
+    }
+    if (error instanceof z.ZodError || error instanceof RangeError) {
+      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
     }
     const failure =
       error instanceof HostTransportError

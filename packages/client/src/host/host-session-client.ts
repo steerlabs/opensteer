@@ -906,6 +906,10 @@ export class HttpHostClient {
 
   #bootstrapPromise: Promise<void> | null = null;
   #bootstrapFailed = false;
+  #bootstrapReadGeneration = 0;
+  #attemptBootstrap: Promise<void> | null = null;
+  #bootstrapAttemptSignal: AbortSignal | undefined;
+  #authRestored = false;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
   #tasksStale = false;
@@ -970,9 +974,13 @@ export class HttpHostClient {
       ...(options.bufferedResponses === undefined
         ? {}
         : { bufferedResponses: options.bufferedResponses }),
-      onAuthenticationRequired: () => {
-        this.#expireSession();
-        this.#reverifyCapabilities();
+      onAuthenticationRequired: (method) => {
+        const checking =
+          method === "bootstrap.get" &&
+          this.#bootstrapAttemptSignal &&
+          !this.connection.getSnapshot().scope;
+        this.#expireSession(!checking);
+        if (!checking) this.#reverifyCapabilities();
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
@@ -2174,28 +2182,35 @@ export class HttpHostClient {
 
   async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
     attempt.signal.throwIfAborted();
-    if (this.#snapshot.session !== "authenticated" || this.#bootstrapFailed)
-      await this.#bootstrap("load");
+    if (this.#snapshot.session !== "authenticated" || this.#bootstrapFailed || this.#authRestored) {
+      const reason = this.#authRestored ? "reauthenticate" : "load";
+      const bootstrap = this.#bootstrap(reason, true, this.#authRestored, true, attempt.signal);
+      this.#attemptBootstrap = bootstrap;
+      try {
+        await bootstrap;
+        attempt.signal.throwIfAborted();
+        this.#authRestored = false;
+      } finally {
+        if (this.#attemptBootstrap === bootstrap) this.#attemptBootstrap = null;
+      }
+    }
     attempt.signal.throwIfAborted();
     if (
       this.#snapshot.session !== "authenticated" ||
       !this.#snapshot.user ||
       !this.#snapshot.deploymentId
-    )
-      throw new HostClientRequestError({
+    ) {
+      const refusal = new HostClientRequestError({
         code: "unauthorized",
         message: "Sign in to continue.",
         status: 401,
         retryable: false,
       });
-    attempt.acceptScope(
-      this.#clientScope?.() ?? {
-        authorityKey: this.#baseUrl.origin,
-        deploymentId: this.#snapshot.deploymentId,
-        viewerId: this.#snapshot.user.id,
-        loginId: this.#snapshot.sessionId ?? String(this.#viewerGeneration),
-      },
-    );
+      attempt.fail?.(classifyClientFailure(refusal));
+      throw refusal;
+    }
+    const scope = this.#scope();
+    if (scope) attempt.acceptScope(scope);
     return new Promise((resolve, reject) => {
       let admitted = false;
       let closeLease!: (failure: ReturnType<typeof classifyClientFailure>) => void;
@@ -2229,13 +2244,8 @@ export class HttpHostClient {
           );
           return;
         }
-        const scope = this.#clientScope?.() ?? {
-          authorityKey: this.#baseUrl.origin,
-          deploymentId: this.#snapshot.deploymentId!,
-          viewerId: this.#snapshot.user!.id,
-          loginId: this.#snapshot.sessionId ?? String(this.#viewerGeneration),
-        };
-        attempt.acceptScope(scope);
+        const scope = this.#scope();
+        if (scope) attempt.acceptScope(scope);
         if (admitted || this.#snapshot.connection !== "connected") return;
         admitted = true;
         this.#stopHandshake();
@@ -2271,25 +2281,29 @@ export class HttpHostClient {
     });
   }
 
+  #scope(): ClientScope | null {
+    if (this.#clientScope) return this.#clientScope();
+    if (!this.#snapshot.deploymentId || !this.#snapshot.user) return null;
+    return {
+      authorityKey: this.#baseUrl.origin,
+      deploymentId: this.#snapshot.deploymentId,
+      viewerId: this.#snapshot.user.id,
+      loginId: this.#snapshot.sessionId ?? String(this.#viewerGeneration),
+    };
+  }
+
   async load(): Promise<void> {
-    if (this.#ownsConnection) this.connection.start();
     if (this.#disposed) throw new Error("The Host client is closed.");
-    const channel = this.#snapshot.deploymentId
-      ? this.#channels.get(this.#snapshot.deploymentId)
-      : undefined;
-    if (
-      !this.#bootstrapPromise &&
-      !this.#bootstrapFailed &&
-      this.#snapshot.session === "authenticated" &&
-      channel?.synchronized &&
-      channel.socket?.readyState === 1
-    )
-      return;
-    await (this.#bootstrapPromise ?? this.#bootstrap("load"));
+    if (this.#ownsConnection) this.connection.start();
+    await (this.#attemptBootstrap ?? this.#bootstrapPromise);
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
     if (this.#disposed) return;
+    if (this.#ownsConnection && this.#snapshot.session === "authentication-required") {
+      await this.reauthenticate();
+      return;
+    }
     if (options?.retryConnection) this.connection.retry();
     await this.#refresh("refresh");
   }
@@ -2302,18 +2316,12 @@ export class HttpHostClient {
     await this.#bootstrap(reason, false, true);
   }
 
-  /**
-   * Re-reads the session after something outside this client restored it.
-   *
-   * Once bootstrap answers 401 the client latches `authentication-required` and
-   * stops polling, so an ordinary `refresh` can join a stale in-flight bootstrap
-   * instead of asking the Host again. Desktop restores Host sessions in its main
-   * process, and this is how that recovery reaches the renderer.
-   */
+  /** The browser cookie or desktop attachment was restored outside the session. */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    await this.#bootstrap("reauthenticate", true, true);
+    this.#authRestored = true;
     this.connection.retry();
+    await this.#attemptBootstrap;
   }
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
@@ -3347,6 +3355,7 @@ export class HttpHostClient {
     force = false,
     revalidateCapabilities = false,
     trigger = true,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (trigger) bootstrapReadDiagnostics.trigger(reason);
     if (this.#bootstrapPromise && !force) {
@@ -3359,7 +3368,8 @@ export class HttpHostClient {
       if (!this.#disposed) await this.#bootstrap(reason, false, false, false);
       return;
     }
-    const operation = this.#performBootstrap(reason, revalidateCapabilities);
+    this.#bootstrapAttemptSignal = signal;
+    const operation = this.#performBootstrap(reason, revalidateCapabilities, signal);
     this.#bootstrapPromise = operation;
     let succeeded = false;
     try {
@@ -3369,7 +3379,8 @@ export class HttpHostClient {
       if (this.#bootstrapPromise === operation) {
         this.#bootstrapFailed = !succeeded;
         this.#bootstrapPromise = null;
-        if (this.#rereadPending) {
+        this.#bootstrapAttemptSignal = undefined;
+        if (!signal?.aborted && this.#rereadPending) {
           const reason = this.#rereadPending;
           this.#rereadPending = null;
           this.#reread(reason, false);
@@ -3745,11 +3756,15 @@ export class HttpHostClient {
     void this.#refreshCapabilities({ revalidate: true }).catch(() => undefined);
   }
 
-  async #refreshCapabilities(options?: { readonly revalidate: boolean }): Promise<void> {
+  async #refreshCapabilities(
+    options?: { readonly revalidate: boolean },
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!this.#readCapabilities || this.#disposed) return;
     const generation = this.#viewerGeneration;
     const read = ++this.#capabilityReadGeneration;
     const capabilities = await this.#readCapabilities(options);
+    signal?.throwIfAborted();
     if (
       generation !== this.#viewerGeneration ||
       read !== this.#capabilityReadGeneration ||
@@ -3789,8 +3804,18 @@ export class HttpHostClient {
     }
   }
 
-  async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
+  async #performBootstrap(
+    reason: BootstrapReason,
+    revalidateCapabilities: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
     let generation = this.#viewerGeneration;
+    const read = ++this.#bootstrapReadGeneration;
+    const current = () =>
+      !this.#disposed &&
+      read === this.#bootstrapReadGeneration &&
+      generation === this.#viewerGeneration;
+    const call = signal ? { signal } : undefined;
     const presenceMark = this.#presenceCounter,
       ownerViewRevision = this.#ownerViews.revision;
     if (
@@ -3801,30 +3826,38 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, connection: "connecting" });
     }
     if (this.#readCapabilities)
-      await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+      await this.#refreshCapabilities(
+        revalidateCapabilities ? { revalidate: true } : undefined,
+        signal,
+      );
+    signal?.throwIfAborted();
+    if (!current()) return;
     bootstrapReadDiagnostics.start(reason);
-    const response = await this.rpc["bootstrap.get"]({});
+    const response = await this.rpc["bootstrap.get"]({}, call);
+    signal?.throwIfAborted();
     if (!response.ok && response.error.code === "unauthorized") {
-      if (generation === this.#viewerGeneration) this.#expireSession();
-      const authGeneration = this.#viewerGeneration,
-        identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
-      if (authGeneration === this.#viewerGeneration && !this.#disposed)
-        this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
+      if (this.#disposed || read !== this.#bootstrapReadGeneration) return;
+      if (generation === this.#viewerGeneration) this.#expireSession(!signal);
+      generation = this.#viewerGeneration;
+      const config = await this.rpc["auth.config"]({}, call);
+      signal?.throwIfAborted();
+      if (signal && !config.ok) unwrapRpcResult(response);
+      const identityConfig = unwrapRpcResult(config);
+      if (current()) this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
       return;
     }
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+    if (!current()) return;
     this.#hostUnreachable =
       !response.ok && ![...this.#channels.values()].some((channel) => channel.synchronized);
     if (this.#hostUnreachable) this.#update({ ...this.#snapshot, connection: "offline" });
     const payload = unwrapRpcResult(response);
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+    if (!current()) return;
     let replacedViewer = false;
     if (
       (this.#snapshot.user && this.#snapshot.user.id !== payload.user.id) ||
       (this.#snapshot.deploymentId && this.#snapshot.deploymentId !== payload.deploymentId)
     ) {
-      this.#expireSession();
+      this.#expireSession(!signal);
       replacedViewer = true;
       generation = this.#viewerGeneration;
     }
@@ -3890,6 +3923,7 @@ export class HttpHostClient {
     if (!this.#cacheLoaded && this.#streamCache) {
       this.#cacheLoaded = true;
       await this.#checkpointWrite.catch(() => undefined);
+      signal?.throwIfAborted();
       const cached = await this.#streamCache
         .load({
           deploymentId: payload.deploymentId,
@@ -3897,7 +3931,8 @@ export class HttpHostClient {
           apiVersion: hostApiVersion,
         })
         .catch(() => null);
-      if (generation !== this.#viewerGeneration || this.#disposed) return;
+      signal?.throwIfAborted();
+      if (!current()) return;
       if (
         cached &&
         cached.cursor.deploymentId === payload.deploymentId &&
@@ -3923,7 +3958,7 @@ export class HttpHostClient {
         this.#restoredCursor = cached.cursor.afterSequence;
       }
     }
-    if (this.#ownsConnection && replacedViewer) this.connection.retry();
+    if (this.#ownsConnection && replacedViewer && !signal) this.connection.retry();
     this.#ensureDeploymentChannel(payload.deploymentId);
     this.#recomputeConnection();
     this.#reportTimeZone();
@@ -4462,11 +4497,9 @@ export class HttpHostClient {
         return;
       }
       if (message.error.reason === "unsupported-version") this.#reverifyCapabilities();
-      // The Host refused this channel. A retryable refusal is a transport
-      // fault and takes the backoff; a final one leaves the channel down, and
-      // the connection state is where a reader learns that.
       channel.refused = !message.error.retryable;
-      this.#closeChannel(channel, message.error.retryable);
+      this.#closeChannel(channel, false);
+      this.#connectionFailed?.(message.error);
       this.#recomputeConnection();
       return;
     }
@@ -5034,16 +5067,6 @@ export class HttpHostClient {
     // connection for the one being read. A refused one's own screen remains
     // unavailable, and it never decides for a client reading nothing yet.
     const channels = [...this.#channels.values()];
-    if (channels.some((channel) => channel.refused))
-      this.#connectionFailed?.(
-        new HostClientRequestError({
-          code: "forbidden",
-          reason: "realtime-refused",
-          message: "Access needs to be checked.",
-          status: 403,
-          retryable: false,
-        }),
-      );
     const read = channels.filter(({ deploymentId }) => this.#readsDeployment(deploymentId));
     const pending = (
       read.length > 0 ? read : channels.filter((channel) => !channel.refused)
@@ -5193,8 +5216,8 @@ export class HttpHostClient {
     });
   }
 
-  #expireSession(): void {
-    this.connection.invalidateScope();
+  #expireSession(invalidate = true): void {
+    if (invalidate) this.connection.invalidateScope();
     const cacheScope = this.#cacheScope();
     if (cacheScope)
       this.#checkpointWrite = this.#checkpointWrite

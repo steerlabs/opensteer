@@ -381,3 +381,17 @@ it("bounds buffered browser-open RPC headers independently of the generic respon
     vi.useRealTimers();
   }
 });
+
+it("reports authentication refusal when the 401 body is plain text", async () => {
+  const onAuthenticationRequired = vi.fn();
+  const client = createHttpHostApiClient({
+    baseUrl: new URL("https://host.example"),
+    onAuthenticationRequired,
+    fetch: async () => new Response("Unauthorized", { status: 401 }),
+  });
+  await expect(client["auth.config"]({})).resolves.toMatchObject({
+    ok: false,
+    error: { code: "unauthorized", reason: "sign-in-required", retryable: false },
+  });
+  expect(onAuthenticationRequired).toHaveBeenCalledTimes(1);
+});
