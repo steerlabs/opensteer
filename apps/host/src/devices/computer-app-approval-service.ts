@@ -43,6 +43,7 @@ import {
 } from "@opensteer/integration-core";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
+import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
   ComputerUseInstalledAppsParamsSchema,
@@ -115,6 +116,30 @@ export async function endComputerUseSessions(
 /** Said when automatic approval is asked for on anything but a Mac. */
 export const automaticApprovalMacOnlyRefusal =
   "Automatic approval is only for apps on a Mac. The owner allows phone access from any Opensteer app.";
+
+function computerAppReportRefusal(
+  report: Awaited<ReturnType<DeviceComputerAppsPort["reportsApp"]>>,
+  device: string,
+  app: string,
+): OpensteerError {
+  if (report === "offline")
+    return new OpensteerError({
+      code: "conflict",
+      reason: "device-offline",
+      message: `Open Opensteer on ${device} and keep it open, then try again.`,
+    });
+  if (report === "connecting")
+    return new OpensteerError({
+      code: "conflict",
+      reason: "computer-app-connecting",
+      message: `Opensteer on ${device} is still connecting. Try again in a moment.`,
+    });
+  return new OpensteerError({
+    code: "conflict",
+    reason: "computer-app-not-offered",
+    message: `This version of Opensteer on ${device} doesn't offer ${app}. Update Opensteer on ${device}.`,
+  });
+}
 
 /** Owner decisions consume exact pending requests; reductions need no new approval. */
 type DeviceInput = { readonly deviceId?: DeviceId; readonly runnerId?: RunnerId };
@@ -224,6 +249,7 @@ export class ComputerAppApprovalService {
     if (!request)
       throw new OpensteerError({
         code: "conflict",
+        reason: computerAppApprovalChangedReason,
         message: "This approval is no longer waiting.",
       });
     if (isPhoneDisplayDefinitionId(request.definitionId))
@@ -263,6 +289,7 @@ export class ComputerAppApprovalService {
       if (!computerAppIdentitiesEqual(app.identity, request.app))
         throw new OpensteerError({
           code: "conflict",
+          reason: computerAppApprovalChangedReason,
           message: "This app changed since it was requested. Request access again.",
         });
     }
@@ -303,6 +330,7 @@ export class ComputerAppApprovalService {
     if (!request || request.ownerUserId !== input.actorUserId)
       throw new OpensteerError({
         code: "conflict",
+        reason: computerAppApprovalChangedReason,
         message: "This approval is no longer waiting for you.",
       });
     if (input.secrets && (request.kind !== "server" || input.decision !== "allow"))
@@ -337,6 +365,7 @@ export class ComputerAppApprovalService {
         if (!secrets)
           throw new OpensteerError({
             code: "conflict",
+            reason: computerAppApprovalChangedReason,
             message: "This approval is no longer waiting.",
           });
         return this.#store.localMcp.approve({ ...answer, secrets });
@@ -383,6 +412,7 @@ export class ComputerAppApprovalService {
           if (request.app && !(await this.#computerApps.attached(request.deviceId)))
             throw new OpensteerError({
               code: "conflict",
+              reason: "device-offline",
               message:
                 "Can't verify this app right now. Check that its computer is online and try again.",
             });
@@ -436,6 +466,7 @@ export class ComputerAppApprovalService {
     ) {
       throw new OpensteerError({
         code: "bad_request",
+        reason: "computer-app-definition-changed",
         message: "This app does not offer that access.",
       });
     }
@@ -462,16 +493,8 @@ export class ComputerAppApprovalService {
       if (incompatibility) throw new OpensteerError({ code: "conflict", message: incompatibility });
       if (iphone) {
         const report = await this.#computerApps.reportsApp(input.deviceId, definition.id);
-        const name = "this iPhone";
-        if (report !== "reported") {
-          const message =
-            report === "offline"
-              ? `Open Opensteer on ${name} and keep it open, then try again.`
-              : report === "connecting"
-                ? `Opensteer on ${name} is still connecting. Try again in a moment.`
-                : `This version of Opensteer on ${name} doesn't offer ${definition.name}. Update Opensteer on ${name}.`;
-          throw new OpensteerError({ code: "conflict", message });
-        }
+        if (report !== "reported")
+          throw computerAppReportRefusal(report, "this iPhone", definition.name);
       }
       return this.#store.requestDeviceComputerAppSetup({
         access: input.access,
@@ -550,7 +573,11 @@ export class ComputerAppApprovalService {
         input.access === "read-write" &&
         !definition.config.operations.some((operation) => operation.effect === "write"))
     ) {
-      throw new OpensteerError({ code: "bad_request", message: "Computer app was not found" });
+      throw new OpensteerError({
+        code: "bad_request",
+        reason: "computer-app-definition-changed",
+        message: "The app or its available access changed. Review it and request access again.",
+      });
     }
     const digest = integrationDefinitionDigest(definition);
     const installed = (await this.#store.listInstallations()).find(
@@ -618,12 +645,12 @@ export class ComputerAppApprovalService {
         }
         return mutation;
       } catch (error) {
-        if (error instanceof ComputerAppNotOfferedError) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: `${error.runnerName} is offline. Turn ${definition.name} on when it is back.`,
-          });
-        }
+        if (error instanceof ComputerAppNotOfferedError)
+          throw computerAppReportRefusal(
+            await computerApps.reportsApp(input.deviceId, definition.id),
+            error.runnerName,
+            definition.name,
+          );
         throw error;
       }
     });

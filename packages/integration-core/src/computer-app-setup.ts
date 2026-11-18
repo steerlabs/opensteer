@@ -16,6 +16,8 @@ import { LocalMcpLaunchSchema, LocalMcpLaunchViewSchema } from "./local-mcp.js";
 
 const IsoDateTimeSchema = z.iso.datetime({ offset: true });
 
+export const computerAppApprovalChangedReason = "computer-app-approval-changed";
+
 const localMcpServerSetupShape = {
   installationTitle: z.string().trim().min(1).max(160),
   name: McpIdentifierSchema,

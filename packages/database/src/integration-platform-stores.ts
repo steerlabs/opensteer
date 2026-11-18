@@ -26,6 +26,7 @@ import {
   IntegrationConnectionRequirementSchema,
   IntegrationDefinitionIdSchema,
   IntegrationDefinitionSummarySchema,
+  StoredIntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
   IntegrationServerTransportSchema,
@@ -417,7 +418,7 @@ export async function revokeComputerConnectionsInTransaction(
         .select("manifest")
         .where("id", "=", selector.installationId)
         .executeTakeFirst();
-      const definition = IntegrationDefinitionSummarySchema.safeParse(
+      const definition = StoredIntegrationDefinitionSummarySchema.safeParse(
         installation?.manifest.definition,
       );
       return definition.success
