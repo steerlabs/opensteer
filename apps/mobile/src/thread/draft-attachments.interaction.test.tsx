@@ -194,3 +194,21 @@ it("an upload that fails just before the outage is published goes again on recov
   expect(strip.current!.items[0]).toMatchObject({ error: null, status: "ready" });
   await act(async () => root.unmount());
 });
+
+it("restarts an upload that fails after its replacement connection is ready", async () => {
+  const uploads = controlledUploads();
+  const connection = fakeConnection();
+  const { root, strip } = await mountStrip(connection);
+  try {
+    await act(async () => strip.current!.paste(photo));
+    await act(async () => connection.set({ phase: "recovering" }));
+    await act(async () => connection.set({ phase: "ready", readyRevision: 2 }));
+    expect(uploads).toHaveLength(1);
+    await act(async () => uploads[0]!.reject(new HostTransportError("unreachable")));
+    expect(uploads).toHaveLength(2);
+    await act(async () => uploads[1]!.resolve(uploaded));
+    expect(strip.current!.items[0]).toMatchObject({ status: "ready" });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

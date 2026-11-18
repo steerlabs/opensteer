@@ -305,13 +305,16 @@ describe("ComputerUseBlock", () => {
 
     await click(button(container, "Add app"));
     await settle();
-    expect(installed).toHaveBeenCalledWith({
-      icons: true,
-      limit: 50,
-      offset: 0,
-      query: "",
-      runnerId: mac,
-    });
+    expect(installed).toHaveBeenCalledWith(
+      {
+        icons: true,
+        limit: 50,
+        offset: 0,
+        query: "",
+        runnerId: mac,
+      },
+      { signal: expect.any(AbortSignal) },
+    );
     const candidates = [...dialog().querySelectorAll<HTMLElement>(".computer-use__list > li")];
     // Notes is already approved, so it is listed as such and offers no choice.
     expect(
@@ -414,9 +417,50 @@ describe("ComputerUseBlock", () => {
     await act(async () => {
       await vi.runAllTimersAsync();
     });
-    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ query: "pre" }));
+    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ query: "pre" }), {
+      signal: expect.any(AbortSignal),
+    });
     expect(dialog().textContent).toContain("Preview");
     expect(dialog().querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the current picker search when its old answer fails after recovery", async () => {
+    vi.useFakeTimers();
+    const old = Promise.withResolvers<never>();
+    const connection = switchableConnection();
+    const installed = vi.fn(async (input: unknown, _options?: { signal: AbortSignal }) => ({
+      ok: true,
+      data: {
+        apps: [{ identity: (input as { query: string }).query ? preview : notes, running: false }],
+        total: 1,
+      },
+    }));
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await act(async () => vi.runAllTimersAsync());
+    installed.mockImplementationOnce(() => old.promise);
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        search,
+        "pre",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.runAllTimersAsync();
+    });
+    await act(async () => vi.runAllTimersAsync());
+    expect(installed).toHaveBeenCalledTimes(2);
+    const oldSignal = installed.mock.calls[1]?.[1]?.signal;
+    await act(async () => connection.set(false));
+    await act(async () => connection.set(true));
+    await act(async () => old.reject(new TypeError("Failed to fetch")));
+    expect(dialog().textContent).toContain("Preview");
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+    expect(oldSignal?.aborted).toBe(true);
   });
 
   it("searches and pages on the Mac rather than in the page", async () => {
@@ -440,7 +484,9 @@ describe("ComputerUseBlock", () => {
       await vi.runAllTimersAsync();
     });
     await click(button(container, "Show more"));
-    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, query: "" }));
+    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, query: "" }), {
+      signal: expect.any(AbortSignal),
+    });
     expect(container.querySelectorAll(".computer-use__list > li")).toHaveLength(2);
 
     const search = container.querySelector<HTMLInputElement>('input[type="search"]');
@@ -455,6 +501,7 @@ describe("ComputerUseBlock", () => {
     });
     expect(installed).toHaveBeenLastCalledWith(
       expect.objectContaining({ offset: 0, query: "not" }),
+      { signal: expect.any(AbortSignal) },
     );
     expect(button(container, "Show more")).toBeNull();
   });

@@ -180,11 +180,15 @@ class StagedFiles {
   }
 
   /** Whether a failure is the connection's, and if so, parks the file as waiting. */
-  #interrupted(localId: string, record: StagedRecord, error: unknown): boolean {
+  #interrupted(localId: string, record: StagedRecord, revision: number, error: unknown): boolean {
     if (classifyClientFailure(error).kind !== "transport") return false;
     const connection = this.client.connection.getSnapshot();
-    record.interruptedAt = connection.readyRevision;
-    if (connection.phase === "ready") return false;
+    record.interruptedAt = revision;
+    if (connection.phase === "ready") {
+      if (connection.readyRevision === revision) return false;
+      this.retry(localId);
+      return true;
+    }
     this.#patch(localId, { error: null, part: null, retryable: false, status: "waiting" });
     return true;
   }
@@ -309,6 +313,7 @@ class StagedFiles {
       return;
     }
     const controller = new AbortController();
+    const revision = this.client.connection.getSnapshot().readyRevision;
     record.controller = controller;
     const deploymentId = this.#deploymentId;
     this.#patch(localId, { error: null, part: null, retryable: false, status: "uploading" });
@@ -339,7 +344,7 @@ class StagedFiles {
         (error: unknown) => {
           if (controller.signal.aborted) return;
           record.controller = null;
-          if (this.#interrupted(localId, record, error)) return;
+          if (this.#interrupted(localId, record, revision, error)) return;
           this.#patch(localId, {
             error: uploadFailure(),
             retryable: retryable(error),
@@ -360,6 +365,7 @@ class StagedFiles {
       return;
     }
     const controller = new AbortController();
+    const revision = this.client.connection.getSnapshot().readyRevision;
     record.controller = controller;
     this.#patch(localId, { error: null, retryable: false, status: "checking" });
     void recheck(this.client, record.attachmentId, record.mediaType, controller.signal).then(
@@ -376,7 +382,7 @@ class StagedFiles {
       (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
-        if (this.#interrupted(localId, record, error)) return;
+        if (this.#interrupted(localId, record, revision, error)) return;
         const unreachable = retryable(error) && !isNotFound(error);
         this.#patch(localId, {
           error: unreachable

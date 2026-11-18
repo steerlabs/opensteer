@@ -10,10 +10,16 @@ import {
 } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import { localSession } from "../use-action.js";
-import { TabCloserProvider, useTabCloseLine, useTabCloser } from "./tab-closer.js";
+import {
+  TabCloserProvider,
+  useTabCloseLine,
+  useTabCloser,
+  useTabGroupCloser,
+} from "./tab-closer.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const tab = "tab_00000000-0000-4000-8000-000000000001" as TabId;
+const anotherTab = "tab_00000000-0000-4000-8000-000000000002" as TabId;
 let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
@@ -21,15 +27,15 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function Row() {
+function Row({ id = tab }: { readonly id?: TabId }) {
   const close = useTabCloser();
-  const line = useTabCloseLine(tab);
+  const line = useTabCloseLine(id);
   return (
     <div>
-      <button onClick={() => close({ key: tab })} type="button">
+      <button onClick={() => close({ key: id })} type="button">
         Close
       </button>
-      <p data-line>{line?.text ?? ""}</p>
+      <p data-line={id}>{line?.text ?? ""}</p>
       {line?.link ? (
         <button onClick={line.link.onPress} type="button">
           {line.link.label}
@@ -39,7 +45,16 @@ function Row() {
   );
 }
 
-function setup(closeTabs: HostClient["closeTabs"], open: () => boolean) {
+function Group() {
+  const close = useTabGroupCloser();
+  return (
+    <button type="button" onClick={() => close([tab, anotherTab])}>
+      Close group
+    </button>
+  );
+}
+
+function setup(closeTabs: HostClient["closeTabs"], open: (id: TabId) => boolean, group = false) {
   const listeners = new Set<() => void>();
   let state: ClientConnectionState = localSession.connection.getSnapshot();
   const connection: ClientConnection = {
@@ -54,14 +69,14 @@ function setup(closeTabs: HostClient["closeTabs"], open: () => boolean) {
     connection,
     closeTabs: vi.fn(closeTabs),
     rpc: {
-      "tabs.get": async () => {
-        if (open()) return { ok: true, data: { tabId: tab } };
+      "tabs.get": vi.fn(async ({ tabId }: { tabId: TabId }, _options?: { signal: AbortSignal }) => {
+        if (open(tabId)) return { ok: true, data: { tabId } };
         throw Object.assign(new Error("gone"), {
           code: "not_found",
           provenance: "host",
           retryable: false,
         });
-      },
+      }),
     },
   } as unknown as HostClient;
   const node = document.createElement("div");
@@ -71,12 +86,19 @@ function setup(closeTabs: HostClient["closeTabs"], open: () => boolean) {
     root!.render(
       <TabCloserProvider hostClient={hostClient}>
         <Row />
+        {group ? (
+          <>
+            <Row id={anotherTab} />
+            <Group />
+          </>
+        ) : null}
       </TabCloserProvider>,
     ),
   );
   return {
     hostClient,
-    line: () => node.querySelector("[data-line]")?.textContent ?? "",
+    line: (id = tab) => node.querySelector(`[data-line="${id}"]`)?.textContent ?? "",
+    checks: () => [...node.querySelectorAll("button")].filter((b) => b.textContent === "Check"),
     button: (name: string) =>
       [...node.querySelectorAll("button")].find((b) => b.textContent === name),
     offline() {
@@ -124,4 +146,37 @@ it("says the Host's refusal of the tab on its row", async () => {
   await act(async () => view.button("Close")!.click());
   expect(view.line()).not.toBe("");
   expect(view.line()).not.toContain("busy");
+});
+
+it("keeps each tab's outcome when a group close or a check has mixed results", async () => {
+  const view = setup(
+    vi
+      .fn<HostClient["closeTabs"]>()
+      .mockResolvedValueOnce({
+        closed: [tab],
+        failed: [{ tabId: anotherTab, error: { code: "conflict", message: "busy", next: null } }],
+      })
+      .mockRejectedValueOnce(new HostTransportError("unreachable")),
+    (id) => {
+      if (id === anotherTab) throw new HostTransportError("timed-out");
+      return true;
+    },
+    true,
+  );
+  await act(async () => view.button("Close group")!.click());
+  expect(view.line(tab)).toBe("");
+  expect(view.line(anotherTab)).not.toBe("");
+  await act(async () => view.button("Close group")!.click());
+  expect(view.checks()).toHaveLength(2);
+  await act(async () => {
+    for (const check of view.checks()) check.click();
+  });
+  expect(view.line(tab)).toContain("Not closed");
+  expect(view.line(anotherTab)).toContain("Couldn't confirm");
+  expect(view.checks()).toHaveLength(1);
+  expect(view.hostClient.rpc["tabs.get"]).toHaveBeenCalledWith(
+    { tabId: anotherTab },
+    { signal: expect.any(AbortSignal) },
+  );
+  expect(view.hostClient.closeTabs).toHaveBeenCalledTimes(2);
 });
