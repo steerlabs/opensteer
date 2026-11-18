@@ -1042,6 +1042,22 @@ it("offers transient Passwords choices and settles the pinned shared command in 
   }
 });
 
+// The web preview opened its own connection before the Host state loaded, and
+// its browser tabs then never showed a picture.
+it("opens its own connection only once its Host state has loaded", async () => {
+  const client = new MockHostClient({ latencyMs: 50 });
+  try {
+    void client.load();
+    await vi.waitFor(
+      () => expect(client.connection.getSnapshot().phase, "never connected").toBe("ready"),
+      { timeout: 2000 },
+    );
+    expect(client.getSnapshot().connection).toBe("connected");
+  } finally {
+    client.dispose();
+  }
+});
+
 it("loads managed memory passes through the current strict trigger contract", async () => {
   const client = new MockHostClient({ latencyMs: 0, memoryPasses: "active" });
   try {
