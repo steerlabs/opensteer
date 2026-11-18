@@ -390,6 +390,7 @@ integration("notification decision boundary", () => {
               }),
             ),
             content: jsonValue(content),
+            createdAt: new Date(),
             id,
             kind: "assistant",
             published: true,

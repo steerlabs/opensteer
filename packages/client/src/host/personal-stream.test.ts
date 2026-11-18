@@ -898,7 +898,7 @@ test("uses no timers or network reads when an attached personal client is idle",
   }
 });
 
-test("invalidates observed tab inventory without discarding its independent layout", async () => {
+test("retains stale tab inventory until replacement and keeps its independent layout", async () => {
   const tab = TabSchema.parse({
     tabId: "page",
     kind: "page",
@@ -923,16 +923,12 @@ test("invalidates observed tab inventory without discarding its independent layo
   const view = { entries: [], complete: true, hasMore: false };
   let socket: MockPersonalSocket;
   let generation = 0;
-  const fetch = vi.fn<typeof globalThis.fetch>(async (url, options) => {
+  const replacement = Promise.withResolvers<Response>();
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
     const { kind, expectedRevision, cursor } = JSON.parse(
       new URL(String(url)).searchParams.get("input")!,
     );
-    if (expectedRevision === "2")
-      return new Promise<Response>((_, reject) => {
-        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
-          once: true,
-        });
-      });
+    if (expectedRevision === "2") return replacement.promise;
     const page = Number(cursor ?? 0);
     const next = kind === "tab" && page + 1 < tabsByPage.length ? String(page + 1) : null;
     return Response.json({
@@ -994,6 +990,7 @@ test("invalidates observed tab inventory without discarding its independent layo
       expect(tabs.complete).toBe(true);
       expect(tabs.layout).toEqual(layout);
     });
+    const held = tabs.get(tab.tabId);
     socket!.deliver({
       type: "host.resource",
       subscriptionId: "shell",
@@ -1002,9 +999,25 @@ test("invalidates observed tab inventory without discarding its independent layo
       revision: "2",
       view,
     });
-    expect(tabs.get(tab.tabId)).toBeUndefined();
+    expect(tabs.get(tab.tabId)).toBe(held);
     expect(tabs.complete).toBe(false);
     expect(tabs.layout).toEqual(layout);
+
+    replacement.resolve(
+      Response.json({
+        ok: true,
+        data: {
+          revision: "2",
+          data: { kind: "tab", tabs: { tabs: [], layout, complete: true } },
+          next: null,
+        },
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(tabs.get(tab.tabId)).toBeUndefined();
+      expect(tabs.complete).toBe(true);
+      expect(tabs.layout).toEqual(layout);
+    });
   } finally {
     releaseTab();
     releaseLayout();
