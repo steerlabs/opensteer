@@ -15,6 +15,7 @@ interface Progress {
   readonly apkSha256: string;
   readonly connectionGeneration: number;
   readonly startedAt: number;
+  readonly attempt: number;
   state: State;
 }
 
@@ -23,6 +24,7 @@ export class AgentPhoneUpdateHub {
   readonly #progress = new Map<RunnerId, Progress>();
   readonly #sockets = new Set<WebSocket>();
   readonly #expiry: ReturnType<typeof setInterval>;
+  #nextAttempt = 0;
 
   readonly #options: {
     readonly authenticator: RunnerAuthenticator;
@@ -61,12 +63,25 @@ export class AgentPhoneUpdateHub {
 
   projection(runnerId: RunnerId, generation: number, connected: boolean) {
     const entry = this.#progress.get(runnerId);
-    if (!entry) return null;
+    if (!entry || entry.connectionGeneration > generation) return null;
     if (connected || entry.connectionGeneration !== generation) {
       this.#progress.delete(runnerId);
       return null;
     }
     return entry.state;
+  }
+
+  #publish(runnerId: RunnerId, progress: Progress) {
+    const held = this.#progress.get(runnerId);
+    if (
+      held &&
+      (held.connectionGeneration > progress.connectionGeneration ||
+        (held.connectionGeneration === progress.connectionGeneration &&
+          held.attempt > progress.attempt))
+    )
+      throw new Error("Phone update was replaced");
+    this.#progress.set(runnerId, progress);
+    this.#options.changed();
   }
 
   close(): void {
@@ -145,6 +160,7 @@ export class AgentPhoneUpdateHub {
             clearTimeout(timeout);
             runnerId = identity.runnerId;
             release = this.#options.release();
+            const attempt = ++this.#nextAttempt;
             await send(
               JSON.stringify({
                 type: "host.agent-phone.update",
@@ -159,6 +175,7 @@ export class AgentPhoneUpdateHub {
               apkSha256: release?.manifest.apkSha256 ?? "",
               connectionGeneration: identity.connectionGeneration,
               startedAt: Date.now(),
+              attempt,
               state: "downloading",
             };
             return;
@@ -174,8 +191,7 @@ export class AgentPhoneUpdateHub {
             downloaded = true;
             if (this.#progress.size >= 256 && !this.#progress.has(runnerId))
               throw new Error("Phone update capacity reached");
-            this.#progress.set(runnerId, progress);
-            this.#options.changed();
+            this.#publish(runnerId, progress);
             // Await each write so a slow tunnel never queues the whole APK per phone.
             for (let offset = 0; offset < release.apk.byteLength; offset += 65_536) {
               if (offset % 1_048_576 === 0) await authorize();
@@ -189,8 +205,7 @@ export class AgentPhoneUpdateHub {
             throw new Error("Phone update release changed");
           if (progress.state === "failed") return;
           progress.state = status.state;
-          this.#progress.set(runnerId, progress);
-          this.#options.changed();
+          this.#publish(runnerId, progress);
         })
         .catch(() => {
           socket.close(1008, "Phone update refused");
@@ -206,7 +221,12 @@ export class AgentPhoneUpdateHub {
       this.#sockets.delete(socket);
       // A status and close can share one read; drain accepted frames before classifying the disconnect.
       void lane.then(() => {
-        if (downloaded && progress?.state === "downloading") {
+        if (
+          downloaded &&
+          runnerId &&
+          progress?.state === "downloading" &&
+          this.#progress.get(runnerId) === progress
+        ) {
           progress.state = "failed";
           this.#options.changed();
         }

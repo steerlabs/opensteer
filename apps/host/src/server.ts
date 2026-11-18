@@ -1,7 +1,6 @@
 import { createPersonalReads } from "./server/personal-reads.js";
 import { PersonalResources } from "./server/personal-resources.js";
-import { OpensteerStore } from "@opensteer/database";
-import { IntegrationStore } from "@opensteer/database";
+import { IntegrationPlatformStore, IntegrationStore, OpensteerStore } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { attachPersonalSocket } from "./server/personal-socket.js";
@@ -1015,6 +1014,7 @@ export async function createHostServer(
     const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
     const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
+    const policyStore = page && new IntegrationPlatformStore(store.database);
     for (const runner of manageable) {
       if (ownership.get(runner.id)?.effectiveOwner !== ownerId) continue;
       const reported = dependencies.computerApps.status(runner.id);
@@ -1041,13 +1041,11 @@ export async function createHostServer(
         runner.moduleDescriptors.shell?.platform !== "darwin"
       )
         continue;
-      computerUsePolicies.set(
-        runner.id,
-        await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy({
-          deviceId: await store.requireSelfDeviceId(runner.id),
-          ownerUserId: ownerId,
-        }),
-      );
+      const target = { deviceId: await store.requireSelfDeviceId(runner.id), ownerUserId: ownerId };
+      const policy = policyStore
+        ? await policyStore.getDeviceComputerUsePolicy(target)
+        : await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy(target);
+      computerUsePolicies.set(runner.id, { appApproval: policy.appApproval });
     }
     const access = new Map<string, MachineAccessView>(
       await Promise.all(
