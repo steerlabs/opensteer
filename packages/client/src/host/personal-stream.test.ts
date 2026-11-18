@@ -2271,3 +2271,22 @@ test("every running task stays listed while others finish, and loaded task pages
     client.dispose();
   }
 });
+
+test("keeps a visit that arrives before its task", () => {
+  const f = fixture();
+  f.syncShell();
+  const later = createId("thread");
+  const commit = (fromSequence: string, change: object) =>
+    f.stream.receive({
+      ...f.shell,
+      type: "host.changes",
+      fromSequence,
+      throughSequence: String(Number(fromSequence) + 1),
+      changes: [{ ...change, sequence: String(Number(fromSequence) + 1), ordinal: 0 }],
+    });
+  commit("1", upsert("visit", later, { threadId: later, lastVisitedAt: time, revision: "2" }));
+  commit("2", upsert("task", later, { ...task, id: later, revision: "3" }));
+  const state = f.stream.shell.getSnapshot();
+  expect(state.tasks.has(later)).toBe(true);
+  expect(state.visits.get(later)?.lastVisitedAt).toBe(time);
+});
