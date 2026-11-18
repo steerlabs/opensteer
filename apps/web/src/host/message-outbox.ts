@@ -8,7 +8,7 @@ import {
   type MessageRecordStorage,
   type PendingSendCommand,
 } from "@opensteer/client/host";
-import { ClientOperationError } from "@opensteer/client/connections";
+import { ClientOperationError, type ClientScope } from "@opensteer/client/connections";
 import {
   MessageContentSchema,
   type ArtifactContentPart,
@@ -26,34 +26,10 @@ export function initializeBrowserMessageOutbox(
   initializeMessageOutbox(client, {
     storage,
     legacy: {
-      load: async (scope) => {
-        const prefix = `opensteer:pending-send:v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.viewerId)}:`;
-        return Object.keys(globalThis.localStorage)
-          .filter((key) => key.startsWith(prefix))
-          .map((key) => {
-            const raw = globalThis.localStorage.getItem(key);
-            if (raw === null || new TextEncoder().encode(raw).byteLength > 10 * 1024 * 1024)
-              throw new Error("Saved message cannot be read.");
-            const command = hostApi["commands.dispatch"].payload.parse(JSON.parse(raw));
-            if (
-              command.type !== "thread.sendMessage" ||
-              command.threadId !== decodeURIComponent(key.slice(prefix.length))
-            )
-              throw new Error("Saved message scope is invalid.");
-            return { command };
-          });
-      },
+      load: async (scope) => browserLegacyMessages(scope).map(({ command }) => ({ command })),
       remove: async (scope, id) => {
-        const prefix = `opensteer:pending-send:v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.viewerId)}:`;
-        for (const key of Object.keys(globalThis.localStorage).filter((key) =>
-          key.startsWith(prefix),
-        )) {
-          const value = hostApi["commands.dispatch"].payload.parse(
-            JSON.parse(globalThis.localStorage.getItem(key)!),
-          );
-          if ("idempotencyKey" in value && value.idempotencyKey === id)
-            globalThis.localStorage.removeItem(key);
-        }
+        for (const { key, command } of browserLegacyMessages(scope))
+          if (command.idempotencyKey === id) globalThis.localStorage.removeItem(key);
       },
     },
     drafts: {
@@ -86,6 +62,24 @@ export function initializeBrowserMessageOutbox(
         return "restored";
       },
     },
+  });
+}
+
+function browserLegacyMessages(scope: ClientScope) {
+  const prefix = `opensteer:pending-send:v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.viewerId)}:`;
+  return Object.keys(globalThis.localStorage).flatMap((key) => {
+    if (!key.startsWith(prefix)) return [];
+    try {
+      const raw = globalThis.localStorage.getItem(key);
+      if (raw === null || new TextEncoder().encode(raw).byteLength > 10 * 1024 * 1024) return [];
+      const command = hostApi["commands.dispatch"].payload.parse(JSON.parse(raw));
+      return command.type === "thread.sendMessage" &&
+        command.threadId === decodeURIComponent(key.slice(prefix.length))
+        ? [{ key, command }]
+        : [];
+    } catch {
+      return [];
+    }
   });
 }
 

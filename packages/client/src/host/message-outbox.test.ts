@@ -453,3 +453,42 @@ describe("app lifetime message delivery", () => {
     },
   );
 });
+
+it("surfaces a full legacy queue and imports the remainder when a slot is freed", async () => {
+  vi.useFakeTimers();
+  const session = controlledClientSession();
+  session.change({ phase: "recovering" });
+  const legacy = new Map(
+    Array.from({ length: 49 }, (_, index) => {
+      const cmd = { ...command(`legacy-${index}`), threadId: createId("thread") };
+      return [cmd.idempotencyKey, { command: cmd }];
+    }),
+  );
+  const outbox = createMessageOutbox({
+    session,
+    storage: storage().port,
+    drafts: { restore: async () => "restored" },
+    dispatch: async () => {
+      throw new Error("Never dispatch a legacy record automatically");
+    },
+    legacy: {
+      load: async () => [...legacy.values()],
+      remove: async (_scope, id) => {
+        legacy.delete(id);
+      },
+    },
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outbox.getSnapshot()).toMatchObject({ loading: false, issue: null });
+    expect(outbox.getSnapshot().messages).toHaveLength(48);
+    expect(legacy.size).toBe(1);
+    await outbox.restoreDraft("legacy-0");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outbox.getSnapshot().messages).toHaveLength(48);
+    expect(outbox.getSnapshot().messages.some((row) => row.localId === "legacy-48")).toBe(true);
+    expect(legacy.size).toBe(0);
+  } finally {
+    outbox.dispose();
+  }
+});

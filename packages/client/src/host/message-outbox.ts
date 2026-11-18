@@ -108,6 +108,7 @@ class SessionMessageOutbox implements MessageOutbox {
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   #storageRetry: ReturnType<typeof setTimeout> | null = null;
   #storageAttempt = 0;
+  #legacyPending = false;
   constructor(options: MessageOutboxOptions) {
     this.#options = options;
     this.#unsubscribe = options.session.connection.subscribe(() => this.#connection());
@@ -166,6 +167,7 @@ class SessionMessageOutbox implements MessageOutbox {
       if (this.#storageRetry) clearTimeout(this.#storageRetry);
       this.#storageRetry = null;
       this.#storageAttempt = 0;
+      this.#legacyPending = false;
       this.#confirmed.clear();
       this.#cancelled.clear();
       this.#sending.clear();
@@ -190,36 +192,50 @@ class SessionMessageOutbox implements MessageOutbox {
     if (!scope || this.#disposed) return;
     try {
       let entries = await this.#options.storage.load(scope);
-      if (this.#options.legacy) {
-        const legacy = await this.#options.legacy.load(scope);
-        for (const held of legacy) {
-          if (!this.#current(scope, generation)) return;
-          if (!entries.some((entry) => entry.localId === held.command.idempotencyKey)) {
-            if (
-              entries.length >= 48 ||
-              entries.filter((entry) => entry.command.threadId === held.command.threadId).length >=
-                20
-            )
-              throw storageFailure();
-            const entry: StoredMessage = {
-              localId: held.command.idempotencyKey,
-              command: held.command,
-              createdAt: new Date().toISOString(),
-              order: Math.min(1, ...entries.map((entry) => entry.order)) - 1,
-              attempted: true,
-              phase: "rejected",
-              rejection: { code: "unconfirmed" },
-              ...(held.localAttachmentUris
-                ? { localAttachmentUris: held.localAttachmentUris }
-                : {}),
-            };
-            await this.#options.storage.put(scope, entry);
-            entries = [...entries, entry];
+      const legacy = this.#options.legacy;
+      let remaining = false;
+      if (legacy) {
+        const migrate = async () => {
+          const held = await legacy.load(scope).catch(() => []);
+          if (!held.length || !this.#current(scope, generation)) return;
+          entries = await this.#options.storage.load(scope);
+          for (const { command, localAttachmentUris } of held) {
+            if (!this.#current(scope, generation)) return;
+            const localId = command.idempotencyKey;
+            try {
+              if (!entries.some((entry) => entry.localId === localId)) {
+                if (
+                  entries.length >= 48 ||
+                  entries.filter((entry) => entry.command.threadId === command.threadId).length >=
+                    20
+                ) {
+                  remaining = true;
+                  continue;
+                }
+                const entry: StoredMessage = {
+                  localId,
+                  command,
+                  createdAt: new Date().toISOString(),
+                  order: Math.min(1, ...entries.map((entry) => entry.order)) - 1,
+                  attempted: true,
+                  phase: "rejected",
+                  rejection: { code: "unconfirmed" },
+                  ...(localAttachmentUris ? { localAttachmentUris } : {}),
+                };
+                await this.#options.storage.put(scope, entry);
+                entries = [...entries, entry];
+              }
+              await legacy.remove(scope, localId);
+            } catch {
+              // Keep the legacy record until its durable copy can be committed.
+              remaining = true;
+            }
           }
-          await this.#options.legacy.remove(scope, held.command.idempotencyKey);
-        }
+        };
+        await this.#write(() => this.#options.storage.exclusive?.(scope, migrate) ?? migrate());
       }
       if (!this.#current(scope, generation)) return;
+      this.#legacyPending = remaining;
       for (const entry of entries) {
         const held = this.#state.messages.find((value) => value.localId === entry.localId);
         if (!entry.rejection && held?.rejection)
@@ -416,7 +432,8 @@ class SessionMessageOutbox implements MessageOutbox {
       this.#publish({
         messages: this.#state.messages.filter((entry) => entry.localId !== localId),
       });
-      this.#drain();
+      if (this.#legacyPending) await this.#reload();
+      else this.#drain();
     }
   }
   #drain(): void {

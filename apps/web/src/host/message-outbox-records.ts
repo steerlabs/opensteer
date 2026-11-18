@@ -33,6 +33,13 @@ function database(): Promise<IDBDatabase> {
   return opened;
 }
 export function browserMessageRecords(): MessageRecordStorage {
+  const locks = globalThis.navigator?.locks;
+  if (!locks) {
+    const unavailable = async () => {
+      throw new Error("Message storage requires Web Locks.");
+    };
+    return { read: unavailable, write: unavailable, remove: unavailable };
+  }
   const channel =
     typeof BroadcastChannel === "undefined"
       ? null
@@ -83,12 +90,7 @@ export function browserMessageRecords(): MessageRecordStorage {
     mutate,
     write: (key, value) => mutate(key, () => value),
     remove: (key) => mutate(key, () => null),
-    ...(globalThis.navigator?.locks
-      ? {
-          exclusive: <T>(key: string, work: () => Promise<T>) =>
-            navigator.locks.request(`opensteer:${key}`, work),
-        }
-      : {}),
+    exclusive: (key, work) => locks.request(`opensteer:${key}`, work),
     subscribe(listener) {
       const changed = () => listener();
       const legacyChanged = (event: StorageEvent) => {
