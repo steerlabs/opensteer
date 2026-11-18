@@ -3466,6 +3466,29 @@ describe("a task", () => {
     expect(headers.at(-1)?.title).toBe(base.threads.find(({ id }) => id === workId)?.title);
   });
 
+  it("says an offline Stop didn't go out beside it, and lets the line go with the run", async () => {
+    const task = taskAtWork();
+    const running = snapshotFor({
+      entries: task.entries,
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost({ ...running, network: "offline" });
+    const { container } = await mount(host, workId);
+
+    await press(container, "Stop this run");
+    expect(host.stopRun).not.toHaveBeenCalled();
+    expect(text(container)).toContain("Not stopped");
+
+    // Back online the line still says what that tap came to, until the run ends by itself.
+    host.move({ ...running, network: "online" });
+    await settle();
+    host.move(snapshotFor({ entries: task.entries, run: null, threadId: workId }));
+    await settle();
+    expect(hasButton(container, "Stop this run")).toBe(false);
+    expect(text(container)).not.toContain("Not stopped");
+  });
+
   it("marks a message that joins a running task, and leaves Chat unmarked", async () => {
     const task = taskAtWork();
     const steer = said("Check the other statement too", task.runId);
