@@ -7,6 +7,7 @@ import {
   type WebContents,
 } from "electron";
 import {
+  BrowserPaintTimeoutError,
   pageViewport,
   type NativePresentationSource,
   type PresentedSurface,
@@ -64,7 +65,7 @@ interface PageSlot {
   followAgain: boolean;
   followEpoch: number;
   disposed: boolean;
-  cancelPaint(): void;
+  paint: AbortController | null;
 }
 interface Presentation {
   readonly id: DesktopBrowserPresentationId;
@@ -515,7 +516,7 @@ export class DesktopBrowserPresentationManager {
       followAgain: false,
       followEpoch: 0,
       disposed: false,
-      cancelPaint: () => undefined,
+      paint: null,
       dispose: () => undefined,
     };
     presentation.pending = page;
@@ -540,43 +541,51 @@ export class DesktopBrowserPresentationManager {
       this.#glass(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
       this.#follow(presentation, page);
-      const paint = new AbortController();
-      page.cancelPaint = () => paint.abort();
-      // Admission and dialog controls do not depend on paint. Keep the old
-      // view until this mounted revision has compositor evidence.
-      void native
-        .waitForPaint(paint.signal)
-        .then(() => {
-          page.cancelPaint = () => undefined;
-          if (!this.#valid(presentation) || presentation.pending !== page || page.disposed) return;
-          const oldPresentation = owner.current;
-          const oldPage = presentation.page;
-          presentation.pending = null;
-          presentation.page = page;
-          owner.current = presentation;
-          this.#passkeyChanged();
-          this.#order(owner);
-          this.#placed(presentation, page);
-          this.#emit(owner, {
-            type: "fullscreen",
-            presentationId: presentation.id,
-            revision: page.revision,
-            active: native.isFullscreen(),
-          });
-          if (oldPage && oldPage !== page) this.#disposePage(oldPage);
-          if (oldPresentation && oldPresentation !== presentation)
-            this.#end(oldPresentation, "released");
-        })
-        .catch((error: unknown) => {
-          if (page.disposed || !this.#valid(presentation) || presentation.pending !== page) return;
-          this.#onError(error);
-          this.#end(presentation, "page-closed");
-        });
+      this.#paintPending(presentation, page);
     } catch (error) {
       if (presentation.pending === page) presentation.pending = null;
       this.#disposePage(page);
       throw error;
     }
+  }
+
+  #paintPending(presentation: Presentation, page: PageSlot): void {
+    const pending = () =>
+      !page.disposed && this.#valid(presentation) && presentation.pending === page;
+    if (!pending() || page.paint) return;
+    const paint = new AbortController();
+    page.paint = paint;
+    const owner = presentation.owner;
+    // Keep the current view until the pending view has produced a frame.
+    void page.native
+      .waitForPaint(paint.signal)
+      .then(() => {
+        page.paint = null;
+        if (!pending()) return;
+        const oldPresentation = owner.current;
+        const oldPage = presentation.page;
+        presentation.pending = null;
+        presentation.page = page;
+        owner.current = presentation;
+        this.#passkeyChanged();
+        this.#order(owner);
+        this.#placed(presentation, page);
+        this.#emit(owner, {
+          type: "fullscreen",
+          presentationId: presentation.id,
+          revision: page.revision,
+          active: page.native.isFullscreen(),
+        });
+        if (oldPage && oldPage !== page) this.#disposePage(oldPage);
+        if (oldPresentation && oldPresentation !== presentation)
+          this.#end(oldPresentation, "released");
+      })
+      .catch((error: unknown) => {
+        page.paint = null;
+        if (!pending() || paint.signal.aborted || error instanceof BrowserPaintTimeoutError) return;
+        this.#onError(error);
+        this.#end(presentation, "page-closed");
+      });
   }
 
   #observePage(presentation: Presentation, page: PageSlot): () => void {
@@ -623,6 +632,11 @@ export class DesktopBrowserPresentationManager {
       }
     });
     const gone = () => this.#end(presentation, "page-closed");
+    const paintReady = () => this.#paintPending(presentation, page);
+    const stopCapture = page.surface.page.capture?.subscribe(() => {
+      if (page.surface.page.capture?.read()) paintReady();
+    });
+    contents.on("did-finish-load", paintReady);
     const autofillKeys = new AutofillKeys();
     const key = (event: Electron.Event, input: Input) => {
       const outstanding = page.native.inputOutstanding();
@@ -783,6 +797,8 @@ export class DesktopBrowserPresentationManager {
       passkeyInput?.();
       viewerInput?.();
       surfaceEvents();
+      stopCapture?.();
+      contents.off("did-finish-load", paintReady);
       contents.off("before-mouse-event", mouse);
       contents.off("zoom-changed", zoom);
       contents.off("before-input-event", key);
@@ -802,6 +818,7 @@ export class DesktopBrowserPresentationManager {
       page.native.setStage(this.#dips(presentation), presentation.owner.window.isFocused());
       this.#follow(presentation, page);
     }
+    if (presentation.pending) this.#paintPending(presentation, presentation.pending);
     if (presentation.page) this.#placed(presentation, presentation.page);
   }
   #follow(presentation: Presentation, page: PageSlot): void {
@@ -1004,7 +1021,7 @@ export class DesktopBrowserPresentationManager {
       page.findRequestId = null;
       if (!page.surface.page.isClosed())
         page.native.view.webContents.stopFindInPage("clearSelection");
-      page.cancelPaint();
+      page.paint?.abort();
       page.dispose();
       page.native.unmount();
     } finally {
