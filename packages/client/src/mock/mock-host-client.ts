@@ -1,3 +1,4 @@
+import { nameConnectionFromHost } from "../host/host-connection.js";
 import { disposeMessageOutbox } from "../host/message-outbox.js";
 import {
   createConnectionController,
@@ -3850,6 +3851,7 @@ export class MockHostClient implements HostClient {
         message: "Sign in to continue.",
         retryable: false,
       });
+    nameConnectionFromHost(this.#connectionController, snapshot);
     attempt.acceptScope(
       this.#scopeProvider?.() ?? {
         authorityKey: "mock",

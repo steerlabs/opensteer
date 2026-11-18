@@ -1,3 +1,4 @@
+import { nameConnectionFromHost } from "./host-connection.js";
 import { disposeMessageOutbox } from "./message-outbox.js";
 import {
   createConnectionController,
@@ -5592,6 +5593,7 @@ export class HttpHostClient {
     reconcileBrowserTargets?.();
     this.#nodeDetails.refreshNodes();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
+    nameConnectionFromHost(this.connection, this.#snapshot);
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }

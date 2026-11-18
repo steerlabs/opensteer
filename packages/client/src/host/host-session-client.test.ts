@@ -558,6 +558,29 @@ describe("HttpHostClient authentication and onboarding", () => {
     remote.dispose();
   });
 
+  // The web page never named its connection, so the pill said "Can't reach your
+  // computer" while the sidebar said "Mac mini".
+  it("names its connection after the computer its Host verified", async () => {
+    const named = bootstrap([]);
+    const payload = {
+      ...named,
+      identityConfig: {
+        ...named.identityConfig,
+        deployment: { kind: "personal" as const, name: "Mac mini" },
+      },
+    };
+    const client = createHttpHostClient({
+      fetch: async (input) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        return json(path === "/v1/rpc/auth.config" ? payload.identityConfig : payload);
+      },
+    });
+    expect(client.connection.getSnapshot().name).toBeNull();
+    await client.load();
+    expect(client.connection.getSnapshot().name).toBe("Mac mini");
+    client.dispose();
+  });
+
   it("spends a password-recovery capability without retaining it or the new password", async () => {
     const token = `olpr_${"A".repeat(43)}`;
     const newPassword = "new password that must not persist";

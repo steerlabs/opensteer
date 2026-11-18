@@ -3,6 +3,7 @@ import {
   connectedLabel,
   presentConnectionStarting,
 } from "../feedback/client-issue.js";
+import type { ConnectionController } from "../connections/connection-controller.js";
 import type { HostSnapshot } from "./client.js";
 
 type ConnectionState = Pick<HostSnapshot, "connection" | "session" | "network">;
@@ -74,4 +75,18 @@ export function canRespondToRequests(snapshot: ConnectionState | null): boolean 
     snapshot.connection === "connected" &&
     snapshot.session === "authenticated"
   );
+}
+
+/**
+ * Gives an unnamed connection the name its Host verified, so the shell says
+ * "Can't reach Mac mini" like the sidebar. A name the app already chose stays.
+ */
+export function nameConnectionFromHost(
+  connection: Pick<ConnectionController, "getSnapshot" | "setPresentation">,
+  snapshot: Pick<HostSnapshot, "identityConfig">,
+): void {
+  const verified = snapshot.identityConfig?.deployment.name;
+  const state = connection.getSnapshot();
+  if (!verified || state.name !== null || state.target !== "computer") return;
+  connection.setPresentation({ name: verified, target: state.target, route: state.route });
 }
