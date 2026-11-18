@@ -329,10 +329,10 @@ const real = (files, event = "pull_request") =>
 test("real graph includes every workspace dependency kind", () => {
   assert.equal(
     realGraph.find((entry) => entry.name === "@opensteer/plugin-engine-sdk")?.dir,
-    "vendor/plugin-engine/sdk",
+    "packages/plugin-engine/sdk",
   );
   assert.ok(
-    real(["vendor/plugin-engine/sdk/src/index.ts"]).typecheck.includes(
+    real(["packages/plugin-engine/sdk/src/index.ts"]).typecheck.includes(
       "@opensteer/plugin-engine-sdk",
     ),
   );
@@ -701,7 +701,7 @@ test("Check needs every lane, and the changes job and action publish the plan", 
 void test("plugin built-artifact tests select on resource and build inputs outside their imports", () => {
   for (const input of [
     "scripts/plugin-engine/prepare-host.ts",
-    "vendor/plugin-engine/apps/src/index.ts",
+    "packages/plugin-engine/apps/src/index.ts",
     "apps/host/tsup.config.ts",
   ]) {
     const plan = real([input]);

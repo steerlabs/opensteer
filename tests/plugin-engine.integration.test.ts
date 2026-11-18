@@ -12,7 +12,7 @@ import { Deferred, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope, Schema 
 import { Digest, SecureRandom } from "effect/crypto";
 import { SqlClient } from "effect/sql";
 import { FetchHttpClient, HttpClient } from "effect/http";
-import { httpsOnlyUrlPolicy } from "../vendor/plugin-engine/utils/src/url-policy.ts";
+import { httpsOnlyUrlPolicy } from "../packages/plugin-engine/utils/src/url-policy.ts";
 import {
   createPluginEngine,
   makePluginEngineStorage,
@@ -34,7 +34,7 @@ import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
 import { makeExecutions, type McpBackend } from "@opensteer/plugin-engine-mcp";
-import { executeProgram } from "../vendor/plugin-engine/mcp/src/implementation/execute.ts";
+import { executeProgram } from "../packages/plugin-engine/mcp/src/implementation/execute.ts";
 import {
   startRuntimeCheck,
   ownedRuntimeProcesses,
@@ -43,9 +43,9 @@ import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
-import type { ScheduleDispatcher } from "../vendor/plugin-engine/sdk/src/contracts/scheduler.ts";
+import type { ScheduleDispatcher } from "../packages/plugin-engine/sdk/src/contracts/scheduler.ts";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import framework from "../vendor/plugin-engine/apps/package.json" with { type: "json" };
+import framework from "../packages/plugin-engine/apps/package.json" with { type: "json" };
 
 const fixtureSource = (revision: number) => `
 import { defineApp, query, mutation, router, object, number, userInterval } from "apps";
@@ -124,7 +124,7 @@ test.for(fixtureFlows)(
     const directory = await mkdtemp(join(tmpdir(), "opensteer-engine-test-"));
     context.onTestFinished(() => rm(directory, { recursive: true, force: true }));
     const archive = join(directory, "framework.tgz");
-    await cp(resolve("vendor/plugin-engine/apps/dist"), join(directory, "package"), {
+    await cp(resolve("packages/plugin-engine/apps/dist"), join(directory, "package"), {
       recursive: true,
     });
     execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", directory, "package"], {

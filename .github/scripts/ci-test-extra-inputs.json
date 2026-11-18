@@ -3,35 +3,35 @@
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ],
   "tests/plugin-engine.integration.test.ts": [
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ],
   "tests/plugin-features.integration.test.ts": [
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ],
   "tests/plugin-oauth.integration.test.ts": [
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ],
   "tests/plugin-runtime.integration.test.ts": [
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source",
     "apps/desktop/scripts/build-personal-runtime.ts",
     "apps/desktop/scripts/personal-runtime-layout.ts"
@@ -40,14 +40,14 @@
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ],
   "tests/plugin-service.integration.test.ts": [
     "apps/host/src/plugins",
     "apps/host/tsup.config.ts",
     "scripts/plugin-engine",
-    "vendor/plugin-engine",
+    "packages/plugin-engine",
     "packages/plugin-source"
   ]
 }

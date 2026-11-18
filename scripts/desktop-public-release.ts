@@ -453,27 +453,48 @@ export async function draft(
   }
 }
 
-export function requireNewerStable(version: string, tags: readonly string[]) {
+const channelTag = {
+  stable: {
+    pattern: /^desktop-v(.*)$/u,
+    glob: "refs/tags/desktop-v*",
+    refusal: "Stable version must be newer than every published Stable",
+  },
+  beta: {
+    pattern: /^v(.*)-insider$/u,
+    glob: "refs/tags/v*-insider",
+    refusal: "Insider version must be newer than every published insider",
+  },
+} as const;
+function requireNewer(channel: Channel, version: string, tags: readonly string[]) {
+  const { pattern, refusal } = channelTag[channel];
   const next = versionSchema.parse(version).split(".").map(BigInt);
   for (const tag of tags) {
-    if (!tag.startsWith("desktop-v")) continue;
-    const previous = versionSchema.parse(tag.slice("desktop-v".length)).split(".").map(BigInt);
+    const published = pattern.exec(tag)?.[1];
+    if (published === undefined) continue;
+    const previous = versionSchema.parse(published).split(".").map(BigInt);
     const difference =
       next.map((value, i) => value - previous[i]!).find((value) => value !== 0n) ?? 0n;
-    if (difference <= 0n)
-      throw new Error("Stable version must be newer than every published Stable");
+    if (difference <= 0n) throw new Error(refusal);
   }
 }
-// A draft gets its tag only when published, so the Stable tags are the published Stables.
-async function stableHeadGuard(repo: string, version: string, run: Run) {
+export function requireNewerStable(version: string, tags: readonly string[]) {
+  requireNewer("stable", version, tags);
+}
+// Beta takes the first eligible feed entry, so an older insider must never follow a newer one.
+export function requireNewerInsider(version: string, tags: readonly string[]) {
+  requireNewer("beta", version, tags);
+}
+// A draft gets its tag only when published, so a channel's tags are its published releases.
+async function headGuard(repo: string, channel: Channel, version: string, run: Run) {
   const refs = await run("git", [
     "ls-remote",
     "--tags",
     "--refs",
     `https://github.com/${repo}.git`,
-    "refs/tags/desktop-v*",
+    channelTag[channel].glob,
   ]);
-  requireNewerStable(
+  requireNewer(
+    channel,
     version,
     refs.split("\n").flatMap((line) => line.split("\trefs/tags/")[1] ?? []),
   );
@@ -506,7 +527,7 @@ export async function verifyInsiderProvenance(
     )
       throw new Error("Insider source/version/launch-check evidence disagree");
     await verifyAssets(temp, manifest);
-    await stableHeadGuard(repo, manifest.version, run);
+    await headGuard(repo, "stable", manifest.version, run);
     return manifest;
   } finally {
     await rm(temp, { recursive: true, force: true });
@@ -562,8 +583,8 @@ export async function publish(
         },
         run,
       );
-      await stableHeadGuard(repo, manifest.version, run);
-    }
+      await headGuard(repo, "stable", manifest.version, run);
+    } else await headGuard(repo, "beta", manifest.version, run);
     await run("gh", [
       "api",
       "--method",

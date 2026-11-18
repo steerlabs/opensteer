@@ -10,15 +10,39 @@ const { deriveReleaseVersion } = createRequire(import.meta.url)(
   "../../scripts/release-version.cjs",
 );
 const repo = "steerlabs/opensteer";
+/** Changes that never reach a desktop, APK, Account or team image: documentation and CI only. */
+export const unreleasedPaths = [
+  "docs/**",
+  "README.md",
+  "AGENTS.md",
+  "CHANGELOG*.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".github/dependabot.yml",
+  ".github/workflows/ci.yml",
+  ".github/workflows/agent-context-budget.yml",
+  ".github/actions/ci-browser/**",
+  ".github/actions/ci-changes/**",
+  ".github/actions/ci-setup/**",
+  ".github/scripts/ci-*.mjs",
+  ".github/scripts/ci-*.json",
+  ".github/scripts/fork-safety.mjs",
+  ".github/scripts/fork-safety.test.mjs",
+  ".github/scripts/local-check.mjs",
+  ".github/scripts/local-check.test.mjs",
+];
 const insiderPattern = /^v(\d+\.\d+\.\d+)-insider$/u;
 const stablePattern = /^desktop-v(\d+\.\d+\.\d+)$/u;
 const exactSha = /^[a-f0-9]{40}$/u;
 const releaseIdQuery =
   "query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}";
-function execute(executable, args, root) {
+// One page of 100 workflow runs is about 1.4 MB, over Node's 1 MB default for a child's output.
+export function execute(executable, args, root) {
   return execFileSync(executable, args, {
     cwd: root,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 90_000,
   }).trim();
@@ -89,7 +113,7 @@ function sameManifest(manifest, source) {
     throw Error("Release manifest disagrees with selected source/version/channel/tag");
 }
 export function preflight(
-  { root = process.cwd(), channel, event, insiderTag = "" },
+  { root = process.cwd(), channel, event, insiderTag = "", sourceSha = "", mainSha = "" },
   run = execute,
 ) {
   const github = client(root, run);
@@ -97,7 +121,14 @@ export function preflight(
   git("fetch", "origin", "main", "--tags");
   let sha;
   let version;
-  if (event === "push" || channel === "insider") {
+  if (event === "workflow_run") {
+    channel = "beta";
+    if (!exactSha.test(sourceSha))
+      throw Error("Expected the exact SHA of the CI run that succeeded");
+    if (!exactSha.test(mainSha)) throw Error("Expected the main commit this release started from");
+    sha = newestGreen(sourceSha, mainSha, github);
+    version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
+  } else if (channel === "insider") {
     channel = "beta";
     sha = git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}");
     version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
@@ -133,7 +164,63 @@ export function preflight(
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
   const source = { sha, version, channel, tag };
-  return requireSourceChecks(source, github) ?? source;
+  return qualify(source, github, event);
+}
+function qualify(source, github, event) {
+  return (
+    requireSourceChecks(source, github) ??
+    (event === "workflow_run" ? coveredElsewhere(source, github) : undefined) ??
+    source
+  );
+}
+/**
+ * Automatic releases run one at a time, and GitHub keeps only the newest of the runs waiting
+ * behind the running one. That survivor was started by whichever CI completion arrived last,
+ * not necessarily by the newest commit's, so it releases the newest first-parent main commit
+ * whose CI is green, between the commit that started it and main when it started. Main then
+ * already held every commit whose CI completion it replaced, and the draft and publish tooling
+ * comes from that main commit, so it is never older than the source.
+ */
+function newestGreen(sourceSha, mainSha, { git, newest }) {
+  // Preflight fetched main after this run started, so it holds mainSha.
+  const main = git("rev-list", "--first-parent", mainSha).split("\n");
+  const index = main.indexOf(sourceSha);
+  if (index < 0) throw Error("Release source must be on first-parent main");
+  const newestRun = new Map();
+  for (const item of newest(
+    "actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100",
+    "workflow_runs",
+  ))
+    if (
+      item.head_branch === "main" &&
+      item.event === "push" &&
+      exactSha.test(item.head_sha) &&
+      !(newestRun.get(item.head_sha)?.run_number > item.run_number)
+    )
+      newestRun.set(item.head_sha, item);
+  // requireSourceChecks then verifies the chosen commit's newest CI run and Check in full.
+  return (
+    main.slice(0, index).find((sha) => newestRun.get(sha)?.conclusion === "success") ?? sourceSha
+  );
+}
+/** A commit whose releasable files a published insider already holds does not release again. */
+function coveredElsewhere(source, { git, publishedVersions }) {
+  const latest = publishedVersions(insiderPattern, "refs/tags/v*-insider").reduce(
+    (best, version) => (best === undefined || isNewer(version, best) ? version : best),
+    undefined,
+  );
+  if (latest === undefined) return undefined;
+  const tag = `v${latest}-insider`;
+  // The remote listed a tag that may have been published after this run fetched its tags.
+  git("fetch", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`);
+  const released = git("rev-parse", "--verify", `refs/tags/${tag}^{commit}`);
+  const changed = git("diff", "--name-only", released, source.sha).split("\n").filter(Boolean);
+  if (
+    git("merge-base", released, source.sha) === source.sha ||
+    changed.every((file) => unreleasedPaths.some((pattern) => path.matchesGlob(file, pattern)))
+  )
+    return { ...source, superseded: true, supersededBy: tag };
+  return undefined;
 }
 
 class SourceChecksPending extends Error {
@@ -226,7 +313,7 @@ function requireFullChecks(source, { git, pages, newest }) {
     if (!laneJobs.length || !laneJobs.every(green)) refuse();
   }
 }
-/** Push starts alongside main CI. Keep the selected SHA fixed while it qualifies. */
+/** A dispatch may start alongside main CI. Keep the selected SHA fixed while it qualifies. */
 export async function qualifiedPreflight(
   options,
   run = execute,
@@ -244,7 +331,7 @@ export async function qualifiedPreflight(
   while (now() < deadline) {
     await sleep(Math.min(15_000, deadline - now()));
     try {
-      return requireSourceChecks(source, github) ?? source;
+      return qualify(source, github, options.event);
     } catch (error) {
       if (!(error instanceof SourceChecksPending)) throw error;
     }
@@ -292,6 +379,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
             channel: process.env.CHANNEL,
             event: process.env.EVENT,
             insiderTag: process.env.INSIDER_TAG,
+            sourceSha: process.env.SOURCE_SHA,
+            mainSha: process.env.MAIN_SHA,
           })
         : process.argv[2] === "discover"
           ? discover({

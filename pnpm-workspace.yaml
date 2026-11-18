@@ -2,7 +2,7 @@ packages:
   - apps/*
   - packages/*
   - evals/*
-  - vendor/plugin-engine/*
+  - packages/plugin-engine/*
 
 catalog:
   "@agentclientprotocol/sdk": 2.2.0

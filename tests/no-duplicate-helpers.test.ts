@@ -11,12 +11,7 @@ const sourceFiles = execFileSync(
 )
   .trim()
   .split("\n")
-  .filter(
-    (file) =>
-      Boolean(file) &&
-      !file.startsWith("vendor/plugin-engine/") &&
-      !file.startsWith("scripts/plugin-engine/overlay/"),
-  )
+  .filter(Boolean)
   // The index still names files deleted in the working tree, and a file that is
   // gone declares nothing, so the guard reads what is actually on disk.
   .filter((file) => existsSync(path.join(repositoryRoot, file)));
@@ -248,9 +243,16 @@ describe("shared helper homes", () => {
   });
 
   it("keeps bounded HTTP body readers in boundedJson", () => {
+    // The git push guard parses a command list while it streams, and the OpenAPI reader belongs
+    // to the `apps` framework plugins bundle, which depends on no Opensteer package.
+    const streamReaders = new Set([
+      "packages/plugin-engine/app-source/src/implementation/protected-git.ts",
+      "packages/plugin-engine/apps/src/implementation/openapi-source.ts",
+    ]);
     const violations = [...sources].filter(
       ([file, source]) =>
         file !== "packages/shared/src/boundedJson.ts" &&
+        !streamReaders.has(file) &&
         /(?:\.body|\bbody)\??\.getReader\s*\(/u.test(source),
     );
 
