@@ -593,8 +593,8 @@ function AddAppDialog({
     readonly scopeKey: string | null;
     readonly total: number;
   } | null>(null);
-  const [request, load] = useState({ search: "", offset: 0 });
   const scopeKey = clientScopeKey(useClientConnection(hostClient.connection).scope);
+  const [request, load] = useState({ search: "", offset: 0, scopeKey });
 
   const [asking, setAsking] = useState<{
     readonly access: IntegrationAccess;
@@ -602,12 +602,14 @@ function AddAppDialog({
   } | null>(null);
   const [askError, setAskError] = useState<Failure | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const { search, offset } = request;
+  const { search } = request;
+  const offset = request.scopeKey === scopeKey ? request.offset : 0;
   const resource = useMemo(
     () =>
       createClientRead(hostClient, {
         key: JSON.stringify(["computer-apps", machine.id, search, offset]),
         label: "this computer's apps",
+        scopeKey,
         read: async (signal) =>
           unwrapRpcResult(
             await hostClient.rpc["integration.computer.apps.installed"](
@@ -622,7 +624,7 @@ function AddAppDialog({
             ),
           ),
       }),
-    [hostClient, machine.id, search, offset],
+    [hostClient, machine.id, scopeKey, search, offset],
   );
   useDisposedWithView(resource);
   const read = useClientRead(resource);
@@ -666,11 +668,11 @@ function AddAppDialog({
     const search = query.trim();
     if (search === request.search) return;
     const timer = globalThis.setTimeout(
-      () => load({ search, offset: 0 }),
+      () => load({ search, offset: 0, scopeKey }),
       search ? pickerSearchDelayMs : 0,
     );
     return () => globalThis.clearTimeout(timer);
-  }, [query, request.search]);
+  }, [query, request.search, scopeKey]);
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -819,7 +821,10 @@ function AddAppDialog({
           <button
             className="btn btn--ghost btn--small computer-use__more"
             disabled={loading}
-            onClick={() => load({ search: listing.query, offset: apps.length })}
+            onClick={() => {
+              if (search === listing.query && offset === apps.length) void resource.refresh();
+              else load({ search: listing.query, offset: apps.length, scopeKey });
+            }}
             type="button"
           >
             {loading ? "Loading…" : "Show more"}
