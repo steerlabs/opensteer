@@ -391,71 +391,6 @@ describe("NativeOAuthManager", () => {
     fixture.manager.dispose();
   });
 
-  it("initializes legacy login IDs only while the confirmed bootstrap still owns the credential", async () => {
-    const fixture = await managerFixture();
-    await fixture.manager.initialize();
-    await fixture.manager.beginHostSignIn(fixture.connection);
-    await fixture.manager.handleCallback(
-      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
-    );
-    const credential = (await fixture.store.load()).hosts[0]!;
-    const { viewLoginId: _id, ...legacy } = credential;
-    await fixture.store.setHost(legacy);
-    fixture.manager.dispose();
-    // Reopen the owner over the persisted legacy record.
-    const owner = new NativeOAuthManager({
-      accountOrigin: null,
-      accountSessions: fixture.accountSessions,
-      catalog: fixture.catalog,
-      now: () => fixture.clock.now,
-      fetch: async () =>
-        Response.json({
-          access_token: "refreshed-access-token-0123456789",
-          refresh_token: "refreshed-refresh-token-0123456789",
-          expires_in: 3600,
-          token_type: "Bearer",
-        }),
-      oauth: {
-        application: "desktop",
-        clientId: "opensteer-desktop",
-        accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
-        hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
-      },
-      openExternal: async () => undefined,
-      store: fixture.store,
-    });
-    await owner.initialize();
-    expect(owner.hostViewLoginId(fixture.connection)).toBeUndefined();
-    const started = deferred<void>(),
-      release = deferred<void>();
-    const setHost = fixture.store.setHost.bind(fixture.store);
-    vi.spyOn(fixture.store, "setHost").mockImplementationOnce(async (value) => {
-      started.resolve();
-      await release.promise;
-      return setHost(value);
-    });
-    let current = true;
-    const initializing = owner.initializeViewLoginIds(fixture.connection, () => current);
-    await started.promise;
-    current = false;
-    release.resolve();
-    await initializing;
-    expect(owner.hostViewLoginId(fixture.connection)).toBeUndefined();
-    fixture.clock.now = new Date("2026-08-11T20:00:02.000Z");
-    vi.spyOn(fixture.store, "setHost").mockRejectedValueOnce(new Error("Keychain locked"));
-    await owner.authorizationHeader(fixture.connection);
-    // Bootstrap can succeed with the rotated token while its first write is pending.
-    await owner.initializeViewLoginIds(fixture.connection, () => true);
-    expect(owner.hostViewLoginId(fixture.connection)).toEqual(expect.any(String));
-    const loginId = owner.hostViewLoginId(fixture.connection);
-    await owner.authorizationHeader(fixture.connection);
-    expect((await fixture.store.load()).hosts[0]?.viewLoginId).toBe(loginId);
-    const write = vi.spyOn(fixture.store, "setHost").mockClear();
-    await owner.initializeViewLoginIds(fixture.connection, () => true);
-    expect(write).not.toHaveBeenCalled();
-    owner.dispose();
-  });
-
   it("opens Account and Host consent in the system browser with S256 PKCE", async () => {
     const fixture = await managerFixture();
     await fixture.manager.initialize();
@@ -1265,6 +1200,12 @@ describe("NativeOAuthManager", () => {
     await expect(fixture.manager.state()).resolves.toMatchObject({
       account: { detail: expect.stringMatching(/basic-text/u), status: "error" },
     });
+    const failure = fixture.manager.credentialStorageFailure();
+    expect(failure).toMatchObject({
+      cause: { message: "This computer refuses a basic-text credential store." },
+      failure: { reason: "login-storage-unavailable" },
+    });
+    await expect(fixture.manager.accountAuthorizationHeader()).rejects.toBe(failure);
     await expect(fixture.manager.beginHostSignIn(fixture.connection)).rejects.toThrow(
       /basic-text/u,
     );

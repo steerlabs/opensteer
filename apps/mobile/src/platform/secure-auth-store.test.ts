@@ -5,7 +5,7 @@ import {
 } from "@opensteer/client/auth";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemorySecureStore } from "./memory-secure-store.js";
 import { createSecureAuthStore } from "./secure-auth-store.js";
 import { createSecureRecordStore } from "./secure-record-store.js";
@@ -53,7 +53,11 @@ describe("createSecureAuthStore", () => {
       secureStore: new MemorySecureStore(),
     });
     const auth = createSecureAuthStore(records);
-    const host = { ...hostCredential(first), accountIdentity: null };
+    const host = {
+      ...hostCredential(first),
+      accountIdentity: null,
+      viewLoginId: crypto.randomUUID(),
+    };
     await auth.setAccount(accountCredential());
     await auth.setHost(host);
     expect(
@@ -76,6 +80,49 @@ describe("createSecureAuthStore", () => {
       first,
       second,
     ]);
+  });
+
+  it("upgrades legacy Account and Host records once and keeps the Host binding separate", async () => {
+    const secureStore = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "opensteer.auth", secureStore });
+    const account = accountCredential();
+    const host = hostCredential(first);
+    const binding = { issuer: account.issuerOrigin, subject: account.subject };
+    await records.write("account", JSON.stringify(account));
+    await records.write("hosts", JSON.stringify([first]));
+    await records.write(`host.${first}`, JSON.stringify(host));
+    await records.write(
+      `host.${first}.binding`,
+      JSON.stringify({ refreshToken: host.refreshToken, accountIdentity: binding }),
+    );
+    const writes = vi.spyOn(records, "write");
+    const upgraded = await createSecureAuthStore(records).load();
+    expect(upgraded.account).toEqual({ ...account, viewLoginId: expect.any(String) });
+    expect(upgraded.hosts).toEqual([
+      { ...host, accountIdentity: binding, viewLoginId: expect.any(String) },
+    ]);
+    expect(JSON.parse((await records.read(`host.${first}`))!)).toEqual({
+      ...host,
+      viewLoginId: upgraded.hosts[0]!.viewLoginId,
+    });
+    expect(await createSecureAuthStore(records).load()).toEqual(upgraded);
+    expect(writes.mock.calls.map(([name]) => name)).toEqual(["account", `host.${first}`]);
+  });
+
+  it("reports a failed ID write and keeps the usable Account credential", async () => {
+    const secureStore = new MemorySecureStore();
+    const records = createSecureRecordStore({ keyPrefix: "opensteer.auth", secureStore });
+    const account = accountCredential();
+    await records.write("account", JSON.stringify(account));
+    const failure = new Error("The protected store is read-only.");
+    secureStore.interrupt = () => {
+      throw failure;
+    };
+    const report = vi.fn();
+    const loaded = await createSecureAuthStore(records, report).load();
+    expect(report).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(loaded.account).toEqual(account);
+    expect(await records.read("account")).toBe(JSON.stringify(account));
   });
 
   it("replaces a Host credential rather than adding a second", async () => {

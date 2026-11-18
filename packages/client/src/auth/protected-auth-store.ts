@@ -8,6 +8,18 @@ import {
 } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
+import { ClientOperationError } from "../connections/operation-error.js";
+
+export function credentialStorageError(
+  cause: unknown,
+  message = "Protected credential storage is unavailable.",
+): ClientOperationError {
+  return new ClientOperationError(message, "blocked", {
+    cause,
+    kind: "local",
+    reason: "login-storage-unavailable",
+  });
+}
 
 const AuthTokenSchema = z.string().min(16).max(65_536).refine(noAsciiControl);
 const ScopeSchema = z.string().regex(/^[A-Za-z0-9:._/-]{1,100}$/u);

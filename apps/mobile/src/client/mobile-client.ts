@@ -134,8 +134,8 @@ export interface MobileClientState {
   /** The teams this phone can reach: their own Hosts, never the selection. */
   readonly teams: readonly MobileTeamConnection[];
   readonly selection: MobileSelection;
-  /** The last write to this device's own storage that did not land, in words. */
-  readonly storageFailure: string | null;
+  /** The last write to this device's own storage that did not land. */
+  readonly storageFailure: Error | null;
   readonly savedViewFailure: string | null;
 }
 
@@ -268,6 +268,7 @@ export class MobileClient {
   readonly #savedViewCache: SavedViewCache;
   readonly #changingLogins = new Set<string>();
   readonly #savedViewAuthorizedClients = new WeakSet<HostClient>();
+  #attachedSource: DeploymentConnection["source"] | undefined;
   #attachedViewLoginId: string | undefined;
   #cacheIdentityFailureAttempt: number | null = null;
   readonly #authStore: ProtectedAuthStore;
@@ -332,7 +333,7 @@ export class MobileClient {
   }
   #hostOrigin: string | null = null;
   #hostClientDetach: (() => void) | null = null;
-  #storageFailure: string | null = null;
+  #storageFailure: Error | null = null;
   #state: MobileClientState = {
     pendingComputer: null,
     account: signedOutAccountState(),
@@ -438,7 +439,9 @@ export class MobileClient {
       now: options.now ?? (() => new Date()),
       privateFiles: options.privateFiles,
     });
-    this.#authStore = createSecureAuthStore(options.records);
+    this.#authStore = createSecureAuthStore(options.records, (error) =>
+      this.#recordLoginIdFailure(error),
+    );
     this.sessions = createPersonalSessionStore(options.records, {
       beforeChange: async (id) => {
         await this.#notificationPreviews?.clear(id);
@@ -1572,6 +1575,29 @@ export class MobileClient {
           ? { kind: "unroutable" }
           : { kind: "verification-failed", verification };
       }
+      const { source } = resolution.selected.connection;
+      const accountOwned = source.kind === "account";
+      const matchesAccount = () => {
+        if (source.kind !== "account") return true;
+        const identity = this.oauth.accountIdentity();
+        return identity?.issuer === source.issuer && identity.subject === source.subject;
+      };
+      if (accountOwned) {
+        const storageFailure = this.oauth.credentialStorageFailure();
+        if (storageFailure) {
+          this.#sessionFailures.set(id, "unavailable");
+          await this.#republish();
+          return { kind: "session-failed", error: storageFailure };
+        }
+        if (!matchesAccount()) {
+          this.#sessionFailures.set(id, "account-required");
+          await this.#republish();
+          return { attempt, generation, kind: "needs-credential" };
+        }
+      }
+      const accountLoginId = accountOwned ? this.oauth.accountViewLoginId() : undefined;
+      const sameAccount = () =>
+        !accountOwned || (matchesAccount() && accountLoginId === this.oauth.accountViewLoginId());
       let authorization = await this.#authorizationFor(resolution.selected.connection);
       if (
         authorization === null &&
@@ -1584,7 +1610,14 @@ export class MobileClient {
       if (!current()) return { kind: "superseded" };
       resolution = await this.#resolve(id);
       if (!current()) return { kind: "superseded" };
-      if (generation !== this.#fence.generation || resolution.kind === "superseded") continue;
+      if (
+        generation !== this.#fence.generation ||
+        resolution.kind === "superseded" ||
+        !sameAccount() ||
+        (resolution.kind === "resolved" &&
+          !sameConnectionSource(source, resolution.selected.connection.source))
+      )
+        continue;
       if (resolution.kind === "unroutable") {
         this.#attachmentGeneration = this.#fence.generation;
         await this.#republish();
@@ -1624,6 +1657,11 @@ export class MobileClient {
             await this.#republish();
             return { kind: "unroutable" };
           }
+          if (
+            !sameAccount() ||
+            !sameConnectionSource(source, resolution.selected.connection.source)
+          )
+            continue;
         } catch (error) {
           if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation) continue;
@@ -1642,44 +1680,16 @@ export class MobileClient {
       const sameCredential = () =>
         current() &&
         generation === this.#fence.generation &&
-        credentialRevision === this.#credentialRevision;
-      let viewLoginId = await this.#viewLoginId(attachment.connection);
-      if (!viewLoginId && attachment.connection.kind === "personal" && sameCredential()) {
-        try {
-          viewLoginId = await this.sessions.initializeViewLoginId?.(id, sameCredential);
-        } catch {
-          this.#cacheIdentityFailureAttempt = attempt;
-        }
-      }
-      if (attachment.connection.source.kind === "account")
-        await this.oauth.initializeViewLoginIds(attachment.connection, sameCredential).catch(noop);
+        credentialRevision === this.#credentialRevision &&
+        sameAccount();
+      const loginId = await this.#viewLoginId(attachment.connection);
       if (!sameCredential()) continue;
-      if (
-        (!viewLoginId && this.#host.credentials.viewLoginId) ||
-        (attachment.connection.source.kind === "account" && !this.oauth.accountViewLoginId())
-      ) {
-        this.#attachmentState = "offline";
-        this.#sessionFailures.set(id, "unavailable");
-        await this.#republish();
-        return {
-          kind: "session-failed",
-          error: new ClientOperationError("Could not save this phone's login.", "blocked", {
-            kind: "local",
-            provenance: "local",
-            reason: "login-storage-unavailable",
-            retryable: false,
-          }),
-        };
-      }
-      const loginId = viewLoginId;
-      const accountOwned = attachment.connection.source.kind === "account";
-      const accountLoginId = accountOwned ? this.oauth.accountViewLoginId() : undefined;
       const assertCurrentAttachment = (): void => {
         if (
           !this.#isCurrentSelection(id, attempt) ||
           generation !== this.#fence.generation ||
           credentialRevision !== this.#credentialRevision ||
-          (accountOwned && accountLoginId !== this.oauth.accountViewLoginId())
+          !sameAccount()
         )
           throw new HostTransportError("deployment-changed");
       };
@@ -1749,6 +1759,7 @@ export class MobileClient {
         continue;
       }
       this.#attachedViewLoginId = loginId;
+      this.#attachedSource = source;
       this.#changingLogins.delete(id);
       this.#hostClient = hostClient;
       initializeMessageOutbox(hostClient, {
@@ -1817,7 +1828,8 @@ export class MobileClient {
       let previewAccountLoginId = this.oauth.accountViewLoginId();
       const detachAccount = this.oauth.subscribe(() => {
         const next = this.oauth.accountViewLoginId();
-        if (this.#hostClient !== hostClient || next === previewAccountLoginId) return;
+        if (this.#hostClient !== hostClient || (next === previewAccountLoginId && matchesAccount()))
+          return;
         previewAccountLoginId = next;
         if (accountOwned) {
           this.#credentialRevision++;
@@ -2114,6 +2126,7 @@ export class MobileClient {
     if (this.#hostClient) disposeMessageOutbox(this.#hostClient);
     this.#hostClient?.dispose();
     this.#hostClient = null;
+    this.#attachedSource = undefined;
     this.#hostOrigin = null;
     this.#attachmentGeneration = -1;
     this.#attachmentRefused = false;
@@ -2196,15 +2209,27 @@ export class MobileClient {
   async #viewLoginId(connection: DeploymentConnection): Promise<string | undefined> {
     const id = connection.authority.document.deploymentId,
       attempt = this.#attachmentAttempt;
+    if (this.#cacheIdentityFailureAttempt === attempt) return undefined;
     try {
       return await this.#host.credentials.viewLoginId?.(connection);
-    } catch {
+    } catch (error) {
       if (this.#isCurrentSelection(id, attempt)) {
         this.#cacheIdentityFailureAttempt = attempt;
         this.savedViews.block();
+        if (this.#hostClient) this.savedViews.attach(this.#hostClient);
+        this.#recordLoginIdFailure(error);
       }
       return undefined;
     }
+  }
+
+  #recordLoginIdFailure(cause: unknown): void {
+    this.#storageFailure = new Error(
+      "Saved views and pending messages are unavailable for this sign-in.",
+      {
+        cause,
+      },
+    );
   }
 
   async #savedScope(connection: DeploymentConnection): Promise<SavedViewScope | null> {
@@ -2244,7 +2269,6 @@ export class MobileClient {
     let loginId: string | undefined, accountLoginId: string | undefined;
     const current = () =>
       this.#isCurrentSelection(id, attempt) &&
-      this.#cacheIdentityFailureAttempt !== attempt &&
       // An unrelated Deployment/Account cleanup cannot suspend this login.
       (this.#authorizationEpoch === epoch || !this.#savedViewCache.isBlocked(id)) &&
       !this.#savedViewCache.isPending(id) &&
@@ -2259,7 +2283,12 @@ export class MobileClient {
         if (scope === null) return;
         loginId = scope.loginId;
         accountLoginId = scope.accountSource?.loginId;
-        if (!current() || this.#savedViewCache.isBlocked(id)) return;
+        if (
+          !current() ||
+          this.#cacheIdentityFailureAttempt === attempt ||
+          this.#savedViewCache.isBlocked(id)
+        )
+          return;
         this.savedViews.load(scope);
       })
       .catch(noop);
@@ -2344,11 +2373,16 @@ export class MobileClient {
           return;
         }
         await this.#resolve(deploymentId);
-        if (this.#attachmentGeneration === this.#fence.generation) {
+        const sameRoute = this.#attachmentGeneration === this.#fence.generation;
+        if (
+          sameRoute &&
+          (this.#attachedSource === undefined ||
+            sameConnectionSource(this.#attachedSource, connection.source))
+        ) {
           await this.#republish();
           return;
         }
-        const attempt = await this.#selectLocallyNow(deploymentId, false);
+        const attempt = await this.#selectLocallyNow(deploymentId, sameRoute);
         if (attempt !== null) void this.#attachSelection(deploymentId, attempt).catch(noop);
       } catch {
         // A revision this release cannot resolve leaves the phone detached and
@@ -2633,15 +2667,10 @@ export class MobileClient {
       const current = catalog.deployments.find(
         ({ authority }) => authority.document.deploymentId === id,
       );
-      const sameSource =
-        current &&
-        previous.source.kind === current.source.kind &&
-        (previous.source.kind === "manual" ||
-          (current.source.kind === "account" &&
-            previous.source.issuer === current.source.issuer &&
-            previous.source.subject === current.source.subject));
       if (
-        (!current || !isSameHost(previous.authority, current.authority) || !sameSource) &&
+        (!current ||
+          !isSameHost(previous.authority, current.authority) ||
+          !sameConnectionSource(previous.source, current.source)) &&
         !this.#savedViewCache.isBlocked(id)
       )
         void this.#invalidateSavedView(id);
@@ -2655,12 +2684,23 @@ export class MobileClient {
     ) {
       this.#iphoneApps?.stop();
     }
+    const unavailableCredentials = new Set<DeploymentId>();
     for (const connection of catalog.deployments) {
       const deploymentId = connection.authority.document.deploymentId;
       // `held` never reaches the network, so drawing the list cannot turn into
       // one token refresh per row.
-      if (await this.#host.credentials.held(connection)) this.#credentialed.add(deploymentId);
-      else this.#credentialed.delete(deploymentId);
+      try {
+        if (await this.#host.credentials.held(connection)) this.#credentialed.add(deploymentId);
+        else this.#credentialed.delete(deploymentId);
+      } catch (error) {
+        if (
+          !(error instanceof ClientOperationError) ||
+          error.failure.reason !== "login-storage-unavailable"
+        )
+          throw error;
+        this.#credentialed.delete(deploymentId);
+        unavailableCredentials.add(deploymentId);
+      }
     }
     const attachedId = this.#attachedDeploymentId;
     const rows = catalog.deployments.filter(isPersonalConnection).map((connection) => {
@@ -2670,7 +2710,11 @@ export class MobileClient {
         attachment: attached ? this.#attachmentState : null,
         credentialed:
           this.#credentialed.has(deploymentId) && !(this.#attachmentRefused && attached),
-        sessionFailure: attached ? (this.#sessionFailures.get(deploymentId) ?? null) : null,
+        sessionFailure: unavailableCredentials.has(deploymentId)
+          ? "unavailable"
+          : attached
+            ? (this.#sessionFailures.get(deploymentId) ?? null)
+            : null,
         verification: this.#verification.get(deploymentId) ?? null,
       });
     });
@@ -2819,6 +2863,17 @@ type ProtocolVerificationOutcome = HostEpochAgreement | "superseded";
 
 function sessionFailureOf(error: unknown): HostSessionExchangeFailure {
   return error instanceof HostSessionExchangeError ? error.outcome : "unavailable";
+}
+
+function sameConnectionSource(
+  left: DeploymentConnection["source"],
+  right: DeploymentConnection["source"],
+): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === "manual" ||
+      (right.kind === "account" && left.issuer === right.issuer && left.subject === right.subject))
+  );
 }
 
 function verificationFailureDetail(verification: HostVerification): string {

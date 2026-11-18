@@ -291,7 +291,7 @@ export class SavedViewPresentation {
     }
     if (tasks !== this.#state.tasks) this.#publish({ ...this.#state, tasks });
     if (dirty) this.#captureRevision += 1;
-    if (dirty && !this.#invalidating()) {
+    if (dirty && this.#scope !== null && !this.#invalidating()) {
       this.#cancelTimer();
       this.#timer = setTimeout(() => {
         void this.flush();
