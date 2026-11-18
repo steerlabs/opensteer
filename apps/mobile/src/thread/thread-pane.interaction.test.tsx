@@ -5731,6 +5731,79 @@ it("doesn't start a new task offline, says so above the composer and keeps the d
   );
 });
 
+// A cold offline Home swallowed a refused save: the words stayed on screen
+// while a relaunch brought back only the older draft.
+it("says a refused Home draft isn't saved, before and after the computer answers", async () => {
+  const { HeldNewTaskPane, NewTaskPane } = await import("../screens/new-task.js");
+  class FullFilesystem extends MemoryPrivateFilesystem {
+    full = false;
+    override async writeFileAtomic(path: string, content: Uint8Array | string): Promise<void> {
+      if (this.full) throw new Error("This device has no space left.");
+      await super.writeFileAtomic(path, content);
+    }
+  }
+  const files = new FullFilesystem();
+  const drafts = createThreadDraftStore({
+    filePath: "/private/new-task.json",
+    now: () => new Date(at),
+    privateFiles: files,
+    saveRetryDelaysMs: [0],
+  });
+  await drafts.load();
+  harness.drafts = drafts;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () =>
+    root.render(
+      <HeldNewTaskPane
+        connection={null}
+        deploymentId={deploymentId}
+        name="Mac mini"
+        underHeader={false}
+        userId={userId}
+      />,
+    ),
+  );
+  await type(container, "Message", "Book the flights");
+  expect(text(container)).not.toContain("Couldn't save this draft");
+  files.full = true;
+  await type(container, "Message", "Book the flights for Friday");
+  expect(
+    container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+  ).toBe("Book the flights for Friday");
+  expect(text(container)).toContain("Couldn't save this draft on this device.");
+
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  harness.activeHost = host.client;
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => false}
+        underHeader={false}
+      />,
+    ),
+  );
+  await settle();
+  expect(text(container)).toContain("Couldn't save this draft on this device.");
+  files.full = false;
+  await type(container, "Message", "Book the flights for Friday morning");
+  expect(text(container)).not.toContain("Couldn't save this draft");
+  const relaunched = createThreadDraftStore({
+    filePath: "/private/new-task.json",
+    now: () => new Date(at),
+    privateFiles: files,
+  });
+  await relaunched.load();
+  expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Book the flights for Friday morning",
+  );
+});
+
 describe("a new task Ask started", () => {
   const included = includedPage;
 

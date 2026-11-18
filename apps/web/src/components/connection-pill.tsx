@@ -48,6 +48,7 @@ export interface ConnectionDetailsProps {
  * "Connected" only after an interruption was heard.
  */
 export const ConnectionPill = memo(function ConnectionPill({
+  announce = true,
   details = null,
   detailsHint = "Opens connection details.",
   gated = false,
@@ -55,6 +56,8 @@ export const ConnectionPill = memo(function ConnectionPill({
   recoveredLabel = "Connected",
   source = "",
 }: {
+  /** False where the caller draws `ConnectionAnnouncement` itself, outside a pill it moves. */
+  readonly announce?: boolean;
   readonly notice: ConnectionPillNotice | null;
   /** Which connection it speaks for; the pill stays mounted as the route changes it. */
   readonly source?: string;
@@ -65,7 +68,6 @@ export const ConnectionPill = memo(function ConnectionPill({
   readonly recoveredLabel?: string;
 }) {
   const current = gated ? null : notice;
-  const spoken = useSpokenConnection(gated ? undefined : current, recoveredLabel, source);
   // The last notice stays drawn while it leaves.
   const [drawn, setDrawn] = useState(current);
   if (current !== null && current !== drawn) setDrawn(current);
@@ -79,9 +81,14 @@ export const ConnectionPill = memo(function ConnectionPill({
   if (shown === null && settled !== null) setSettled(null);
   return (
     <>
-      <span aria-live="polite" className="visually-hidden">
-        {spoken}
-      </span>
+      {announce ? (
+        <ConnectionAnnouncement
+          gated={gated}
+          notice={notice}
+          recoveredLabel={recoveredLabel}
+          source={source}
+        />
+      ) : null}
       {shown === null ? null : (
         <div
           className={
@@ -157,6 +164,26 @@ export const ConnectionPill = memo(function ConnectionPill({
     </>
   );
 });
+
+/** What screen readers hear of the pill's connection. */
+export function ConnectionAnnouncement({
+  gated = false,
+  notice,
+  recoveredLabel = "Connected",
+  source = "",
+}: {
+  readonly gated?: boolean;
+  readonly notice: ConnectionPillNotice | null;
+  readonly recoveredLabel?: string;
+  readonly source?: string;
+}) {
+  const spoken = useSpokenConnection(gated ? undefined : notice, recoveredLabel, source);
+  return (
+    <span aria-live="polite" className="visually-hidden">
+      {spoken}
+    </span>
+  );
+}
 
 /** The pill's details: which connection, what is going on, and the one thing to do. */
 export const ConnectionDetails = memo(function ConnectionDetails(props: ConnectionDetailsProps) {

@@ -311,6 +311,8 @@ export interface ThreadDraftStore {
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
   readTaskStart(deploymentId: string, userId: string, threadId: string): TaskStartRecord | null;
+  /** True while words, a quote or a page shown in this draft could not be written to disk. */
+  readDraftUnsaved(deploymentId: string, userId: string, threadId: string): boolean;
   writeDraft(deploymentId: string, userId: string, threadId: string, text: string): Promise<void>;
   /** Attaches or removes the update this draft answers. Null clears it. */
   writeDraftQuote(
@@ -340,6 +342,8 @@ export function createThreadDraftStore(options: {
   readonly filePath: string;
   readonly now: () => Date;
   readonly privateFiles: PrivateFilesystem;
+  /** Waits before each retry of a refused draft edit; tests pass shorter ones. */
+  readonly saveRetryDelaysMs?: readonly number[];
   readonly forgetDraftFiles?: (
     scope: FirstMessageAttachmentDraftScope,
     localUris: readonly (string | null)[],
@@ -359,6 +363,11 @@ export function createThreadDraftStore(options: {
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
   const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
+  const overlays = { page: pageEdits, quote: quoteEdits, text: textEdits } as const;
+  // Fields whose latest edit was refused by disk. Shown until an edit of that
+  // field saves or the overlay goes, so a still-failing disk doesn't flicker.
+  const unsaved = new Map<string, Set<keyof typeof overlays>>();
+  const retryDelays = options.saveRetryDelaysMs ?? [150, 600];
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -437,6 +446,41 @@ export function createThreadDraftStore(options: {
       pending = nextPending;
       publish();
     });
+
+  /** Shows a field edit at once, then writes it, retrying while it is still the latest. */
+  const saveEdit = async <Edit extends object>(
+    field: keyof typeof overlays,
+    edits: Map<string, Edit>,
+    entryKey: string,
+    edit: Edit,
+    change: (nextDrafts: Map<string, ThreadDraft>) => void,
+  ): Promise<void> => {
+    if (!edits.has(entryKey)) unsaved.get(entryKey)?.delete(field);
+    edits.set(entryKey, edit);
+    publish();
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await mutate(change);
+        break;
+      } catch (error) {
+        // A newer edit carries the whole field; retrying this one could overwrite it.
+        if (edits.get(entryKey) !== edit) return;
+        const delay = retryDelays[attempt];
+        if (delay === undefined) {
+          unsaved.set(entryKey, (unsaved.get(entryKey) ?? new Set()).add(field));
+          publish();
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (edits.get(entryKey) !== edit) return;
+      }
+    }
+    if (edits.get(entryKey) === edit) {
+      edits.delete(entryKey);
+      unsaved.get(entryKey)?.delete(field);
+      publish();
+    }
+  };
 
   const store: ThreadDraftStore = {
     getVersion: () => version,
@@ -808,6 +852,11 @@ export function createThreadDraftStore(options: {
       return { threadIds };
     },
 
+    readDraftUnsaved(deploymentId, userId, threadId): boolean {
+      const entryKey = key(deploymentId, userId, threadId);
+      return [...(unsaved.get(entryKey) ?? [])].some((field) => overlays[field].has(entryKey));
+    },
+
     readTaskStart(deploymentId, userId, threadId): TaskStartRecord | null {
       const entry = pending.get(key(deploymentId, userId, threadId)) ?? null;
       // A record whose Thread does not match the one it is filed under is a
@@ -821,16 +870,10 @@ export function createThreadDraftStore(options: {
     async writeDraft(deploymentId, userId, threadId, text): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
       const edit = { text: text.slice(0, maxDraftCharacters) };
-      textEdits.set(entryKey, edit);
-      publish();
-      await mutate((nextDrafts) => {
+      await saveEdit("text", textEdits, entryKey, edit, (nextDrafts) => {
         const current = nextDrafts.get(entryKey);
         putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: edit.text });
       });
-      if (textEdits.get(entryKey) === edit) {
-        textEdits.delete(entryKey);
-        publish();
-      }
     },
 
     async writeDraftAttachments(
@@ -880,37 +923,25 @@ export function createThreadDraftStore(options: {
     async writeDraftQuote(deploymentId, userId, threadId, quote): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
       const edit = { quote: quote === null ? null : DraftQuoteSchema.parse(quote) };
-      quoteEdits.set(entryKey, edit);
-      publish();
-      await mutate((nextDrafts) => {
+      await saveEdit("quote", quoteEdits, entryKey, edit, (nextDrafts) => {
         const current = nextDrafts.get(entryKey);
         putDraft(nextDrafts, entryKey, userId, {
           ...draftFields(current),
           quote: edit.quote ?? undefined,
         });
       });
-      if (quoteEdits.get(entryKey) === edit) {
-        quoteEdits.delete(entryKey);
-        publish();
-      }
     },
 
     async writeDraftPage(deploymentId, userId, threadId, page): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
       const edit = { page: page === null ? null : BrowserPageSchema.parse(page) };
-      pageEdits.set(entryKey, edit);
-      publish();
-      await mutate((nextDrafts) => {
+      await saveEdit("page", pageEdits, entryKey, edit, (nextDrafts) => {
         const current = nextDrafts.get(entryKey);
         putDraft(nextDrafts, entryKey, userId, {
           ...draftFields(current),
           page: edit.page ?? undefined,
         });
       });
-      if (pageEdits.get(entryKey) === edit) {
-        pageEdits.delete(entryKey);
-        publish();
-      }
     },
   };
   return store;

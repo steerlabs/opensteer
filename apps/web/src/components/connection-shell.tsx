@@ -21,6 +21,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -28,6 +29,7 @@ import {
 import { createPortal } from "react-dom";
 import { ConnectionGate, type ConnectionGateButton } from "./connection-gate.js";
 import {
+  ConnectionAnnouncement,
   ConnectionPill,
   type ConnectionDetailsProps,
   type ConnectionPillNotice,
@@ -224,34 +226,56 @@ export function ShellConnectionPill({
           ];
     }),
   );
-  const { host, slot } = useContext(PillSlotContext);
+  const { host, returnFocus, slot } = useContext(PillSlotContext);
   const [inline, setInline] = useState<HTMLElement | null>(null);
   // One element holds the pill wherever it sits: moving it between a column and the main one
   // keeps the pill, its open details and its live region, rather than drawing a new one.
   useLayoutEffect(() => {
     const parent = slot ?? inline;
-    if (host && parent && host.parentElement !== parent) parent.append(host);
-  }, [host, inline, slot]);
+    if (!host || !parent || host.parentElement === parent) return;
+    // A move takes focus out of the document; give it back to the same control.
+    const focused = returnFocus.current ?? document.activeElement;
+    returnFocus.current = null;
+    parent.append(host);
+    if (
+      focused instanceof HTMLElement &&
+      host.contains(focused) &&
+      document.activeElement !== focused
+    )
+      focused.focus({ preventScroll: true });
+  }, [host, inline, returnFocus, slot]);
   useLayoutEffect(() => () => host?.remove(), [host]);
-  const pill = (
-    <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />
-  );
-  if (!host) return pill;
+  if (!host)
+    return <ConnectionPill details={shown} gated={gated} notice={notice} source={current.key} />;
   return (
     <>
       <span className="connection-pill-host" ref={setInline} />
-      {createPortal(pill, host)}
+      {/* Screen readers can say a live region again when it moves, so it stays here. */}
+      <ConnectionAnnouncement gated={gated} notice={notice} source={current.key} />
+      {createPortal(
+        <ConnectionPill
+          announce={false}
+          details={shown}
+          gated={gated}
+          notice={notice}
+          source={current.key}
+        />,
+        host,
+      )}
     </>
   );
 }
 
 interface PillSlotValue {
   readonly host: HTMLElement | null;
+  /** The pill's focused control as its column went away, to focus again where it lands. */
+  readonly returnFocus: { current: HTMLElement | null };
   readonly slot: HTMLElement | null;
   readonly place: (element: HTMLElement) => () => void;
 }
 const PillSlotContext = createContext<PillSlotValue>({
   host: null,
+  returnFocus: { current: null },
   slot: null,
   place: () => () => {},
 });
@@ -329,13 +353,21 @@ export function ConnectionGateScope({ children }: { readonly children: ReactNode
     element.className = "connection-pill-host";
     return element;
   });
+  const returnFocus = useRef<HTMLElement | null>(null);
   const pillSlot = useMemo<PillSlotValue>(
     () => ({
       host,
+      returnFocus,
       slot,
       place: (element) => {
         setSlot(element);
-        return () => setSlot((current) => (current === element ? null : current));
+        return () => {
+          // Runs before React takes the column out of the page, focus with it.
+          const focused = document.activeElement;
+          if (focused instanceof HTMLElement && host?.contains(focused))
+            returnFocus.current = focused;
+          setSlot((current) => (current === element ? null : current));
+        };
       },
     }),
     [host, slot],

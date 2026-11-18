@@ -28,6 +28,7 @@ import {
   unrefTimer,
 } from "../connections/operation-error.js";
 import type { ClientIssue } from "../feedback/client-issue.js";
+import { threadStartsRunForMessage } from "./thread-activity.js";
 
 export interface StoredMessage {
   readonly localId: string;
@@ -175,7 +176,13 @@ export function compareOutboxOrder(a: StoredMessage, b: StoredMessage): number {
 }
 export function sameStoredMessage(a: StoredMessage, b: StoredMessage): boolean {
   return (
-    sameDeliveryView(a, b) &&
+    a.localId === b.localId &&
+    a.phase === b.phase &&
+    a.attempted === b.attempted &&
+    a.createdAt === b.createdAt &&
+    a.inTranscript === b.inTranscript &&
+    a.rejection?.code === b.rejection?.code &&
+    a.rejection?.reason === b.rejection?.reason &&
     a.lease?.id === b.lease?.id &&
     a.lease?.expiresAt === b.lease?.expiresAt &&
     a.uncertain === b.uncertain &&
@@ -183,26 +190,6 @@ export function sameStoredMessage(a: StoredMessage, b: StoredMessage): boolean {
     a.migrated === b.migrated &&
     JSON.stringify(a.localAttachmentUris) === JSON.stringify(b.localAttachmentUris) &&
     JSON.stringify(a.command) === JSON.stringify(b.command)
-  );
-}
-
-function sameDeliveryView(a: StoredMessage, b: StoredMessage): boolean {
-  return (
-    a.localId === b.localId &&
-    a.phase === b.phase &&
-    a.attempted === b.attempted &&
-    a.createdAt === b.createdAt &&
-    a.inTranscript === b.inTranscript &&
-    a.rejection?.code === b.rejection?.code &&
-    a.rejection?.reason === b.rejection?.reason
-  );
-}
-
-function sameMessagePresentation(a: StoredMessage, b: StoredMessage): boolean {
-  return (
-    sameDeliveryView(a, b) &&
-    (a.command.delivery ?? "queue") === (b.command.delivery ?? "queue") &&
-    JSON.stringify(a.command.content) === JSON.stringify(b.command.content)
   );
 }
 function storageFailure(): ClientOperationError {
@@ -429,10 +416,6 @@ class SessionMessageOutbox implements MessageOutbox {
           entry.phase === "sending" && !owned ? { ...entry, phase: "waiting" as const } : entry;
         const held = previous.get(entry.localId);
         if (held && sameStoredMessage(held, row)) return held;
-        if (held && sameMessagePresentation(held, row)) {
-          const projected = localRows.get(held);
-          if (projected) localRows.set(row, projected);
-        }
         return row;
       })
       .sort(compareOutboxOrder);
@@ -460,6 +443,7 @@ class SessionMessageOutbox implements MessageOutbox {
         order: 0,
         attempted: false,
         phase: "waiting",
+        ...(this.#options.startsRun?.(parsed.threadId) ? { inTranscript: true } : {}),
         ...(options?.localAttachmentUris
           ? { localAttachmentUris: options.localAttachmentUris }
           : {}),
@@ -915,8 +899,8 @@ export function initializeMessageOutbox(
       const snapshot = client.getSnapshot();
       const thread = snapshot.threads.find(({ id }) => id === threadId);
       return (
-        thread?.status === "idle" &&
-        !thread.inputQueuePaused &&
+        thread !== undefined &&
+        threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread }) &&
         !snapshot.inputQueues[threadId]?.items.length
       );
     },
@@ -1049,8 +1033,8 @@ function localRow(entry: StoredMessage, viewerId: UserId): MessageEntry {
 }
 
 /**
- * The previous projection when every row in the next one is the same object, so a
- * subscriber to the whole outbox redraws only for a change to its own task.
+ * The previous projection when every row shows the same thing. Local rows can
+ * get a new storage identity when just their dispatch metadata changes.
  */
 export function sameTranscript(
   previous: readonly TranscriptEntry[] | null,
@@ -1058,7 +1042,18 @@ export function sameTranscript(
 ): readonly TranscriptEntry[] {
   return previous !== null &&
     previous.length === next.length &&
-    previous.every((entry, index) => entry === next[index])
+    previous.every((entry, index) => {
+      const row = next[index];
+      return (
+        entry === row ||
+        (entry.kind === "message" &&
+          entry.localDelivery !== undefined &&
+          row?.kind === "message" &&
+          row.localDelivery !== undefined &&
+          entry.clientSendKey === row.clientSendKey &&
+          JSON.stringify(entry) === JSON.stringify(row))
+      );
+    })
     ? previous
     : next;
 }

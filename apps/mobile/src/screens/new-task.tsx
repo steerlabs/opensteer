@@ -1,5 +1,5 @@
 import { clientScopeKey, type ClientConnection } from "@opensteer/client/connections";
-import { clientIssue, clientIssueActions } from "@opensteer/client/feedback";
+import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine } from "../ui/client-feedback.js";
@@ -158,7 +158,6 @@ function NewTask(props: {
   // What Send came to when no task was started: said above the composer,
   // with the draft kept, until the words change or Send is pressed again.
   const [line, setLine] = useState<ActionLineValue | null>(null);
-  const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
   const resume = useRef<(record: TaskStartRecord) => Promise<void>>(async () => undefined);
   const mounted = useRef(true);
@@ -184,16 +183,11 @@ function NewTask(props: {
 
   const changeText = (next: string): void => {
     setLine(null);
-    void drafts.writeDraft(deploymentId, userId, draftKey, next).then(
-      () => setDraftFailure(null),
-      () => setDraftFailure("This draft could not be saved on this phone."),
-    );
+    // A refused save keeps the words on screen; the store says it is unsaved.
+    void drafts.writeDraft(deploymentId, userId, draftKey, next).catch(noop);
   };
   const changePage = (next: BrowserPageContentPart | null): void => {
-    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).then(
-      () => setDraftFailure(null),
-      () => setDraftFailure("This page could not be saved on this phone."),
-    );
+    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).catch(noop);
   };
 
   /**
@@ -601,9 +595,7 @@ function NewTask(props: {
             <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
           )}
           {otherStartLine ? <ActionLine line={otherStartLine} numberOfLines={2} /> : null}
-          {draftFailure === null ? null : (
-            <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
-          )}
+          {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
         </Animated.View>
       )}
     </FirstMessageComposer>
@@ -686,9 +678,15 @@ export function HeldNewTaskPane(props: {
         {line === null ? null : (
           <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
         )}
+        {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
       </View>
     </FirstMessageComposer>
   );
+}
+
+function DraftUnsaved(): ReactNode {
+  const { title, detail } = presentClientIssue({ code: "draft-unsaved" });
+  return <Notice detail={detail ?? ""} title={title} tone="neutral" />;
 }
 
 const heldExecution = firstMessageExecution({

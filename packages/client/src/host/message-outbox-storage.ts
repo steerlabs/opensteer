@@ -214,7 +214,13 @@ export function createMessageOutboxStorage(records: MessageRecordStorage): Messa
       )
         throw new Error("The message key is already in use.");
       saved = options?.append
-        ? (existing ?? { ...entry, order: Math.max(0, ...entries.map((row) => row.order)) + 1 })
+        ? (existing ?? {
+            ...entry,
+            order: Math.max(0, ...entries.map((row) => row.order)) + 1,
+            inTranscript: entries.some((row) => row.command.threadId === entry.command.threadId)
+              ? undefined
+              : entry.inTranscript,
+          })
         : (options?.migrated || options?.handoff) && existing
           ? existing
           : entry;

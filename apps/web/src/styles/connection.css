@@ -27,8 +27,7 @@
   animation: connection-pill-in var(--duration-med) var(--ease-out) both;
 }
 
-.connection-pill--settled,
-.connection-pill__label--settled {
+.connection-pill--settled {
   animation: none;
 }
 
@@ -82,6 +81,12 @@ html.electron-shell .connection-pill {
   overflow: hidden;
   text-overflow: ellipsis;
   animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+/* After the label's own rule, which it must outrank: a settled label moved
+   to another column doesn't fade in again. */
+.connection-pill__label--settled {
+  animation: none;
 }
 
 .connection-pill__dot {

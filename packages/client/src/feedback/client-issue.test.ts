@@ -60,6 +60,7 @@ describe("safe client issues", () => {
       "unconfirmed",
       "rejected",
       "login-storage-unavailable",
+      "draft-unsaved",
       "storage-unavailable",
       "queue-full",
       "preparation-required",
