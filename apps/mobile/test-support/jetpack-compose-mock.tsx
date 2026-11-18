@@ -45,9 +45,11 @@ export const compose = {
     { Trigger: slot, Items: slot },
   ),
   DropdownMenuItem: Object.assign(view, { Text: slot }),
+  FilterChip: Object.assign(view, { Label: slot, LeadingIcon: slot }),
+  FlowRow: view,
   Host: view,
   IconButton: view,
-  LazyColumn: view,
+  LazyColumn: ({ children }: ViewProps) => <div data-scroll-list>{children}</div>,
   ListItem: Object.assign(view, {
     HeadlineContent: slot,
     SupportingContent: slot,
@@ -74,8 +76,6 @@ export const compose = {
   RadioButton: () => null,
   RNHostView: slot,
   Row: view,
-  SegmentedButton: Object.assign(view, { Label: slot }),
-  SingleChoiceSegmentedButtonRow: view,
   Switch: ({
     value,
     onCheckedChange,
@@ -96,9 +96,12 @@ export const composeModifiers = {
   background: other,
   clickable: (handler: () => void): Modifier => ({ kind: "click", handler }),
   clip: other,
+  fillMaxSize: other,
   fillMaxWidth: other,
+  imePadding: other,
   padding: other,
   selectable: (_selected: boolean, handler: () => void): Modifier => ({ kind: "click", handler }),
+  selectableGroup: other,
   semantics: ({ contentDescription }: { contentDescription?: string }): Modifier =>
     contentDescription === undefined
       ? { kind: "other" }
@@ -106,4 +109,5 @@ export const composeModifiers = {
   Shapes: { Circle: {} },
   size: other,
   toggleable: (_value: boolean, handler: () => void): Modifier => ({ kind: "click", handler }),
+  weight: other,
 };

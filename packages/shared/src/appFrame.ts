@@ -104,6 +104,16 @@ export function appThemeScript(theme: AppTheme): string {
   return `document.documentElement.dataset.theme=${JSON.stringify(theme)};document.documentElement.style.colorScheme=${JSON.stringify(theme)};window.dispatchEvent(new CustomEvent('opensteer:theme',{detail:{theme:${JSON.stringify(theme)}}}));true;`;
 }
 
+// Android delivers WebView messages and navigation events through different
+// paths. A post-load query can read the current document's readiness directly.
+const appReadyFlag = "__opensteerAppFrameReady";
+export const appFrameReadinessScript = `
+  window.ReactNativeWebView.postMessage(JSON.stringify({
+    type: window.${appReadyFlag} === true ? 'opensteer-app:ready' : 'opensteer-app:unprepared'
+  }));
+  true;
+`;
+
 export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false): string {
   const doctype = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/iu.exec(html);
   if (!doctype) html = "<!doctype html>" + html;
@@ -115,6 +125,7 @@ export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false
     if(parent!==window)parent.postMessage(message,'*');
     if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
   };
+  window.${appReadyFlag}=true;
   send({type:'opensteer-app:ready'});
   addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented)return;
     const url=new URL(a.href,location.href);

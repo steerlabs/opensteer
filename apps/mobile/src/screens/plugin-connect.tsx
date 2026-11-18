@@ -198,6 +198,7 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
         {
           key: "create",
           kind: "primary",
+          pinned: true,
           label: action.pending === "create" ? "Connecting…" : "Save and link",
           disabled: !method || !pluginAccountComplete(fields, values) || action.pending !== null,
           onPress: () =>

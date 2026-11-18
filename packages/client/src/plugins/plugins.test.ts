@@ -511,21 +511,27 @@ it("explains that tools are off even when accounts and tools are absent", () => 
   expect(pluginEmptyToolsText({ plugin, tools: null })).toBe("Tools are off for agents.");
 });
 
-it("shows a pending server launch as waiting for approval", () => {
-  expect(
-    pluginLocalToolStatus({
-      id: "app_server_pending",
-      kind: "local-server",
-      name: "pending",
-      title: "Pending",
-      computer: { id: "fixture", name: "Test Mac" },
-      unavailable: "Approve the launch first.",
-      waitingForLaunchApproval: true,
-      toolCount: 0,
-      readOnlyToolCount: 0,
-      access: "all",
-    }),
-  ).toEqual({ label: "Waiting for approval", tone: "attention" });
+it("shows the Host's unavailable detail, with waiting and off taking precedence", () => {
+  const server = {
+    id: "app_server_pending",
+    kind: "local-server",
+    name: "pending",
+    title: "Pending",
+    computer: { id: "fixture", name: "Test Mac" },
+    unavailable: "Test Mac is offline. Open Opensteer on Test Mac.",
+    toolCount: 0,
+    readOnlyToolCount: 0,
+    access: "all",
+  } as const;
+  expect(pluginLocalToolStatus(server)).toEqual({ label: server.unavailable, tone: "attention" });
+  expect(pluginLocalToolStatus({ ...server, waitingForLaunchApproval: true })).toEqual({
+    label: "Waiting for approval",
+    tone: "attention",
+  });
+  expect(pluginLocalToolStatus({ ...server, access: "off" })).toEqual({
+    label: "Off for agents",
+    tone: "muted",
+  });
 });
 
 it("uses the original account creation receipt to recover a lost answer", async () => {
