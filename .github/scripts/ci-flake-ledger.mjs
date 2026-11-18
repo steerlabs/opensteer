@@ -15,7 +15,7 @@
  * Anything else is listed as unproven: it may be a regression, or a flake without evidence.
  */
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
@@ -108,29 +108,36 @@ export function classify(runs, position, reaches, shardOf = () => undefined) {
     return [...jobs.values()];
   };
   // The job that ran the test passed, or every job of its lane when its shard is unknown.
-  const passed = (item, test) => {
+  const passingJobs = (item, test) => {
     const { lane } = laneOf(test.job);
     const shard = shardOf(item, test);
     const jobs = latest(item).filter((job) =>
       shard ? job.name === shard : laneOf(job.name).lane === lane,
     );
-    return (
-      jobs.length > 0 &&
+    return jobs.length > 0 &&
       jobs.every((job) => job.conclusion === "success") &&
       // Without its plan, only a scheduled or manual run is known to run every file.
       (!byFile(test) || (item.plan ? selects(item.plan, test) : item.event !== "push"))
-    );
+      ? jobs
+      : undefined;
   };
+  const passed = (item, test) => passingJobs(item, test) !== undefined;
+  // What a maintainer needs to check the claim: the passing job and the commits compared.
+  const proof = (kind, sha, jobs, compared) => ({
+    kind,
+    passing: { sha, url: jobs[0].url },
+    ...(compared ? { compared } : {}),
+  });
   const evidenceFor = (item, job, test) => {
-    if (
-      item.jobs.some(
-        (other) =>
-          other.name === job.name && other.attempt > job.attempt && other.conclusion === "success",
-      )
-    )
-      return "rerun";
-    if (runs.some((other) => other !== item && other.sha === item.sha && passed(other, test)))
-      return "same commit";
+    const rerun = item.jobs.find(
+      (other) =>
+        other.name === job.name && other.attempt > job.attempt && other.conclusion === "success",
+    );
+    if (rerun) return proof("rerun", item.sha, [rerun]);
+    const twin = runs.find(
+      (other) => other !== item && other.sha === item.sha && passed(other, test),
+    );
+    if (twin) return proof("same commit", twin.sha, passingJobs(twin, test));
     const at = position.get(item.sha);
     if (at === undefined) return undefined;
     const nearest = (older) =>
@@ -147,11 +154,16 @@ export function classify(runs, position, reaches, shardOf = () => undefined) {
         .find((other) => passed(other, test));
     const before = nearest(true);
     const after = nearest(false);
-    if (
-      (before && !reaches(before.sha, item.sha, test)) ||
-      (after && !reaches(item.sha, after.sha, test))
-    )
-      return "unreachable diff";
+    if (before && !reaches(before.sha, item.sha, test))
+      return proof("unreachable diff", before.sha, passingJobs(before, test), {
+        from: before.sha,
+        to: item.sha,
+      });
+    if (after && !reaches(item.sha, after.sha, test))
+      return proof("unreachable diff", after.sha, passingJobs(after, test), {
+        from: item.sha,
+        to: after.sha,
+      });
     return undefined;
   };
   const entries = new Map();
@@ -181,12 +193,13 @@ export function classify(runs, position, reaches, shardOf = () => undefined) {
         entry.failures++;
         if (evidence) entry.flakes++;
         if (item.createdAt < entry.firstSeen) entry.firstSeen = item.createdAt;
-        if (evidence && !entry.evidence.includes(evidence)) entry.evidence.push(evidence);
+        if (evidence && !entry.evidence.includes(evidence.kind)) entry.evidence.push(evidence.kind);
         entry.occurrences.push({
           sha: item.sha,
           createdAt: item.createdAt,
           url: job.url,
-          evidence,
+          evidence: evidence?.kind,
+          ...(evidence ? { proof: evidence } : {}),
         });
         entries.set(key, entry);
       }
@@ -212,17 +225,21 @@ export function classify(runs, position, reaches, shardOf = () => undefined) {
 /** Which tests a diff between two commits can reach, as CI selects them (ci-changes.mjs). */
 export function reachability(root, git) {
   const graph = readGraph(root);
-  const files = new Map();
-  const read = (file) => {
-    if (!files.has(file))
-      try {
-        files.set(file, readFileSync(resolve(root, file), "utf8"));
-      } catch {
-        files.set(file, undefined);
-      }
-    return files.get(file);
+  const tracked = parseDiff(git("ls-files", "-z"));
+  // Each side of a diff reads its own commit, so a lockfile or manifest edit is compared, not
+  // matched against itself. A file a commit lacks reads as undefined, as decide() expects.
+  const at = (ref) => {
+    const seen = new Map();
+    return (file) => {
+      if (!seen.has(file))
+        try {
+          seen.set(file, git("show", `${ref}:${file}`));
+        } catch {
+          seen.set(file, undefined);
+        }
+      return seen.get(file);
+    };
   };
-  const repo = { tracked: parseDiff(git("ls-files", "-z")), read, readBase: read };
   const plans = new Map();
   return (from, to, test) => {
     // Today's import graph stands in for theirs; a test it no longer has is assumed reachable.
@@ -235,7 +252,10 @@ export function reachability(root, git) {
         key,
         changed.includes("tests/quarantine.json")
           ? undefined
-          : decide(changed, graph, graph, { event: "push", repo }),
+          : decide(changed, graph, graph, {
+              event: "push",
+              repo: { tracked, read: at(to), readBase: at(from) },
+            }),
       );
     }
     const plan = plans.get(key);
@@ -377,6 +397,16 @@ function format({ flakes, unproven }, runs) {
         `- ${entry.file ?? "(job)"}${name}`,
         `  ${proven}${entry.failures} failed; first seen ${entry.firstSeen}; last ${entry.lastFailure}`,
       );
+      // The newest proof, with what a quarantine entry has to cite.
+      const proof = entry.occurrences.find((occurrence) => occurrence.proof)?.proof;
+      if (proof) {
+        const compared = proof.compared
+          ? `; compared ${proof.compared.from}..${proof.compared.to}`
+          : "";
+        lines.push(
+          `  proof (${proof.kind}): passed at ${proof.passing.sha} ${proof.passing.url}${compared}`,
+        );
+      }
     }
   };
   table("Flakes", flakes);

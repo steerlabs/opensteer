@@ -241,3 +241,42 @@ test("a quarantine edit or a test no longer in the tree counts as reaching it", 
   assert.equal(reaches("a", "b", unit), true);
   assert.equal(reaches("a", "b", { ...unit, file: "tests/deleted.test.ts" }), true);
 });
+
+test("a lockfile edit is read from each side of the diff, so a dependency change reaches every test", () => {
+  const real = (...args) =>
+    execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const lock = real("show", "HEAD:pnpm-lock.yaml");
+  const git = (...args) => {
+    if (args[0] === "diff") return "pnpm-lock.yaml\0";
+    if (args[0] === "show") {
+      const [ref, file] = args[1].split(":");
+      if (file === "pnpm-lock.yaml" && ref === "a") return `${lock}\n# an older dependency set\n`;
+      return real("show", `HEAD:${file}`);
+    }
+    return real(...args);
+  };
+  const reaches = reachability(process.cwd(), git);
+  assert.equal(
+    reaches("a", "b", { kind: "vitest", file: "tests/quarantine.test.ts", job: "tests (1)" }),
+    true,
+  );
+});
+
+test("a proof names the passing job and the commits compared", () => {
+  const rerun = classify(
+    [ci(1, "b", [red(), job("integration (1)", "success", 2)])],
+    position,
+    never,
+  ).flakes[0];
+  assert.deepEqual(rerun.occurrences[0].proof, {
+    kind: "rerun",
+    passing: { sha: "b", url: "https://example.invalid/integration (1)/2" },
+  });
+  const runs = [ci(1, "b", [red()]), ci(2, "a", [green()], { event: "schedule" })];
+  const unreachable = classify(runs, position, () => false).flakes[0];
+  assert.deepEqual(unreachable.occurrences[0].proof.kind, "unreachable diff");
+  assert.equal(unreachable.occurrences[0].proof.passing.sha, "a");
+  assert.equal(typeof unreachable.occurrences[0].proof.passing.url, "string");
+  const { from, to } = unreachable.occurrences[0].proof.compared;
+  assert.deepEqual([from, to].sort(), ["a", "b"]);
+});
