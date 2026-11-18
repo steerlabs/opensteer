@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "vitest";
+import { sql } from "kysely";
 import {
   PluginService,
   type PluginServiceOptions,
@@ -19,6 +20,7 @@ import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
+import { createDatabase } from "../packages/database/src/connection.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   pluginFixtureFiles,
@@ -289,7 +291,7 @@ async function outputFixture(
   });
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
   context.onTestFinished(() => service.close());
-  return service;
+  return { service, databaseUrl: clone.url };
 }
 
 test("a version change of one plugin waits only for that plugin's earlier changes", async (context) => {
@@ -297,7 +299,7 @@ test("a version change of one plugin waits only for that plugin's earlier change
   const reached = Promise.withResolvers<void>();
   const release = Promise.withResolvers<boolean>();
   let hold = false;
-  const service = await outputFixture(context, {
+  const { service } = await outputFixture(context, {
     authorize: async (input) => {
       authorized.push(`${input.operation}:${input.plugin ?? ""}`);
       if (!hold || input.operation !== "install") return { allowed: true };
@@ -339,6 +341,29 @@ test("a version change of one plugin waits only for that plugin's earlier change
   );
 });
 
+test("reads installed metadata without decoding unrequested plugins", async (context) => {
+  const { service, databaseUrl } = await outputFixture(context);
+  const installed = await service.install(
+    { kind: "files", name: "Requested", files: pluginFixtureFiles(1) },
+    caller,
+  );
+  if (installed.status !== "installed") throw new Error("Fixture did not install");
+  const id = installed.plugin.id;
+  const database = createDatabase({ connectionString: databaseUrl });
+  try {
+    // A row whose slug fails SDK decoding detects queries that read outside the requested IDs.
+    await sql`insert into plugin_engine.plugin_engine_apps (id, code, owner, name, slug, created_at)
+      select 'app_unrequested', code, owner, 'Unrequested', 'INVALID', created_at
+      from plugin_engine.plugin_engine_apps where id = ${id}`.execute(database);
+    await expect(service.installed({ plugins: [id, "unknown"] }, caller)).resolves.toMatchObject([
+      { plugin: { id } },
+    ]);
+    await expect(service.installed({ plugins: ["unknown"] }, caller)).resolves.toEqual([]);
+  } finally {
+    await database.destroy();
+  }
+});
+
 test("search and describe project local blockers from one inventory per answer", async (context) => {
   const blocked = {
     code: "read_only_task",
@@ -346,7 +371,7 @@ test("search and describe project local blockers from one inventory per answer",
     next: "Use read operations.",
   };
   let reads = 0;
-  const service = await outputFixture(context, {
+  const { service } = await outputFixture(context, {
     providers: async () => {
       reads++;
       return [{ ...hostProvider, toolBlockers: { double: blocked } }];
@@ -364,7 +389,7 @@ test("search and describe project local blockers from one inventory per answer",
 });
 
 test("consent discloses a raw secret that reaches plugin code", async (context) => {
-  const service = await outputFixture(context);
+  const { service } = await outputFixture(context);
   const target = { requirement: "service", scope: "user" as const };
   const syntheticKey = "synthetic-raw-key";
   const exposed = await service.install(
@@ -417,7 +442,7 @@ test("consent discloses a raw secret that reaches plugin code", async (context) 
 });
 
 test("oversized execution results are refused before IPC and terminal state is pruned", async (context) => {
-  const service = await outputFixture(context);
+  const { service } = await outputFixture(context);
   for (const code of ['return "字".repeat(30000);', 'console.log("字".repeat(30000)); return 1;']) {
     const oversized = await service.execute({ code }, caller);
     expect(oversized).toMatchObject({

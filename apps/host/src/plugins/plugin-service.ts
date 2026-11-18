@@ -646,9 +646,23 @@ export class PluginService {
       return this.#request(operation, input, context, signal);
     // A new install is keyed by its creation identity: nothing else can name its plugin yet.
     const { plugin, key } = versionTarget.parse(input);
-    return this.#versionChanges.run(plugin ?? `new:${key ?? randomUUID()}`, () =>
-      this.#request(operation, input, context, signal),
-    );
+    return this.#versionChanges.run(plugin ?? `new:${key ?? randomUUID()}`, async () => {
+      const result = await this.#request(operation, input, context, signal);
+      if (operation === "install") {
+        const installed = operations.install.output.parse(result);
+        if (installed.status === "installed") {
+          const id = installed.plugin.id;
+          const publish = () => this.#cacheVersion(id, signal);
+          if (plugin === undefined) await this.#versionChanges.run(id, publish);
+          else await publish();
+        }
+      } else if (operation === "activate") {
+        await this.#cacheVersion(operations.activate.input.parse(input).plugin, signal);
+      } else {
+        await this.skillCache.remove(operations.remove.input.parse(input).plugin);
+      }
+      return result;
+    });
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,
@@ -714,14 +728,6 @@ export class PluginService {
         })),
       );
       return operations.list.output.parse(plugins) as PluginOutput<K>;
-    }
-    if (operation === "install") {
-      const installed = operations.install.output.parse(parsed);
-      if (installed.status === "installed") await this.#cacheVersion(installed.plugin.id, signal);
-    } else if (operation === "activate") {
-      await this.#cacheVersion(operations.activate.input.parse(input).plugin, signal);
-    } else if (operation === "remove") {
-      await this.skillCache.remove(operations.remove.input.parse(input).plugin);
     }
     return parsed;
   }

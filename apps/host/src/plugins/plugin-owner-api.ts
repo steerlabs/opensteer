@@ -894,14 +894,9 @@ export class PluginOwnerApi {
               ),
         ]);
         const recent = z.array(EngineScheduledRunSchema).parse(history).slice(0, pluginRunsMax);
-        const approvals = new Map(
-          [...pending.runs, ...recent]
-            .filter((run) => run.status === "awaiting-approval")
-            .map((run) => [run.id, run]),
-        );
         const invocations = new Map(
           await Promise.all(
-            [...approvals.keys()].map(async (id) => {
+            pending.runs.map(async ({ id }) => {
               const raw = await this.#call(
                 service
                   .manage(

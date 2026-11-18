@@ -37,7 +37,7 @@ export function projectDirectLocalTools(result: unknown) {
         return { ...rest, ok: false, error: local.data.blocked };
       case "mcp":
         kind = "mcp";
-        return { ...rest, mcp: local.data.result };
+        return { ...rest, ok: local.data.result.isError !== true, mcp: local.data.result };
     }
   };
   const body = parsed.data.execution;
