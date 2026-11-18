@@ -1057,6 +1057,76 @@ describe("team attempt fencing", () => {
       }
     },
   );
+  it.each(["channel", "thread"] as const)(
+    "retires only a revoked %s when the channel and thread have different scopes",
+    async (revokedView) => {
+      vi.useFakeTimers();
+      const host = new MockTeamHost();
+      const sockets: MockTeamSocket[] = [];
+      const other = createId("teamChannel");
+      host.channels.set(other, { ...host.channels.get(mockTeamChannelId)!, id: other });
+      const root = TeamMessageIdSchema.parse("8");
+      const revoked = revokedView === "channel" ? mockTeamChannelId : other;
+      const persistence = createMemoryTeamPersistence();
+      let policyClosed = false;
+      const channel = vi.fn(async ({ channelId }: { channelId: string }) =>
+        channelId === revoked
+          ? { ok: false, error: { code: "forbidden", message: "Access removed", retryable: false } }
+          : { ok: true, data: null },
+      );
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (policyClosed && key === "team.channel.get") return channel;
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+        connect: () => {
+          const socket = host.connect();
+          if (policyClosed) {
+            const send = socket.send.bind(socket);
+            socket.send = (raw) => {
+              if (typeof raw === "string" && JSON.parse(raw).scope?.channelId === revoked)
+                socket.close(1008);
+              else send(raw);
+            };
+          }
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      try {
+        await client.load();
+        client.selectChannel(mockTeamChannelId);
+        client.selectThread(other, root);
+        await vi.advanceTimersByTimeAsync(0);
+        await client.setDraft(channelScope, "Channel draft");
+        await client.setDraft({ kind: "thread", channelId: other, rootId: root }, "Thread draft");
+        policyClosed = true;
+        sockets[0]!.close(1008);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(channel.mock.calls.map(([input]) => input.channelId).sort()).toEqual(
+          [mockTeamChannelId, other].sort(),
+        );
+        const snapshot = client.getSnapshot();
+        expect(snapshot[revokedView]).toBeNull();
+        expect(snapshot[revokedView === "channel" ? "thread" : "channel"]).not.toBeNull();
+        expect(Object.values(snapshot.drafts)).toEqual([
+          revokedView === "channel" ? "Thread draft" : "Channel draft",
+        ]);
+        if (revokedView === "thread") client.selectThread(other, root);
+        else client.selectChannel(mockTeamChannelId);
+        expect(client.getSnapshot()[revokedView]).toBeNull();
+      } finally {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("revalidates the selected channel after a path change even after the sidebar caught up", async () => {
     vi.useFakeTimers();
     const host = new MockTeamHost();

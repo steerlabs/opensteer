@@ -77,6 +77,7 @@ export interface TeamSessionSnapshot {
   readonly sidebar: TeamSidebar | null;
   readonly channel: TeamTimeline | null;
   readonly thread: TeamTimeline | null;
+  readonly revokedChannels?: ReadonlySet<string> | undefined;
   /** The socket's state; `offline` between a close and the next attempt, however brief. */
   readonly connection: "offline" | "connecting" | "connected";
   /**
@@ -153,6 +154,7 @@ export class TeamSessionClient {
   #synchronize: ((cut?: "sidebar" | number) => void) | null = null;
   #needsRevalidation = false;
   #viewRevalidationPending = false;
+  #revocationsDirty = false;
   readonly #probeAnswers = new Set<() => void>();
   readonly rpc: HostApiClient;
   readonly owner: TeamRuntimeOwner | undefined;
@@ -538,39 +540,60 @@ export class TeamSessionClient {
         });
         this.#viewRevalidationPending = true;
       }
+      if (this.#revocationsDirty) {
+        await this.#save();
+        this.#revocationsDirty = false;
+        signal.throwIfAborted();
+      }
       while (this.#viewRevalidationPending) {
-        const selected = this.#snapshot.channel ?? this.#snapshot.thread;
-        if (!selected) {
-          this.#viewRevalidationPending = false;
-          break;
-        }
-        const channelId = selected.scope.channelId;
-        let revoked = false;
-        try {
-          await this.rpc["team.channel.get"]({ channelId }, { signal }).then(unwrapRpcResult);
-        } catch (error) {
-          signal.throwIfAborted();
-          if (lifetime !== this.#lifetime) return;
-          if (
-            !(error instanceof OpensteerError) ||
-            !["forbidden", "not_found"].includes(error.code)
-          )
-            throw error;
-          revoked = true;
-        }
+        const { channel, thread } = this.#snapshot;
+        const channels = new Set(
+          [channel, thread].flatMap((view) => (view ? [view.scope.channelId] : [])),
+        );
+        const access = await Promise.all(
+          [...channels].map(async (channelId) => {
+            try {
+              await this.rpc["team.channel.get"]({ channelId }, { signal }).then(unwrapRpcResult);
+              return null;
+            } catch (error) {
+              if (
+                error instanceof OpensteerError &&
+                ["forbidden", "not_found"].includes(error.code)
+              )
+                return channelId;
+              throw error;
+            }
+          }),
+        );
         signal.throwIfAborted();
         if (lifetime !== this.#lifetime) return;
-        const current = this.#snapshot.channel ?? this.#snapshot.thread;
-        if (current?.generation !== selected.generation) continue;
-        if (revoked) {
-          this.selectChannel(null);
+        if (
+          channel?.generation !== this.#snapshot.channel?.generation ||
+          thread?.generation !== this.#snapshot.thread?.generation
+        )
+          continue;
+
+        const revoked = new Set<string>(access.filter((id) => id !== null));
+        if (revoked.size) {
+          const retired = (view: TeamTimeline | null) =>
+            view !== null && revoked.has(view.scope.channelId);
+          const keptChannel = retired(channel) ? null : channel;
+          const keptThread = retired(thread) ? null : thread;
+          this.#revocationsDirty = true;
           this.#update({
-            pending: this.#snapshot.pending.filter((row) => row.command.channelId !== channelId),
+            channel: keptChannel,
+            thread: keptThread,
+            revokedChannels: new Set([...(this.#snapshot.revokedChannels ?? []), ...revoked]),
+            pending: this.#snapshot.pending.filter((row) => !revoked.has(row.command.channelId)),
             drafts: Object.fromEntries(
               Object.entries(this.#snapshot.drafts).filter(([key]) => {
                 try {
                   const parsed: unknown = JSON.parse(key);
-                  return !Array.isArray(parsed) || parsed[1] !== channelId;
+                  return (
+                    !Array.isArray(parsed) ||
+                    typeof parsed[1] !== "string" ||
+                    !revoked.has(parsed[1])
+                  );
                 } catch {
                   return true;
                 }
@@ -578,9 +601,14 @@ export class TeamSessionClient {
             ),
           });
           await this.#save();
+          this.#revocationsDirty = false;
           signal.throwIfAborted();
           if (lifetime !== this.#lifetime) return;
-          if (this.#snapshot.channel || this.#snapshot.thread) continue;
+          if (
+            keptChannel?.generation !== this.#snapshot.channel?.generation ||
+            keptThread?.generation !== this.#snapshot.thread?.generation
+          )
+            continue;
         }
         this.#viewRevalidationPending = false;
       }
@@ -616,6 +644,7 @@ export class TeamSessionClient {
     if (this.#socket?.readyState === 1) this.#socket.send(JSON.stringify(frame));
   }
   selectChannel(channelId: TeamChannelId | null): void {
+    if (channelId && this.#snapshot.revokedChannels?.has(channelId)) return;
     const channel = channelId
       ? emptyTeamTimeline("channel", ++this.#generation, { kind: "channel", channelId })
       : null;
@@ -643,6 +672,7 @@ export class TeamSessionClient {
     this.#synchronize?.();
   }
   selectThread(channelId: TeamChannelId, rootId: TeamMessageId | null): void {
+    if (rootId && this.#snapshot.revokedChannels?.has(channelId)) return;
     const thread = rootId
       ? emptyTeamTimeline("thread", ++this.#generation, { kind: "thread", channelId, rootId })
       : null;
@@ -912,6 +942,7 @@ export class TeamSessionClient {
           handlesByChannel: {},
           agentRecipients: [],
           sidebar: null,
+          revokedChannels: undefined,
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
           thread: thread ? emptyTeamTimeline("thread", ++this.#generation, thread.scope) : null,
           search: null,
