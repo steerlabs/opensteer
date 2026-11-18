@@ -33,6 +33,13 @@ const discovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
   hostInstanceId: createId("hostInstance"),
   hostKey: { algorithm: "Ed25519" },
 });
+const shellCursor = {
+  deploymentId,
+  epoch,
+  viewerId: ownerId,
+  scopeKey: "shell",
+  afterSequence: "0",
+};
 const attach = {
   type: "client.attach",
   apiVersion: hostApiVersion,
@@ -52,13 +59,7 @@ describe("personal realtime negotiation", () => {
   });
 
   it("passes the current version's resume cursor to the scoped reader", async () => {
-    const cursor = {
-      deploymentId,
-      epoch,
-      viewerId: ownerId,
-      scopeKey: "shell",
-      afterSequence: "41",
-    };
+    const cursor = { ...shellCursor, afterSequence: "41" };
     readCut.mockReset().mockResolvedValue({ throughSequence: "41", cursor, frames: [] });
     await using peer = await realtimeSocket();
     const message = once(peer.socket, "message");
@@ -87,7 +88,7 @@ describe("personal realtime negotiation", () => {
     readCut.mockReset().mockImplementation(async () => {
       entered.resolve();
       await release.promise;
-      return { throughSequence: "0", cursor: null, frames: [] };
+      return { throughSequence: "0", cursor: shellCursor, frames: [] };
     });
     await using peer = await realtimeSocket();
     try {
