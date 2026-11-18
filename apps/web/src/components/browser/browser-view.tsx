@@ -1,5 +1,6 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { WebTabNotice } from "../devices/web-tab-notice.js";
+import { useFreshPicture } from "./fresh-picture.js";
 import {
   browserSiteForTab,
   browserSiteLabel,
@@ -297,6 +298,7 @@ export function PlaceBrowserView({
     [hostClient, sessionId, tabId],
   );
   const viewer = useSyncExternalStore(subscribeViewer, readViewer, readViewer);
+  const picture = useFreshPicture(hostClient, sessionId, tabId, viewer);
   const subscribePasskeys = useCallback(
     (listener: () => void) =>
       hostClient.browserPasskeys?.subscribe(sessionId, tabId, listener) ?? (() => {}),
@@ -462,6 +464,7 @@ export function PlaceBrowserView({
     (frame: BrowserFrameView) => {
       const token = frame.header.watchToken;
       if (token) hostClient.acceptBrowserWatchFrame(sessionId, token, tabId);
+      picture.presented(frame);
       if (!presentationPresented()) return;
       setPaintedTab(`${sessionId}:${tabId}`);
       if (!takeKeyboard.current) return;
@@ -472,7 +475,7 @@ export function PlaceBrowserView({
         if (active === null || active === document.body) keyboardRef.current?.focus();
       });
     },
-    [hostClient, sessionId, tabId, presentationPresented],
+    [hostClient, sessionId, tabId, presentationPresented, picture.presented],
   );
 
   const catalogTab = dormant || !tabListed ? undefined : row;
@@ -668,10 +671,10 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [prePaint, tabId, visible]);
   const waiting = prePaint && waitingTab === tabId;
-  // Until this viewer has a fresh frame the picture is the page as it last was: it stays, dimmed
+  // Until this viewer draws a fresh frame the picture is the page as it last was: it stays, dimmed
   // under its own chip, and takes no input. The viewer's own feed decides, not the pill: either
   // can come back first.
-  const stale = viewer.status !== "live" && !native && !prePaint;
+  const stale = !picture.fresh && !native && !prePaint;
   const [stalePulse, setStalePulse] = useState(0);
 
   const fitLabel = placement
