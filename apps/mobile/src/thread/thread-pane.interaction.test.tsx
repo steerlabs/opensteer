@@ -3510,6 +3510,17 @@ describe("a task", () => {
     await settle();
     expect(text(container)).toContain("Couldn't confirm");
     expect(text(container)).not.toContain("Not stopped");
+    // The stop fact lands after the reconnection's check: it settles the line by itself.
+    const [ask, , ...rest] = task.entries;
+    host.move(
+      snapshotFor({
+        entries: [ask!, ran(task.runId, { stopping: true }), ...rest],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    await settle();
+    expect(text(container)).not.toContain("Couldn't confirm");
   });
 
   it("settles an unconfirmed Stop for its original run when a different run starts", async () => {

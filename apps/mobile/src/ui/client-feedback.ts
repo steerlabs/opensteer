@@ -320,6 +320,8 @@ export function useScreenAction<I, O>(
   readonly state: ClientActionState<O>;
   readonly run: (input: I) => Promise<ActionOutcome<O>>;
   readonly dismiss: () => void;
+  /** Settles an unconfirmed outcome from what the client now holds, as Check does. */
+  readonly reconcile: () => Promise<void>;
 } {
   const entry = useMemo(
     () => (session === null ? null : heldAction(session, key, spec)),
@@ -359,7 +361,7 @@ export function useScreenAction<I, O>(
     [state.outcome, state.issue, checkable, reconcile, retry, key],
   );
   const run = useCallback((input: I) => action.run(input), [action]);
-  return { line, running: state.running, state, run, dismiss };
+  return { line, running: state.running, state, run, dismiss, reconcile };
 }
 
 // Each outcome is said and felt once, even when its words repeat the last one's.

@@ -15,7 +15,7 @@ import {
   startReference,
 } from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
-import { compactionOfferText } from "@opensteer/client/host";
+import { compactionOfferText, type HostSnapshot } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -224,6 +224,24 @@ export function Composer(props: {
     },
   );
   const stopping = stopAction.running;
+  // The fact that the run stopped can land just after the connection is back,
+  // after the ready revision's check: it settles the line as it arrives.
+  const { stopRunId } = props;
+  const stopEvidence = useHostSelector(
+    props.hostClient,
+    useCallback(
+      (snapshot: HostSnapshot) =>
+        stopRunId !== null &&
+        (!snapshot.runQueue.some((run) => run.id === stopRunId && run.threadId === threadId) ||
+          runStopRequested(snapshot.transcripts[threadId] ?? [], stopRunId)),
+      [stopRunId, threadId],
+    ),
+  );
+  const stopUnconfirmed = stopAction.state.outcome?.kind === "unconfirmed";
+  const { reconcile: reconcileStop } = stopAction;
+  useEffect(() => {
+    if (stopUnconfirmed && stopEvidence) void reconcileStop();
+  }, [reconcileStop, stopEvidence, stopUnconfirmed]);
   const reopenLine = useTaskDoneLine(threadId);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
