@@ -133,7 +133,7 @@ it("debounces projection changes for two seconds and distinguishes offline/unava
     issue: { code: "connection", reason: "unreachable" },
   });
   expect(controller.getSnapshot().tasks).toMatchObject({
-    label: "Can't reach your computer · Saved view",
+    label: "Can't reach Mac mini · Saved view",
   });
   controller.connection(base);
   expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
