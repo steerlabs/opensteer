@@ -1,5 +1,5 @@
 import { discardAllStagedFiles } from "../attachments/use-staged-attachments.js";
-import { composerDrafts } from "../composer-drafts.js";
+import { cleanTaskStartJournals, composerDrafts } from "../composer-drafts.js";
 import { useEffect, useId, useState } from "react";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { Dialog } from "../dialog.js";
@@ -104,14 +104,11 @@ function useAccountLeaves(
       (memberships) => {
         if (live) setResult({ state: "ready", names: memberships.map(({ name }) => name) });
       },
-      (reason: unknown) => {
+      () => {
         if (live)
           setResult({
             state: "error",
-            message:
-              reason instanceof Error
-                ? reason.message
-                : "This Mac’s device memberships could not be read.",
+            message: "This Mac’s device memberships could not be read.",
           });
       },
     );
@@ -166,16 +163,15 @@ export function SignOutDialog({
               void onConfirm()
                 .then(() => {
                   discardAllStagedFiles();
-                  composerDrafts.clearAll();
+                  void composerDrafts
+                    .clearAll()
+                    .then(() => cleanTaskStartJournals())
+                    .catch(() => {});
                   onClose();
                 })
-                .catch((reason: unknown) => {
+                .catch(() => {
                   setPending(false);
-                  setError(
-                    reason instanceof Error && reason.message
-                      ? reason.message
-                      : "Signing out didn’t finish. Try again.",
-                  );
+                  setError("Signing out didn’t finish. Try again.");
                 });
             }}
             type="button"

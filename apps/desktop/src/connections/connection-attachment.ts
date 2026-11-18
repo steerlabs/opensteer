@@ -1,5 +1,6 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { DeploymentAccessFailure } from "@opensteer/protocol/desktop";
-import { classifyClientFailure, clientPublicDetail } from "@opensteer/client/connections";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import type { HostSessionObservation } from "@opensteer/client/auth";
 
 /**
@@ -7,7 +8,7 @@ import type { HostSessionObservation } from "@opensteer/client/auth";
  * This is never a judgement about the Deployment itself — a place can be
  * perfectly healthy while this app is simply `idle` and not attached to it.
  */
-export type ConnectionSupervisorStatus =
+export type ConnectionAttachmentStatus =
   | "authorizing"
   | "connected"
   | "connecting"
@@ -16,18 +17,18 @@ export type ConnectionSupervisorStatus =
   | "needs-sign-in"
   | "offline";
 
-export interface ConnectionSupervisorSnapshot {
+export interface ConnectionAttachmentSnapshot {
   readonly failure: DeploymentAccessFailure | null;
-  readonly status: ConnectionSupervisorStatus;
+  readonly status: ConnectionAttachmentStatus;
 }
 
 /**
- * The outcome of the attachment this supervisor is currently living inside.
+ * The outcome of the attachment this attempt is currently living inside.
  * `null` is the whole of "not attached and not trying": there is no stored
  * idle status and no stored failure to go stale, so nothing a past attempt
  * learned can outlive the attempt and leave a row permanently dead.
  */
-interface ConnectionAttachment {
+interface AttachmentObservation {
   readonly failure: DeploymentAccessFailure | null;
   readonly status: "authorizing" | "connected" | "connecting" | "needs-sign-in" | "offline";
 }
@@ -36,18 +37,16 @@ interface ConnectionAttachment {
  * Owns the attached Deployment's attachment: when to try, when to stop, and
  * what the attempt learned. Exactly one exists, for the selected Deployment;
  * every other row's status is a pure function of its attachment key, so a
- * scheduled retry, an in-flight establishment, and a rotated key are all
+ * an in-flight establishment and a rotated key are all
  * fenced by this one object's lifetime.
  */
-export class ConnectionSupervisor {
+export class ConnectionAttachment {
   readonly #close: () => Promise<void>;
   readonly #deploymentId: string;
   readonly #establish: (deploymentId: string) => Promise<HostSessionObservation>;
-  readonly #listeners = new Set<(snapshot: ConnectionSupervisorSnapshot) => void>();
-  readonly #schedule: (callback: () => void, delayMilliseconds: number) => unknown;
-  #attachment: ConnectionAttachment | null = null;
+  readonly #listeners = new Set<(snapshot: ConnectionAttachmentSnapshot) => void>();
+  #attachment: AttachmentObservation | null = null;
   #attachmentKey: string | null;
-  #attempt = 0;
   #operationId = 0;
 
   constructor(options: {
@@ -55,22 +54,20 @@ export class ConnectionSupervisor {
     readonly close?: () => Promise<void>;
     readonly deploymentId: string;
     readonly establish: (deploymentId: string) => Promise<HostSessionObservation>;
-    readonly schedule?: (callback: () => void, delayMilliseconds: number) => unknown;
   }) {
     this.#attachmentKey = options.attachmentKey;
     this.#close = options.close ?? (() => Promise.resolve());
     this.#deploymentId = options.deploymentId;
     this.#establish = options.establish;
-    this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
   }
 
   get deploymentId(): string {
     return this.#deploymentId;
   }
 
-  snapshot(): ConnectionSupervisorSnapshot {
+  snapshot(): ConnectionAttachmentSnapshot {
     if (this.#attachment) return this.#attachment;
-    return { failure: null, status: detachedStatus(this.#attachmentKey) };
+    return { failure: null, status: detachedAttachmentStatus(this.#attachmentKey) };
   }
 
   /**
@@ -95,7 +92,7 @@ export class ConnectionSupervisor {
     return status !== "connected" && status !== "connecting";
   }
 
-  subscribe(listener: (snapshot: ConnectionSupervisorSnapshot) => void): () => void {
+  subscribe(listener: (snapshot: ConnectionAttachmentSnapshot) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
@@ -106,16 +103,7 @@ export class ConnectionSupervisor {
       this.#publish();
       return;
     }
-    this.#attempt = 0;
     this.#run(++this.#operationId, false);
-  }
-
-  /**
-   * Ambient triggers — the network came back, the machine woke — resume an
-   * attachment that is sitting on a failure and leave every other one alone.
-   */
-  resume(): void {
-    if (this.#attachment?.failure) this.attach();
   }
 
   /** A person stopped waiting: the attempt is abandoned and the row goes idle. */
@@ -137,7 +125,6 @@ export class ConnectionSupervisor {
     if (this.#attachmentKey === options.attachmentKey) return;
     const wasAttached = this.#attachment !== null;
     this.#operationId += 1;
-    this.#attempt = 0;
     this.#attachmentKey = options.attachmentKey;
     // A rotated route or a restarted Host changes the attachment key without
     // changing which Deployment this is. An attachment that was live is closed
@@ -164,7 +151,6 @@ export class ConnectionSupervisor {
 
   #detach(): void {
     this.#operationId += 1;
-    this.#attempt = 0;
     if (this.#attachment === null) return;
     this.#attachment = null;
     this.#publish();
@@ -192,23 +178,17 @@ export class ConnectionSupervisor {
         const classified = classifyClientFailure(error);
         const failure: DeploymentAccessFailure = {
           code: failureCode(classified.reason),
-          detail: clientPublicDetail(error, "This deployment is temporarily unavailable."),
+          detail: presentActionFailure(error, "This deployment is temporarily unavailable."),
           retryable: classified.classification === "transient",
         };
         this.#attachment = { failure, status: "offline" };
         this.#publish();
-        if (!failure.retryable || this.#attempt >= retryDelays.length) return;
-        const delay = retryDelays[this.#attempt++]!;
-        this.#schedule(() => {
-          if (operationId === this.#operationId) this.#run(operationId, false);
-        }, delay);
       },
     );
   }
 
   #applyObservation(observation: HostSessionObservation): void {
     this.#attachment = attachmentFromObservation(observation);
-    if (this.#attachment.status === "connected") this.#attempt = 0;
     this.#publish();
   }
 
@@ -218,9 +198,7 @@ export class ConnectionSupervisor {
   }
 }
 
-const retryDelays = [500, 1_500] as const;
-
-function attachmentFromObservation(observation: HostSessionObservation): ConnectionAttachment {
+function attachmentFromObservation(observation: HostSessionObservation): AttachmentObservation {
   if (observation.outcome === "ready") return { failure: null, status: "connected" };
   // Waiting on a person's browser is not waiting on a machine: nothing here
   // will finish it, so it is published as its own state rather than hidden
@@ -253,7 +231,7 @@ function attachmentFromObservation(observation: HostSessionObservation): Connect
  * that is a fact about the route, so it holds while detached too. Every
  * unattached row in the catalog reads exactly this.
  */
-export function detachedStatus(attachmentKey: string | null): ConnectionSupervisorStatus {
+export function detachedAttachmentStatus(attachmentKey: string | null): ConnectionAttachmentStatus {
   return attachmentKey === null ? "needs-remote-access" : "idle";
 }
 

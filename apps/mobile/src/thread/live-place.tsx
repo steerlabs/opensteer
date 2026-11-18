@@ -16,6 +16,7 @@ import { ComputerDisplay } from "../computers/phone-display.js";
 import { macWindowVideoSupported } from "../computers/phone-display-native.js";
 import { color, radius, space } from "../theme.js";
 import { appear, dim, exit } from "../ui/motion.js";
+import { LastPictureChip } from "../ui/last-picture-chip.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 
@@ -135,6 +136,8 @@ export function PictureCover(props: {
   readonly picture: RunPlacePicture;
   /** The glyph's size in a small form; null for a page. */
   readonly glyph: number | null;
+  /** Bumped by a tap on a stale picture: the chip acknowledges it. */
+  readonly pulse?: number;
 }): ReactNode {
   const { place } = props;
   const picture = props.painted ? props.picture : { ...props.picture, usable: false };
@@ -150,7 +153,11 @@ export function PictureCover(props: {
       style={[styles.cover, picture.usable ? styles.stale : styles.waiting]}
       testID={picture.usable ? "run-page-stale" : "run-page-waiting"}
     >
-      {picture.usable ? null : (
+      {picture.usable ? (
+        props.glyph === null ? (
+          <LastPictureChip pulse={props.pulse ?? 0} />
+        ) : null
+      ) : (
         <>
           <Symbol name={placeSymbol(kind)} size={24} tint={color.muted} />
           <AppText numberOfLines={1} role="secondaryMedium" style={styles.coverTitle}>

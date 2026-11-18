@@ -1,3 +1,4 @@
+import { createClientAction } from "../actions/client-action.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 interface PersonalFixture {
@@ -40,6 +41,7 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,
+  expectedMutationSessionHeader,
   HostToClientMessageSchema,
   createBrowserSessionId,
   type HostToClientMessage,
@@ -110,7 +112,6 @@ describe("HttpHostClient tabs", () => {
     const client = createHttpHostClient({
       capabilities: ["browser-target-control-v1"],
       fetch: page.fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         const socket = new FakeSocket();
         sockets.push({ url, socket });
@@ -530,6 +531,64 @@ function requiredString(input: Readonly<Record<string, unknown>>, key: string): 
 }
 
 describe("HttpHostClient authentication and onboarding", () => {
+  it("keeps a queued reply bound when the Host upgrades before the client sees it", async () => {
+    const initial = { ...bootstrap([]), apiVersion: 61 };
+    let apiVersion = initial.apiVersion;
+    let cookie = initial.sessionId;
+    const admitted: string[] = [];
+    const client = createHttpHostClient({
+      bindMutationsToSession: true,
+      fetch: async (input, init) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path.endsWith("/bootstrap.get"))
+          return json({ ...initial, apiVersion, sessionId: cookie });
+        expect(path).toMatch(/\/commands\.dispatch$/u);
+        // The replacement Host speaks API 62 and authenticates the current cookie.
+        const expected = new Headers(init?.headers).get(expectedMutationSessionHeader);
+        if (apiVersion >= 62 && expected !== null && expected !== cookie)
+          return json(
+            {
+              error: {
+                code: "forbidden",
+                reason: "session-changed",
+                message: "Sign-in changed",
+                retryable: false,
+              },
+            },
+            403,
+          );
+        admitted.push(cookie);
+        return json(
+          {
+            error: { code: "conflict", message: "Reply reached the wrong login", retryable: false },
+          },
+          409,
+        );
+      },
+    });
+    try {
+      await client.load();
+      const expectedLogin = client.connection.getSnapshot().scope!;
+      expect(expectedLogin.loginId).toBe(initial.sessionId);
+      apiVersion = 62;
+      cookie = createId("authSession");
+      await expect(
+        client.dispatch(
+          {
+            type: "thread.sendMessage",
+            threadId: createId("thread"),
+            idempotencyKey: "saved-reply",
+            content: [{ type: "text", text: "Saved before the upgrade" }],
+          },
+          { expectedLogin },
+        ),
+      ).rejects.toMatchObject({ reason: "session-changed" });
+      expect(admitted).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("projects and clears the authenticated session surface", async () => {
     const sessionId = createId("authSession");
     const remoteBootstrap = {
@@ -544,7 +603,6 @@ describe("HttpHostClient authentication and onboarding", () => {
         if (path === "/v1/rpc/auth.config") return json(remoteBootstrap.identityConfig);
         return authenticated ? json(remoteBootstrap) : json({ error: unauthorizedError() }, 401);
       },
-      refreshIntervalMs: 0,
     });
     await remote.load();
     expect(remote.getSnapshot().sessionSurface).toBe("personal-remote");
@@ -559,6 +617,29 @@ describe("HttpHostClient authentication and onboarding", () => {
     remote.dispose();
   });
 
+  // The web page never named its connection, so the pill said "Can't reach your
+  // computer" while the sidebar said "Mac mini".
+  it("names its connection after the computer its Host verified", async () => {
+    const named = bootstrap([]);
+    const payload = {
+      ...named,
+      identityConfig: {
+        ...named.identityConfig,
+        deployment: { kind: "personal" as const, name: "Mac mini" },
+      },
+    };
+    const client = createHttpHostClient({
+      fetch: async (input) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        return json(path === "/v1/rpc/auth.config" ? payload.identityConfig : payload);
+      },
+    });
+    expect(client.connection.getSnapshot().name).toBeNull();
+    await client.load();
+    expect(client.connection.getSnapshot().name).toBe("Mac mini");
+    client.dispose();
+  });
+
   it("spends a password-recovery capability without retaining it or the new password", async () => {
     const token = `olpr_${"A".repeat(43)}`;
     const newPassword = "new password that must not persist";
@@ -569,7 +650,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       expect(JSON.parse(String(init?.body))).toEqual({ newPassword, token });
       return json({ reset: true });
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
 
     await client.rpc["auth.password.recover"]({ newPassword, token });
     expect(JSON.stringify(client)).not.toContain(token);
@@ -594,7 +675,7 @@ describe("HttpHostClient authentication and onboarding", () => {
         token,
       });
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
 
     await expect(
       client.dispatch({
@@ -660,7 +741,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       if (!authenticated) return json({ error: unauthorizedError() }, 401);
       return json(bootstrap([]));
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
 
     await client.load();
     expect(client.getSnapshot().session).toBe("authentication-required");
@@ -712,7 +793,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       if (!authenticated) return json({ error: unauthorizedError() }, 401);
       return json(bootstrap([]));
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
 
     await client.load();
     expect(client.getSnapshot().session).toBe("authentication-required");
@@ -887,7 +968,7 @@ describe("HttpHostClient authentication and onboarding", () => {
         201,
       );
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
     await client.load();
 
     const modelSelection = ModelSelectionSchema.parse({
@@ -989,7 +1070,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     };
     const client = createHttpHostClient({
       fetch: async () => json(invalid),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
 
@@ -1027,7 +1107,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     };
     const client = createHttpHostClient({
       fetch: async () => json(payload),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
 
@@ -1056,7 +1135,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     };
     const client = createHttpHostClient({
       fetch: async () => json(invalid),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
 
@@ -1088,7 +1166,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -1138,7 +1215,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -1165,7 +1241,6 @@ describe("HttpHostClient authentication and onboarding", () => {
     const workspace = makeDeployment("Older Host");
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
 
@@ -1181,7 +1256,7 @@ describe("HttpHostClient harness authentication", () => {
     const fetch = vi.fn(async () =>
       json({ authentication: { status: "not-started" } }),
     ) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
 
     await expect(
       client.rpc["harness.authentication.get"]({ environmentId, harnessInstanceId }),
@@ -1198,7 +1273,6 @@ describe("HttpHostClient durable realtime", () => {
       const fetch = vi.fn(async () => json(bootstrap([workspace])));
       const client = createHttpHostClient({
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
       });
       const synchronize = () => {
@@ -1231,7 +1305,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it.each(["connecting", "subscribing", "disconnected"])(
-      "rereads on load while the channel is %s",
+      "leaves bootstrap with the connection owner while the channel is %s",
       async (state) => {
         const f = fixture();
         try {
@@ -1242,39 +1316,43 @@ describe("HttpHostClient durable realtime", () => {
             f.socket.serverClose();
           }
           await f.client.load();
-          expect(f.fetch).toHaveBeenCalledTimes(2);
+          expect(f.fetch).toHaveBeenCalledTimes(1);
         } finally {
           f.client.dispose();
         }
       },
     );
 
-    it.each(["initial", "live"])("retries load after a %s bootstrap failure", async (state) => {
-      const f = fixture();
-      try {
-        if (state === "live") {
-          await f.client.load();
-          f.synchronize();
-        }
-        const reads = f.fetch.mock.calls.length;
-        f.fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
-        const reading = state === "initial" ? f.client.load() : f.client.refresh();
-        await Promise.all([
-          expect(reading).rejects.toThrow("The Host could not be reached."),
-          expect(f.client.load()).rejects.toThrow("The Host could not be reached."),
-        ]);
+    it.each(["initial", "live"])(
+      "joins a failed %s bootstrap and reads again on explicit retry",
+      async (state) => {
+        const f = fixture();
+        try {
+          if (state === "live") {
+            await f.client.load();
+            f.synchronize();
+          }
+          const reads = f.fetch.mock.calls.length;
+          f.fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
+          const reading = state === "initial" ? f.client.load() : f.client.refresh();
+          await Promise.all([
+            expect(reading).rejects.toThrow("The Host could not be reached."),
+            expect(f.client.load()).rejects.toThrow("The Host could not be reached."),
+          ]);
 
-        await f.client.load();
-        expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
-        expect(f.client.getSnapshot().session).toBe("authenticated");
-        if (state === "live") {
-          await f.client.load();
+          if (state === "initial") f.client.connection.retry();
+          await (state === "initial" ? f.client.load() : f.client.refresh());
           expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+          expect(f.client.getSnapshot().session).toBe("authenticated");
+          if (state === "live") {
+            await f.client.load();
+            expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+          }
+        } finally {
+          f.client.dispose();
         }
-      } finally {
-        f.client.dispose();
-      }
-    });
+      },
+    );
   });
 
   it("routes viewer-wide history notices to the history cache", async () => {
@@ -1282,7 +1360,6 @@ describe("HttpHostClient durable realtime", () => {
     const socket = new FakeSocket();
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     try {
@@ -1314,7 +1391,6 @@ describe("HttpHostClient durable realtime", () => {
     const reads = { list: 0, worker: 0, other: 0 };
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 1,
       fetch: async (input, init) => {
@@ -1457,7 +1533,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -1518,7 +1593,6 @@ describe("HttpHostClient durable realtime", () => {
       const reads: { readonly open: unknown; readonly before: unknown }[] = [];
       const client = createHttpHostClient({
         capabilities: family ? ["task-family-v1"] : [],
-        refreshIntervalMs: 0,
         webSocketFactory: () => new FakeSocket(),
         fetch: async (input, init) => {
           const url = new URL(input instanceof Request ? input.url : String(input));
@@ -1576,7 +1650,6 @@ describe("HttpHostClient durable realtime", () => {
       let hold: ReturnType<typeof Promise.withResolvers<Response>> | undefined;
       const client = createHttpHostClient({
         capabilities: enabled ? ["task-family-v1"] : [],
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
         fetch: async (input, init) => {
           const url = new URL(input instanceof Request ? input.url : String(input));
@@ -1643,7 +1716,6 @@ describe("HttpHostClient durable realtime", () => {
       random: () => 0,
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 2,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -1778,7 +1850,6 @@ describe("HttpHostClient durable realtime", () => {
     };
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       browserUsageReads: "observed",
     });
     await client.load();
@@ -1815,7 +1886,6 @@ describe("HttpHostClient durable realtime", () => {
     try {
       for (let index = 0; index < 12; index++) {
         const client = createHttpHostClient({
-          refreshIntervalMs: 0,
           webSocketFactory: () => new FakeSocket(),
           fetch: async (input, init) => {
             const request = new Request(input, init);
@@ -1867,7 +1937,6 @@ describe("HttpHostClient durable realtime", () => {
       ) as unknown as typeof globalThis.fetch;
       const client = createHttpHostClient({
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -1899,7 +1968,6 @@ describe("HttpHostClient durable realtime", () => {
     });
     let reads = 0;
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async () => {
         reads += 1;
@@ -1915,7 +1983,7 @@ describe("HttpHostClient durable realtime", () => {
     });
     try {
       await client.load();
-      const olderRead = client.load();
+      const olderRead = client.refresh();
       await withTimeout(reading, 1_000, {
         timeoutError: () =>
           new Error("The overlapping bootstrap did not reach its stale catalog read"),
@@ -1969,7 +2037,6 @@ describe("HttpHostClient durable realtime", () => {
     ) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -2035,7 +2102,6 @@ describe("HttpHostClient durable realtime", () => {
         );
       },
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -2048,6 +2114,7 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
     expect(reads).toBe(1);
 
+    sockets[0]!.receive({ type: "host.synchronized", sequence: sequence("0") });
     platform.enterBackground();
     sockets[0]!.receive({ type: "host.browser-sessions-changed" });
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2091,7 +2158,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -2183,7 +2249,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -2243,7 +2308,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -2351,7 +2415,6 @@ describe("HttpHostClient durable realtime", () => {
       const client = createHttpHostClient({
         capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -2601,7 +2664,6 @@ describe("HttpHostClient durable realtime", () => {
             },
           });
         },
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
       });
       await client.load();
@@ -3085,7 +3147,6 @@ describe("HttpHostClient durable realtime", () => {
             },
           });
         },
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
       });
       await client.load();
@@ -3366,7 +3427,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -3447,7 +3507,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -3550,7 +3609,6 @@ describe("HttpHostClient durable realtime", () => {
       const client = createHttpHostClient({
         capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -3645,7 +3703,7 @@ describe("HttpHostClient durable realtime", () => {
       }
       return json(bootstrap([workspace]));
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
     await client.load();
 
     client.activateThread(thread.id);
@@ -3706,7 +3764,6 @@ describe("HttpHostClient durable realtime", () => {
         if (reads === 2) throw new Error("Latest page is temporarily unavailable");
         return pendingLatest;
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -3754,7 +3811,7 @@ describe("HttpHostClient durable realtime", () => {
       }
       return json(bootstrap([workspace]));
     }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
+    const client = createHttpHostClient({ fetch });
     await client.load();
 
     client.activateThread(missingThreadId);
@@ -3771,7 +3828,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -3840,7 +3896,6 @@ describe("HttpHostClient durable realtime", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -3936,7 +3991,6 @@ describe("HttpHostClient durable realtime", () => {
       },
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 5,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4033,7 +4087,6 @@ describe("HttpHostClient durable realtime", () => {
       },
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 5,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4128,7 +4181,6 @@ describe("HttpHostClient durable realtime", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4178,7 +4230,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4269,7 +4320,6 @@ describe("HttpHostClient durable realtime", () => {
       random: () => 0,
       reconnectBaseDelayMs: 10,
       reconnectMaxDelayMs: 40,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4334,7 +4384,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4458,7 +4507,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4539,7 +4587,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4595,7 +4642,6 @@ describe("HttpHostClient durable realtime", () => {
     const socket = new FakeSocket();
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     await client.load();
@@ -4626,7 +4672,6 @@ describe("HttpHostClient durable realtime", () => {
       const socket = new FakeSocket();
       const client = createHttpHostClient({
         fetch: async () => json(bootstrap([workspace])),
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
       });
       await client.load();
@@ -4736,7 +4781,6 @@ describe("HttpHostClient durable realtime", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -4878,7 +4922,6 @@ describe("HttpHostClient durable realtime", () => {
       }) as unknown as typeof globalThis.fetch;
       const client = createHttpHostClient({
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -4982,7 +5025,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -5103,7 +5145,6 @@ describe("HttpHostClient durable realtime", () => {
     }) as unknown as typeof globalThis.fetch;
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -5217,7 +5258,6 @@ describe("HttpHostClient durable realtime", () => {
       random: () => 0,
       reconnectBaseDelayMs: 5,
       reconnectMaxDelayMs: 20,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -5934,7 +5974,6 @@ async function queueHost(captureBeforeGate = false) {
   }) as unknown as typeof globalThis.fetch;
   const client = createHttpHostClient({
     fetch,
-    refreshIntervalMs: 0,
     webSocketFactory: () => {
       const socket = new FakeSocket();
       sockets.push(socket);
@@ -6024,7 +6063,6 @@ describe("HttpHostClient browser profiles", () => {
       profiles: [{ homeRunnerId: null, id: profileId, name: "Work" }],
     };
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async (input) => {
         const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
@@ -6064,7 +6102,7 @@ describe("HttpHostClient browser profiles", () => {
 });
 
 describe("HttpHostClient attachment discovery", () => {
-  it("uses cached evidence on periodic refresh and reverifies after a Host restart", async () => {
+  it("does not poll discovery and reverifies only when explicitly asked", async () => {
     vi.useFakeTimers();
     const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
@@ -6072,7 +6110,6 @@ describe("HttpHostClient attachment discovery", () => {
     const client = createHttpHostClient({
       capabilities,
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 15_000,
       reconnectBaseDelayMs: 10,
       webSocketFactory: () => {
         const socket = new FakeSocket();
@@ -6083,10 +6120,9 @@ describe("HttpHostClient attachment discovery", () => {
     try {
       await client.load();
       await vi.advanceTimersByTimeAsync(15_000);
-      expect(capabilities).toHaveBeenCalledTimes(2);
+      expect(capabilities).toHaveBeenCalledTimes(1);
       expect(capabilities).not.toHaveBeenCalledWith({ revalidate: true });
-      sockets[0]!.serverClose();
-      await vi.advanceTimersByTimeAsync(10);
+      await client.refresh({ retryConnection: true });
       expect(capabilities).toHaveBeenCalledWith({ revalidate: true });
       expect(sockets).toHaveLength(2);
       expect(client.getSnapshot().threadRenameAvailable).toBe(true);
@@ -6095,12 +6131,13 @@ describe("HttpHostClient attachment discovery", () => {
     }
   });
 
-  it("reverifies discovery on refresh while a periodic bootstrap is still running", async () => {
+  it("reverifies discovery on refresh while a notice bootstrap is still running", async () => {
     vi.useFakeTimers();
     const workspace = makeDeployment();
     const capabilities = vi.fn(async () => [] as const);
     let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
     let bootstraps = 0;
+    const socket = new FakeSocket();
     const client = createHttpHostClient({
       capabilities,
       fetch: async () => {
@@ -6111,12 +6148,15 @@ describe("HttpHostClient attachment discovery", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 15_000,
-      webSocketFactory: () => new FakeSocket(),
+      webSocketFactory: () => socket,
     });
     try {
       await client.load();
-      await vi.advanceTimersByTimeAsync(15_000);
+      socket.open();
+      socket.receiveRaw({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "1") });
+      socket.receiveRaw({ type: "host.synchronized", sequence: "1" });
+      socket.receiveRaw({ type: "host.browser-sessions-changed" });
+      await vi.advanceTimersByTimeAsync(0);
       expect(held).not.toBeNull();
       const refreshed = client.refresh();
       await vi.advanceTimersByTimeAsync(0);
@@ -6152,7 +6192,6 @@ describe("HttpHostClient attachment discovery", () => {
                 refusal === "unauthorized" ? 401 : 400,
               )
             : json(bootstrap([])),
-        refreshIntervalMs: 0,
       });
       try {
         await client.load();
@@ -6171,7 +6210,6 @@ describe("HttpHostClient voice capability", () => {
     let enabled = false;
     const client = createHttpHostClient({
       capabilities: async () => (enabled ? ["voice-run-v1"] : []),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async () => json(bootstrap([])),
     });
@@ -6198,7 +6236,6 @@ describe("HttpHostClient title capability", () => {
     const commands: Readonly<Record<string, unknown>>[] = [];
     const client = createHttpHostClient({
       capabilities: async () => (available ? ["thread-titles-v1"] : []),
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
@@ -6290,7 +6327,6 @@ describe("HttpHostClient Thread state reconciliation", () => {
         if (path === options.path) return json(options.response);
         return json(bootstrap([options.workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     await client.load();
@@ -6529,7 +6565,6 @@ describe("HttpHostClient Thread state reconciliation", () => {
     }
     const old = createHttpHostClient({
       capabilities: [],
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async () => json(bootstrap([workspace])),
     });
@@ -6559,7 +6594,6 @@ describe("HttpHostClient Thread state reconciliation", () => {
       const dispatched: string[] = [];
       const client = createHttpHostClient({
         ...(capabilities ? { capabilities: [...capabilities] } : {}),
-        refreshIntervalMs: 0,
         webSocketFactory: () => new FakeSocket(),
         fetch: async (input, init) => {
           const url = new URL(input instanceof Request ? input.url : String(input));
@@ -7198,7 +7232,6 @@ describe("HttpHostClient Thread state reconciliation", () => {
           }
           throw new Error(`Unexpected request ${path}`);
         },
-        refreshIntervalMs: 0,
         webSocketFactory: () => socket,
       });
       await client.load();
@@ -7344,7 +7377,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
 });
 
 describe("HttpHostClient lifecycle", () => {
-  it("stops polling and stops burning reconnect backoff while backgrounded", async () => {
+  it("avoids polling and pauses reconnect backoff while backgrounded", async () => {
     vi.useFakeTimers();
     const workspace = makeDeployment();
     const platform = fakeLifecycle();
@@ -7356,7 +7389,6 @@ describe("HttpHostClient lifecycle", () => {
         return json(bootstrap([workspace]));
       },
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 1_000,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7365,9 +7397,10 @@ describe("HttpHostClient lifecycle", () => {
     });
     await client.load();
     sockets[0]?.open();
+    sockets[0]?.receive({ type: "host.synchronized", sequence: sequence("0") });
     await vi.advanceTimersByTimeAsync(2_500);
     const polledWhileVisible = bootstrapCalls;
-    expect(polledWhileVisible).toBeGreaterThan(1);
+    expect(polledWhileVisible).toBe(1);
 
     platform.enterBackground();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -7390,7 +7423,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 1_000,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7430,7 +7462,6 @@ describe("HttpHostClient lifecycle", () => {
       workspaces = [makeDeployment()],
       options: {
         readonly fetch?: () => Promise<Response>;
-        readonly refreshIntervalMs?: number;
       } = {},
     ) {
       vi.useFakeTimers();
@@ -7439,7 +7470,6 @@ describe("HttpHostClient lifecycle", () => {
       const client = createHttpHostClient({
         fetch: options.fetch ?? (async () => json(bootstrap(workspaces))),
         lifecycle: platform.lifecycle,
-        refreshIntervalMs: options.refreshIntervalMs ?? 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -7499,9 +7529,22 @@ describe("HttpHostClient lifecycle", () => {
 
       await vi.advanceTimersByTimeAsync(realtimeIdleProbeMs + realtimeIdleProbeDeadlineMs / 2);
       expect(sentPingNonce(host.sockets[0]!)).toBeTruthy();
+      console.log(
+        "PROBE before",
+        host.client.connection.getSnapshot().phase,
+        host.client.connection.getSnapshot().epoch,
+        host.client.connection.getSnapshot().pathRevision,
+      );
       host.platform.changeNetwork("online", "same");
       await vi.advanceTimersByTimeAsync(realtimeIdleProbeDeadlineMs);
 
+      console.log(
+        "PROBE after",
+        host.client.connection.getSnapshot().phase,
+        host.client.connection.getSnapshot().epoch,
+        host.client.connection.getSnapshot().pathRevision,
+        host.sockets.length,
+      );
       expect(events).toEqual(["network"]);
       expect(host.sockets).toHaveLength(2);
       host.client.dispose();
@@ -7532,7 +7575,7 @@ describe("HttpHostClient lifecycle", () => {
 
       host.sockets[0]!.serverClose();
       await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
-      expect(host.label()).toBe("Reconnecting…");
+      expect(host.client.connection.getSnapshot().trying).toBe(true);
 
       for (const socket of host.sockets.slice(1)) if (socket.readyState === 0) socket.open();
       host.synchronize(host.sockets.at(-1)!);
@@ -7570,11 +7613,13 @@ describe("HttpHostClient lifecycle", () => {
         },
       });
       await expect(host.client.load()).rejects.toThrow();
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
       expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
-
       host.platform.enterBackground();
       host.platform.enterForeground();
-
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
       expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
       host.client.dispose();
     });
@@ -7603,7 +7648,6 @@ describe("HttpHostClient lifecycle", () => {
           if (!up) throw new TypeError("Network request failed");
           return json(bootstrap([workspace]));
         },
-        refreshIntervalMs: 15_000,
       });
       await host.client.load();
       host.synchronize(host.sockets[0]!);
@@ -7621,15 +7665,16 @@ describe("HttpHostClient lifecycle", () => {
         const socket = host.sockets.at(-1)!;
         if (socket.readyState === 0) socket.serverClose();
       }
-      expect(labels).toEqual(new Set(["Unavailable"]));
+      expect(host.client.connection.getSnapshot().showInterruption).toBe(true);
+      expect(host.client.connection.getSnapshot().phase).toBe("recovering");
 
       // A new network is worth hoping for, with the pill already up.
       host.platform.changeNetwork("online");
-      expect(host.label()).toBe("Reconnecting…");
+      expect(host.client.connection.getSnapshot().trying).toBe(true);
 
       up = true;
       const retried = host.client.refresh({ retryConnection: true });
-      expect(host.label()).toBe("Reconnecting…");
+      expect(host.client.connection.getSnapshot().trying).toBe(true);
       await retried;
       host.synchronize(host.sockets.at(-1)!);
       expect(host.label()).toBe("Connected");
@@ -7645,7 +7690,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7684,7 +7728,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7703,7 +7746,7 @@ describe("HttpHostClient lifecycle", () => {
     expect(sentPingNonce(dead)).toBeTruthy();
 
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(dead.closeEvents).toEqual([{ code: 1000, reason: "Liveness probe unanswered" }]);
+    expect(dead.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
     expect(sockets).toHaveLength(2);
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
@@ -7714,6 +7757,56 @@ describe("HttpHostClient lifecycle", () => {
     client.dispose();
   });
 
+  it("replaces a silent lease and backs off an unsynchronized replacement before resuming", async () => {
+    vi.useFakeTimers();
+    const workspace = makeDeployment(),
+      sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      realtimeLiveness: { idleMs: 1000, deadlineMs: 1000 },
+      reconnectBaseDelayMs: 1000,
+      reconnectMaxDelayMs: 4000,
+      random: () => 1,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const first = sockets[0]!;
+      first.open();
+      first.receive({ snapshot: deploymentSnapshot(workspace, "7"), type: "host.snapshot" });
+      first.receive({ sequence: sequence("7"), type: "host.synchronized" });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(first.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
+      expect(sockets).toHaveLength(2);
+      sockets[1]!.open();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(sockets[1]!.closeEvents).toEqual([{ code: 1000, reason: "Realtime channel silent" }]);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(sockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(3);
+      const healthy = sockets[2]!;
+      healthy.open();
+      expect(parseSent(healthy, 0)).toMatchObject({
+        type: "client.subscribe",
+        cursor: { afterSequence: "7" },
+      });
+      healthy.receive({ sequence: sequence("7"), type: "host.synchronized" });
+      expect(client.connection.getSnapshot()).toMatchObject({ phase: "ready", readyRevision: 2 });
+      await vi.advanceTimersByTimeAsync(1500);
+      healthy.receive({ nonce: sentPingNonce(healthy)!, type: "host.pong" });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sockets).toHaveLength(3);
+      expect(healthy.closeEvents).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps a probed channel whose subscription delivers before the answer does", async () => {
     vi.useFakeTimers();
     const workspace = makeDeployment();
@@ -7722,7 +7815,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       realtimeLiveness: { deadlineMs: 1_000, idleMs: 1_000 },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7769,7 +7861,6 @@ describe("HttpHostClient lifecycle", () => {
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
       realtimeLiveness: { deadlineMs: 1_000, idleMs: 1_000 },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7794,7 +7885,7 @@ describe("HttpHostClient lifecycle", () => {
     client.subscribeNotifications(() => undefined);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(sentPingNonce(socket)).toBeTruthy();
-    expect(socket.closeEvents).toEqual([{ code: 1000, reason: "Liveness probe unanswered" }]);
+    expect(socket.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
     expect(sockets).toHaveLength(2);
     client.dispose();
   });
@@ -7807,7 +7898,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7849,7 +7939,6 @@ describe("HttpHostClient lifecycle", () => {
       lifecycle: platform.lifecycle,
       reconnectBaseDelayMs: 10,
       reconnectMaxDelayMs: 40,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7892,7 +7981,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7935,7 +8023,6 @@ describe("HttpHostClient lifecycle", () => {
         return json(bootstrap([workspace]));
       },
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -7943,14 +8030,15 @@ describe("HttpHostClient lifecycle", () => {
       },
     });
 
-    const loaded = client.load();
+    const loaded = expect(client.load()).rejects.toMatchObject({ name: "AbortError" });
     platform.enterBackground();
     gate[0]?.();
     await loaded;
 
-    // The Workspace channel exists and holds its cursor; only the socket waits.
+    expect(client.getSnapshot().deploymentId).toBeNull();
     expect(sockets).toEqual([]);
     platform.enterForeground();
+    await client.load();
     expect(sockets).toHaveLength(1);
     sockets[0]?.open();
     expect(parseSent(sockets[0]!, 0)).toMatchObject({
@@ -7968,7 +8056,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -8005,7 +8092,6 @@ describe("HttpHostClient lifecycle", () => {
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
     await client.load();
@@ -8023,7 +8109,6 @@ describe("HttpHostClient lifecycle", () => {
       random: () => 0,
       reconnectBaseDelayMs: 10,
       reconnectMaxDelayMs: 40,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -8084,7 +8169,6 @@ describe("HttpHostClient notifications", () => {
         signedIn
           ? json(bootstrap([home, other]))
           : json({ error: { code: "unauthorized", message: "Sign in again." } }, 401),
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -8149,7 +8233,6 @@ describe("HttpHostClient notifications", () => {
           return json({ error: { code: "bad_request", message: "Unknown zone" } }, 400);
         return json({ timeZone: command.timeZone });
       },
-      refreshIntervalMs: 0,
       timeZoneReports: "observed",
       webSocketFactory: () => new FakeSocket(),
     });
@@ -8204,7 +8287,6 @@ describe("HttpHostClient notifications", () => {
           commands.push(rpcPayload(url, init));
           return json({ error: { code: "bad_request", message: "Recorded" } }, 400);
         },
-        refreshIntervalMs: 0,
         timeZoneReports: "observed",
         webSocketFactory: () => new FakeSocket(),
       });
@@ -8286,7 +8368,6 @@ describe("HttpHostClient Run activity and live streams", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     const state = (
@@ -8429,7 +8510,6 @@ describe("HttpHostClient Run activity and live streams", () => {
             : { ...bootstrap([workspace]), user: collaborator },
         );
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -8514,7 +8594,6 @@ describe("HttpHostClient Run activity and live streams", () => {
       },
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 5,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -8609,7 +8688,6 @@ describe("HttpHostClient Run activity and live streams", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     const append = (at: number, text: string) =>
@@ -8679,7 +8757,6 @@ describe("HttpHostClient Run activity and live streams", () => {
         if (path === "/v1/rpc/thread.events.list") return json(historyPage(thread));
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     const state = (at: string, pendingRequests: number) =>
@@ -8757,7 +8834,6 @@ describe("HttpHostClient Run activity and live streams", () => {
         }
         return json(bootstrap([workspace]));
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
     const markers = () =>
@@ -8866,9 +8942,15 @@ describe("HttpHostClient owner views", () => {
         }
         return host.bootstrap();
       },
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
+        const send = socket.send.bind(socket);
+        socket.send = (raw) => {
+          send(raw);
+          const frame = JSON.parse(raw) as { type: string; nonce?: string };
+          if (frame.type === "client.ping")
+            queueMicrotask(() => socket.receive({ type: "host.pong", nonce: frame.nonce! }));
+        };
         sockets.push(socket);
         return socket;
       },
@@ -9234,7 +9316,6 @@ describe("realtime review regressions", () => {
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       reconnectBaseDelayMs: 10,
       reconnectMaxDelayMs: 10,
       ...options,
@@ -9429,7 +9510,7 @@ describe("realtime review regressions", () => {
   it("F4 preserves terminal refusal through automatic rereads, foreground and network changes until person Retry", async () => {
     vi.useFakeTimers();
     const platform = fakeLifecycle();
-    const f = await fixture({ lifecycle: platform.lifecycle, refreshIntervalMs: 10 });
+    const f = await fixture({ lifecycle: platform.lifecycle });
     try {
       f.sockets[0]!.receiveRaw({
         type: "host.error",
@@ -9502,7 +9583,6 @@ describe("realtime protocol recovery journey", () => {
     ];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 0,
       reconnectBaseDelayMs: 10,
       reconnectMaxDelayMs: 10,
       webSocketFactory: () => {
@@ -9584,7 +9664,6 @@ describe("realtime protocol recovery journey", () => {
       },
       random: () => 1,
       reconnectBaseDelayMs: 10,
-      refreshIntervalMs: 0,
       ...options,
       webSocketFactory: () => {
         const socket = new FakeSocket();
@@ -9806,9 +9885,9 @@ describe("realtime protocol recovery journey", () => {
     try {
       const { socket } = await exhaustReplay(f);
       socket.receiveRaw(unreadableSnapshot(f));
-      expect(describeHostConnection(f.client.getSnapshot())).toMatchObject({
-        action: "retry",
-        label: "Unavailable",
+      expect(f.client.connection.getSnapshot()).toMatchObject({
+        phase: "recovering",
+        showInterruption: false,
       });
       // Ten milliseconds doubled fifteen times has passed five minutes.
       for (let failures = 4; failures < 16; failures += 1) {
@@ -10027,9 +10106,12 @@ describe("realtime protocol recovery journey", () => {
       const { f, opened, platform } = await inBackoff();
       try {
         await reconnectAfter(f, 80);
-        platform.changeNetwork("online");
+        platform.changeNetwork("online", "same");
         await vi.advanceTimersByTimeAsync(0);
         expect(f.sockets).toHaveLength(opened + 1);
+        await vi.advanceTimersByTimeAsync(160);
+        expect(f.sockets).toHaveLength(opened + 1);
+        f.sockets.at(-1)!.serverClose();
         await reconnectAfter(f, 160);
       } finally {
         f.client.dispose();
@@ -10902,7 +10984,6 @@ describe("task marks through the production client and mock transport", () => {
       capabilities: ["task-marks-v1"],
       fetch: transport.fetch,
       webSocketFactory: transport.connect,
-      refreshIntervalMs: 0,
     });
     try {
       await client.load();
@@ -11014,7 +11095,6 @@ describe("HttpHostClient overnight transcript residency", () => {
     }> = [];
     let boot = bootstrap([workspace]);
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
       ...(lifecycle ? { lifecycle } : {}),
       capabilities: omitSnapshotMessages ? ["snapshot-messages-omit-v1", "person-show-v1"] : [],
       webSocketFactory: () => socket,
@@ -11648,7 +11728,6 @@ it.each([false, true])(
         ? ["browser-passkeys-v1", "browser-target-control-v1"]
         : ["browser-target-control-v1"],
       fetch: page.fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         const socket = new FakeSocket();
         sockets.push({ url, socket });
@@ -11736,7 +11815,7 @@ describe("attachment reads", () => {
     return rpc;
   }
   function pendingRead() {
-    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const client = createHttpHostClient({});
     let complete!: (value: ReturnType<typeof content>) => void;
     const pending = new Promise<ReturnType<typeof content>>((resolve) => {
       complete = resolve;
@@ -11808,7 +11887,7 @@ describe("attachment reads", () => {
   });
 
   it("evicts least recently used bytes and excludes oversized items", async () => {
-    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const client = createHttpHostClient({});
     const rpc = attachmentRpc(client).mockResolvedValue(content(12 * 1024 * 1024));
     try {
       await boundedRead(client, "a");
@@ -11829,7 +11908,7 @@ describe("attachment reads", () => {
   });
 
   it("does not cache failures or issue a request for an already aborted caller", async () => {
-    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const client = createHttpHostClient({});
     const rpc = attachmentRpc(client)
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue(content());
@@ -11852,7 +11931,6 @@ describe("attachment reads", () => {
       let payload = bootstrap([]);
       let authenticated = true;
       const client = createHttpHostClient({
-        refreshIntervalMs: 0,
         fetch: async (input) => {
           const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
           if (path === "/v1/rpc/auth.config") return json(payload.identityConfig);
@@ -11896,8 +11974,6 @@ describe("a Run's current place", () => {
       runId = createId("run");
     const socket = new FakeSocket();
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-
       capabilities: ["place-events-v1"],
       webSocketFactory: () => socket,
       fetch: async () => json(bootstrap([workspace])),
@@ -11994,8 +12070,6 @@ describe("a Run's current place", () => {
     let boot = bootstrap([workspace]);
     const socket = new FakeSocket();
     const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-
       capabilities: ["place-events-v1", "snapshot-messages-omit-v1"],
       webSocketFactory: () => socket,
       fetch: async () => json(boot),
@@ -12099,7 +12173,6 @@ it("hydrates older running helper cards and routes a watched node's work only to
   const nodeReads: Readonly<Record<string, unknown>>[] = [];
   const client = createHttpHostClient({
     capabilities: ["node-detail-v1"],
-    refreshIntervalMs: 0,
     webSocketFactory: () => socket,
     fetch: async (input, init) => {
       const url = new URL(String(input));
@@ -12294,7 +12367,6 @@ describe("HttpHostClient command projection", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -12414,7 +12486,6 @@ describe("HttpHostClient command projection", () => {
       }) as unknown as typeof globalThis.fetch;
       const client = createHttpHostClient({
         fetch,
-        refreshIntervalMs: 0,
         webSocketFactory: () => {
           const socket = new FakeSocket();
           sockets.push(socket);
@@ -12546,7 +12617,6 @@ describe("HttpHostClient command projection", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
     await client.load();
@@ -12562,10 +12632,14 @@ describe("HttpHostClient command projection", () => {
       type: "harness.create",
     });
 
-    expect(client.getSnapshot().harnesses).toEqual([
-      expect.objectContaining({ id: harnessInstanceId }),
-      expect.objectContaining({ id: addedHarnessId, name: "Claude" }),
-    ]);
+    await vi.waitFor(
+      () =>
+        expect(client.getSnapshot().harnesses).toEqual([
+          expect.objectContaining({ id: harnessInstanceId }),
+          expect.objectContaining({ id: addedHarnessId, name: "Claude" }),
+        ]),
+      { timeout: 1000 },
+    );
     client.dispose();
   });
 
@@ -12626,7 +12700,6 @@ describe("HttpHostClient command projection", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
     await client.load();
@@ -12686,7 +12759,6 @@ describe("HttpHostClient command projection", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
     await client.load();
@@ -12731,7 +12803,6 @@ describe("HttpHostClient command projection", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
     });
     await client.load();
@@ -12795,7 +12866,6 @@ it.each([60, 61])(
     const payload = { ...bootstrap([]), apiVersion };
     const client = createHttpHostClient({
       capabilities: ["device-drivers-v1"],
-      refreshIntervalMs: 0,
       fetch: async () => json(payload),
     });
     try {
@@ -12806,3 +12876,130 @@ it.each([60, 61])(
     }
   },
 );
+
+describe("personal connection admission", () => {
+  it("synchronizes and runs a ready-gated action after in-place password sign-in", async () => {
+    vi.useFakeTimers();
+    const workspace = makeDeployment();
+    const payload = bootstrap([workspace]);
+    let authenticated = false;
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (input) => {
+        const path = new URL(input.toString()).pathname;
+        if (path.endsWith("/auth.config")) return json(payload.identityConfig);
+        if (path.endsWith("/auth.password.signIn")) {
+          authenticated = true;
+          return json({
+            redirectUrl: null,
+            session: {
+              absoluteExpiresAt: "2026-11-20T20:00:00.000Z",
+              createdAt: "2026-11-17T20:00:00.000Z",
+              expiresAt: "2026-11-18T20:00:00.000Z",
+              id: payload.sessionId,
+              user: payload.user,
+            },
+          });
+        }
+        return authenticated ? json(payload) : json({ error: unauthorizedError() }, 401);
+      },
+    });
+    try {
+      await client.load();
+      expect(client.connection.getSnapshot().phase).toBe("blocked");
+      expect(
+        await client.rpc["auth.password.signIn"]({
+          email: "owner@example.test",
+          password: "password",
+        }),
+      ).toMatchObject({ ok: true });
+      await client.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      sockets[0]!.open();
+      sockets[0]!.receiveRaw({
+        type: "host.snapshot",
+        snapshot: deploymentSnapshot(workspace, "1"),
+      });
+      sockets[0]!.receiveRaw({ type: "host.synchronized", sequence: "1" });
+      const action = createClientAction(client, {
+        key: "settings",
+        label: "read settings",
+        execute: async (_input, signal) => client.rpc["auth.config"]({}, { signal }),
+      });
+      expect(await action.run(undefined)).toMatchObject({ kind: "confirmed", value: { ok: true } });
+      action.dispose();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("reports the version refused by personal realtime instead of access loss", async () => {
+    const workspace = makeDeployment();
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      webSocketFactory: () => socket,
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receiveRaw({
+        type: "host.error",
+        error: {
+          code: "bad_message",
+          reason: "unsupported-version",
+          retryable: false,
+          message: "Unsupported",
+        },
+      });
+      expect(client.connection.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        issue: { code: "update-app" },
+      });
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("defers startup bootstrap while offline and aborts it on a subsequent path change", async () => {
+    vi.useFakeTimers();
+    const platform = fakeLifecycle({ network: "offline", visibility: "foreground" });
+    const workspace = makeDeployment();
+    const stale = Promise.withResolvers<Response>();
+    const calls: AbortSignal[] = [];
+    const client = createHttpHostClient({
+      lifecycle: platform.lifecycle,
+      fetch: async (_input, init) => {
+        calls.push(init!.signal!);
+        if (calls.length === 1) return stale.promise;
+        return json(bootstrap([workspace]));
+      },
+    });
+    try {
+      const startup = client.load().catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(0);
+      await startup;
+      platform.changeNetwork("online");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+      const joined = client.load().catch(() => undefined);
+      platform.changeNetwork("online");
+      await vi.advanceTimersByTimeAsync(0);
+      await joined;
+      expect(calls[0]!.aborted).toBe(true);
+      expect(calls).toHaveLength(2);
+      stale.resolve(json(bootstrap([makeDeployment()])));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().deploymentId).toBe(workspace.id);
+    } finally {
+      client.dispose();
+    }
+  });
+});

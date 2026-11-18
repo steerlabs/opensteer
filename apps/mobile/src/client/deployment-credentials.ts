@@ -12,7 +12,7 @@ import type { PersonalSessionStore } from "./personal-session-store.js";
  * catalog changed.
  */
 export interface DeploymentCredentials {
-  authorization(connection: DeploymentConnection): Promise<string | null>;
+  authorization(connection: DeploymentConnection, expectedLoginId?: string): Promise<string | null>;
   held(connection: DeploymentConnection): Promise<boolean>;
   viewLoginId?(connection: DeploymentConnection): Promise<string | undefined>;
 }
@@ -35,11 +35,18 @@ export function createDeploymentCredentials(options: {
       if (connection.kind === "team") return options.oauth.hostViewLoginId?.(connection);
       return (await options.sessions.load(connection.authority.document.deploymentId))?.viewLoginId;
     },
-    async authorization(connection): Promise<string | null> {
-      if (connection.kind === "team") return options.oauth.authorizationHeader(connection);
+    async authorization(connection, expectedLoginId): Promise<string | null> {
+      if (connection.kind === "team") {
+        const value = await options.oauth.authorizationHeader(connection);
+        return expectedLoginId === undefined ||
+          options.oauth.hostViewLoginId?.(connection) === expectedLoginId
+          ? value
+          : null;
+      }
       return options.sessions.authorization(
         connection.authority.document.deploymentId,
         options.now(),
+        expectedLoginId,
       );
     },
 

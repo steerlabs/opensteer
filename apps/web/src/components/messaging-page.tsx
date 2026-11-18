@@ -23,6 +23,7 @@ import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
 import { useToast } from "./toast.js";
+import { presentFailure } from "./use-action.js";
 
 type View = "overview" | "providers" | "setup" | "computer-setup" | "repair" | "success";
 
@@ -1882,6 +1883,7 @@ export function normalizeChannelIds(value: string): string[] {
   ];
 }
 
+/** A failure in the app's words, never the exception's own text. */
 function message(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "Channel settings could not be loaded.";
+  return presentFailure(reason, "change channel settings");
 }

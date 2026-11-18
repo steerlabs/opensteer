@@ -2,7 +2,9 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
+import { ClientOperationError } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
 import type { PagePresence } from "../ui/page-presence.js";
 import { LocalPhoneTab } from "./local-tab.js";
@@ -41,6 +43,7 @@ test("a returning local screen holds its intent across Host activation and never
   let releasedAdmissions = 0;
   let activations = 0;
   const hostClient = {
+    connection: controlledClientSession().connection,
     activateTab: async (tabId: string) => {
       expect(tabId).toBe("tab");
       activations++;
@@ -110,4 +113,68 @@ test("a returning local screen holds its intent across Host activation and never
   }
   expect(intents).toBe(0);
   expect(viewers).toBe(0);
+});
+
+test("a lost activation waits quietly and asks again on recovery; only the tab's own failure is said", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const admission: PhonePresentationAdmission = {
+    sessionId: "session",
+    surfaceId: "tab",
+    bindingId: "binding",
+    runtimeId: "runtime",
+    targetControl: 1,
+  };
+  const manager = {
+    markLocalPresentation: () => () => {},
+    localPresentation: () => admission,
+  } as unknown as PhoneBrowserManager;
+  const session = controlledClientSession();
+  const failures: Error[] = [
+    new ClientOperationError("socket closed while activating", "transient", {
+      kind: "transport",
+      provenance: "transport",
+      reason: "connection-lost",
+      retryable: true,
+    }),
+  ];
+  const activateTab = vi.fn(async () => {
+    const failure = failures.shift();
+    if (failure) throw failure;
+  });
+  const hostClient = {
+    connection: session.connection,
+    activateTab,
+    retainBrowserViewer: () => () => {},
+  } as unknown as HostClient;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const render = () => (
+    <LocalPhoneTab
+      presence={{ interactive: true, shown: true, held: true }}
+      available
+      deploymentId="deployment"
+      hostClient={hostClient}
+      manager={manager}
+      admission={admission}
+      liveSession={false}
+      status={(message) => <div>{message}</div>}
+    />
+  );
+  try {
+    await act(async () => root.render(render()));
+    expect(activateTab).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toBe("Opening…");
+    expect(container.textContent).not.toContain("socket closed");
+
+    failures.push(new Error("The tab's page was closed on the Host."));
+    await act(async () => session.change({ readyRevision: 2 }));
+    expect(activateTab).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toBe("This tab could not open.");
+
+    // A later recovery without a lost activation asks nothing more.
+    await act(async () => session.change({ readyRevision: 3 }));
+    expect(activateTab).toHaveBeenCalledTimes(2);
+  } finally {
+    act(() => root.unmount());
+  }
 });

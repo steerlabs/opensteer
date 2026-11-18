@@ -1,3 +1,14 @@
+import { nameConnectionFromHost } from "../host/host-connection.js";
+import { disposeMessageOutbox } from "../host/message-outbox.js";
+import {
+  createConnectionController,
+  type ClientScope,
+  type ConnectionAttempt,
+  type ConnectionController,
+  type ConnectionLease,
+} from "../connections/connection-controller.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import {
   DeviceComputerAppSetupRequestReaderSchema,
   type DeviceComputerAppSetupRequest,
@@ -1789,6 +1800,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  readonly connectionController?: ConnectionController;
+  readonly clientScope?: () => ClientScope | null;
   /** Fail the first metadata batch containing this ID, then resolve normally. */
   referenceResolveFailureId?: ReferenceId;
   teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
@@ -1818,6 +1831,8 @@ export interface MockHostClientOptions {
   world?: "seeded" | "first-run" | "busy" | "stress";
   /** The team this Host plays; `absent`, today's Hosts, by default. */
   latencyMs?: number;
+  /** What a Run does before its reply: the scripted reasoning, tools and streamed text, or only the reply. */
+  replies?: "scripted" | "brief";
   now?: () => Date;
   pendingRequests?: readonly Request[];
   /** The sessions `sessions.list` reports; one current session by default. */
@@ -3445,7 +3460,7 @@ async function executeMockCommand(
       await client.stopNode(command.threadId, command.nodeId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "run.interrupt":
-      await client.stopRun(command.threadId);
+      await client.stopRun(command.threadId, command.runId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "request.respond":
       await client.resolveRequest(command);
@@ -3811,6 +3826,72 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  #ownsConnection: boolean;
+  #scopeProvider: (() => ClientScope | null) | undefined;
+  #connectionController: ConnectionController;
+  get connection() {
+    return this.#connectionController;
+  }
+  adoptConnection(connection: ConnectionController, scope?: () => ClientScope | null): void {
+    if (this.#ownsConnection) this.#connectionController.dispose();
+    this.#ownsConnection = false;
+    this.#connectionController = connection;
+    this.#scopeProvider = scope;
+  }
+  async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    if (!this.#ownsConnection) await this.load();
+    // Its own connection is ready only with its state: a reader keyed on that moment sees both.
+    else this.#state.markConnected();
+    attempt.signal.throwIfAborted();
+    const snapshot = this.getSnapshot();
+    if (snapshot.session !== "authenticated" || !snapshot.user || !snapshot.deploymentId)
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "Sign in to continue.",
+        retryable: false,
+      });
+    nameConnectionFromHost(this.#connectionController, snapshot);
+    attempt.acceptScope(
+      this.#scopeProvider?.() ?? {
+        authorityKey: "mock",
+        deploymentId: snapshot.deploymentId,
+        viewerId: snapshot.user.id,
+        loginId: snapshot.sessionId ?? "mock",
+      },
+    );
+    let finish!: (failure: ReturnType<typeof classifyClientFailure>) => void;
+    const closed = new Promise<ReturnType<typeof classifyClientFailure>>((resolve) => {
+      finish = resolve;
+    });
+    let wasConnected = snapshot.connection === "connected";
+    const unsubscribe = this.subscribe(() => {
+      const next = this.getSnapshot();
+      if (next.connection === "connected") wasConnected = true;
+      if (
+        next.session !== "authenticated" ||
+        next.connection === "offline" ||
+        (wasConnected && next.connection !== "connected")
+      ) {
+        const failure = classifyClientFailure(
+          next.session !== "authenticated"
+            ? new HostClientRequestError({
+                code: "unauthorized",
+                status: 401,
+                message: "Sign in to continue.",
+                retryable: false,
+              })
+            : new HostTransportError("unreachable"),
+        );
+        unsubscribe();
+        attempt.fail?.(failure);
+        finish(failure);
+      }
+    });
+    const lease = { closed, probe: async () => {}, close: unsubscribe };
+    attempt.admit?.(lease);
+    return lease;
+  }
   deploymentSnapshot(
     sequence = String(this.getSnapshot().revision),
     deviceAccessRequests: "include" | "omit" = "include",
@@ -3949,6 +4030,13 @@ export class MockHostClient implements HostClient {
   readonly #lifecycle: ClientLifecycle | null;
 
   constructor(options: MockHostClientOptions = {}) {
+    this.#ownsConnection = options.connectionController === undefined;
+    this.#scopeProvider = options.clientScope;
+    this.#connectionController =
+      options.connectionController ??
+      createConnectionController({
+        driver: { connect: (attempt) => this.openConnection(attempt) },
+      });
     this.desktopUpdates = new MockDesktopUpdates(options.desktopUpdates);
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
@@ -4167,6 +4255,20 @@ export class MockHostClient implements HostClient {
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;
+    this.#state.subscribe(() => {
+      if (
+        this.getSnapshot().session !== "authenticated" &&
+        this.connection.getSnapshot().scope !== null
+      )
+        this.connection.invalidateScope();
+      if (
+        this.#ownsConnection &&
+        this.getSnapshot().session === "authenticated" &&
+        this.connection.getSnapshot().phase === "blocked"
+      )
+        this.connection.retry();
+    });
+    if (this.#ownsConnection) this.connection.start();
   }
 
   applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {
@@ -4913,10 +5015,16 @@ export class MockHostClient implements HostClient {
     this.#computerViews.clear();
     this.#worldSubscription();
     this.#places.dispose();
+    disposeMessageOutbox(this);
+    if (this.#ownsConnection) this.connection.dispose();
     this.#state.dispose();
   }
 
   load(): Promise<void> {
+    if (this.#ownsConnection) {
+      if (this.connection.getSnapshot().phase === "blocked") this.connection.retry();
+      else this.connection.start();
+    }
     return this.#state.load();
   }
 
@@ -5102,11 +5210,12 @@ export class MockHostClient implements HostClient {
     await this.#state.stopNode(threadId, nodeId);
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
-    if (!run) throw new Error("This Thread has nothing to stop.");
+    if (!run || (expectedRunId && run.id !== expectedRunId))
+      throw new Error("This Thread has nothing to stop.");
     await this.dispatch({
       idempotencyKey: `mock-interrupt:${crypto.randomUUID()}`,
       runId: run.id,
@@ -6251,6 +6360,7 @@ class MockHostState {
     { readonly startedAt: number; readonly method: HarnessSetupMethod }
   >();
   private readonly latencyMs: number;
+  private readonly replies: "scripted" | "brief";
   private readonly listeners = new Set<() => void>();
   private readonly notificationListeners = new Set<(notification: NotificationView) => void>();
   private readonly assignments = new Map<string, AssignmentView>();
@@ -6392,6 +6502,7 @@ class MockHostState {
       ]),
     ];
     this.latencyMs = options.latencyMs ?? 420;
+    this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());
     this.chrome = new MockChromeSignIns(this.now);
     const initial = {
@@ -9977,7 +10088,12 @@ class MockHostState {
     if (!definition) throw new Error("Integration not found.");
     // The Host's own words when a checked key is turned away; nothing is saved.
     if (definition.apiKey?.check && Object.values(input.values).includes(mockRejectedApiKey)) {
-      throw new Error(`${definition.name} rejected this key.`);
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: `${definition.name} rejected this key.`,
+        reason: "integration-key-rejected",
+        status: 409,
+      });
     }
     const timestamp = this.now().toISOString();
     if (input.connectionId) {
@@ -11150,6 +11266,11 @@ class MockHostState {
     this.runPlaces.dispose();
   }
 
+  markConnected(): void {
+    if (this.snapshot.connection !== "connected")
+      this.update({ ...this.snapshot, connection: "connected" });
+  }
+
   async load(): Promise<void> {
     if (this.snapshot.connection === "connected") return;
     await delay(Math.min(this.latencyMs, 180));
@@ -12258,7 +12379,7 @@ class MockHostState {
     });
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const active = this.activeRuns.get(threadId);
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     // A seeded Run has no script behind it, but the Host interrupts any Run it
@@ -12266,7 +12387,8 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
-    if (runId === undefined) throw new Error("This Thread has nothing to stop.");
+    if (runId === undefined || (expectedRunId && runId !== expectedRunId))
+      throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
 
@@ -12745,88 +12867,7 @@ class MockHostState {
       ),
     );
 
-    // Reasoning streams a couple of sentences, then completes.
-    let reasoning: ReasoningEntry = {
-      createdAt: this.now().toISOString(),
-      id: `reasoning:${run.id}:block-1`,
-      kind: "reasoning",
-      runId: run.id,
-      state: "streaming",
-      text: "",
-    };
-    const reasoningSentences = [
-      "I should inspect the files before changing anything. ",
-      "One shell check plus a focused edit will keep the run small and verifiable.",
-    ];
-    for (const sentence of reasoningSentences) {
-      await delay(this.latencyMs / 2);
-      if (!this.isRunCurrent(thread.id, run)) return;
-      reasoning = { ...reasoning, text: `${reasoning.text}${sentence}` };
-      this.upsertEntry(thread.id, reasoning);
-    }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, { ...reasoning, state: "done" });
-
-    // A shell tool call streams stdout lines, then completes with canonical output.
-    let shell: ToolEntry = {
-      arguments: { command: "rg --files src | head -n 3" },
-      callId: "call-shell-1",
-      createdAt: this.now().toISOString(),
-      id: `tool:${run.id}:call-shell-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      output: undefined,
-      runId: run.id,
-      state: "running",
-      streamText: "",
-      tool: { name: "shell", namespace: "codex" },
-    };
-    this.upsertEntry(thread.id, shell);
-    const stdoutLines = ["src/app.tsx\n", "src/host/client.ts\n", "src/host/transcript.ts\n"];
-    for (const line of stdoutLines) {
-      await delay(this.latencyMs / 3);
-      if (!this.isRunCurrent(thread.id, run)) return;
-      shell = { ...shell, streamText: `${shell.streamText}${line}` };
-      this.upsertEntry(thread.id, shell);
-    }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, {
-      ...shell,
-      output: { text: shell.streamText },
-      state: "done",
-    });
-
-    // A second, edit-shaped tool call with a diff-ish payload.
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    const edit: ToolEntry = {
-      arguments: {
-        patch: "@@ -1,2 +1,3 @@\n # Notes\n+\n+- Recorded this run in the Thread.\n",
-        path: "docs/notes.md",
-      },
-      callId: "call-edit-1",
-      createdAt: this.now().toISOString(),
-      id: `tool:${run.id}:call-edit-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      output: undefined,
-      runId: run.id,
-      state: "running",
-      streamText: "",
-      tool: { name: "apply_patch", namespace: "codex" },
-    };
-    this.upsertEntry(thread.id, edit);
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
-    this.upsertEntry(thread.id, {
-      ...edit,
-      output: { text: "Applied patch to docs/notes.md" },
-      state: "done",
-    });
+    if (this.replies === "scripted" && !(await this.streamMockWork(thread, run))) return;
 
     // The assistant reply streams into a draft, then the final markdown
     // message replaces the draft in place.
@@ -12845,14 +12886,16 @@ class MockHostState {
       runId: run.id,
       streaming: true,
     };
-    for (const chunk of splitIntoChunks(reply, 3)) {
-      await delay(this.latencyMs / 3);
+    if (this.replies === "scripted") {
+      for (const chunk of splitIntoChunks(reply, 3)) {
+        await delay(this.latencyMs / 3);
+        if (!this.isRunCurrent(thread.id, run)) return;
+        draft = { ...draft, body: `${draft.body}${chunk}` };
+        this.upsertEntry(thread.id, draft);
+      }
+      await delay(this.latencyMs / 2);
       if (!this.isRunCurrent(thread.id, run)) return;
-      draft = { ...draft, body: `${draft.body}${chunk}` };
-      this.upsertEntry(thread.id, draft);
     }
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(thread.id, run)) return;
     const assistantEntry: MessageEntry = {
       author: mockAgentAuthor(run.id, thread.id),
       body: reply,
@@ -12863,7 +12906,8 @@ class MockHostState {
       published: true,
       runId: run.id,
     };
-    this.replaceEntryById(thread.id, streamId, assistantEntry);
+    if (this.replies === "scripted") this.replaceEntryById(thread.id, streamId, assistantEntry);
+    else this.upsertEntry(thread.id, assistantEntry);
 
     // The engine states what the turn consumed just before the Run ends.
     runEntry = {
@@ -12912,6 +12956,92 @@ class MockHostState {
     if (answersPerson) this.notifyReply(thread.id, run.id);
     // Finalization is what admits the next queued message; each gets its own turn.
     this.admitNextInput(thread.id);
+  }
+  /** A Run's scripted work before its reply: reasoning, a shell call and an edit, streamed. */
+  private async streamMockWork(thread: ThreadSummary, run: ActiveMockRun): Promise<boolean> {
+    // Reasoning streams a couple of sentences, then completes.
+    let reasoning: ReasoningEntry = {
+      createdAt: this.now().toISOString(),
+      id: `reasoning:${run.id}:block-1`,
+      kind: "reasoning",
+      runId: run.id,
+      state: "streaming",
+      text: "",
+    };
+    const reasoningSentences = [
+      "I should inspect the files before changing anything. ",
+      "One shell check plus a focused edit will keep the run small and verifiable.",
+    ];
+    for (const sentence of reasoningSentences) {
+      await delay(this.latencyMs / 2);
+      if (!this.isRunCurrent(thread.id, run)) return false;
+      reasoning = { ...reasoning, text: `${reasoning.text}${sentence}` };
+      this.upsertEntry(thread.id, reasoning);
+    }
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, { ...reasoning, state: "done" });
+
+    // A shell tool call streams stdout lines, then completes with canonical output.
+    let shell: ToolEntry = {
+      arguments: { command: "rg --files src | head -n 3" },
+      callId: "call-shell-1",
+      createdAt: this.now().toISOString(),
+      id: `tool:${run.id}:call-shell-1`,
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: run.id,
+      state: "running",
+      streamText: "",
+      tool: { name: "shell", namespace: "codex" },
+    };
+    this.upsertEntry(thread.id, shell);
+    const stdoutLines = ["src/app.tsx\n", "src/host/client.ts\n", "src/host/transcript.ts\n"];
+    for (const line of stdoutLines) {
+      await delay(this.latencyMs / 3);
+      if (!this.isRunCurrent(thread.id, run)) return false;
+      shell = { ...shell, streamText: `${shell.streamText}${line}` };
+      this.upsertEntry(thread.id, shell);
+    }
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, {
+      ...shell,
+      output: { text: shell.streamText },
+      state: "done",
+    });
+
+    // A second, edit-shaped tool call with a diff-ish payload.
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    const edit: ToolEntry = {
+      arguments: {
+        patch: "@@ -1,2 +1,3 @@\n # Notes\n+\n+- Recorded this run in the Thread.\n",
+        path: "docs/notes.md",
+      },
+      callId: "call-edit-1",
+      createdAt: this.now().toISOString(),
+      id: `tool:${run.id}:call-edit-1`,
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: run.id,
+      state: "running",
+      streamText: "",
+      tool: { name: "apply_patch", namespace: "codex" },
+    };
+    this.upsertEntry(thread.id, edit);
+    await delay(this.latencyMs / 2);
+    if (!this.isRunCurrent(thread.id, run)) return false;
+    this.upsertEntry(thread.id, {
+      ...edit,
+      output: { text: "Applied patch to docs/notes.md" },
+      state: "done",
+    });
+    return true;
   }
 
   private isRunCurrent(threadId: string, run: ActiveMockRun): boolean {

@@ -1,7 +1,7 @@
+import { act, failureWords, refusalReason } from "../use-action.js";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deviceMachine,
-  HostClientRequestError,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
@@ -9,7 +9,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { ComputerView } from "@opensteer/protocol";
-import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
+import { usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 import { ComputerStopButton } from "../computer-watch.js";
 import { ComputerDisplayScreen, PhoneControlBar, useComputerDisplay } from "../phone-display.js";
@@ -142,13 +142,17 @@ export function OwnerView({
   const reopen = async () => {
     setReopening(true);
     try {
-      await onReopen();
-    } catch (error) {
-      toast.error(
-        error instanceof HostClientRequestError && error.reason
-          ? computerReasonWords(error.reason, { machine: machineName, phone, target: targetName })
-          : actionErrorMessage(error),
+      await act(
+        hostClient,
+        { label: "reopen this", done: "reopened", happened: "this reopened" },
+        onReopen,
       );
+    } catch (error) {
+      const reason = refusalReason(error);
+      const words = reason
+        ? computerReasonWords(reason, { machine: machineName, phone, target: targetName })
+        : failureWords(error);
+      if (words) toast.error(words);
     } finally {
       if (mounted.current) setReopening(false);
     }

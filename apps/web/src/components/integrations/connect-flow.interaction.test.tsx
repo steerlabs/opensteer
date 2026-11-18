@@ -411,7 +411,8 @@ describe("ConnectFlow", () => {
     await click("Recheck repository access");
 
     expect(operations.reloadDashboard).toHaveBeenCalledTimes(2);
-    expect(alert()).toBe(unavailable);
+    // Said as the check's own failure, never the exception's text.
+    expect(alert()).toBe("Couldn't load repository access.");
     expect(text()).toContain("Repository access is still required");
     expect(buttons()).toContain("Recheck repository access");
     expect(buttons()).not.toContain("Continue to GitHub");
@@ -599,7 +600,7 @@ describe("ConnectFlow", () => {
     await click("Continue to Slack");
     await click("Cancel");
 
-    expect(alert()).toBe(unreachable);
+    expect(alert()).toBe("Couldn't confirm this change.");
     expect(buttons()).not.toContain("Cancel");
     expect(button("Continue to Slack").disabled).toBe(false);
 

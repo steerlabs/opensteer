@@ -1,3 +1,11 @@
+import "fake-indexeddb/auto";
+import {
+  initializeMessageOutbox,
+  createMessageOutboxStorage,
+  disposeMessageOutbox,
+  type HostClient,
+} from "@opensteer/client/host";
+import { controlledClientSession, testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +19,19 @@ import { resetQuestionSessionsForTests } from "./question-session.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
-const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
+const noPlaces = vi.hoisted(() => ({
+  browserSessions: [],
+  connection: "connected",
+  machines: [],
+  deploymentId: "deployment",
+  user: { id: "viewer" },
+  session: "authenticated",
+  sessionId: "test-login",
+  network: "online",
+  threads: [],
+  inputQueues: {},
+  transcripts: {},
+}));
 const shell = vi.hoisted(() => ({
   desktopBridge: null,
   desktopDeployment: null,
@@ -66,15 +86,106 @@ const shell = vi.hoisted(() => ({
   localExecutionStatus: null,
 }));
 Object.assign(noPlaces, { tabs: new TabStore(), browserProfiles: [] });
-Object.assign(shell.hostClient, { tabViewer: () => null });
+Object.assign(shell.hostClient, {
+  tabViewer: () => null,
+  connection: testHostConnection(shell.hostClient as unknown as HostClient),
+});
+let messageStorage: ReturnType<typeof createMessageOutboxStorage>;
+beforeEach(() => {
+  const records = new Map<string, string>();
+  messageStorage = createMessageOutboxStorage({
+    read: async (key) => records.get(key) ?? null,
+    write: async (key, value) => {
+      records.set(key, value);
+    },
+    remove: async (key) => {
+      records.delete(key);
+    },
+  });
+  initializeMessageOutbox(shell.hostClient as unknown as HostClient, {
+    storage: messageStorage,
+    drafts: { restore: async () => "restored" },
+  });
+});
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
-afterEach(() => {
+afterEach(async () => {
   act(() => root.unmount());
+  await composerDrafts.clearAll();
+  disposeMessageOutbox(shell.hostClient as unknown as HostClient);
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
   shell.snapshot.waitingRequests = [];
+});
+
+it("keeps a reply tapped before sign-in changed in the draft", async () => {
+  const client = shell.hostClient as unknown as HostClient;
+  const original = client.connection.getSnapshot().scope!;
+  const control = controlledClientSession();
+  control.change({ scope: original });
+  const connection = vi
+    .spyOn(client.connection, "getSnapshot")
+    .mockImplementation(control.connection.getSnapshot);
+  initializeMessageOutbox(client, {
+    session: control,
+    storage: messageStorage,
+    drafts: { restore: async () => "restored" },
+  });
+  const threadId = createId("thread");
+  const key = composerDraftKeyFor(original.deploymentId, original.viewerId, {
+    kind: "thread",
+    threadId,
+  })!;
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let restorePause: (() => void) | undefined;
+  try {
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface disabled={false} placeholder="Reply…" running={false} threadId={threadId} />
+        </MemoryRouter>,
+      ),
+    );
+    await act(async () => rewrite(composerField(node), "Words from the original sign-in"));
+    await vi.waitFor(() =>
+      expect(composerDrafts.read(key)?.text).toBe("Words from the original sign-in"),
+    );
+    const transact = composerDrafts.transaction;
+    const pause = vi.spyOn(composerDrafts, "transaction").mockImplementationOnce(async (edit) => {
+      entered.resolve();
+      await release.promise;
+      return transact(edit);
+    });
+    restorePause = () => pause.mockRestore();
+    await act(async () =>
+      node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(),
+    );
+    await vi.waitFor(() => expect(pause).toHaveBeenCalled());
+    await entered.promise;
+    const replacement = { ...original, loginId: "replacement" };
+    await act(async () => {
+      control.change({ scope: replacement });
+      release.resolve();
+    });
+    await vi.waitFor(() =>
+      expect(
+        shell.hostClient.dispatch.mock.calls.length > 0 ||
+          node.querySelector(".composer__error") !== null,
+      ).toBe(true),
+    );
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    expect(await messageStorage.load(replacement)).toEqual([]);
+    expect(composerDrafts.read(key)?.text).toBe("Words from the original sign-in");
+  } finally {
+    release.resolve();
+    restorePause?.();
+    connection.mockRestore();
+  }
 });
 
 function request(presentation: Request["presentation"]): Request {
@@ -202,16 +313,19 @@ describe("request surface connectivity", () => {
     await act(async () => {
       node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
     });
-    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce(), {
+      timeout: 1_000,
+    });
     expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ threadId, type: "thread.sendMessage" }),
+      { preserveOrigin: true, expectedLogin: expect.objectContaining({ viewerId: "viewer" }) },
     );
     expect(
       [...node.querySelectorAll(".action-rows .action-row__label")].map((item) => item.textContent),
     ).toEqual(["Allow once", "Not now"]);
   });
 
-  it("disables all approval controls offline and restores them on reconnect", async () => {
+  it("keeps an approval enabled offline, says it wasn't sent, and sends once back online", async () => {
     const node = document.createElement("div");
     document.body.append(node);
     root = createRoot(node);
@@ -220,12 +334,13 @@ describe("request surface connectivity", () => {
       title: "Continue?",
       options: [{ id: "yes", label: "Continue", hint: "confirm" }],
     });
-    const render = (disabled: boolean) =>
+    Object.assign(noPlaces, { network: "offline" });
+    try {
       act(() =>
         root.render(
           <MemoryRouter>
             <InputSurface
-              disabled={disabled}
+              disabled={false}
               placeholder="Reply…"
               requests={[approval]}
               running={false}
@@ -234,15 +349,19 @@ describe("request surface connectivity", () => {
           </MemoryRouter>,
         ),
       );
-    render(true);
-    expect(node.querySelector("fieldset")?.disabled).toBe(true);
-    const button = node.querySelector<HTMLButtonElement>(".action-rows button")!;
-    await act(async () => button.click());
-    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
-    render(false);
-    expect(node.querySelector("fieldset")?.disabled).toBe(false);
-    await act(async () => button.click());
-    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+      expect(node.querySelector("fieldset")?.disabled).toBe(false);
+      const button = node.querySelector<HTMLButtonElement>(".action-rows button")!;
+      await act(async () => button.click());
+      // Known offline before dispatch: nothing goes out, and the line says so under the buttons.
+      expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+      expect(node.querySelector(".action-line")?.textContent).toBe("Not sent. You're offline.");
+      Object.assign(noPlaces, { network: "online" });
+      await act(async () => button.click());
+      expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+      expect(node.querySelector(".action-line")).toBeNull();
+    } finally {
+      Object.assign(noPlaces, { network: "online" });
+    }
   });
 
   it("keeps a draft when a secret form docks and takes the field's place", () => {
@@ -400,7 +519,7 @@ describe("answering a question", () => {
         </MemoryRouter>,
       ),
     );
-    expect(draft.closest("[hidden]")).toBeNull();
+    await vi.waitFor(() => expect(draft.closest("[hidden]")).toBeNull(), { timeout: 1_000 });
     expect(node.querySelector(".composer--answer")).toBeNull();
     const switchToAnswer = [...node.querySelectorAll("button")].find(
       (button) => button.textContent === "Type an answer",
@@ -411,8 +530,8 @@ describe("answering a question", () => {
     expect(draft.value).toBe("Also check Kyoto");
   });
 
-  it("leaves a draft holding only a quote in the message box too", () => {
-    composerDrafts.update(
+  it("leaves a draft holding only a quote in the message box too", async () => {
+    await composerDrafts.update(
       composerDraftKeyFor("deployment", "viewer", { kind: "thread", threadId: "thread" })!,
       {
         quote: { attribution: "Sam", excerpt: "the August numbers", messageId: "msg_quoted" },
@@ -444,7 +563,9 @@ describe("answering a question", () => {
         </MemoryRouter>,
       ),
     );
-    expect(node.querySelector(".composer--answer")).toBeNull();
+    await vi.waitFor(() => expect(node.querySelector(".composer--answer")).toBeNull(), {
+      timeout: 1_000,
+    });
     await act(async () => option(node, "Batches").click());
     await act(async () => option(node, "All at once").click());
     await act(async () => answerButton(node).click());

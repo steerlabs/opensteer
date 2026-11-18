@@ -55,6 +55,13 @@ const native = vi.hoisted(() => ({
   renders: 0,
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => native.geometry }));
+vi.mock("react-native-reanimated", () => ({
+  default: { View: (props: { children?: ReactNode }) => <div>{props.children}</div> },
+}));
+vi.mock("../ui/motion.js", () => ({ dim: undefined, exit: undefined }));
+vi.mock("../ui/last-picture-chip.js", () => ({
+  LastPictureChip: () => <span>Last picture</span>,
+}));
 vi.mock("../computers/phone-display-native.js", async () => {
   const React = await import("react");
   const Picture = React.forwardRef(
@@ -446,11 +453,13 @@ describe.each(["image", "picture"] as const)(
         throw new Error("Too many browser capture targets are retained.");
       });
       render("synchronized");
-      expect(container.textContent).toContain("Too many browser capture targets are retained.");
+      // The page says it can't be shown in its own words, never the client's error text.
+      expect(container.textContent).toContain("This page can’t be shown.");
+      expect(container.textContent).not.toContain("capture targets");
       const retry = container.querySelector("button");
       expect(retry).not.toBeNull();
       act(() => retry?.click());
-      expect(container.textContent).not.toContain("Too many browser capture targets");
+      expect(container.textContent).not.toContain("This page can’t be shown.");
     });
 
     it("keeps its viewer and last picture off screen, taking no input, and shows it again on the same viewer", async () => {
@@ -708,7 +717,11 @@ describe.each(["image", "picture"] as const)(
           {} as PanResponderGestureState,
         ),
       ).toBe(false);
+      // The last picture stays, marked as such, with no words about the connection.
+      expect(container.textContent).toContain("Last picture");
+      expect(container.textContent).not.toContain("Connecting");
       render("synchronized");
+      expect(container.textContent).not.toContain("Last picture");
       expect(send).not.toHaveBeenCalled();
       render("synchronized", false);
       expect(container.querySelector("img")).toBeNull();

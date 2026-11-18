@@ -24,7 +24,6 @@ import {
 import { Link, useLocation, useNavigate } from "react-router";
 import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
-  settingsMutationRejected,
   addPluginService,
   pluginCatalogCategories,
   pluginCatalogMatches,
@@ -57,7 +56,7 @@ import {
   type SettingsView,
 } from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction } from "../../use-action.js";
 import { platformIntegrations } from "../../integrations/helpers.js";
 import { AddYourOwn } from "./add-your-own.js";
 
@@ -163,7 +162,7 @@ function PluginOverview({
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
         </label>
-        <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
+        <SettingsError message={overview.error} />
         {!rows ? (
           <LoadingRows label="Loading plugins" rows={3} />
         ) : (
@@ -239,7 +238,7 @@ function PluginCatalog({
   reveal,
   view,
 }: {
-  readonly error: unknown;
+  readonly error: string | null;
   readonly onChanged: () => void;
   readonly products: readonly PluginCatalogProduct[] | null;
   readonly query: string;
@@ -271,7 +270,7 @@ function PluginCatalog({
       <h2 className="settings-catalog__title" id={titleId}>
         Add more
       </h2>
-      <SettingsError message={error ? actionErrorMessage(error) : null} />
+      <SettingsError message={error} />
       {!products ? (
         error ? null : (
           <LoadingRows label="Loading plugins to add" rows={2} />
@@ -425,30 +424,35 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
             attempt.current = operation;
             setPending(true);
             setError(null);
-            void hostClient
-              .dispatch({
-                type: "settings.plugin.enabled.set",
-                idempotencyKey: operation.key,
-                target: row.target,
-                expectedRevision: operation.revision,
-                enabled: operation.enabled,
-              })
-              .then(() => {
-                attempt.current = null;
-                reload();
-              })
-              .catch(async (reason: unknown) => {
-                if (settingsMutationRejected(reason)) attempt.current = null;
-                // A lost response may have committed. Reconcile before offering the same operation again.
-                try {
-                  unwrapRpcResult(
-                    await hostClient.rpc["plugins.detail.get"]({ target: row.target }),
-                  );
+            void runAction(hostClient, {
+              label: "change this",
+              done: "changed",
+              execute: () =>
+                hostClient.dispatch({
+                  type: "settings.plugin.enabled.set",
+                  idempotencyKey: operation.key,
+                  target: row.target,
+                  expectedRevision: operation.revision,
+                  enabled: operation.enabled,
+                }),
+            })
+              .then(async (outcome) => {
+                if (outcome.kind === "confirmed") {
+                  attempt.current = null;
                   reload();
-                } catch {
-                  /* Keep the original operation for an idempotent retry. */
+                  return;
                 }
-                setError(actionErrorMessage(reason));
+                if (outcome.kind !== "unconfirmed") attempt.current = null;
+                // A lost response may have committed. Reconcile before offering the same operation again.
+                else
+                  await hostClient.rpc["plugins.detail.get"]({ target: row.target }).then(
+                    (result) => {
+                      unwrapRpcResult(result);
+                      reload();
+                    },
+                    () => undefined,
+                  );
+                setError(outcomeWords(outcome));
               })
               .finally(() => setPending(false));
           }}
@@ -527,7 +531,7 @@ function PluginDetail({
       ) : target.kind !== "service" && target.kind !== "device-app" ? (
         <Link to="/settings/plugins">All plugins</Link>
       ) : null}
-      <SettingsError message={detail.error ? actionErrorMessage(detail.error) : null} />
+      <SettingsError message={detail.error} />
       {data ? (
         <>
           {target.kind !== "service" && target.kind !== "device-app" ? (
@@ -663,21 +667,25 @@ export function PluginAddSheet({ product }: { readonly product: PluginCatalogPro
     connectedAccount.current = connectionId;
     setPlacing(true);
     setPlacementError(null);
-    try {
-      const consent = reviewedConsent();
-      placementAttempt.current = consent;
-      await completePluginConsent(hostClient, consent, connectionId, (next) => {
-        placementAttempt.current = next;
-        if (consentStorageKey.current) storePluginConsent(consentStorageKey.current, next);
-      });
-      if (consentStorageKey.current) sessionStorage.removeItem(consentStorageKey.current);
-      setSaved(true);
-    } catch (reason) {
-      setPlacementError(actionErrorMessage(reason));
-      throw reason;
-    } finally {
-      setPlacing(false);
+    const consent = reviewedConsent();
+    placementAttempt.current = consent;
+    const outcome = await runAction(hostClient, {
+      label: "add this",
+      done: "added",
+      happened: "this was added",
+      execute: () =>
+        completePluginConsent(hostClient, consent, connectionId, (next) => {
+          placementAttempt.current = next;
+          if (consentStorageKey.current) storePluginConsent(consentStorageKey.current, next);
+        }),
+    });
+    setPlacing(false);
+    if (outcome.kind !== "confirmed") {
+      setPlacementError(outcomeWords(outcome));
+      throw new Error("The plugin was not added.");
     }
+    if (consentStorageKey.current) sessionStorage.removeItem(consentStorageKey.current);
+    setSaved(true);
   }
   if (ready)
     return (
@@ -784,9 +792,7 @@ export function PluginAddSheet({ product }: { readonly product: PluginCatalogPro
           />
         </details>
       ) : null}
-      <SettingsError
-        message={placementError ?? (facts.error ? actionErrorMessage(facts.error) : null)}
-      />
+      <SettingsError message={placementError ?? facts.error} />
       <button
         className="btn btn--primary"
         type="button"
@@ -794,16 +800,22 @@ export function PluginAddSheet({ product }: { readonly product: PluginCatalogPro
         onClick={() => {
           setPlacing(true);
           setPlacementError(null);
-          void (async () => {
-            if (integration?.entry)
-              await addPluginService(hostClient, {
-                kind: definition?.computerApp ? "device-app" : "service",
-                definitionId,
-              });
-            setReady(true);
-          })()
-            .catch((reason: unknown) => setPlacementError(actionErrorMessage(reason)))
-            .finally(() => setPlacing(false));
+          void runAction(hostClient, {
+            label: "add this",
+            done: "added",
+            happened: "this was added",
+            execute: async () => {
+              if (integration?.entry)
+                await addPluginService(hostClient, {
+                  kind: definition?.computerApp ? "device-app" : "service",
+                  definitionId,
+                });
+            },
+          }).then((outcome) => {
+            if (outcome.kind === "confirmed") setReady(true);
+            else setPlacementError(outcomeWords(outcome));
+            setPlacing(false);
+          });
         }}
       >
         {device ? `Add ${product.title}` : `Connect ${product.title}`}
@@ -861,7 +873,7 @@ function DirectoryRequests() {
     ) ?? [];
   return (
     <section aria-label="Asked for by your agents" className="settings-plugin-asks">
-      <SettingsError message={requests.error ? actionErrorMessage(requests.error) : null} />
+      <SettingsError message={requests.error} />
       {asks.slice(0, showAll ? undefined : 3).map((entry) => (
         <div className="settings-plugin-ask" key={entry.request.id}>
           <span aria-hidden className="settings-plugin-ask__glyph">
@@ -968,27 +980,33 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
     if (pending) return;
     setPending(true);
     setError(null);
-    void hostClient
-      .dispatch(
-        remove
-          ? {
-              type: "plugin.remove",
-              pluginId: pluginId,
-              idempotencyKey: mutationIdempotencyKey("plugin-remove"),
-            }
-          : {
-              type: "plugin.update",
-              pluginId: pluginId,
-              input: { directory: detail.sourceFolder! },
-              idempotencyKey: mutationIdempotencyKey("plugin-update"),
-            },
-      )
-      .then(() => {
-        if (remove) void navigate(detail.row.device ? "/settings/devices" : "/settings/plugins");
-        else reload();
-      })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setPending(false));
+    void runAction(hostClient, {
+      label: remove ? "remove this" : "update this",
+      done: remove ? "removed" : "updated",
+      execute: () =>
+        hostClient.dispatch(
+          remove
+            ? {
+                type: "plugin.remove",
+                pluginId: pluginId,
+                idempotencyKey: mutationIdempotencyKey("plugin-remove"),
+              }
+            : {
+                type: "plugin.update",
+                pluginId: pluginId,
+                input: { directory: detail.sourceFolder! },
+                idempotencyKey: mutationIdempotencyKey("plugin-update"),
+              },
+        ),
+    }).then((outcome) => {
+      setPending(false);
+      if (outcome.kind !== "confirmed") {
+        setError(outcomeWords(outcome));
+        return;
+      }
+      if (remove) void navigate(detail.row.device ? "/settings/devices" : "/settings/plugins");
+      else reload();
+    });
   }
   return (
     <section>
@@ -1095,10 +1113,16 @@ function ChangeSecrets(props: {
     }
     setPending(true);
     setError(null);
-    void setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets)
-      .then(props.onSaved)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setPending(false));
+    void runAction(hostClient, {
+      label: "save these",
+      done: "saved",
+      happened: "these were saved",
+      execute: () => setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets),
+    }).then((outcome) => {
+      setPending(false);
+      if (outcome.kind === "confirmed") props.onSaved();
+      else setError(outcomeWords(outcome));
+    });
   };
   return (
     <Dialog
@@ -1140,7 +1164,7 @@ function PluginSecrets({ detail }: { readonly detail?: PluginDetailView }) {
   );
   return (
     <section className="settings-group">
-      <SettingsError message={servers.error ? actionErrorMessage(servers.error) : null} />
+      <SettingsError message={servers.error} />
       {matching?.length ? (
         <>
           <h2 className="settings-group__title">Secrets on your computers</h2>
@@ -1197,7 +1221,7 @@ function PluginServers({ detail }: { readonly detail: PluginDetailView }) {
     ) ?? [];
   return (
     <>
-      <SettingsError message={platform.error ? actionErrorMessage(platform.error) : null} />
+      <SettingsError message={platform.error} />
       {entries.length ? (
         <section className="settings-group">
           <h2 className="settings-group__title">MCP servers</h2>

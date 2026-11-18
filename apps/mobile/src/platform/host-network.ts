@@ -75,6 +75,7 @@ export function createHostNetwork(options: {
     fetch: async (input, init) => {
       fence(destinationOf(input));
       const authorization = await options.authorization.current();
+      init?.signal?.throwIfAborted();
       const headers = new Headers(init?.headers);
       if (authorization !== null) headers.set("authorization", authorization);
       const response = await options.fetch(input, {

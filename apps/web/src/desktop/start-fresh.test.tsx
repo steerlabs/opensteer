@@ -76,7 +76,7 @@ it("starts fresh once, and offers it again with the reason when it fails", async
   expect(view.get().state).toEqual({
     phase: "offer",
     data: oldData,
-    error: "The browser profiles are in use.",
+    error: "Opensteer couldn’t start fresh.",
   });
   await act(async () => view.get().startFresh());
   expect(reset.startFresh).toHaveBeenCalledTimes(2);

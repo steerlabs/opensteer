@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestAgentProposedDetail } from "@opensteer/core";
 import { mainAccessDetail } from "@opensteer/client/integrations";
 import { mockTmdbProposal } from "@opensteer/client/mock";
+import { controlledClientSession } from "@opensteer/client/test-support";
 
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate }) }));
 vi.mock("expo-haptics", () => ({
@@ -14,6 +15,21 @@ vi.mock("expo-haptics", () => ({
   selectionAsync: vi.fn(async () => {}),
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../ui/placeholder.js", () => ({
+  PlaceholderRows: () => <div aria-label="Not loaded yet" />,
+}));
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: (props: {
+    line: { text: string; link?: { label: string; onPress: () => void } | null };
+  }) => (
+    <p>
+      {props.line.text}
+      {props.line.link ? (
+        <button onClick={props.line.link.onPress}>{props.line.link.label}</button>
+      ) : null}
+    </p>
+  ),
+}));
 const navigate = vi.hoisted(() => vi.fn());
 const cardRenders = vi.hoisted(() => vi.fn());
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
@@ -926,7 +942,7 @@ describe("IntegrationConnectCard", () => {
 
     await press("Connect");
 
-    expect(text()).toContain(`This connection did not finish${rejectedSignIn}`);
+    expect(text()).toContain(rejectedSignIn);
     expect(buttons()).toContain("Try again");
     expect(buttons()).not.toContain("Recheck repository access");
 
@@ -952,13 +968,13 @@ describe("IntegrationConnectCard", () => {
     );
     await click("Recheck repository access");
 
-    expect(text()).toContain(`This connection did not finish${rejectedSignIn}`);
+    expect(text()).toContain(rejectedSignIn);
     expect(buttons()).toContain("Try again");
     expect(buttons()).not.toContain("Recheck repository access");
   });
 
   it("keeps the repository step when GitHub fails a recheck without rejecting the sign-in", async () => {
-    const unavailable = "GitHub repository access could not be checked. Retry in a moment.";
+    const unavailable = "GitHub repository access could not be checked. Try again.";
     const client = fakeClient({
       connections: [githubConnection(githubConnectionId)],
       provider: "github",
@@ -973,13 +989,14 @@ describe("IntegrationConnectCard", () => {
 
     // A 5xx changes nothing at the Host: the account still waits for repositories.
     client.rpc["integration.repositoryAccess.check"].mockResolvedValueOnce({
-      error: { code: "internal", message: unavailable, retryable: true },
+      error: { code: "internal", message: "upstream 503 from api.github.com", retryable: true },
       ok: false,
     });
     await click("Recheck repository access");
 
     expect(reload).toHaveBeenCalledTimes(reloads + 1);
-    expect(text()).toContain(`This connection did not finish${unavailable}`);
+    expect(text()).toContain(unavailable);
+    expect(text()).not.toContain("upstream 503");
     expect(text()).toContain("Repository access is still required");
     expect(buttons()).toContain("Recheck repository access");
     expect(buttons()).not.toContain("Continue in browser");
@@ -1644,6 +1661,7 @@ function fakeClient(input: {
     },
   );
   return {
+    connection: controlledClientSession().connection,
     dispatch,
     streamUnrelatedThread() {
       snapshot = {

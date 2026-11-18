@@ -31,6 +31,7 @@ function setup(value: BrowserHistory = { entries: [entry()], icons: [] }) {
   };
   const history = new BrowserHistoryClient(ports);
   history.setScope(scope);
+  history.setConnected(true);
   return { history, ports };
 }
 afterEach(() => vi.useRealTimers());
@@ -139,6 +140,23 @@ describe("Host browsing history cache", () => {
     await history.load("profile");
     expect(history.failed("profile")).toBe(false);
     expect(history.failed(null)).toBe(false);
+    history.dispose();
+  });
+
+  it("leaves a read that failed while disconnected unreported, rereads on reconnect, and tells loaded-empty from never loaded", async () => {
+    const { history, ports } = setup({ entries: [], icons: [] });
+    history.setConnected(false);
+    ports.get.mockRejectedValueOnce(new Error("Host unreachable"));
+    await history.load("profile");
+    expect(history.failed("profile")).toBe(false);
+    expect(history.loaded("profile")).toBe(false);
+    history.setConnected(true);
+    await vi.waitFor(() => expect(history.loaded("profile")).toBe(true));
+    expect(ports.get).toHaveBeenCalledTimes(2);
+    ports.get.mockRejectedValueOnce(new Error("Host unreachable"));
+    await history.load("profile");
+    expect(history.failed("profile")).toBe(true);
+    expect(history.loaded("profile")).toBe(true);
     history.dispose();
   });
 

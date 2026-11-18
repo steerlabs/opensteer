@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
 import {
@@ -29,6 +30,11 @@ import { TeamRoutes } from "./team-routes.js";
 import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
 import { TeamSideFor, LeaveTeamDialog } from "./team-sidebar-sections.js";
+import {
+  ConnectionGateScope,
+  ShellConnectionPill,
+  type ShellConnectionSource,
+} from "../components/connection-shell.js";
 
 type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type Entry =
@@ -67,7 +73,11 @@ async function readEntry(): Promise<Entry> {
   const result = await rpc["team.bootstrap.get"]({});
   if (result.ok) return { kind: "ready", bootstrap: result.data };
   if (bootstrapMembershipRefused(result.error)) return { kind: "not-member" };
-  if (!signedOut) return { kind: "failed", message: result.error.message };
+  if (!signedOut)
+    return {
+      kind: "failed",
+      message: presentClientIssue({ code: "read-failed", resource: "this team" }).title,
+    };
   const state = await fetch("/v1/team/setup/state", { headers: versionHeaders });
   const setUp = state.ok && ((await state.json()) as { complete?: unknown }).complete === true;
   return { kind: "signed-out", setUp };
@@ -226,11 +236,11 @@ function TeamSignIn({
         oauthQuery,
         providerId: "opensteer-account",
       });
-    } catch (failure) {
+    } catch {
       window.sessionStorage.removeItem(teamPageReturnKey);
       setBusy(false);
       setError(
-        `${failure instanceof Error ? failure.message : "Sign-in couldn’t start."}${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
+        `Sign-in couldn’t start.${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
       );
     }
   };
@@ -354,14 +364,17 @@ function TeamWebShell({
             <TeamSideFor onNavigate={close} teamId={team.teamId} />
           </section>
         </nav>
-        <main className="app-shell__main">
-          <Routes>
-            <Route index element={<Navigate replace to={landing} />} />
-            <Route path="teams/:teamId/*" element={<TeamRoutes />} />
-            <Route path="settings/teams/:teamId/:page" element={<TeamSettingsPage />} />
-            <Route path="*" element={<Navigate replace to={landing} />} />
-          </Routes>
-        </main>
+        <ConnectionGateScope>
+          <main className="app-shell__main">
+            <TeamPill team={team} />
+            <Routes>
+              <Route index element={<Navigate replace to={landing} />} />
+              <Route path="teams/:teamId/*" element={<TeamRoutes />} />
+              <Route path="settings/teams/:teamId/:page" element={<TeamSettingsPage />} />
+              <Route path="*" element={<Navigate replace to={landing} />} />
+            </Routes>
+          </main>
+        </ConnectionGateScope>
       </div>
     </WorkspaceProvider>
   );
@@ -376,4 +389,23 @@ function TeamSettingsPage() {
       </div>
     </div>
   );
+}
+
+/** The team's own site speaks about the one connection it has: its team's. */
+function TeamPill({ team }: { readonly team: TeamAttachment }) {
+  const client = team.client;
+  const current = useMemo<ShellConnectionSource | null>(
+    () =>
+      client
+        ? {
+            key: `team:${team.teamId}`,
+            connection: client.connection,
+            mark: "users",
+            onSignIn: () => window.location.reload(),
+            onUpdate: () => window.location.reload(),
+          }
+        : null,
+    [client, team.teamId],
+  );
+  return current ? <ShellConnectionPill current={current} /> : null;
 }

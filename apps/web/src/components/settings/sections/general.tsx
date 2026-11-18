@@ -12,7 +12,7 @@ import {
   resolveNotificationAvailability,
   type NotificationAvailability,
 } from "../../../desktop/notifications.js";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { act, failureWords } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { settingsPlaceDetail } from "../copy.js";
 import { desktopBridge } from "../../../desktop/desktop-bridge.js";
@@ -23,7 +23,6 @@ import {
   SettingsRow,
   SettingsSegmented,
   SettingsSwitch,
-  StatusText,
   type SettingsView,
 } from "../primitives.js";
 
@@ -49,17 +48,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
               </button>
             ) : undefined
           }
-          detail={
-            view.statusInfo.status === "ready" ? (
-              view.deployment?.onThisComputer ? (
-                "Running here"
-              ) : (
-                placeDetail
-              )
-            ) : (
-              <StatusText info={view.statusInfo} />
-            )
-          }
+          detail={view.deployment?.onThisComputer ? "Running here" : placeDetail}
           title={view.name}
         />
       </SettingsGroup>
@@ -139,8 +128,8 @@ function NotificationsRow() {
       (resolved) => {
         if (live) setAvailability(resolved);
       },
-      (reason: unknown) => {
-        if (live) setFailure(actionErrorMessage(reason));
+      () => {
+        if (live) setFailure("Couldn’t check whether this app can notify you.");
       },
     );
     return () => {
@@ -148,12 +137,7 @@ function NotificationsRow() {
     };
   }, []);
   if (failure !== null) {
-    return (
-      <SettingsRow
-        detail={`Couldn’t check whether this app can notify you: ${failure}`}
-        title="Notifications"
-      />
-    );
+    return <SettingsRow detail={failure} title="Notifications" />;
   }
   // Nothing is claimed while the answer is outstanding.
   if (availability === null) return null;
@@ -174,7 +158,7 @@ function NotificationsRow() {
             onClick={() => {
               setAsking(true);
               void requestNotificationPermission()
-                .then(setAvailability, (reason: unknown) => setFailure(actionErrorMessage(reason)))
+                .then(setAvailability, () => setFailure("Couldn’t ask to turn on notifications."))
                 .finally(() => setAsking(false));
             }}
             type="button"
@@ -228,9 +212,10 @@ function QuietTasksRow() {
     const days = QuietTaskDaysSchema.parse(Number(value));
     setPending(days);
     setError(null);
-    void hostClient
-      .setQuietTaskDays(days)
-      .catch((cause: unknown) => setError(actionErrorMessage(cause)))
+    void act(hostClient, { label: "change this", done: "changed" }, () =>
+      hostClient.setQuietTaskDays(days),
+    )
+      .catch((cause: unknown) => setError(failureWords(cause)))
       .finally(() => setPending(null));
   };
   return (

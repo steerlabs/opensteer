@@ -158,6 +158,12 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         })
       ).ok,
     ).toBe(true);
+    await expect(
+      devSession.rpc["team.message.get"]({
+        channelId: groupChannel,
+        messageId: root.data.message.id,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "not_found", retryable: false } });
     // A live name is the team's, whatever its case, even when the channel holding it is hidden.
     const taken = await devSession.rpc["commands.dispatch"]({
       type: "team.channel.create",
@@ -445,7 +451,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
 
     console.info("Z4: reading local task");
     personalClient = new HttpHostClient({
-      refreshIntervalMs: 0,
       baseUrl: personal.hostOrigin,
       fetch: (url, init) =>
         fetch(url, {

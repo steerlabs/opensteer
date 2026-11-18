@@ -1,6 +1,6 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { DevicePreparedIdentity, DeviceInitialAccess } from "@opensteer/protocol";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { outcomeWords, runAction } from "../use-action.js";
 
 /**
  * Why this Mac is not a finished device yet, with the one move that fixes it.
@@ -71,23 +71,29 @@ export async function setUpThisDevice(
       cause: { kind: "use-from-anywhere", homeName: input.homeName },
       runnerId: null,
     };
-  let runnerId: string | null;
-  try {
-    onStage("joining");
-    const preparedIdentity = input.devicesAvailable ? await ports.prepare(input.name) : undefined;
-    const { token } = await ports.mint({
-      ...(preparedIdentity ? { preparedIdentity } : {}),
-      name: input.name,
-      access: input.devicesAvailable ? input.access : null,
-    });
-    ({ runnerId } = await ports.setUp({ token, name: input.name }));
-  } catch (reason) {
+  // Each step is said in the app's words; the ports' own exception text never is.
+  onStage("joining");
+  const joined = await runAction(null, {
+    label: "add this Mac",
+    done: "added",
+    happened: "this Mac was added",
+    execute: async () => {
+      const preparedIdentity = input.devicesAvailable ? await ports.prepare(input.name) : undefined;
+      const { token } = await ports.mint({
+        ...(preparedIdentity ? { preparedIdentity } : {}),
+        name: input.name,
+        access: input.devicesAvailable ? input.access : null,
+      });
+      return (await ports.setUp({ token, name: input.name })).runnerId;
+    },
+  });
+  if (joined.kind !== "confirmed")
     return {
       ok: false,
-      cause: { kind: "failed", detail: actionErrorMessage(reason) },
+      cause: { kind: "failed", detail: outcomeWords(joined) ?? "" },
       runnerId: null,
     };
-  }
+  const runnerId = joined.value;
   if (runnerId === null)
     return {
       ok: false,
@@ -95,17 +101,23 @@ export async function setUpThisDevice(
       runnerId: null,
     };
   if (!input.devicesAvailable) return { ok: true, runnerId };
-  try {
-    await ports.applyAccess(runnerId, input.access);
-  } catch (reason) {
-    return { ok: false, cause: { kind: "failed", detail: actionErrorMessage(reason) }, runnerId };
-  }
-  try {
-    onStage("binding");
-    await ports.bind(runnerId);
-  } catch (reason) {
-    return { ok: false, cause: { kind: "bind", detail: actionErrorMessage(reason) }, runnerId };
-  }
+  const applied = await runAction(null, {
+    label: "set what this Mac allows",
+    done: "set",
+    happened: "what this Mac allows was set",
+    execute: () => ports.applyAccess(runnerId, input.access),
+  });
+  if (applied.kind !== "confirmed")
+    return { ok: false, cause: { kind: "failed", detail: outcomeWords(applied) ?? "" }, runnerId };
+  onStage("binding");
+  const bound = await runAction(null, {
+    label: "connect this Mac",
+    done: "connected",
+    happened: "this Mac connected",
+    execute: () => ports.bind(runnerId),
+  });
+  if (bound.kind !== "confirmed")
+    return { ok: false, cause: { kind: "bind", detail: outcomeWords(bound) ?? "" }, runnerId };
   return { ok: true, runnerId };
 }
 

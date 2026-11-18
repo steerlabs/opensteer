@@ -11,7 +11,8 @@ import {
   type,
 } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText, Notice } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
 import { Avatar, TeamTile } from "./team-marks.js";
@@ -113,11 +114,13 @@ export function SearchBody(props: {
         keyboardShouldPersistTaps="handled"
       >
         {props.failure === null ? null : (
-          <Notice
-            action={{ label: "Try again", onPress: props.onRetry }}
-            detail={props.failure}
-            title="Search didn't answer"
-            tone="neutral"
+          <ActionLine
+            line={{
+              key: props.failure,
+              text: props.failure,
+              tone: "muted",
+              link: { label: "Try again", onPress: props.onRetry },
+            }}
           />
         )}
         {nothing ? (

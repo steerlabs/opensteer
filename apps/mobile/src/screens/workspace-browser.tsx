@@ -2,7 +2,6 @@ import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
   canRespondToRequests,
-  describeHostConnection,
   placeAgentState,
   listedRowThreadId,
   threadMark,
@@ -96,10 +95,9 @@ import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
 import { ComputerOwnerView } from "../computers/phone-display.js";
 import { tabTitle } from "../tabs/tab-entries.js";
-import { useOperation } from "../tabs/use-tabs.js";
 import { useTabViewer, type OpenIntent } from "../tabs/use-tab-viewer.js";
 import { computerSymbols } from "./settings-model.js";
-import { color, space, touchTarget } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import {
   derivePagePair,
   edgesAround,
@@ -117,7 +115,13 @@ import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane, useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { useConnectionReady } from "../ui/connection-live.js";
+import { refusal, useScreenAction } from "../ui/client-feedback.js";
+import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { ConnectionRouteGate } from "../ui/route-gate.js";
+import { closeTabs, tabActionKey, tabActionSpecs } from "../tabs/tab-actions.js";
+import { DeploymentGate } from "./deployment-gate.js";
 import { Screen } from "../ui/screen.js";
 import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
 import { NewTaskPane } from "./new-task.js";
@@ -144,17 +148,8 @@ export function OpeningTabScreen({ route }: StaticScreenProps<OpeningTabRoute>):
  */
 export function WorkspaceBrowserScreen({ route }: StaticScreenProps<TabRoute>): ReactNode {
   const { selection } = useMobileState();
-  if (selection.deploymentId !== route.params.deploymentId || selection.hostClient === null) {
-    return (
-      <Screen>
-        <Notice
-          title="This deployment is no longer open"
-          detail="Return to your thread to reconnect."
-          tone="neutral"
-        />
-      </Screen>
-    );
-  }
+  if (selection.deploymentId !== route.params.deploymentId || selection.hostClient === null)
+    return <DeploymentGate deploymentId={route.params.deploymentId} />;
   return (
     <Surfaces
       // A saved tab moving to its restored session is the same page, so the
@@ -167,20 +162,19 @@ export function WorkspaceBrowserScreen({ route }: StaticScreenProps<TabRoute>): 
 }
 
 function Surfaces(props: { readonly hostClient: HostClient; readonly route: TabRoute }): ReactNode {
-  const { snapshot, loadError, reload } = useHostSnapshot(props.hostClient);
+  const { snapshot } = useHostSnapshot(props.hostClient);
+  const navigation = useNavigation();
   const presence = useScreenPresence();
   const authorized = snapshot.session === "authenticated" && snapshot.user !== null;
-  // Coming back into view, not out from under a sheet: the page never left the stream.
-  useEffect(() => {
-    if (presence.shown && authorized) void reload().catch(() => undefined);
-  }, [authorized, presence.shown, reload]);
+  // No reader yet, so nothing of theirs to show: the gate is the one explanation.
   if (!authorized)
     return (
       <Screen>
-        <Notice
-          title={snapshot.session === "checking" ? "Connecting…" : "Sign in to view this page"}
-          detail="Return to your thread to continue."
-          tone="neutral"
+        <ConnectionRouteGate
+          connection={props.hostClient.connection}
+          secondary={
+            navigation.canGoBack() ? { label: "Back", onPress: () => navigation.goBack() } : null
+          }
         />
       </Screen>
     );
@@ -190,8 +184,6 @@ function Surfaces(props: { readonly hostClient: HostClient; readonly route: TabR
       key={snapshot.user?.id}
       presence={presence}
       hostClient={props.hostClient}
-      loadError={loadError}
-      reload={reload}
       route={props.route}
       snapshot={snapshot}
     />
@@ -201,36 +193,15 @@ function Surfaces(props: { readonly hostClient: HostClient; readonly route: TabR
 function SurfacesForUser(props: {
   readonly presence: PagePresence;
   readonly hostClient: HostClient;
-  readonly loadError: string | null;
-  readonly reload: () => Promise<void>;
   readonly route: TabRoute;
   readonly snapshot: HostSnapshot;
 }): ReactNode {
   const { snapshot } = props;
   const connected = canRespondToRequests(snapshot);
-  const notices = (
-    <>
-      {props.loadError ? (
-        <Notice
-          title="Tabs could not be refreshed"
-          detail={props.loadError}
-          action={{ label: "Try again", onPress: () => void props.reload().catch(() => undefined) }}
-        />
-      ) : null}
-      {connected ? null : (
-        <Notice
-          title={describeHostConnection(snapshot).label}
-          detail="Tabs reconnect when the deployment is available."
-          tone="neutral"
-        />
-      )}
-    </>
-  );
   return (
     <TabSurface
       connected={connected}
       hostClient={props.hostClient}
-      notices={notices}
       presence={props.presence}
       route={props.route}
       snapshot={snapshot}
@@ -242,7 +213,6 @@ interface TabSurfaceProps {
   readonly presence: PagePresence;
   readonly connected: boolean;
   readonly hostClient: HostClient;
-  readonly notices: ReactNode;
   readonly route: TabRoute;
   readonly snapshot: HostSnapshot;
 }
@@ -293,11 +263,13 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
     if (next !== null) navigation.setParams({ editAddress: false, popup: false, tabId: next });
     else if (navigation.canGoBack()) navigation.goBack();
   }, [hostClient, left, navigation, route.popup, shown]);
+  const ready = useConnectionReady(hostClient.connection);
   if (tab === undefined)
     return (
       <Screen>
-        {props.notices}
-        {syncing || left ? (
+        {syncing && !ready ? (
+          <ConnectionRouteGate connection={hostClient.connection} />
+        ) : syncing || left ? (
           <TabStatus title="Opening…" waiting />
         ) : (
           <ClosedTab
@@ -312,7 +284,6 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
   if (tab.state === "unavailable")
     return (
       <Screen>
-        {props.notices}
         <UnavailableTab hostClient={hostClient} key={tab.tabId} tab={tab} />
       </Screen>
     );
@@ -326,8 +297,12 @@ function ClosedTab(props: {
   readonly intent: OpenIntent;
   readonly tabId: TabId;
 }): ReactNode {
-  const reopening = useOperation();
   const { hostClient, intent, tabId } = props;
+  const reopening = useScreenAction(
+    hostClient,
+    tabActionKey("reopen", tabId),
+    tabActionSpecs.reopen,
+  );
   const reopen = async () => {
     // Renewed before the answer: the reopened tab's first ask may land before it.
     intent.current = tabId;
@@ -341,10 +316,10 @@ function ClosedTab(props: {
   return (
     <TabStatus
       action={{
-        label: reopening.busy ? "Reopening…" : "Reopen",
-        onPress: () => void reopening.run(reopen, "This tab could not reopen."),
+        label: reopening.running ? "Reopening…" : "Reopen",
+        onPress: () => void reopening.run(reopen),
       }}
-      detail={reopening.failure}
+      detail={reopening.line?.text ?? null}
       title="This tab was closed"
     />
   );
@@ -360,23 +335,27 @@ const retriable: ReadonlySet<TabUnavailableCode> = new Set(["paused", "protected
 function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
   const { hostClient, tab } = props;
   const closing = useTabClose(hostClient, tab.tabId);
-  const retrying = useOperation();
+  const retrying = useScreenAction(
+    hostClient,
+    tabActionKey("open", tab.tabId),
+    tabActionSpecs.open,
+  );
   const retry = () =>
     void retrying.run(async () => {
       const viewer = await hostClient.activateTab(tab.tabId, { wake: true });
       if (viewer.kind !== "page" && viewer.kind !== "app" && viewer.view.state === "unavailable")
-        throw new Error("It still can’t be shown. Try again once it is ready.");
-    }, "This tab could not open.");
+        throw refusal("unavailable", "It still can’t be shown.");
+    });
   const close = { label: closing.closing ? "Closing…" : "Close tab", onPress: closing.close };
   const again =
     tab.unavailableCode !== undefined && retriable.has(tab.unavailableCode)
-      ? { label: retrying.busy ? "Trying…" : "Try again", onPress: retry }
+      ? { label: retrying.running ? "Trying…" : "Try again", onPress: retry }
       : null;
   return (
     <TabStatus
       action={again ?? close}
       also={again === null ? undefined : close}
-      detail={closing.failure ?? retrying.failure}
+      detail={closing.failure ?? retrying.line?.text ?? null}
       title={tab.unavailableReason ?? "This tab can’t open right now"}
     />
   );
@@ -408,7 +387,6 @@ function ViewedTab(
   if (viewer === null)
     return (
       <Screen>
-        {props.notices}
         {state.status === "failed" ? (
           <TabStatus action={{ label: "Try again", onPress: retry }} title={state.error} />
         ) : (
@@ -559,27 +537,29 @@ function Focused(
   );
 
   // A new tab of this page's profile, over this one, so Back returns here.
-  const opening = useOperation();
+  const opening = useScreenAction(
+    hostClient,
+    tabActionKey("newTab", tab.tabId),
+    tabActionSpecs.newTab,
+  );
   const onOpenTab = useCallback(
     (url: string) => {
       if (tab.kind !== "page") return;
       const target: TabTarget = tab.profile
         ? { kind: "page", profileId: tab.profile.profileId, url }
         : { computerId: tab.computer.computerId, guest: true, kind: "page", url };
-      void opening.run(
-        () =>
-          openMobileTab({
-            navigation,
-            hostClient,
-            deploymentId,
-            target,
-            address: url,
-            ...(route.threadId === undefined ? {} : { threadId: route.threadId }),
-            failed: (error) => {
-              throw error;
-            },
-          }),
-        "A new tab could not be opened.",
+      void opening.run(() =>
+        openMobileTab({
+          navigation,
+          hostClient,
+          deploymentId,
+          target,
+          address: url,
+          ...(route.threadId === undefined ? {} : { threadId: route.threadId }),
+          failed: (error) => {
+            throw error;
+          },
+        }),
       );
     },
     [deploymentId, hostClient, navigation, opening, route.threadId, tab],
@@ -650,23 +630,14 @@ function Focused(
       appId === null
         ? null
         : {
-            closable: props.connected && !closing.closing,
+            closable: !closing.closing,
             live: !closing.closing,
             onClose: closing.close,
             onOpenThread: appThreadId === null ? null : openAppThread,
             onReload: reloadApp,
             onReport: reportApp,
           },
-    [
-      appId,
-      appThreadId,
-      closing.close,
-      closing.closing,
-      openAppThread,
-      props.connected,
-      reloadApp,
-      reportApp,
-    ],
+    [appId, appThreadId, closing.close, closing.closing, openAppThread, reloadApp, reportApp],
   );
   const onAsk = paired ? askBeside : askAway;
   const onOpenAgent = paired ? showBeside : openThread;
@@ -869,18 +840,13 @@ function Focused(
                 />
               ),
           };
-  const notices = (
-    <>
-      {props.notices}
-      {opening.failure === null ? null : (
-        <Notice
-          action={{ label: "Dismiss", onPress: opening.dismiss }}
-          detail={opening.failure}
-          title="A new tab could not be opened"
-        />
-      )}
-    </>
-  );
+  // A new tab asked for from this page's bar answers over the page.
+  const notices =
+    opening.line === null ? null : (
+      <View style={styles.pageLine}>
+        <ActionLine line={opening.line} numberOfLines={2} onDismiss={opening.dismiss} />
+      </View>
+    );
   return (
     <PlaceBarProvider ask={ask} status={status} verticalBar={verticalBar}>
       <PagePairSurface
@@ -1092,23 +1058,13 @@ function useTabClose(
   hostClient: HostClient,
   tabId: TabId,
 ): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
-  const operation = useOperation();
+  const operation = useScreenAction(hostClient, tabActionKey("close", tabId), tabActionSpecs.close);
   const { run } = operation;
-  const [attempted, setAttempted] = useState<TabId | null>(null);
-  const close = useCallback(() => {
-    setAttempted(tabId);
-    void run(async () => {
-      const result = await hostClient.closeTabs([tabId]);
-      const failed = result.failed.find((item) => item.tabId === tabId);
-      if (failed) throw new Error(failed.error.message);
-    }, "This tab could not be closed.");
-  }, [hostClient, run, tabId]);
-  const current = attempted === tabId;
-  return {
-    close,
-    closing: current && operation.busy,
-    failure: current ? operation.failure : null,
-  };
+  const close = useCallback(
+    () => void run(() => closeTabs(hostClient, [tabId])),
+    [hostClient, run, tabId],
+  );
+  return { close, closing: operation.running, failure: operation.line?.text ?? null };
 }
 
 /**
@@ -1187,11 +1143,12 @@ const AppTab = memo(function AppTab(props: {
             { paddingLeft: chrome.left, paddingRight: chrome.right, top: chrome.top },
           ]}
         >
-          <Notice
-            action={{ label: "Try again", onPress: props.onRetryClose }}
-            detail={props.closeFailure}
-            title="This tab could not be closed"
-          />
+          <View style={styles.pageLine}>
+            <AppText role="caption" tone="muted">
+              {props.closeFailure}
+            </AppText>
+            <SecondaryButton compact label="Try again" onPress={props.onRetryClose} />
+          </View>
         </View>
       )}
       {pair === null ? null : (
@@ -1606,6 +1563,15 @@ const styles = StyleSheet.create({
   // floor: with the keyboard up on a short screen, a floor is what pushes the
   // page's own address field under the keyboard.
   pageAlone: { flex: 1, minHeight: 0 },
+  // An action's line over a page or an app: on the plate, so it reads over any picture.
+  pageLine: {
+    ...material.float,
+    alignItems: "flex-start",
+    borderRadius: radius.md,
+    gap: space[8],
+    margin: space[8],
+    padding: space[12],
+  },
   // Centred over the pane, clear of its edges.
   pill: { alignItems: "center", paddingBottom: space[4] },
   row: { flexDirection: "row" },

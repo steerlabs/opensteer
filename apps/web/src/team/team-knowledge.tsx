@@ -1,3 +1,4 @@
+import { readWords, toastError } from "../components/use-action.js";
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import {
@@ -30,7 +31,6 @@ import { AuthorAvatar } from "../components/team/team-marks.js";
 import type { AuthorView } from "../components/team/team-models.js";
 import { recentWhen } from "../components/team/team-time.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { EditTopicDialog, NewTopicDialog, TopicAccessDialog } from "./team-knowledge-topics.js";
 import { channelPath, knowledgePath } from "./team-paths.js";
 import type { TeamView } from "./team-view.js";
@@ -203,7 +203,7 @@ function Knowledge({
                 <div className="kb-scroll" ref={list}>
                   {rows === null ? (
                     notes.error ? (
-                      <p className="knowledge__empty">{actionErrorMessage(notes.error)}</p>
+                      <p className="knowledge__empty">{readWords(notes.error)}</p>
                     ) : (
                       <LoadingRows label="Loading notes" rows={6} />
                     )
@@ -232,7 +232,7 @@ function Knowledge({
                   ) : null}
                   {notes.error && rows !== null ? (
                     <p className="kb-error" role="alert">
-                      {actionErrorMessage(notes.error)}
+                      {readWords(notes.error)}
                     </p>
                   ) : null}
                 </div>
@@ -450,7 +450,7 @@ function ListHead({
     })
       .then(unwrapRpcResult)
       .then(onChanged)
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+      .catch((error: unknown) => toastError(toast)(error));
   return (
     <>
       <header className="kb-head">
@@ -700,12 +700,11 @@ function NotePanel({
   const older = viewing === null ? null : history?.versions.find((v) => v.version === viewing);
   const shown = older ?? note;
 
-  const failed = (error: unknown) =>
-    toast.error(
-      isNoteChangedConflict(error)
-        ? "Someone changed this note. You’re seeing the newest version now."
-        : actionErrorMessage(error),
-    );
+  const failed = (error: unknown) => {
+    if (isNoteChangedConflict(error))
+      toast.error("Someone changed this note. You’re seeing the newest version now.");
+    else toastError(toast)(error);
+  };
   const restore = (from: TeamNote) =>
     void read.restore(from).then(() => {
       setViewing(null);
@@ -922,7 +921,7 @@ function Versions({
             </li>
           ) : history.error ? (
             <li className="kb-error" role="alert">
-              {actionErrorMessage(history.error)}{" "}
+              Couldn’t load earlier versions.{" "}
               <button className="link-button" onClick={onMore} type="button">
                 Try again
               </button>

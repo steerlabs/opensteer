@@ -32,6 +32,7 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
     vi.stubEnv("OPENSTEER_RUNNER_SOURCE_REVISION", "a".repeat(40));
     vi.stubEnv("OPENSTEER_RUNNER_ARTIFACT_BASE_URL", "https://releases.example");
     client = new MockHostClient({ latencyMs: 0 });
+    await client.load();
     const snapshot = client.getSnapshot();
     const target = vi.fn().mockResolvedValue(
       route
@@ -55,7 +56,11 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
     );
     const mint = vi.fn(client.dispatch.bind(client));
     shell = {
-      hostClient: { rpc: { "agentPhone.target.get": target }, dispatch: mint },
+      hostClient: {
+        connection: client.connection,
+        rpc: { "agentPhone.target.get": target },
+        dispatch: mint,
+      },
       snapshot: {
         ...snapshot,
         identityConfig: { ...snapshot.identityConfig, publicOrigin: "http://127.0.0.1:4848" },

@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -20,12 +21,18 @@ const state = vi.hoisted(() => ({
       },
     ],
     machineRevision: 1,
+    connection: "connected",
+    deploymentId: "deployment",
+    session: "authenticated",
+    user: { id: "usr_reader" },
   },
 }));
 const host = {
   getSnapshot: () => state.snapshot,
   openTab: state.openTab,
+  subscribe: () => () => undefined,
 };
+Object.assign(host, { connection: testHostConnection(host as never) });
 vi.mock("@opensteer/client/host", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/client/host")>()),
   canRespondToRequests: () => true,
@@ -45,7 +52,8 @@ vi.mock("@react-navigation/native", () => ({
   }),
   StackActions: { push: (name: string, params: unknown) => ({ name, params }) },
 }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (load) => ({
+  ...(await load<typeof import("@opensteer/client/react")>()),
   useHostSelector: (_: unknown, select: (snapshot: unknown) => unknown) => select(state.snapshot),
 }));
 vi.mock("@opensteer/client/integrations", () => ({
@@ -101,7 +109,14 @@ vi.mock("../ui/screen.js", () => ({
   useListContentInsets: () => ({}),
   useReadingColumn: () => ({}),
 }));
-vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "Failed" }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("opens a screen-only phone when the Host allows viewing, independently of agent access", async () => {
   const container = document.createElement("div");

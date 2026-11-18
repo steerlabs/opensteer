@@ -3,7 +3,7 @@ import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host"
 import { harnessDriverLabel } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState, type ReactNode } from "react";
-import { operationDetail } from "../client/mobile-client.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AiSettingsForm } from "./settings-ai-form.js";
 import { useAiAccounts } from "./settings-ai-accounts.js";
@@ -16,19 +16,48 @@ export function AiSettingsController(): ReactNode {
   const page = "ai";
   const navigation = useNavigation();
   const { selection } = useMobileState();
-  const [engineUpdatePending, setEngineUpdatePending] = useState<string | null>(null);
-  const [engineUpdateError, setEngineUpdateError] = useState<{
-    detail: string;
-    key: string;
-  } | null>(null);
+  const [engineUpdateKey, setEngineUpdateKey] = useState<string | null>(null);
   const snapshot = useSettingsHost(selection.hostClient);
+  const hostClient = selection.hostClient;
+  const engineUpdate = useScreenAction(hostClient, "harness-update", {
+    label: "update the engine",
+    done: "updated",
+    happened: "the engine was updated",
+    execute: async (input: { environmentId: string; driverKind: string }) => {
+      await hostClient!.dispatch({
+        driverKind: input.driverKind,
+        environmentId: input.environmentId,
+        idempotencyKey: mutationIdempotencyKey(
+          `harness-update:${input.environmentId}:${input.driverKind}`,
+        ),
+        type: "harness.update",
+      });
+    },
+    // The snapshot says whether the computer took the update: it is under way or done.
+    reconcile: async (input) => {
+      const installation = hostClient
+        ?.getSnapshot()
+        .environments.find((environment) => environment.id === input.environmentId)
+        ?.harnessDrivers.find((driver) => driver.driverKind === input.driverKind)?.installation;
+      if (installation === undefined || installation === null) return null;
+      return installation.update === "available"
+        ? notDone("updated")
+        : { kind: "confirmed", value: undefined };
+    },
+  });
   const engineUpdates = useMemo(() => {
     if (snapshot === null) return [];
     return snapshot.engineInstallations.map(({ driverKind, environmentId, installation }) => {
       const key = `${environmentId}:${driverKind}`;
-      const model = engineInstallationUpdateModel(installation, key === engineUpdatePending);
+      const model = engineInstallationUpdateModel(
+        installation,
+        key === engineUpdateKey && engineUpdate.running,
+      );
       return {
-        detail: engineUpdateError?.key === key ? engineUpdateError.detail : model.detail,
+        detail:
+          key === engineUpdateKey && engineUpdate.line !== null
+            ? engineUpdate.line.text
+            : model.detail,
         driverKind,
         environmentId,
         key,
@@ -37,8 +66,7 @@ export function AiSettingsController(): ReactNode {
         updating: model.updating,
       };
     });
-  }, [engineUpdateError, engineUpdatePending, snapshot]);
-  const hostClient = selection.hostClient;
+  }, [engineUpdate.line, engineUpdate.running, engineUpdateKey, snapshot]);
   const idleCompaction = useIdleCompactionSettings(hostClient);
   const form = (
     backgroundModels: BackgroundModelsForm | null,
@@ -55,26 +83,9 @@ export function AiSettingsController(): ReactNode {
       page={page}
       engineUpdates={engineUpdates}
       onEngineUpdate={(environmentId, driverKind) => {
-        const hostClient = selection.hostClient;
-        if (!hostClient || engineUpdatePending) return;
-        const key = `${environmentId}:${driverKind}`;
-        setEngineUpdatePending(key);
-        setEngineUpdateError(null);
-        void hostClient
-          .dispatch({
-            driverKind,
-            environmentId,
-            idempotencyKey: mutationIdempotencyKey(`harness-update:${key}`),
-            type: "harness.update",
-          })
-          .then(() => hostClient.refresh())
-          .catch((error: unknown) =>
-            setEngineUpdateError({
-              detail: operationDetail(error, "Update failed. Try again."),
-              key: `${environmentId}:${driverKind}`,
-            }),
-          )
-          .finally(() => setEngineUpdatePending(null));
+        if (engineUpdate.running) return;
+        setEngineUpdateKey(`${environmentId}:${driverKind}`);
+        void engineUpdate.run({ environmentId, driverKind });
       }}
     />
   );

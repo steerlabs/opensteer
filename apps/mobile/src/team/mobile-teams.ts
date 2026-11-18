@@ -2,13 +2,14 @@ import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
   HostVersionMismatchError,
+  classifyClientFailure,
+  clientEndpointUnavailable,
   type DeploymentConnection,
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
 } from "@opensteer/client/connections";
 import {
   HostClientRequestError,
-  operationFailure,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -248,7 +249,6 @@ class MobileTeamRuntime {
   #live: string | null = null;
   /** When each team out of view was last painted for the sidebar. */
   readonly #painted = new Map<string, number>();
-  #foreground = true;
   #linksFor: HostClient | null = null;
   #snapshot: MobileTeamsSnapshot = { computerId: null, teams: [], unlinked: [], selected: null };
   readonly #detachOwner: () => void;
@@ -301,6 +301,10 @@ class MobileTeamRuntime {
       const transport = this.#transport(connection, scope);
       return {
         scope,
+        ...(options.client.lifecycle ? { lifecycle: options.client.lifecycle } : {}),
+        ...(this.#names.get(scope.teamDeploymentId)
+          ? { name: this.#names.get(scope.teamDeploymentId)! }
+          : {}),
         owner: this.owner,
         rpc: transport.rpc,
         // Keyed by team and team user, so each viewer's drafts are already their own.
@@ -355,12 +359,6 @@ class MobileTeamRuntime {
         void this.select(this.#selected);
       })
       .catch(() => undefined);
-  }
-
-  /** The app went to the background or came back: no socket while nobody looks. */
-  foreground(active: boolean): void {
-    this.#foreground = active;
-    void this.select(this.#selected);
   }
 
   /**
@@ -514,11 +512,7 @@ class MobileTeamRuntime {
         await this.#rememberUser(teamId, userId);
       } catch (error) {
         if (error instanceof HostClientRequestError && bootstrapMembershipRefused(error))
-          this.#setState(
-            teamId,
-            error.reason === "not-a-member" ? "join" : "removed",
-            error.message,
-          );
+          this.#setState(teamId, error.reason === "not-a-member" ? "join" : "removed", null);
         else this.#fail(teamId, error);
         throw error;
       }
@@ -564,7 +558,7 @@ class MobileTeamRuntime {
     const generation = ++this.#selection;
     const { computerId } = this.#snapshot;
     if (teamId !== null && computerId !== null) this.#recent.set(computerId, teamId);
-    const target = this.#foreground ? (teamId ?? this.#ambient()) : null;
+    const target = teamId ?? this.#ambient();
     this.#selected = teamId;
     this.#live = target;
     if (target === null) {
@@ -963,7 +957,8 @@ class MobileTeamRuntime {
   }
 
   #fail(teamId: string, error: unknown): void {
-    this.#setState(teamId, teamFailure(error), error instanceof Error ? error.message : null);
+    // The state says what happened; an error's own words never reach a screen.
+    this.#setState(teamId, teamFailure(error), null);
   }
 
   async #loadMemo(): Promise<void> {
@@ -1126,7 +1121,7 @@ export function teamFailure(error: unknown): TeamState {
     if (error.code === "unauthorized") return "signed-out";
   }
   if (error instanceof TeamAccessError) return "removed";
-  return operationFailure(error) === "unavailable" ? "offline" : "failed";
+  return clientEndpointUnavailable(classifyClientFailure(error)) ? "offline" : "failed";
 }
 
 /**
@@ -1172,7 +1167,6 @@ export class MobileTeams {
   #runtime: MobileTeamRuntime;
   #detachRuntime: (() => void) | null = null;
   #detachIdentity: (() => void) | null = null;
-  #foreground = true;
   constructor(options: Options) {
     this.#options = options;
     this.profiles = options.profiles ?? null;
@@ -1210,7 +1204,6 @@ export class MobileTeams {
     this.#runtime.dispose();
     this.#runtime = new MobileTeamRuntime(this.#options);
     this.#detachRuntime = this.#runtime.subscribe(this.#publish);
-    this.#runtime.foreground(this.#foreground);
     this.#runtime.start();
     this.#publish();
     return true;
@@ -1220,10 +1213,6 @@ export class MobileTeams {
     this.#detachIdentity = null;
     this.#detachRuntime?.();
     this.#runtime.dispose();
-  }
-  foreground(active: boolean): void {
-    this.#foreground = active;
-    this.#runtime.foreground(active);
   }
   #run<Value>(work: (runtime: MobileTeamRuntime) => Promise<Value>): Promise<Value> {
     const runtime = this.#runtime;

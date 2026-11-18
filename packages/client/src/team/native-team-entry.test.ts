@@ -15,7 +15,7 @@ import {
   signTestDiscoveryEnvelope,
   testHostAuthorityKeys,
 } from "../test-support/index.js";
-import { operationFailure } from "../host/operation-failure.js";
+import { classifyClientFailure, hostUnanswered } from "../connections/operation-error.js";
 import { NativeTeamEntry, previewTeamInvite } from "./native-team-entry.js";
 import { TeamRuntimeOwner } from "./team-runtime-owner.js";
 
@@ -686,7 +686,8 @@ it("tells an invite preview the team refused from one that never reached it", as
     ),
   );
   expect(refused).toMatchObject({ message: "Invites are paused.", status: 500 });
-  expect(operationFailure(refused)).toBe("failed");
+  expect(classifyClientFailure(refused)).toMatchObject({ kind: "service", retryable: true });
+  expect(hostUnanswered(classifyClientFailure(refused))).toBe(false);
   // Connect's tunnel page while the team's machine sleeps, and a request that got no answer.
   const gateway = await preview(async () => new Response("<html>", { status: 530 }));
   const lost = await preview(async () => {
@@ -704,5 +705,5 @@ it("tells an invite preview the team refused from one that never reached it", as
       ),
   );
   for (const unreachable of [gateway, lost, cut])
-    expect(operationFailure(unreachable)).toBe("unavailable");
+    expect(hostUnanswered(classifyClientFailure(unreachable))).toBe(true);
 });

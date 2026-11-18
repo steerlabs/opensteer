@@ -11,6 +11,34 @@ import {
 } from "./task-mark.js";
 import type { TaskDirectory } from "./task-directory.js";
 
+/**
+ * The directory as marks for these tasks read it: the same object until one of
+ * them changes name, mark or state, so a row holding it stays undrawn meanwhile.
+ */
+export function useOccupantDirectory(
+  directory: TaskDirectory,
+  threadIds: readonly string[],
+): TaskDirectory {
+  const held = useRef(directory);
+  if (
+    held.current !== directory &&
+    !threadIds.every((threadId) => sameOccupantTask(held.current, directory, threadId))
+  )
+    held.current = directory;
+  return held.current;
+}
+
+function sameOccupantTask(left: TaskDirectory, right: TaskDirectory, threadId: string): boolean {
+  const before = threadInDirectory(threadId, left.snapshot);
+  const after = threadInDirectory(threadId, right.snapshot);
+  return (
+    before?.title === after?.title &&
+    before?.icon === after?.icon &&
+    before?.color === after?.color &&
+    left.rows.get(threadId)?.tone === right.rows.get(threadId)?.tone
+  );
+}
+
 /** Marks on a place: who holds or acts there, newest first, at most three and "+N". */
 const shownMarks = 3;
 

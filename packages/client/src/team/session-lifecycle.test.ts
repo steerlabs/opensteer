@@ -197,7 +197,7 @@ it("checks persisted pending ids after restarting the client before it resends",
     await vi.waitFor(
       () =>
         expect(first.getSnapshot().error, "send acknowledgement was never lost").toBe(
-          "Acknowledgement lost.",
+          "Couldn't confirm this change.",
         ),
       { timeout: 1000 },
     );
@@ -276,7 +276,6 @@ it("keeps Personal and Team attachments alive together with independent durable 
     baseUrl: "http://personal",
     fetch: personalHost.fetch,
     webSocketFactory: personalHost.connect,
-    refreshIntervalMs: 0,
   });
   const teamHost = new MockTeamHost(),
     team = new TeamSessionClient({

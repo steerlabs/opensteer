@@ -1,4 +1,11 @@
-import { RequestIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { withClientSendKeys, withEventClientSendKeys } from "./threads/client-send-keys.js";
+import {
+  RequestIdSchema,
+  TabIdSchema,
+  RunnerIdSchema,
+  type MessageId,
+  type UserId,
+} from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
   IntegrationGrantIdSchema,
@@ -495,6 +502,17 @@ export async function createHostServer(
         (request.url ?? "").split("?", 1)[0]?.startsWith("/media/") === true,
     }),
   });
+  const noSendKeys: ReadonlyMap<string, string> = new Map();
+  const readSendKeys = (ownerId: UserId) => async (ids: readonly MessageId[]) => {
+    if (ids.length === 0) return noSendKeys;
+    try {
+      return await dependencies.store.personalMessageSendKeys(ownerId, ids);
+    } catch {
+      // Optional metadata must not turn an accepted send into a failed acknowledgement.
+      app.log.warn("Personal message send keys could not be read");
+      return noSendKeys;
+    }
+  };
   const appGateway = new AppGateway({
     apps: dependencies.apps,
     identity: dependencies.authenticator.identity,
@@ -1491,7 +1509,10 @@ export async function createHostServer(
           ),
       };
       projected.events = projectAgentEvents(
-        projected.events,
+        await withEventClientSendKeys(
+          projected.events,
+          readSendKeys(requireRpcSession(context).user.id),
+        ),
         servedHostApiVersion(context.headers),
       );
       return rpcSuccess(
@@ -1541,7 +1562,13 @@ export async function createHostServer(
         maxItems: input.limit ?? 100,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(page);
+      return rpcSuccess({
+        ...page,
+        messages: await withClientSendKeys(
+          page.messages,
+          readSendKeys(requireRpcSession(context).user.id),
+        ),
+      });
     },
     "browser.searchSuggestions.get": async (input) =>
       rpcSuccess(await searchSuggestions(input.query, dependencies.fetch ?? globalThis.fetch)),
@@ -1616,9 +1643,18 @@ export async function createHostServer(
       const requestedBy = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(
-        await dependencies.store.getThreadInputQueue({ threadId: thread.id, requestedBy }),
+      const queue = await dependencies.store.getThreadInputQueue({
+        threadId: thread.id,
+        requestedBy,
+      });
+      const messages = await withClientSendKeys(
+        queue.items.map(({ message }) => message),
+        readSendKeys(requestedBy),
       );
+      return rpcSuccess({
+        ...queue,
+        items: queue.items.map((item, index) => ({ ...item, message: messages[index]! })),
+      });
     },
     "assignment.get": async (input, context) => {
       const assignment = await dependencies.store.getAssignmentForOwner({
@@ -1878,8 +1914,11 @@ export async function createHostServer(
           wasDuplicate: result.wasDuplicate,
         };
       }
-      case "thread.sendMessage":
-        return threadService.sendMessage({ kind: "person", userId }, command);
+      case "thread.sendMessage": {
+        const sent = await threadService.sendMessage({ kind: "person", userId }, command);
+        const [message] = await withClientSendKeys([sent.message], readSendKeys(userId));
+        return { ...sent, message: message! };
+      }
 
       case "thread.inputQueue.resume":
         return {
@@ -3075,6 +3114,7 @@ export async function createHostServer(
         session,
         request.log,
         (id) => dependencies.computerUse?.deviceForSession?.(id) ?? null,
+        readSendKeys(session.user.id),
       );
     },
   );
@@ -3211,7 +3251,6 @@ export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
     | "assets"
-    | "attachments"
     | "authenticator"
     | "personalRemoteAccess"
     | "passkeys"
@@ -3223,7 +3262,6 @@ export function advertisedCapabilities(
     "devices-v1",
     ...(dependencies.deviceDrivers ? ["device-drivers-v1" as const] : []),
     "automatic-models-v1",
-    "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
     "thread-titles-v1",
@@ -4039,6 +4077,7 @@ function attachRealtimeSocket(
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
   sessionDevice: (id: import("@opensteer/protocol").ComputerUseSessionId) => string | null,
+  sendKeys: (ids: readonly MessageId[]) => Promise<ReadonlyMap<string, string>>,
 ): void {
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
@@ -4046,6 +4085,16 @@ function attachRealtimeSocket(
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage) => {
+      if (message.type === "host.events")
+        message = { ...message, events: await withEventClientSendKeys(message.events, sendKeys) };
+      else if (message.type === "host.snapshot")
+        message = {
+          ...message,
+          snapshot: {
+            ...message.snapshot,
+            messages: await withClientSendKeys(message.snapshot.messages, sendKeys),
+          },
+        };
       const projected = HostToClientMessageSchema.safeParse(
         // Tells the reader which version the state it just received was read at.
         message.type === "host.synchronized"

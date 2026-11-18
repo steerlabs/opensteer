@@ -6,7 +6,7 @@ import {
 } from "@opensteer/core";
 import { deploymentKindLabel } from "@opensteer/protocol/deployment-status";
 import type { InitialOwnerClaimInput, PasswordSignInInput } from "@opensteer/client/host";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { CredentialForm } from "./credential-form.js";
 import { ErrorNotice, OnboardingCard, StartupFailure } from "./onboarding-card.js";
 import { Icon } from "./icon.js";
@@ -69,12 +69,15 @@ export function PasswordRecovery({
     }
     setError(null);
     setPending(true);
-    try {
-      await onReset(token, newPassword);
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-      setPending(false);
-    }
+    const outcome = await runAction(null, {
+      label: "reset your password",
+      done: "reset",
+      happened: "your password was reset",
+      execute: () => onReset(token, newPassword),
+    });
+    if (outcome.kind === "confirmed") return;
+    setError(outcomeWords(outcome));
+    setPending(false);
   }
 
   return (
@@ -187,13 +190,16 @@ export function HostAccessOnboarding({
       if (!token) return;
       setAdmissionError(null);
       setAdmissionPending(true);
-      try {
-        await onAdmit(token);
-      } catch (reason) {
-        setAdmissionError(actionErrorMessage(reason));
+      const outcome = await runAction(null, {
+        label: "check this setup code",
+        done: "checked",
+        happened: "this setup code was checked",
+        execute: () => onAdmit(token),
+      });
+      setAdmissionPending(false);
+      if (outcome.kind !== "confirmed") {
+        setAdmissionError(outcomeWords(outcome));
         return;
-      } finally {
-        setAdmissionPending(false);
       }
     }
     if (codeOnly) return;

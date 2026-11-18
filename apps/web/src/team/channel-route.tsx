@@ -1,3 +1,4 @@
+import { act, failureWords, toastError } from "../components/use-action.js";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
@@ -45,12 +46,11 @@ import type {
   StagedFileView,
   TeamSend,
 } from "../components/team/team-models.js";
-import { ConnectionBanner } from "../components/team/team-status.js";
 import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
-import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { fromLivePage } from "../ui-utils.js";
 import { useConnectAgent, WelcomeCard } from "./hosted-teams.js";
 import { useTeams, useTeamSession } from "./team-attachments.js";
 import { channelPath } from "./team-paths.js";
@@ -126,21 +126,23 @@ export function ChannelRoute({
   const navigate = useNavigate();
   const location = useLocation();
   const client = view?.client ?? null;
+  const channelRevoked =
+    channelId !== null && view?.snapshot.revokedChannels?.has(channelId) === true;
   useEffect(() => {
-    if (!client || !channelId) return;
+    if (!client || !channelId || channelRevoked) return;
     client.selectChannel(channelId);
     return () => client.selectChannel(null);
-  }, [channelId, client]);
+  }, [channelId, channelRevoked, client]);
   const threadRoot = place.threadId
     ? (TeamMessageIdSchema.safeParse(place.threadId).data ?? null)
     : null;
   useEffect(() => {
-    if (client && channelId) client.selectThread(channelId, threadRoot);
-  }, [channelId, client, threadRoot]);
+    if (client && channelId && !channelRevoked) client.selectThread(channelId, threadRoot);
+  }, [channelId, channelRevoked, client, threadRoot]);
   const [invalidLink, setInvalidLink] = useState(false);
   useEffect(() => {
     setInvalidLink(false);
-    if (!client || !channelId || !place.messageId) return;
+    if (!client || !channelId || channelRevoked || !place.messageId) return;
     let live = true;
     void client
       .landMessage(channelId, TeamMessageIdSchema.parse(place.messageId))
@@ -168,7 +170,7 @@ export function ChannelRoute({
     return () => {
       live = false;
     };
-  }, [client, channelId, place.messageId, threadRoot, teamId, navigate]);
+  }, [client, channelId, channelRevoked, place.messageId, threadRoot, teamId, navigate]);
   const channelTimeline = view?.snapshot.channel ?? null;
   const threadTimeline = view?.snapshot.thread ?? null;
   useEffect(() => {
@@ -179,6 +181,7 @@ export function ChannelRoute({
       ),
     );
   }, [channelTimeline, threadTimeline, view, want]);
+  if (channelRevoked) return <p className="team-empty">This channel is unavailable.</p>;
   if (invalidLink) return <p className="team-empty">This message is no longer available here.</p>;
   if (!channelId) return <p className="team-empty">This channel link isn’t valid.</p>;
   if (!view) return <TeamUnavailable teamId={teamId} />;
@@ -269,7 +272,7 @@ function ChannelScreenFor({
   const { links, surface } = useTeams();
   const connectAgent = useConnectAgent(team);
   const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
+  const report = (error: unknown) => toastError(toast)(error);
   const docked = selection.kind === "place";
   const channel = channelView(view, timeline?.channel ?? null, channelId);
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
@@ -367,8 +370,11 @@ function ChannelScreenFor({
           previewUrl,
         },
       ]);
-      const done = prepareTeamUpload(channelId, file)
-        .then((upload) => client.upload(upload))
+      const done = act(
+        client,
+        { label: "upload this file", done: "uploaded", happened: "this file was uploaded" },
+        () => prepareTeamUpload(channelId, file).then((upload) => client.upload(upload)),
+      )
         .then((uploaded) => {
           if (generation !== uploadGeneration.current) return null;
           setStaged(rootId, (current) =>
@@ -382,7 +388,7 @@ function ChannelScreenFor({
           if (generation !== uploadGeneration.current) return null;
           setStaged(rootId, (current) =>
             current.map((row) =>
-              row.id === id ? { ...row, status: "failed", error: actionErrorMessage(error) } : row,
+              row.id === id ? { ...row, status: "failed", error: failureWords(error) ?? "" } : row,
             ),
           );
           return null;
@@ -437,13 +443,15 @@ function ChannelScreenFor({
           { ...row.command, createdAt: row.createdAt },
           pendingSendView(
             row,
-            !snapshot.unreachable,
+            snapshot.connection === "connected",
             snapshot.sendErrors?.[row.command.clientMessageId]
               ? {
                   error: snapshot.sendErrors[row.command.clientMessageId],
                   teamName: (timeline?.channel ?? entry?.channel)?.share?.teamName,
                 }
               : null,
+            // A refusal names the team that turned it away: "Acme didn't accept it."
+            team.name,
           ),
         ),
       );
@@ -871,26 +879,16 @@ function ChannelScreenFor({
     ) : (
       threadPane
     );
-  const notice = snapshot.versionRefusal
-    ? ({ kind: snapshot.versionRefusal } as const)
-    : snapshot.connection === "connected"
-      ? null
-      : snapshot.unreachable
-        ? ({ kind: "unreachable" } as const)
-        : ({ kind: "reconnecting" } as const);
   return (
     <TeamFileReadContext value={readFile}>
       <ChannelScreen
         banner={
-          <>
-            <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
-            {timeline?.channel?.share?.state === "disconnected" ||
-            timeline?.channel?.share?.updateRequired ? (
-              <p className="team-share-notice" role="status">
-                {channel.shareLabel}. {channel.shareDetail}
-              </p>
-            ) : null}
-          </>
+          timeline?.channel?.share?.state === "disconnected" ||
+          timeline?.channel?.share?.updateRequired ? (
+            <p className="team-share-notice" role="status">
+              {channel.shareLabel}. {channel.shareDetail}
+            </p>
+          ) : null
         }
         channel={channel}
         lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
@@ -1023,7 +1021,7 @@ function ChannelDetailsPane({
   readonly view: TeamView;
 }) {
   const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
+  const report = (error: unknown) => toastError(toast)(error);
   const dispatch = (command: Parameters<(typeof view.client.rpc)["commands.dispatch"]>[0]) =>
     view.client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const level: NotifyLevel =

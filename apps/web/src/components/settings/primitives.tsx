@@ -1,23 +1,14 @@
 import { Dialog } from "../dialog.js";
 import { useState, type ReactNode } from "react";
 import type { DeploymentDisplayKind } from "@opensteer/core";
-import {
-  deploymentStatusLabel,
-  deploymentStatusTone,
-  type DeploymentStatusInfo,
-} from "@opensteer/protocol/deployment-status";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 import { Icon } from "../icon.js";
 import type { SettingsFacts } from "./copy.js";
 
 /**
  * Everything every section of Settings needs to know about the place it is
- * describing, derived once by the shell.
- *
- * Sections used to each re-derive "which kind of place is this, and is it
- * reachable" from whatever was nearest to hand, which is how one screen came
- * to show two different statuses for one Deployment. There is one derivation,
- * it happens in the shell, and it arrives here.
+ * describing, derived once by the shell. Whether it is reachable is the
+ * shell's connection pill's to say, never a section's.
  */
 export interface SettingsView {
   readonly deployment: DesktopDeploymentSummary | null;
@@ -26,28 +17,6 @@ export interface SettingsView {
   readonly machineOwner: boolean;
   readonly name: string;
   readonly facts: SettingsFacts;
-  readonly statusInfo: DeploymentStatusInfo;
-}
-
-/** The 7px dot every status wears; `starting` pulses, motion settings allowing. */
-export function StatusDot({ info }: { readonly info: DeploymentStatusInfo }) {
-  const tone = deploymentStatusTone(info.status);
-  return (
-    <span
-      aria-hidden
-      className={`status-dot status-dot--${tone}${info.status === "starting" ? " status-dot--pulse" : ""}`}
-    />
-  );
-}
-
-/** Dot plus word: a status read at a glance, never a control. */
-export function StatusText({ info }: { readonly info: DeploymentStatusInfo }) {
-  return (
-    <span className="settings-status" role="status">
-      <StatusDot info={info} />
-      {deploymentStatusLabel(info.status)}
-    </span>
-  );
 }
 
 /** The heading block each Settings section opens with. */

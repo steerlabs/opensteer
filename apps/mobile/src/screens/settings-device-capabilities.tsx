@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Alert, TextInput, View } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { deviceRemovalConfirmation } from "@opensteer/client/computers";
@@ -8,8 +8,9 @@ import {
   type MachineAccessPolicy,
   type MachineSummary,
 } from "@opensteer/protocol";
+import { ActionLine } from "../ui/action-line.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
-import { useSettingsLease } from "./use-settings-read.js";
 
 export function SettingsDeviceCapabilities({
   host,
@@ -21,43 +22,58 @@ export function SettingsDeviceCapabilities({
   readonly deploymentId: string;
 }) {
   const navigation = useNavigation();
-  const current = useSettingsLease(host);
-  const busy = useRef(false);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState<string | null>(null);
   const [folder, setFolder] = useState("");
   const [folderWritable, setFolderWritable] = useState(false);
-  async function run(operation: () => Promise<unknown>) {
-    if (busy.current || !current()) return;
-    busy.current = true;
-    setPending(true);
-    setError(null);
-    try {
-      await operation();
-      if (current()) await host.refresh();
-    } catch {
-      if (current()) setError("The change could not be confirmed. Refresh before trying again.");
-    } finally {
-      busy.current = false;
-      if (current()) setPending(false);
-    }
-  }
+  const machineNow = () => host.getSnapshot().machines.find((row) => row.id === machine.id);
+  const access = useScreenAction(host, `machine-access:${machine.id}`, {
+    label: "change access",
+    done: "changed",
+    happened: "access changed",
+    execute: async (input: { readonly revision: number; readonly policy: MachineAccessPolicy }) => {
+      await host.dispatch({
+        type: "machine.access.update",
+        runnerId: machine.id,
+        expectedRevision: input.revision,
+        policy: input.policy,
+        idempotencyKey: mutationIdempotencyKey("device-access"),
+      });
+    },
+    // A newer revision means the computer took a change.
+    reconcile: async (input) => {
+      const revision = machineNow()?.access?.revision;
+      if (revision === undefined) return null;
+      return revision > input.revision
+        ? { kind: "confirmed", value: undefined }
+        : notDone("changed");
+    },
+  });
+  const removal = useScreenAction(host, `machine-revoke:${machine.id}`, {
+    label: "remove this device",
+    done: "removed",
+    happened: "this device was removed",
+    execute: async (_: undefined) => {
+      await host.dispatch({
+        type: "machine.revoke",
+        machineId: machine.id,
+        idempotencyKey: mutationIdempotencyKey("device-remove"),
+      });
+    },
+    reconcile: async () =>
+      machineNow() === undefined ? { kind: "confirmed", value: undefined } : notDone("removed"),
+  });
+  const pending = access.running || removal.running;
+  const line = access.line ?? removal.line;
   function change(policy: MachineAccessPolicy) {
     if (!machine.access) return;
     const parsed = MachineAccessPolicySchema.safeParse(policy);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "Check the folder path.");
+      setInvalid(parsed.error.issues[0]?.message ?? "Check the folder path.");
       return;
     }
-    void run(() =>
-      host.dispatch({
-        type: "machine.access.update",
-        runnerId: machine.id,
-        expectedRevision: machine.access!.revision,
-        policy: parsed.data,
-        idempotencyKey: mutationIdempotencyKey("device-access"),
-      }),
-    );
+    setInvalid(null);
+    removal.dismiss();
+    void access.run({ revision: machine.access.revision, policy: parsed.data });
   }
   return (
     <View style={{ gap: 12 }}>
@@ -178,7 +194,20 @@ export function SettingsDeviceCapabilities({
           />
         </>
       ) : null}
-      {error ? <AppText>{error}</AppText> : null}
+      {invalid ? (
+        <AppText role="caption" tone="danger">
+          {invalid}
+        </AppText>
+      ) : line ? (
+        <ActionLine
+          line={line}
+          numberOfLines={2}
+          onDismiss={() => {
+            access.dismiss();
+            removal.dismiss();
+          }}
+        />
+      ) : null}
       {machine.revocable ? (
         <SecondaryButton
           label="Remove device"
@@ -191,13 +220,8 @@ export function SettingsDeviceCapabilities({
                 text: ask.confirm,
                 style: "destructive",
                 onPress: () => {
-                  void run(() =>
-                    host.dispatch({
-                      type: "machine.revoke",
-                      machineId: machine.id,
-                      idempotencyKey: mutationIdempotencyKey("device-remove"),
-                    }),
-                  );
+                  access.dismiss();
+                  void removal.run(undefined);
                 },
               },
             ]);

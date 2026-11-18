@@ -22,5 +22,6 @@ export function useTeamShareParticipants(
   return usePagedList(
     session && query !== null ? read : null,
     `share-participants:${channelId}:${query}`,
+    session,
   );
 }

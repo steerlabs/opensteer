@@ -1,4 +1,9 @@
-import { compactionOfferText } from "@opensteer/client/host";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { ActionNotDone, failureWords } from "./use-action.js";
+
+const isNotDone = (error: unknown) => error instanceof ActionNotDone;
+import { changedTaskDraft, compactionOfferText } from "@opensteer/client/host";
+import type { ClientConnection, ClientScope } from "@opensteer/client/connections";
 import {
   dictationLabels,
   dictationView,
@@ -20,15 +25,11 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import {
-  placeContentLabel,
-  type ArtifactContentPart,
-  type ContentPart,
-  type PlaceContentPart,
-} from "@opensteer/core";
+import { type ArtifactContentPart, type PlaceContentPart } from "@opensteer/core";
+import type { PendingSubmission } from "../host/message-outbox.js";
 import { mutationIdempotencyKey, type HostClient, type PlaceItem } from "@opensteer/client/host";
 import { collectComposerTokens, type ComposerSnapshot } from "@opensteer/client/references";
-import { AttachmentTray } from "./attachments/attachment-tray.js";
+import { AttachmentTray, filesWaitLine } from "./attachments/attachment-tray.js";
 import {
   ComposerEditor,
   type ComposerChange,
@@ -44,7 +45,6 @@ import {
   type AttachmentTarget,
 } from "./attachments/use-staged-attachments.js";
 import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
-import { forgetPending, unanswered } from "./pending-sends.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { canvasFont, textWidth } from "./text-width.js";
@@ -65,45 +65,16 @@ export interface ComposerQuote {
 
 /** What a send carries beside its words. */
 export interface ComposerSubmission {
+  readonly scope: ClientScope | null;
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   /** The places the message includes — pages, Mac apps, phones — as the draft held them. */
   readonly places: readonly PlaceContentPart[];
-  /** Exact accepted command content, only when a saved send is sent again. */
-  readonly content?: readonly ContentPart[];
   /** Uploaded files, in the order the person added them. */
   readonly attachments: readonly ArtifactContentPart[];
   readonly idempotencyKey: string;
+  readonly draftRevision?: string;
   /** The exact source message this one answers, when the reader quoted one. */
   readonly quotedMessageId?: string;
-  /** The same message handed to the Host again, after an attempt that went unanswered. */
-  readonly replay: boolean;
-}
-
-/**
- * A message handed to the Host and not yet acknowledged: its words, its files
- * and its key, fixed together. Sending it again under that key must be the
- * same message, or it is a second one.
- */
-export interface PendingSubmission {
-  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
-  readonly places?: readonly PlaceContentPart[];
-  /** Exact accepted command content, only when a saved send is sent again. */
-  readonly content?: readonly ContentPart[];
-  readonly attachments: readonly ArtifactContentPart[];
-  readonly body: string;
-  readonly idempotencyKey: string;
-  readonly quotedMessageId?: string;
-}
-
-/** Where a Thread's unacknowledged message is kept, so a reload can still finish sending it. */
-export interface PendingSends {
-  /** Throws when it cannot be kept; such a message is not sent. */
-  claim(submission: PendingSubmission): void;
-  clear(idempotencyKey: string): void;
-  /** Removes whatever is kept, including a record that can no longer be read. */
-  discard(): void;
-  /** Throws when the kept record cannot be read. */
-  read(): PendingSubmission | null;
 }
 
 /** A message handed back to the composer, such as a queued one taken back to be reworded. */
@@ -148,6 +119,7 @@ interface ComposerProps {
    */
   placeContext?: { readonly context: ComposerContext; readonly hostClient: HostClient } | null;
   disabled?: boolean;
+  connection?: ClientConnection;
   readOnly?: boolean;
   footerExtras?: ReactNode;
   /** Chat's voice button, beside Send. */
@@ -170,15 +142,20 @@ interface ComposerProps {
   onHoldingChange?: ((holding: boolean) => void) | undefined;
   /** Invoked when the reader presses Escape in the textarea (e.g. to return focus to docked action options). */
   onEscape?: (() => void) | undefined;
-  onSend: (body: string, submission: ComposerSubmission) => Promise<void>;
-  onStop?: (() => Promise<void>) | undefined;
+  onReloadDraft?: () => void;
   /**
-   * Keeps each message before it is sent, and a message whose send went
-   * unanswered apart from the draft, to be sent again exactly. Without it
-   * `onSend` is responsible for keeping what it sends, and a failed send
-   * returns to the draft.
+   * Keeps or sends the message. A rejection from `act` is said in the
+   * action owner's words; anything else as a message this device couldn't keep.
    */
-  pendingSends?: PendingSends | null | undefined;
+  onSend: (
+    body: string,
+    submission: ComposerSubmission,
+  ) => Promise<
+    | void
+    | { readonly draftGeneration: string; readonly preserveDraft?: true }
+    | { readonly replyCleared: boolean }
+  >;
+  onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
    * Whom the message goes to, for the field to name — "Ask Opensteer…",
@@ -228,6 +205,7 @@ export function Composer({
   placeContext = null,
   references = null,
   disabled = false,
+  connection,
   readOnly = false,
   footerExtras,
   voice,
@@ -236,9 +214,9 @@ export function Composer({
   onHoldingChange,
   onEscape,
   onSend,
+  onReloadDraft,
   compactionOffer,
   onStop,
-  pendingSends = null,
   placeholder,
   recipient = null,
   restore = null,
@@ -249,6 +227,14 @@ export function Composer({
   stopping: runStopping = false,
 }: ComposerProps) {
   const [saved] = useState(() => (draftKey ? composerDrafts.read(draftKey) : null));
+  const editorEditId = useRef(saved?.editId);
+  const draftSave = useRef(Promise.resolve());
+  const editorFields = useRef({
+    text: saved?.text ?? "",
+    quote: saved?.quote ?? null,
+    places: saved?.places,
+    refusal: saved?.refusal !== undefined,
+  });
   const [draft, setDraft] = useState(saved?.text ?? "");
   const { controller: dictation, snapshot: speech } = useDictation();
   const onCall = useVoiceOn();
@@ -283,12 +269,11 @@ export function Composer({
   const [requestingStop, setRequestingStop] = useState(false);
   const stopping = requestingStop || runStopping;
   const [error, setError] = useState<string | null>(saved?.refusal ?? null);
+  const [staleDraft, setStaleDraft] = useState(false);
   const [draftUnsaved, setDraftUnsaved] = useState(false);
-  const [sending, setSending] = useState(nothingSending);
+  const sending = nothingSending;
   const [dropping, setDropping] = useState(false);
-  const [held, setHeld] = useState(() => ({ owner: pendingSends, ...readHeld(pendingSends) }));
   const submittingRef = useRef(false);
-  /** False once this composer is gone; see the refusal branch of `deliver`. */
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -342,23 +327,50 @@ export function Composer({
     performance.mark("dictation-press");
     baseSelection.current = readSelection();
     editorRef.current?.focus();
+    // Take the draft behind the edits already queued by this field. A later
+    // completion is still this draft's even if the field has gone.
+    const held = draftKey
+      ? draftSave.current
+          .then(async () => {
+            const editId = await composerDrafts.reserveEdit(draftKey, editorEditId.current);
+            if (editId !== null) editorEditId.current = editId;
+            return editId;
+          })
+          .catch(() => null)
+      : null;
+    if (held) draftSave.current = held.then(() => undefined);
     dictation.start({
       owner,
       read: () => ({ text: ownerDraft.text, selection: readSelection() }),
       commit: (text, selection) => {
         const before = ownerDraft.text;
         ownerDraft.text = text;
-        // Recognition finished after leaving: the words still belong to this
-        // draft, and any written there since stay.
-        if (!mounted.current) {
-          if (draftKey)
-            composerDrafts.handBack(draftKey, {
-              edit: (current) =>
-                current === before || !current.trim() ? text : `${text}\n${current}`,
-            });
-          return;
+        const editing = () => mounted.current && currentOwner.current === owner;
+        if (draftKey && held) {
+          const edit = (current: string) =>
+            current === before || !current.trim() ? text : `${text}\n${current}`;
+          // Send and leave both await the same durable edit. The live field
+          // still applies the text itself so it has an undo step.
+          draftSave.current = draftSave.current.then(async () => {
+            const editId = await held;
+            const saved =
+              editId !== null &&
+              (await composerDrafts
+                .transaction((store) =>
+                  editing()
+                    ? store.update(
+                        draftKey,
+                        { text: edit(store.read(draftKey)?.text ?? "") },
+                        editId,
+                      )
+                    : store.handBack(draftKey, { edit }, editId),
+                )
+                .catch(() => false));
+            if (editing()) setDraftUnsaved(!saved);
+          });
+          if (editing()) editorFields.current.text = text;
         }
-        if (currentOwner.current !== owner) return;
+        if (!editing()) return;
         latestDraft.current = text;
         const editor = editorRef.current;
         const base = dictationBase.current;
@@ -393,21 +405,10 @@ export function Composer({
   };
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const appliedRestore = useRef<ComposerRestore | null>(null);
-  /** The pending key already tried on this connection, so a reload retries once, not in a loop. */
-  const attempted = useRef<string | null>(null);
   const blockedById = useId();
   const staged = useStagedAttachments(attachments);
   const restoreAttachments = staged.restore;
   const acceptsFiles = attachments !== null && !disabled && !readOnly && sendBlocked === null;
-
-  // Another Thread, user or deployment has its own unacknowledged message, if any.
-  let current = held;
-  if (held.owner !== pendingSends) {
-    current = { owner: pendingSends, ...readHeld(pendingSends) };
-    setHeld(current);
-  }
-  const pending = current.value;
-  const unreadable = current.unreadable;
 
   useEffect(() => {
     if (!restore || appliedRestore.current === restore) return;
@@ -448,19 +449,17 @@ export function Composer({
     hasContent &&
     !uploadsPending &&
     !placesPending &&
-    pending === null &&
-    unreadable === null &&
     sendBlocked === null;
 
-  const holding =
-    hasContent || quote !== null || submitting || pending !== null || unreadable !== null;
+  const holding = hasContent || quote !== null || submitting;
   const reportHolding = useEffectEvent((value: boolean) => onHoldingChange?.(value));
   useEffect(() => {
     reportHolding(holding);
   }, [holding]);
 
   const receiveReturned = useRef((_returned: ReturnedToDraft) => {});
-  receiveReturned.current = ({ edit, places, quote: returnedQuote, reason }) => {
+  receiveReturned.current = ({ edit, places, quote: returnedQuote, reason, files }) => {
+    if (files) restoreAttachments(files.flatMap((file) => (file.part ? [file.part] : [])));
     setDraft(edit);
     if (places?.length) context?.prepend(places);
     if (returnedQuote) setQuote(returnedQuote);
@@ -473,116 +472,43 @@ export function Composer({
         : undefined,
     [draftKey],
   );
-  // A message held for sending holds its files too, so a reload that found them
-  // in the draft does not offer them a second time.
-  const { releaseSent } = staged;
-  useEffect(() => {
-    if (pending) releaseSent(pending.attachments);
-  }, [pending, releaseSent]);
   // A place the draft only picked up by itself is not worth keeping a draft for.
   const keepDraft = hasContent || quote !== null;
   const followingPlace = context?.following ?? true;
   useEffect(() => {
     if (!draftKey) return;
-    const kept = composerDrafts.update(
-      draftKey,
-      keepDraft
-        ? {
-            quote,
-            text: draft,
-            ...(followingPlace || !context ? {} : { places: context.parts() }),
-          }
-        : { places: [], quote: null, text: "" },
-    );
-    setDraftUnsaved(!kept);
+    const shown = keepDraft
+      ? { quote, text: draft, ...(followingPlace || !context ? {} : { places: context.parts() }) }
+      : { places: [], quote: null, text: "" };
+    // A reopened editor may still show the old values when a late write
+    // arrives from another view. Save only fields this editor changed.
+    const before = editorFields.current;
+    const change = {
+      ...(shown.text !== before.text ? { text: shown.text } : {}),
+      ...(JSON.stringify(shown.quote) !== JSON.stringify(before.quote)
+        ? { quote: shown.quote }
+        : {}),
+      ...(shown.places && JSON.stringify(shown.places) !== JSON.stringify(before.places ?? [])
+        ? { places: shown.places }
+        : {}),
+    };
+    editorFields.current = { ...before, ...shown, refusal: false };
+    if (!before.refusal && Object.keys(change).length === 0) return;
+    draftSave.current = draftSave.current.then(async () => {
+      const kept = await composerDrafts
+        .transaction((store) => {
+          if (!store.update(draftKey, change, editorEditId.current)) return false;
+          editorEditId.current = store.read(draftKey)?.editId;
+          return true;
+        })
+        .catch(() => false);
+      if (mounted.current) setDraftUnsaved((unsaved) => (unsaved === !kept ? unsaved : !kept));
+    });
   }, [chips, context, draft, draftKey, followingPlace, keepDraft, quote]);
 
-  /**
-   * One attempt. `carried` names the tray files this attempt took; an attempt
-   * from the held message has none there.
-   */
-  const deliver = async (
-    submission: PendingSubmission,
-    replay: boolean,
-    carried: readonly string[],
-    carriedQuote: ComposerQuote | null = null,
-  ): Promise<void> => {
-    const owner = pendingSends;
-    const hold = (value: PendingSubmission | null) =>
-      setHeld((previous) =>
-        previous.owner === owner ? { owner, unreadable: null, value } : previous,
-      );
-    submittingRef.current = true;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onSend(submission.body, {
-        ...(submission.compaction ? { compaction: submission.compaction } : {}),
-        attachments: submission.attachments,
-        places: submission.places ?? [],
-        ...(submission.content ? { content: submission.content } : {}),
-        idempotencyKey: submission.idempotencyKey,
-        ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
-        replay,
-      });
-      forgetPending(owner, submission.idempotencyKey);
-      hold(null);
-      staged.release(carried);
-      editorRef.current?.focus();
-    } catch (sendError) {
-      if (owner && unanswered(sendError)) {
-        // Held as sent. Only "Send again" sends it, under the same key.
-        hold(submission);
-        staged.release(carried);
-        setError(
-          "Opensteer could not confirm this message was sent. Send it again when you are connected.",
-        );
-        return;
-      }
-      // Refused after this composer closed: the message stays kept, so the
-      // next time this Thread opens it is answered again and handed back to
-      // that draft, rather than to no draft at all. It holds its files now.
-      if (owner && !mounted.current) {
-        staged.release(carried);
-        return;
-      }
-      // Nothing kept it, so it goes back to the draft it came from, with its
-      // files still there, and says why when that draft is next opened.
-      if (!mounted.current) {
-        const { body } = submission;
-        if (draftKey)
-          composerDrafts.handBack(draftKey, {
-            edit: (current) => (body && current.trim() ? `${body}\n${current}` : body || current),
-            places: submission.places ?? [],
-            quote: carriedQuote,
-            reason:
-              sendError instanceof Error ? sendError.message : "The message could not be sent.",
-          });
-        return;
-      }
-      // Refused: the Host answered, so the words and files go back to be
-      // changed, and whatever is sent next is a new message.
-      forgetPending(owner, submission.idempotencyKey);
-      hold(null);
-      // The places it carried come back with its words, ahead of whatever the
-      // next draft holds by now — a recovered send's too.
-      context?.prepend(submission.places ?? []);
-      const { body } = submission;
-      if (body) setDraft((current) => (current.trim() ? `${body}\n${current}` : body));
-      if (carried.length === 0) restoreAttachments(submission.attachments);
-      // The refused message goes back whole: its quote is part of what was
-      // written, and retyping the reference is not something to ask for.
-      if (carriedQuote) setQuote(carriedQuote);
-      setError(sendError instanceof Error ? sendError.message : "The message could not be sent.");
-    } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
-      setSending(nothingSending);
-    }
-  };
-
   const submit = async (
-    text = latestDraft.current,
+    scope: ClientScope | null,
+    text: string,
     choice?: import("@opensteer/core").CompactionSendChoice,
   ) => {
     const body = text.trim();
@@ -593,6 +519,7 @@ export function Composer({
     const parts = carried.flatMap((item) => (item.part ? [item.part] : []));
     if (parts.length !== carried.length) return;
     const carriedQuote = quote;
+    const isTaskDraft = draftKey?.includes(":task:") === true;
     const places = context?.parts() ?? [];
     const submission: PendingSubmission = {
       ...(choice || compactionOffer?.visible ? { compaction: choice ?? "compactFirst" } : {}),
@@ -602,30 +529,109 @@ export function Composer({
       idempotencyKey: mutationIdempotencyKey("message"),
       ...(carriedQuote ? { quotedMessageId: carriedQuote.messageId } : {}),
     };
-    try {
-      pendingSends?.claim(submission);
-    } catch (claimError) {
-      setError(claimError instanceof Error ? claimError.message : "The message was not kept.");
+    {
+      submittingRef.current = true;
+      setSubmitting(true);
+      setError(null);
+      setStaleDraft(false);
+      let sourceEditId: string | undefined;
+      try {
+        await draftSave.current;
+        const source = draftKey
+          ? await composerDrafts.transaction((store) => store.durableDraft(draftKey))
+          : null;
+        if (
+          draftKey &&
+          (!source?.revision ||
+            (editorEditId.current && editorEditId.current !== source.editId) ||
+            source.text.trim() !== body ||
+            source.quote?.messageId !== carriedQuote?.messageId ||
+            (source.places?.length
+              ? JSON.stringify(source.places) !== JSON.stringify(places)
+              : explicitPlaces) ||
+            JSON.stringify(source.files.map((file) => file.part?.artifactId)) !==
+              JSON.stringify(parts.map((part) => part.artifactId)))
+        )
+          throw changedTaskDraft();
+        sourceEditId = source?.editId;
+        const result = await onSend(submission.body, {
+          scope,
+          attachments: submission.attachments,
+          places: submission.places ?? [],
+          ...(submission.compaction ? { compaction: submission.compaction } : {}),
+          idempotencyKey: submission.idempotencyKey,
+          ...(source?.revision ? { draftRevision: source.revision } : {}),
+          ...(submission.quotedMessageId ? { quotedMessageId: submission.quotedMessageId } : {}),
+        });
+        if (result && "replyCleared" in result && !result.replyCleared) return;
+        if (draftKey && result && "draftGeneration" in result) {
+          const submitted = latestDraft.current === text ? (source ?? undefined) : undefined;
+          const finished = await composerDrafts.finishTaskStart(
+            draftKey,
+            result.draftGeneration,
+            submitted,
+            result.preserveDraft,
+          );
+          if (finished === "unavailable") {
+            setDraftUnsaved(true);
+            return;
+          }
+          if (result.preserveDraft) {
+            setError("The previous task started. Start again to send this draft.");
+            return;
+          }
+          if (finished !== "cleared") return;
+        }
+        const sameText = latestDraft.current.trim() === text.trim();
+        if (draftKey && !result && sameText && source?.revision) {
+          await composerDrafts.transaction((store) => {
+            if (store.durableDraft(draftKey)?.revision === source.revision) store.clear(draftKey);
+          });
+        }
+        const samePlaces = JSON.stringify(context?.parts() ?? []) === JSON.stringify(places);
+        const before = editorFields.current;
+        editorFields.current = {
+          ...before,
+          ...(sameText ? { text: "" } : {}),
+          ...(before.quote === carriedQuote ? { quote: null } : {}),
+          ...(samePlaces ? { places: undefined } : {}),
+        };
+        editorEditId.current = draftKey ? composerDrafts.read(draftKey)?.editId : undefined;
+        setDraft((current) => (current.trim() === text.trim() ? "" : current));
+        setQuote((current) => (current === carriedQuote ? null : current));
+        staged.release(carried.map((item) => item.localId));
+        if (samePlaces) context?.reset();
+        if (choice === "keepFullHistory") compactionOffer?.dismiss();
+      } catch (error) {
+        const issue = clientIssue(error, { operation: "action", label: "save this message" });
+        const reason =
+          failureWords(error) ??
+          (issue && !isNotDone(error) ? presentClientIssue(issue).title : null);
+        if (mounted.current) {
+          setError(reason);
+          setStaleDraft(
+            issue?.code === "draft-changed" ||
+              (error instanceof ActionNotDone &&
+                "issue" in error.outcome &&
+                error.outcome.issue?.code === "draft-changed"),
+          );
+        } else if (draftKey && !isTaskDraft && reason && sourceEditId)
+          void composerDrafts
+            .handBack(draftKey, { edit: (current) => current, reason }, sourceEditId)
+            .catch(() => {});
+      } finally {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
       return;
     }
-    if (choice === "keepFullHistory") compactionOffer?.dismiss();
-    attempted.current = submission.idempotencyKey;
-    const ids = carried.map((item) => item.localId);
-    setSending(new Set(ids));
-    // The message is on its way; what is written now is the next draft, with
-    // its own places. Nothing the send answers later reaches back into it.
-    setDraft("");
-    setQuote(null);
-    picker.close();
-    context?.reset();
-    if (draftKey) composerDrafts.update(draftKey, { places: [], quote: null, text: "" });
-    await deliver(submission, false, ids, carriedQuote);
   };
 
   const latestSubmit = useRef(submit);
   latestSubmit.current = submit;
   const finishAndSend = async (choice?: import("@opensteer/core").CompactionSendChoice) => {
     if (waitingSend.current) return;
+    const scope = connection?.getSnapshot().scope ?? null;
     waitingSend.current = true;
     try {
       if (!dictating) {
@@ -635,7 +641,7 @@ export function Composer({
           ? await editor.flushPendingInput(editor.readSnapshot().generation).catch(() => null)
           : null;
         if (typed?.composing) return;
-        await latestSubmit.current(typed?.text ?? latestDraft.current, choice);
+        await latestSubmit.current(scope, typed?.text ?? latestDraft.current, choice);
         return;
       }
       const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
@@ -648,6 +654,7 @@ export function Composer({
       )
         return;
       await latestSubmit.current(
+        scope,
         finish.kind === "committed" ? finish.text : latestDraft.current,
         choice,
       );
@@ -655,36 +662,6 @@ export function Composer({
       waitingSend.current = false;
     }
   };
-
-  const sendAgain = async () => {
-    if (!pending || disabled || readOnly || submittingRef.current) return;
-    attempted.current = pending.idempotencyKey;
-    await deliver(pending, true, []);
-  };
-
-  const discardUnreadable = () => {
-    if (!pendingSends) return;
-    try {
-      pendingSends.discard();
-      setHeld({ owner: pendingSends, ...readHeld(pendingSends) });
-    } catch (discardError) {
-      setError(
-        discardError instanceof Error ? discardError.message : "The saved message was not removed.",
-      );
-    }
-  };
-
-  // A message the page came back holding is sent again once there is a Host
-  // to take it; a reconnection is what makes another try worth making.
-  const retryHeld = useEffectEvent(() => void sendAgain());
-  useEffect(() => {
-    if (disabled || readOnly) {
-      attempted.current = null;
-      return;
-    }
-    if (pending === null || attempted.current === pending.idempotencyKey) return;
-    retryHeld();
-  }, [disabled, pending, readOnly]);
 
   const stop = useCallback(async () => {
     if (!onStop || stopping || disabled || readOnly) return;
@@ -808,15 +785,13 @@ export function Composer({
   const showSend = !settingsRequired && (!showStop || hasContent);
   const blockedBy =
     sendBlocked ??
-    (unreadable !== null
-      ? "Deal with the saved message that cannot be read first"
-      : pending !== null
-        ? "Send the unconfirmed message again first"
-        : staged.items.some((item) => item.status === "failed")
-          ? "Remove or retry the attachments that could not be uploaded"
-          : uploadsPending || placesPending
-            ? "Waiting for attachments to finish uploading"
-            : null);
+    (staged.items.some((item) => item.status === "failed")
+      ? "Remove or retry the attachments that could not be uploaded"
+      : staged.items.some((item) => item.status === "waiting")
+        ? filesWaitLine
+        : uploadsPending || placesPending
+          ? "Waiting for attachments to finish uploading"
+          : null);
 
   const attachable = !disabled && !readOnly;
   const attachmentControl =
@@ -1042,24 +1017,6 @@ export function Composer({
           {sendBlocked}
         </p>
       ) : null}
-      {unreadable !== null ? (
-        <section aria-label="Saved message" className="held-message" role="alert">
-          <p className="held-message__text">{unreadable}</p>
-          <div className="held-message__foot">
-            <span>Check the conversation: it may already have been sent.</span>
-            <button className="btn btn--small" onClick={discardUnreadable} type="button">
-              Discard saved message
-            </button>
-          </div>
-        </section>
-      ) : pending ? (
-        <HeldMessage
-          disabled={disabled || readOnly || submitting}
-          message={pending}
-          onSendAgain={() => void sendAgain()}
-          sending={submitting}
-        />
-      ) : null}
       {quote ? (
         <section aria-label="Quoted message" className="composer-quote">
           <span className="composer-quote__mark" aria-hidden>
@@ -1104,6 +1061,11 @@ export function Composer({
         <p aria-live="assertive" className="composer__error" role="alert">
           <Icon name="alert-circle" />
           <span>{error}</span>
+          {staleDraft && onReloadDraft ? (
+            <button className="btn btn--small btn--ghost" type="button" onClick={onReloadDraft}>
+              Reload draft
+            </button>
+          ) : null}
         </p>
       ) : null}
       {context && placeContext && chips.length > 0 ? (
@@ -1338,65 +1300,4 @@ function ContextChips({
       </div>
     </div>
   );
-}
-
-/** The message still owed to the Host, shown as it was sent. */
-function HeldMessage({
-  disabled,
-  message,
-  onSendAgain,
-  sending,
-}: {
-  readonly disabled: boolean;
-  readonly message: PendingSubmission;
-  readonly onSendAgain: () => void;
-  readonly sending: boolean;
-}) {
-  return (
-    <section aria-label="Unconfirmed message" className="held-message">
-      {(message.places ?? []).map((part, index) => (
-        <p className="held-message__text" key={`${part.type}:${index}`}>
-          {placeContentLabel(part)}
-        </p>
-      ))}
-      {message.body ? <p className="held-message__text">{message.body}</p> : null}
-      {message.attachments.length > 0 ? (
-        <ul aria-label="Attachments" className="held-message__files">
-          {message.attachments.map((part) => (
-            <li key={part.artifactId} title={part.name}>
-              <Icon name="paperclip" />
-              <span>{part.name}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <div className="held-message__foot">
-        <span role="status">{sending ? "Sending…" : "Not confirmed yet."}</span>
-        <button className="btn btn--small" disabled={disabled} onClick={onSendAgain} type="button">
-          Send again
-        </button>
-      </div>
-    </section>
-  );
-}
-
-/**
- * What this Thread still owes the Host. A record that cannot be read is
- * reported rather than read as nothing: it may be a message already sent,
- * and only the person can decide to let it go.
- */
-function readHeld(pendingSends: PendingSends | null): {
-  readonly unreadable: string | null;
-  readonly value: PendingSubmission | null;
-} {
-  try {
-    return { unreadable: null, value: pendingSends?.read() ?? null };
-  } catch (error) {
-    return {
-      unreadable: `A message saved for sending here cannot be read${
-        error instanceof Error && error.message ? ` (${error.message})` : ""
-      }. Nothing more is sent from this conversation until it is discarded.`,
-      value: null,
-    };
-  }
 }

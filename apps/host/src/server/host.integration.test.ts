@@ -127,6 +127,9 @@ function createHostServer(dependencies: HostServerTestOverrides) {
     {
       countLiveThreadsByEnvironment: async () => new Map(),
       database: personalFixture.database,
+      personalMessageSendKeys: personalFixture.store.personalMessageSendKeys.bind(
+        personalFixture.store,
+      ),
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
       listActiveShellSessions: async () => [],
@@ -462,7 +465,6 @@ describe("Host signing keys", () => {
         capabilities: [
           "devices-v1",
           "automatic-models-v1",
-          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "message-origin-v1",
@@ -615,7 +617,6 @@ describe("Host signing keys", () => {
         capabilities: [
           "devices-v1",
           "automatic-models-v1",
-          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "message-origin-v1",
@@ -2513,7 +2514,10 @@ describe("Thread input command boundary", () => {
     };
   }
 
-  async function boundaryServer(commands: Record<string, unknown>) {
+  async function boundaryServer(
+    commands: Record<string, unknown>,
+    store?: Pick<OpensteerStore, "personalMessageSendKeys">,
+  ) {
     return createHostServer({
       authenticator: {
         authenticateSession: async () => testAuthenticatedSession(ownerId),
@@ -2521,6 +2525,7 @@ describe("Thread input command boundary", () => {
       } as never,
       commands: commands as never,
       discovery: testDiscovery,
+      ...(store ? { store: store as OpensteerStore } : {}),
     });
   }
 
@@ -2554,6 +2559,37 @@ describe("Thread input command boundary", () => {
         2,
         expect.objectContaining({ policy: "steer", requestedBy: ownerId }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("acknowledges the accepted message when its send key cannot be read", async () => {
+    const accepted = messageResult("queue");
+    const app = await boundaryServer(
+      { enqueueThreadInput: async () => accepted },
+      {
+        personalMessageSendKeys: async () => {
+          throw new Error("Send-key lookup unavailable");
+        },
+      },
+    );
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        content: accepted.message.content,
+        idempotencyKey: "send-key-lookup-unavailable",
+        threadId,
+        type: "thread.sendMessage",
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(rpcData(response)).toEqual({
+        input: accepted.input,
+        message: accepted.message,
+        run: null,
+        type: "thread.sendMessage",
+        wasDuplicate: false,
+      });
     } finally {
       await app.close();
     }
@@ -4207,14 +4243,11 @@ it("registers phone previews as a session mutation without durable command admis
   );
   try {
     const capabilityDependencies = {
-      attachments: {} as never,
       authenticator,
       notificationPreviews: previews,
     };
     expect(advertisedCapabilities(capabilityDependencies)).toContain("notification-preview-v1");
-    expect(advertisedCapabilities({ attachments: {} as never, authenticator })).not.toContain(
-      "notification-preview-v1",
-    );
+    expect(advertisedCapabilities({ authenticator })).not.toContain("notification-preview-v1");
     const command = {
       type: "notification.preview.register",
       installationId: "phone-installation",

@@ -28,13 +28,13 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import { tabRoute } from "../browser/surface-route.js";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Linking, Platform } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { iphonePermissionOf } from "../iphone-apps/controller.js";
 import { iphoneAppIds, iphoneAppRow, opensteerOn } from "../iphone-apps/model.js";
 import { resetToDeployments } from "../navigation-ref.js";
+import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { wantsAlerts } from "../notifications/push-registration.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
@@ -75,7 +75,6 @@ function DevicePage(props: {
   const client = useMobileClient();
   const { rows } = useMobileState();
   const machines = useHostSelector(props.hostClient, selectMachines);
-  const revision = useHostSelector(props.hostClient, selectRevision);
   const devicesAvailable = useHostSelector(props.hostClient, selectDevices);
   const profiles = useHostSelector(props.hostClient, selectProfiles);
   const machine = machines.find(({ id }) => id === props.machineId) ?? null;
@@ -88,15 +87,41 @@ function DevicePage(props: {
     enrollment.deploymentId === props.deploymentId;
   const screenMac = machine === null ? null : phoneScreenMac(machine);
   const canRespond = useHostSelector(props.hostClient, canRespondToRequests);
-  const apps = useComputerUseData(
-    thisDevice || screenMac !== null ? props.hostClient : null,
-    revision,
-  );
+  const apps = useComputerUseData(thisDevice || screenMac !== null ? props.hostClient : null);
   const { registration } = useMobileNotifications();
   const push = usePushRegistration();
   const [name, setName] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  /** A fact about the device an action found, such as a change made elsewhere. */
+  const [note, setNote] = useState<string | null>(null);
+  const [signOutFailed, setSignOutFailed] = useState(false);
   const busy = useRef(false);
+  const change = useScreenAction<DeviceChange, void>(
+    props.hostClient,
+    `device:${props.deploymentId}:${props.machineId}`,
+    {
+      label: "change this device",
+      execute: async (input) => {
+        await input.work();
+        if (input.refresh) await props.hostClient.refresh().catch(() => undefined);
+      },
+      // The device as the Host now has it says whether a lost answer was a change.
+      reconcile: async (input) => {
+        await props.hostClient.refresh();
+        const settled = input.settled?.();
+        return settled === undefined
+          ? null
+          : settled
+            ? { kind: "confirmed", value: undefined }
+            : notDone();
+      },
+    },
+  );
+  const failure =
+    change.line ?? (note === null ? null : { key: note, text: note, tone: "muted" as const });
+  const footer = settingsFooter(
+    failure ??
+      (signOutFailed ? { key: "sign-out", text: "Couldn't sign out.", tone: "muted" } : null),
+  );
 
   useLayoutEffect(() => {
     if (machine !== null) navigation.setOptions({ title: machine.name });
@@ -113,7 +138,7 @@ function DevicePage(props: {
               {
                 key: "gone",
                 kind: "text",
-                label: failure ?? "This device is no longer part of this Opensteer.",
+                label: note ?? "This device is no longer part of this Opensteer.",
               },
             ],
           },
@@ -121,16 +146,14 @@ function DevicePage(props: {
       />
     );
 
-  const run = (operation: () => Promise<unknown>, fallback: string, refresh = true): void => {
+  const run = (work: () => Promise<unknown>, refresh = true, settled?: () => boolean): void => {
     if (busy.current) return;
     busy.current = true;
-    setFailure(null);
-    void operation()
-      .then(() => (refresh ? props.hostClient.refresh() : undefined))
-      .catch((error: unknown) => setFailure(operationDetail(error, fallback)))
-      .finally(() => {
-        busy.current = false;
-      });
+    setNote(null);
+    setSignOutFailed(false);
+    void change.run({ work, refresh, ...(settled ? { settled } : {}) }).finally(() => {
+      busy.current = false;
+    });
   };
   if (machine.status === "pending") {
     const ownPending =
@@ -168,47 +191,49 @@ function DevicePage(props: {
                 label: "Cancel setup",
                 destructive: true,
                 onPress: () =>
-                  run(
-                    async () => {
-                      if (ownPending)
-                        await iphoneController.remove({ hostClient: props.hostClient });
-                      else if (
-                        (await cancelDeviceSetup(
-                          props.hostClient,
-                          machine.enrollmentId ?? machine.id,
-                        )) === "joined"
-                      ) {
-                        setFailure(
-                          "This device finished joining. Open it in Devices to remove it.",
-                        );
-                        return;
-                      }
-                      navigation.goBack();
-                    },
-                    "Setup could not be cancelled. Try again.",
-                    ownPending,
-                  ),
+                  run(async () => {
+                    if (ownPending) await iphoneController.remove({ hostClient: props.hostClient });
+                    else if (
+                      (await cancelDeviceSetup(
+                        props.hostClient,
+                        machine.enrollmentId ?? machine.id,
+                      )) === "joined"
+                    ) {
+                      setNote("This device finished joining. Open it in Devices to remove it.");
+                      return;
+                    }
+                    navigation.goBack();
+                  }, ownPending),
               },
-              ...(failure ? [{ key: "failure", kind: "text" as const, label: failure }] : []),
             ],
+            ...(footer ? { footer } : {}),
           },
         ]}
       />
     );
   }
+  const switchContext = { devicesAvailable, ...(thisDevice ? { noun: thisPhoneNoun } : {}) };
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
     if (access === null) return;
-    run(async () => {
-      const result = await props.hostClient.updateMachineAccess({
-        expectedRevision: access.revision,
-        policy: withDeviceSwitch(access.policy, key, on),
-        deviceId: machine.id,
-      });
-      if (result.outcome === "conflict") {
-        setFailure("It changed on another device. Look again and try once more.");
-      }
-    }, "That change could not be confirmed. Try again.");
+    run(
+      async () => {
+        const result = await props.hostClient.updateMachineAccess({
+          expectedRevision: access.revision,
+          policy: withDeviceSwitch(access.policy, key, on),
+          deviceId: machine.id,
+        });
+        if (result.outcome === "conflict")
+          setNote("It changed on another device. Look again and try once more.");
+      },
+      true,
+      () => {
+        const now = props.hostClient.getSnapshot().machines.find(({ id }) => id === machine.id);
+        return now === undefined
+          ? false
+          : deviceSwitches(now, switchContext).rows.find((row) => row.key === key)?.value === on;
+      },
+    );
   };
 
   const draft = name ?? machine.name;
@@ -223,14 +248,13 @@ function DevicePage(props: {
           name: next,
           type: "machine.rename",
         }),
-      "The name could not be saved.",
+      true,
+      () =>
+        props.hostClient.getSnapshot().machines.find(({ id }) => id === machine.id)?.name === next,
     );
   };
 
-  const switches = deviceSwitches(machine, {
-    devicesAvailable,
-    ...(thisDevice ? { noun: thisPhoneNoun } : {}),
-  });
+  const switches = deviceSwitches(machine, switchContext);
   const opensteer = opensteerOn(
     rows.find((row) => row.deploymentId === props.deploymentId)?.name ?? "Opensteer",
   );
@@ -333,7 +357,7 @@ function DevicePage(props: {
                     idempotencyKey: mutationIdempotencyKey(`phone-access:${machine.id}`),
                     type: "integration.disconnect",
                   });
-                }, "Access did not change. Try again."),
+                }),
             },
           ]
         : []),
@@ -362,20 +386,16 @@ function DevicePage(props: {
               kind: "button" as const,
               label: "Open screen",
               onPress: () =>
-                run(
-                  async () => {
-                    const opened = await props.hostClient.openTab(tab.data);
-                    if (navigation.isFocused())
-                      navigation.dispatch(
-                        StackActions.push(
-                          "WorkspaceBrowser",
-                          tabRoute(props.deploymentId, opened.tabId),
-                        ),
-                      );
-                  },
-                  "The screen could not be opened.",
-                  false,
-                ),
+                run(async () => {
+                  const opened = await props.hostClient.openTab(tab.data);
+                  if (navigation.isFocused())
+                    navigation.dispatch(
+                      StackActions.push(
+                        "WorkspaceBrowser",
+                        tabRoute(props.deploymentId, opened.tabId),
+                      ),
+                    );
+                }, false),
             },
           ]
         : []),
@@ -391,7 +411,7 @@ function DevicePage(props: {
         title: copy.title,
         message: copy.body,
         confirm: copy.confirm,
-        onConfirm: () => run(act, `${machine.name} did not change. Try again.`),
+        onConfirm: () => run(act),
       });
     const generation = deviceMachine(machine).phoneDisplay?.driver?.generation;
     return {
@@ -400,8 +420,8 @@ function DevicePage(props: {
         title: screenMac.attached
           ? phoneUseCardTitle({ driver: deviceMachine(machine).phoneDisplay?.driver ?? null })
           : "Screen control",
-        ...(failure !== null
-          ? { footer: { text: failure, tone: "danger" as const } }
+        ...(footer
+          ? { footer }
           : screenMac.attached
             ? { footer: { text: iphoneScreenKeepAwakeTip } }
             : {}),
@@ -473,8 +493,8 @@ function DevicePage(props: {
           {
             key: "agent",
             title: "Your agent can use",
-            ...(failure !== null
-              ? { footer: { text: failure, tone: "danger" as const } }
+            ...(footer
+              ? { footer }
               : switches.footer !== null
                 ? { footer: { text: switches.footer } }
                 : {}),
@@ -558,21 +578,17 @@ function DevicePage(props: {
                           void client
                             .signOut(props.deploymentId)
                             .then(resetToDeployments)
-                            .catch((error: unknown) =>
-                              setFailure(operationDetail(error, "Signing out did not finish.")),
-                            );
+                            .catch(() => setSignOutFailed(true));
                           return;
                         }
-                        run(
-                          () =>
-                            props.hostClient
-                              .dispatch({
-                                idempotencyKey: mutationIdempotencyKey("device-remove"),
-                                machineId: machine.id,
-                                type: "machine.revoke",
-                              })
-                              .then(() => navigation.goBack()),
-                          `${machine.name} could not be removed.`,
+                        run(() =>
+                          props.hostClient
+                            .dispatch({
+                              idempotencyKey: mutationIdempotencyKey("device-remove"),
+                              machineId: machine.id,
+                              type: "machine.revoke",
+                            })
+                            .then(() => navigation.goBack()),
                         );
                       },
                     }),
@@ -584,7 +600,13 @@ function DevicePage(props: {
   return <NativeSettingsPage sections={sections} />;
 }
 
+interface DeviceChange {
+  readonly work: () => Promise<unknown>;
+  readonly refresh: boolean;
+  /** Whether the device as now read shows the change; absent where it can't tell. */
+  readonly settled?: () => boolean;
+}
+
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
-const selectRevision = (snapshot: HostSnapshot) => snapshot.machineRevision;
 const selectDevices = (snapshot: HostSnapshot) => snapshot.devicesAvailable === true;
 const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;

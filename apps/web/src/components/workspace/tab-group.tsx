@@ -2,7 +2,7 @@ import { memo, useMemo, useRef, useState, type CSSProperties } from "react";
 import { TabGroupColorSchema, type TabGroup, type TabId } from "@opensteer/core";
 import type { HostClient, PlaceItem, PlaceOccupant } from "@opensteer/client/host";
 import { usePlaces } from "@opensteer/client/react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SurfaceMenuRow } from "../surface-menu.js";
@@ -82,9 +82,12 @@ export const TabGroupHeader = memo(function TabGroupHeader({
         aria-label={`${name}, ${tabIds.length} tabs`}
         className="side-tab__main side-tab-group__main"
         onClick={() =>
-          void hostClient
-            .updateTabGroup({ groupId: group.groupId, collapsed: !group.collapsed })
-            .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+          void act(
+            hostClient,
+            { label: "change this group", done: "changed", happened: "this group changed" },
+            () =>
+              hostClient.updateTabGroup({ groupId: group.groupId, collapsed: !group.collapsed }),
+          ).catch(toastFailure(toast))
         }
         onKeyDown={(event) => {
           if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
@@ -162,18 +165,20 @@ function TabGroupEditor({
   const saved = useRef(group.name);
   const toast = useToast();
   const closeGroup = useTabGroupCloser();
-  const failed = (error: unknown) => toast.error(actionErrorMessage(error));
+  const failed = toastFailure(toast);
   const save = () => {
     const trimmed = title.trim();
     // A group always has a name; clearing it keeps the one it had.
     if (!trimmed || trimmed === saved.current) return;
     saved.current = trimmed;
-    void hostClient
-      .updateTabGroup({ groupId: group.groupId, name: trimmed })
-      .catch((error: unknown) => {
-        saved.current = group.name;
-        failed(error);
-      });
+    void act(
+      hostClient,
+      { label: "rename this group", done: "renamed", happened: "this group was renamed" },
+      () => hostClient.updateTabGroup({ groupId: group.groupId, name: trimmed }),
+    ).catch((error: unknown) => {
+      saved.current = group.name;
+      failed(error);
+    });
   };
   return (
     <Popover
@@ -214,7 +219,11 @@ function TabGroupEditor({
             className="tab-group-editor__swatch"
             key={color}
             onClick={() =>
-              void hostClient.updateTabGroup({ groupId: group.groupId, color }).catch(failed)
+              void act(
+                hostClient,
+                { label: "change this group", done: "changed", happened: "this group changed" },
+                () => hostClient.updateTabGroup({ groupId: group.groupId, color }),
+              ).catch(failed)
             }
             style={tabGroupStyle(color)}
             title={color}
@@ -229,7 +238,15 @@ function TabGroupEditor({
           item={{ icon: "browser", label: "Ungroup" }}
           onChoose={() => {
             onClose();
-            void hostClient.deleteTabGroup(group.groupId).catch(failed);
+            void act(
+              hostClient,
+              {
+                label: "ungroup these tabs",
+                done: "ungrouped",
+                happened: "these tabs were ungrouped",
+              },
+              () => hostClient.deleteTabGroup(group.groupId),
+            ).catch(failed);
           }}
         />
         <SurfaceMenuRow

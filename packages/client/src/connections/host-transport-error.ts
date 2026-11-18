@@ -1,4 +1,4 @@
-import { ClientOperationError } from "./operation-error.js";
+import { ClientOperationError, type ClientFailureOptions } from "./operation-error.js";
 
 export type HostTransportErrorCode =
   "response-too-large" | "timed-out" | "deployment-changed" | "cancelled" | "unreachable";
@@ -26,15 +26,12 @@ const details = {
   },
 } as const;
 
-/**
- * A gateway answering for a Host behind it that doesn't: Connect's tunnel while
- * the computer sleeps (530), or a proxy in front of a stopped Host (502-504).
- */
+/** A gateway can answer for an unreachable Host, including Connect's tunnel (530). */
 export function isGatewayFailure(status: number): boolean {
   return status === 502 || status === 503 || status === 504 || status === 530;
 }
 
-/** This client already has as many Host requests open as it allows, so it sent nothing. */
+/** The request pool is full and the request was never sent. */
 export class HostCapacityError extends Error {
   constructor(message: string) {
     super(message);
@@ -42,16 +39,28 @@ export class HostCapacityError extends Error {
   }
 }
 
-/** The observing boundary classifies a failure; IPC carries only its code. */
+/** The legacy code remains available when a peer cannot carry the observed failure. */
 export class HostTransportError extends ClientOperationError {
   readonly code: HostTransportErrorCode;
   readonly retryable: boolean;
 
-  constructor(code: HostTransportErrorCode, options?: ErrorOptions) {
+  constructor(code: HostTransportErrorCode, options?: ClientFailureOptions) {
     const detail = details[code];
-    super(detail.message, detail.retryable ? "transient" : "blocked", options);
+    super(detail.message, (options?.retryable ?? detail.retryable) ? "transient" : "blocked", {
+      code,
+      reason: code,
+      retryable: detail.retryable,
+      provenance: code === "response-too-large" ? "protocol" : "transport",
+      kind:
+        code === "cancelled" || code === "deployment-changed"
+          ? "cancelled"
+          : code === "response-too-large"
+            ? "protocol"
+            : "transport",
+      ...options,
+    });
     this.name = code === "cancelled" ? "AbortError" : "HostTransportError";
     this.code = code;
-    this.retryable = detail.retryable;
+    this.retryable = options?.retryable ?? detail.retryable;
   }
 }

@@ -17,7 +17,7 @@ import {
   BrowserSignInRequestResponseSchema,
   type BrowserSignInOutcome,
 } from "@opensteer/protocol/browser-sources";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import type { ChromeConnectEnvironment } from "./chrome/chrome-environment.js";
@@ -26,7 +26,7 @@ import { useChromeInspection } from "./chrome/use-chrome-inspection.js";
 import { useShellChromeEnvironment } from "./chrome/use-shell-chrome-environment.js";
 import { Icon } from "./icon.js";
 
-export type BrowserSignInRequestClient = Pick<HostClient, "dispatch" | "rpc">;
+export type BrowserSignInRequestClient = Pick<HostClient, "connection" | "dispatch" | "rpc">;
 
 export function ThreadBrowserSignInAction({
   disabled,
@@ -122,17 +122,27 @@ export function BrowserSignInRequestBody({
     if (decision === "allow" && !sourceId) return;
     setAnswer(decision);
     setError(null);
-    void client
-      .dispatch({
-        decision:
-          decision === "allow" && sourceId
-            ? { decision: "allow", sourceId }
-            : { decision: "decline" },
-        idempotencyKey: mutationIdempotencyKey(`browser-sign-in:${request.id}`),
-        requestId: request.id,
-        type: "browser.sign-in.respond",
-      })
-      .then((result) => {
+    void runAction(client, {
+      label: "send your answer",
+      done: "sent",
+      happened: "your answer was sent",
+      execute: () =>
+        client.dispatch({
+          decision:
+            decision === "allow" && sourceId
+              ? { decision: "allow", sourceId }
+              : { decision: "decline" },
+          idempotencyKey: mutationIdempotencyKey(`browser-sign-in:${request.id}`),
+          requestId: request.id,
+          type: "browser.sign-in.respond",
+        }),
+    })
+      .then((outcome) => {
+        if (outcome.kind !== "confirmed") {
+          setError(outcomeWords(outcome));
+          return;
+        }
+        const result = outcome.value;
         if (result.type !== "browser.sign-in.respond" || decision !== "allow") return;
         if (!result.outcome || !sourceId) return;
         allowedStatus.current = latestInspection.current?.candidates.find(
@@ -143,7 +153,6 @@ export function BrowserSignInRequestBody({
         setAllowed({ outcome: result.outcome, sourceId });
         if (result.outcome.status === "problem") refresh();
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
       .finally(() => setAnswer(null));
   };
   const respondRef = useRef(respond);

@@ -1,3 +1,5 @@
+import { presentFailure } from "../use-action.js";
+
 export type BrowserActionRunner = (action: () => Promise<void>) => Promise<boolean>;
 
 export async function runBrowserAction(
@@ -8,7 +10,7 @@ export async function runBrowserAction(
     await action();
     return true;
   } catch (error) {
-    showError(error instanceof Error ? error.message : "Opensteer couldn’t complete that action.");
+    showError(presentFailure(error, "complete that action"));
     return false;
   }
 }

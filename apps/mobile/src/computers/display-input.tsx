@@ -161,9 +161,8 @@ export function DisplayControls({
           if (active()) setReceipt(outcome === "written" ? "Copied" : `Copy ${outcome}`);
         } else if (result.outcome !== "empty") setReceipt(`Copy ${result.outcome}`);
       })
-      .catch((error: unknown) => {
-        if (active()) setReceipt(error instanceof Error ? error.message : "Input unavailable.");
-      });
+      // A refusal is said by the session's own receipt; a lost picture by its cover.
+      .catch(() => undefined);
     return true;
   };
   const send = (events: readonly DisplayInputEvent[], geometry = picture?.generation): boolean =>

@@ -122,3 +122,23 @@ export const composerMenu = {
     </div>
   ),
 };
+
+type Line = { readonly text: string } | null;
+/** An action's line as words a journey reads, in place of the subtitle it stands in for. */
+export const actionLine = {
+  ActionLine: (props: { readonly line: { readonly text: string } }) => (
+    <p role="status">{props.line.text}</p>
+  ),
+  RowSubtitle: (props: { readonly line: Line; readonly subtitle: ReactNode }) =>
+    props.line === null ? <span>{props.subtitle}</span> : <p role="status">{props.line.text}</p>,
+};
+/** The gate draws only that it is there; the content behind it waits for it to go. */
+export const connectionGate = {
+  Gated: (props: Children & { readonly gate: ReactNode }) => props.gate ?? props.children,
+};
+export const routeGate = {
+  ConnectionRouteGate: () => <p data-gate="connection">Connection gate</p>,
+};
+export const placeholder = {
+  PlaceholderRows: () => <p aria-label="Not loaded yet" />,
+};

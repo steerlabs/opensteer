@@ -11,7 +11,7 @@ import {
 } from "react";
 import { formatBytes } from "../../app-model.js";
 import type { HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords, runRead } from "../use-action.js";
 import { Icon, type IconName } from "../icon.js";
 import {
   initialMachineAccessEditorState,
@@ -151,15 +151,20 @@ export function MachineAccessSection({
       setConflict(false);
       setError(null);
       try {
-        const outcome = await client.updateMachineAccess({
-          expectedRevision: editor.revision,
-          policy,
-          runnerId: machineId,
-        });
+        const outcome = await act(
+          client,
+          { label: "save this", done: "saved", happened: "this was saved" },
+          () =>
+            client.updateMachineAccess({
+              expectedRevision: editor.revision,
+              policy,
+              runnerId: machineId,
+            }),
+        );
         if (outcome.outcome === "conflict") setConflict(true);
         else edit({ policy, revision: outcome.revision, type: "saved" });
       } catch (reason) {
-        setError(actionErrorMessage(reason));
+        setError(failureWords(reason));
       } finally {
         setSaving(false);
       }
@@ -177,11 +182,13 @@ export function MachineAccessSection({
   async function reload() {
     setError(null);
     reloading.current = true;
-    try {
-      await client.refresh();
-    } catch (reason) {
+    const result = await runRead(client, {
+      resource: "these settings",
+      read: () => client.refresh(),
+    });
+    if (!result.ok) {
       reloading.current = false;
-      setError(actionErrorMessage(reason));
+      setError(result.words);
       return;
     }
     reloading.current = false;
@@ -206,9 +213,13 @@ export function MachineAccessSection({
     setStopping((current) => [...current, sessionId]);
     setError(null);
     try {
-      await client.stopMachineAccessSession(sessionId);
+      await act(
+        client,
+        { label: "stop this session", done: "stopped", happened: "this session stopped" },
+        () => client.stopMachineAccessSession(sessionId),
+      );
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       // A Stop that failed is a Stop that can be tried again: leaving the id
       // here would keep the button disabled until some unrelated notification
@@ -226,10 +237,14 @@ export function MachineAccessSection({
     if (!desktopBridge) return;
     setError(null);
     try {
-      const picked = await desktopBridge.pickFolder();
+      const picked = await act(
+        null,
+        { label: "choose a folder", done: "chosen", happened: "a folder was chosen" },
+        () => desktopBridge.pickFolder(),
+      );
       if (picked) edit({ index, path: picked.path, type: "share-path-edited" });
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     }
   }
 

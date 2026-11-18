@@ -195,10 +195,12 @@ export class MockComputerViews {
     const snapshot = this.#snapshot();
     if (snapshot.session !== "authenticated") return;
     const now = this.#now().getTime();
-    const approved = this.#approvedDevices();
+    // Runs on every getSnapshot: approvals are read only once a live view needs checking.
+    let approved: ReturnType<MockComputerViews["approved"]> | null = null;
     for (const machine of snapshot.machines)
       for (const view of machine.computerUse?.ownerViews ?? []) {
         if (view.state === "closed" || view.state === "expired") continue;
+        approved ??= this.#approvedDevices();
         const valid = approved.some(
           (item) => item.connectionId === view.connectionId && item.machineId === view.machineId,
         );

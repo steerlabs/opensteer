@@ -468,7 +468,7 @@ function pendingView(
     edited: false,
     pinned: false,
     continued: false,
-    send: pendingSendView(send, connected, retry),
+    send: { ...pendingSendView(send, connected, retry), since: Date.parse(send.createdAt) },
     thread: null,
     agentRun: null,
   };

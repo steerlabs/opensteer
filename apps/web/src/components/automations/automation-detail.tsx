@@ -1,3 +1,5 @@
+import { act as owned, failureWords } from "../use-action.js";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   useCallback,
   useMemo,
@@ -25,7 +27,7 @@ import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { Popover } from "../popover.js";
 import { useToast } from "../toast.js";
-import { actionErrorMessage, conversationPath, useMinuteClock } from "../../ui-utils.js";
+import { conversationPath, useMinuteClock } from "../../ui-utils.js";
 import {
   automationShape,
   runOutcome,
@@ -59,7 +61,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
   const detail = state.data?.definition ?? null;
   const error = state.error;
-  const missing = state.status === "error" && state.errorCode === "not_found";
+  const missing = state.status === "failed" && state.issue.code === "access-lost";
 
   return (
     <div className="page">
@@ -182,10 +184,15 @@ function AutomationView({
   const act = async (work: () => Promise<string | null>) => {
     setPending(true);
     try {
-      const done = await work();
+      const done = await owned(
+        client,
+        { label: "change this automation", done: "changed", happened: "this automation changed" },
+        work,
+      );
       if (done) toast.success(done);
     } catch (reason) {
-      toast.error(actionErrorMessage(reason));
+      const words = failureWords(reason);
+      if (words) toast.error(words);
     } finally {
       setPending(false);
     }
@@ -206,7 +213,11 @@ function AutomationView({
   const runNow = () =>
     act(async () => {
       const schedules = schedulesClient(client);
-      await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
+      const outcome = await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
+      if (outcome.kind !== "confirmed") {
+        if (outcome.issue) toast.error(presentClientIssue(outcome.issue).title);
+        return "";
+      }
       return "Running now";
     });
 

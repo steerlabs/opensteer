@@ -35,7 +35,9 @@ it.each(["loaded", "failed"] as const)(
     });
     if (outcome === "failed") {
       expect(button().disabled).toBe(true);
-      expect(document.body.textContent).toContain("Membership inventory could not be read");
+      expect(document.body.textContent).toContain(
+        "This Mac’s device memberships could not be read.",
+      );
       expect(document.body.textContent).not.toContain("nothing is deleted");
       expect(confirm).not.toHaveBeenCalled();
     } else {

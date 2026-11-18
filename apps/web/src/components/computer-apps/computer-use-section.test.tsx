@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import type { HostClient } from "@opensteer/client/host";
+import type { ClientConnection, ClientConnectionState } from "@opensteer/client/connections";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
@@ -10,6 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerUseBlock, type ComputerUseLocalActions } from "./computer-use-section.js";
+import { localSession } from "../use-action.js";
 
 const mac = "rnr_11111111-1111-4111-8111-111111111111";
 const setupRequestId = "00000000-0000-4000-8000-000000000007";
@@ -97,7 +99,7 @@ describe("ComputerUseBlock", () => {
     });
     await click(button(container, "Set up on this Mac"));
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
-      "The Computer use permissions panel could not load the bundled application.",
+      "Couldn't confirm System Settings opened.",
     );
   });
 
@@ -303,13 +305,16 @@ describe("ComputerUseBlock", () => {
 
     await click(button(container, "Add app"));
     await settle();
-    expect(installed).toHaveBeenCalledWith({
-      icons: true,
-      limit: 50,
-      offset: 0,
-      query: "",
-      runnerId: mac,
-    });
+    expect(installed).toHaveBeenCalledWith(
+      {
+        icons: true,
+        limit: 50,
+        offset: 0,
+        query: "",
+        runnerId: mac,
+      },
+      { signal: expect.any(AbortSignal) },
+    );
     const candidates = [...dialog().querySelectorAll<HTMLElement>(".computer-use__list > li")];
     // Notes is already approved, so it is listed as such and offers no choice.
     expect(
@@ -364,8 +369,137 @@ describe("ComputerUseBlock", () => {
     await click(button(candidate, "Can see"));
     expect(candidate.getAttribute("aria-busy")).toBe("true");
     await act(async () => review.reject(new Error("Can't verify this app right now.")));
-    expect(candidate.textContent).toContain("Can't verify this app right now.");
+    expect(candidate.textContent).toContain("Couldn't confirm this app was added.");
     expect(button(candidate, "Can see")?.disabled).toBe(false);
+  });
+
+  it("keeps the listed apps through an outage and rereads the current search on recovery", async () => {
+    vi.useFakeTimers();
+    let ready = true;
+    const installed = vi.fn(async (input: unknown) => {
+      if (!ready) throw new TypeError("Failed to fetch");
+      const { query } = input as { query: string };
+      return {
+        data: {
+          apps: [query ? preview : notes].map((identity) => ({ identity, running: false })),
+          total: 1,
+        },
+        ok: true,
+      };
+    });
+    const connection = switchableConnection();
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(dialog().textContent).toContain("Notes");
+    ready = false;
+    await act(async () => connection.set(false));
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]');
+    if (!search) throw new Error("search missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(search, "pre");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+    expect(dialog().textContent).toContain("Notes");
+    ready = true;
+    await act(async () => connection.set(true));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ query: "pre" }), {
+      signal: expect.any(AbortSignal),
+    });
+    expect(dialog().textContent).toContain("Preview");
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the current picker search when its old answer fails after recovery", async () => {
+    vi.useFakeTimers();
+    const old = Promise.withResolvers<never>();
+    const connection = switchableConnection();
+    const installed = vi.fn(async (input: unknown, _options?: { signal: AbortSignal }) => ({
+      ok: true,
+      data: {
+        apps: [{ identity: (input as { query: string }).query ? preview : notes, running: false }],
+        total: 1,
+      },
+    }));
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await act(async () => vi.runAllTimersAsync());
+    installed.mockImplementationOnce(() => old.promise);
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        search,
+        "pre",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.runAllTimersAsync();
+    });
+    await act(async () => vi.runAllTimersAsync());
+    expect(installed).toHaveBeenCalledTimes(2);
+    const oldSignal = installed.mock.calls[1]?.[1]?.signal;
+    await act(async () => connection.set(false));
+    await act(async () => connection.set(true));
+    await act(async () => old.reject(new TypeError("Failed to fetch")));
+    expect(dialog().textContent).toContain("Preview");
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
+    expect(oldSignal?.aborted).toBe(true);
+  });
+
+  it("retries a failed next page and starts at page zero under a different login", async () => {
+    const connection = switchableConnection();
+    let rejectNext = true;
+    const installed = vi.fn(async (input: unknown) => {
+      const { offset } = input as { offset: number };
+      if (offset !== 0 && rejectNext) {
+        rejectNext = false;
+        return { ok: false, error: { code: "internal", message: "Failed", retryable: false } };
+      }
+      return {
+        ok: true,
+        data: { apps: [{ identity: offset === 0 ? notes : preview, running: false }], total: 2 },
+      };
+    });
+    const { container } = await mount({
+      connection: connection.connection,
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await settle();
+    await click(button(dialog(), "Show more"));
+    await settle();
+    expect(dialog().querySelector('[role="alert"]')).not.toBeNull();
+    await click(button(dialog(), "Show more"));
+    await settle();
+    expect(installed.mock.calls.map(([input]) => (input as { offset: number }).offset)).toEqual([
+      0, 1, 1,
+    ]);
+    expect(dialog().textContent).toContain("Preview");
+    await act(async () => connection.replaceLogin());
+    await settle();
+    expect(
+      installed.mock.calls.slice(3).map(([input]) => (input as { offset: number }).offset),
+    ).toEqual([0]);
+    expect(dialog().textContent).toContain("Notes");
+    expect(dialog().textContent).not.toContain("Preview");
   });
 
   it("searches and pages on the Mac rather than in the page", async () => {
@@ -389,7 +523,9 @@ describe("ComputerUseBlock", () => {
       await vi.runAllTimersAsync();
     });
     await click(button(container, "Show more"));
-    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, query: "" }));
+    expect(installed).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, query: "" }), {
+      signal: expect.any(AbortSignal),
+    });
     expect(container.querySelectorAll(".computer-use__list > li")).toHaveLength(2);
 
     const search = container.querySelector<HTMLInputElement>('input[type="search"]');
@@ -404,6 +540,7 @@ describe("ComputerUseBlock", () => {
     });
     expect(installed).toHaveBeenLastCalledWith(
       expect.objectContaining({ offset: 0, query: "not" }),
+      { signal: expect.any(AbortSignal) },
     );
     expect(button(container, "Show more")).toBeNull();
   });
@@ -437,7 +574,9 @@ describe("ComputerUseBlock", () => {
     );
     expect(button(container, "Decline Preview")?.textContent).toBe("Declining…");
     await act(async () => answer.reject(new Error("Studio did not answer.")));
-    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio did not answer.");
+    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(container.querySelector(".notice--error")).toBeNull();
   });
 
@@ -447,13 +586,19 @@ describe("ComputerUseBlock", () => {
       view: view({}),
       dispatch: async (command) => {
         if (command.type === "integration.computer.setup.respond")
-          throw new Error("Your session changed. Review this approval again.");
+          throw new HostClientRequestError({
+            code: "unauthorized",
+            status: 401,
+            message: "Your session changed. Review this approval again.",
+          });
         return { type: command.type, request: { id: setupRequestId } };
       },
     });
     await click(radio(container, "automatic"));
     await click(button(dialog(), "Allow"));
-    expect(dialog().textContent).toContain("Your session changed.");
+    // Said in the presenter's words, never the Host's own sentence.
+    expect(dialog().textContent).toContain("Signed out");
+    expect(dialog().textContent).not.toContain("Your session changed.");
     expect(radio(container, "automatic").checked).toBe(false);
   });
 
@@ -479,7 +624,9 @@ describe("ComputerUseBlock", () => {
     expect(stop).toHaveBeenCalledTimes(1);
 
     await act(async () => answer.reject(new Error("Studio is offline.")));
-    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio is offline.");
+    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(sessionRow?.querySelector("button")?.textContent).toBe("Stop");
     expect(container.querySelector(".notice--error")).toBeNull();
   });
@@ -487,6 +634,7 @@ describe("ComputerUseBlock", () => {
 
 interface MountInput {
   readonly dispatch?: (command: { type: string }) => Promise<unknown>;
+  readonly connection?: ClientConnection;
   readonly local?: ComputerUseLocalActions | null;
   readonly onChanged?: () => Promise<void>;
   readonly refresh?: () => Promise<void>;
@@ -500,6 +648,7 @@ async function mount(input: MountInput) {
   const root = createRoot(container);
   mountedRoots.push(root);
   const hostClient = {
+    connection: input.connection ?? localSession.connection,
     dispatch: input.dispatch ?? (async (command: { type: string }) => ({ type: command.type })),
     // Stop outcomes are kept per signed-in person on one deployment.
     getSnapshot: () => ({
@@ -644,6 +793,32 @@ function reviewResult() {
         path: "/System/Applications/Preview.app",
         risk: "normal",
       },
+    },
+  };
+}
+
+function switchableConnection() {
+  const listeners = new Set<() => void>();
+  let state: ClientConnectionState = localSession.connection.getSnapshot();
+  const connection: ClientConnection = {
+    getSnapshot: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    retry: () => undefined,
+  };
+  return {
+    connection,
+    replaceLogin() {
+      state = { ...state, scope: { ...state.scope!, loginId: "replacement" } };
+      for (const listener of listeners) listener();
+    },
+    set(ready: boolean) {
+      state = ready
+        ? { ...state, phase: "ready", network: "online", readyRevision: state.readyRevision + 1 }
+        : { ...state, phase: "recovering", network: "offline" };
+      for (const listener of listeners) listener();
     },
   };
 }

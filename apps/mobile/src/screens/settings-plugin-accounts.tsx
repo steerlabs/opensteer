@@ -1,6 +1,5 @@
 import type { NativeSettingsSection, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
-  canRespondToRequests,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
@@ -19,9 +18,11 @@ import {
   integrationAuthorizationSettled,
   integrationAuthorizationCancelUnconfirmedDetail,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useClientRead, useHostSelector } from "@opensteer/client/react";
+import type { ActionOutcome } from "@opensteer/client/actions";
+import { createClientRead } from "@opensteer/client/reads";
 import { useIsFocused } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
   Alert,
@@ -32,10 +33,12 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { notDone, readLine, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { IntegrationOAuthAppForm } from "../thread/integration-oauth-app-form.js";
@@ -78,32 +81,30 @@ function ConnectedApps(props: {
 }) {
   const { hostClient, hostName } = props;
   const mobile = useMobileClient();
-  const active = useRef(true);
-  const viewer = useRef(hostClient.getSnapshot().user?.id);
-  const current = useCallback(
-    () =>
-      active.current &&
-      hostClient.getSnapshot().user?.id === viewer.current &&
-      canRespondToRequests(hostClient.getSnapshot()),
-    [hostClient],
-  );
-  useEffect(() => {
-    active.current = true;
-    return () => {
-      active.current = false;
-    };
-  }, [hostClient]);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
-  const online = useHostSelector(hostClient, canRespondToRequests);
-  const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
+  const resource = useMemo(
+    () =>
+      createClientRead(hostClient, {
+        key: "integration-accounts",
+        label: "your apps",
+        read: () => readDashboard(hostClient),
+      }),
+    [hostClient],
+  );
+  const read = useClientRead(resource);
+  const dashboard = read.data?.dashboard ?? null;
+  const platform = read.data?.platform ?? null;
+  const apps = useMemo(
+    () => (read.data ? connectedAppsModel({ ...read.data, hostName }) : null),
+    [read.data, hostName],
+  );
   const [ownApp, setOwnApp] = useState(false);
   const [savedSource, setSavedSource] = useState<{
     readonly definitionId: string;
     readonly source: IntegrationOAuthApplicationSource;
   } | null>(null);
-  const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
   const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const keyAttempt = useRef<{
     command: Extract<
@@ -112,10 +113,8 @@ function ConnectedApps(props: {
     >;
     known: Set<string>;
   } | null>(null);
-  const [apps, setApps] = useState<readonly ConnectedAppModel[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [pendingConnection, setPendingConnection] = useState<string | null>(null);
+  /** What the last action said: its own words (connected, cancelled), or null. */
   const [done, setDone] = useState<string | null>(null);
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
@@ -126,23 +125,50 @@ function ConnectedApps(props: {
   const awaitingRepositories = useRef<{ readonly id: string; readonly title: string } | null>(null);
   const returned = useRef<() => void>(() => undefined);
 
-  const load = useCallback(async () => {
-    try {
-      const [dashboard, platform] = await Promise.all([
-        hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-        hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-      ]);
-      if (!current()) return null;
-      setDashboard(dashboard);
-      setPlatform(platform);
-      setApps(connectedAppsModel({ dashboard, hostName, platform }));
-      setLoadError(null);
-      return dashboard;
-    } catch (reason) {
-      if (current()) setLoadError(operationDetail(reason, "Connections could not be loaded."));
+  /** A fresh read for an action that needs the answer now; the screen's list follows. */
+  const load = async (): Promise<IntegrationDashboard> => {
+    const fresh = await readDashboard(hostClient);
+    resource.invalidate();
+    return fresh.dashboard;
+  };
+  const connect = useScreenAction(hostClient, "integration-connect", {
+    label: "connect the account",
+    done: "connected",
+    happened: "the account was connected",
+    execute: (work: () => Promise<string | null>) => work(),
+    // A lost answer may still have connected it; the list read again shows what happened.
+    reconcile: async () => {
+      await resource.refresh();
       return null;
-    }
-  }, [hostClient, hostName, current]);
+    },
+  });
+  const disconnectAction = useScreenAction(hostClient, "integration-disconnect", {
+    label: "disconnect the account",
+    done: "disconnected",
+    happened: "the account was disconnected",
+    execute: (work: {
+      readonly connectionId: string;
+      readonly run: () => Promise<string | null>;
+    }) => work.run(),
+    reconcile: async (work) => {
+      const fresh = await load();
+      return fresh.connections.some((connection) => connection.id === work.connectionId)
+        ? notDone("disconnected")
+        : { kind: "confirmed", value: null };
+    },
+  });
+  const saveApp = useScreenAction(hostClient, "integration-own-app", {
+    label: "save your app",
+    done: "saved",
+    happened: "your app was saved",
+    execute: (work: () => Promise<string | null>) => work(),
+    reconcile: async () => {
+      await resource.refresh();
+      return null;
+    },
+  });
+  const actionLine = connect.line ?? disconnectAction.line ?? saveApp.line;
+  const loadLine = readLine(read, read.refresh);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
@@ -152,27 +178,33 @@ function ConnectedApps(props: {
     return () => subscription.remove();
   }, []);
 
-  // Read when shown and when the person comes back, as from GitHub in the browser.
+  // Read again when shown and when the person comes back, as from GitHub in the browser.
   useEffect(() => {
-    if (focused && foreground && online) void load();
-  }, [focused, foreground, load, online]);
+    if (focused && foreground) resource.invalidate();
+  }, [focused, foreground, resource]);
 
-  /** One action at a time, its failure said once, and the list read again after it. */
-  const run = async (key: string, action: () => Promise<string | null>) => {
-    if (busy !== null || !current()) return;
+  /** One action at a time; what it says is kept once, and the list read again after it. */
+  const run = async <I,>(
+    key: string,
+    action: { readonly run: (input: I) => Promise<ActionOutcome<string | null>> },
+    input: I,
+  ) => {
+    if (busy !== null) return;
     setBusy(key);
-    setError(null);
     setDone(null);
+    connect.dismiss();
+    disconnectAction.dismiss();
+    saveApp.dismiss();
     try {
-      const message = await action();
-      if (current() && message !== null) {
+      const outcome = await action.run(input);
+      const message = outcome.kind === "confirmed" ? (outcome.value ?? null) : null;
+      if (message !== null) {
         setDone(message);
         void AccessibilityInfo.announceForAccessibility(message);
       }
-    } catch (reason) {
-      if (current()) setError(operationDetail(reason, "That did not finish. Try again."));
     } finally {
-      if (current()) setBusy(null);
+      setBusy(null);
+      resource.invalidate();
     }
   };
 
@@ -188,7 +220,7 @@ function ConnectedApps(props: {
     const access = unwrapRpcResult(
       await hostClient.rpc["integration.repositoryAccess.check"]({ connectionId: account.id }),
     );
-    await load();
+    resource.invalidate();
     if (access.ready) {
       awaitingRepositories.current = null;
       return `${account.title} is connected.`;
@@ -196,11 +228,8 @@ function ConnectedApps(props: {
     awaitingRepositories.current = account;
     if (!openGitHub) return null;
     const url = access.installationUrl ?? access.installations[0]?.configureUrl ?? null;
-    if (url === null) {
-      throw new Error(
-        "This sign-in app has no GitHub App installation link. Choose repositories from Opensteer on a computer.",
-      );
-    }
+    if (url === null)
+      return "This sign-in app has no GitHub App installation link. Choose repositories from Opensteer on a computer.";
     await Linking.openURL(url);
     return null;
   };
@@ -208,40 +237,41 @@ function ConnectedApps(props: {
   useEffect(() => {
     returned.current = () => {
       const account = awaitingRepositories.current;
-      if (account !== null) void run(account.id, () => finishRepositories(account, false));
+      if (account !== null) void run(account.id, connect, () => finishRepositories(account, false));
     };
   });
 
   const signIn = (app: ConnectedAppModel, key: string) => {
     const start = (source: IntegrationOAuthApplicationSource) =>
-      void run(key, async () => {
+      void run(key, connect, async () => {
         const controller = new AbortController();
         setSigningIn(controller);
-        const status = await integrationAuthorizationSettled(
-          mobile
-            .beginIntegrationAuthorization({
-              applicationSource: source,
-              definitionId: app.definitionId,
-              signal: controller.signal,
-            })
-            .finally(() => setSigningIn(null)),
-          () => setCancelUnconfirmed(true),
-        ).finally(() => setCancelUnconfirmed(false));
-        if (!current()) return null;
-        const outcome = integrationAuthorizationError(status.status, status.failureCode);
-        if (outcome !== null) throw new Error(outcome);
-        const dashboard = await load();
-        const connection =
-          dashboard === null ? null : authorizationConnection(dashboard, status.connectionId);
-        if (connection === null) {
-          throw new Error(
-            `${app.name} reported success, but no connected account is recorded here. Try again.`,
-          );
+        let status: Awaited<ReturnType<typeof integrationAuthorizationSettled>>;
+        try {
+          status = await integrationAuthorizationSettled(
+            mobile
+              .beginIntegrationAuthorization({
+                applicationSource: source,
+                definitionId: app.definitionId,
+                signal: controller.signal,
+              })
+              .finally(() => setSigningIn(null)),
+            () => setCancelUnconfirmed(true),
+          ).finally(() => setCancelUnconfirmed(false));
+        } catch (error) {
+          // The person's own Cancel, settled here: a fact, not a lost answer.
+          if (controller.signal.aborted) return integrationAuthorizationError("cancelled", null);
+          throw error;
         }
+        // Cancelled, refused or failed at the provider: its own words, not a lost answer.
+        const outcome = integrationAuthorizationError(status.status, status.failureCode);
+        if (outcome !== null) return outcome;
+        const connection = authorizationConnection(await load(), status.connectionId);
+        if (connection === null)
+          return `${app.name} reported success, but no connected account is recorded here. Try again.`;
         setPendingConnection(connection.id);
         await props.onConnected?.(connection.id);
         setPendingConnection(null);
-        if (!current()) return null;
         const account = { id: connection.id, title: integrationAccountTitle(connection) };
         return connection.status === "connected"
           ? `${account.title} is connected.`
@@ -266,22 +296,24 @@ function ConnectedApps(props: {
   };
 
   const chooseRepositories = (account: ConnectedAccountRow) =>
-    void run(account.id, () => finishRepositories(account, true));
+    void run(account.id, connect, () => finishRepositories(account, true));
 
   const disconnect = (account: ConnectedAccountRow) =>
     Alert.alert(account.title, "Agents stop using this account. You can connect it again.", [
       {
         onPress: () =>
-          void run(account.id, async () => {
-            const result = await hostClient.dispatch({
-              connectionId: account.id,
-              idempotencyKey: mutationIdempotencyKey(`integration-disconnect:${account.id}`),
-              type: "integration.disconnect",
-            });
-            await load();
-            return result.type === "integration.disconnect" && result.notice !== null
-              ? result.notice
-              : `${account.title} is disconnected.`;
+          void run(account.id, disconnectAction, {
+            connectionId: account.id,
+            run: async () => {
+              const result = await hostClient.dispatch({
+                connectionId: account.id,
+                idempotencyKey: mutationIdempotencyKey(`integration-disconnect:${account.id}`),
+                type: "integration.disconnect",
+              });
+              return result.type === "integration.disconnect" && result.notice !== null
+                ? result.notice
+                : `${account.title} is disconnected.`;
+            },
           }),
         style: "destructive",
         text: "Disconnect",
@@ -299,13 +331,13 @@ function ConnectedApps(props: {
     ownApp && manifest && provider && dashboard ? (
       <Sheet open={ownApp} onClose={() => setOwnApp(false)} title="Your own app">
         <View style={{ padding: space[16], gap: space[16] }}>
-          {error ? <Notice title="App could not be saved" detail={error} /> : null}
+          {saveApp.line ? <ActionLine line={saveApp.line} numberOfLines={2} /> : null}
           <IntegrationOAuthAppForm
             busy={busy !== null}
             callbackUrl={dashboard.callbackUrls[provider] ?? ""}
             manifest={manifest}
             onSave={(draft) =>
-              void run("own-app", async () => {
+              void run("own-app", saveApp, async () => {
                 const saved = await hostClient.dispatch({
                   idempotencyKey: mutationIdempotencyKey(`integration-app:${provider}`),
                   input: {
@@ -319,11 +351,8 @@ function ConnectedApps(props: {
                   },
                   type: "integration.providerApplication.save",
                 });
-                if (saved.type !== "integration.providerApplication.save")
-                  throw new Error("Integration application command mismatch.");
-                if (!current()) return null;
+                if (saved.type !== "integration.providerApplication.save") return null;
                 const fresh = await load();
-                if (!fresh || !current()) return null;
                 const source = connectSavedSource(fresh, saved.application);
                 setSavedSource(
                   source && definition ? { definitionId: definition.id, source } : null,
@@ -346,7 +375,7 @@ function ConnectedApps(props: {
       kind: "button",
       label,
       onPress,
-      disabled: busy !== null || !online,
+      disabled: busy !== null,
     });
     const sections: NativeSettingsSection[] = [];
     if (busy)
@@ -366,14 +395,23 @@ function ConnectedApps(props: {
             : []),
         ],
       });
-    if (error || loadError || done)
+    const said = settingsFooter(actionLine ?? loadLine);
+    if (said || done)
       sections.push({
         key: "account-status",
-        title: error || loadError ? "Needs you" : "Sign-in",
-        rows: [
-          { key: "status", kind: "text", label: error ?? loadError ?? done ?? "" },
-          ...(loadError ? [button("retry", "Try again", () => void load())] : []),
-        ],
+        title: "Sign-in",
+        rows: done === null ? [] : [{ key: "status", kind: "text", label: done }],
+        ...(said ? { footer: said } : {}),
+      });
+    if (apps === null && loadLine === null)
+      sections.push({
+        key: "accounts-waiting",
+        title: "Sign in",
+        rows: [0, 1, 2].map((index) => ({
+          key: `placeholder:${index}`,
+          kind: "placeholder" as const,
+          label: "Not loaded yet",
+        })),
       });
     if (pendingConnection && props.onConnected)
       sections.push({
@@ -384,7 +422,7 @@ function ConnectedApps(props: {
             "retry-placement",
             "Retry placement",
             () =>
-              void run("placement", async () => {
+              void run("placement", connect, async () => {
                 await props.onConnected?.(pendingConnection);
                 setPendingConnection(null);
                 return "Connected and turned on in your chosen places.";
@@ -410,10 +448,9 @@ function ConnectedApps(props: {
             `connect-key:${method.id}`,
             keyAttempt.current ? "Retry connection" : "Connect account",
             () =>
-              void run("api-key", async () => {
+              void run("api-key", connect, async () => {
                 if (!keyAttempt.current) {
                   const before = await load();
-                  if (!before || !current()) throw new Error("Reconnect before adding an account.");
                   keyAttempt.current = {
                     known: new Set(before.connections.map((connection) => connection.id)),
                     command: {
@@ -430,15 +467,12 @@ function ConnectedApps(props: {
                 const attempt = keyAttempt.current;
                 await hostClient.dispatch(attempt.command);
                 const after = await load();
-                if (!after || !current()) return null;
                 const matches = after.connections.filter(
                   (connection) =>
                     connection.definitionId === definition!.id && !attempt.known.has(connection.id),
                 );
                 if (matches.length !== 1)
-                  throw new Error(
-                    "The connected account could not be identified. Review it in Plugins.",
-                  );
+                  return "The connected account could not be identified. Review it in Plugins.";
                 const connection = matches[0]!;
                 setKeyValues({});
                 setPendingConnection(connection.id);
@@ -495,7 +529,7 @@ function ConnectedApps(props: {
         title: "Sign-in app",
         rows: [
           button("own-app", "Use my own OAuth app", () => {
-            setError(null);
+            saveApp.dismiss();
             setOwnApp(true);
           }),
         ],
@@ -507,19 +541,13 @@ function ConnectedApps(props: {
       </>
     );
   }
+  const said: ActionLineValue | null = actionLine ?? loadLine;
   return (
     <Screen edgeToEdge>
       <ScrollView
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
       >
-        {online ? null : (
-          <Notice
-            detail="Reconnect to see your apps or make changes."
-            title={`${hostName} is not connected`}
-            tone="neutral"
-          />
-        )}
         {signingIn ? (
           <SecondaryButton label="Cancel sign-in" onPress={() => signingIn.abort()} />
         ) : null}
@@ -530,15 +558,13 @@ function ConnectedApps(props: {
             tone="neutral"
           />
         ) : null}
-        {done === null ? null : <Notice detail={done} title="Done" tone="neutral" />}
-        {error === null ? null : <Notice detail={error} title="That did not finish" />}
-        {loadError === null ? null : (
-          <Notice
-            action={{ label: "Try again", onPress: () => void load() }}
-            detail={loadError}
-            title="Connections could not be loaded"
-          />
+        {done === null ? null : (
+          <AppText role="secondary" tone="muted">
+            {done}
+          </AppText>
         )}
+        {said === null ? null : <ActionLine line={said} numberOfLines={2} />}
+        {apps === null && loadLine === null ? <PlaceholderRows /> : null}
         {apps !== null && apps.length === 0 ? (
           <AppText role="secondary" tone="muted">
             No apps yet. Add one from Opensteer on a computer, or when an agent asks for it.
@@ -547,9 +573,9 @@ function ConnectedApps(props: {
         {canSetUp ? (
           <SecondaryButton
             label="Use my own OAuth app"
-            disabled={busy !== null || !online}
+            disabled={busy !== null}
             onPress={() => {
-              setError(null);
+              saveApp.dismiss();
               setOwnApp(true);
             }}
           />
@@ -727,3 +753,14 @@ const styles = StyleSheet.create({
   pressed: { backgroundColor: color.surfacePressed },
   status: { alignItems: "center", flexDirection: "row", gap: space[6] },
 });
+
+async function readDashboard(hostClient: HostClient): Promise<{
+  readonly dashboard: IntegrationDashboard;
+  readonly platform: IntegrationPlatformDashboardView;
+}> {
+  const [dashboard, platform] = await Promise.all([
+    hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+    hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+  ]);
+  return { dashboard, platform };
+}

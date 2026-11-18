@@ -5,7 +5,7 @@ import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js
 import { notificationPreviewNative } from "../modules/notification-preview/index.js";
 import { NotificationPreviews } from "./notifications/notification-preview.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
-import { ConnectionPill } from "./ui/connection-pill.js";
+import { ConnectionPill } from "./ui/connection-shell.js";
 import { VoiceOverlay } from "./voice/controls.js";
 import { VoiceProvider } from "./voice/context.js";
 
@@ -51,7 +51,7 @@ import { createTransportNetwork } from "./platform/host-network.js";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
-import { MobileClient, operationDetail } from "./client/mobile-client.js";
+import { MobileClient } from "./client/mobile-client.js";
 import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
@@ -114,6 +114,12 @@ import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
 import { AppText, Notice } from "./ui/primitives.js";
+import { failureWords } from "./ui/client-feedback.js";
+import {
+  subscribeToDraftPastes,
+  supportsDraftPastes,
+} from "../modules/composer-editor/paste-events.js";
+import { receiveNativeDraftPastes } from "./thread/draft-attachments.js";
 
 /**
  * The composition root, and the only place any of this is wired.
@@ -314,6 +320,9 @@ function mobileClient(): MobileRoot {
         port.signedInSubject,
       );
   const client: MobileClient = new MobileClient({
+    afterMessageSent: () => {
+      void notifications.registration.sync();
+    },
     notificationPreviews: previews,
     lifecycle,
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
@@ -323,6 +332,7 @@ function mobileClient(): MobileRoot {
     quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
     forgetDraftFiles,
+    forgetMessageFiles: forgetDraftFiles,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
     hostPort: configuration.mock
@@ -447,6 +457,11 @@ const startupRefusal: StartupFailure | null =
 
 export function App(): ReactNode {
   const [{ broker, client, entry, iphone, notifications, teams }] = useState(mobileClient);
+  useEffect(() => {
+    if (supportsDraftPastes())
+      return receiveNativeDraftPastes(client.drafts, subscribeToDraftPastes);
+    return undefined;
+  }, [client]);
   const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(startupRefusal);
   const [initialNavigationState, setInitialNavigationState] = useState<InitialState | null>(null);
   const [linkFailure, setLinkFailure] = useState<string | null>(null);
@@ -511,10 +526,11 @@ export function App(): ReactNode {
                 if (!current()) return;
                 destinations.selectionFailed();
                 setLinkFailure(
-                  operationDetail(
+                  failureWords(
                     error,
-                    "That deployment could not be opened. You can try again there.",
-                  ),
+                    { label: "open that computer", done: "opened" },
+                    "That computer could not be opened. You can try again there.",
+                  ) ?? "",
                 );
                 observeRootSelection();
               }),
@@ -541,7 +557,11 @@ export function App(): ReactNode {
         },
         failed: (error) =>
           setLinkFailure(
-            operationDetail(error, "That link could not be opened. Try opening it again."),
+            failureWords(
+              error,
+              { label: "open that link", done: "opened" },
+              "That link could not be opened. Try opening it again.",
+            ) ?? "",
           ),
         settled: () => observeRootSelection(),
       }),
@@ -615,7 +635,12 @@ export function App(): ReactNode {
       })
       .catch((error: unknown) => {
         setStartupFailure({
-          detail: operationDetail(error, "Opensteer could not read this device's storage."),
+          detail:
+            failureWords(
+              error,
+              { label: "read this device's storage" },
+              "Opensteer could not read this device's storage.",
+            ) ?? "Opensteer could not read this device's storage.",
           title: "This device's storage did not answer",
         });
       });
@@ -630,11 +655,6 @@ export function App(): ReactNode {
   useEffect(() => {
     if (startupRefusal !== null) return;
     teams.start();
-    // No team socket while nobody looks; the team in front reconnects on return.
-    const state = AppState.addEventListener("change", (next) =>
-      teams.foreground(next === "active"),
-    );
-    return () => state.remove();
   }, [teams]);
 
   useEffect(() => {
@@ -796,9 +816,9 @@ export function App(): ReactNode {
                             theme={navigationTheme}
                           />
                           <TeamReadyNotices />
+                          <ConnectionPill />
                         </MobileTeamsProvider>
                       </AppLinksProvider>
-                      <ConnectionPill />
                       <OpenComputer />
                       {/* Outside the navigator: a Request card on the bar still navigates. */}
                       <NavigationContainerRefContext value={navigationRef}>

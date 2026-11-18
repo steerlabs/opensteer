@@ -62,11 +62,15 @@ export function ComputerUseBlock(props: {
 }): ReactNode {
   const { hostClient, machine, view } = props;
   const approval = useComputerAppApproval(hostClient);
-  const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
+  const { busy, failureFor, run } = useBlockActions(
+    props.canRespond,
+    props.onChanged,
+    props.hostClient,
+  );
   const [apps, setApps] = useState<readonly ComputerUseInstalledApp[] | null>(null);
   const [query, setQuery] = useState("");
   const viewer = { here: false, machineName: machine.name };
-  const disabled = !props.canRespond || busy !== null;
+  const disabled = busy !== null;
   async function request(
     input:
       | {
@@ -279,8 +283,12 @@ export function PhoneUseBlock(props: {
   readonly view: PhoneUseView;
 }): ReactNode {
   const { hostClient, machine, view } = props;
-  const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
-  const disabled = !props.canRespond || busy !== null;
+  const { busy, failureFor, run } = useBlockActions(
+    props.canRespond,
+    props.onChanged,
+    props.hostClient,
+  );
+  const disabled = busy !== null;
 
   const setAccess = (access: "read" | "read-write" | null): void => {
     run("access", async () => {

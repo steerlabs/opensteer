@@ -1,3 +1,15 @@
+import { nameConnectionFromHost } from "./host-connection.js";
+import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
+import {
+  clientScopeKey,
+  createConnectionController,
+  type ConnectionController,
+  type ConnectionAttempt,
+  type ConnectionLease,
+  type ClientScope,
+} from "../connections/connection-controller.js";
+import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
@@ -153,11 +165,7 @@ import { RunPlaceStore } from "./run-place.js";
 import {
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
-  connectionInterruptionHoldMs,
-  socketProbeDeadlineMs,
-  socketTrustWindowMs,
   type ClientLifecycle,
-  type ClientNetworkPath,
   type ClientNetworkState,
   type ClientVisibility,
 } from "./lifecycle.js";
@@ -268,7 +276,6 @@ const defaultReconnectMaxDelayMs = 12_000;
 /** Times a channel fails at one position before it starts over from a snapshot. */
 const realtimeReplayAttempts = 3;
 /** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
-const unreadableFrameMaxDelayMs = 5 * 60_000;
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
 const rememberedNotificationIds = 256;
 
@@ -374,13 +381,11 @@ interface DeploymentChannel {
   /** The version `cursor` was read at; state read at another one is replaced. */
   apiVersion: number;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
-  probeFollowsNetwork: boolean;
   probeNonce: string | null;
-  probeTimer: Timer | null;
+  probeResolve: (() => void) | null;
   /** When the current socket last showed its subscription delivering. */
   progressAt: number;
-  reconnectAttempt: number;
-  reconnectTimer: Timer | null;
+  interrupted: boolean;
   /** Whether this subscription was answered by replay, which carries events but never notices. */
   resumed: boolean;
   socket: WebSocketClient | null;
@@ -388,7 +393,6 @@ interface DeploymentChannel {
   /** Replay and sync frames this client could not read since it last synchronized. */
   unreadableFrames: number;
   /** While frames are unreadable, when the next attempt may start. */
-  unreadableRetryAt: number;
   deploymentId: string;
 }
 
@@ -414,6 +418,11 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly presentation?: import("../connections/connection-controller.js").ConnectionPresentation;
+  readonly connectionController?: ConnectionController;
+  readonly clientScope?: () => ClientScope | null;
+  /** Browser and desktop credentials are selected outside the renderer. */
+  readonly bindMutationsToSession?: boolean;
   readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
@@ -440,7 +449,6 @@ export interface HttpHostClientOptions {
   readonly realtimeLiveness?: { readonly idleMs: number; readonly deadlineMs: number };
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
-  readonly refreshIntervalMs?: number;
   /** Where a platform keeps a record of realtime frames this client could not read. */
   readonly reportRealtimeFrame?: (record: RealtimeFrameDiagnostic) => void;
 
@@ -457,6 +465,12 @@ type AttachmentRead = {
 };
 
 export class HttpHostClient {
+  readonly connection: ConnectionController;
+  readonly #ownsConnection: boolean;
+  readonly #clientScope: (() => ClientScope | null) | undefined;
+  readonly #bindMutationsToSession: boolean;
+  #connectionPathRevision = 0;
+  #connectionFailed: ((error: unknown) => void) | null = null;
   readonly browserPasskeys: BrowserPasskeys;
   readonly iphoneSetup: IphoneSetupPort | undefined;
   readonly browserHistory: BrowserHistoryClient;
@@ -884,27 +898,24 @@ export class HttpHostClient {
   readonly #latestTranscriptLoads = new Map<string, Promise<void>>();
   #activeThreadId: string | null = null;
   #hostUnreachable = false;
-  #interruptionTimer: ReturnType<typeof setTimeout> | null = null;
-  readonly #random: () => number;
   readonly #livenessIdleMs: number;
   readonly #livenessDeadlineMs: number;
-  #livenessTimer: Timer | null = null;
-  readonly #reconnectBaseDelayMs: number;
-  readonly #reconnectMaxDelayMs: number;
+  #handshakeTimer: Timer | null = null;
   readonly #reportRealtimeFrame: ((record: RealtimeFrameDiagnostic) => void) | undefined;
   #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
   #lostFrameRereadTimer: Timer | null = null;
-  readonly #refreshIntervalMs: number;
 
   readonly #webSocketFactory: (url: string) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
-  readonly #socketTrustWindowMs: number;
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
-  #backgroundedAt: number | null = null;
 
   #bootstrapPromise: Promise<void> | null = null;
   #bootstrapFailed = false;
+  #bootstrapReadGeneration = 0;
+  #attemptBootstrap: Promise<void> | null = null;
+  #bootstrapAttemptSignal: AbortSignal | undefined;
+  #authRestored = false;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
   #tasksStale = false;
@@ -917,7 +928,6 @@ export class HttpHostClient {
   >();
 
   #disposed = false;
-  #refreshTimer: Timer | null = null;
 
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
   #remembering: Promise<unknown> = Promise.resolve();
@@ -968,9 +978,13 @@ export class HttpHostClient {
       baseUrl: this.#baseUrl,
       fetch: this.#fetch,
       ...(options.pacedUploads ? { pacedUploads: true } : {}),
-      onAuthenticationRequired: () => {
-        this.#expireSession();
-        this.#reverifyCapabilities();
+      onAuthenticationRequired: (method) => {
+        const checking =
+          method === "bootstrap.get" &&
+          this.#bootstrapAttemptSignal &&
+          !this.connection.getSnapshot().scope;
+        this.#expireSession(!checking);
+        if (!checking) this.#reverifyCapabilities();
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
@@ -1029,24 +1043,30 @@ export class HttpHostClient {
           listener();
         }),
     });
-    this.#random = options.random ?? Math.random;
     this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
     this.#livenessDeadlineMs = Math.max(
       1,
       options.realtimeLiveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs,
     );
-    this.#reconnectBaseDelayMs = Math.max(
-      0,
-      options.reconnectBaseDelayMs ?? defaultReconnectBaseDelayMs,
-    );
-    this.#reconnectMaxDelayMs = Math.max(
-      this.#reconnectBaseDelayMs,
-      options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
-    );
-    this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
+    this.#clientScope = options.clientScope;
+    this.#bindMutationsToSession = options.bindMutationsToSession ?? false;
+    this.#ownsConnection = !options.connectionController;
+    this.connection =
+      options.connectionController ??
+      createConnectionController({
+        driver: { connect: (attempt) => this.openConnection(attempt) },
+        keepAliveInBackground: () => this.#notificationListeners.size > 0,
+        ...(options.presentation ? { presentation: options.presentation } : {}),
+        ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
+        ...(options.random ? { random: options.random } : {}),
+        ...(options.realtimeLiveness ? { liveness: options.realtimeLiveness } : {}),
+        backoff: {
+          baseMs: options.reconnectBaseDelayMs ?? defaultReconnectBaseDelayMs,
+          maximumMs: options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
+        },
+      });
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
-    this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
     const lifecycle = options.lifecycle?.getSnapshot();
     this.#network = lifecycle?.network ?? "unknown";
     this.#snapshot = {
@@ -1075,10 +1095,39 @@ export class HttpHostClient {
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
-    if (this.#visibility === "background") this.#backgroundedAt = Date.now();
     this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
-    if (options.lifecycle) this.#observeLifecycle(options.lifecycle);
+    this.#lifecycleDisposers.push(
+      this.connection.subscribe(() => {
+        const state = this.connection.getSnapshot();
+        const visibilityChanged = state.visibility !== this.#visibility;
+        const networkChanged =
+          state.network !== this.#network || state.pathRevision !== this.#connectionPathRevision;
+        this.#connectionPathRevision = state.pathRevision;
+        this.#visibility = state.visibility;
+        this.#network = state.network;
+        this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
+        this.#targetedWatch.suspend(this.#reconnectSuspended());
+        if (visibilityChanged)
+          for (const listener of this.#lifecycleListeners)
+            listener(this.#visibility === "foreground" ? "foreground" : "background");
+        if (visibilityChanged && state.visibility === "foreground" && this.#rereadPending) {
+          const pending = this.#rereadPending;
+          this.#rereadPending = null;
+          this.#reread(pending);
+        }
+        if (networkChanged) {
+          this.#targetedControl.reconnect();
+          this.#targetedWatch.reconnect();
+          for (const listener of this.#lifecycleListeners) listener("network");
+        }
+        if (
+          this.#snapshot.network !== state.network ||
+          this.#snapshot.connectionInterrupted !== state.showInterruption
+        )
+          this.#update(this.#snapshot);
+      }),
+    );
     const views = computerViewMethods(
       this.rpc,
       (view) =>
@@ -1154,9 +1203,14 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
-  async dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput> {
+  async dispatch(
+    command: ClientCommandInput,
+    options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
+  ): Promise<HostApiCommandOutput> {
     const parsedCommand = clientCommandSchema.parse(
-      this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
+      options?.preserveOrigin
+        ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
+        : this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
     const screenCommand =
       parsedCommand.type === "iphone.screen.attach" ||
@@ -1189,7 +1243,25 @@ export class HttpHostClient {
       "deviceId" in parsedCommand.input
     )
       return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    return this.#dispatchCommand(hostApi["commands.dispatch"].payload.parse(parsedCommand));
+    const commandPayload = hostApi["commands.dispatch"].payload.parse(parsedCommand);
+    const login = options?.expectedLogin;
+    if (!login) return this.#dispatchCommand(commandPayload);
+    assertMessageLogin(login, this.connection.getSnapshot().scope);
+    if (!this.#bindMutationsToSession) return this.#dispatchCommand(commandPayload);
+    // The receiving Host decides whether it can check this header. API 60/61 ignore it.
+    try {
+      return await this.#dispatchCommand(commandPayload, login.loginId);
+    } catch (error) {
+      const { reason } = classifyClientFailure(error);
+      if (
+        clientScopeKey(this.connection.getSnapshot().scope) === clientScopeKey(login) &&
+        reason === "session-changed"
+      ) {
+        this.connection.invalidateScope();
+        if (this.#ownsConnection) void this.reauthenticate().catch(() => {});
+      }
+      throw error;
+    }
   }
 
   /** The zone is read at send time: a phone that crossed zones says so on its next message. */
@@ -1205,7 +1277,10 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(parsedCommand: HostApiCommand): Promise<HostApiCommandOutput> {
+  async #dispatchCommand(
+    parsedCommand: HostApiCommand,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
     // Installation and server selection advance an integration access Request
     // without resolving it. Capture that fact before dispatch so an earlier
     // request.updated event cannot make the HTTP acknowledgement erase the
@@ -1223,7 +1298,7 @@ export class HttpHostClient {
             request.kind === "integration.access" &&
             request.status === "pending",
         );
-    const result = await this.#dispatch(parsedCommand);
+    const result = await this.#dispatch(parsedCommand, expectedSessionId);
     switch (result.type) {
       case "teams.ask.decide":
         if (commandIs(parsedCommand, result.type))
@@ -1311,7 +1386,7 @@ export class HttpHostClient {
       case "harness.create":
         // The Host reports a new harness only through bootstrap, so without
         // this the AI engine stays invisible until the next refresh tick.
-        await this.refresh();
+        void this.refresh().catch(() => undefined);
         break;
       case "harness.rename":
       case "harness.default.set":
@@ -1331,7 +1406,7 @@ export class HttpHostClient {
         );
         // Enabling or disabling can move the default to a sibling, which is
         // not included in this command result.
-        await this.refresh();
+        void this.refresh().catch(() => undefined);
         break;
       case "harness.delete":
         if (commandIs(parsedCommand, result.type)) {
@@ -1342,7 +1417,7 @@ export class HttpHostClient {
             }),
           );
           // Deleting the default can promote the oldest enabled sibling.
-          await this.refresh();
+          void this.refresh().catch(() => undefined);
         }
         break;
       case "thread.create":
@@ -2131,30 +2206,129 @@ export class HttpHostClient {
     void operation.catch(() => undefined);
   }
 
+  async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    attempt.signal.throwIfAborted();
+    if (this.#snapshot.session !== "authenticated" || this.#bootstrapFailed || this.#authRestored) {
+      const reason = this.#authRestored ? "reauthenticate" : "load";
+      const bootstrap = this.#bootstrap(reason, true, this.#authRestored, true, attempt.signal);
+      this.#attemptBootstrap = bootstrap;
+      try {
+        await bootstrap;
+        attempt.signal.throwIfAborted();
+        this.#authRestored = false;
+      } finally {
+        if (this.#attemptBootstrap === bootstrap) this.#attemptBootstrap = null;
+      }
+    }
+    attempt.signal.throwIfAborted();
+    if (
+      this.#snapshot.session !== "authenticated" ||
+      !this.#snapshot.user ||
+      !this.#snapshot.deploymentId
+    ) {
+      const refusal = new HostClientRequestError({
+        code: "unauthorized",
+        message: "Sign in to continue.",
+        status: 401,
+        retryable: false,
+      });
+      attempt.fail?.(classifyClientFailure(refusal));
+      throw refusal;
+    }
+    const scope = this.#scope();
+    if (scope) attempt.acceptScope(scope);
+    return new Promise((resolve, reject) => {
+      let admitted = false;
+      let closeLease!: (failure: ReturnType<typeof classifyClientFailure>) => void;
+      const closed = new Promise<ReturnType<typeof classifyClientFailure>>((done) => {
+        closeLease = done;
+      });
+      const close = () => {
+        if (this.#connectionFailed !== fail) return;
+        this.#connectionFailed = null;
+        unsubscribe();
+        attempt.signal.removeEventListener("abort", abort);
+        for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
+        this.#recomputeConnection();
+      };
+      const fail = (error: unknown) => {
+        if (this.#connectionFailed !== fail) return;
+        close();
+        const failure = classifyClientFailure(error);
+        attempt.fail?.(failure);
+        if (admitted) closeLease(failure);
+        else reject(error);
+      };
+      const abort = () => fail(attempt.signal.reason);
+      const observe = () => {
+        if (this.#snapshot.session !== "authenticated") {
+          fail(
+            new HostClientRequestError({
+              code: "unauthorized",
+              message: "Sign in to continue.",
+              status: 401,
+              retryable: false,
+            }),
+          );
+          return;
+        }
+        const scope = this.#scope();
+        if (scope) attempt.acceptScope(scope);
+        if (admitted || this.#snapshot.connection !== "connected") return;
+        admitted = true;
+        this.#stopHandshake();
+        const lease: ConnectionLease = {
+          closed,
+          lastProgressAt: () =>
+            Math.min(...[...this.#channels.values()].map((channel) => channel.progressAt)),
+          // A socket proven alive answers task notices owed from the background; a
+          // replaced one answers them through its replay, so they are not read twice.
+          probe: (signal) =>
+            Promise.all(
+              [...this.#channels.values()].map((channel) => this.#probeChannel(channel, signal)),
+            ).then(() => {
+              signal.throwIfAborted();
+              if (this.#tasksStale) this.#rereadTasks();
+            }),
+          close,
+        };
+        attempt.admit?.(lease);
+        resolve(lease);
+      };
+      const unsubscribe = this.subscribe(observe);
+      this.#connectionFailed = fail;
+      attempt.signal.addEventListener("abort", abort, { once: true });
+      const held = this.#channels.get(this.#snapshot.deploymentId!);
+      if (held) held.refused = false;
+      this.#ensureDeploymentChannel(this.#snapshot.deploymentId!);
+      observe();
+    });
+  }
+
+  #scope(): ClientScope | null {
+    if (this.#clientScope) return this.#clientScope();
+    if (!this.#snapshot.deploymentId || !this.#snapshot.user) return null;
+    return {
+      authorityKey: this.#baseUrl.origin,
+      deploymentId: this.#snapshot.deploymentId,
+      viewerId: this.#snapshot.user.id,
+      loginId: this.#snapshot.sessionId ?? String(this.#viewerGeneration),
+    };
+  }
+
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
-    const channel = this.#snapshot.deploymentId
-      ? this.#channels.get(this.#snapshot.deploymentId)
-      : undefined;
-    if (
-      !this.#bootstrapPromise &&
-      !this.#bootstrapFailed &&
-      this.#snapshot.session === "authenticated" &&
-      channel?.synchronized &&
-      channel.socket?.readyState === 1
-    )
-      return;
-    await this.#bootstrap("load");
+    if (this.#ownsConnection) this.connection.start();
+    await (this.#attemptBootstrap ?? this.#bootstrapPromise);
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
     if (this.#disposed) return;
-    if (options?.retryConnection)
-      for (const channel of this.#channels.values()) {
-        channel.refused = false;
-        channel.unreadableRetryAt = 0;
-        if (channel.reconnectTimer) this.#replaceChannel(channel);
-      }
+    if (this.#ownsConnection && this.#snapshot.session === "authentication-required") {
+      await this.reauthenticate();
+      return;
+    }
+    if (options?.retryConnection) this.connection.retry();
     await this.#refresh("refresh");
   }
 
@@ -2166,17 +2340,12 @@ export class HttpHostClient {
     await this.#bootstrap(reason, false, true);
   }
 
-  /**
-   * Re-reads the session after something outside this client restored it.
-   *
-   * Once bootstrap answers 401 the client latches `authentication-required` and
-   * stops polling, so an ordinary `refresh` can join a stale in-flight bootstrap
-   * instead of asking the Host again. Desktop restores Host sessions in its main
-   * process, and this is how that recovery reaches the renderer.
-   */
+  /** The browser cookie or desktop attachment was restored outside the session. */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    await this.#bootstrap("reauthenticate", true, true);
+    this.#authRestored = true;
+    this.connection.retry();
+    await this.#attemptBootstrap;
   }
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
@@ -2265,8 +2434,7 @@ export class HttpHostClient {
     this.#notificationListeners.add(listener);
     // Hidden sockets were left closed, or unwatched, while nobody listened; they are needed now.
     if (resumesHidden) {
-      for (const channel of this.#channels.values()) this.#connect(channel);
-      this.#watchLiveness();
+      this.connection.wake();
     }
     return () => this.#notificationListeners.delete(listener);
   }
@@ -2651,18 +2819,24 @@ export class HttpHostClient {
     throw new Error("The browser view is not synchronized.");
   }
 
-  async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const result = await this.dispatch({
-      type: "thread.create",
-      accessMode: input.accessMode,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
-      modelSelection: input.modelSelection,
-      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.generateTitle ? { generateTitle: true } : {}),
-      title: input.title?.trim() || "New task",
-    });
+  async createThread(
+    input: CreateThreadInput,
+    expectedLogin?: ClientScope,
+  ): Promise<ThreadSummary> {
+    const result = await this.dispatch(
+      {
+        type: "thread.create",
+        accessMode: input.accessMode,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
+        modelSelection: input.modelSelection,
+        ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
+        ...(input.generateTitle ? { generateTitle: true } : {}),
+        title: input.title?.trim() || "New task",
+      },
+      expectedLogin ? { expectedLogin } : undefined,
+    );
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
     // Not waited for: the new Thread is what the person is waiting to see.
     void this.#rememberQuietly({
@@ -2849,14 +3023,16 @@ export class HttpHostClient {
     });
   }
 
-  async stopRun(threadId: string): Promise<void> {
+  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
-    const run = threadStopTarget({ runQueue: this.#snapshot.runQueue, thread });
-    if (!run) throw new Error("This Thread has nothing to stop.");
+    const runId = expectedRunId
+      ? RunIdSchema.parse(expectedRunId)
+      : threadStopTarget({ runQueue: this.#snapshot.runQueue, thread })?.id;
+    if (!runId) throw new Error("This Thread has nothing to stop.");
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("interrupt"),
-      runId: run.id,
+      runId,
       threadId,
       type: "run.interrupt",
     });
@@ -3028,7 +3204,7 @@ export class HttpHostClient {
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-attach"),
     });
     if (result.type !== "iphone.screen.attach") throw new Error("Screen attach command mismatch.");
-    await this.refresh();
+    void this.refresh().catch(() => undefined);
     return result;
   }
 
@@ -3040,7 +3216,7 @@ export class HttpHostClient {
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-detach"),
     });
     if (result.type !== "iphone.screen.detach") throw new Error("Screen detach command mismatch.");
-    await this.refresh();
+    void this.refresh().catch(() => undefined);
     return result;
   }
 
@@ -3058,7 +3234,7 @@ export class HttpHostClient {
       throw new Error("Access settings command mismatch.");
     }
     if (result.outcome === "conflict") return { outcome: "conflict" };
-    await this.refresh();
+    void this.refresh().catch(() => undefined);
     return { outcome: "updated", revision: result.revision };
   }
 
@@ -3071,7 +3247,7 @@ export class HttpHostClient {
     if (result.type !== "machine.access.session.stop") {
       throw new Error("Stop session command mismatch.");
     }
-    await this.refresh();
+    void this.refresh().catch(() => undefined);
     return result.ended;
   }
 
@@ -3150,11 +3326,20 @@ export class HttpHostClient {
     void this.loadThreadInputQueue(threadId).catch(() => undefined);
   }
 
-  async #dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    return unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+  async #dispatch(
+    command: HostApiCommandInput,
+    expectedSessionId?: string,
+  ): Promise<HostApiCommandOutput> {
+    return unwrapRpcResult(
+      await this.rpc["commands.dispatch"](
+        command,
+        expectedSessionId ? { expectedSessionId } : undefined,
+      ),
+    );
   }
 
   dispose(): void {
+    disposeMessageOutbox(this);
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.references.dispose();
@@ -3162,7 +3347,7 @@ export class HttpHostClient {
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     if (this.#disposed) return;
-    this.#clearInterruptionHold();
+    if (this.#ownsConnection) this.connection.dispose();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.browserHistory.dispose();
@@ -3186,9 +3371,7 @@ export class HttpHostClient {
     this.#heldLive.clear();
     for (const release of this.#lifecycleDisposers) release();
     this.#lifecycleDisposers.length = 0;
-    if (this.#refreshTimer) globalThis.clearInterval(this.#refreshTimer);
-    this.#refreshTimer = null;
-    this.#stopLiveness();
+    this.#stopHandshake();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#assignmentReads.clear();
@@ -3212,6 +3395,7 @@ export class HttpHostClient {
     force = false,
     revalidateCapabilities = false,
     trigger = true,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (trigger) bootstrapReadDiagnostics.trigger(reason);
     if (this.#bootstrapPromise && !force) {
@@ -3224,7 +3408,8 @@ export class HttpHostClient {
       if (!this.#disposed) await this.#bootstrap(reason, false, false, false);
       return;
     }
-    const operation = this.#performBootstrap(reason, revalidateCapabilities);
+    this.#bootstrapAttemptSignal = signal;
+    const operation = this.#performBootstrap(reason, revalidateCapabilities, signal);
     this.#bootstrapPromise = operation;
     let succeeded = false;
     try {
@@ -3234,7 +3419,8 @@ export class HttpHostClient {
       if (this.#bootstrapPromise === operation) {
         this.#bootstrapFailed = !succeeded;
         this.#bootstrapPromise = null;
-        if (this.#rereadPending) {
+        this.#bootstrapAttemptSignal = undefined;
+        if (!signal?.aborted && this.#rereadPending) {
           const reason = this.#rereadPending;
           this.#rereadPending = null;
           this.#reread(reason, false);
@@ -3253,7 +3439,11 @@ export class HttpHostClient {
    * joined. Hidden, it waits: coming to the foreground rereads anyway.
    */
   #reread(reason: BootstrapReason, trigger = true): void {
-    if (this.#disposed || this.#visibility === "background") return;
+    if (this.#disposed) return;
+    if (this.#visibility === "background") {
+      this.#rereadPending ??= reason;
+      return;
+    }
     if (this.#bootstrapPromise) {
       if (trigger) bootstrapReadDiagnostics.trigger(reason);
       this.#rereadPending ??= reason;
@@ -3606,11 +3796,15 @@ export class HttpHostClient {
     void this.#refreshCapabilities({ revalidate: true }).catch(() => undefined);
   }
 
-  async #refreshCapabilities(options?: { readonly revalidate: boolean }): Promise<void> {
+  async #refreshCapabilities(
+    options?: { readonly revalidate: boolean },
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!this.#readCapabilities || this.#disposed) return;
     const generation = this.#viewerGeneration;
     const read = ++this.#capabilityReadGeneration;
     const capabilities = await this.#readCapabilities(options);
+    signal?.throwIfAborted();
     if (
       generation !== this.#viewerGeneration ||
       read !== this.#capabilityReadGeneration ||
@@ -3650,8 +3844,18 @@ export class HttpHostClient {
     }
   }
 
-  async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
+  async #performBootstrap(
+    reason: BootstrapReason,
+    revalidateCapabilities: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
     let generation = this.#viewerGeneration;
+    const read = ++this.#bootstrapReadGeneration;
+    const current = () =>
+      !this.#disposed &&
+      read === this.#bootstrapReadGeneration &&
+      generation === this.#viewerGeneration;
+    const call = signal ? { signal } : undefined;
     const presenceMark = this.#presenceCounter,
       ownerViewRevision = this.#ownerViews.revision;
     if (
@@ -3662,29 +3866,39 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, connection: "connecting" });
     }
     if (this.#readCapabilities)
-      await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+      await this.#refreshCapabilities(
+        revalidateCapabilities ? { revalidate: true } : undefined,
+        signal,
+      );
+    signal?.throwIfAborted();
+    if (!current()) return;
     bootstrapReadDiagnostics.start(reason);
-    const response = await this.rpc["bootstrap.get"]({});
+    const response = await this.rpc["bootstrap.get"]({}, call);
+    signal?.throwIfAborted();
     if (!response.ok && response.error.code === "unauthorized") {
-      if (generation === this.#viewerGeneration) this.#expireSession();
-      const authGeneration = this.#viewerGeneration,
-        identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
-      if (authGeneration === this.#viewerGeneration && !this.#disposed)
-        this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
+      if (this.#disposed || read !== this.#bootstrapReadGeneration) return;
+      if (generation === this.#viewerGeneration) this.#expireSession(!signal);
+      generation = this.#viewerGeneration;
+      const config = await this.rpc["auth.config"]({}, call);
+      signal?.throwIfAborted();
+      if (signal && !config.ok) unwrapRpcResult(response);
+      const identityConfig = unwrapRpcResult(config);
+      if (current()) this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
       return;
     }
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+    if (!current()) return;
     this.#hostUnreachable =
       !response.ok && ![...this.#channels.values()].some((channel) => channel.synchronized);
     if (this.#hostUnreachable) this.#update({ ...this.#snapshot, connection: "offline" });
     const payload = unwrapRpcResult(response);
-    if (generation !== this.#viewerGeneration || this.#disposed) return;
+    if (!current()) return;
+    let replacedViewer = false;
     if (
       (this.#snapshot.user && this.#snapshot.user.id !== payload.user.id) ||
       (this.#snapshot.deploymentId && this.#snapshot.deploymentId !== payload.deploymentId)
     ) {
-      this.#expireSession();
+      this.#expireSession(!signal);
+      replacedViewer = true;
       generation = this.#viewerGeneration;
     }
     this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
@@ -3749,6 +3963,7 @@ export class HttpHostClient {
     if (!this.#cacheLoaded && this.#streamCache) {
       this.#cacheLoaded = true;
       await this.#checkpointWrite.catch(() => undefined);
+      signal?.throwIfAborted();
       const cached = await this.#streamCache
         .load({
           deploymentId: payload.deploymentId,
@@ -3756,7 +3971,8 @@ export class HttpHostClient {
           apiVersion: hostApiVersion,
         })
         .catch(() => null);
-      if (generation !== this.#viewerGeneration || this.#disposed) return;
+      signal?.throwIfAborted();
+      if (!current()) return;
       if (
         cached &&
         cached.cursor.deploymentId === payload.deploymentId &&
@@ -3782,118 +3998,10 @@ export class HttpHostClient {
         this.#restoredCursor = cached.cursor.afterSequence;
       }
     }
+    if (this.#ownsConnection && replacedViewer && !signal) this.connection.retry();
     this.#ensureDeploymentChannel(payload.deploymentId);
     this.#recomputeConnection();
-    this.#startRefresh();
     this.#reportTimeZone();
-  }
-
-  #startRefresh(): void {
-    if (this.#refreshTimer || this.#refreshIntervalMs === 0) return;
-    if (this.#visibility === "background") return;
-    this.#refreshTimer = globalThis.setInterval(() => {
-      void this.#bootstrap("interval").catch(() => undefined);
-    }, this.#refreshIntervalMs);
-  }
-
-  #stopRefresh(): void {
-    if (this.#refreshTimer) globalThis.clearInterval(this.#refreshTimer);
-    this.#refreshTimer = null;
-  }
-
-  #observeLifecycle(lifecycle: ClientLifecycle): void {
-    this.#lifecycleDisposers.push(
-      lifecycle.onBackground(() => this.#enterBackground()),
-      lifecycle.onForeground(() => this.#enterForeground()),
-      lifecycle.onNetworkChange((state, path) => this.#networkChanged(state, path)),
-    );
-  }
-
-  /**
-   * Hidden work is work nobody is reading. The timers stop so a backgrounded
-   * app neither polls nor burns reconnect backoff, and the sockets stay: the
-   * operating system may tear them down, and discovering that on the way back
-   * is cheaper than closing sockets that are still good.
-   */
-  #enterBackground(): void {
-    if (this.#disposed || this.#visibility === "background") return;
-    this.#visibility = "background";
-    this.#targetedControl.suspend(true, this.#network !== "offline");
-    this.#targetedWatch.suspend(true);
-    for (const listener of this.#lifecycleListeners) listener("background");
-    this.#backgroundedAt = Date.now();
-    this.#stopRefresh();
-    this.#clearInterruptionHold();
-    this.#update({ ...this.#snapshot, connectionInterrupted: false });
-    if (!this.#notifiesWhileHidden()) {
-      for (const channel of this.#channels.values()) {
-        this.#clearProbe(channel);
-        if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-        channel.reconnectTimer = null;
-      }
-    }
-  }
-
-  #enterForeground(): void {
-    if (this.#disposed || this.#visibility === "foreground") return;
-    const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
-    this.#visibility = "foreground";
-    this.#targetedControl.suspend(this.#network === "offline");
-    this.#targetedWatch.suspend(this.#network === "offline");
-    for (const listener of this.#lifecycleListeners) listener("foreground");
-    this.#backgroundedAt = null;
-    this.#beginConnectionAttempt();
-    this.#update(this.#snapshot);
-    const trusted = backgroundedForMs < this.#socketTrustWindowMs && this.#network !== "offline";
-    for (const channel of this.#channels.values()) {
-      if (trusted && channel.socket?.readyState === 1) {
-        this.#probeChannel(channel);
-        continue;
-      }
-      this.#replaceChannel(channel);
-    }
-    this.#recomputeConnection();
-    this.#startRefresh();
-    if (this.#snapshot.session === "authenticated")
-      void this.#refresh("foreground").catch(() => undefined);
-    // A replaced socket answers what is owed once it synchronizes, so it is not read twice.
-    if (this.#tasksStale && [...this.#channels.values()].every(({ synchronized }) => synchronized))
-      this.#rereadTasks();
-  }
-
-  /**
-   * A handover to another network invalidates every open socket at once, and
-   * the interface it left will never report their death. Wi-Fi to cellular is
-   * reported as `online` both before and after, so it is the notification that
-   * invalidates, never a change in its value — the one exception being a
-   * device that is still off the network, where there is nothing to replace.
-   * Going offline stops the backoff instead of spending it against an
-   * interface that cannot carry the packets. A phone also reports paths that
-   * did not move, so a `same` notification costs one ping, and only a socket
-   * that does not answer shows the path was lost.
-   */
-  #networkChanged(state: ClientNetworkState, path: ClientNetworkPath): void {
-    if (this.#disposed) return;
-    if (state === "offline" && this.#network === "offline") return;
-    if (path === "same" && state === this.#network) {
-      if (this.#deploymentReconnectSuspended()) return;
-      for (const channel of this.#channels.values())
-        this.#probeChannel(channel, socketProbeDeadlineMs, true);
-      return;
-    }
-    this.#network = state;
-    this.#followNetwork();
-  }
-
-  #followNetwork(): void {
-    this.#beginConnectionAttempt();
-    this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
-    this.#targetedWatch.suspend(this.#reconnectSuspended());
-    this.#targetedControl.reconnect();
-    this.#targetedWatch.reconnect();
-    for (const channel of this.#channels.values()) this.#replaceChannel(channel);
-    this.#recomputeConnection();
-    for (const listener of this.#lifecycleListeners) listener("network");
   }
 
   /** Reconnecting is pointless while the app is hidden or the device is off
@@ -3912,81 +4020,59 @@ export class HttpHostClient {
     return this.#notificationListeners.size > 0;
   }
 
-  #probeChannel(
-    channel: DeploymentChannel,
-    deadlineMs = socketProbeDeadlineMs,
-    followNetwork = false,
-  ): void {
+  #probeChannel(channel: DeploymentChannel, signal: AbortSignal): Promise<void> {
     const socket = channel.socket;
-    if (!socket || socket.readyState !== 1) return;
-    // A probe already in the air answers this question too, so it inherits it.
-    channel.probeFollowsNetwork ||= followNetwork;
-    if (channel.probeTimer) return;
-    const nonce = globalThis.crypto.randomUUID();
-    const progressAt = channel.progressAt;
-    channel.probeNonce = nonce;
-    channel.probeTimer = globalThis.setTimeout(() => {
-      const follow = channel.probeFollowsNetwork;
-      channel.probeTimer = null;
-      channel.probeNonce = null;
-      channel.probeFollowsNetwork = false;
-      // A client that stopped reading meanwhile judges the socket on its way back,
-      // and one whose subscription delivered since asking has its answer already:
-      // on a slow route the reply can queue behind the very frames that prove it.
-      if (
-        channel.socket !== socket ||
-        channel.progressAt !== progressAt ||
-        this.#deploymentReconnectSuspended()
-      )
-        return;
-      if (follow) {
-        this.#followNetwork();
+    if (!socket || socket.readyState !== 1)
+      return Promise.reject(new HostTransportError("unreachable"));
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        channel.probeResolve = null;
+        channel.probeNonce = null;
+        reject(signal.reason);
+      };
+      if (signal.aborted) {
+        abort();
         return;
       }
-      this.#replaceChannel(channel, "Liveness probe unanswered");
-      this.#recomputeConnection();
-    }, deadlineMs);
-    try {
-      socket.send(JSON.stringify({ nonce, type: "client.ping" }));
-    } catch {
-      this.#replaceChannel(channel, "Liveness probe unsendable");
-      this.#recomputeConnection();
-      return;
-    }
-    this.#watchLiveness();
+      signal.addEventListener("abort", abort, { once: true });
+      channel.probeResolve = () => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      };
+      const nonce = globalThis.crypto.randomUUID();
+      channel.probeNonce = nonce;
+      try {
+        socket.send(JSON.stringify({ nonce, type: "client.ping" }));
+      } catch (error) {
+        signal.removeEventListener("abort", abort);
+        channel.probeResolve = null;
+        reject(error);
+      }
+    });
   }
 
   #clearProbe(channel: DeploymentChannel): void {
-    if (channel.probeTimer) globalThis.clearTimeout(channel.probeTimer);
-    channel.probeTimer = null;
+    const resolve = channel.probeResolve;
+    channel.probeResolve = null;
+    resolve?.();
     channel.probeNonce = null;
-    channel.probeFollowsNetwork = false;
   }
 
-  /**
-   * No transport reports every way a socket can die: a route can stall with
-   * the socket still open, and a close can be lost on its way to the reader.
-   * So a channel whose subscription has gone quiet is asked whether it is
-   * there, and one that cannot be asked — still connecting, never
-   * synchronized, or no longer open — is given the same time before it is
-   * replaced. The answer proves the socket carries frames both ways; that an
-   * open socket's subscription is still delivering is the Host's to keep, by
-   * closing any socket it stops delivering to.
-   */
-  #watchLiveness(): void {
-    if (this.#livenessTimer || this.#disposed) return;
-    this.#livenessTimer = globalThis.setInterval(
-      () => this.#checkLiveness(),
+  /** An open socket has a deadline to deliver its required initial subscriptions. */
+  #watchHandshake(): void {
+    if (this.#handshakeTimer || this.#disposed) return;
+    this.#handshakeTimer = globalThis.setInterval(
+      () => this.#checkHandshake(),
       Math.max(1, Math.floor(this.#livenessDeadlineMs / 2)),
     );
   }
 
-  #stopLiveness(): void {
-    if (this.#livenessTimer) globalThis.clearInterval(this.#livenessTimer);
-    this.#livenessTimer = null;
+  #stopHandshake(): void {
+    if (this.#handshakeTimer) globalThis.clearInterval(this.#handshakeTimer);
+    this.#handshakeTimer = null;
   }
 
-  #checkLiveness(): void {
+  #checkHandshake(): void {
     // Nothing is judged while the client is not reading: a suspended channel
     // is replaced on the way back, by the foreground and network signals.
     if (
@@ -3994,35 +4080,23 @@ export class HttpHostClient {
       this.#snapshot.session !== "authenticated" ||
       this.#deploymentReconnectSuspended()
     ) {
-      this.#stopLiveness();
+      this.#stopHandshake();
       return;
     }
     const now = Date.now();
     let watched = false;
     for (const channel of this.#channels.values()) {
       const socket = channel.socket;
-      if (!socket) continue;
+      if (!socket || channel.synchronized) continue;
       watched = true;
       const silentMs = now - channel.progressAt;
       if (silentMs < this.#livenessIdleMs) continue;
-      if (channel.synchronized && socket.readyState === 1) {
-        this.#probeChannel(channel, this.#livenessDeadlineMs);
-      } else if (silentMs >= this.#livenessIdleMs + this.#livenessDeadlineMs) {
+      if (silentMs >= this.#livenessIdleMs + this.#livenessDeadlineMs) {
         this.#closeChannel(channel, true, 1000, "Realtime channel silent");
         this.#recomputeConnection();
       }
     }
-    if (!watched) this.#stopLiveness();
-  }
-
-  /** Drops the current socket and opens its replacement at once, keeping the
-   * cursor so the Host resumes the stream rather than restarting it. */
-  #replaceChannel(channel: DeploymentChannel, reason = "Client closed"): void {
-    this.#closeChannel(channel, false, 1000, reason);
-    if (this.#deploymentReconnectSuspended()) return;
-    if (this.#snapshot.session !== "authenticated") return;
-    channel.reconnectAttempt = 0;
-    this.#connect(channel);
+    if (!watched) this.#stopHandshake();
   }
 
   /** Apps pages reread on this; nothing else is read again. */
@@ -4056,28 +4130,25 @@ export class HttpHostClient {
   #ensureDeploymentChannel(deploymentId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
     const existing = this.#channels.get(deploymentId);
-    if (existing?.socket || existing?.reconnectTimer) return;
+    if (existing?.socket) return;
     const channel =
       existing ??
       ({
         cursor: this.#restoredCursor ?? zeroSequence,
         apiVersion: this.#servedApiVersion,
         refused: false,
-        probeFollowsNetwork: false,
         probeNonce: null,
-        probeTimer: null,
+        probeResolve: null,
         progressAt: 0,
-        reconnectAttempt: 0,
-        reconnectTimer: null,
+        interrupted: false,
         resumed: false,
         socket: null,
         synchronized: false,
         unreadableFrames: 0,
-        unreadableRetryAt: 0,
         deploymentId,
       } satisfies DeploymentChannel);
     this.#channels.set(deploymentId, channel);
-    this.#connect(channel);
+    if (this.#connectionFailed) this.#connect(channel);
   }
 
   #connect(channel: DeploymentChannel): void {
@@ -4087,19 +4158,6 @@ export class HttpHostClient {
     // nobody can read. The channel and its cursor stay, so the next foreground
     // or network signal opens the socket and resumes the stream.
     if (this.#deploymentReconnectSuspended()) return;
-    // Each try can cost a whole snapshot, and a phone reports its network often,
-    // so only the person's Retry starts one before its time.
-    const wait = channel.unreadableFrames > 0 ? channel.unreadableRetryAt - Date.now() : 0;
-    if (wait > 0) {
-      channel.reconnectTimer ??= globalThis.setTimeout(() => {
-        channel.reconnectTimer = null;
-        this.#connect(channel);
-      }, wait);
-      return;
-    }
-    // A reused channel may now reach a restarted or upgraded Host at the same
-    // identity and route. Discovery is refreshed even when no bootstrap is due.
-    if (channel.progressAt > 0 || channel.reconnectAttempt > 0) this.#reverifyCapabilities();
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
@@ -4112,9 +4170,6 @@ export class HttpHostClient {
     }
     channel.socket = socket;
     channel.progressAt = Date.now();
-    if (channel.unreadableFrames > 0)
-      channel.unreadableRetryAt =
-        Date.now() + this.#retryDelay(channel.reconnectAttempt, channel.unreadableFrames);
     // A new socket is a new subscription: a stream reread asked for under the
     // old one answers about streams this one starts over.
     this.#heldLive.delete(channel.deploymentId);
@@ -4122,11 +4177,10 @@ export class HttpHostClient {
       channel.deploymentId,
       (this.#liveGenerations.get(channel.deploymentId) ?? 0) + 1,
     );
-    channel.reconnectTimer = null;
     channel.synchronized = false;
     this.#clearProbe(channel);
     this.#recomputeConnection();
-    this.#watchLiveness();
+    this.#watchHandshake();
     const viewer: SocketViewer = {
       deploymentId: this.#snapshot.deploymentId,
       userId: this.#snapshot.user?.id ?? null,
@@ -4191,7 +4245,10 @@ export class HttpHostClient {
       }
     });
     socket.addEventListener("error", () => {
-      if (channel.socket === socket) this.#recomputeConnection();
+      if (channel.socket === socket) {
+        this.#hostUnreachable = true;
+        this.#recomputeConnection();
+      }
     });
     socket.addEventListener("close", () => {
       if (channel.socket !== socket) return;
@@ -4445,6 +4502,7 @@ export class HttpHostClient {
       }
       return;
     }
+    if (message.type !== "host.pong" && channel.probeResolve) this.#clearProbe(channel);
     if (message.type === "host.pong") {
       // Only a probe is correlated; an uncorrelated pong answers nobody.
       if (message.nonce === channel.probeNonce) this.#clearProbe(channel);
@@ -4479,11 +4537,9 @@ export class HttpHostClient {
         return;
       }
       if (message.error.reason === "unsupported-version") this.#reverifyCapabilities();
-      // The Host refused this channel. A retryable refusal is a transport
-      // fault and takes the backoff; a final one leaves the channel down, and
-      // the connection state is where a reader learns that.
       channel.refused = !message.error.retryable;
-      this.#closeChannel(channel, message.error.retryable);
+      this.#closeChannel(channel, false);
+      this.#connectionFailed?.(message.error);
       this.#recomputeConnection();
       return;
     }
@@ -4496,7 +4552,7 @@ export class HttpHostClient {
         this.#threadState.clear();
       }
       channel.cursor = zeroSequence;
-      channel.reconnectAttempt = 0;
+      channel.interrupted = false;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
       this.#recomputeConnection();
       return;
@@ -4614,11 +4670,11 @@ export class HttpHostClient {
       if (this.#snapshot.transcripts[thread.id]?.some((entry) => drawnLiveStream(entry) !== null))
         this.#scheduleLiveRefresh(thread.id, channel.deploymentId);
     }
-    const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
+    const reconnected = channel.interrupted || channel.unreadableFrames > 0;
     const resumed = reconnected || channel.resumed;
     channel.synchronized = true;
     this.#nodeDetails.connected(channel.deploymentId);
-    channel.reconnectAttempt = 0;
+    channel.interrupted = false;
     channel.unreadableFrames = 0;
     this.#invalidatePersonalRemoteAccess();
     if (reconnected) this.#reread("reconnect");
@@ -5001,26 +5057,25 @@ export class HttpHostClient {
     );
   }
 
-  #reconnectDelay(attempt: number, maxDelayMs = this.#reconnectMaxDelayMs): number {
-    const ceiling = Math.min(maxDelayMs, this.#reconnectBaseDelayMs * 2 ** Math.min(attempt, 16));
-    return Math.min(maxDelayMs, Math.round(ceiling * (0.8 + this.#random() * 0.2)));
-  }
-
   #retryDelay(attempt: number, unreadableFrames: number): number {
-    return this.#reconnectDelay(
-      Math.max(attempt, unreadableFrames - 1),
-      unreadableFrames > 0 ? unreadableFrameMaxDelayMs : this.#reconnectMaxDelayMs,
+    return Math.min(
+      defaultReconnectMaxDelayMs,
+      defaultReconnectBaseDelayMs * 2 ** Math.min(16, Math.max(attempt, unreadableFrames - 1)),
     );
   }
 
   #scheduleReconnect(channel: DeploymentChannel): void {
-    if (this.#disposed || channel.reconnectTimer || this.#deploymentReconnectSuspended()) return;
-    const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
-    if (channel.unreadableFrames > 0) channel.unreadableRetryAt = Date.now() + delay;
-    channel.reconnectTimer = globalThis.setTimeout(() => {
-      channel.reconnectTimer = null;
-      this.#connect(channel);
-    }, delay);
+    channel.interrupted = true;
+    this.#connectionFailed?.(
+      channel.unreadableFrames > 0
+        ? new ClientOperationError("A synchronized answer is needed.", "transient", {
+            retryable: true,
+            kind: "protocol",
+            provenance: "protocol",
+            reason: "unreadable-frame",
+          })
+        : new HostTransportError("unreachable"),
+    );
   }
 
   #closeChannel(
@@ -5029,8 +5084,6 @@ export class HttpHostClient {
     code = 1000,
     reason = "Client closed",
   ): void {
-    if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-    channel.reconnectTimer = null;
     this.#clearProbe(channel);
     const socket = channel.socket;
     channel.socket = null;
@@ -5058,19 +5111,19 @@ export class HttpHostClient {
     const pending = (
       read.length > 0 ? read : channels.filter((channel) => !channel.refused)
     ).filter((channel) => !channel.synchronized);
-    if (pending.length === 0) this.#hostUnreachable = false;
+    if (pending.length === 0 && !channels.some((channel) => channel.refused))
+      this.#hostUnreachable = false;
     // Retrying a snapshot this client cannot read is no reconnection in
     // progress: it says so, and offers Retry, between and during the attempts.
     const connection: HostConnectionState =
-      pending.length === 0
-        ? "connected"
-        : pending.some(
-              (channel) =>
-                (!channel.socket && !channel.reconnectTimer) ||
-                channel.unreadableFrames > realtimeReplayAttempts,
-            ) || this.#hostUnreachable
-          ? "offline"
-          : "connecting";
+      this.#network === "offline" || channels.some((channel) => channel.refused)
+        ? "offline"
+        : pending.length === 0
+          ? "connected"
+          : pending.some((channel) => channel.unreadableFrames > realtimeReplayAttempts) ||
+              this.#hostUnreachable
+            ? "offline"
+            : "connecting";
     if (connection !== this.#snapshot.connection || this.#network !== this.#snapshot.network) {
       this.#update({ ...this.#snapshot, connection });
     }
@@ -5078,49 +5131,6 @@ export class HttpHostClient {
 
   #readsDeployment(_deploymentId: string): boolean {
     return true;
-  }
-
-  /**
-   * Coming back, or a new network, is a new reason to expect the Host: what
-   * earlier attempts found says nothing about this one.
-   */
-  #beginConnectionAttempt(): void {
-    this.#hostUnreachable = false;
-    if (this.#snapshot.session === "authenticated" && this.#snapshot.connection === "offline")
-      this.#update({ ...this.#snapshot, connection: "connecting" });
-  }
-
-  #clearInterruptionHold(): void {
-    if (this.#interruptionTimer) globalThis.clearTimeout(this.#interruptionTimer);
-    this.#interruptionTimer = null;
-  }
-
-  /**
-   * Only an interruption that outlasts the hold is said. Stopping is said at
-   * once: nothing is on its way to fix it, unless the device itself is offline,
-   * which a phone reports for a moment in the middle of a handover. Nothing
-   * counts while hidden, where sockets die unwatched and a frozen timer would
-   * fire on the way back, mid-reconnect.
-   */
-  #withInterruption(snapshot: HostSnapshot): HostSnapshot {
-    let interrupted = snapshot.connectionInterrupted;
-    if (snapshot.connection === "connected" && this.#network !== "offline") {
-      this.#clearInterruptionHold();
-      interrupted = false;
-    } else if (this.#visibility !== "foreground") {
-      return snapshot;
-    } else if (snapshot.connection === "offline" && this.#network !== "offline") {
-      this.#clearInterruptionHold();
-      interrupted = true;
-    } else if (!interrupted && !this.#interruptionTimer) {
-      this.#interruptionTimer = globalThis.setTimeout(() => {
-        this.#interruptionTimer = null;
-        this.#update({ ...this.#snapshot, connectionInterrupted: true });
-      }, connectionInterruptionHoldMs);
-    }
-    return interrupted === snapshot.connectionInterrupted
-      ? snapshot
-      : { ...snapshot, connectionInterrupted: interrupted };
   }
 
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
@@ -5246,7 +5256,8 @@ export class HttpHostClient {
     });
   }
 
-  #expireSession(): void {
+  #expireSession(invalidate = true): void {
+    if (invalidate) this.connection.invalidateScope();
     const cacheScope = this.#cacheScope();
     if (cacheScope)
       this.#checkpointWrite = this.#checkpointWrite
@@ -5293,7 +5304,6 @@ export class HttpHostClient {
     this.#hydrationBuffers.clear();
     this.#hydratedThreads.clear();
     this.#invalidatedHydrations.clear();
-    this.#stopRefresh();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#update({
@@ -5452,7 +5462,15 @@ export class HttpHostClient {
 
   #update(snapshot: HostSnapshot, liveThreadId?: string): void {
     if (this.#disposed) return;
-    snapshot = withPublishedReplies(this.#snapshot, this.#withInterruption(snapshot), liveThreadId);
+    snapshot = withPublishedReplies(
+      this.#snapshot,
+      {
+        ...snapshot,
+        network: this.#network,
+        connectionInterrupted: this.connection?.getSnapshot().showInterruption ?? false,
+      },
+      liveThreadId,
+    );
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
       !this.#capabilities?.includes("task-family-v1") &&
@@ -5615,6 +5633,7 @@ export class HttpHostClient {
     reconcileBrowserTargets?.();
     this.#nodeDetails.refreshNodes();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
+    nameConnectionFromHost(this.connection, this.#snapshot);
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }
@@ -5701,8 +5720,9 @@ export function unwrapRpcResult<Success>(
     code: result.error.code,
     message: result.error.message,
     ...(result.error.reason === undefined ? {} : { reason: result.error.reason }),
-    retryable: result.error.retryable,
+    ...(result.error.provenance ? { provenance: result.error.provenance } : {}),
     status: rpcErrorStatus(result.error.code),
+    retryable: result.error.retryable,
   });
 }
 

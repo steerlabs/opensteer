@@ -1,8 +1,9 @@
+import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
 import type { TabGroupColor, TabId } from "@opensteer/core";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
-import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
+import { sameTaskRow, taskMark, taskMarkQuiet } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
 import { useNativeBrowserLayer, useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -34,7 +35,6 @@ import {
   tabFilterActive,
   tabFilterEmptyWords,
   type TabFilter,
-  describeHostConnection,
   listedRowThreadId,
   doneDays,
   doneTaskList,
@@ -66,16 +66,19 @@ import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { VoiceClock } from "./voice.js";
 import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
+import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
-import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
 import { setAsideStagedFiles } from "./attachments/use-staged-attachments.js";
 import {
+  cleanTaskStartJournals,
   composerDraftKey,
   composerDrafts,
+  homeDraftId,
   useComposerDraftIndex,
   type ComposerDraftTarget,
 } from "./composer-drafts.js";
@@ -86,7 +89,7 @@ import {
   useListedBrowserPresentations,
   type BrowserPresentation,
 } from "./workspace/identity.js";
-import { OccupantMarks, useFocusRescue } from "./workspace/occupant-marks.js";
+import { OccupantMarks, useFocusRescue, useOccupantDirectory } from "./workspace/occupant-marks.js";
 import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
@@ -108,7 +111,8 @@ import {
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { revealInList, useScrollEdges } from "./workspace/scroll-edges.js";
-import { useTabCloser } from "./workspace/tab-closer.js";
+import { useTabCloseLine, useTabCloser } from "./workspace/tab-closer.js";
+import { RowSubtitle } from "./action-line.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { TabMenu } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
@@ -167,6 +171,7 @@ export function Sidebar({
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
   const drafts = useComposerDraftIndex(deploymentId, userId);
+  const namedDrafts = drafts.tasks.filter((draft) => draft.draftId !== homeDraftId);
   // The list arranges the layout's tab IDs; each row reads its own tab, so a title repaints one row.
   const fullStrip = useTabStrip(hostClient);
   const layout = useTabLayout(hostClient);
@@ -230,10 +235,14 @@ export function Sidebar({
     motion,
     move: (move) => {
       const input = organizeInput(move, layout);
+      // The drag is over by the answer, so only a toast is left to say it didn't move.
       if (input)
-        void hostClient
-          .organizeTabs(input)
-          .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        void runAction(hostClient, {
+          label: "move this tab",
+          done: "moved",
+          happened: "this tab moved",
+          execute: () => hostClient.organizeTabs(input),
+        }).then(toastOutcome(toast));
     },
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
@@ -251,7 +260,7 @@ export function Sidebar({
   const [editingGroup, editGroup] = useState<string | null>(null);
   const presentations = useListedBrowserPresentations(hostClient);
   const deployment = selectedDeploymentFrom(deploymentAccess, desktopDeployment);
-  const connection = describeHostConnection(snapshot);
+  const connection = useConnectionDot(hostClient.connection);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
   const [searching, setSearching] = useState(false);
   // Search reads every tab's words, so the list is held only while it is open.
@@ -455,22 +464,47 @@ export function Sidebar({
     onCloseMobile();
     nav.openConversation("/voice");
   };
-  const discardDraft = (target: ComposerDraftTarget) => {
-    if (!deploymentId || !userId) return;
-    const key = composerDraftKey({ deploymentId, userId }, target);
-    const draft = composerDrafts.read(key);
-    if (!draft) return;
-    const files = setAsideStagedFiles(key);
-    composerDrafts.clear(key);
-    toast.success("Draft discarded", {
-      label: "Undo",
-      lapse: files.forget,
-      run: () => {
-        composerDrafts.restore(key, draft);
-        files.takeBack();
-      },
-    });
-  };
+  const discardDraft = useCallback(
+    (target: ComposerDraftTarget) => {
+      if (!deploymentId || !userId) return;
+      const key = composerDraftKey({ deploymentId, userId }, target);
+      const draft = composerDrafts.read(key);
+      if (!draft) return;
+      const files = setAsideStagedFiles(key);
+      void composerDrafts.discard(key, draft.revision, false).then((outcome) => {
+        if (outcome !== "discarded") {
+          files.takeBack();
+          if (outcome === "queued") toast.error("This draft has already entered the send queue.");
+          return;
+        }
+        const retired =
+          target.kind === "task"
+            ? cleanTaskStartJournals(key, draft.startGeneration).catch(() => undefined)
+            : Promise.resolve(undefined);
+        toast.success("Draft discarded", {
+          label: "Undo",
+          lapse: files.forget,
+          run: () => {
+            void retired
+              .then(async (start) => {
+                const restored = await composerDrafts.transaction((store) => {
+                  if (store.read(key)) return false;
+                  return store.restore(key, {
+                    ...draft,
+                    editId: undefined,
+                    editReserved: undefined,
+                    ...(start ? { start, startGeneration: undefined } : {}),
+                  });
+                });
+                if (restored) files.takeBack();
+              })
+              .catch(() => {});
+          },
+        });
+      });
+    },
+    [deploymentId, toast, userId],
+  );
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
   const loadEarlier = () => {
     if (loadingEarlier) return;
@@ -859,6 +893,27 @@ export function Sidebar({
                       ]}
                 </RowMotion>
               </SideList>
+              {!doneView && namedDrafts.length > 0 ? (
+                <details>
+                  <summary>Drafts</summary>
+                  <ul>
+                    {namedDrafts.map(({ draftId, title }) => (
+                      <li key={draftId}>
+                        <button
+                          className="btn btn--ghost btn--small"
+                          onClick={() => {
+                            onCloseMobile();
+                            nav.openConversation("/", { draftId });
+                          }}
+                          type="button"
+                        >
+                          {title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
             </>
           ) : (
             <TeamSideFor onNavigate={onCloseMobile} teamId={side} />
@@ -1096,17 +1151,7 @@ function openConversationRow(
 
 /* ---- Tasks ---- */
 
-const TaskRowItem = memo(function TaskRowItem({
-  hostClient,
-  ask,
-  onDiscardDraft,
-  onNavigate,
-  onSetDone,
-  open,
-  row,
-  unsent,
-  workspace,
-}: {
+interface TaskRowItemProps {
   readonly hostClient: HostClient;
   readonly ask: string | null;
   readonly onDiscardDraft: (target: ComposerDraftTarget) => void;
@@ -1117,7 +1162,19 @@ const TaskRowItem = memo(function TaskRowItem({
   /** A reply is waiting here, unsent. */
   readonly unsent: boolean;
   readonly workspace: WorkspaceState;
-}) {
+}
+
+const TaskRowItem = memo(function TaskRowItem({
+  hostClient,
+  ask,
+  onDiscardDraft,
+  onNavigate,
+  onSetDone,
+  open,
+  row,
+  unsent,
+  workspace,
+}: TaskRowItemProps) {
   const { highlight, nav, work } = workspace;
   const threadId = row.threadId;
   const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
@@ -1292,7 +1349,16 @@ const TaskRowItem = memo(function TaskRowItem({
       ) : null}
     </li>
   );
-});
+}, sameTaskRowItemProps);
+
+/** A snapshot that changes nothing this row says, a reply streaming elsewhere, leaves it undrawn. */
+function sameTaskRowItemProps(left: TaskRowItemProps, right: TaskRowItemProps): boolean {
+  return (
+    (Object.keys(right) as (keyof TaskRowItemProps)[]).every(
+      (key) => key === "row" || left[key] === right[key],
+    ) && sameTaskRow(left.row, right.row)
+  );
+}
 
 /* ---- Tabs ---- */
 
@@ -1312,9 +1378,22 @@ const TabRowItem = memo(function TabRowItem({
   ...props
 }: TabRowProps) {
   const place = usePlace(props.hostClient, placeKey);
+  const occupantIds = useMemo(
+    () => place?.occupants.map((occupant) => occupant.threadId) ?? [],
+    [place?.occupants],
+  );
+  const directory = useOccupantDirectory(props.directory, occupantIds);
   if (!place) return null;
   const device = place.kind === "phone" ? null : (elsewhere.get(place.device.machineId) ?? null);
-  return <TabRow {...props} badge={badges ? place.identity : null} device={device} place={place} />;
+  return (
+    <TabRow
+      {...props}
+      badge={badges ? place.identity : null}
+      device={device}
+      directory={directory}
+      place={place}
+    />
+  );
 });
 
 const TabRow = memo(function TabRow({
@@ -1514,6 +1593,7 @@ const TabRow = memo(function TabRow({
         size={16}
       />
       <CloseTabButton fallback={fallbackRef} place={place} />
+      <TabCloseOutcome tabId={place.key} />
       {menuAt && mainRef.current ? (
         <TabMenu
           anchor={mainRef.current}
@@ -1591,6 +1671,20 @@ function neighbourRow(index: number): HTMLElement | null {
   );
 }
 
+/** Why this tab is still here after a close, whichever control asked; nothing otherwise. */
+const TabCloseOutcome = memo(function TabCloseOutcome({
+  tabId,
+}: {
+  readonly tabId: PlaceItem["key"];
+}) {
+  const line = useTabCloseLine(tabId);
+  return (
+    <span className="side-tab__outcome">
+      <RowSubtitle line={line} subtitle={null} />
+    </span>
+  );
+});
+
 /**
  * Takes exactly this tab off the list; it quits and stops nothing. Its row
  * leaves with it, so focus on it goes on to the neighbouring row.
@@ -1628,7 +1722,7 @@ function SidebarFooter({
   placeName,
   workspace,
 }: {
-  readonly connection: ReturnType<typeof describeHostConnection>;
+  readonly connection: ReturnType<typeof useConnectionDot>;
   readonly onCloseMobile: () => void;
   readonly onThisComputer: boolean;
   readonly placeName: string;
@@ -1678,7 +1772,7 @@ function SidebarFooter({
         <button
           aria-expanded={open}
           aria-haspopup="menu"
-          aria-label={`${placeName}: ${connection.label}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
+          aria-label={`${placeName}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
           className="sidebar__place"
           onClick={() => setOpen((value) => !value)}
           ref={anchorRef}
@@ -1688,15 +1782,13 @@ function SidebarFooter({
             <Icon name={onThisComputer ? "desktop" : "server"} />
             {signInEnded ? <span className="sidebar__place-alert" /> : null}
           </span>
-          <span className="sidebar__place-text">
+          {/* The dot only: the pill over the main column says what is wrong. */}
+          <span className="sidebar__place-text sidebar__place-line">
+            <span
+              aria-hidden
+              className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+            />
             <span className="sidebar__place-name">{placeName}</span>
-            <span className="sidebar__place-status">
-              <span
-                aria-hidden
-                className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-              />
-              {connection.label}
-            </span>
           </span>
           <Icon className="sidebar__place-settings" name="chevron-down" />
         </button>

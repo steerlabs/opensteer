@@ -51,7 +51,7 @@ describe("describeHostConnection", () => {
     expect(
       describeHostConnection({ ...snapshot, connectionInterrupted: false, session: "checking" })
         .label,
-    ).toBe("Offline");
+    ).toBe("Connecting to your computer…");
   });
 });
 

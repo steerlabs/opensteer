@@ -51,7 +51,6 @@ const view: SettingsView = {
   machineOwner: true,
   name: "My Mac",
   facts: { desktop: false, onThisComputer: false, remote: false },
-  statusInfo: { status: "ready", reason: null },
 };
 async function mount(
   path = "/settings/plugins",
@@ -507,6 +506,8 @@ it("paints a remembered plugin list again only for the person who saw it", async
     ...snapshot,
     user: { ...snapshot.user!, id: "usr_00000000-0000-4000-8000-0000000000ff" as never },
   });
+  client.connection.invalidateScope();
+  client.connection.retry();
   const other = await revisit();
   expect(other.querySelector('[aria-label="Enable Gmail"]')).toBeNull();
   expect(other.querySelector('[aria-label="Loading plugins"]')).not.toBeNull();

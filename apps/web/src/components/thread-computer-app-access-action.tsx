@@ -13,6 +13,7 @@ import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
 
 import { useShell } from "./app-shell.js";
+import { act, failureWords, requestAnswer } from "./use-action.js";
 
 /**
  * An agent asked to use an app on a Mac, or the whole screen of a phone.
@@ -66,15 +67,17 @@ export function ThreadComputerAppAccessAction({
     setBusy("decline");
     setError(null);
     try {
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-        requestId: request.id,
-        response: { kind: "external", value: { decision: "declined" } },
-        type: "request.respond",
-      });
+      await act(hostClient, requestAnswer, () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          requestId: request.id,
+          response: { kind: "external", value: { decision: "declined" } },
+          type: "request.respond",
+        }),
+      );
     } catch (reason) {
       // Said on the card where it was declined, not again in the app-wide banner.
-      setError(reason instanceof Error ? reason.message : "The request could not be declined.");
+      setError(failureWords(reason));
       setBusy(null);
     }
   }
@@ -85,13 +88,14 @@ export function ThreadComputerAppAccessAction({
     setError(null);
     try {
       if (request.payload.kind !== "computer.app.access") return;
-      if (!isPhoneDisplayDefinitionId(definitionId)) {
-        await approval.ask(request.payload.setupRequestId);
-        return;
-      }
-      await setPhoneDisplayAccess(hostClient, { access, definitionId, deviceId });
+      const setupRequestId = request.payload.setupRequestId;
+      await act(hostClient, requestAnswer, async () => {
+        if (isPhoneDisplayDefinitionId(definitionId))
+          await setPhoneDisplayAccess(hostClient, { access, definitionId, deviceId });
+        else await approval.ask(setupRequestId);
+      });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The request could not be allowed.");
+      setError(failureWords(reason));
     } finally {
       setBusy(null);
     }
@@ -101,7 +105,6 @@ export function ThreadComputerAppAccessAction({
     <>
       {approval.dialog}
       <ActionNote>{`${computerUseAccessLabel[access]} · ${approveOn}`}</ActionNote>
-      {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
         {
           <button
@@ -122,6 +125,7 @@ export function ThreadComputerAppAccessAction({
           {busy === "decline" ? "Declining…" : "Decline"}
         </button>
       </div>
+      {error ? <ActionNote alert>{error}</ActionNote> : null}
     </>
   );
 }

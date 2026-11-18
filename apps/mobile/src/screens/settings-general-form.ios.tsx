@@ -28,6 +28,7 @@ import {
   IdentityMark,
   Lines,
   LinkRow,
+  LineFooter,
 } from "./settings-form-primitives.ios.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
 import {
@@ -148,7 +149,7 @@ export function GeneralSettingsForm(
               </Text>
             ))}
           </Picker>
-          <ErrorText detail={quietTasks.error} />
+          {quietTasks.line === null ? null : <LineFooter footer={quietTasks.line} />}
         </Section>
       )}
       {

@@ -2,6 +2,7 @@ import { useNativeBrowserLayer } from "../native-browser-overlays.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   createContext,
+  useCallback,
   useLayoutEffect,
   useRef,
   useState,
@@ -15,6 +16,7 @@ import {
 } from "../pane-resize-handle.js";
 import { useVisualViewportKeyboardInset } from "../visual-viewport-keyboard.js";
 import { useWorkspace } from "./workspace-context.js";
+import { useConnectionPillSlot } from "../connection-shell.js";
 import { ToastToolbarContext, useToastPlacement } from "../toast.js";
 
 /**
@@ -49,6 +51,11 @@ export function WorkspaceLayout({
   const { dock, layout, phone, work } = useWorkspace();
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const conversationRef = useRef<HTMLElement | null>(null);
+  const [conversation, setConversation] = useState<HTMLElement | null>(null);
+  const holdConversation = useCallback((element: HTMLElement | null) => {
+    conversationRef.current = element;
+    setConversation(element);
+  }, []);
   const [toolbar, setToolbar] = useState<HTMLElement | null>(null);
   const [beside, setBeside] = useState<HTMLElement | null>(null);
   const setToastPlacement = useToastPlacement();
@@ -163,6 +170,10 @@ export function WorkspaceLayout({
     return () => setToastPlacement?.(null);
   }, [dock.open, phone, setToastPlacement, toolbar, work]);
 
+  // The conversation is the column with a title strip whenever it shows; a page alone keeps the
+  // pill over the whole main column.
+  useConnectionPillSlot(!phone && (!work || dock.open) ? conversation : null);
+
   const classes = [
     "workspace",
     work ? "workspace--work" : "workspace--talk",
@@ -204,7 +215,7 @@ export function WorkspaceLayout({
         className={`workspace__conversation${entering ? " workspace__conversation--entering" : ""}`}
         id="workspace-conversation"
         inert={conversationHidden}
-        ref={conversationRef}
+        ref={holdConversation}
       >
         <BesideSlot value={work ? null : beside}>{children}</BesideSlot>
       </section>
