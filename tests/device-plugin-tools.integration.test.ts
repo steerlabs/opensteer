@@ -278,14 +278,14 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       ),
     ).toMatchObject({
       blocked: {
-        code: "access_required",
+        code: "access_denied",
         message: expect.stringContaining("allows reading only"),
         next: expect.stringContaining("app_access_request"),
       },
     });
     const blockedDescription = await gateway.call("plugin_describe", { paths: [createEvent] });
     expect((blockedDescription.items as { blocked?: unknown }[])[0]).toMatchObject({
-      blocked: { code: "access_required", next: expect.stringContaining('dataApp "calendar"') },
+      blocked: { code: "access_denied", next: expect.stringContaining('dataApp "calendar"') },
     });
     let sent = helper.invocations.length;
     const readOnly = await pluginCall(gateway, createEvent, {
@@ -293,10 +293,16 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       end: "2026-10-01T10:00",
       title: "Dentist",
     });
-    expect(readOnly.failure).toContain("allows reading only");
-    expect(readOnly.failure).toContain(`computerId \\"${computer.runnerId}\\"`);
-    expect(readOnly.failure).toContain('dataApp \\"calendar\\"');
-    expect(readOnly.failure).toContain('access \\"read-write\\"');
+    expect(readOnly.raw).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message: "Calendar on Studio Mac allows reading only.",
+          next: `To create_event, call app_access_request with dataApp "calendar", computerId "${computer.runnerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
+        },
+      },
+    });
     expect(helper.invocations).toHaveLength(sent);
 
     // The person sees both apps in Plugins with what agents type, and sets Reminders to
@@ -416,10 +422,17 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
         id: "R1",
       },
     );
-    expect(lost.failure).toContain(
-      "Studio Mac did not confirm this. Check whether it happened before trying again.",
-    );
-    expect(lost.failure).toContain("Retryable");
+    expect(lost.raw).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "outcome_unknown",
+          message:
+            "Studio Mac did not confirm this. Check whether it happened before trying again.",
+          next: "Check current state before repeating the write.",
+        },
+      },
+    });
     expect(helper.invocations).toHaveLength(sent + 1);
 
     // Offline: the provider says so instead of listing tools, and nothing is rerouted.
@@ -450,7 +463,16 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       end: "2026-10-07",
       start: "2026-10-01",
     });
-    expect(offline.failure).toContain("Studio Mac is offline");
+    expect(offline.raw).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "computer_offline",
+          message: "Device is offline. Do not request access.",
+          next: `computerId=${computer.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
+        },
+      },
+    });
     expect(helper.invocations).toHaveLength(sent);
   }, 240_000);
 
