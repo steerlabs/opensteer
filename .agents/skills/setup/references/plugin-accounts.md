@@ -23,6 +23,23 @@ Remove old `relayOnly` entries before deploying: registry entries now describe c
 apps only. Retired built-in service requests receive HTTP 400 with an update instruction; they do
 not fall back to plugin consent.
 
+**Production registry**: [deploy/account/oauth-providers.json](../../../../deploy/account/oauth-providers.json)
+holds every entry except credentials. Its `allowedScopes` and `placement.hosts` are the union of
+what the catalog plugins for that provider request and where they send tokens; change it only with
+that check, and remember a changed entry makes existing grants reconnect. To build the registry
+from the managed apps' credentials in the runtime secret (with gcloud signed in to the project):
+
+1. `pnpm exec tsx .github/scripts/account-oauth-registry.ts --dry-run` reads the version
+   `deploy/account/account.yaml` pins, joins and validates, and names included and skipped
+   providers.
+2. Run it again without `--dry-run`. It adds a version with `OPENSTEER_HOSTED_OAUTH_PROVIDERS` and
+   without the retired `OPENSTEER_HOSTED_OAUTH_<PROVIDER>_*` keys, and prints its number.
+3. Set that number in the `opensteer-account-runtime` `resourceName` line of
+   `deploy/account/account.yaml`, rename its `SecretProviderClass` (`account-runtime-vN`) and the
+   Deployment's reference to it, and deploy. Rolling back means pinning the earlier version.
+4. Check `/v1/oauth-broker/metadata?version=3` lists each provider with its placement, then sign
+   in once per provider.
+
 **Custom apps**: prepare the plugin account connection, review its sites, credential exposure and
 scopes, then save or select the owner's OAuth client. With an Account
 link, register the exact Account relay callback the Host shows (also on independent HTTPS Hosts);
