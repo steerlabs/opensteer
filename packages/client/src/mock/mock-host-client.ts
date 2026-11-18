@@ -3841,8 +3841,9 @@ export class MockHostClient implements HostClient {
     this.#scopeProvider = scope;
   }
   async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
-    // The Host's state, not `load()`, which would restart the connection opening now.
-    await this.#state.load();
+    if (!this.#ownsConnection) await this.load();
+    // Its own connection is ready only with its state: a reader keyed on that moment sees both.
+    else this.#state.markConnected();
     attempt.signal.throwIfAborted();
     const snapshot = this.getSnapshot();
     if (snapshot.session !== "authenticated" || !snapshot.user || !snapshot.deploymentId)
@@ -11258,6 +11259,11 @@ class MockHostState {
     this.#provisionalIcons.clear();
     this.activeRuns.clear();
     this.runPlaces.dispose();
+  }
+
+  markConnected(): void {
+    if (this.snapshot.connection !== "connected")
+      this.update({ ...this.snapshot, connection: "connected" });
   }
 
   async load(): Promise<void> {

@@ -988,7 +988,7 @@ it("draws nothing for a silent automatic turn, and its source and failure when i
 });
 
 it("loads output only on expansion, retries a failure, and reuses it when reopened", async () => {
-  const mock = new MockHostClient({ latencyMs: 0 });
+  const mock = new MockHostClient();
   const read = vi
     .fn()
     .mockRejectedValueOnce(new Error("offline"))
