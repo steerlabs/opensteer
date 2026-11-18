@@ -45,6 +45,7 @@ import {
   listIntegrationConnections,
   OpensteerStore,
 } from "./index.js";
+import { DROP_STORED_DEFINITION_API_KEY_SQL } from "./migrations.js";
 import { jsonValue } from "./store-primitives.js";
 import {
   installIntegrationInTransaction,
@@ -1717,7 +1718,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
     }
   });
 
-  it("removes a live computer connection with its installation", async ({ storeFixture }) => {
+  it("removes a live connection and waiting approval with a legacy computer installation", async ({
+    storeFixture,
+  }) => {
     const { fixture, setApprovedComputerConnection, definition, platform, database } = storeFixture;
     const setup = await fixture("uninstall");
     const connected = await setApprovedComputerConnection({
@@ -1729,12 +1732,28 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
+    const { request } = await platform.requestComputerAppSetup({
+      access: "read",
+      actorUserId: setup.ownerUserId,
+      app: null,
+      definitionDigest: integrationDefinitionDigest(definition),
+      definitionId: definition.id,
+      requiresApp: false,
+      runnerId: setup.runnerId,
+    });
+    await sql`
+      update integration_installations
+      set manifest = jsonb_set(manifest, '{definition,apiKey}', 'null'::jsonb)
+      where id = ${setup.installationId}
+    `.execute(database);
+    await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
     const mutation = await platform.uninstall({
       actorUserId: setup.ownerUserId,
       installationId: setup.installationId,
       requestId: "computer-uninstall",
     });
     expect(mutation.removedConnectionIds).toEqual([connected.connection.id]);
+    expect(await platform.getComputerAppSetupRequest({ setupRequestId: request.id })).toBeNull();
     await expect(
       database
         .selectFrom("integrationConnections")

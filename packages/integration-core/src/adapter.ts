@@ -65,6 +65,7 @@ export const IntegrationDefinitionSummarySchema = IntegrationDefinitionBaseSchem
     computerApp: ComputerAppPresentationSchema.optional(),
   })
   .strict();
+
 export const IntegrationDefinitionSummaryViewSchema = z.object({
   ...IntegrationDefinitionSummarySchema.shape,
   // API 62 pins this response vocabulary; native definitions only produce computer entries.
