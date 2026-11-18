@@ -1,10 +1,9 @@
 import { qualifyEngineStorage } from "../apps/host/src/plugins/engine-storage.js";
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, test } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PgClient from "@effect/sql-pg/PgClient";
@@ -123,35 +122,12 @@ test.for(fixtureFlows)(
     const clone = await cloneTestDatabase("host");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-engine-test-"));
     context.onTestFinished(() => rm(directory, { recursive: true, force: true }));
-    const archive = join(directory, "framework.tgz");
-    await cp(resolve("packages/plugin-engine/apps/dist"), join(directory, "package"), {
-      recursive: true,
-    });
-    execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", directory, "package"], {
-      env: { ...process.env, COPYFILE_DISABLE: "1" },
-    });
-    const tarball = await readFile(archive);
     const observed: string[] = [];
+    const requested: string[] = [];
     let origin = "";
     const server = createServer((request, response) => {
-      if (request.url === "/apps") {
-        response.setHeader("content-type", "application/json");
-        response.end(
-          JSON.stringify({
-            name: "apps",
-            "dist-tags": { latest: framework.version },
-            versions: {
-              [framework.version]: {
-                name: "apps",
-                version: framework.version,
-                dist: { tarball: origin + "/framework.tgz" },
-              },
-            },
-          }),
-        );
-      } else if (request.url === "/framework.tgz") {
-        response.end(tarball);
-      } else if (request.url === "/secret") {
+      requested.push(request.url ?? "");
+      if (request.url === "/secret") {
         observed.push(request.headers.authorization ?? "");
         response.setHeader("content-type", "text/plain");
         response.end(request.headers.authorization);
@@ -797,6 +773,8 @@ test.for(fixtureFlows)(
       }),
     );
     expect(tables.length).toBeGreaterThan(10);
+    // Builds link the Host's framework: the registry is never asked for it.
+    expect(requested.filter((path) => path !== "/secret")).toEqual([]);
     console.log("Plugin runtime after plugin", ownedRuntimeProcesses());
   },
 );

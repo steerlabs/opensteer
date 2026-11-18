@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./framework-reference.json": "./dist/framework-reference.json",
+    "./runtime.json": "./dist/runtime.json",
     "./package.json": "./package.json",
     "./contracts": "./src/contracts/host.ts",
     "./host": "./src/host.ts",

@@ -23,17 +23,16 @@ import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
 
 /**
- * What the compiling host contributes. `registry` replaces the public npm registry. A host has no
- * framework of its own: every source declares the `apps` release it uses in `dependencies.apps`.
- * `apps` supplies the package files of one declared release, so a test deployment can build apps
- * against its own unpublished framework. Any other declared release installs from the registry.
+ * What the compiling host contributes. `registry` replaces the public npm registry for the packages
+ * a source declares besides `apps`. `apps` holds the files of the Host's own framework package:
+ * every build links it, whatever `apps` version the source's `package.json` names, so the framework
+ * is never fetched.
  */
 export interface WorkerHost {
   readonly registry?: string;
-  readonly apps?: {
-    readonly version: string;
-    /** Package-relative paths and contents, as in the published archive. */
-    readonly files: Effect.Effect<Readonly<Record<string, string>>, RuntimeBuildFailed>;
+  readonly apps: {
+    /** Package-relative paths and contents, as in the package archive. */
+    readonly files: Readonly<Record<string, string>>;
   };
 }
 

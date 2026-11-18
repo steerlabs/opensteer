@@ -170,17 +170,12 @@ beforeAll(async () => {
     // Like the Host, wait for the execution report before checking its authority.
     beforeAuthorize: () => executions.settled(),
   });
-  registry = await pluginFixtureRegistry(
-    directory,
-    undefined,
-    pluginFixtureFiles(1),
-    (request, response) => {
-      if (request.url !== "/effect") return false;
-      effects++;
-      response.end("ok");
-      return true;
-    },
-  );
+  registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1), (request, response) => {
+    if (request.url !== "/effect") return false;
+    effects++;
+    response.end("ok");
+    return true;
+  });
   homeFiles = new AgentHomeFiles({
     agentHome: async () => personal.agentHome,
     helperPath: new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)

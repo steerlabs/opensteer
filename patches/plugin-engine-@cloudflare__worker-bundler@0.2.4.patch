@@ -1,8 +1,8 @@
 diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
-index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f582ca1bf 100644
+index fa55910..aa562a8 100644
 --- a/dist/file-system-ZXKe_fv7.d.ts
 +++ b/dist/file-system-ZXKe_fv7.d.ts
-@@ -37,6 +37,8 @@
+@@ -37,6 +37,8 @@ interface FileSystem {
   */
  declare class InMemoryFileSystem implements FileSystem {
    private files;
@@ -11,7 +11,7 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
    /**
     * @param files Optional initial file contents. Accepts either a plain object
     * (keys are paths, values are file contents) or a `Map`. Defaults to an
-@@ -44,7 +46,7 @@
+@@ -44,7 +46,7 @@ declare class InMemoryFileSystem implements FileSystem {
     */
    constructor(files?: Record<string, string> | Map<string, string>);
    read(path: string): string | null;
@@ -21,10 +21,10 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
    list(prefix?: string): string[];
    flush(): Promise<void>;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
+index 53dd55f..f2ef7c5 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -331,6 +331,8 @@
+@@ -331,6 +331,8 @@ declare function handleAssetRequest(
   * Options for createApp
   */
  interface CreateAppOptions {
@@ -33,7 +33,7 @@ index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb
    /**
     * Input files — keys are paths relative to project root, values are file contents.
     * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
-@@ -499,6 +501,8 @@
+@@ -499,6 +501,8 @@ interface InstallResult {
  //#endregion
  //#region src/installer.d.ts
  interface InstallOptions {
@@ -43,10 +43,10 @@ index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb
     * Include devDependencies (default: false)
     */
 diff --git a/dist/index.js b/dist/index.js
-index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d32413719983c2e98d 100644
+index 9ddcbac..2f26670 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -78,7 +78,7 @@
+@@ -78,7 +78,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
  			}
  		}
  	} catch {}
@@ -55,7 +55,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  	if (legacyEntry && typeof legacyEntry === "string") {
  		const fullPath = `node_modules/${packageName}/${normalizeRelativePath(legacyEntry)}`;
  		if (files.read(fullPath) !== null) return {
-@@ -231,7 +231,28 @@
+@@ -231,7 +231,28 @@ function bundlerOnlyOptionsWarning(opts) {
  /**
  * Bundle files using esbuild-wasm
  */
@@ -84,7 +84,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  	const { files, entryPoint, externals, target, minify, sourcemap, nodejsCompat, jsx, jsxImportSource, define, loader: loaderOverrides, conditions, virtualModules, plugins: extraPlugins = [] } = options;
  	await initializeEsbuild();
  	const virtualFsPlugin = {
-@@ -255,7 +276,7 @@
+@@ -255,7 +276,7 @@ async function bundleWithEsbuild(options) {
  						external: true
  					};
  					try {
@@ -93,7 +93,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  						if (!result.external) return {
  							path: result.path,
  							namespace: "virtual"
-@@ -857,7 +878,12 @@
+@@ -857,7 +878,12 @@ var InMemoryFileSystem = class {
  		this.files = files instanceof Map ? files : new Map(Object.entries(files));
  	}
  	read(path) {
@@ -107,7 +107,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  	}
  	write(path, content) {
  		this.files.set(path, content);
-@@ -1516,7 +1542,7 @@
+@@ -1516,7 +1542,7 @@ async function createApp(options) {
  	const wranglerConfig = parseWranglerConfig(fileSystem);
  	const nodejsCompat = hasNodejsCompat(wranglerConfig);
  	const installWarnings = [];
@@ -117,10 +117,10 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
-index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267ac36b4045 100644
+index 5ed55da..acd5009 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
-@@ -381,7 +381,7 @@
+@@ -381,7 +381,7 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
  * @returns Metadata about the installation
  */
  async function installDependencies(fileSystem, options = {}) {
@@ -129,7 +129,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  	const result = {
  		installed: [],
  		warnings: []
-@@ -407,14 +407,16 @@
+@@ -407,14 +407,16 @@ async function installDependencies(fileSystem, options = {}) {
  		if (Object.keys(depsToInstall).length === 0) return result;
  		const installedPackages = /* @__PURE__ */ new Set();
  		const inProgress = /* @__PURE__ */ new Map();
@@ -148,7 +148,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  	if (installedPackages.has(name)) return;
  	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
  		installedPackages.add(name);
-@@ -424,6 +426,19 @@
+@@ -424,6 +426,19 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  	if (existing) return existing;
  	const installPromise = (async () => {
  		try {
@@ -168,7 +168,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  			const metadata = await fetchPackageMetadata(name, registry);
  			const version = resolveVersion(versionRange, metadata);
  			if (!version) {
-@@ -437,10 +452,10 @@
+@@ -437,10 +452,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  			}
  			installedPackages.add(name);
  			result.installed.push(`${name}@${version}`);
@@ -181,7 +181,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  		} catch (error) {
  			const message = error instanceof Error ? error.message : String(error);
  			result.warnings.push(`Failed to install ${name}: ${message}`);
-@@ -475,82 +490,85 @@
+@@ -475,82 +490,113 @@ function resolveVersion(range, metadata) {
  	const versions = Object.keys(metadata.versions);
  	return semver.maxSatisfying(versions, range) ?? void 0;
  }
@@ -217,24 +217,23 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
 -	const buffer = await response.arrayBuffer();
 -	return extractTarball(new Uint8Array(buffer));
 +	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
-+	return extractTarball(response.body, options.buildInputsOnly === true ? isBuildInput : isTextFile);
-+}
-+/** Files a bundler never reads: source maps, type declarations and package documentation. */
-+function isBuildInput(path) {
-+	const lower = path.toLowerCase();
-+	if (lower.endsWith(".map") || /\.d\.[cm]?ts$/.test(lower) || lower.endsWith(".md")) return false;
-+	const fileName = lower.split("/").pop() ?? "";
-+	if (["readme", "changelog", "license", "licence"].some((doc) => fileName.startsWith(doc))) return false;
-+	return isTextFile(path);
++	const keep = options.buildInputsOnly === true ? isBuildInput : isTextFile;
++	// A tarball named by URL in package.json has no published digest; a registry version does.
++	if (metadata.version === void 0) return extractTarball(response.body, keep);
++	const archive = new Uint8Array(await response.arrayBuffer());
++	await verifyTarball(name, metadata, archive);
++	return extractTarball(new Response(archive).body, keep);
  }
  /**
 -* Extract files from a gzipped tarball.
-+* Extract files from a gzipped tarball stream.
- *
- * npm packages are distributed as .tgz files (gzipped tar).
- * Package contents are usually enclosed by one archive directory, which is
+-*
+-* npm packages are distributed as .tgz files (gzipped tar).
+-* Package contents are usually enclosed by one archive directory, which is
 -* removed by `parseTar` so returned paths are relative to the package root.
--*/
++* Check a registry tarball against the digest its version metadata publishes: the strongest
++* `dist.integrity` hash (SHA-512, SHA-384 or SHA-256), else the SHA-1 `dist.shasum`. A version
++* that publishes neither is refused.
+ */
 -async function extractTarball(data) {
 -	return parseTar(await decompress(data));
 -}
@@ -254,22 +253,48 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
 -		if (done) break;
 -		chunks.push(value);
 -		totalLength += value.length;
--	}
++async function verifyTarball(name, metadata, archive) {
++	const algorithms = { sha512: "SHA-512", sha384: "SHA-384", sha256: "SHA-256" };
++	const published = (metadata.dist?.integrity ?? "").split(/\s+/).map((entry) => /^(sha512|sha384|sha256)-([A-Za-z0-9+/]+={0,2})$/.exec(entry)).filter((match) => match !== null).sort((a, b) => b[1].localeCompare(a[1]));
++	const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
++	const toHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
++	const digest = async (algorithm) => new Uint8Array(await crypto.subtle.digest(algorithm, archive));
++	if (published.length > 0) {
++		const [, algorithm, expected] = published[0];
++		if (toBase64(await digest(algorithms[algorithm])) === expected) return;
++		throw new Error(`Tarball for ${name}@${metadata.version} does not match its published ${algorithm} integrity`);
+ 	}
 -	const result = new Uint8Array(totalLength);
 -	let offset = 0;
 -	for (const chunk of chunks) {
 -		result.set(chunk, offset);
 -		offset += chunk.length;
--	}
++	const shasum = metadata.dist?.shasum;
++	if (typeof shasum === "string" && /^[0-9a-f]{40}$/.test(shasum)) {
++		if (toHex(await digest("SHA-1")) === shasum) return;
++		throw new Error(`Tarball for ${name}@${metadata.version} does not match its published shasum`);
+ 	}
 -	return result;
--}
--/**
++	throw new Error(`Registry metadata for ${name}@${metadata.version} publishes no tarball digest`);
++}
++/** Files a bundler never reads: source maps, type declarations and package documentation. */
++function isBuildInput(path) {
++	const lower = path.toLowerCase();
++	if (lower.endsWith(".map") || /\.d\.[cm]?ts$/.test(lower) || lower.endsWith(".md")) return false;
++	const fileName = lower.split("/").pop() ?? "";
++	if (["readme", "changelog", "license", "licence"].some((doc) => fileName.startsWith(doc))) return false;
++	return isTextFile(path);
+ }
+ /**
 -* Parse a tar archive and extract text files.
--*
++* Extract files from a gzipped tarball stream.
+ *
 -* TAR format:
 -* - 512-byte header blocks
 -* - File content (padded to 512 bytes)
 -* - Two empty blocks at the end
++* npm packages are distributed as .tgz files (gzipped tar).
++* Package contents are usually enclosed by one archive directory, which is
 +* removed so returned paths are relative to the package root. The archive is
 +* read one entry at a time: neither the compressed nor the unpacked archive is
 +* held whole, and skipped entries are discarded as they arrive.
@@ -326,7 +351,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  	}
  	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
  	const files = {};
-@@ -560,6 +578,70 @@
+@@ -560,6 +606,70 @@ function parseTar(data) {
  	}
  	return files;
  }

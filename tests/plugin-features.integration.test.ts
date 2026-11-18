@@ -195,7 +195,7 @@ beforeEach(async (testContext) => {
   testContext.onTestFinished(() => database.destroy());
   personal = await seedPersonalFixture(database, directory);
   records = new PluginAgentStore(database);
-  registry = await pluginFixtureRegistry(directory, undefined, files(), (request, response) => {
+  registry = await pluginFixtureRegistry(undefined, files(), (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     const secure = requestUrl.pathname === "/secure-openapi.json";
     if (requestUrl.pathname === "/secured") {

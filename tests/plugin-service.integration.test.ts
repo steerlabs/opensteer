@@ -57,7 +57,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-service-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
   const events = new EventEmitter();
-  const registry = await pluginFixtureRegistry(directory, () => events.emit("waiting"));
+  const registry = await pluginFixtureRegistry(() => events.emit("waiting"));
   context.onTestFinished(() => registry.close());
   const origin = registry.origin;
   let refused = false;
@@ -275,7 +275,7 @@ async function outputFixture(
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
-  const registry = await pluginFixtureRegistry(directory);
+  const registry = await pluginFixtureRegistry();
   context.onTestFinished(() => registry.close());
   const service = new PluginService({
     ...options,

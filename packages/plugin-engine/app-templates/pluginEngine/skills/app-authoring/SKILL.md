@@ -6,8 +6,8 @@ description: Build and deploy PluginEngine apps with tools, storage, UI, account
 # Build an PluginEngine app
 
 An app is TypeScript source with a default `defineApp` export from `apps`.
-Its `package.json` declares the exact `apps` version it uses, which
-`framework.release` returns. App authors use ordinary async functions; Effect stays inside
+Its `package.json` declares `apps` at the version
+`framework.release` returns; builds always use the host's own `apps`. App authors use ordinary async functions; Effect stays inside
 the framework. An app's installed name is separate from its source definition.
 
 ## Choose how to work

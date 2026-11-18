@@ -13,8 +13,9 @@ const Package = Schema.Struct({
 });
 
 /**
- * Framework archives are loaded alone; direct npm imports retain their authored declarations and
- * dependency graphs. `registry` replaces the public npm registry when the host configures one.
+ * The framework is the Host's own (see `WorkerHost`); direct npm imports retain their authored
+ * declarations and dependency graphs. `registry` replaces the public npm registry when the host
+ * configures one.
  * The installer's errors quote the URLs it fetched, which start with that registry. An operator's
  * registry URL can carry credentials or a token, and the deployer reading a failed build is not
  * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
@@ -107,18 +108,12 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
     };
     return {
       plugin,
-      framework:
-        dependencies.apps === undefined
-          ? Effect.succeed(false)
-          : dependencies.apps === host.apps?.version
-            ? host.apps.files.pipe(
-                Effect.map((files) => {
-                  for (const [path, content] of Object.entries(files))
-                    filesystem.write(`node_modules/apps/${path}`, content);
-                  return true;
-                }),
-              )
-            : install("apps", dependencies.apps, false).pipe(Effect.as(true)),
+      framework: Effect.sync(() => {
+        if (dependencies.apps === undefined) return false;
+        for (const [path, content] of Object.entries(host.apps.files))
+          filesystem.write(`node_modules/apps/${path}`, content);
+        return true;
+      }),
     };
   }).pipe(
     Effect.catchTag("SchemaError", (cause) =>

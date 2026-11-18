@@ -35,7 +35,7 @@ async function fixture(context: { onTestFinished(fn: () => unknown): void }) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-lifecycle-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
-  const registry = await pluginFixtureRegistry(directory);
+  const registry = await pluginFixtureRegistry();
   context.onTestFinished(() => registry.close());
   const options: PluginServiceOptions = {
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),

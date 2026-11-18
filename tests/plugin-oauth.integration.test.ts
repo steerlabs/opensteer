@@ -463,7 +463,7 @@ beforeAll(async () => {
     }
   };
   await link();
-  registry = await pluginFixtureRegistry(directory, undefined, undefined, (request, response) => {
+  registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
     if (request.url !== "/secret") return false;
     apiTokens.push(String(request.headers.authorization));
     response.setHeader("content-type", "text/plain");
