@@ -7,8 +7,9 @@ import { connect } from "node:net";
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineAccessPolicy } from "@opensteer/protocol";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import type { MachineAccessSetup } from "@opensteer/runner";
 import {
   activeSessionId,
@@ -434,22 +435,45 @@ integration("Machine access audit, transfer and realtime", () => {
     const otherOwnerHeaders = await additionalOwnerSession(host);
     const ownerFeed = await openRealtime(host, host.ownerHeaders, ["machine"]);
     const bystanderFeed = await openRealtime(host, otherOwnerHeaders, ["machine"]);
-    ownerFeed.messages.length = 0;
-    bystanderFeed.messages.length = 0;
-    const changes = (feed: { readonly messages: readonly Record<string, unknown>[] }) =>
-      feed.messages.filter(
-        (message) => message.type === "host.resource" && message.kind === "machine",
+    const revision = (feed: typeof ownerFeed) => {
+      let latest = 0n;
+      for (const value of feed.messages) {
+        const parsed = ScopedHostMessageSchema.safeParse(value);
+        if (!parsed.success) continue;
+        const frame = parsed.data;
+        const machine =
+          frame.type === "host.resource" && frame.kind === "machine"
+            ? frame.revision
+            : "shellProgress" in frame
+              ? frame.shellProgress?.resourceRevisions.machine
+              : undefined;
+        if (machine && BigInt(machine) > latest) latest = BigInt(machine);
+      }
+      return latest;
+    };
+    let seen = revision(ownerFeed);
+    const settle = async (change: string) => {
+      seen = await vi.waitFor(
+        () => {
+          const ownerRevision = revision(ownerFeed);
+          expect(
+            ownerRevision,
+            `Owner machine revision did not advance after ${change}`,
+          ).toBeGreaterThan(seen);
+          expect(revision(bystanderFeed), `Second owner fell behind after ${change}`).toBe(
+            ownerRevision,
+          );
+          return ownerRevision;
+        },
+        { timeout: 15_000 },
       );
-    const settle = async (atLeast: number) => {
-      await waitForCondition(async () => changes(ownerFeed).length >= atLeast);
-      return changes(ownerFeed).length;
     };
     try {
       // A Runner disconnecting and reconnecting are both changes to the list.
       await target.disconnect();
-      let seen = await settle(1);
+      await settle("disconnect");
       await target.reconnect();
-      seen = await settle(seen + 1);
+      await settle("reconnect");
 
       // Minting a pending computer, renaming one, writing an access policy,
       // and removing one: each is a row the list now reads differently.
@@ -458,7 +482,7 @@ integration("Machine access audit, transfer and realtime", () => {
         idempotencyKey: "changed-enrollment",
         name: "Pending computer",
       });
-      seen = await settle(seen + 1);
+      await settle("enrollment");
 
       await testRpcData(
         host.origin,
@@ -471,7 +495,7 @@ integration("Machine access audit, transfer and realtime", () => {
         },
         { headers: host.ownerHeaders },
       );
-      seen = await settle(seen + 1);
+      await settle("rename");
 
       await updateAccessPolicy(host, {
         expectedRevision: 2,
@@ -479,15 +503,10 @@ integration("Machine access audit, transfer and realtime", () => {
         policy: { commands: true, forwarding: false, reach: "deployment", shares: [] },
         runnerId: target.runnerId,
       });
-      seen = await settle(seen + 1);
+      await settle("access policy update");
 
       await revokeMachine(host, { key: "changed-revoke", runnerId: target.runnerId });
-      seen = await settle(seen + 1);
-
-      await waitForCondition(async () => changes(bystanderFeed).length === seen);
-      expect(changes(bystanderFeed).map(({ revision }) => revision)).toEqual(
-        changes(ownerFeed).map(({ revision }) => revision),
-      );
+      await settle("revocation");
       expect(
         bystanderFeed.messages.filter((message) =>
           String(message.type).startsWith("host.machine.access."),
