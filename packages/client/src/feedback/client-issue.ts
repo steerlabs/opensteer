@@ -22,6 +22,8 @@ export type ClientIssueCode =
   | "draft-changed"
   | "draft-previous-login"
   | "draft-unsaved"
+  | "draft-limit"
+  | "dictation-recovered"
   | "storage-unavailable"
   | "queue-full"
   | "preparation-required";
@@ -65,6 +67,8 @@ export function clientIssueFromFailure(
   if (failure.reason === "draft-changed" || failure.reason === "draft-superseded")
     return { code: "draft-changed" };
   if (failure.reason === "draft-previous-login") return { code: "draft-previous-login" };
+  if (failure.reason === "draft-files-full" || failure.reason === "draft-text-full")
+    return { code: "draft-limit", reason: failure.reason };
   if (failure.reason === "queue-full") return { code: "queue-full" };
   if (failure.code === "unauthorized") return { code: "sign-in" };
   if (["client-too-old", "api-version-mismatch", "unsupported-version"].includes(failure.reason))
@@ -92,7 +96,6 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "thread-not-found": "This task is no longer available.",
   "thread-closed": "This task is closed.",
   "draft-unverified": "The draft may have changed or been discarded. Edit to recover your message.",
-  "host-too-old": "Update Opensteer on the computer to send this message.",
   "browser-session-closed": "This tab is closed.",
   "browser-capture-limit": "Too many pages are being watched.",
   "browser-input-owner-conflict": "Someone else is using this page.",
@@ -203,6 +206,18 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
         "Couldn't save this draft on this device.",
         null,
         "It stays here until you close Opensteer.",
+      );
+    case "draft-limit":
+      return result(
+        issue.reason === "draft-files-full"
+          ? "Too many files to combine these drafts. Your edit is still here."
+          : "Too much text to combine these drafts. Your edit is still here.",
+      );
+    case "dictation-recovered":
+      return result(
+        issue.reason === "unsaved"
+          ? "Couldn’t save the dictated text. Copy it before closing Opensteer."
+          : "Dictated text was saved separately.",
       );
     case "draft-previous-login":
       return result(

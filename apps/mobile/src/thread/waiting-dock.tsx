@@ -160,7 +160,7 @@ export function WaitingEditBar(props: {
   /** The item open, or null once it has left the list. */
   readonly item: WaitingInput | null;
   /** The words, and what was attached, on their way into a new message. */
-  readonly onSendAsNew: (words: ReturnType<WaitingEditController["takeBack"]>) => void;
+  readonly onSendAsNew: Parameters<WaitingEditController["moveToDraft"]>[0];
 }): ReactNode {
   const { decisions, editing, item } = props;
   const edit = editing.edit;
@@ -199,8 +199,10 @@ export function WaitingEditBar(props: {
       // A teammate's words aren't the person's to send as their own.
       edit.kind === "ask" || !draft.dirty ? null : (
         <AnswerPill
+          busy={saving}
+          disabled={saving}
           label="Send as new message…"
-          onPress={() => props.onSendAsNew(editing.takeBack())}
+          onPress={() => void editing.moveToDraft(props.onSendAsNew)}
           tone="primary"
         />
       )

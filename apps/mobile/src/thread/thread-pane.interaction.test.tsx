@@ -3866,6 +3866,54 @@ describe("a task", () => {
     ).toBe("Include the card fees and the FX rate");
   });
 
+  it("keeps the waiting edit when its file will not fit in the reply draft", async () => {
+    const waiting = said("Include the notes", null);
+    const item = waitingInput(waiting, workId);
+    const part = {
+      type: "artifact" as const,
+      artifactId: createId("attachment"),
+      name: "notes.txt",
+      mediaType: "text/plain",
+    };
+    const host = fakeHost(
+      snapshotFor({
+        entries: [waiting],
+        queue: [
+          { ...item, message: { ...item.message, content: [...item.message.content, part] } },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container, drafts } = await mount(host, workId);
+    await act(async () => {
+      await drafts.writeDraft(deploymentId, userId, workId, "Existing reply");
+      await drafts.writeDraftAttachments(
+        deploymentId,
+        userId,
+        workId,
+        Array.from({ length: 10 }, (_, index) => ({
+          attachmentId: createId("attachment"),
+          localUri: null,
+          mediaType: "text/plain",
+          name: `file-${index}.txt`,
+          sizeBytes: 1,
+          status: "ready" as const,
+        })),
+      );
+    });
+    const originalDraft = drafts.readDraft(deploymentId, userId, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Words returning from the waiting message");
+    await act(async () =>
+      host.move(snapshotFor({ entries: [waiting], queue: [], run: null, threadId: workId })),
+    );
+    await press(container, "Send as new message…");
+    expect(editField(container)?.value).toBe("Words returning from the waiting message");
+    expect(text(container)).toContain("Too many files");
+    expect(drafts.readDraft(deploymentId, userId, workId)).toEqual(originalDraft);
+  });
+
   it("shows a message another device is editing, and lets it go from here", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
@@ -4977,6 +5025,27 @@ it("hides an unsupported mic and disables it while another composer owns dictati
   );
   expect(button(container, "Start dictation (English)").disabled).toBe(true);
   await act(async () => dictation.cancel("another"));
+});
+
+it("recovers dictation that finished after leaving a full reply draft", async () => {
+  const speech = await enableDictation();
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const files = new MemoryPrivateFilesystem();
+  const { container } = await mount(host, workId, { files });
+  const saved = "x".repeat(15_990);
+  const dictated = "These words must all survive.";
+  await type(container, "Message", saved);
+  await act(async () => composerEditorFake.select?.({ start: saved.length, end: saved.length }));
+  await press(container, "Start dictation (English)");
+  await speech.emit({ type: "listening" });
+  await speech.emit({ type: "text", finalized: [dictated], volatile: [] });
+  await act(async () => roots.pop()?.unmount());
+  await speech.emit({ type: "ended", reason: "completed", error: null });
+  const reopened = await mount(host, workId, { files });
+  expect(reopened.drafts.readDraft(deploymentId, userId, workId)?.text).toBe(saved);
+  await press(reopened.container, "Copy dictated text");
+  const { setStringAsync } = await import("expo-clipboard");
+  expect(setStringAsync).toHaveBeenCalledWith(dictated);
 });
 
 it("does not send an empty message when Send finishes a microphone with no speech", async () => {

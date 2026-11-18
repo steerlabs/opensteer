@@ -22,6 +22,7 @@ import {
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
+import { HttpHostClient } from "@opensteer/client/host";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -32,6 +33,7 @@ import {
   type HostNetworkSocketEvents,
 } from "@opensteer/client/connections";
 import {
+  controlledClientSession,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testDiscoveryEnvelope,
@@ -49,6 +51,199 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each([
+    ["web", 60],
+    ["web", 61],
+    ["web", 62],
+    ["desktop", 60],
+    ["desktop", 61],
+    ["desktop", 62],
+  ] as const)("%s sends and creates tasks on Personal API %i", async (surface, version) => {
+    const row = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const deploymentId = row.authority.document.deploymentId;
+    const userId = createId("user");
+    const loginId = createId("authSession");
+    const threadId = createId("thread");
+    const environmentId = createId("environment");
+    const harnessInstanceId = createId("harnessInstance");
+    const modelSelection = { modelId: "claude", providerId: "anthropic", options: {} };
+    const at = "2026-09-01T00:00:00Z";
+    const messageId = createId("message");
+    const scope = {
+      authorityKey: row.authority.document.canonicalOrigin,
+      deploymentId,
+      viewerId: userId,
+      loginId,
+    };
+    const view = controlledClientSession();
+    view.change({ scope });
+    const admitted: { type: string; session: string | null }[] = [];
+    const answer = (headers: Headers, path: string, body: string | null) => {
+      if (Number(headers.get(hostApiVersionHeader)) > version) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "bad_request",
+              reason: "unsupported-version",
+              message: "Unsupported version",
+              retryable: false,
+            },
+          },
+          { status: 400 },
+        );
+      }
+      if (path.includes("sessions.list"))
+        return Response.json({
+          ok: true,
+          data: {
+            sessions: [
+              {
+                id: loginId,
+                current: true,
+                createdAt: at,
+                expiresAt: at,
+                absoluteExpiresAt: at,
+                lastSeenAt: at,
+                deviceLabel: "Opensteer",
+                form: null,
+                deviceId: null,
+              },
+            ],
+          },
+        });
+      const command = JSON.parse(body!) as { type: string };
+      admitted.push({ type: command.type, session: headers.get(expectedMutationSessionHeader) });
+      return Response.json({
+        ok: true,
+        data:
+          command.type === "thread.create"
+            ? {
+                type: command.type,
+                asOfSequence: "0",
+                wasDuplicate: false,
+                thread: {
+                  accessMode: "auto",
+                  continuationIdentity: null,
+                  createdAt: at,
+                  updatedAt: at,
+                  createdBy: userId,
+                  environmentId,
+                  harnessInstanceId,
+                  id: threadId,
+                  lineageRootThreadId: threadId,
+                  inputQueuePaused: false,
+                  listed: true,
+                  modelSelection,
+                  parentThreadId: null,
+                  pendingRequests: 0,
+                  status: "idle",
+                  title: "Task",
+                  purpose: "task",
+                  teamOrigin: null,
+                },
+              }
+            : {
+                type: command.type,
+                run: null,
+                wasDuplicate: false,
+                input: {
+                  assignmentId: null,
+                  cancelReason: null,
+                  causalChainId: createId("causalChain"),
+                  createdAt: at,
+                  deliveredAt: null,
+                  messageId,
+                  policy: "queue",
+                  replyTarget: null,
+                  runId: null,
+                  state: "pending",
+                  teamRequestId: null,
+                  teamSource: null,
+                  threadId,
+                  updatedAt: at,
+                },
+                message: {
+                  author: { kind: "human", displayName: "Person", principalId: "person", userId },
+                  content: [{ type: "text", text: "Hello" }],
+                  createdAt: at,
+                  id: messageId,
+                  kind: "input",
+                  runId: null,
+                  sequence: "1",
+                  threadId,
+                },
+              },
+      });
+    };
+    const transport =
+      surface === "desktop"
+        ? desktopHostTransport({
+            catalog: catalogStore([row], deploymentId),
+            network: {
+              openWebSocket: () => socket(),
+              request: async ({ request }) =>
+                answer(
+                  new Headers(request.headers.additional),
+                  request.path,
+                  request.body instanceof Uint8Array
+                    ? new TextDecoder().decode(request.body)
+                    : null,
+                ),
+            },
+          })
+        : null;
+    const host = new HttpHostClient({
+      baseUrl: new URL(routeOrigin),
+      bindMutationsToSession: true,
+      fetch: transport
+        ? hostFetch(transport, deploymentId)
+        : async (input, init) =>
+            answer(
+              new Headers(init?.headers),
+              String(input),
+              typeof init?.body === "string" ? init.body : null,
+            ),
+    });
+    vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
+    try {
+      await expect(
+        host.dispatch(
+          {
+            type: "thread.create",
+            accessMode: "auto",
+            environmentId,
+            harnessInstanceId,
+            modelSelection,
+            idempotencyKey: "task",
+            title: "Task",
+          },
+          { expectedLogin: scope },
+        ),
+      ).resolves.toMatchObject({ thread: { id: threadId } });
+      await expect(
+        host.dispatch(
+          {
+            type: "thread.sendMessage",
+            content: [{ type: "text", text: "Hello" }],
+            threadId,
+            idempotencyKey: "reply",
+          },
+          { expectedLogin: scope },
+        ),
+      ).resolves.toMatchObject({ message: { id: messageId } });
+      expect(admitted).toEqual(
+        ["thread.create", "thread.sendMessage"].map((type) => ({
+          type,
+          session: version < 62 ? null : loginId,
+        })),
+      );
+    } finally {
+      host.dispose();
+      transport?.dispose();
+    }
+  });
+
   it("preserves the renderer's expected session through the Host mutation route", async () => {
     const deploymentRow = deployment("Home", "https://home.connect.opensteer.test", "personal");
     const id = deploymentRow.authority.document.deploymentId;

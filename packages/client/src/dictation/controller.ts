@@ -77,7 +77,7 @@ export interface DictationTarget {
   owner: string;
   /** Read the latest draft, not the rendered preview or a captured React closure. */
   read(): { text: string; selection: DictationSelection };
-  commit(text: string, selection: DictationSelection): void;
+  commit(text: string, selection: DictationSelection, transcript: string): void;
 }
 export type DictationFinish =
   | { kind: "idle" }
@@ -430,7 +430,7 @@ export class DictationController {
                   { start: current.text.length, end: current.text.length },
                   transcript,
                 );
-          session.target.commit(insertion.text, insertion.selection);
+          session.target.commit(insertion.text, insertion.selection, transcript);
           committed = true;
           finish = { kind: "committed", text: insertion.text };
         } else finish = { kind: "empty" };

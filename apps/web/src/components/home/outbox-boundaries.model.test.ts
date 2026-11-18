@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { clientScopeKey } from "@opensteer/client/connections";
+import { classifyClientFailure, clientScopeKey } from "@opensteer/client/connections";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import {
   createMessageOutbox,
@@ -7,12 +7,14 @@ import {
   HttpHostClient,
   enqueueDraftReply,
   initializeMessageOutbox,
+  type ConsumedDraftRevision,
   type MessageRecordStorage,
   type PendingSendCommand,
 } from "@opensteer/client/host";
 import { controlledClientSession, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { BrowserPageContentPartSchema, createId, ModelSelectionSchema } from "@opensteer/core";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
+import { insertDictationText } from "@opensteer/client/dictation";
 import { afterEach, it, vi } from "vitest";
 import {
   createThreadDraftStore,
@@ -21,16 +23,19 @@ import {
   type ThreadDraft,
 } from "../../../../mobile/src/client/thread-drafts.js";
 import {
+  composerDraftKey,
   createComposerDraftStore,
   reserveComposerTaskStart,
   transactionalComposerDrafts,
 } from "../composer-drafts.js";
 import { restoreComposerDraft } from "../../host/message-outbox.js";
+import { browserDraftHandoffKey } from "../../host/message-outbox-records.js";
 import { draftTaskStart, startTask } from "./task-start.js";
 
 const original = controlledClientSession().connection.getSnapshot().scope!;
 const replacement = { ...original, loginId: "replacement" };
-const draftKey = "opensteer:composer-draft:v1:deployment:viewer:task:home";
+const draftScope = { deploymentId: "deployment", userId: "viewer" };
+const draftKey = composerDraftKey(draftScope, { kind: "task", draftId: "home" });
 const creation = {
   accessMode: "auto" as const,
   environmentId: "env",
@@ -54,20 +59,23 @@ const message = (key: string, text = "The saved words"): PendingSendCommand => (
 function disk() {
   const records = new Map<string, string>();
   const edits = new MutationQueue();
-  let afterEdit: (() => void | Promise<void>) | undefined;
+  let afterEdit: ((raw: string | null) => void | Promise<void>) | undefined;
   let committed: (() => void) | undefined;
   const port = {
     read: async (key) => records.get(key) ?? null,
     write: async (key, raw) => void records.set(key, raw),
     remove: async (key) => void records.delete(key),
-    mutate: (key, edit) =>
+    mutate: (key, edit, consumedDraft?: ConsumedDraftRevision) =>
       edits.run(async () => {
-        const next = edit(records.get(key) ?? null);
+        const previous = records.get(key) ?? null;
+        const next = edit(previous);
         const checkpoint = afterEdit;
         afterEdit = undefined;
-        await checkpoint?.();
+        await checkpoint?.(next);
         if (next === null) records.delete(key);
         else records.set(key, next);
+        if (consumedDraft && next !== previous)
+          records.set(browserDraftHandoffKey(consumedDraft.key), consumedDraft.revision);
         committed?.();
       }),
   } satisfies MessageRecordStorage;
@@ -76,7 +84,7 @@ function disk() {
     afterCommit(next: (() => void) | undefined) {
       committed = next;
     },
-    afterEdit(next: () => void | Promise<void>) {
+    afterEdit(next: (raw: string | null) => void | Promise<void>) {
       afterEdit = next;
     },
   };
@@ -98,7 +106,12 @@ function webDrafts(database: ReturnType<typeof disk>) {
       createComposerDraftStore(() => local),
       database.port.mutate,
     );
-  return Object.assign(open, { legacyDiscard: (key: string) => local.removeItem(key) });
+  const legacyKey = (key: string) => key.replace("composer-draft:v2:", "composer-draft:v1:");
+  return Object.assign(open, {
+    legacyDiscard: (key: string) => local.removeItem(legacyKey(key)),
+    legacyEdit: (key: string, text: string) =>
+      local.setItem(legacyKey(key), JSON.stringify({ files: [], quote: null, text, updatedAt: 1 })),
+  });
 }
 
 const interrupted = new Error("renderer crashed");
@@ -160,7 +173,7 @@ function home(
             handoff: true,
             expectedLogin: original,
             assertCurrent,
-            verifyDraftAfterCommit: true,
+            consumedDraft: { key: draftKey, revision: editor.revision! },
           });
         },
         assertCurrent,
@@ -227,7 +240,8 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       const host = new HttpHostClient({
         baseUrl: "https://host.test",
         bindMutationsToSession: true,
-        fetch: async (_url, init) => {
+        fetch: async (url, init) => {
+          if (!String(url).endsWith("/commands.dispatch")) return Response.error();
           await wire.promise;
           assert.equal(init?.credentials, "include");
           const headers = new Headers(init?.headers);
@@ -257,6 +271,7 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           );
         },
       });
+      vi.spyOn(host.connection, "getSnapshot").mockImplementation(session.connection.getSnapshot);
       const outbox = initializeMessageOutbox(host, {
         session,
         storage,
@@ -342,7 +357,11 @@ it("P1.2 gives handoff, revision and discard one commit order", async () => {
     try {
       for (const event of events) {
         if (event === "edit") {
-          edit = (revise ? b.update(draftKey, { text: "B" }) : b.clear(draftKey)).then((result) => {
+          edit = (
+            revise
+              ? b.update(draftKey, { text: "B" })
+              : b.discard(draftKey, editor.revision).then((result) => result === "discarded")
+          ).then((result) => {
             changedBeforeCommit = !didCommit;
             return result;
           });
@@ -363,7 +382,8 @@ it("P1.2 gives handoff, revision and discard one commit order", async () => {
           await send;
         }
       }
-      assert.equal(await edit, true);
+      if (revise) assert.equal(await edit, true);
+      else assert.equal(await edit, changedBeforeCommit);
       const [first] = controller.outbox.getSnapshot().messages;
       assert.equal(Boolean(first), !changedBeforeCommit);
       if (first)
@@ -376,35 +396,43 @@ it("P1.2 gives handoff, revision and discard one commit order", async () => {
   });
 });
 
-it("holds the words for Edit if a previous-release tab discards during the first append", async () => {
+it("keeps the new draft independent of a previous release's discard at the dispatchable commit", async () => {
   await seeds([["append", "commit"], ["legacy-discard"]], async (events) => {
+    if (events.indexOf("legacy-discard") < events.indexOf("append")) return;
     const database = disk();
     const reopen = webDrafts(database);
+    reopen.legacyEdit(draftKey, "The saved words");
     const draft = reopen();
-    await draft.update(draftKey, { text: "The saved words" });
+    const legacy = draft.index(draftScope).legacy[0]!;
+    assert.equal(await draft.importLegacy(legacy.key, legacy.revision), "copied");
     const owner = home(database);
     const prepared = Promise.withResolvers<void>();
     const allowCommit = Promise.withResolvers<void>();
     let start: Promise<unknown> | undefined;
     let committed = false;
     let discardedBeforeCommit = false;
+    let retainedBeforeCommit = true;
+    const pauseOnWaiting = async (raw: string | null) => {
+      if (!raw?.includes('"phase":"waiting"')) {
+        database.afterEdit(pauseOnWaiting);
+        return;
+      }
+      prepared.resolve();
+      await allowCommit.promise;
+    };
     try {
       for (const event of events) {
         if (event === "append") {
           const editor = draft.read(draftKey);
           if (editor === null) continue;
           start = owner
-            .start(draft, editor, () =>
-              database.afterEdit(async () => {
-                prepared.resolve();
-                await allowCommit.promise;
-              }),
-            )
+            .start(draft, editor, () => database.afterEdit(pauseOnWaiting))
             .catch(() => {});
           await Promise.race([prepared.promise, start]);
         } else if (event === "legacy-discard") {
           discardedBeforeCommit = start !== undefined && !committed;
           reopen.legacyDiscard(draftKey);
+          if (!committed) retainedBeforeCommit = draft.read(draftKey)?.text === "The saved words";
         } else {
           allowCommit.resolve();
           await start;
@@ -412,16 +440,57 @@ it("holds the words for Edit if a previous-release tab discards during the first
         }
       }
       const [row] = await createMessageOutboxStorage(database.port).load(original);
-      if (discardedBeforeCommit) {
-        assert.equal(row?.phase, "rejected");
+      if (start) {
+        assert.equal(row?.phase, "waiting");
         assert.deepEqual(row.command.content, [{ type: "text", text: "The saved words" }]);
         assert.equal(row.attempted, false);
-      } else if (start) assert.equal(row?.phase, "waiting");
-      else assert.equal(row, undefined);
+      }
+      assert(
+        retainedBeforeCommit,
+        discardedBeforeCommit
+          ? "legacy discard raced dispatchable commit"
+          : "legacy discard removed the active draft",
+      );
     } finally {
       allowCommit.resolve();
       owner.outbox.dispose();
     }
+  });
+});
+
+it("keeps closed-editor dictation when a previous release rewrites the draft", async () => {
+  await seeds([["reserve", "leave", "recognize"], ["legacy-edit"]], async (events) => {
+    if (
+      events.indexOf("legacy-edit") < events.indexOf("leave") ||
+      events.indexOf("legacy-edit") > events.indexOf("recognize")
+    )
+      return;
+    const open = webDrafts(disk());
+    const editor = open();
+    open.legacyEdit(draftKey, "Words");
+    const legacy = editor.index(draftScope).legacy[0]!;
+    assert.equal(await editor.importLegacy(legacy.key, legacy.revision), "copied");
+    let held: string | null = null;
+    for (const event of events) {
+      if (event === "reserve") held = await editor.reserveEdit(draftKey);
+      if (event === "legacy-edit") {
+        open.legacyEdit(draftKey, "A previous tab's words");
+        editor.invalidate();
+      }
+      if (event === "recognize") {
+        assert(held);
+        assert(await editor.handBack(draftKey, { edit: (text) => `${text} dictated` }, held));
+      }
+    }
+    assert.equal(open().read(draftKey)?.text, "Words dictated");
+    const later = editor.index(draftScope).legacy[0]!;
+    assert.equal(later.title, "A previous tab's words");
+    assert.equal(await editor.importLegacy(later.key, later.revision), "occupied");
+    assert.equal(await editor.discard(draftKey, editor.read(draftKey)?.revision), "discarded");
+    assert.equal(await editor.importLegacy(later.key, later.revision), "copied");
+    assert.equal(editor.read(draftKey)?.text, "A previous tab's words");
+    assert.equal(await editor.discard(draftKey, editor.read(draftKey)?.revision), "discarded");
+    assert.deepEqual(open().index(draftScope).legacy, []);
   });
 });
 
@@ -460,50 +529,78 @@ it("a reply's originating login cannot be replaced between tap and enqueue", asy
   });
 });
 
-it("keeps the reply recoverable when the Host cannot enforce its originating login", async () => {
+it("keeps a reply under its own login when the old Host sees a replacement credential", async () => {
   vi.useFakeTimers();
-  const restored: PendingSendCommand[] = [];
-  const version = 61;
-  const request = vi.fn<typeof fetch>(async (_url, init) => {
-    assert(Number(new Headers(init?.headers).get(hostApiVersionHeader)) > version);
-    return Response.json(
-      {
-        ok: false,
-        error: {
-          code: "bad_request",
-          reason: "unsupported-version",
-          message: "Unsupported version",
-          retryable: false,
+  const login = { ...original, loginId: createId("authSession") };
+  const changed = { ...replacement, loginId: createId("authSession") };
+  const view = controlledClientSession();
+  view.change({ scope: login });
+  const admitted: string[] = [];
+  const request = vi.fn<typeof fetch>(async (url, init) => {
+    if (Number(new Headers(init?.headers).get(hostApiVersionHeader)) > 61)
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: "bad_request",
+            reason: "unsupported-version",
+            message: "Unsupported version",
+            retryable: false,
+          },
         },
-      },
-      { status: 400 },
-    );
+        { status: 400 },
+      );
+    if (String(url).includes("sessions.list")) {
+      const time = "2026-09-01T00:00:00Z";
+      return Response.json({
+        ok: true,
+        data: {
+          sessions: [
+            {
+              id: changed.loginId,
+              current: true,
+              createdAt: time,
+              expiresAt: time,
+              absoluteExpiresAt: time,
+              lastSeenAt: time,
+              deviceLabel: "Opensteer",
+              deviceId: null,
+              form: null,
+            },
+          ],
+        },
+      });
+    }
+    admitted.push(changed.loginId);
+    return Response.error();
   });
   const host = new HttpHostClient({
     baseUrl: "https://host.test",
     bindMutationsToSession: true,
     fetch: request,
   });
+  vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
+  vi.spyOn(host.connection, "invalidateScope").mockImplementation(() =>
+    view.change({ scope: changed }),
+  );
+  vi.spyOn(host, "reauthenticate").mockResolvedValue(undefined);
+  const storage = createMessageOutboxStorage(disk().port);
   const outbox = initializeMessageOutbox(host, {
-    session: controlledClientSession(),
-    storage: createMessageOutboxStorage(disk().port),
-    drafts: {
-      restore: async (_scope, row) => {
-        restored.push(row.command);
-        return "restored";
-      },
-    },
+    session: view,
+    storage,
+    drafts: { restore: async () => "restored" },
   });
   try {
     const reply = message("saved-reply");
-    await outbox.enqueue(reply, { expectedLogin: original });
+    await outbox.enqueue(reply, { expectedLogin: login });
     await vi.advanceTimersByTimeAsync(0);
-    assert.equal(request.mock.calls.length, 1);
-    const [row] = outbox.getSnapshot().messages;
-    assert.equal(row?.phase, "rejected");
-    assert.equal(row.rejection?.reason, "host-too-old");
-    assert.equal(await outbox.restoreDraft(reply.idempotencyKey), "restored");
-    assert.deepEqual(restored, [reply]);
+    assert.deepEqual(admitted, []);
+    assert.equal(view.connection.getSnapshot().scope?.loginId, changed.loginId);
+    assert.deepEqual(await storage.load(changed), []);
+    assert.deepEqual(
+      (await storage.load(login)).map((row) => row.command),
+      [reply],
+    );
   } finally {
     host.dispose();
   }
@@ -570,6 +667,68 @@ function mobile(files = new ModelPrivateFilesystem()) {
     }),
   };
 }
+
+it("preserves stored and incoming mobile input when their merge would exceed a draft limit", async () => {
+  await seeds(
+    [
+      ["reserve", "leave", "speech"],
+      ["fill", "return-edit"],
+    ],
+    async (events) => {
+      const { files, drafts } = mobile();
+      const args = [original.deploymentId, original.viewerId, createId("thread")] as const;
+      const fullText = "x".repeat(15_990);
+      const transcript = "All the spoken words must survive.";
+      const attachment = (name: string) => ({
+        attachmentId: createId("attachment"),
+        localUri: null,
+        mediaType: "text/plain",
+        name,
+        sizeBytes: 1,
+        status: "ready" as const,
+      });
+      const originals = Array.from({ length: 10 }, (_, i) => attachment(`${i}.txt`));
+      await drafts.load();
+      let target: ReturnType<typeof drafts.captureEdit> | undefined;
+      let overflow = false;
+      let expectedText = "";
+      for (const event of events) {
+        if (event === "reserve") target = drafts.captureEdit(...args);
+        else if (event === "fill") {
+          await drafts.writeDraft(...args, fullText);
+          await drafts.writeDraftAttachments(...args, originals);
+          expectedText = fullText;
+        } else if (event === "return-edit") {
+          const patch = {
+            text: "Words still in the waiting editor",
+            attachments: [...originals, attachment("waiting.txt")],
+          };
+          await assert.rejects(
+            drafts.reserveEdit(...args)(() => patch),
+            (error) => classifyClientFailure(error).reason === "draft-files-full",
+          );
+          assert.equal(patch.text, "Words still in the waiting editor");
+        } else if (event === "speech") {
+          assert(target);
+          overflow = expectedText === fullText;
+          const end = expectedText.length;
+          const next = insertDictationText(expectedText, { start: end, end }, transcript).text;
+          assert.equal(
+            await drafts.keepDictation(target, expectedText, next, transcript),
+            !overflow,
+          );
+          if (!overflow) expectedText = next;
+        }
+        assert.equal(drafts.readDraft(...args)?.text ?? "", expectedText);
+      }
+      const reopened = mobile(files).drafts;
+      await reopened.load();
+      assert.deepEqual(reopened.readDraft(...args)?.attachments, originals);
+      assert.equal(reopened.readDraft(...args)?.text, expectedText);
+      assert.equal(reopened.readDictatedText(...args)?.text ?? "", overflow ? transcript : "");
+    },
+  );
+});
 
 it("P1.4 preserves the newer mobile draft when an old submission reaches the claim", async () => {
   await seeds([["capture", "claim"], ["revise"]], async (events, seed) => {
@@ -714,7 +873,7 @@ it.each(["web", "mobile"] as const)(
           },
           {
             revision: saved,
-            verifyDraftAfterCommit: platform === "web",
+            ...(platform === "web" ? { draftKey: keyForReply } : {}),
             assertCurrent: () => {
               if (platform === "web") browser.bindReply(keyForReply, clientScopeKey(scope)!, saved);
             },
@@ -737,7 +896,7 @@ it.each(["web", "mobile"] as const)(
         const cleared =
           platform === "mobile"
             ? await native.consumeReply(deploymentId, viewerId, threadId, saved).catch(() => false)
-            : await browser.clear(keyForReply);
+            : await browser.consumeReply(keyForReply, saved, () => {});
         if (cleared) await owner.forgetHandoff(original, sendKey);
         return cleared;
       };
@@ -804,7 +963,7 @@ it.each(["web", "mobile"] as const)(
 it("recovers the Home handoff at each committed step, including the Host's creation", async () => {
   // Count both the local commit notifications and the Host's independently
   // durable creation. Each cut kills the renderer before its next transition.
-  for (let cut = 1; cut <= 8; cut++) {
+  for (let cut = 1; cut <= 7; cut++) {
     const database = disk();
     const open = webDrafts(database);
     const first = open();

@@ -125,7 +125,11 @@ describe("dictation controller", () => {
     expect(f.port.stop).toHaveBeenCalledTimes(1);
     f.emit(completed);
     expect(await finish).toEqual({ kind: "committed", text: "a good day" });
-    expect(f.target.commit).toHaveBeenCalledExactlyOnceWith("a good day", { start: 6, end: 6 });
+    expect(f.target.commit).toHaveBeenCalledExactlyOnceWith(
+      "a good day",
+      { start: 6, end: 6 },
+      "good",
+    );
     expect(await f.controller.stop("one")).toEqual({ kind: "idle" });
   });
 

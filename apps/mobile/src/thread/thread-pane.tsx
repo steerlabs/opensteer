@@ -481,14 +481,14 @@ function ThreadPaneForUser(
   const [focusDraft, setFocusDraft] = useState(0);
   const drafts = client.drafts;
   const sendAsNew = useCallback(
-    (words: { readonly parts: readonly ContentPart[]; readonly text: string } | null) => {
-      if (words === null || viewerUserId === null) return;
+    async (words: { readonly parts: readonly ContentPart[]; readonly text: string }) => {
+      if (viewerUserId === null) return false;
       // Files go with it by reference; a page or app it named was this edit's alone.
       const attachments = words.parts.filter(
         (part): part is ArtifactContentPart => part.type === "artifact",
       );
       const complete = drafts.reserveEdit(deploymentId, viewerUserId, threadId);
-      void complete((draft) => {
+      const kept = await complete((draft) => {
         const held = draft?.attachments ?? [];
         return {
           ...(words.text
@@ -508,12 +508,9 @@ function ThreadPaneForUser(
             ...held,
           ],
         };
-      }).then(
-        (kept) => {
-          if (kept) setFocusDraft((value) => value + 1);
-        },
-        () => setDeliveryNotice(issueLine({ code: "draft-unsaved" }, `restore:${Date.now()}`)),
-      );
+      });
+      if (kept) setFocusDraft((value) => value + 1);
+      return kept;
     },
     [deploymentId, drafts, threadId, viewerUserId],
   );

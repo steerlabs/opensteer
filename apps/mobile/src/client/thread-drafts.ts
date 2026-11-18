@@ -8,7 +8,11 @@ import {
   messageStorageFingerprint,
   type StoredMessage,
 } from "@opensteer/client/host";
-import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
+import {
+  clientScopeKey,
+  ClientOperationError,
+  type ClientScope,
+} from "@opensteer/client/connections";
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   CompactionSendChoiceSchema,
@@ -20,6 +24,7 @@ import {
 import { homeDraftId } from "../home/home-draft.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-scope.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
+import { insertDictationText } from "@opensteer/client/dictation";
 import { z } from "zod";
 
 /**
@@ -206,6 +211,7 @@ export type TaskStartRecord = z.infer<typeof TaskStartRecordSchema>;
 export type TaskStartParameters = z.infer<typeof TaskStartParametersSchema>;
 
 const newTaskKeyPrefix = "new-task:";
+const dictatedKeyPrefix = "dictated:";
 
 /** The key of a new task's draft, under an id made on this phone. */
 export function newTaskDraftKey(draftId: string): string {
@@ -327,6 +333,18 @@ export interface ThreadDraftStore {
   captureEdit(deploymentId: string, userId: string, threadId: string): DraftEditTarget;
   completeEdit(target: DraftEditTarget, change: Parameters<CompleteDraftEdit>[0]): Promise<boolean>;
   reserveEdit(deploymentId: string, userId: string, threadId: string): CompleteDraftEdit;
+  keepDictation(
+    target: DraftEditTarget,
+    before: string,
+    next: string,
+    transcript: string,
+  ): Promise<boolean>;
+  readDictatedText(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+  ): { text: string; unsaved: boolean } | null;
+  discardDictatedText(deploymentId: string, userId: string, threadId: string): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readSavedDraft(
     deploymentId: string,
@@ -401,9 +419,12 @@ export function createThreadDraftStore(options: {
   const retryDelays = options.saveRetryDelaysMs ?? [150, 600];
   const writes = new MutationQueue();
   const editOwners = new Map<string, string>();
+  const unsavedDictation = new Map<string, string>();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
     `${deploymentId}:${userId}:${threadId}`;
+  const dictationPrefix = (deploymentId: string, userId: string, threadId: string) =>
+    key(deploymentId, userId, `${dictatedKeyPrefix}${threadId}:`);
 
   const readVisibleDraft = (
     deploymentId: string,
@@ -948,6 +969,18 @@ export function createThreadDraftStore(options: {
         const current = nextDrafts.get(entryKey);
         const patch = change(current ?? null);
         if (patch === null) return false;
+        const limit =
+          (patch.attachments?.length ?? 0) > maxDraftAttachments
+            ? "draft-files-full"
+            : (patch.text?.length ?? 0) > maxDraftCharacters
+              ? "draft-text-full"
+              : null;
+        if (limit)
+          throw new ClientOperationError("The combined draft exceeds its limit.", "blocked", {
+            kind: "local",
+            reason: limit,
+            retryable: false,
+          });
         putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), ...patch });
         saved = true;
         return undefined;
@@ -958,6 +991,76 @@ export function createThreadDraftStore(options: {
     reserveEdit(deploymentId, userId, threadId) {
       const target = store.captureEdit(deploymentId, userId, threadId);
       return (change) => store.completeEdit(target, change);
+    },
+
+    async keepDictation(target, before, next, transcript) {
+      const { deploymentId, userId, threadId, editId } = target;
+      const entryKey = key(deploymentId, userId, threadId);
+      const prefix = dictationPrefix(deploymentId, userId, threadId);
+      let merged = false;
+      try {
+        await mutate((nextDrafts) => {
+          if (editOwners.get(entryKey) !== editId) return false;
+          const current = nextDrafts.get(entryKey);
+          const text = current?.text ?? "";
+          const end = text.length;
+          const combined =
+            text === before
+              ? next
+              : insertDictationText(text, { start: end, end }, transcript).text;
+          if (combined.length <= maxDraftCharacters) {
+            putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: combined });
+            merged = true;
+          } else {
+            const saved = [...nextDrafts.keys()].some((key) => key.startsWith(prefix));
+            const recovered = (saved ? "\n\n" : "") + transcript;
+            const id = globalThis.crypto.randomUUID();
+            // The ordinary draft limit still applies to each stored record.
+            for (let start = 0; start < recovered.length; start += maxDraftCharacters) {
+              nextDrafts.set(
+                `${prefix}${id}:${start}`,
+                DraftSchema.parse({
+                  text: recovered.slice(start, start + maxDraftCharacters),
+                  updatedAt: options.now().toISOString(),
+                  userId,
+                }),
+              );
+            }
+          }
+          return undefined;
+        });
+        return merged;
+      } catch {
+        if (editOwners.get(entryKey) !== editId) return false;
+        const held = unsavedDictation.get(prefix);
+        unsavedDictation.set(prefix, held ? `${held}\n\n${transcript}` : transcript);
+        publish();
+        return false;
+      }
+    },
+
+    readDictatedText(deploymentId, userId, threadId) {
+      const prefix = dictationPrefix(deploymentId, userId, threadId);
+      const saved = [...drafts]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([, draft]) => draft.text)
+        .join("");
+      const unsaved = unsavedDictation.get(prefix);
+      const text = [saved, unsaved].filter(Boolean).join("\n\n");
+      return text ? { text, unsaved: unsaved !== undefined } : null;
+    },
+
+    async discardDictatedText(deploymentId, userId, threadId) {
+      const prefix = dictationPrefix(deploymentId, userId, threadId);
+      const unsaved = unsavedDictation.get(prefix);
+      await mutate(
+        (nextDrafts) => {
+          for (const key of nextDrafts.keys()) if (key.startsWith(prefix)) nextDrafts.delete(key);
+        },
+        () => {
+          if (unsavedDictation.get(prefix) === unsaved) unsavedDictation.delete(prefix);
+        },
+      );
     },
 
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
@@ -1013,7 +1116,9 @@ export function createThreadDraftStore(options: {
         if (!entryKey.startsWith(scope) || draft.userId !== userId || !draftHasContent(draft))
           continue;
         const draftKey = entryKey.slice(scope.length);
-        if (!draftKey.startsWith(newTaskKeyPrefix)) threadIds.add(draftKey);
+        if (draftKey.startsWith(dictatedKeyPrefix))
+          threadIds.add(draftKey.slice(dictatedKeyPrefix.length).split(":")[0]!);
+        else if (!draftKey.startsWith(newTaskKeyPrefix)) threadIds.add(draftKey);
       }
       return { threadIds };
     },

@@ -752,7 +752,7 @@ export function AppShell({
             handoff: true,
             expectedLogin: scope,
             assertCurrent,
-            verifyDraftAfterCommit: true,
+            consumedDraft: { key: draftKey, revision: draftRevision },
           }),
         hasLegacyHandoff: (key) => outbox.hasHandoff(scope, key, "legacy"),
       });

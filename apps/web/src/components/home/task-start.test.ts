@@ -17,7 +17,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { ClientOperationError, clientScopeKey } from "@opensteer/client/connections";
 import { ModelSelectionSchema } from "@opensteer/core";
-import { createComposerDraftStore, type DraftStorage } from "../composer-drafts.js";
+import {
+  composerDraftKey,
+  createComposerDraftStore,
+  transactionalComposerDrafts,
+  type DraftStorage,
+} from "../composer-drafts.js";
 import { draftTaskStart, retireTaskStarts, startTask } from "./task-start.js";
 
 function memoryStorage(): DraftStorage {
@@ -33,7 +38,10 @@ function memoryStorage(): DraftStorage {
   };
 }
 
-const draftKey = "opensteer:composer-draft:v1:deployment:user:task:home";
+const draftKey = composerDraftKey(
+  { deploymentId: "deployment", userId: "user" },
+  { kind: "task", draftId: "home" },
+);
 const creation = {
   accessMode: "auto" as const,
   environmentId: "env",
@@ -120,6 +128,60 @@ const lost = () =>
   });
 
 afterEach(() => vi.unstubAllGlobals());
+
+it.each(["discard", "enqueue"] as const)(
+  "gives the first IndexedDB commit to %s",
+  async (first) => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const scope = controlledClientSession().connection.getSnapshot().scope!;
+    const local = memoryStorage();
+    const a = transactionalComposerDrafts(createComposerDraftStore(() => local));
+    const b = transactionalComposerDrafts(createComposerDraftStore(() => local));
+    const storage = createMessageOutboxStorage(browserMessageRecords({ notify: false }));
+    const threadId = createId("thread");
+    const localId = `first-${threadId}`;
+    const key = composerDraftKey(
+      { deploymentId: scope.deploymentId, userId: scope.viewerId },
+      { kind: "thread", threadId },
+    );
+    const content = [{ type: "text" as const, text: "Keep this revision" }];
+    await a.update(key, { text: content[0]!.text });
+    const revision = a.read(key)!.revision!;
+    const enqueue = () =>
+      storage.put(
+        scope,
+        {
+          localId,
+          command: { type: "thread.sendMessage", idempotencyKey: localId, threadId, content },
+          createdAt: new Date().toISOString(),
+          order: 0,
+          attempted: false,
+          phase: "waiting",
+        },
+        {
+          handoff: true,
+          append: true,
+          consumedDraft: { key, revision },
+          assertCurrent: () => {
+            if (a.durableDraft(key)?.revision !== revision) throw changedTaskDraft();
+          },
+        },
+      );
+    if (first === "discard") {
+      expect(await b.discard(key, revision)).toBe("discarded");
+      await expect(enqueue()).rejects.toThrow("The saved draft changed");
+      expect((await storage.load(scope)).some((row) => row.localId === localId)).toBe(false);
+    } else {
+      await enqueue();
+      expect(await b.discard(key, revision)).toBe("queued");
+      expect(
+        (await storage.load(scope)).find((row) => row.localId === localId)?.command.content,
+      ).toEqual(content);
+      await storage.remove(scope, localId);
+      await storage.forgetHandoff?.(scope, localId);
+    }
+  },
+);
 
 it("reclaims settled handoff receipts after discard and fences a stale window", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());

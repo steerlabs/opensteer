@@ -296,9 +296,13 @@ function NewTaskComposer({
         <button
           className="btn btn--ghost btn--small"
           onClick={() => {
-            void composerDrafts.clear(draftKey).then((cleared) => {
-              if (!cleared) {
-                setDiscardError("Couldn't discard this draft. Try again.");
+            void composerDrafts.discard(draftKey, draft?.revision).then((outcome) => {
+              if (outcome !== "discarded") {
+                setDiscardError(
+                  outcome === "queued"
+                    ? "This draft has already entered the send queue."
+                    : "Couldn't discard this draft. Try again.",
+                );
                 return;
               }
               setDiscardError(null);

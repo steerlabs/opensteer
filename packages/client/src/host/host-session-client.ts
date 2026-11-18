@@ -1,12 +1,14 @@
 import { nameConnectionFromHost } from "./host-connection.js";
-import { disposeMessageOutbox } from "./message-outbox.js";
+import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
 import {
+  clientScopeKey,
   createConnectionController,
   type ConnectionController,
   type ConnectionAttempt,
   type ConnectionLease,
   type ClientScope,
 } from "../connections/connection-controller.js";
+import { sessionBoundMutationApiVersion } from "@opensteer/deployment-authority";
 import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
@@ -1242,28 +1244,34 @@ export class HttpHostClient {
       "deviceId" in parsedCommand.input
     )
       return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    const expectedSession = this.#bindMutationsToSession
-      ? options?.expectedLogin?.loginId
-      : undefined;
+    const commandPayload = hostApi["commands.dispatch"].payload.parse(parsedCommand);
+    const login = options?.expectedLogin;
+    if (!login) return this.#dispatchCommand(commandPayload);
+    const assertCurrent = () => assertMessageLogin(login, this.connection.getSnapshot().scope);
+    assertCurrent();
+    if (!this.#bindMutationsToSession) return this.#dispatchCommand(commandPayload);
     try {
-      return await this.#dispatchCommand(
-        hostApi["commands.dispatch"].payload.parse(parsedCommand),
-        expectedSession,
-      );
+      if (
+        this.#snapshot.session !== "authenticated" ||
+        this.#servedApiVersion >= sessionBoundMutationApiVersion
+      ) {
+        try {
+          return await this.#dispatchCommand(commandPayload, login.loginId);
+        } catch (error) {
+          // The version gate refuses before admission, including when the Host rolled back.
+          if (classifyClientFailure(error).reason !== "unsupported-version") throw error;
+        }
+      }
+      assertCurrent();
+      const { sessions } = unwrapRpcResult(await this.rpc["sessions.list"]({}));
+      if (!sessions.some((session) => session.current && session.id === login.loginId))
+        assertMessageLogin(login, null);
+      assertCurrent();
+      return await this.#dispatchCommand(commandPayload);
     } catch (error) {
       const { reason } = classifyClientFailure(error);
       if (
-        expectedSession &&
-        (reason === "unsupported-version" || reason === "api-version-mismatch")
-      )
-        throw new ClientOperationError("Update Opensteer to send saved messages.", "blocked", {
-          kind: "protocol",
-          reason: "host-too-old",
-          retryable: false,
-        });
-      if (
-        expectedSession &&
-        this.connection.getSnapshot().scope?.loginId === expectedSession &&
+        clientScopeKey(this.connection.getSnapshot().scope) === clientScopeKey(login) &&
         reason === "session-changed"
       ) {
         this.connection.invalidateScope();

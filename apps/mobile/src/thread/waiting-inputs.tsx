@@ -446,6 +446,13 @@ function editNotice(edit: WaitingEdit): {
   readonly tone: "danger" | "soft";
 } | null {
   const ask = edit.kind === "ask";
+  if (edit.failure !== null)
+    return {
+      action:
+        edit.phase === "refused" && !edit.gone && edit.draft.conflict === null ? "retry" : null,
+      text: edit.failure,
+      tone: "danger",
+    };
   if (edit.gone)
     return {
       action: null,
@@ -459,12 +466,6 @@ function editNotice(edit: WaitingEdit): {
       action: "reload",
       text: `This ${ask ? "ask" : "message"} changed elsewhere before you saved.`,
       tone: "soft",
-    };
-  if (edit.failure !== null)
-    return {
-      action: edit.phase === "refused" ? "retry" : null,
-      text: edit.failure,
-      tone: "danger",
     };
   return null;
 }

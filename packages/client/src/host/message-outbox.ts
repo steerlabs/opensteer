@@ -1,7 +1,7 @@
 /*
  * One durable FIFO per task and login. Enqueue appends waiting. Browser drafts
- * first append an unsent copy, then become waiting once the durable source is
- * rechecked. An invalid source or crash leaves the copy available for Edit.
+ * record the consumed revision in the same commit, so discard and send have
+ * one winner.
  * A dispatcher claims the head with an expiring lease before sending the frozen
  * command. If it never calls dispatch, it releases the lease. Transport loss or a
  * reclaimed lease leaves uncertainty about admission. Reload, reconnect and
@@ -57,6 +57,12 @@ export interface MessageOutboxWrite {
   readonly append?: boolean;
   readonly sourceExists?: () => boolean;
   readonly assertCurrent?: () => void;
+  readonly consumedDraft?: ConsumedDraftRevision;
+}
+
+export interface ConsumedDraftRevision {
+  readonly key: string;
+  readonly revision: string;
 }
 
 export interface MessageOutboxStorage {
@@ -71,7 +77,6 @@ export interface MessageOutboxStorage {
     previous: StoredMessage,
     next: StoredMessage | null,
     takeBack?: boolean,
-    canReplace?: () => boolean,
   ): Promise<boolean>;
   claim(
     scope: ClientScope,
@@ -125,7 +130,7 @@ export interface MessageOutbox {
       readonly handoff?: boolean | "resume";
       readonly expectedLogin?: ClientScope;
       readonly assertCurrent?: () => void;
-      readonly verifyDraftAfterCommit?: boolean;
+      readonly consumedDraft?: ConsumedDraftRevision;
       /** Native draft ownership is committed in enqueue order, before the outbox write. */
       readonly bindDraft?: () => Promise<void>;
     },
@@ -479,9 +484,7 @@ class SessionMessageOutbox implements MessageOutbox {
         createdAt: new Date().toISOString(),
         order: 0,
         attempted: false,
-        ...(options?.verifyDraftAfterCommit
-          ? { phase: "rejected", rejection: { code: "rejected", reason: "draft-unverified" } }
-          : { phase: "waiting" }),
+        phase: "waiting",
         ...(this.#options.startsRun?.(parsed.threadId) ? { inTranscript: true } : {}),
         ...(options?.localAttachmentUris
           ? { localAttachmentUris: options.localAttachmentUris }
@@ -498,35 +501,12 @@ class SessionMessageOutbox implements MessageOutbox {
           await options.bindDraft();
         }
         const storage = this.#options.storage;
-        let saved = await storage.put(scope, entry, {
+        const saved = await storage.put(scope, entry, {
           append: true,
           ...(options?.handoff ? { handoff: options.handoff } : {}),
+          ...(options?.consumedDraft ? { consumedDraft: options.consumedDraft } : {}),
           assertCurrent,
         });
-        if (options?.verifyDraftAfterCommit) {
-          const held =
-            saved ?? (await storage.load(scope)).find((row) => row.localId === entry.localId);
-          if (held?.phase === "rejected" && held.rejection?.reason === "draft-unverified") {
-            // A previous-release tab can change localStorage during the first
-            // IndexedDB commit. The copy stays unsendable until this second check.
-            const waiting = { ...held, phase: "waiting" as const, rejection: undefined };
-            const verified = await storage.replace(scope, held, waiting, false, () => {
-              if (!this.#current(scope, generation)) return false;
-              try {
-                assertCurrent();
-                return true;
-              } catch (error) {
-                if (draftChanged(classifyClientFailure(error).reason)) return false;
-                throw error;
-              }
-            });
-            if (verified) saved = waiting;
-            else {
-              await this.#load(scope, generation, false);
-              return parsed.idempotencyKey;
-            }
-          }
-        }
         if (saved && this.#current(scope, generation)) {
           this.#publishRows(
             [...this.#state.messages.filter((row) => row.localId !== saved.localId), saved],
@@ -810,9 +790,7 @@ class SessionMessageOutbox implements MessageOutbox {
     } catch (error) {
       const failure = classifyClientFailure(error);
       const notStarted = failure.reason === "session-changed";
-      const rejected =
-        failure.reason === "host-too-old" ||
-        (!notStarted && failure.kind === "rejection" && !failure.retryable);
+      const rejected = !notStarted && failure.kind === "rejection" && !failure.retryable;
       if (!rejected && this.#current(scope, generation) && !this.#confirmed.has(entry.localId))
         this.#pause(entry.localId);
       const rejection: ClientIssue | undefined = rejected

@@ -179,15 +179,11 @@ export function InputSurface({
         idempotencyKey,
         ...(quotedMessageId ? { quotedMessageId } : {}),
       }),
-      { revision: draftRevision, assertCurrent, verifyDraftAfterCommit: true },
+      { revision: draftRevision, assertCurrent, draftKey },
     );
-    const cleared = await composerDrafts
-      .transaction((store) => {
-        assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
-        if (store.durableDraft(draftKey)?.revision !== draftRevision) return false;
-        return store.clear(draftKey);
-      })
-      .catch(() => false);
+    const cleared = await composerDrafts.consumeReply(draftKey, draftRevision, () => {
+      assertMessageLogin(scope, hostClient.connection.getSnapshot().scope);
+    });
     if (cleared) void outbox.forgetHandoff(scope, id).catch(() => {});
     return { replyCleared: cleared };
   };

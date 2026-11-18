@@ -2,6 +2,7 @@ import type { ClientScope } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { setStringAsync } from "expo-clipboard";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine, useScreenAction } from "../ui/client-feedback.js";
 import { useConnectionReady } from "../ui/connection-live.js";
@@ -171,6 +172,7 @@ export function Composer(props: {
   const userId = props.user.id;
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, threadId);
+  const dictated = drafts.readDictatedText(deploymentId, userId, threadId);
   const text = draft?.text ?? "";
   const dictation = useDictation();
   const dictationState = useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
@@ -431,10 +433,12 @@ export function Composer(props: {
   }, [notice]);
   // While voice holds the microphone, dictation steps aside on every composer.
   const voiceOn = useVoiceOn();
+  const dictationSave = useRef<Promise<boolean> | null>(null);
   const startDictation = (): void => {
     if (voiceOn) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const complete = drafts.reserveEdit(deploymentId, userId, threadId);
+    const target = drafts.captureEdit(deploymentId, userId, threadId);
+    dictationSave.current = null;
     let readText = "";
     dictation.start({
       owner,
@@ -445,19 +449,11 @@ export function Composer(props: {
           selection: selection.current,
         };
       },
-      commit: (next, caret) => {
+      commit: (next, caret, transcript) => {
         selection.current = caret;
         if (mounted.current && currentOwner.current === owner)
           committedSelection.current = { text: next, ...caret };
-        void complete((draft) => ({
-          text: !draft?.text.trim() || draft.text === readText ? next : `${next}\n${draft.text}`,
-        })).catch(() => {
-          if (mounted.current && currentOwner.current === owner)
-            setDraftFailure("This draft could not be saved on this phone.");
-        });
-        if (mounted.current) {
-          draftText.current = next;
-        }
+        dictationSave.current = drafts.keepDictation(target, readText, next, transcript);
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       },
     });
@@ -661,6 +657,7 @@ export function Composer(props: {
       const generation = input.current?.readSnapshot().generation ?? null;
       const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
       if (result.kind === "failed" || result.kind === "aborted" || !mounted.current) return;
+      if (result.kind === "committed" && !(await dictationSave.current)) return;
       let words = result.kind === "committed" ? result.text : draftText.current;
       // The field's last keystroke, or an autocorrection the tap on Send accepted, can
       // still be on its way to React: read what the field holds now.
@@ -814,6 +811,42 @@ export function Composer(props: {
             {draftFailure}
           </AppText>
         </Animated.View>
+      )}
+      {dictated === null ? null : (
+        <View style={styles.failure}>
+          <ActionLine
+            line={{
+              ...issueLine(
+                { code: "dictation-recovered", ...(dictated.unsaved ? { reason: "unsaved" } : {}) },
+                `dictation:${threadId}`,
+              ),
+              link: {
+                label: "Copy",
+                accessibilityLabel: "Copy dictated text",
+                onPress: () => {
+                  void setStringAsync(dictated.text).catch(() =>
+                    setDraftFailure(
+                      presentClientIssue({ code: "rejected", action: "copy dictated text" }).title,
+                    ),
+                  );
+                },
+              },
+            }}
+            numberOfLines={2}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              void drafts
+                .discardDictatedText(deploymentId, userId, threadId)
+                .catch(() => setDraftFailure(presentClientIssue({ code: "draft-unsaved" }).title));
+            }}
+          >
+            <AppText role="caption" tone="soft">
+              Discard dictated text
+            </AppText>
+          </Pressable>
+        </View>
       )}
       {quote === null || view.readOnly || answering ? null : (
         <View accessibilityLabel="Quoted update" style={styles.quote}>

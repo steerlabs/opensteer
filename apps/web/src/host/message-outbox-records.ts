@@ -1,6 +1,8 @@
 import { ClientOperationError } from "@opensteer/client/connections";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
-import type { MessageRecordStorage } from "@opensteer/client/host";
+import type { ConsumedDraftRevision, MessageRecordStorage } from "@opensteer/client/host";
+
+export const browserDraftHandoffKey = (key: string): string => `draft-handoff:${key}`;
 
 let opened: Promise<IDBDatabase> | null = null;
 function database(): Promise<IDBDatabase> {
@@ -41,6 +43,7 @@ function database(): Promise<IDBDatabase> {
 export async function mutateBrowserMessageRecord(
   key: string,
   change: (raw: string | null) => string | null,
+  consumedDraft?: ConsumedDraftRevision,
 ): Promise<boolean> {
   const db = await database();
   let committed = false;
@@ -59,6 +62,8 @@ export async function mutateBrowserMessageRecord(
         committed = true;
         if (value === null) store.delete(key);
         else store.put(value, key);
+        if (consumedDraft)
+          store.put(consumedDraft.revision, browserDraftHandoffKey(consumedDraft.key));
       } catch (error) {
         failure = error;
         transaction.abort();
@@ -91,8 +96,12 @@ export function browserMessageRecords({ notify = true } = {}): MessageRecordStor
     !notify || typeof BroadcastChannel === "undefined"
       ? null
       : new BroadcastChannel("opensteer-message-outbox");
-  const mutate: NonNullable<MessageRecordStorage["mutate"]> = async (key, change) => {
-    const committed = await mutateBrowserMessageRecord(key, change);
+  const mutate: NonNullable<MessageRecordStorage["mutate"]> = async (
+    key,
+    change,
+    consumedDraft,
+  ) => {
+    const committed = await mutateBrowserMessageRecord(key, change, consumedDraft);
     if (!committed || !notify) return;
     if (channel) {
       try {
