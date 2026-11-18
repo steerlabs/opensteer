@@ -66,11 +66,6 @@ export const IntegrationDefinitionSummarySchema = IntegrationDefinitionBaseSchem
   })
   .strict();
 
-/** Older Hosts stored a null service credential disclosure on every computer definition. */
-export const StoredIntegrationDefinitionSummarySchema = IntegrationDefinitionSummarySchema.extend({
-  apiKey: z.null().optional(),
-}).transform(({ apiKey: _apiKey, ...definition }) => definition);
-
 export const IntegrationDefinitionSummaryViewSchema = z.object({
   ...IntegrationDefinitionSummarySchema.shape,
   // API 62 pins this response vocabulary; native definitions only produce computer entries.

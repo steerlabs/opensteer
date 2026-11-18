@@ -9,7 +9,7 @@ import {
   type ComputerAppIdentity,
   ComputerAppIdentitySchema,
   IntegrationConnectionRequirementSchema,
-  StoredIntegrationDefinitionSummarySchema,
+  IntegrationDefinitionSummarySchema,
   IntegrationServerSchema,
   type IntegrationToolMaterial,
   createIntegrationId,
@@ -201,7 +201,7 @@ export async function computerConnectionTargetInTransaction(
       message: `${known?.title ?? input.definitionId} is not installed`,
     });
   }
-  const parsed = StoredIntegrationDefinitionSummarySchema.safeParse(installed.manifest.definition);
+  const parsed = IntegrationDefinitionSummarySchema.safeParse(installed.manifest.definition);
   if (!parsed.success)
     throw new OpensteerError({
       cause: parsed.error,

@@ -45,6 +45,7 @@ import {
   listIntegrationConnections,
   OpensteerStore,
 } from "./index.js";
+import { DROP_STORED_DEFINITION_API_KEY_SQL } from "./migrations.js";
 import { jsonValue } from "./store-primitives.js";
 import {
   installIntegrationInTransaction,
@@ -1745,6 +1746,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       set manifest = jsonb_set(manifest, '{definition,apiKey}', 'null'::jsonb)
       where id = ${setup.installationId}
     `.execute(database);
+    await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
     const mutation = await platform.uninstall({
       actorUserId: setup.ownerUserId,
       installationId: setup.installationId,

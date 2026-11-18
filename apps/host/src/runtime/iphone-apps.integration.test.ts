@@ -1,4 +1,5 @@
 import { localNamespace } from "../plugins/provider-names.js";
+import { DROP_STORED_DEFINITION_API_KEY_SQL } from "@opensteer/database";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -254,13 +255,14 @@ integration.sequential("iPhone integrations Host contract", () => {
       await allowApps(phone);
       if (scenario === "fresh") return;
 
-      // 0033 and 0034 preserved these built-in manifests and their catalog digests.
+      // What a pre-overhaul release left: 0033 and 0034 kept these manifests and digests; 0035 corrects them.
       const legacy = await sql`
         update integration_installations
         set manifest = jsonb_set(manifest, '{definition,apiKey}', 'null'::jsonb)
         where source_kind = 'built-in' and manifest->'definition'->>'adapter' = 'computer'
       `.execute(host.store.database);
       expect(legacy.numAffectedRows).toBe(5n);
+      await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(host.store.database);
       const deployment = await host.store.database
         .selectFrom("deployments")
         .select("id")
