@@ -21,6 +21,8 @@ import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 interface DatabaseConnectionOptions {
   readonly connectionString: string;
   readonly maxConnections?: number;
+  readonly minConnections?: number;
+  readonly idleTimeoutMs?: number;
   readonly applicationName?: string;
 }
 
@@ -60,6 +62,8 @@ export function createDatabase<Schema = DatabaseSchema>(
       application_name: options.applicationName ?? "opensteer-host",
       connectionString: options.connectionString,
       max: options.maxConnections ?? 10,
+      ...(options.minConnections === undefined ? {} : { min: options.minConnections }),
+      ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMillis: options.idleTimeoutMs }),
     });
 
   const holders = new Map<object, { origin: Error; started: number; state: string }>();

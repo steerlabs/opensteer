@@ -523,6 +523,9 @@ export async function createHostRuntime(
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
+    // The authority lock or Team LISTEN session occupies one pool slot.
+    minConnections: 2,
+    idleTimeoutMs: 5 * 60_000,
   });
   let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;
