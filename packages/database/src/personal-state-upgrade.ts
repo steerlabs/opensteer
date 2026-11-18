@@ -1,7 +1,7 @@
 import { describeTranscriptRun, transcriptRuns } from "./execution-changes.js";
 import { describeTranscriptRequest, requestFromRow } from "./request-persistence.js";
 import { itemView } from "./personal-sync-store.js";
-import { CompiledQuery, sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
   MessageIdSchema,
@@ -35,7 +35,7 @@ export const personalCurrentStateMigrationName = "0030_personal_current_state";
 
 const batchSize = 500;
 const messageBatchSize = 500;
-const verifyBatchSize = 2_048;
+const verifyBatchSize = 500;
 const messageIdPattern = z.toJSONSchema(MessageIdSchema, { io: "input" }).pattern!;
 const nodeIdPattern = z.toJSONSchema(ExecutionNodeIdSchema, { io: "input" }).pattern!;
 const settlementBatchSize = 128;
@@ -711,48 +711,58 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
   return stage(cursor, "verify");
 }
 
-const verifyPageSql = `
+async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
+  const {
+    rows: [page],
+  } = await sql<{ lastId: string | null; ids: string[] }>`
     with page as materialized (
       select id,kind,view,case
-        when kind='message' then id=message_id and id collate "C" ~* $2
+        when kind='message' then id=message_id and id collate "C" ~* ${messageIdPattern}
         when kind='reasoning' then octet_length(id) between 1 and 600
           and octet_length(block_id) between 1 and 255
         else false
-      end and (run_id is null or run_id collate "C" ~* $3)
-        and (attempt_id is null or attempt_id collate "C" ~* $4)
-        and (node_id is null or node_id collate "C" ~* $5)
+      end and (run_id is null or run_id collate "C" ~* ${legacyRunIdPattern})
+        and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
+        and (node_id is null or node_id collate "C" ~* ${nodeIdPattern})
         and created_at >= '0001-01-01 00:00:00+00'::timestamptz
         and created_at < '10000-01-01 00:00:00+00'::timestamptz as shape_checked
-      from transcript_items where id > $1 order by id limit ${verifyBatchSize}
-    ), representatives as (
-      select id from page where shape_checked is not true
-      union all
-      select id from (
-        select distinct on (kind,view) id from page where shape_checked order by kind,view,id
-      ) checked
+      from transcript_items where id > ${cursor.key} order by id limit ${verifyBatchSize}
     )
-    select i.id,i.thread_id as "threadId",i.kind,i.revision,
-      coalesce(i.position,1)::text as position,i.run_id as "runId",i.attempt_id as "attemptId",
-      i.node_id as "nodeId",i.is_turn_start as "isTurnStart",i.created_at as "createdAt",i.view,
-      i.message_id as "messageId",i.tool_call_id as "toolCallId",i.request_id as "requestId",
-      i.execution_node_id as "executionNodeId",i.delegation_id as "delegationId",i.app_id as "appId",
-      i.block_id as "blockId",i.binding_generation as "bindingGeneration",
-      (select max(id) from page) as "lastId"
-    from representatives r join transcript_items i using (id)
-`;
-
-async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
-  const { rows: cards } = await tx.executeQuery<
-    Parameters<typeof itemView>[0] & { lastId: string }
-  >(
-    CompiledQuery.raw(verifyPageSql, [
-      cursor.key,
-      messageIdPattern,
-      legacyRunIdPattern,
-      legacyAttemptIdPattern,
-      nodeIdPattern,
-    ]),
-  );
+    select (select max(id) from page) as "lastId",
+      array(select id from page where shape_checked is not true
+        union all
+        select id from (
+          select distinct on (kind,view) id from page where shape_checked
+          order by kind,view,id
+        ) checked) as ids
+  `.execute(tx.withoutPlugins());
+  const cards = page!.ids.length
+    ? await tx
+        .selectFrom("transcriptItems")
+        .select([
+          "id",
+          "threadId",
+          "kind",
+          "revision",
+          "runId",
+          "attemptId",
+          "nodeId",
+          "isTurnStart",
+          "createdAt",
+          "view",
+          "messageId",
+          "toolCallId",
+          "requestId",
+          "executionNodeId",
+          "delegationId",
+          "appId",
+          "blockId",
+          "bindingGeneration",
+        ])
+        .select(sql<string>`coalesce(position,1)::text`.as("position"))
+        .where(sql<boolean>`id=any(${page!.ids}::text[])`)
+        .execute()
+    : [];
   for (const card of cards) {
     try {
       itemView(card);
@@ -760,7 +770,7 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
       throw new Error(`Personal conversion parity check failed at card ${card.id}`);
     }
   }
-  if (cards[0]) return { ...cursor, key: cards[0].lastId };
+  if (page!.lastId) return { ...cursor, key: page!.lastId };
   const parity = (
     await sql<{
       canonical: string;
@@ -861,22 +871,16 @@ async function convertBatch(
     await dropOldState(tx);
     return { stage: "finalize", done: true };
   }
-  const {
-    rows: [state],
-  } = await tx.executeQuery<{
-    deploymentId: DeploymentId;
-    sequence: string;
-    ready: boolean;
-    lastCommitAt: Date;
-    upgradeCursor: unknown;
-  }>(
-    CompiledQuery.raw(
-      `select deployment_id as "deploymentId",sequence,ready,last_commit_at as "lastCommitAt",
-      upgrade_cursor as "upgradeCursor" from client_sync_state
-      where deployment_id=$1 for no key update`,
-      [deployment.id],
-    ),
-  );
+  const state = (
+    await sql<{
+      deploymentId: DeploymentId;
+      sequence: string;
+      ready: boolean;
+      lastCommitAt: Date;
+      upgradeCursor: unknown;
+    }>`select deployment_id,sequence,ready,last_commit_at,upgrade_cursor from client_sync_state
+      where deployment_id=${deployment.id} for no key update`.execute(tx)
+  ).rows[0];
   if (!state || state.ready) throw new Error("Personal conversion has no unready deployment fence");
   const source: Source = {
     id: state.deploymentId,
@@ -957,12 +961,8 @@ async function convertBatch(
     default:
       next = await deriveCards(tx, cursor, cursor.stage);
   }
-  await tx.executeQuery(
-    CompiledQuery.raw(
-      "update client_sync_state set upgrade_cursor=$1::jsonb where deployment_id=$2 and sequence=$3::bigint",
-      [JSON.stringify(next), source.id, source.sequence],
-    ),
-  );
+  await sql`update client_sync_state set upgrade_cursor=${JSON.stringify(next)}::jsonb
+    where deployment_id=${source.id} and sequence=${source.sequence}::bigint`.execute(tx);
   return { stage: cursor.stage, done: false };
 }
 

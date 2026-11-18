@@ -52,7 +52,6 @@ export interface LegacyImportCounts {
 
 const maxLegacyBatchBytes = 2 * 1024 * 1024;
 const maxLegacyBatchRows = 500;
-const maxSqlPlacementRows = 4_096;
 export const legacyRunIdPattern = z.toJSONSchema(RunIdSchema, { io: "input" }).pattern!;
 export const legacyAttemptIdPattern = z.toJSONSchema(RunAttemptIdSchema, { io: "input" }).pattern!;
 const threadIdPattern = z.toJSONSchema(ThreadIdSchema, { io: "input" }).pattern!;
@@ -65,24 +64,13 @@ const emptyCounts: LegacyImportCounts = {
 };
 
 const legacyBatchSql = `
-    with keys as materialized (
-      select sequence,type from deployment_events
+    with sized as materialized (
+      select sequence,
+        case when type in ('tool.started','tool.completed','reasoning.completed','node.message')
+          then octet_length(data::text) else 256 end as bytes
+      from deployment_events
       where deployment_id=$1 and sequence>$2::bigint and sequence<=$3::bigint
-      order by sequence limit ${maxSqlPlacementRows}
-    ), placement_end as (
-      select min(sequence) as first_other from keys
-      where type not in ('message.created','message.placed','assistant.message')
-    ), placement_count as (
-      select count(*) from keys,placement_end where first_other is null or sequence<first_other
-    ), sized as materialized (
-      select key.sequence,
-        case when key.type in ('tool.started','tool.completed','reasoning.completed','node.message')
-          then octet_length(event.data::text) else 256 end as bytes
-      from (
-        select sequence,type from keys order by sequence
-        limit greatest((select count from placement_count),${maxLegacyBatchRows})
-      ) key
-      join deployment_events event on event.deployment_id=$1 and event.sequence=key.sequence
+      order by sequence limit ${maxLegacyBatchRows}
     ), bounded as (
       select sequence,bytes,sum(bytes) over(order by sequence) as batch_bytes,
         row_number() over(order by sequence) as row_no from sized
@@ -461,15 +449,25 @@ async function importToolBatch(
     });
   }
   if (writes.size) {
+    const values = [...writes.values()].map(
+      (row) => sql`(
+      ${row.id}::text,${row.threadId}::text,${row.runId}::text,${row.attemptId}::text,
+      ${row.bindingGeneration}::integer,${row.nodeId}::text,${row.callId}::text,${row.origin}::text,
+      ${row.tool === null ? null : JSON.stringify(row.tool)}::jsonb,
+      ${row.integration === null ? null : JSON.stringify(row.integration)}::jsonb,
+      ${row.arguments}::jsonb,${row.status}::text,
+      ${row.output === null ? null : JSON.stringify(row.output)}::jsonb,
+      ${row.isError}::boolean,${row.startedAt}::timestamptz,${row.completedAt}::timestamptz,
+      ${row.completionOrder}::bigint
+    )`,
+    );
     await sql`insert into tool_calls(id,thread_id,run_id,attempt_id,binding_generation,node_id,call_id,origin,
       tool,integration,arguments,status,output,is_error,started_at,completed_at,completion_order)
-    select value.id,value."threadId",value."runId",value."attemptId",value."bindingGeneration",value."nodeId",
-      value."callId",value.origin,value.tool,value.integration,coalesce(value.arguments::jsonb,old.arguments),
-      value.status,value.output,value."isError",value."startedAt",value."completedAt",value."completionOrder"
-    from jsonb_to_recordset(${JSON.stringify([...writes.values()])}::jsonb) as value(
-      id text,"threadId" text,"runId" text,"attemptId" text,"bindingGeneration" int,"nodeId" text,"callId" text,
-      origin text,tool jsonb,integration jsonb,arguments text,status text,output jsonb,"isError" boolean,
-      "startedAt" timestamptz,"completedAt" timestamptz,"completionOrder" bigint)
+    select value.id,value.thread_id,value.run_id,value.attempt_id,value.binding_generation,value.node_id,
+      value.call_id,value.origin,value.tool,value.integration,coalesce(value.arguments,old.arguments),
+      value.status,value.output,value.is_error,value.started_at,value.completed_at,value.completion_order
+    from (values ${sql.join(values)}) as value(id,thread_id,run_id,attempt_id,binding_generation,node_id,call_id,
+      origin,tool,integration,arguments,status,output,is_error,started_at,completed_at,completion_order)
     left join tool_calls old on old.id=value.id
     on conflict(id) do update set arguments=excluded.arguments,status=excluded.status,output=excluded.output,
       is_error=excluded.is_error,completed_at=excluded.completed_at,completion_order=excluded.completion_order
@@ -481,24 +479,14 @@ async function importToolBatch(
       tx,
     );
   if (cards.size)
-    await sql`insert into transcript_items(id,thread_id,run_id,attempt_id,node_id,kind,
-      visible,is_turn_start,created_at,position,tool_call_id,view)
-    select id,"threadId","runId","attemptId","nodeId",kind,visible,"isTurnStart","createdAt",position,"toolCallId",view
-    from jsonb_to_recordset(${JSON.stringify([...cards.values()])}::jsonb) as card(
-      id text,"threadId" text,"runId" text,"attemptId" text,"nodeId" text,kind text,visible boolean,
-      "isTurnStart" boolean,"createdAt" timestamptz,position bigint,"toolCallId" text,view jsonb)
-    on conflict(id) do update set view=excluded.view
-    `.execute(tx);
-  if (images.length) {
-    const values = images.map((image) => ({ ...image, pathHash: image.pathHash.toString("hex") }));
-    await sql`insert into tool_output_images(id,tool_call_id,image_index,thread_id,node_id,
-      path,path_hash,media_type,generated,completion_order)
-    select id,"toolCallId","imageIndex","threadId","nodeId",path,decode("pathHash",'hex'),
-      "mediaType",generated,"completionOrder" from jsonb_to_recordset(${JSON.stringify(values)}::jsonb) as image(
-        id text,"toolCallId" text,"imageIndex" int,"threadId" text,"nodeId" text,path text,
-        "pathHash" text,"mediaType" text,generated boolean,"completionOrder" bigint)
-    `.execute(tx);
-  }
+    await tx
+      .insertInto("transcriptItems")
+      .values([...cards.values()])
+      .onConflict((conflict) =>
+        conflict.column("id").doUpdateSet((eb) => ({ view: eb.ref("excluded.view") })),
+      )
+      .execute();
+  if (images.length) await tx.insertInto("toolOutputImages").values(images).execute();
   return { ...stats, images: images.length };
 }
 
