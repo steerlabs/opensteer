@@ -589,19 +589,29 @@ describe("the person's plugin API", () => {
           expiresAt: 1796083200000,
           invocation: { app: "p0", tool: "reviewed", input: { source: "saved" } },
         };
-      return Array.from({ length: 50 }, (_, index) => ({
-        ...run,
-        id: `finished-${index}`,
-        status: "succeeded",
-        scheduledAt: "2026-11-01T00:00:00.000Z",
-      }));
+      return [
+        { ...run, id: "pending-outside-page" },
+        ...Array.from({ length: 49 }, (_, index) => ({
+          ...run,
+          id: `finished-${index}`,
+          status: "succeeded",
+          scheduledAt: "2026-11-01T00:00:00.000Z",
+        })),
+      ];
     });
     const result = await api.reads()["plugins.schedule.runs"]({ pluginId: "p0" }, context(ownerId));
     expect(result.ok && result.data).toMatchObject({
       cursor: "more-pending",
       pending: [{ id: "pending", approval: { tool: "reviewed", arguments: { source: "saved" } } }],
-      runs: Array.from({ length: 50 }, (_, index) => ({ id: `finished-${index}` })),
+      runs: [
+        { id: "pending-outside-page", status: "awaiting-approval", approval: null },
+        ...Array.from({ length: 49 }, (_, index) => ({ id: `finished-${index}` })),
+      ],
     });
+    expect(service.manage.mock.calls).toEqual([
+      [{ operation: "schedules.runs", input: { app: "p0", limit: 50 } }, owner],
+      [{ operation: "schedules.approval", input: { run: "pending" } }, owner],
+    ]);
     expect(service.detail).not.toHaveBeenCalled();
     service.manage.mockClear();
     service.scheduleApprovals.mockResolvedValue({ runs: [], next: null });

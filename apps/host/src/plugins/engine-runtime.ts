@@ -712,10 +712,10 @@ export async function startEngine(
           }
           case "installed": {
             const input = operations.installed.input.parse(raw);
-            const plugins = yield* engine.apps.list({ owner });
-            const wanted = input.plugins ? new Set(input.plugins) : null;
+            const ids = input.plugins?.filter(Schema.is(AppId));
+            if (ids?.length === 0) return [];
             return yield* Effect.forEach(
-              wanted ? plugins.filter(({ id }) => wanted.has(id)) : plugins,
+              yield* engine.apps.list({ owner, ...(ids ? { ids } : {}) }),
               (plugin) =>
                 Effect.gen(function* () {
                   const metadata = yield* accountAdapter.metadata(plugin);
