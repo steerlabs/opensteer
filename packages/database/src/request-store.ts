@@ -490,33 +490,22 @@ export class RequestStore {
     reason: "plugin-interrupted" | "plugin-expired" | "run-ended",
   ): Promise<readonly AgentEvent[]> {
     return withPersonalTransaction(this.#database, async (transaction) => {
+      // The Personal mutation fence serializes Request settlement. Read the kind
+      // under that fence, then write the continuation before locking the Request.
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
         .where("id", "=", requestId)
-        .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row || !["plugin.approval", "plugin.input"].includes(row.kind)) return [];
-      const updated = await transaction
-        .updateTable("requests")
-        .set({
-          status: "cancelled",
-          cancellationReason: reason,
-          response: null,
-          resolvedBy: null,
-          settlementProvenance: null,
-          resolvedAt: new Date(),
-        })
-        .where("id", "=", requestId)
-        .returningAll()
-        .executeTakeFirstOrThrow();
+      const now = new Date();
       if (reason === "run-ended")
         await transaction
           .updateTable("requestContinuations")
           .set({
             status: "undeliverable",
             reason: "Plugin execution stopped with its Run",
-            updatedAt: new Date(),
+            updatedAt: now,
           })
           .where("requestId", "=", requestId)
           .execute();
@@ -528,18 +517,31 @@ export class RequestStore {
             status: "waiting",
             reason: null,
             attemptedAt: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
+            createdAt: now,
+            updatedAt: now,
           })
           .onConflict((c) =>
             c.column("requestId").doUpdateSet({
               status: "waiting",
               reason: null,
               attemptedAt: null,
-              updatedAt: new Date(),
+              updatedAt: now,
             }),
           )
           .execute();
+      const updated = await transaction
+        .updateTable("requests")
+        .set({
+          status: "cancelled",
+          cancellationReason: reason,
+          response: null,
+          resolvedBy: null,
+          settlementProvenance: null,
+          resolvedAt: now,
+        })
+        .where("id", "=", requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
       return [
         await appendHostDeploymentEvent(transaction, {
           type: "request.cancelled",
