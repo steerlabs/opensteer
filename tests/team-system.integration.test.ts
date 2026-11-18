@@ -1,3 +1,4 @@
+import { openVerticalViewer } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { join } from "node:path";
 import { sql } from "kysely";
 import {
@@ -11,8 +12,7 @@ import {
   watchTeamReplyRead,
 } from "../packages/client/src/host/personal-team-links.js";
 import { PersonalTeamRequestsStore } from "../packages/database/src/personal-team-requests-store.js";
-import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
-import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
+import type { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { teamAgentIdentity } from "../packages/client/src/team/presentation.js";
 import {
   TeamLinkViewSchema,
@@ -24,7 +24,6 @@ import {
   teamApiVersionHeader,
 } from "../packages/deployment-authority/src/index.js";
 import type { KnowledgeTopicId, RequestResponse } from "../packages/core/src/index.js";
-import { WebSocket } from "ws";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
 import { startTeamSystem, teamCondition, openMachineSocket } from "./team-system.test-support.js";
@@ -445,24 +444,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
 
     console.info("Z4: reading local task");
-    personalClient = new HttpHostClient({
-      baseUrl: personal.hostOrigin,
-      fetch: (url, init) =>
-        fetch(url, {
-          ...init,
-          headers: {
-            ...Object.fromEntries(new Headers(init?.headers)),
-            cookie: personal.sessionCookie,
-            origin: personal.hostOrigin.origin,
-          },
-        }),
-      webSocketFactory: (url) =>
-        new WebSocket(url, {
-          headers: { cookie: personal.sessionCookie, origin: personal.hostOrigin.origin },
-        }) as unknown as WebSocketClient,
-    });
-    await personalClient.load();
-    await teamCondition(
+    personalClient = await openVerticalViewer(personal, localTaskId);
+    const completedAt = await teamCondition(
       personalClient,
       () =>
         personalClient!.getSnapshot().threads.find((thread) => thread.id === localTaskId)
@@ -489,9 +472,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       timeoutError: () =>
         new Error("Visible reply never attempted to read before receipt persistence"),
     });
-    const completedAt = personalClient
-      .getSnapshot()
-      .threads.find((thread) => thread.id === localTaskId)!.latestRunCompletedAt!;
     expect((personalClient.getSnapshot().threadVisits[localTaskId] ?? "") < completedAt).toBe(true);
     releasePublication.resolve();
     await teamCondition(
