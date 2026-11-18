@@ -197,8 +197,9 @@ export class PersonalTeamRequests {
       await this.cancel(teamId, request.id);
       return;
     }
+    let ack: Awaited<ReturnType<TeamLinkRpc["call"]>>;
     try {
-      await this.options.rpc(teamId).call({ type: "accept", requestId: request.id });
+      ack = await this.options.rpc(teamId).call({ type: "accept", requestId: request.id });
     } catch (error) {
       if (
         error instanceof OpensteerError &&
@@ -207,6 +208,8 @@ export class PersonalTeamRequests {
         await this.cancel(teamId, request.id);
       throw error;
     }
+    if (ack.kind === "accepted" && ack.request.id === request.id)
+      await this.options.requests.remote(teamId, request.id, ack.request.state);
     await this.reconcileOne(local);
   }
 
@@ -499,8 +502,13 @@ export class PersonalTeamRequests {
         await this.#receipt(admitted);
         const current = (await this.options.requests.get(teamId, local.requestId))!;
         const outcome = await this.options.runs.outcome(current);
-        if (["pending", "working", "needs_you"].includes(outcome.state))
-          await this.options.rpc(teamId).call({ type: "accept", requestId: local.requestId });
+        if (["pending", "working", "needs_you"].includes(outcome.state)) {
+          const ack = await this.options
+            .rpc(teamId)
+            .call({ type: "accept", requestId: local.requestId });
+          if (ack.kind === "accepted" && ack.request.id === local.requestId)
+            await this.options.requests.remote(teamId, local.requestId, ack.request.state);
+        }
         await this.reconcileOne(current);
       } catch (error) {
         await this.#failure(local, error);

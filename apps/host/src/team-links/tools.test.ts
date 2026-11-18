@@ -102,7 +102,7 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
   expect(posts[2]?.clientMessageId).not.toBe(posts[0]?.clientMessageId);
 });
 
-it("retries a Run's team context until the team has the accept, but not once the request ended", async () => {
+it("retries a Run's team context only before the team confirms the accept", async () => {
   const source = TeamSourceSchema.parse({
     teamId: createId("deployment"),
     channelId: createId("teamChannel"),
@@ -116,21 +116,31 @@ it("retries a Run's team context until the team has the accept, but not once the
       peopleOnly: false,
     },
   });
+  let teamReply = false;
   let request: ReturnType<typeof PersonalTeamRequestSchema.parse> | null = null;
+  const refusal = new OpensteerError({
+    code: "forbidden",
+    message: "Team request is unavailable",
+    retryable: false,
+  });
   const tools = new TeamRunTools(
     {} as PersonalTeamLinksStore,
-    { forRun: async () => request } as unknown as PersonalTeamRequestsStore,
+    {
+      forRun: async () => request,
+      repliesToTeam: async () => teamReply,
+    } as unknown as PersonalTeamRequestsStore,
     () => ({
       call: async () => {
-        throw new OpensteerError({
-          code: "not_found",
-          message: "Team request is unavailable",
-          retryable: false,
-        });
+        throw refusal;
       },
     }),
   );
   const runId = createId("run");
+  await expect(tools.context(runId)).rejects.toMatchObject({
+    code: "forbidden",
+    retryable: false,
+  });
+  teamReply = true;
   await expect(tools.context(runId)).rejects.toMatchObject({ retryable: true });
   request = PersonalTeamRequestSchema.parse({
     kind: "self",
@@ -141,14 +151,17 @@ it("retries a Run's team context until the team has the accept, but not once the
     inputId: createId("message"),
     runId,
     source,
+    remoteState: "queued",
     publicationState: "pending",
     terminalState: null,
     replyMessageId: null,
   });
   await expect(tools.context(runId)).rejects.toMatchObject({ retryable: true });
-  request = { ...request, terminalState: "cancelled" };
-  await expect(tools.context(runId)).rejects.toMatchObject({
-    message: "Team request is unavailable",
-    retryable: false,
-  });
+  for (const settled of [
+    { ...request, remoteState: "working" as const },
+    { ...request, terminalState: "cancelled" as const },
+  ]) {
+    request = settled;
+    await expect(tools.context(runId)).rejects.toBe(refusal);
+  }
 });

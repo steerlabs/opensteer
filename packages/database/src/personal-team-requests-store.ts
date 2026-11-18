@@ -576,6 +576,16 @@ export class PersonalTeamRequestsStore {
     return rows.map((row) => this.#view(row));
   }
 
+  /** Whether the Run answers a team request, even before that request's mirror is recorded. */
+  async repliesToTeam(runId: RunId): Promise<boolean> {
+    const run = await this.database
+      .selectFrom("runs")
+      .select("replyTarget")
+      .where("id", "=", runId)
+      .executeTakeFirst();
+    return run?.replyTarget?.kind === "team-thread";
+  }
+
   async forRun(runId: RunId): Promise<PersonalTeamRequest | null> {
     const run = await this.database
       .selectFrom("runs")

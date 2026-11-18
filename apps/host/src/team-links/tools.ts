@@ -62,6 +62,7 @@ export class TeamRunTools {
 
   async context(runId: RunId) {
     // Admission commits, and can dispatch, before the mirror is recorded and the team has the accept.
+    // Only that window retries; any other refusal stays as the team or link gave it.
     const unconfirmed = () =>
       new OpensteerError({
         code: "conflict",
@@ -69,7 +70,10 @@ export class TeamRunTools {
         retryable: true,
       });
     const request = await this.requests.forRun(runId);
-    if (!request) throw unconfirmed();
+    if (!request) {
+      if (await this.requests.repliesToTeam(runId)) throw unconfirmed();
+      throw linkError();
+    }
     let result: TeamLinkResult;
     try {
       result = await this.rpc(request.teamId).call({
@@ -77,7 +81,12 @@ export class TeamRunTools {
         requestId: request.requestId,
       });
     } catch (error) {
-      if (request.terminalState === null && error instanceof OpensteerError && !error.retryable)
+      if (
+        request.terminalState === null &&
+        request.remoteState === "queued" &&
+        error instanceof OpensteerError &&
+        !error.retryable
+      )
         throw unconfirmed();
       throw error;
     }
