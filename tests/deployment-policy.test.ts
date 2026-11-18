@@ -213,7 +213,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: {
       kind: 1,
       "connection.kind": 3,
-      "attachment.connection.kind": 1,
       "connection?.kind": 1,
       "connection.authority.document.deploymentShape.kind": 1,
     },
