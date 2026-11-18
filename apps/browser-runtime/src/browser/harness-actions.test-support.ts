@@ -37,7 +37,7 @@ import {
 const executablePath = findChromium();
 const evidenceRoot =
   process.env.OPENSTEER_HARNESS_ACTIONS_EVIDENCE_DIR ?? join(tmpdir(), "opensteer-harness-actions");
-const command = "pnpm test:browser -- apps/browser-runtime/src/browser/harness-actions";
+const command = "pnpm test:browser apps/browser-runtime/src/browser/harness-actions";
 const programAssertions = `
 function assert(value, message) { if (!value) throw new Error('Contract assertion: '+message); }
 async function fails(action, pattern) {
