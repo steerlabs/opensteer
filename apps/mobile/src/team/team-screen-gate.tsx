@@ -7,8 +7,10 @@ import {
 } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import { Fragment, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Linking } from "react-native";
 import { TeamReferenceProvider } from "../markdown/reference-navigation.js";
 import { ConnectionGate } from "../ui/connection-gate.js";
+import { downloadPage } from "../ui/connection-live.js";
 import { useShellGate } from "../ui/shell-gate.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { useMobileTeams, useTeamSession, useTeamsSnapshot } from "./team-context.js";
@@ -155,16 +157,20 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
           busy,
           onPress: attempt(() => teams.addToPhone(teamId).then(() => teams.select(teamId))),
         }
-      : issue.code === "connection" || issue.code === "update-server"
-        ? {
-            label: clientIssueActions.tryAgain,
-            busy,
-            onPress:
-              connection === null ? attempt(() => teams.select(teamId)) : () => connection.retry(),
-          }
-        : state === "removed"
-          ? (back ?? remove)
-          : null;
+      : copy.action === "update"
+        ? { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) }
+        : issue.code === "connection" || issue.code === "update-server"
+          ? {
+              label: clientIssueActions.tryAgain,
+              busy,
+              onPress:
+                connection === null
+                  ? attempt(() => teams.select(teamId))
+                  : () => connection.retry(),
+            }
+          : state === "removed"
+            ? (back ?? remove)
+            : null;
   return (
     <ConnectionGate
       detail={copy.detail ?? ""}
