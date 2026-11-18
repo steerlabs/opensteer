@@ -488,22 +488,23 @@ describe("the personal stack from source", () => {
         threadId,
         type: "thread.sendMessage",
       });
-      if (sent.type !== "thread.sendMessage")
-        throw new Error("thread.sendMessage returned another receipt");
-      return vi.waitFor(
+      if (sent.type !== "thread.sendMessage" || !sent.run)
+        throw new Error("thread.sendMessage did not start a Run");
+      const runId = sent.run.id;
+      const outcome = await vi.waitFor(
         async () => {
-          const { messages } = await rpc("thread.messages.list", { limit: 100, threadId });
-          const answered = messages.find(
-            (message) => message.kind === "assistant" && textOf(message).includes(reply),
-          );
-          if (!answered)
-            throw new Error(
-              `The turn never answered "${reply}": ${JSON.stringify(messages.map(textOf))}`,
-            );
-          return messages;
+          const { attempts } = await rpc("run.attempts.list", { runId });
+          const ended = attempts.find((attempt) => attempt.status === "current")?.outcome;
+          if (!ended) throw new Error(`Run ${runId} never ended`);
+          return ended;
         },
         { interval: 250, timeout: 60_000 },
       );
+      const { messages } = await rpc("thread.messages.list", { limit: 100, threadId });
+      expect(
+        messages.some((message) => message.kind === "assistant" && textOf(message).includes(reply)),
+        `The turn ended ${outcome} before answering "${reply}": ${JSON.stringify(messages.map(textOf))}`,
+      ).toBe(true);
     };
     const start = windows
       ? `set "GREETING=hello from cmd" && node server.cjs`

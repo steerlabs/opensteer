@@ -794,6 +794,26 @@ integration("Runs that outlive their connection", () => {
       "parent idle",
     );
     expect((await run(active, childRun.id)).status).toBe("running");
+    const preparingReceived = Promise.withResolvers<void>();
+    const preparingMayCommit = Promise.withResolvers<void>();
+    const preparingCommitted = Promise.withResolvers<void>();
+    const isPreparing = (catalog: { harnessInstanceId: string; status: string }) =>
+      catalog.harnessInstanceId === active.harnessInstanceId && catalog.status === "preparing";
+    const recordCatalogs = active.host.store.recordHarnessCatalogs.bind(active.host.store);
+    const catalogGate = vi
+      .spyOn(active.host.store, "recordHarnessCatalogs")
+      .mockImplementation(async (input) => {
+        if (!input.catalogs.some(isPreparing)) return recordCatalogs(input);
+        preparingReceived.resolve();
+        await preparingMayCommit.promise;
+        const recorded = await recordCatalogs(input);
+        if (recorded.some(isPreparing)) preparingCommitted.resolve();
+        return recorded;
+      });
+    restoreDatabaseQuery = () => {
+      preparingMayCommit.resolve();
+      catalogGate.mockRestore();
+    };
     const restarting = active.restartRunner();
     void restarting.catch(() => undefined);
     await waitFor(
@@ -859,6 +879,12 @@ integration("Runs that outlive their connection", () => {
       .map((part) => part.text)
       .join("\n");
     expect(notice).toContain("Opensteer restarted while you were working");
+    // The replacement engine can be held in initialize while the Host still
+    // has no catalog for that boot. Gate the write through recovery, then use
+    // its commit as the signal to check the catalog the person sees.
+    await preparingReceived.promise;
+    preparingMayCommit.resolve();
+    await preparingCommitted.promise;
     const { environments } = await readTestResource(active.api, "harness-catalog");
     expect(
       environments
