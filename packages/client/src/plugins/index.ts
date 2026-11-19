@@ -180,11 +180,12 @@ export const pluginCatalogUnavailable = "plugin-catalog-unavailable";
 export type PluginCatalogListView =
   | { readonly kind: "loading" }
   | { readonly kind: "failed"; readonly text: string; readonly retry: boolean }
-  | { readonly kind: "empty"; readonly text: string }
+  | { readonly kind: "empty"; readonly text: string | null }
   | {
       readonly kind: "entries";
       readonly issue: { readonly text: string; readonly retry: boolean } | null;
     };
+/** `deviceApps` counts the device apps listed beside the plugins: while one shows, nothing is unmatched. */
 export function pluginCatalogListView(
   list: {
     readonly loading: boolean;
@@ -192,6 +193,7 @@ export function pluginCatalogListView(
     readonly error: ClientIssue | null;
   },
   search: string,
+  deviceApps = 0,
 ): PluginCatalogListView {
   if (list.loading) return { kind: "loading" };
   const issue = list.error
@@ -204,7 +206,11 @@ export function pluginCatalogListView(
   if (issue) return { kind: "failed", ...issue };
   return {
     kind: "empty",
-    text: search ? `Nothing in the catalog matches “${search}”.` : "The catalog is empty.",
+    text: deviceApps
+      ? null
+      : search
+        ? `Nothing in the catalog matches “${search}”.`
+        : "The catalog is empty.",
   };
 }
 

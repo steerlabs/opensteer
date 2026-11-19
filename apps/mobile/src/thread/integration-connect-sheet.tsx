@@ -13,6 +13,7 @@ import {
   computerAccessUpgrade,
   computerAppPermissionNotice,
   computerAppSetupElsewhere,
+  computerAppSetupRequested,
   collapsedAccountRows,
   computerConnectionState,
   connectCard,
@@ -373,9 +374,7 @@ export function IntegrationConnectCard(props: {
       if (result.type !== "integration.computer.setup.request")
         throw new Error("Integration computer command mismatch.");
       if (generation !== operationGeneration.current) return;
-      setNotice(
-        `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
-      );
+      setNotice(computerAppSetupRequested(plan.definition.name, computer?.name ?? "that computer"));
       refresh();
     });
   const chooseServer = (serverId: string) =>

@@ -14,13 +14,16 @@ import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settin
  * - a manual webhook setup shows its instructions but has nothing to finish
  *   it with, or a setup that asks for nothing has no "Done";
  * - a saved account outlives every plugin that used it with nowhere to remove it;
- * - a live workflow run that isn't among the first rows has no Stop.
+ * - a live workflow run that isn't among the first rows has no Stop;
+ * - an app built into Opensteer, such as iMessage, can't be found in the
+ *   catalog, which says nothing matches.
  */
 
 const state = vi.hoisted(() => ({
   host: null as HostClient | null,
   pages: [] as NativeSettingsPageProps[],
   navigate: vi.fn(),
+  settingUp: null as string | null,
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() }, Platform: { OS: "ios" } }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
@@ -45,6 +48,12 @@ vi.mock("./confirm.js", () => ({
 }));
 vi.mock("../thread/app-frame.js", () => ({ AppFrame: () => null }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
+vi.mock("./device-app-setup-sheet.js", () => ({
+  DeviceAppSetupSheet: (props: { readonly definition: { readonly id: string } }) => {
+    state.settingUp = props.definition.id;
+    return null;
+  },
+}));
 vi.mock("./local-server-sections.js", () => ({
   useLocalServerSections: () => ({ sections: [], sheet: null }),
 }));
@@ -56,7 +65,7 @@ vi.mock("./native-settings-page.js", () => ({
 }));
 const { PluginDetailScreen } = await import("./plugin-detail.js");
 const { PluginAccountsScreen } = await import("./plugin-accounts.js");
-const { PluginsScreen } = await import("./plugins.js");
+const { PluginCatalogScreen, PluginsScreen } = await import("./plugins.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let root: Root | undefined;
@@ -66,6 +75,7 @@ afterEach(() => {
   client?.dispose();
   state.pages = [];
   state.host = null;
+  state.settingUp = null;
   state.navigate.mockClear();
 });
 
@@ -209,4 +219,22 @@ it("stops a live workflow run the Host lists past the first six", async () => {
   const runs = await client.rpc["plugins.workflow.runs"]({ pluginId: "plg_linear" });
   if (!runs.ok) throw new Error("runs read failed");
   expect(runs.data.runs.find(({ id }) => id === "wfr_6a8")?.status).toBe("terminated");
+});
+
+it("finds iMessage in the catalog and sets it up on a device", async () => {
+  await host();
+  await render(
+    <PluginCatalogScreen route={{ params: { deploymentId: "dep_fixture" } } as never} />,
+  );
+  await until(() => !!page().search, "the catalog loaded");
+  await act(async () => page().search!.onChange("imessage"));
+  await until(() => has(undefined, "Apple Messages"), "Apple Messages was listed");
+  expect(row(page(), (candidate) => candidate.label === "Apple Messages")).toMatchObject({
+    detail: expect.stringMatching(/^Requires a Mac · /u),
+  });
+  expect(rows(page()).some((candidate) => candidate.label.startsWith("Nothing in the"))).toBe(
+    false,
+  );
+  await press(undefined, "Apple Messages");
+  await until(() => state.settingUp === "apple-messages", "the setup sheet opened");
 });
