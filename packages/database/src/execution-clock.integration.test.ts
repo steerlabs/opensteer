@@ -82,6 +82,14 @@ describeStore("execution lease clock", (it) => {
     await expect(store.commitRunnerEvent(ordinary)).rejects.toMatchObject({
       code: "forbidden",
     });
+    // What the Host does next with a refused report: it must leave the outcome to classification.
+    await store.failRunForRefusedRunnerEvent({
+      bindingGeneration: f.bindingGeneration,
+      message: "Execution capability came from a stale or invalid binding",
+      runId: f.run.id,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
     const beforeClassification = await database
       .selectFrom("runs")
       .select(["status", "nextRunnerOrdinal"])

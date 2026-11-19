@@ -2,6 +2,7 @@ import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { drainAssignmentCancellation } from "./assignment-store.js";
 import { drainRevokedChannelInputs } from "./channel-store.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
@@ -249,6 +250,9 @@ export async function failRunForRefusedRunnerEvent(
     ) {
       return;
     }
+    // A lease that ran out is the lease sweep's to classify. A report still being
+    // committed when it ran out is refused for that alone and must not fail the Run first.
+    if (session.leaseExpiresAt && session.leaseExpiresAt <= executionDate(database)) return;
     return finalizeRunTransaction(transaction, {
       completedAt: new Date(),
       failure: {
