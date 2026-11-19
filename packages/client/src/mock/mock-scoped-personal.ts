@@ -28,7 +28,11 @@ import {
   type PersonalResourceKind,
   type PersonalResourceView,
 } from "@opensteer/protocol/resources";
-import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
+import {
+  TranscriptItemSchema,
+  transcriptMessageRefLimits,
+  type TranscriptItem,
+} from "@opensteer/protocol/transcript";
 import { type PersonalInputQueue } from "@opensteer/protocol";
 import type { TranscriptFixtureSnapshot, ThreadSummary, TranscriptEntry } from "../host/client.js";
 import { messageBody } from "../host/transcript.js";
@@ -182,23 +186,30 @@ function mockScopedItem(
     isTurnStart: entry.kind === "message" && entry.messageKind === "input",
   };
   switch (entry.kind) {
-    case "message":
+    case "message": {
+      const refs = {
+        attachments: entry.attachments?.slice(0, transcriptMessageRefLimits.attachments) ?? [],
+        pages: entry.pages?.slice(0, transcriptMessageRefLimits.pages) ?? [],
+        places: entry.places?.slice(0, transcriptMessageRefLimits.places) ?? [],
+      };
       return TranscriptItemSchema.parse({
         ...value,
         kind: entry.kind,
         messageId: MessageIdSchema.parse(entry.id),
         messageKind: entry.messageKind,
         author: entry.author,
+        ...Object.fromEntries(Object.entries(refs).filter(([, list]) => list.length)),
         view: {
           preview: entry.body.slice(0, 400),
           truncated:
             entry.body.length > 400 ||
-            !!entry.attachments?.length ||
-            !!entry.pages?.length ||
-            !!entry.places?.length,
+            refs.attachments.length < (entry.attachments?.length ?? 0) ||
+            refs.pages.length < (entry.pages?.length ?? 0) ||
+            refs.places.length < (entry.places?.length ?? 0),
           published: entry.published ?? true,
         },
       });
+    }
     case "tool":
       return TranscriptItemSchema.parse({
         ...value,
