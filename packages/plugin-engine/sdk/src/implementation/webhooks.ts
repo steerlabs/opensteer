@@ -1,5 +1,4 @@
 import { engineSigningSecret } from "apps/contracts";
-import upstreamNames from "../../../upstream-names.json" with { type: "json" };
 import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
@@ -7,7 +6,7 @@ import { CurrentActor, type ResourceLifecycle } from "../contracts/pluginEngine.
 import type { WorkflowHostControls } from "apps/contracts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
-import { Clock, Effect, Exit, Option, Redacted, Result, Schema } from "effect";
+import { Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import {
   ManualWebhookDescriptor,
@@ -35,7 +34,6 @@ import {
   StorageError,
   RequestInvalid,
   type AccountId,
-  type VersionId,
 } from "../contracts/shared.ts";
 import { SelectedAccounts } from "../contracts/apps.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -151,7 +149,7 @@ const ManagedWebhook = Schema.Struct({
 });
 
 const refusedRemoval =
-  "PluginEngine could not remove this registration: it may no longer use the accounts it was registered with, or the app's active version no longer declares this webhook, and only the active version runs. Remove the webhook for this callback URL at the provider, then confirm.";
+  "PluginEngine could not remove this registration: it is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
 const selectedIds = (selected: SelectedAccounts) =>
   Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
 /**
@@ -165,17 +163,6 @@ const PrivateState = Schema.Struct({
   secret: Schema.String,
   state: Schema.Json,
   setup: Schema.optional(ManualWebhookDescriptor),
-});
-/**
- * A manual setup saved by a framework from before the rename, with its earlier signing-secret
- * source (from the rules data). After an upgrade the person sets it up again at the service.
- */
-const EarlierManualSetup = Schema.Struct({
-  setup: Schema.Struct({
-    signingSecret: Schema.Literals(
-      upstreamNames.rules.filter((rule) => rule.scope === "signing-secret").map(({ from }) => from),
-    ),
-  }),
 });
 type Json = typeof Schema.Json.Type;
 const isList = (value: Json): value is ReadonlyArray<Json> => Array.isArray(value);
@@ -403,26 +390,7 @@ export const makeWebhooks = (
       Effect.flatMap((value) => Schema.decodeUnknownEffect(PrivateState)(Redacted.value(value))),
       Effect.mapError(() => new StorageError()),
     );
-  /**
-   * The saved state, or none for a manual setup completed before the framework renamed its
-   * signing-secret source (`EarlierManualSetup`). Any other state this engine cannot read fails.
-   */
-  const readable = (row: typeof StoredWebhook.Type) =>
-    credentials.decrypt(row.id, row.encrypted).pipe(
-      Effect.mapError(() => new StorageError()),
-      Effect.flatMap((value) => {
-        const saved = Schema.decodeUnknownOption(PrivateState)(Redacted.value(value));
-        return Option.isSome(saved) || Schema.is(EarlierManualSetup)(Redacted.value(value))
-          ? Effect.succeed(saved)
-          : Effect.fail(new StorageError());
-      }),
-    );
-  /**
-   * The subscription's version and source, with the actor's accounts for the rest. A subscription
-   * follows the app's active version through its source's reconciliation, which runs after every
-   * activation; until that has moved it, the host refuses its build as one that is not active, and
-   * a delivery is answered to be sent again.
-   */
+  /** The subscription's pinned version and source, with the actor's accounts for the rest. */
   const subscriptionState = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
       const accounts = yield* backgroundAccounts(db, lifecycle, {
@@ -438,14 +406,10 @@ export const makeWebhooks = (
    * Removing it uses only them: the subscription may have moved to another actor since, and the
    * actor's current links may no longer resolve every requirement.
    */
-  const removalState = (
-    row: typeof StoredWebhook.Type,
-    registration: Registration,
-    version: VersionId,
-  ) =>
+  const removalState = (row: typeof StoredWebhook.Type, registration: Registration) =>
     snapshot(db, {
       app: row.app,
-      version,
+      version: row.version,
       // Only an app-account webhook's registration runs without an actor, and without a caller.
       captured: {
         accounts: registration.accounts,
@@ -625,21 +589,7 @@ export const makeWebhooks = (
         // has no actor, and a user-account webhook's follows its source's actor.
         if (!row.key.startsWith("setup-") || (row.actor === null) !== (input.actor === null))
           continue;
-        const stored = yield* readable(row);
-        if (Option.isNone(stored)) {
-          // A setup completed before the rename is set up again, not carried: the new
-          // subscription needs setup at the service with its own callback URL and secret, and
-          // this one, which has no registration to remove, stops.
-          yield* query(() =>
-            db.updateMany("webhooks", {
-              where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
-              set: { status: "stopped" },
-            }),
-          );
-          replaced = true;
-          continue;
-        }
-        const saved = stored.value;
+        const saved = yield* decrypt(row);
         if (saved.setup === undefined || !serves({ setup: saved.setup, config: saved.config })) {
           replaced = true;
           continue;
@@ -730,20 +680,8 @@ export const makeWebhooks = (
               if (stopping) {
                 // A registration that never started reached no provider: nothing to remove.
                 const registration = yield* registrationOf(row);
-                // Only the app's active version runs anything, so it removes registrations its
-                // earlier versions made, with their saved state. One the active version cannot
-                // remove, such as a webhook it no longer declares, waits for a person to remove it
-                // at the provider, as a refused one does.
-                const version =
-                  registration === undefined
-                    ? null
-                    : yield* storedApp(db, { app: row.app }).pipe(
-                        Effect.map((app) => app.activeVersion),
-                        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
-                      );
-                if (registration !== undefined && version === null) refused = true;
-                else if (registration !== undefined && version !== null) {
-                  const state = yield* removalState(row, registration, version);
+                if (registration !== undefined) {
+                  const state = yield* removalState(row, registration);
                   // The product can refuse before resolving or once a renewal settles; either is
                   // lasting, unlike a storage failure, which the next attempt retries.
                   const context = (yield* registrationUsable(state, registration))
@@ -760,15 +698,6 @@ export const makeWebhooks = (
                       { operation: "webhook-unregister", ...common, state: saved.state },
                       state,
                       context,
-                    ).pipe(
-                      Effect.catchIf(
-                        (error) => Schema.is(WebhookFailed)(error) && error.reason === "definition",
-                        () =>
-                          Effect.sync(() => {
-                            refused = true;
-                            return null;
-                          }),
-                      ),
                     );
                 }
               } else {
@@ -1145,30 +1074,20 @@ export const makeWebhooks = (
           yield* refused("inactive");
           return yield* new WebhookFailed({ reason: "inactive" });
         }
-        // The version the delivery runs on, admitted before anything is read for it.
-        const state = yield* subscriptionState(row);
-        if (runtime.admit !== undefined)
-          yield* runtime
-            .admit({ app: row.app, build: state.version.build })
-            .pipe(Effect.mapError(() => new WebhookFailed({ reason: "delivery" })));
         const saved = yield* decrypt(row);
         const url = new URL(row.callbackUrl);
         url.search = new URL(parsed.request.url).search;
-        const value = yield* invoke(
-          row,
-          {
-            operation: "webhook-handle",
-            name: row.name,
-            subscriptionId: row.id,
-            sourceAccount: row.sourceAccount,
-            config: saved.config,
-            state: saved.state,
-            secret: saved.secret,
-            callbackUrl: row.callbackUrl,
-            request: { ...parsed.request, url: url.href },
-          },
-          state,
-        );
+        const value = yield* invoke(row, {
+          operation: "webhook-handle",
+          name: row.name,
+          subscriptionId: row.id,
+          sourceAccount: row.sourceAccount,
+          config: saved.config,
+          state: saved.state,
+          secret: saved.secret,
+          callbackUrl: row.callbackUrl,
+          request: { ...parsed.request, url: url.href },
+        });
         const response = yield* Schema.decodeUnknownEffect(WebhookResponseData)(value).pipe(
           Effect.tapError(() => refused("invalid-response")),
           Effect.mapError(() => new WebhookFailed({ reason: "delivery" })),

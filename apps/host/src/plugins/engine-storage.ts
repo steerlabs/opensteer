@@ -94,17 +94,6 @@ export const engineOAuthAttempt = (sql: SqlClient.SqlClient, connection: string)
 export const lockEngineApp = (sql: SqlClient.SqlClient, app: string) =>
   sql`select id from plugin_engine_apps where id = ${app} for no key update`;
 
-/**
- * What admission reads of a plugin, in one statement: its pending version, if a change of it has
- * not finished, and its active version's build. Nothing for a plugin that is gone.
- */
-export const readAdmission = (sql: SqlClient.SqlClient, app: string) =>
-  sql<{ pending: string | null; build: string | null }>`
-    select app.pending_deployment as pending, version.build as build
-    from plugin_engine_apps app
-    left join plugin_engine_deployments version on version.id = app.active_deployment
-    where app.id = ${app}`.pipe(Effect.map((rows) => rows[0]));
-
 export const readEngineLinks = (sql: SqlClient.SqlClient, app: string) =>
   sql`select requirement, scope, account, consent from opensteer_account_links where app = ${app} order by created_at, account`;
 
@@ -237,27 +226,6 @@ const nextCursor = (more: boolean, last: { id: string; at: string } | undefined,
     ? Buffer.from(JSON.stringify({ filter, at: last.at, id: last.id })).toString("base64url")
     : undefined;
 
-/**
- * The diagnostic of a plugin's rebuild that failed for good, kept with the version that failed in
- * the Host's own table until another version of it becomes active.
- */
-export const versionStore = (sql: SqlClient.SqlClient) => ({
-  failed: (app: string, failure: { readonly version: string; readonly message: string }) =>
-    sql`INSERT INTO public.plugin_rebuild_failures (plugin_id, version, message)
-      VALUES (${app}, ${failure.version}, ${failure.message.slice(0, 4_000)})
-      ON CONFLICT (plugin_id) DO UPDATE SET version = EXCLUDED.version,
-        message = EXCLUDED.message, failed_at = clock_timestamp()`.pipe(Effect.asVoid),
-  cleared: (app: string) =>
-    sql`DELETE FROM public.plugin_rebuild_failures WHERE plugin_id = ${app}`.pipe(Effect.asVoid),
-});
-
-/** Why a plugin's rebuild failed for good, with the version that failed, if it did. */
-export const readRebuildFailure = (sql: SqlClient.SqlClient, app: string) =>
-  sql<{ version: string; message: string }>`
-    SELECT version, message FROM public.plugin_rebuild_failures WHERE plugin_id = ${app}`.pipe(
-    Effect.map((rows) => rows[0] ?? null),
-  );
-
 export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
   sql
     .unsafe(
@@ -275,17 +243,6 @@ export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
         sql.unsafe(
           `CREATE TABLE IF NOT EXISTS opensteer_resource_creations (owner text NOT NULL, key text NOT NULL, kind text NOT NULL, result jsonb NOT NULL, PRIMARY KEY (owner, key, kind))`,
         ),
-      ),
-      // What a pending version records when it activates, saved with it before its plugin's
-      // database is migrated: who wrote its source, the install receipt it answers, and the
-      // version it rebuilds. Gone with the version.
-      Effect.andThen(
-        sql.unsafe(`
-  CREATE TABLE IF NOT EXISTS opensteer_version_intents (
-    version text PRIMARY KEY REFERENCES plugin_engine_deployments(id) ON DELETE CASCADE,
-    author text CHECK (author IN ('catalog', 'agent')), creation_key text, creation_origin text,
-    rebuild_of text
-  )`),
       ),
       Effect.andThen(
         sql.unsafe(`

@@ -10,11 +10,7 @@ import type { CodeFiles } from "../contracts/source.ts";
 import { prepareUiBuild } from "./ui-build.ts";
 import { Effect, Option, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
-import {
-  PublishedAppFramework,
-  WorkerBundle,
-  type DependencyGraph,
-} from "../contracts/worker-build.ts";
+import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol } from "./app-protocols.ts";
 import { browserBuild } from "./worker-browser-build.ts";
 import { sourceImports } from "./worker-source-imports.ts";
@@ -159,7 +155,6 @@ export const compileWorkerApp = (
   files: CodeFiles,
   host: WorkerHost,
   publicPaths: ReadonlyArray<string> = [],
-  pinned?: DependencyGraph,
 ) =>
   Effect.gen(function* () {
     const vendored = files.find((file) => file.path.split("/").includes("node_modules"));
@@ -173,7 +168,7 @@ export const compileWorkerApp = (
     const filesystem = new InMemoryFileSystem(
       Object.fromEntries(files.map((file) => [file.path, file.content])),
     );
-    const dependencies = yield* workerDependencies(filesystem, host, pinned);
+    const dependencies = yield* workerDependencies(filesystem, host);
     if (!(yield* dependencies.framework))
       return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
     const selected = yield* selectedFramework(filesystem);
@@ -215,8 +210,7 @@ export const compileWorkerApp = (
             sizes.plugin,
           ],
         }),
-      catch: (cause) =>
-        dependencies.failure() ?? sizes.failure() ?? json.failure() ?? compileFailure(cause),
+      catch: (cause) => sizes.failure() ?? json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)
@@ -250,7 +244,6 @@ export const compileWorkerApp = (
       framework: { version: selected.version, modules: selected.server },
       ui,
       protocol: selected.protocol,
-      dependencies: yield* dependencies.installed,
       // Locates this build's declaration failures; never retained with it.
       sourceMap: map,
     };

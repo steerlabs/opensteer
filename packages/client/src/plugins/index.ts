@@ -343,7 +343,6 @@ export function pluginStatusView(plugin: PluginSummaryView): {
   readonly label: string;
   readonly tone: PluginTone;
 } {
-  if (plugin.updating) return { label: "Updating", tone: "muted" };
   if (plugin.status === "not-built") return { label: "Didn't build", tone: "error" };
   if (plugin.status === "needs-account" && plugin.accountReadiness === "consent-needs-review")
     return { label: "Review account access", tone: "attention" };

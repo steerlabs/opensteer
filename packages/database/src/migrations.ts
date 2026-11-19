@@ -214,23 +214,6 @@ update integration_request_details set manifest = manifest #- '{definition,apiKe
 update requests set payload = payload #- '{manifest,definition,apiKey}'
   where payload->'manifest'->'definition' ? 'apiKey';
 `;
-/**
- * Why an installed plugin's rebuild for the Host's framework failed for good, with the version that
- * failed, kept until another version of it becomes active or it is removed. Plugins live in the
- * plugin engine's own schema, so the row names its plugin without a reference to it. A contract:
- * it drops the table developer databases kept these in before, in the engine's schema.
- */
-export const pluginRebuildFailuresMigrationName = "0038_plugin_rebuild_failures_contract";
-const PLUGIN_REBUILD_FAILURES_SQL = `
-create table plugin_rebuild_failures (
-  plugin_id text primary key,
-  version text not null,
-  message text not null check (length(message) <= 4000),
-  failed_at timestamptz not null default clock_timestamp()
-);
--- Developer databases kept these in the plugin engine's schema before; nothing is carried over.
-drop table if exists plugin_engine.opensteer_plugin_rebuild_failures;
-`;
 export const unifyLocalPluginAccessMigrationName = "0034_unify_local_plugin_access_contract";
 const UNIFY_LOCAL_PLUGIN_ACCESS_SQL = `
 insert into plugin_agent_settings (owner_user_id, plugin_id, access, author)
@@ -592,11 +575,6 @@ export function migrationProvider(): MigrationProvider {
         [pluginPackageFormatMigrationName]: {
           async up(database) {
             await sql.raw(PLUGIN_PACKAGE_FORMAT_SQL).execute(database);
-          },
-        },
-        [pluginRebuildFailuresMigrationName]: {
-          async up(database) {
-            await sql.raw(PLUGIN_REBUILD_FAILURES_SQL).execute(database);
           },
         },
       };

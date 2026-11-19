@@ -167,7 +167,6 @@ function fixture(input: {
     {
       authorize: () => Effect.succeed({ allowed: true, grants: { ...input.grants } }),
       providers: () => Effect.succeed([...input.providers]),
-      updating: () => undefined,
       // As LocalProviders answers: what keeps the provider, or what the device said at the call.
       call: ({ plugin, tool: name }, elicitation) =>
         plugin === input.asking && elicitation

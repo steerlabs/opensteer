@@ -876,22 +876,4 @@ describe("the person's plugin API", () => {
       owner,
     );
   });
-
-  it("tells the owner a workflow was not started because its plugin is updating", async () => {
-    const { api, service } = setup();
-    const { PluginServiceError } = await import("./engine-protocol.js");
-    service.manage.mockRejectedValueOnce(
-      new PluginServiceError(
-        "unavailable",
-        "This plugin is updating for this version of Opensteer, so the workflow was not started.",
-        "PluginUpdating",
-      ),
-    );
-    await expect(
-      run(api, { type: "plugins.workflow.start", pluginId: "p0", workflow: "w", input: {} }),
-    ).rejects.toMatchObject({
-      reason: "plugin-updating",
-      message: expect.stringContaining("updating"),
-    });
-  });
 });

@@ -40,7 +40,6 @@ import {
   PluginServiceError,
   ConsentSchema,
   type EngineAccountMetadata,
-  type EngineRebuild,
   type PluginCaller,
   type PluginConsent,
   type PluginJson,
@@ -161,12 +160,7 @@ function summary(
     activeVersion: string | null;
     requirements: { accounts: Record<string, unknown>; icons?: unknown };
   },
-  {
-    links,
-    readiness,
-    updating,
-    buildFailure,
-  }: EngineAccountMetadata & Pick<EngineRebuild, "updating" | "buildFailure">,
+  { links, readiness }: EngineAccountMetadata,
   row: Settings | undefined,
 ): PluginSummaryView {
   const required = requirements(plugin);
@@ -195,10 +189,6 @@ function summary(
           : "needs-account",
     accountReadiness,
     accounts: { required: required.length, linked: linked.length },
-    ...(updating === undefined ? {} : { updating: { reason: updating.reason.slice(0, 2_000) } }),
-    ...(buildFailure === undefined || plugin.activeVersion !== null
-      ? {}
-      : { buildFailure: buildFailure.message.slice(0, 4_000) }),
   };
 }
 
@@ -265,13 +255,9 @@ function hostError(error: unknown): never {
             ? "plugin-webhooks-active"
             : error.tag === "AppWorkflowsActive"
               ? "plugin-workflows-active"
-              : error.tag === "PluginUpdating"
-                ? "plugin-updating"
-                : error.tag === "PluginStale"
-                  ? "plugin-stale"
-                  : error.code === "unavailable"
-                    ? "plugin-engine-unavailable"
-                    : `plugin-${error.code}`,
+              : error.code === "unavailable"
+                ? "plugin-engine-unavailable"
+                : `plugin-${error.code}`,
     });
   }
   throw error;

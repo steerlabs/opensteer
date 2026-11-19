@@ -28,13 +28,8 @@ import type {
   ToolSearchPage,
   ToolSearchUnavailable,
 } from "./tools.ts";
-import type { AccountScope, App, AppNotFound, AppRequirements } from "./apps.ts";
-import type {
-  BuildMemoryExceeded,
-  BuildUnanswered,
-  VersionBuildFailed,
-  VersionPending,
-} from "./version.ts";
+import type { AccountScope, App, AppRequirements } from "./apps.ts";
+import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
 import type { Account } from "./account.ts";
 import type {
   AccountConnectionRefused,
@@ -206,19 +201,8 @@ export interface ResourceLifecycle {
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
   /**
-   * Runs in the transaction that saves a deploy's version as the app's pending one, before its
-   * database is migrated: the product saves what it records with the version when it activates,
-   * since the request may be gone by then, keyed by the version so that it goes when a version
-   * whose migration did not commit is deleted. `rebuildOf` is the version whose source this is.
-   */
-  readonly versionPrepared?: (
-    app: AppId,
-    version: VersionId,
-    rebuildOf: VersionId | null,
-  ) => Effect.Effect<void, StorageError>;
-  /**
-   * Runs in the transaction that makes a version active, whether its deploy completes it or the
-   * host completes it later (`complete`).
+   * Runs in the transaction that makes a version active: a deploy's, to a new or an existing app,
+   * and an activation's of a stored version.
    */
   readonly appDeployed?: (
     app: App,
@@ -352,28 +336,6 @@ export interface PluginEngineInputs {
 }
 
 /** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */
-/**
- * A host's part in a deploy, which a deploy's HTTP caller never has.
- *
- * `rebuildOf` names the version whose stored source the deploy builds again. The build installs
- * exactly the packages that version's build installed (`DependencyGraph`); when that version
- * recorded them, the new version is its rebuild (`rebuiltFrom`), and work saved for it (an
- * approval, a queued workflow run, a schedule's approval) continues on the new one. A version
- * that recorded no packages is built again all the same, as a new version saved work does not
- * follow.
- *
- * `commit` runs the deploy's commit, which follows its build: preparing the version, migrating
- * the app's database and activating it. The host wraps it to hold the app alone for that short
- * time, and not for the build.
- */
-export interface DeployOptions {
-  readonly rebuildOf?: VersionId;
-  readonly commit?: <A, E, R>(
-    app: AppId,
-    work: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | import("./version.ts").AppBusy, R>;
-}
-
 export type PluginEngineOptions = PluginEngineInputs &
   (
     | { readonly secret: Redacted.Redacted<string>; readonly credentials?: undefined }
@@ -512,58 +474,6 @@ export type PluginEngine = Omit<
       },
     ) => ReturnType<FlatPluginEngine["apps"]["copy"]>;
     /**
-     * Host-only: `deploy` with the host's part in it (see `DeployOptions`): the version its source
-     * is a rebuild of, and the wrapper of its commit.
-     */
-    readonly deployWith: (
-      input: Parameters<FlatPluginEngine["apps"]["deploy"]>[0],
-      options: DeployOptions,
-    ) => ReturnType<FlatPluginEngine["apps"]["deploy"]>;
-    /**
-     * Host-only: the owner's apps with a pending version, one a deploy saved and may have
-     * migrated the app's database for without activating it. None of their builds may run until
-     * it is completed (`complete`).
-     */
-    readonly pending: (input: {
-      readonly owner: OwnerId;
-    }) => Effect.Effect<
-      ReadonlyArray<{ readonly app: AppId; readonly version: VersionId }>,
-      StorageError
-    >;
-    /**
-     * Host-only: complete the change to a pending version as its deploy does: migrate the app's
-     * database, which repeats nothing already applied, then activate the version. A migration
-     * that did not commit deletes the version (`VersionBuildFailed`); one whose outcome is unknown,
-     * or an activation that failed, leaves it pending (`VersionPending`). `commit` wraps the
-     * migration and activation as a deploy's does (see `DeployOptions`); what follows activation,
-     * such as reconciling the app's schedules, runs after it.
-     */
-    readonly complete: (
-      input: {
-        readonly owner: OwnerId;
-        readonly app: AppId;
-        readonly version: VersionId;
-      },
-      options?: Pick<DeployOptions, "commit">,
-    ) => Effect.Effect<
-      { readonly app: App; readonly version: import("./version.ts").VersionMetadata },
-      | StorageError
-      | VersionBuildFailed
-      | VersionPending
-      | AppNotFound
-      | import("./version.ts").AppBusy
-    >;
-    /**
-     * Host-only: leave the app with no active version, as one whose build failed has, keeping its
-     * versions, accounts and data, only while `expectedVersion` is still the active one. Reports
-     * whether it did. A person or agent activates or deploys a version again.
-     */
-    readonly deactivate: (input: {
-      readonly owner: OwnerId;
-      readonly app: AppId;
-      readonly expectedVersion: VersionId;
-    }) => Effect.Effect<boolean, StorageError | AppNotFound>;
-    /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
      * cached. For checks that must not create anything. Fails
@@ -624,9 +534,6 @@ export type PromisePluginEngine = Promisify<
     | "apps"
   > & {
     readonly tools: Omit<PluginEngine["tools"], "approval" | "searchable" | "search">;
-    readonly apps: Omit<
-      PluginEngine["apps"],
-      "copyAs" | "build" | "deactivate" | "deployWith" | "pending" | "complete"
-    >;
+    readonly apps: Omit<PluginEngine["apps"], "copyAs" | "build">;
   }
 >;

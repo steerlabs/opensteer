@@ -284,18 +284,6 @@ export const createPluginEngine = (
                 app.activeVersion === version.id ? activated(app.id) : Effect.void,
               ),
             ),
-        deployWith: (input, options) =>
-          apps
-            .deployWith(input, options)
-            .pipe(
-              Effect.tap(({ app, version }) =>
-                app.activeVersion === version.id ? activated(app.id) : Effect.void,
-              ),
-            ),
-        complete: (
-          input: Parameters<PluginEngine["apps"]["complete"]>[0],
-          options?: Parameters<PluginEngine["apps"]["complete"]>[1],
-        ) => apps.complete(input, options).pipe(Effect.tap(({ app }) => activated(app.id))),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },

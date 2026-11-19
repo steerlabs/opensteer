@@ -28,8 +28,11 @@ list and use the last source revision as the expected revision for an edit.
 A copy has independent Git history, app data, and account selections.
 
 Activation selects a retained build without rebuilding it. It preserves app data
-and does not undo writes to external services. Check account requirements after
-changing versions. Start a new codemode execution to discover changed tools.
+and does not undo writes to external services; a version whose migrations are not
+the ones the app's database has applied is refused. Only the active version runs:
+an approval, queued workflow run or schedule occurrence saved on another version
+ends `stale` and is started again. Check account requirements after changing
+versions. Start a new codemode execution to discover changed tools.
 
 ### Carry source as data
 
@@ -56,7 +59,7 @@ Every app declares `apps` in `package.json` `dependencies`:
 version this host runs; a deploy without
 it fails and names the same version. Every build links the host's own `apps`
 framework, whatever version the declaration names; it is never downloaded. Apps the host generates, such as imported MCP apps, already declare it. Keep it when
-editing. The host retains the compiled framework with each app version and rebuilds installed apps against a new framework when it upgrades. Missing
+editing. The host retains the compiled framework with each app version and runs the version with it for as long as the host supports its protocol. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the PluginEngine SDK in
 app code. Native dependencies that need scripts are unsupported.

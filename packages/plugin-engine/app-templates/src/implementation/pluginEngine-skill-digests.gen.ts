@@ -2,7 +2,7 @@
 export const pluginEngineSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/SKILL.md": "4d7c3330bcc76b395f7400f48a55fb56af7492b5d970f7aaff3e95bcd8d22e4e",
   "app-authoring/accounts.md": "3b9187c26858a9acc253083185875d56a163375c67d02bf16ecdc6f68f666c8d",
-  "app-authoring/deploy.md": "635f30b328324b056234e89c68231b43c890383a056bae0f4ca9ba243e9ca00f",
+  "app-authoring/deploy.md": "9ab67fcf57968fb8c48b9039f8eff0d8a927a0ae85fbd12283db6561622e5bff",
   "app-authoring/events.md": "dce0ac0fc87a05b41f25f0b868be1f2bc2d4545a75712329a4cf3b4a7969e8aa",
   "app-authoring/integrations.md":
     "7c1000449d476974b37d99ba93ff44d2f8d75dd0a43a833a9f01552dc020142f",

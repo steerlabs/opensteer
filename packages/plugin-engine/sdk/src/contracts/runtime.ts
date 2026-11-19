@@ -23,7 +23,6 @@ import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
 import type { BlobKey, BlobRange } from "./blobs.ts";
 import type { HostApiCheck } from "./host-api.ts";
-import type { DependencyGraph } from "./worker-build.ts";
 
 /**
  * Runtimes report that an invocation invalidated or explicitly refreshed the app's cached
@@ -407,32 +406,6 @@ export interface Runtime<Requirements = never> {
    * A revision identifies all writes before that event; unversioned hosts emit void.
    */
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
-  /**
-   * Whether this runtime runs a retained build as it is. A build linked against a framework other
-   * than this runtime's is never run: work pinned to one continues only on the host's rebuild of its
-   * version's exact source, and otherwise ends stale. Without it every build is current.
-   */
-  readonly current?: (build: BuildId) => Effect.Effect<boolean, never, Requirements>;
-  /**
-   * The host's check that a build selected for an app may run, which every method that runs the
-   * build applies too. The SDK calls it before work it does ahead of running a build, such as
-   * reading a webhook delivery's saved state, so a refused build costs nothing. Without it every
-   * build may run.
-   */
-  readonly admit?: (input: {
-    readonly app: string;
-    readonly build: BuildId;
-  }) => Effect.Effect<void, RuntimeBuildUnavailable, Requirements>;
-  /**
-   * Run `work`, which runs no build itself, as one execution of the app: the host holds the app
-   * for it and admits the build while it does (see `admit`), so no version change of the app
-   * completes meanwhile. The SDK runs the state change a build's execution starts with this way,
-   * such as a queued workflow run starting. Without it `work` runs as it is.
-   */
-  readonly admitted?: <A, E, R>(
-    input: { readonly app: string; readonly build: BuildId },
-    work: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | RuntimeBuildUnavailable, R | Requirements>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
   /**
    * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public
@@ -447,11 +420,6 @@ export interface Runtime<Requirements = never> {
     readonly files: CodeFiles;
     readonly public?: ReadonlyArray<string>;
     readonly retain?: boolean;
-    /**
-     * The packages to install, exactly these versions with these digests, for a rebuild of a
-     * version's source. A build that installs others fails. The build records what it installed.
-     */
-    readonly dependencies?: DependencyGraph;
   }) => Effect.Effect<
     BuiltApp,
     | RuntimeBuildFailed
@@ -591,7 +559,5 @@ export interface Runtime<Requirements = never> {
   readonly migrate: (input: {
     readonly app: string;
     readonly build: BuildId;
-    /** The active version's migrations, by which an applied one renamed since keeps its history. */
-    readonly originals?: ReadonlyArray<{ readonly path: string; readonly content: string }>;
   }) => Effect.Effect<MigrateResult, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
 }

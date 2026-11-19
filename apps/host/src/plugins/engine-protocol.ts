@@ -142,16 +142,6 @@ export const EngineAccountMetadataSchema = z.object({
   ),
 });
 export type EngineAccountMetadata = z.infer<typeof EngineAccountMetadataSchema>;
-/**
- * A plugin's rebuild for this Host's framework, as its owner sees it: `updating` while it is not
- * served until the rebuild finishes, and `buildFailure` when its source did not build and left it
- * with no active version.
- */
-export const EngineRebuildSchema = z.strictObject({
-  updating: z.strictObject({ reason: z.string().min(1).max(2_000) }).optional(),
-  buildFailure: z.strictObject({ version: id, message: z.string().max(4_000) }).optional(),
-});
-export type EngineRebuild = z.infer<typeof EngineRebuildSchema>;
 export const VersionSchema = z.object({ id }).catchall(JsonSchema);
 const toolIndex = z
   .object({
@@ -271,7 +261,6 @@ export const operations = {
       z.strictObject({
         plugin: PluginSchema,
         ...EngineAccountMetadataSchema.shape,
-        ...EngineRebuildSchema.shape,
         versions: z.array(VersionSchema).optional(),
         versionCount: z.number().int().optional(),
       }),
@@ -288,7 +277,6 @@ export const operations = {
       tools: toolIndex.nullable(),
       skills: EngineSkillCatalogSchema.nullable(),
       ...EngineAccountMetadataSchema.shape,
-      ...EngineRebuildSchema.shape,
       versions: z.array(VersionSchema),
       schedules: z.array(EngineScheduleSchema),
       webhooks: z.array(EngineWebhookSchema),
@@ -640,15 +628,6 @@ export const callbackOperations = {
     output: HostToolResultSchema,
   },
   webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },
-  /**
-   * A version became a plugin's active one, whoever activated it, and the change has committed,
-   * its author with it. The Host makes its skill record follow the plugin's active version; that
-   * is idempotent, so one that fails is repaired by the next.
-   */
-  versionPublished: {
-    input: z.strictObject({ plugin: id }),
-    output: z.strictObject({}),
-  },
 } as const;
 export type PluginCallback = keyof typeof callbackOperations;
 export const EngineErrorSchema = z.strictObject({
@@ -729,8 +708,6 @@ const engineMessage = z.union([
     categories: z.array(PluginResourceCategorySchema).min(1).max(5),
   }),
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
-  /** Whether the engine is rebuilding installed plugins for the Host's framework. */
-  z.strictObject({ type: z.literal("rebuilding"), running: z.boolean() }),
   z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
   z.strictObject({
     type: z.literal("result"),

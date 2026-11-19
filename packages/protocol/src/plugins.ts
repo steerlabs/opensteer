@@ -98,14 +98,6 @@ export const PluginSummaryViewSchema = z.object({
     required: z.number().int().nonnegative(),
     linked: z.number().int().nonnegative(),
   }),
-  /**
-   * Being rebuilt for this version of Opensteer, as after an upgrade: nothing of it runs until
-   * then, and agents' calls are refused unsent. `reason` says why it still waits. Read it before
-   * `status`, which a Host from before it reported as for any plugin.
-   */
-  updating: z.object({ reason: text(2_000) }).optional(),
-  /** With `not-built`: why the build that left it without a working version failed. */
-  buildFailure: text(4_000).optional(),
 });
 export type PluginSummaryView = z.infer<typeof PluginSummaryViewSchema>;
 

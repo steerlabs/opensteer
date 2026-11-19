@@ -158,8 +158,6 @@ export class PluginService {
   #streams = 0;
   #activity = 0;
   #lastActivity = Date.now();
-  /** The engine is rebuilding installed plugins; it is not idle until it finishes. */
-  #rebuilding = false;
   readonly #idleMs: number;
   constructor(options: PluginServiceOptions) {
     this.#options = options;
@@ -197,10 +195,6 @@ export class PluginService {
   }
   webhookOrigin(): Promise<string | undefined> {
     return this.#options.webhookOrigin?.() ?? Promise.resolve(undefined);
-  }
-  /** Whether the running engine is rebuilding installed plugins for the Host's framework. */
-  rebuilding(): boolean {
-    return this.#rebuilding;
   }
   state(): PluginServiceState {
     return { ...this.#state };
@@ -284,7 +278,6 @@ export class PluginService {
           ).unref();
   }
   #quiet() {
-    if (this.#rebuilding) return false;
     if (this.#pending.size > 0 || this.#callbacks.size > 0 || this.#streams > 0) return false;
     for (const execution of this.#executions.values())
       if (liveExecution.has(execution.state)) return false;
@@ -378,8 +371,6 @@ export class PluginService {
     });
     this.#child = child;
     let ready = false;
-    // Why the engine could not start, as it said.
-    let fatal: PluginServiceError | undefined;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => {
@@ -396,8 +387,6 @@ export class PluginService {
       const message = parsed.data;
       if (message.type === "resourcesChanged") {
         this.#options.onResourcesChanged?.(message.categories);
-      } else if (message.type === "rebuilding") {
-        this.#rebuilding = message.running;
       } else if (message.type === "diagnostic") {
         this.#options.onDiagnostic?.(message.phase);
       } else if (message.type === "ready") {
@@ -406,15 +395,12 @@ export class PluginService {
         this.#touch();
         this.#set({ status: "ready", generation, pid: message.pid, startupMs: message.startupMs });
         resolveReady();
-        // What a previous engine promoted and never refreshed, it refreshes now.
+        // A refresh that failed before is repaired now.
         void this.reconcileSkills().catch(() => {});
       } else if (message.type === "fatal") {
-        fatal = new PluginServiceError(
-          message.error.code,
-          message.error.message,
-          message.error.tag,
+        rejectReady(
+          new PluginServiceError(message.error.code, message.error.message, message.error.tag),
         );
-        rejectReady(fatal);
       } else if (message.type === "streamChunk") {
         this.#pulls.get(message.id)?.resolve(message);
         this.#pulls.delete(message.id);
@@ -449,7 +435,6 @@ export class PluginService {
       );
       rejectReady(error);
       this.#child = undefined;
-      this.#rebuilding = false;
       for (const pending of this.#pending.values()) {
         pending.cleanup();
         pending.reject(error);
@@ -486,14 +471,14 @@ export class PluginService {
         this.#set({
           status: "unavailable",
           generation,
-          reason: fatal?.message ?? "Plugin engine repeatedly stopped",
+          reason: "Plugin engine repeatedly stopped",
         });
         return;
       }
       this.#set({
         status: "restarting",
         generation,
-        reason: ready ? error.message : (fatal?.message ?? "Plugin engine could not start"),
+        reason: ready ? error.message : "Plugin engine could not start",
       });
       this.#restart = setTimeout(
         () => {
@@ -608,11 +593,7 @@ export class PluginService {
             };
       } else if (message.operation === "webhookOrigin")
         result = (await this.webhookOrigin()) ?? null;
-      else if (message.operation === "versionPublished") {
-        const published = callbackOperations.versionPublished.input.parse(message.input);
-        await this.reconcileSkills([published.plugin], controller.signal);
-        result = {};
-      } else if (message.operation === "providers")
+      else if (message.operation === "providers")
         result =
           (await this.#options.providers?.(
             callbackOperations.providers.input.parse(message.input),

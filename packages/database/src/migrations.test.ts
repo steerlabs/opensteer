@@ -45,7 +45,6 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0035_drop_stored_definition_api_key",
     "0036_one_plugin_per_owner_name",
     "0037_plugin_package_format",
-    "0038_plugin_rebuild_failures_contract",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

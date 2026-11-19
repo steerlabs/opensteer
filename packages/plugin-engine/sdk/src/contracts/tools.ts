@@ -2137,9 +2137,8 @@ export const ToolResumeResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
   /**
    * PluginEngine did not resume the saved call: the request expired, PluginEngine read the app,
-   * version or accounts and they differ from the reviewed call, or (`stale`) the call was saved
-   * for a build the runtime no longer runs and the app's active version is not the host's rebuild
-   * of that version's exact source. A stale call is approved again as a new request.
+   * version or accounts and they differ from the reviewed call, or (`stale`) the version it was
+   * reviewed on is no longer the app's active one. A stale call is approved again as a new request.
    */
   Schema.Struct({
     status: Schema.Literal("failed"),

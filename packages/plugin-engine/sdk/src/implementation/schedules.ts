@@ -14,7 +14,6 @@ import {
   RequestInvalid,
   type AccountId,
   type AppId,
-  type VersionId,
   type OwnerId,
 } from "../contracts/shared.ts";
 import { OAuthReconnectRequired } from "../contracts/oauth.ts";
@@ -193,16 +192,9 @@ export const makeSchedules = (
         (item) => item.name === input.name && (item.scope === "app") === (input.actor === null),
       );
       if (found === undefined) return yield* new ScheduleNotFound();
-      // The version whose declaration this is: an occurrence calls that version, never another
-      // activated since it read the declaration.
+      // The version whose declaration this is: an occurrence calls that version only.
       return { ...found, version: declared.version };
     });
-  /** Whether `version` is still the app's active version, the only one that runs anything. */
-  const stillActive = (app: AppId, version: VersionId) =>
-    storedApp(db, { app }).pipe(
-      Effect.map((stored) => stored.activeVersion === version),
-      Effect.catchTag("AppNotFound", () => Effect.succeed(false)),
-    );
   /** The actor's copy of a user declaration, or without an actor the app schedule, or null. */
   const findOwn = (input: {
     readonly app: AppId;
@@ -741,7 +733,7 @@ export const makeSchedules = (
       );
       return dates.length === 0 ? null : new Date(Math.min(...dates.map((date) => date.getTime())));
     }),
-    tick: ({ runner, authorize, execute, maxCandidates, held = [] }) =>
+    tick: ({ runner, authorize, execute, maxCandidates }) =>
       Effect.gen(function* () {
         const time = yield* now;
         const waiting = yield* query(() =>
@@ -749,12 +741,9 @@ export const makeSchedules = (
             limit: maxCandidates,
             orderBy: ["startedAt", "asc"],
             where: (b) =>
-              b.and(
-                b.or(
-                  b("status", "=", "ready"),
-                  b.and(b("status", "=", "awaiting-approval"), b("expiresAt", "<=", time)),
-                ),
-                held.length === 0 ? true : b("app", "not in", [...held]),
+              b.or(
+                b("status", "=", "ready"),
+                b.and(b("status", "=", "awaiting-approval"), b("expiresAt", "<=", time)),
               ),
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(StoredScheduledRun), rows)));
@@ -834,12 +823,7 @@ export const makeSchedules = (
           db.findMany("schedules", {
             limit: maxCandidates,
             where: (b) =>
-              b.and(
-                b("enabled", "=", true),
-                b("activeRun", "is", null),
-                b("nextAt", "<=", time),
-                held.length === 0 ? true : b("app", "not in", [...held]),
-              ),
+              b.and(b("enabled", "=", true), b("activeRun", "is", null), b("nextAt", "<=", time)),
             orderBy: ["nextAt", "asc"],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(ScheduleSettings), rows)));
@@ -990,9 +974,12 @@ export const makeSchedules = (
                       set: { nextAt, timing: declared.timing },
                     }),
                   );
-                  // Only the active version runs anything: an occurrence whose declaration came
-                  // from a version activated away since ends stale, unrun.
-                  if (!(yield* stillActive(setting.app, declared.version)))
+                  // Only the app's active version runs anything: an occurrence whose declaration
+                  // came from a version activated away since ends stale, unrun.
+                  const active = yield* storedApp(db, { app: setting.app }).pipe(
+                    Effect.map((app) => app.activeVersion),
+                  );
+                  if (active !== declared.version)
                     return yield* finish(claim, "failed", "stale", "other");
                   const response = yield* tools.call({
                     app: setting.app,

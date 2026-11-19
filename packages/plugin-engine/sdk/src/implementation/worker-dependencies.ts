@@ -7,7 +7,6 @@ import type { Plugin } from "esbuild";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import tailwind from "tailwindcss/package.json" with { type: "json" };
 import { withoutUrlSecrets } from "@opensteer/plugin-engine-utils/url-policy";
-import type { DependencyGraph } from "../contracts/worker-build.ts";
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -21,60 +20,16 @@ const registryOrPinned = (version: string) =>
         version,
       );
 
-/** Each installed package's directory under `node_modules/`, by name, scoped names included. */
-const installedPackages = (filesystem: InMemoryFileSystem) => {
-  const names = new Set<string>();
-  for (const path of filesystem.list("node_modules/")) {
-    const parts = path.slice("node_modules/".length).split("/");
-    const name = parts[0]?.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-    if (name !== undefined && filesystem.read(`node_modules/${name}/package.json`) !== null)
-      names.add(name);
-  }
-  return [...names].sort();
-};
-
-/** The SHA-256 of a package's installed files, by path, as the build keeps them. */
-const dependencyDigest = async (filesystem: InMemoryFileSystem, name: string) => {
-  const prefix = `node_modules/${name}/`;
-  const paths = filesystem
-    .list(prefix)
-    .filter((path) => !path.slice(prefix.length).startsWith("node_modules/"))
-    .sort();
-  const parts: Uint8Array[] = [];
-  const encoder = new TextEncoder();
-  for (const path of paths) {
-    const body = filesystem.readBinary(path) ?? encoder.encode(filesystem.read(path) ?? "");
-    parts.push(encoder.encode(`${path.slice(prefix.length)}\0${body.byteLength}\0`), body);
-  }
-  const all = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
-  let offset = 0;
-  for (const part of parts) {
-    all.set(part, offset);
-    offset += part.byteLength;
-  }
-  const digest = await crypto.subtle.digest("SHA-256", all);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
-/** Packages the Host supplies itself, which are never part of a build's recorded graph. */
-const hostPackages = new Set(["apps", "tailwindcss"]);
-
 /**
  * The framework is the Host's own (see `WorkerHost`); direct npm imports retain their authored
- * declarations and dependency graphs. A rebuild passes the graph its version installed
- * (`pinned`): every package of it is installed at its version, with nothing resolved again, and
- * must have the digest it had. `registry` replaces the public npm registry when the host
+ * declarations and dependency graphs. `registry` replaces the public npm registry when the host
  * configures one.
  * The installer's errors quote the URLs it fetched, which start with that registry. An operator's
  * registry URL can carry credentials or a token, and the deployer reading a failed build is not
  * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
  * registry takes as a path segment is kept and reaches the deployer: it cannot be told from a path.
  */
-export const workerDependencies = (
-  filesystem: InMemoryFileSystem,
-  host: WorkerHost,
-  pinned?: DependencyGraph,
-) =>
+export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
     const { registry, publicFetch } = host;
     const manifest = filesystem.read("package.json");
@@ -96,9 +51,6 @@ export const workerDependencies = (
           ),
         });
     const installLock = yield* Semaphore.make(1);
-    // An install fails inside the compiler's resolver, which reports it as its own diagnostic; the
-    // first one is kept so the build fails with it, typed, rather than as a compile error.
-    let failed: RuntimeBuildFailed | undefined;
     const { context } = yield* captureTelemetry;
     const install = (name: string, version: string, transitive = true) =>
       installLock.withPermits(1)(
@@ -155,33 +107,6 @@ export const workerDependencies = (
           });
         }).pipe(Effect.withSpan("runtime.cloud.dependencies")),
       );
-    /**
-     * Install the pinned graph, once: each package at its recorded version alone, so nothing is
-     * resolved again, then check each against its recorded digest.
-     */
-    let graph: Promise<void> | undefined;
-    const installPinned = (packages: DependencyGraph) =>
-      Effect.gen(function* () {
-        for (const entry of packages) yield* install(entry.name, entry.version, false);
-        for (const entry of packages) {
-          const digest = yield* Effect.promise(() => dependencyDigest(filesystem, entry.name));
-          if (digest !== entry.digest)
-            return yield* new RuntimeBuildFailed({
-              stage: "dependencies",
-              message: boundBuildMessage(
-                `The registry now serves ${entry.name}@${entry.version} with other contents than this version was built with, so it is not rebuilt with other code.`,
-              ),
-            });
-        }
-      });
-    const kept = <A, R>(effect: Effect.Effect<A, RuntimeBuildFailed, R>) =>
-      effect.pipe(
-        Effect.tapError((error) =>
-          Effect.sync(() => {
-            failed ??= error;
-          }),
-        ),
-      );
     const plugin: Plugin = {
       name: "pluginEngine-imported-dependencies",
       setup(build) {
@@ -191,9 +116,7 @@ export const workerDependencies = (
             args.kind === "import-rule" &&
             (args.path === "tailwindcss" || args.path.startsWith("tailwindcss/"))
           ) {
-            await Effect.runPromiseWith(context)(
-              kept(install("tailwindcss", tailwind.version, false)),
-            );
+            await Effect.runPromiseWith(context)(install("tailwindcss", tailwind.version, false));
             return undefined;
           }
           const parts = args.path.split("/");
@@ -201,25 +124,7 @@ export const workerDependencies = (
           if (name === undefined || !Object.hasOwn(dependencies, name)) return undefined;
           const version = dependencies[name];
           if (version === undefined) return undefined;
-          if (pinned !== undefined) {
-            graph ??= Effect.runPromiseWith(context)(kept(installPinned(pinned)));
-            await graph;
-            if (filesystem.read(`node_modules/${name}/package.json`) === null)
-              await Effect.runPromiseWith(context)(
-                kept(
-                  Effect.fail(
-                    new RuntimeBuildFailed({
-                      stage: "dependencies",
-                      message: boundBuildMessage(
-                        `${name} was not installed when this version was built, so its rebuild does not install it.`,
-                      ),
-                    }),
-                  ),
-                ),
-              );
-            return undefined;
-          }
-          await Effect.runPromiseWith(context)(kept(install(name, version)));
+          await Effect.runPromiseWith(context)(install(name, version));
           // Let the existing resolver apply package exports, conditions, and asset handling.
           return undefined;
         });
@@ -227,25 +132,6 @@ export const workerDependencies = (
     };
     return {
       plugin,
-      /** The first install that failed while the compiler resolved imports, if one did. */
-      failure: () => failed,
-      /** Every package the build installed, with its version and digest. */
-      installed: Effect.promise(async (): Promise<DependencyGraph> => {
-        const graph: Array<DependencyGraph[number]> = [];
-        for (const name of installedPackages(filesystem)) {
-          if (hostPackages.has(name)) continue;
-          const manifest = JSON.parse(filesystem.read(`node_modules/${name}/package.json`)!) as {
-            version?: unknown;
-          };
-          if (typeof manifest.version !== "string" || manifest.version === "") continue;
-          graph.push({
-            name,
-            version: manifest.version,
-            digest: await dependencyDigest(filesystem, name),
-          });
-        }
-        return graph;
-      }),
       framework: Effect.sync(() => {
         if (dependencies.apps === undefined) return false;
         for (const [path, content] of Object.entries(host.apps.files))

@@ -39,7 +39,7 @@ const Creation = Context.Reference<
 >("opensteer/PluginCreation", { defaultValue: () => undefined });
 /**
  * Who wrote the source an install deploys: reviewed catalog source, or source an agent or person
- * gave. Recorded as the version's author when it becomes active (`appDeployed`).
+ * gave. Recorded as the version's author in the transaction that makes it active (`appDeployed`).
  */
 export const InstallAuthor = Context.Reference<"catalog" | "agent" | undefined>(
   "opensteer/PluginInstallAuthor",
@@ -87,71 +87,6 @@ export function engineAccounts(options: {
           sql`insert into opensteer_resource_creations (owner, key, kind, result) values (${owner}, ${creation.key}, ${kind}, ${JSON.stringify(result)}::jsonb)`,
         );
     });
-  /**
-   * What a version records when it becomes active, saved with it while it is pending, so a
-   * version whose change completes after its request has gone records the same: who wrote its
-   * source (an install's author), the install receipt it answers, and the version it rebuilds.
-   */
-  const prepareVersion = (_app: AppId, version: VersionId, rebuildOf: VersionId | null) =>
-    Effect.gen(function* () {
-      const author = yield* InstallAuthor;
-      const creation = yield* Creation;
-      const plugin = creation?.kind === "plugin" ? creation : undefined;
-      yield* sql`insert into opensteer_version_intents
-          (version, author, creation_key, creation_origin, rebuild_of)
-        values (${version}, ${rebuildOf === null ? (author ?? null) : null}, ${plugin?.key ?? null},
-          ${plugin?.origin ?? null}, ${rebuildOf})`;
-    }).pipe(storage);
-  /**
-   * The author of a version that became active, kept with the person's settings for the plugin.
-   * An install's is who wrote its source; a rebuild's, and an activated version's, is the author
-   * of the version whose source it built again. The plugin's author becomes the active version's.
-   * A plugin with no settings yet gets them only from an install.
-   */
-  const recordAuthor = (
-    app: AppId,
-    version: VersionId,
-    intent: { readonly author: string | null; readonly rebuildOf: string | null },
-  ) =>
-    Effect.gen(function* () {
-      const settingsOwner = sql`(select owner_id from public.personal_settings where singleton_key = 'personal')`;
-      if (intent.author !== null) {
-        yield* sql`insert into public.plugin_agent_settings
-            (owner_user_id, plugin_id, access, author, version_authors)
-          select ${settingsOwner}, ${app}, 'all', ${intent.author}, jsonb_build_object(${version}::text, ${intent.author}::text)
-          where ${settingsOwner} is not null
-          on conflict (owner_user_id, plugin_id) do update set author = excluded.author,
-            version_authors = plugin_agent_settings.version_authors || excluded.version_authors`;
-        return;
-      }
-      const from = intent.rebuildOf ?? version;
-      yield* sql`update public.plugin_agent_settings set
-          author = coalesce(version_authors ->> ${from}::text, author),
-          version_authors = version_authors || jsonb_build_object(${version}::text,
-            coalesce(version_authors ->> ${from}::text, author))
-        where owner_user_id = ${settingsOwner} and plugin_id = ${app}`;
-    }).pipe(storage);
-  /** A pending version's saved record, read and removed when it becomes active. */
-  const takeIntent = (version: VersionId) =>
-    sql<{
-      author: string | null;
-      creationKey: string | null;
-      creationOrigin: string | null;
-      rebuildOf: string | null;
-    }>`delete from opensteer_version_intents where version = ${version}
-      returning author, creation_key as "creationKey", creation_origin as "creationOrigin",
-        rebuild_of as "rebuildOf"`.pipe(
-      Effect.map((rows) => rows[0]),
-      storage,
-    );
-  /** Whether an install with this key saved a version that has not activated yet. */
-  const installPending = (key: string) =>
-    sql<{
-      version: string;
-    }>`select version from opensteer_version_intents where creation_key = ${key}`.pipe(
-      Effect.map((rows) => rows.length > 0),
-      storage,
-    );
   const once = <A, B, E extends Error, R>(
     key: string | undefined,
     kind: CreationKind,
@@ -162,18 +97,9 @@ export function engineAccounts(options: {
     if (!key) return work;
     return Effect.gen(function* () {
       const receipt = yield* creationReceipt(key, kind);
-      if (receipt) return yield* recover(receipt);
-      // The install already saved its version, which activates when its change completes; its
-      // receipt is written then. Installing again would make a second version.
-      if (kind === "plugin" && (yield* installPending(key)))
-        return yield* Effect.fail(
-          new PluginServiceError(
-            "unavailable",
-            "This install is saved and finishes once the plugin's database has been updated for it. Try again in a minute.",
-            "PluginUpdating",
-          ),
-        );
-      return yield* work.pipe(Effect.provideService(Creation, { key, kind, origin }));
+      return receipt
+        ? yield* recover(receipt)
+        : yield* work.pipe(Effect.provideService(Creation, { key, kind, origin }));
     }).pipe(
       Effect.catch((error) =>
         Effect.flatMap(creationReceipt(key, kind), (receipt) =>
@@ -673,27 +599,32 @@ export function engineAccounts(options: {
       ),
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
-    versionPrepared: prepareVersion,
-    // What the version saved when it was prepared, not the request that may be gone, records its
-    // install receipt and author, in the same transaction that makes it active.
+    // The saved origin, not a later request's input, labels a recovered install. The plugin's
+    // author becomes the active version's: an install's is who wrote its source, and an activated
+    // version keeps the author it was installed with.
     appDeployed: (app, version) =>
       Effect.gen(function* () {
-        const intent = yield* takeIntent(version.id);
-        if (intent?.creationKey != null)
-          yield* storage(
-            sql`insert into opensteer_resource_creations (owner, key, kind, result) values (${owner}, ${intent.creationKey}, 'plugin', ${JSON.stringify(
-              {
-                status: "installed",
-                plugin: app,
-                version,
-                ...(intent.creationOrigin === null ? {} : { origin: intent.creationOrigin }),
-              },
-            )}::jsonb) on conflict do nothing`,
-          );
-        yield* recordAuthor(app.id, version.id, {
-          author: intent?.author ?? null,
-          rebuildOf: intent?.rebuildOf ?? version.rebuiltFrom,
+        const creation = yield* Creation;
+        yield* rememberCreation("plugin", {
+          status: "installed",
+          plugin: app,
+          version,
+          origin: creation?.origin,
         });
+        const author = yield* InstallAuthor;
+        yield* storage(sql`insert into public.plugin_agent_settings
+            (owner_user_id, plugin_id, access, author, version_authors)
+          select personal.owner_id, ${app.id}, 'all', chosen.author,
+            jsonb_build_object(${version.id}::text, chosen.author)
+          from public.personal_settings personal
+          cross join lateral (select coalesce(${author ?? null}::text, (
+            select settings.version_authors ->> ${version.id}::text
+            from public.plugin_agent_settings settings
+            where settings.owner_user_id = personal.owner_id and settings.plugin_id = ${app.id}
+          ), 'agent') as author) chosen
+          where personal.singleton_key = 'personal'
+          on conflict (owner_user_id, plugin_id) do update set author = excluded.author,
+            version_authors = plugin_agent_settings.version_authors || excluded.version_authors`);
       }),
     appRemoving: () => Effect.void,
     appAccountConnected: (input) =>

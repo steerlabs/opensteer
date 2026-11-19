@@ -111,7 +111,7 @@ import {
   StoredVersion,
 } from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
-import { continuedVersion, gotApp, storedVersion } from "./apps.ts";
+import { gotApp, storedVersion } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
 import type { OwnerId } from "../contracts/shared.ts";
 import { invocationAccounts } from "./linked-accounts.ts";
@@ -648,7 +648,7 @@ function invocation(
  * Check failures that are answers: the saved call's app, version or accounts are now missing
  * or different. Anything else, such as storage failing, answers nothing.
  */
-export const isContextChange = Schema.is(
+const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
     AppNotDeployed,
@@ -1895,39 +1895,19 @@ export const makeTools = (
             approvals.resume(input, options?.issuer, (saved, originalInput) =>
               Effect.gen(function* () {
                 // The saved identities name the accounts; their credentials are resolved again.
-                const reread = (version: VersionId | undefined) =>
-                  snapshot(db, {
-                    app: saved.app,
-                    version,
-                    accounts: invocationAccounts(saved),
-                  }).pipe(
-                    Effect.withSpan("sdk.invocation.snapshot"),
-                    Effect.flatMap((state) =>
-                      invocation(state, saved.tool, saved.kind, saved.input).pipe(
-                        Effect.map((current) => ({ state, current })),
-                      ),
+                const checked = yield* snapshot(db, {
+                  app: saved.app,
+                  version: saved.version,
+                  accounts: invocationAccounts(saved),
+                }).pipe(
+                  Effect.withSpan("sdk.invocation.snapshot"),
+                  Effect.flatMap((state) =>
+                    invocation(state, saved.tool, saved.kind, saved.input).pipe(
+                      Effect.map((current) => ({ state, current })),
                     ),
-                    Effect.result,
-                  );
-                // The reviewed call runs only while the active version is the one it was reviewed
-                // on, or the host's rebuild of that version's exact source (`continuedVersion`). A
-                // call that can continue on neither is stale, and the person approves it again.
-                const continued = yield* continuedVersion(db, saved.app, saved.version).pipe(
-                  Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
+                  ),
                   Effect.result,
                 );
-                if (Result.isSuccess(continued) && continued.success === null)
-                  return {
-                    status: "failed",
-                    requestId: input.requestId,
-                    reason: "stale",
-                  } satisfies ToolResumeResult;
-                const reviewed: ToolInvocation = Result.isSuccess(continued)
-                  ? { ...saved, version: continued.success! }
-                  : saved;
-                const checked = Result.isFailure(continued)
-                  ? Result.fail(continued.failure)
-                  : yield* reread(reviewed.version);
                 // A failed read shows nothing about the context: only an answer that differs does.
                 if (Result.isFailure(checked) && !isContextChange(checked.failure)) {
                   yield* Effect.annotateCurrentSpan({
@@ -1944,7 +1924,7 @@ export const makeTools = (
                 }
                 if (
                   Result.isFailure(checked) ||
-                  !Schema.toEquivalence(ToolInvocation)(reviewed, checked.success.current)
+                  !Schema.toEquivalence(ToolInvocation)(saved, checked.success.current)
                 ) {
                   return {
                     status: "failed",
@@ -1953,10 +1933,18 @@ export const makeTools = (
                   } satisfies ToolResumeResult;
                 }
                 const { state } = checked.success;
+                // Only the app's active version runs anything: a call reviewed on another is
+                // stale, and the person approves it again.
+                if (state.app.activeVersion !== saved.version)
+                  return {
+                    status: "failed",
+                    requestId: input.requestId,
+                    reason: "stale",
+                  } satisfies ToolResumeResult;
                 return yield* Effect.gen(function* () {
                   yield* Effect.annotateCurrentSpan({
                     "pluginEngine.app.id": saved.app,
-                    "pluginEngine.deployment.id": state.version.id,
+                    "pluginEngine.deployment.id": saved.version,
                     "pluginEngine.build.id": state.version.build,
                     "pluginEngine.tool.name": saved.tool,
                     "pluginEngine.approval.id": input.requestId,
@@ -2018,7 +2006,7 @@ export const makeTools = (
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
                         toolCallFailure(
-                          { app: saved.app, version: state.version.id, tool: saved.tool },
+                          { app: saved.app, version: saved.version, tool: saved.tool },
                           state,
                           renewal,
                         )(result.failure),

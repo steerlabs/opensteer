@@ -1514,11 +1514,10 @@ test("folder build errors are data; a fixed draft deploys a version and can roll
   });
   expect(record.parse(second.version).id).not.toBe(version.id);
   await call(caller, "opensteer_plugin_activate", { pluginId: deployed.id, versionId: version.id });
-  // Its source is deployed again as a new version, which the export below reads.
-  expect([version.id, record.parse(second.version).id]).not.toContain(
+  expect(
     (await service.detail({ plugin: z.string().parse(deployed.id) }, ownerContext)).plugin
       .activeVersion,
-  );
+  ).toBe(version.id);
   await call(caller, "opensteer_plugin_export", { pluginId: deployed.id, directory: "exported" });
   expect(await readFile(join(directory, "exported", "index.ts"), "utf8")).toBe(source.content);
   expect(await readFile(join(directory, "exported", "ui", "public", "page-asset.bin"))).toEqual(

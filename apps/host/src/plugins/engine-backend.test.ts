@@ -56,7 +56,6 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
     { caller: "fixture", mode: "automatic" },
     {
       authorize: () => Effect.succeed({ allowed: true, grants: {} }),
-      updating: () => undefined,
       providers: () =>
         Effect.sync(() => {
           localProviderReads();
@@ -152,7 +151,6 @@ test("a listing kept while a plugin was Off marks its writes once the plugin is 
     {
       authorize: () => Effect.sync(() => ({ allowed: true, grants: { [app]: access } })),
       providers: () => Effect.succeed([]),
-      updating: () => undefined,
       call: () => Effect.succeed({ kind: "value", value: null }),
     },
   );

@@ -298,7 +298,7 @@ async function outputFixture(
   return { service, databaseUrl: clone.url };
 }
 
-test("a version change of one plugin holds that plugin alone, and only while it commits", async (context) => {
+test("changes of one plugin run one at a time and of two at once one wins, while calls and other plugins go on", async (context) => {
   // A call of the first plugin that runs until the test releases it.
   const reached = Promise.withResolvers<void>();
   let release = () => {};
@@ -319,8 +319,8 @@ test("a version change of one plugin holds that plugin alone, and only while it 
   });
   const calling = service.call({ calls: { path: `tools.${a!.slug}.wait`, input: {} } }, caller);
   await deadline(reached.promise, "The call never reached the fixture");
-  // Four installs into the first plugin build at once; a commit waits for the call that runs on
-  // the version it replaces.
+  // Four installs into the first plugin build at once, each expecting the version active when it
+  // started. A running call holds none of them.
   const installs = [2, 3, 4, 5].map((revision) =>
     service
       .install({ kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(revision) }, caller)
@@ -329,20 +329,12 @@ test("a version change of one plugin holds that plugin alone, and only while it 
         (error: unknown) => ({ ok: false as const, error }),
       ),
   );
-  // The other plugin's changes go on meanwhile, and the first plugin is still the version the
-  // call runs on.
+  // The other plugin's changes go on meanwhile.
   await deadline(
     service.activate({ plugin: b!.plugin, version: b!.version }, caller),
     "Another plugin's activation waited",
   );
   await deadline(service.remove({ plugin: b!.plugin }, caller), "Another plugin's removal waited");
-  expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
-    plugin: { activeVersion: a!.version },
-  });
-  release();
-  expect((await deadline(calling, "The call never finished")).result).toMatchObject({
-    execution: { value: { ok: true, value: "released" } },
-  });
   // One install commits; the others expected the version it replaced and change nothing.
   const results = await deadline(Promise.all(installs), "The installs never finished");
   const committed = results.flatMap((outcome) =>
@@ -353,6 +345,15 @@ test("a version change of one plugin holds that plugin alone, and only while it 
     expect(outcome).toMatchObject({ error: { tag: "AppVersionChanged" } });
   expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
     plugin: { activeVersion: committed[0] },
+  });
+  const versions = await service.detail({ plugin: a!.plugin }, caller);
+  expect(versions.versions.map((version) => version.id).sort()).toEqual(
+    [a!.version, committed[0]!].sort(),
+  );
+  // The call that ran through all of it finishes as it began.
+  release();
+  expect((await deadline(calling, "The call never finished")).result).toMatchObject({
+    execution: { value: { ok: true, value: "released" } },
   });
 });
 

@@ -30,8 +30,6 @@ import { PublicationReference, RegistryError } from "./registry.ts";
 import { MarkdownUnavailable } from "./markdown.ts";
 import {
   AppVersionChanged,
-  AppBusy,
-  VersionPending,
   Version,
   VersionMetadata,
   VersionBuildFailed,
@@ -245,7 +243,6 @@ export const DeployAppInput = Schema.Union([
     files: SourceFiles,
     commit: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
-    expectedVersion: Schema.optional(Schema.NullOr(VersionId)),
   }),
   Schema.Struct({
     owner: OwnerId,
@@ -253,7 +250,6 @@ export const DeployAppInput = Schema.Union([
     commit: SourceCommit,
     files: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
-    expectedVersion: Schema.optional(Schema.NullOr(VersionId)),
   }),
 ]);
 
@@ -628,8 +624,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         VersionNotFound,
         AppNotDeployed,
         VersionBuildFailed,
-        VersionPending,
-        AppBusy,
         BuildMemoryExceeded,
         MarkdownUnavailable,
         AccountNotFound,
@@ -651,14 +645,12 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppSlugTaken,
         AppNotFound,
         AppVersionChanged,
-        VersionPending,
-        AppBusy,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the version active when it started, or expectedVersion: one that finds another version activated meanwhile fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the version active when it started: one that finds another version activated meanwhile fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(
@@ -722,25 +714,18 @@ export const AppsGroup = HttpApiGroup.make("apps")
       success: App,
       // Same code lineage only. Managed webhooks re-register for the new version.
       error: [
-        ...sourceErrors,
         StorageError,
         AppNotFound,
         VersionNotFound,
         AppNotDeployed,
         AppVersionChanged,
-        VersionPending,
-        AppBusy,
         VersionBuildFailed,
-        BuildMemoryExceeded,
-        MarkdownUnavailable,
-        AppNameTaken,
-        AppSlugTaken,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Activate a retained version in the same code lineage by deploying its source again as a new version, built with the packages that version installed. Its migrations must match the ones the app's database has applied, so a version the database has moved past is refused. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
+      "Activate a retained version in the same code lineage. Its migrations must be the ones the app's database has applied, so a version the database has moved past is refused with VersionBuildFailed and nothing changes. Activating the active version changes nothing. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
     ),
   )
   .add(

@@ -22,12 +22,6 @@ export const VersionMetadata = Schema.Struct({
   sourceCommit: Schema.NullOr(SourceCommit),
   build: BuildId,
   createdAt: Schema.Date,
-  /**
-   * The version whose exact source this one is the host's own rebuild of, built again for a newer
-   * framework; null for one built from source as it was deployed. Work saved for a version
-   * continues on its rebuilds, and on no other version.
-   */
-  rebuiltFrom: Schema.NullOr(VersionId),
 });
 /** A retained build reference without loading its source files. */
 export type VersionMetadata = typeof VersionMetadata.Type;
@@ -82,33 +76,6 @@ export const AppVersionChanged = ApiError.define({
 export type AppVersionChanged = typeof AppVersionChanged.Type;
 
 /**
- * A version was saved as the app's pending one and the app's database may have been migrated for
- * it, but it is not active yet: the migration's outcome is unknown, or activating it failed. The
- * version activates when the change is completed again (`complete`); until then nothing of the
- * app runs. This is not a failure of the deploy.
- */
-export const VersionPending = ApiError.define({
-  tag: "VersionPending",
-  status: 503,
-  fields: { app: AppId, version: VersionId },
-  message:
-    "The new version is saved and activates once the app's database has been migrated for it; the app is updating until then.",
-});
-export type VersionPending = typeof VersionPending.Type;
-
-/**
- * The app's running work did not finish in the time a version change waits for it, so the change
- * did nothing. It may be tried again.
- */
-export const AppBusy = ApiError.define({
-  tag: "AppBusy",
-  status: 409,
-  fields: { app: AppId },
-  message: "The app is busy running work, so its version did not change. Try again shortly.",
-});
-export type AppBusy = typeof AppBusy.Type;
-
-/**
  * A source location. Nested, because runtimes such as Bun set their own `line` and `column`
  * properties on every Error instance. `line` and `column` are both 1-based, and `column` counts
  * UTF-16 code units, as editors and stack traces print them. esbuild reports 0-based columns in
@@ -146,11 +113,6 @@ export class VersionBuildFailed extends Schema.TaggedError<VersionBuildFailed>()
     location: Schema.optional(SourceLocation),
     /** The stage, location and underlying failure, such as the compiler's own errors. */
     message: Schema.String,
-    /**
-     * The failure says nothing about the source: a package registry, the compiler, the build
-     * store or the app's data facet did not answer, so building the same source again may succeed.
-     */
-    retryable: Schema.optional(Schema.Literal(true)),
   },
   {
     httpApiStatus: 422,

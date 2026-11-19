@@ -217,23 +217,6 @@ export const toEffectRuntime = (
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => observe(store(effect));
   return {
     ...(runtime.changes === undefined ? {} : { changes: runtime.changes }),
-    ...(runtime.current === undefined
-      ? {}
-      : { current: (build: BuildId) => runtime.current!(build).pipe(provide) }),
-    ...(runtime.admit === undefined
-      ? {}
-      : {
-          admit: (input: { readonly app: string; readonly build: BuildId }) =>
-            runtime.admit!(input).pipe(provide),
-        }),
-    ...(runtime.admitted === undefined
-      ? {}
-      : {
-          admitted: <A, E, R>(
-            input: { readonly app: string; readonly build: BuildId },
-            work: Effect.Effect<A, E, R>,
-          ) => runtime.admitted!(input, work).pipe(provide),
-        }),
     build: (input) => runtime.build(input).pipe(provide),
     ...(asset === undefined
       ? {}

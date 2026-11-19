@@ -18,7 +18,6 @@ vi.mock("./engine-storage.js", () => ({
 it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
   const plugin = "app_252169e9-de1b-4743-a005-50b6ed1b1fa0";
   active.set(plugin, "v2");
-  const answered: unknown[] = [];
   let reads = 0;
   const child = Object.assign(new EventEmitter(), {
     connected: true,
@@ -28,8 +27,6 @@ it("makes the skill record follow the active version, and repairs a refresh that
       const message = HostMessageSchema.parse(raw);
       if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
       if (message.type === "stop") child.emit("exit");
-      if (message.type === "callbackResult" || message.type === "callbackError")
-        answered.push(message);
       if (message.type !== "request") return;
       if (message.operation === "health")
         child.emit("message", {
@@ -63,34 +60,22 @@ it("makes the skill record follow the active version, and repairs a refresh that
     credentialKey: new Uint8Array(32),
     origin: "https://fixture.invalid",
   });
-  const published = (id: string) => {
-    child.emit("message", {
-      type: "callback",
-      id,
-      operation: "versionPublished",
-      input: { plugin },
-    });
-    return vi.waitFor(() => expect(answered).toContainEqual(expect.objectContaining({ id })), {
-      timeout: 4_000,
-    });
-  };
+  // What a change of the plugin's active version runs once it has committed.
+  const changed = () => service.reconcileSkills([plugin]);
   try {
     // The engine's start reconciles every plugin; this refresh fails and leaves no record.
     await service.health({}, { caller: "owner", mode: "automatic" });
     await vi.waitFor(() => expect(reads).toBe(1), { timeout: 4_000 });
     expect(await service.skillCache.get(plugin)).toBeUndefined();
-    // The next promotion repairs it, and is answered once the record follows it.
-    await published("first");
-    expect(answered).toContainEqual(
-      expect.objectContaining({ type: "callbackResult", id: "first" }),
-    );
+    // The next change repairs it.
+    await changed();
     expect(await service.skillCache.get(plugin)).toMatchObject({ version: "v2", hasPage: true });
     // A record that already follows the active version is not read again.
-    await published("again");
+    await changed();
     expect(reads).toBe(2);
     // A plugin with no active version has no record.
     active.delete(plugin);
-    await published("removed");
+    await changed();
     expect(await service.skillCache.get(plugin)).toBeUndefined();
   } finally {
     await service.close();

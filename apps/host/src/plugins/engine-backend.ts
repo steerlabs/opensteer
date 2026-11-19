@@ -24,8 +24,7 @@ import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-erro
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend, type McpTool } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
-import { pluginAccessBlocked, pluginUpdatingBlocked, refusalBlocked } from "./target-blocked.js";
-import { answeringRefusal } from "./engine-authority.js";
+import { pluginAccessBlocked } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
@@ -76,8 +75,6 @@ export interface EngineHostCallbacks {
     execution?: string;
   }): Effect.Effect<PluginAuthorizationResult, Error>;
   providers(): Effect.Effect<PluginHostProvider[], Error>;
-  /** Why a plugin is not served until it is rebuilt for this Host's framework, if it is not. */
-  updating(app: string): string | undefined;
   call(
     input: {
       execution: string;
@@ -242,9 +239,8 @@ export function compositeBackend(
         ];
         return listing.map((app) => {
           namespaces.set(app.id, app.slug);
-          // A rebuild first, then the person's setting, then what keeps a local provider.
+          // The person's setting first, then what keeps a local provider.
           const blocked =
-            pluginUpdatingBlocked(app.name, host.updating(app.id)) ??
             pluginAccessBlocked(grants?.[app.id], false) ??
             providers.find((entry) => entry.id === app.id)?.blocked;
           if (blocked) appBlockers.set(app.id, blocked);
@@ -401,16 +397,9 @@ export function compositeBackend(
               return { status: "completed", value: direct ? result : result.value };
           }
         }
-        // A call whose selected build may not run is answered, unsent, with why.
-        return yield* answeringRefusal(
-          engine.tools
-            .call(
-              { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
-              options,
-            )
-            .pipe(Effect.map(wrapDirectResult)),
-          (refusal) => refused(refusalBlocked(namespaces.get(input.app) ?? "This plugin", refusal)),
-        );
+        return yield* engine.tools
+          .call({ ...input, accounts: yield* accounts.accounts(input.app, input.version) }, options)
+          .pipe(Effect.map(wrapDirectResult));
       }),
     resumeInvocation: (pending, response, options) =>
       Effect.gen(function* () {
@@ -427,15 +416,9 @@ export function compositeBackend(
               "Linked accounts changed while approval was pending",
             ),
           );
-        return yield* answeringRefusal(
-          engine.tools
-            .resume({ requestId: pending.requestId, response }, options)
-            .pipe(Effect.map(wrapDirectResult)),
-          (refusal) =>
-            refused(
-              refusalBlocked(namespaces.get(pending.invocation.app) ?? "This plugin", refusal),
-            ),
-        );
+        return yield* engine.tools
+          .resume({ requestId: pending.requestId, response }, options)
+          .pipe(Effect.map(wrapDirectResult));
       }),
     authorizeElicitation: (input) =>
       checked("authorizeElicitation", input.app, input.tool).pipe(

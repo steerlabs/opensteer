@@ -10,10 +10,8 @@ import {
   type PluginEngineDatabase,
   type BlobStorage,
   type AppRuntime,
-  type BuildId,
 } from "@opensteer/plugin-engine-sdk/core";
 import type { engineAccounts } from "./engine-accounts.js";
-import { DispatchRefusals } from "./engine-authority.js";
 import { operations, PluginServiceError } from "./engine-protocol.js";
 
 export function enginePages(
@@ -22,8 +20,6 @@ export function enginePages(
   blobs: BlobStorage,
   database: PluginEngineDatabase,
   accounts: ReturnType<typeof engineAccounts>,
-  /** The runtime's check that a build may run; a page and its assets are served only if so. */
-  admit: (input: { readonly app: string; readonly build: BuildId }) => Effect.Effect<void, Error>,
 ) {
   const native = toEffectRuntime(appRuntime, blobs);
   return (raw: unknown) =>
@@ -90,7 +86,6 @@ export function enginePages(
             app,
             version: Schema.decodeUnknownSync(VersionId)(version),
           });
-          yield* admit({ app, build: retained.build });
           const selected = Option.getOrUndefined(assetPath(rest.join("/")));
           return yield* appAsset(
             selected === undefined ? undefined : yield* asset(retained.build, selected),
@@ -98,8 +93,6 @@ export function enginePages(
             rest.join("/"),
           );
         }
-        // Everything else serves the active version's build, or calls it: only one that may run.
-        yield* admit({ app, build: current.build });
         if ([routes.queryPath, routes.mutatePath, routes.subscribePath].includes(path)) {
           if (incoming.method !== "POST") return HttpServerResponse.empty({ status: 405 });
           yield* accounts.standing(app);
@@ -145,17 +138,12 @@ export function enginePages(
       }).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, incoming));
       return HttpServerResponse.toWeb(
         yield* response.pipe(
-          // A build that may not run is answered by the page operation, which reads why.
-          Effect.catch((error) =>
-            Effect.flatMap(DispatchRefusals, (cell) =>
-              cell?.refusal !== undefined
-                ? Effect.fail(error)
-                : Effect.succeed(
-                    HttpServerResponse.jsonUnsafe(
-                      { _tag: "UiFailed", reason: "operation_failed" },
-                      { status: 422 },
-                    ),
-                  ),
+          Effect.catch(() =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe(
+                { _tag: "UiFailed", reason: "operation_failed" },
+                { status: 422 },
+              ),
             ),
           ),
         ),
