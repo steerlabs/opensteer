@@ -88,7 +88,7 @@ const retainFramework = (framework: WorkerFramework) =>
  */
 export const retainWorkerBuild = (
   build: BuildId,
-  bundle: WorkerBundle & Pick<RetainedWorkerBuild, "database" | "protocol">,
+  bundle: WorkerBundle & Pick<RetainedWorkerBuild, "database" | "protocol" | "dependencies">,
   framework: WorkerFramework,
   ui: readonly UiBuildFile[] | undefined,
 ) =>
@@ -113,6 +113,7 @@ export const retainWorkerBuild = (
       framework: identity,
       database: bundle.database,
       protocol: bundle.protocol,
+      ...(bundle.dependencies === undefined ? {} : { dependencies: bundle.dependencies }),
       ...(metadata === undefined ? {} : { ui: metadata }),
     };
     const body = yield* encodeJson(RetainedWorkerBuild, record);
@@ -138,6 +139,16 @@ export const retainWorkerBuild = (
 export const linkedFramework = (build: BuildId) =>
   loadStoredWorkerBuild(build).pipe(
     Effect.map((stored) => (stored.format === 2 ? stored.framework : undefined)),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * The packages a stored build installed, or none for a build stored before they were recorded or
+ * one that cannot be read.
+ */
+export const installedDependencies = (build: BuildId) =>
+  loadStoredWorkerBuild(build).pipe(
+    Effect.map((stored) => (stored.format === 2 ? stored.dependencies : undefined)),
     Effect.orElseSucceed(() => undefined),
   );
 

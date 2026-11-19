@@ -12,7 +12,12 @@ import {
 } from "apps/contracts";
 import { WorkflowSeed } from "./workflow-runtime.ts";
 import { HostApiCheck } from "./host-api.ts";
-import { RetainedWorkerBuild, WorkerBundle, WorkerFramework } from "./worker-build.ts";
+import {
+  DependencyGraph,
+  RetainedWorkerBuild,
+  WorkerBundle,
+  WorkerFramework,
+} from "./worker-build.ts";
 import { CodeFiles } from "./source.ts";
 import {
   RuntimeAppsDependencyMissing,
@@ -56,12 +61,16 @@ export const CompileWorkerApp = Schema.Struct({
   files: CodeFiles,
   /** Public file paths relative to `ui/public/`, served beside the build and never compiled. */
   public: Schema.optional(Schema.Array(Schema.String)),
+  /** The packages to install exactly, for a rebuild; see `DependencyGraph`. */
+  dependencies: Schema.optional(DependencyGraph),
 });
 /** Compiler output is validated before it is retained by the host, which stores the framework once. */
 export const CompiledWorkerApp = Schema.Struct({
   bundle: WorkerBundle,
   framework: WorkerFramework,
   protocol: RetainedWorkerBuild.fields.protocol,
+  /** The packages the build installed. */
+  dependencies: DependencyGraph,
   requirements: Schema.Json,
   ui: Schema.optionalKey(
     Schema.Array(

@@ -310,6 +310,7 @@ class AppApi extends RpcTarget {
             apps: { files: frameworkFiles },
           },
           request.public ?? [],
+          request.dependencies,
         );
         const { bundle, framework, ui, sourceMap } = compiled;
         const requirements = yield* runner(this.#env, this.#context)
@@ -337,6 +338,7 @@ class AppApi extends RpcTarget {
             bundle,
             framework,
             protocol: compiled.protocol,
+            dependencies: compiled.dependencies,
             requirements: json(yield* Schema.encodeEffect(DeclaredRequirements)(requirements)),
             ...(ui === undefined ? {} : { ui }),
           },

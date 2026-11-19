@@ -23,6 +23,7 @@ import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
 import type { BlobKey, BlobRange } from "./blobs.ts";
 import type { HostApiCheck } from "./host-api.ts";
+import type { DependencyGraph } from "./worker-build.ts";
 
 /**
  * Runtimes report that an invocation invalidated or explicitly refreshed the app's cached
@@ -436,6 +437,11 @@ export interface Runtime<Requirements = never> {
     readonly files: CodeFiles;
     readonly public?: ReadonlyArray<string>;
     readonly retain?: boolean;
+    /**
+     * The packages to install, exactly these versions with these digests, for a rebuild of a
+     * version's source. A build that installs others fails. The build records what it installed.
+     */
+    readonly dependencies?: DependencyGraph;
   }) => Effect.Effect<
     BuiltApp,
     | RuntimeBuildFailed

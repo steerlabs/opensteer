@@ -46,8 +46,28 @@ export const RetainedFramework = Schema.Struct({
 export type RetainedFramework = typeof RetainedFramework.Type;
 
 /**
+ * One package a build installed from the registry: its name, the version installed, and the
+ * SHA-256 of the files the build kept of it (`dependencyDigest`).
+ */
+export const InstalledDependency = Schema.Struct({
+  name: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
+  digest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+});
+export type InstalledDependency = typeof InstalledDependency.Type;
+
+/**
+ * Every package a build installed, by name. A rebuild installs exactly these, by version and
+ * digest, so the same source runs the same dependency code; the Host's framework, and the
+ * stylesheet compiler it pins, are the intended differences and never appear here.
+ */
+export const DependencyGraph = Schema.Array(InstalledDependency);
+export type DependencyGraph = typeof DependencyGraph.Type;
+
+/**
  * The stored build: the app's own modules and the identity of the framework they link. Format 2
  * is the first format that stores the framework separately; builds without the marker inline it.
+ * `dependencies` is the graph the build installed; builds stored before it was recorded lack it.
  */
 export const RetainedWorkerBuild = Schema.Struct({
   format: Schema.Literal(2),
@@ -56,6 +76,7 @@ export const RetainedWorkerBuild = Schema.Struct({
   database: Schema.Boolean,
   ui: Schema.optional(Schema.Array(UiAsset)),
   protocol: AppProtocolVersion,
+  dependencies: Schema.optional(DependencyGraph),
 });
 export type RetainedWorkerBuild = typeof RetainedWorkerBuild.Type;
 

@@ -262,11 +262,12 @@ export const connectedWorkerdApps = (
             ),
           );
         }),
-      build: ({ files, public: publicPaths, retain = true }) =>
+      build: ({ files, public: publicPaths, retain = true, dependencies }) =>
         Effect.gen(function* () {
           const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(CompileWorkerApp))({
             files,
             ...(publicPaths === undefined ? {} : { public: publicPaths }),
+            ...(dependencies === undefined ? {} : { dependencies }),
           }).pipe(
             Effect.mapError(
               (cause) =>
@@ -308,6 +309,7 @@ export const connectedWorkerdApps = (
               ...compiled.bundle,
               database: ownsDatabase(requirements),
               protocol: compiled.protocol,
+              dependencies: compiled.dependencies,
             },
             compiled.framework,
             compiled.ui,
