@@ -213,6 +213,14 @@ async function main(): Promise<void> {
     artifacts.push(...(await stageSharpRuntime(staging, targetOs, targetArch)));
     const pluginArtifacts = await stagePluginRuntime(staging, targetOs, targetArch, postgresSource);
     artifacts.push(...pluginArtifacts);
+    // The bridge carries the Host's plugin framework, which only its build produces.
+    await timePhase("runtime.plugin-framework", () =>
+      run(
+        process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+        ["--filter", "apps", "build"],
+        repositoryRoot,
+      ),
+    );
     await run(
       process.platform === "win32" ? "pnpm.cmd" : "pnpm",
       [
