@@ -110,4 +110,38 @@ describe("ChannelService", () => {
       { environmentId: otherEnvironmentId, driverKinds: ["claude"] },
     ]);
   });
+
+  it.each([
+    ["claimed one and more are due: runs again at once", 1, 0, 0],
+    ["nothing due: armed at the next time", 0, 60_000, 60_000],
+    ["due but none claimable: backs off, no spin", 0, -1, 5_000],
+  ] as const)("ingress pass, %s", async (_, pending, nextIn, armedIn) => {
+    vi.useFakeTimers();
+    try {
+      const fixture = channelServiceFixture({ pending });
+      let first = true;
+      fixture.channels.nextIngressDeadline.mockImplementation(async () => {
+        // After one claimed delivery the rest stay due once, then nothing.
+        if (pending && !first) return null;
+        first = false;
+        return new Date(Date.now() + nextIn) as never;
+      });
+      fixture.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const passes = fixture.channels.claimIngress.mock.calls.length;
+      if (armedIn > 0) {
+        await vi.advanceTimersByTimeAsync(armedIn - 1);
+        expect(fixture.channels.claimIngress.mock.calls.length).toBe(passes);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fixture.channels.claimIngress.mock.calls.length).toBeGreaterThan(passes);
+      } else {
+        expect(fixture.channels.adoptIngress).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      await fixture.service.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

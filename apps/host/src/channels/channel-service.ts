@@ -39,7 +39,7 @@ import {
   type ChannelCredentialPurpose,
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
-import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
@@ -677,7 +677,7 @@ export class ChannelService {
     await this.#relay.request(runnerId, "connections.sync", { connections });
   }
 
-  async #drainIngress(): Promise<Date | null> {
+  async #drainIngress(): Promise<Date | null | typeof retryWithBackoff> {
     const now = new Date();
     if (now.getTime() >= this.#nextPruneAt) {
       this.#nextPruneAt = now.getTime() + 60 * 60 * 1_000;
@@ -686,9 +686,11 @@ export class ChannelService {
     // What is connected is a property of the Deployment, not of one message,
     // so it is read once for the whole drain rather than once per claimed event.
     const availableEngines = await this.#availableEngines();
+    let claimed = 0;
     for (let processed = 0; processed < 100 && !this.#closed; processed += 1) {
       const claim = await this.#channels.claimIngress(`host:${process.pid}`);
       if (!claim) break;
+      claimed += 1;
       const stale = staleIngress(claim, Date.now());
       if (stale) {
         await this.#channels
@@ -733,7 +735,11 @@ export class ChannelService {
           .catch(() => undefined);
       }
     }
-    return this.#closed ? null : this.#channels.nextIngressDeadline();
+    if (this.#closed) return null;
+    const next = await this.#channels.nextIngressDeadline();
+    // A due delivery nothing could claim (another transaction holds it) backs off
+    // rather than spinning; after progress a due one simply runs again.
+    return next && next.getTime() <= now.getTime() && claimed === 0 ? retryWithBackoff : next;
   }
 
   /**
