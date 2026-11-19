@@ -305,6 +305,50 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       },
     });
     expect(helper.invocations).toHaveLength(sent);
+    // A program finds the same marker in its own search and describe, and its refused call
+    // fails with the Host's code.
+    const calendarNamespace = localNamespace(
+      "calendar-studio-mac",
+      `app_device_${calendar.connection.id}`,
+    );
+    const inProgram = await gateway.call("plugin_execute", {
+      code: `const found = await tools.search({ namespace: ${JSON.stringify(calendarNamespace)} });
+const described = await tools.search.describe({ paths: [${JSON.stringify(createEvent)}] });
+let refused = null;
+try { await ${createEvent}({ start: "2026-10-01T09:00", end: "2026-10-01T10:00", title: "Dentist" }); }
+catch (error) { refused = JSON.parse(error.message); }
+return { found, described, refused };`,
+    });
+    const program = (
+      inProgram as {
+        result: {
+          execution: {
+            value: {
+              found: { items: { path: string; blocked?: unknown }[] };
+              described: { items: { path: string; blocked?: unknown }[] };
+              refused: unknown;
+            };
+          };
+        };
+      }
+    ).result.execution.value;
+    const blockedWrite = {
+      code: "access_denied",
+      message: "Calendar on Studio Mac allows reading only.",
+    };
+    expect(program.found.items.find(({ path }) => path === createEvent)).toMatchObject({
+      blocked: blockedWrite,
+    });
+    expect(program.found.items.find(({ path }) => path === listEvents)).not.toHaveProperty(
+      "blocked",
+    );
+    expect(program.described.items).toMatchObject([{ path: createEvent, blocked: blockedWrite }]);
+    expect(program.refused).toMatchObject({
+      code: "access_denied",
+      message: "Calendar on Studio Mac allows reading only.",
+      recovery: { instructions: expect.stringContaining("app_access_request") },
+    });
+    expect(helper.invocations).toHaveLength(sent);
 
     // The person sees both apps in Plugins with what agents type, and sets Reminders to
     // read-only there: its write is refused, its read is not, and agents' list says so.

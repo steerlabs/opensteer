@@ -22,7 +22,7 @@ import {
 } from "@opensteer/plugin-engine-sdk/core";
 import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-error";
 import type { ElicitationHandler } from "apps/contracts";
-import { CurrentMcpExecution, type McpBackend } from "@opensteer/plugin-engine-mcp";
+import { CurrentMcpExecution, type McpBackend, type McpTool } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
 import { pluginAccessBlocked } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
@@ -39,12 +39,18 @@ import {
 /**
  * A device or local-server tool's own refusal or failure. Its text is written by the Host for the
  * agent (offline computer, missing approval, unconfirmed write), never a service's raw reply. The
- * explanation is the description and the next step the recovery, each said once.
+ * explanation is the description and the next step the recovery, each said once; a refusal keeps
+ * the Host's code, as a direct call reports it.
  */
 export const HostToolFailed = UserFacingError.define({
   tag: "HostToolFailed",
   status: 422,
-  fields: { explanation: Schema.String, next: Schema.optional(Schema.String) },
+  fields: {
+    explanation: Schema.String,
+    next: Schema.optional(Schema.String),
+    reason: Schema.optional(Schema.String),
+  },
+  code: ({ reason }) => reason ?? "HostToolFailed",
   presentation: ({ explanation, next }) => ({
     title: "Local tool unavailable",
     description: explanation,
@@ -88,30 +94,25 @@ export function compositeBackend(
   direct = false,
 ) {
   const namespaces = new Map<string, string>();
+  /** What keeps each app, as this backend last listed it. */
   const appBlockers = new Map<string, Blocked>();
-  const toolBlockers = new Map<string, Blocked>();
   const retained = new Map<string, readonly Tool[]>();
-  const toolPath = (app: string, tool: string) => {
-    const namespace = namespaces.get(app);
-    return namespace === undefined ? undefined : localToolPath(namespace, tool);
-  };
   /**
-   * A tool that cannot be called now is listed as it is, with one marker saying why. What keeps
-   * its whole app (the person's Off, or what keeps a local provider) is said once, on the app's
-   * namespace; a tool carries only what keeps it alone (Read-only for a write, one operation's
-   * own blocker).
+   * A tool that cannot be called now is listed as it is, with one marker saying why, which the
+   * engine shows wherever discovery lists it: plugin_search, plugin_describe and a program's own
+   * tools.search alike. What keeps its whole app (the person's Off, or what keeps a local
+   * provider) is said once, on the app (see listApps); a tool carries only what keeps it alone
+   * (Read-only for a write, one operation's own blocker).
    */
   const projectTool = (
     tool: Tool,
     access: "all" | "read-only" | "off" | undefined,
     local?: PluginHostProvider,
-  ): Tool => {
+  ): McpTool => {
     if (access === "off" || local?.blocked) return tool;
     const blocked =
       pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
-    const path = blocked && toolPath(tool.app, tool.name);
-    if (path) toolBlockers.set(path, blocked);
-    return tool;
+    return blocked ? { ...tool, blocked } : tool;
   };
 
   const permissionFor = (operation: string, plugin?: string, tool?: string) =>
@@ -217,14 +218,16 @@ export function compositeBackend(
             activeVersion: version(entry),
           })),
         ];
-        for (const { id, slug } of listing) {
-          namespaces.set(id, slug);
-          const blocked = pluginAccessBlocked(grants?.[id], false);
-          if (blocked) appBlockers.set(id, blocked);
-        }
-        for (const { id, blocked } of providers)
-          if (blocked && !appBlockers.has(id)) appBlockers.set(id, blocked);
-        return listing;
+        return listing.map((app) => {
+          namespaces.set(app.id, app.slug);
+          // The person's setting first, then what keeps a local provider.
+          const blocked =
+            pluginAccessBlocked(grants?.[app.id], false) ??
+            providers.find((entry) => entry.id === app.id)?.blocked;
+          if (blocked) appBlockers.set(app.id, blocked);
+          else appBlockers.delete(app.id);
+          return blocked ? { ...app, blocked } : app;
+        });
       }),
     listAccounts: (input) =>
       Effect.gen(function* () {
@@ -368,6 +371,7 @@ export function compositeBackend(
                 return yield* new HostToolFailed({
                   explanation: result.blocked.message,
                   next: result.blocked.next,
+                  reason: result.blocked.code,
                 });
               return { status: "completed", value: result, toolError: true };
             case "mcp":
@@ -502,16 +506,7 @@ export function compositeBackend(
   };
   return {
     ...backend,
-    toolBlockers,
-    appBlockers,
-    /** What keeps the app whose namespace this is, as search and describe list it. */
-    namespaceBlocker: (path: string) => {
-      for (const [app, blocked] of appBlockers) {
-        const namespace = namespaces.get(app);
-        if (namespace !== undefined && localToolPath(namespace) === path) return blocked;
-      }
-      return undefined;
-    },
+    /** What keeps the app a direct call's path names, when it is the person's setting. */
     blockedNamespace: (path: string) => {
       for (const [app, blocked] of appBlockers) {
         const namespace = namespaces.get(app);
@@ -521,41 +516,5 @@ export function compositeBackend(
       }
       return undefined;
     },
-  };
-}
-
-/** Each blocked app said once on its namespace, and each blocked tool on its own item. */
-export function withCatalogBlockers<
-  Result extends {
-    readonly items: readonly { readonly path: string }[];
-    readonly namespaces: readonly { readonly path?: unknown }[];
-    readonly unavailableApps?: readonly { readonly app: string }[];
-  },
->(
-  result: Result,
-  backend: Pick<
-    ReturnType<typeof compositeBackend>,
-    "appBlockers" | "toolBlockers" | "namespaceBlocker"
-  >,
-) {
-  return {
-    ...result,
-    items: result.items.map((item) => {
-      const blocked = backend.toolBlockers.get(item.path);
-      return blocked ? { ...item, blocked } : item;
-    }),
-    namespaces: result.namespaces.map((space) => {
-      const blocked =
-        typeof space.path === "string" ? backend.namespaceBlocker(space.path) : undefined;
-      return blocked ? { ...space, blocked } : space;
-    }),
-    ...(result.unavailableApps
-      ? {
-          unavailableApps: result.unavailableApps.map((app) => {
-            const blocked = backend.appBlockers.get(app.app);
-            return blocked ? { ...app, blocked } : app;
-          }),
-        }
-      : {}),
   };
 }

@@ -107,11 +107,7 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, migrateEngineProduct } from "./engine-accounts.js";
-import {
-  compositeBackend,
-  withCatalogBlockers,
-  type EngineHostCallbacks,
-} from "./engine-backend.js";
+import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { enginePages } from "./engine-pages.js";
 import {
@@ -645,20 +641,10 @@ export async function startEngine(
     ) =>
       Effect.gen(function* () {
         const pending = result.status === "approval-required" || result.status === "input-required";
-        const projected =
-          "unavailableApps" in result
-            ? {
-                ...result,
-                unavailableApps: result.unavailableApps.map((app) => {
-                  const blocked = catalog.appBlockers.get(app.app);
-                  return blocked ? { ...app, blocked } : app;
-                }),
-              }
-            : result;
         const presented =
           record.direct && !pending
-            ? projectDirectPluginTools(projected, catalog.blockedNamespace)
-            : projected;
+            ? projectDirectPluginTools(result, catalog.blockedNamespace)
+            : result;
         const sizeLimit = pending
           ? interactionBytes
           : z.object({ hostPresentation: z.literal("mcp") }).safeParse(presented).success
@@ -1193,14 +1179,14 @@ export async function startEngine(
             });
           case "search":
           case "describe": {
-            // The catalog and its blocker projection share this response's inventory.
+            // This response's inventory, which the backend marks each blocked app and tool from.
             const providers = yield* Effect.cached(callback("providers", context));
             const discovery = backend(context, undefined, false, () => providers);
             const result =
               operation === "search"
                 ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
                 : yield* describeCatalog(discovery, operations.describe.input.parse(raw));
-            return withCatalogBlockers(result, discovery);
+            return result;
           }
           case "skills":
             return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));

@@ -11,9 +11,15 @@ import {
   type PluginEngine,
   type ToolSearchInput,
 } from "@opensteer/plugin-engine-sdk/core";
-import { CurrentMcpExecution, searchCatalog } from "@opensteer/plugin-engine-mcp";
+import {
+  CurrentMcpExecution,
+  describeCatalog,
+  executeProgram,
+  makeExecutions,
+  searchCatalog,
+} from "@opensteer/plugin-engine-mcp";
 import type { Blocked } from "@opensteer/core";
-import { HostToolFailed, compositeBackend, withCatalogBlockers } from "./engine-backend.js";
+import { HostToolFailed, compositeBackend } from "./engine-backend.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import type { HostToolResult, PluginHostProvider } from "./engine-protocol.js";
 import { localNamespace, localToolPath } from "./provider-names.js";
@@ -170,9 +176,26 @@ function fixture(input: {
     input.direct,
   );
   const search = (query: { query?: string; namespace?: string }) =>
+    Effect.runPromise(searchCatalog(backend, query));
+  const describe = (paths: string[]) => Effect.runPromise(describeCatalog(backend, { paths }));
+  /** One program run by the engine's own execution manager, as plugin_execute runs it. */
+  const program = (code: string) =>
     Effect.runPromise(
-      searchCatalog(backend, query).pipe(
-        Effect.map((result) => withCatalogBlockers(result, backend)),
+      Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* makeExecutions({
+            timeoutMs: 10_000,
+            maxToolCalls: 10,
+            interactionTtlMs: 60_000,
+          });
+          return yield* manager.execute(
+            "fixture",
+            backend,
+            executeProgram(code),
+            "result",
+            "client",
+          );
+        }),
       ),
     );
   const call = (app: string, name: string, kind: "query" | "mutation" = "query") =>
@@ -184,7 +207,7 @@ function fixture(input: {
           Effect.match({ onFailure: (failed) => ({ failed }), onSuccess: (value) => ({ value }) }),
         ),
     );
-  return { search, call, calls };
+  return { search, describe, program, call, calls };
 }
 
 const occurrences = (value: unknown, text: string) => JSON.stringify(value).split(text).length - 1;
@@ -243,6 +266,7 @@ describe("local apps an agent cannot use now", () => {
       const program = await fixture({ providers: blockedLocal }).call(local.id, name);
       const failed = (program as { failed: InstanceType<typeof HostToolFailed> }).failed;
       expect(failed).toBeInstanceOf(HostToolFailed);
+      expect(failed.code).toBe(local.blocked!.code);
       expect(failed.description).toBe(local.blocked!.message);
       expect(failed.recovery.instructions).toBe(local.blocked!.next);
       expect(occurrences([failed.description, failed.recovery], local.blocked!.message)).toBe(1);
@@ -307,5 +331,63 @@ describe("local apps an agent cannot use now", () => {
       value: { toolError: true, value: { kind: "blocked", blocked: offline } },
     });
     expect(calls).toEqual([{ plugin: offlineMac.id, tool: "list_events" }]);
+  });
+
+  it("mark a program's own search and describe as plugin_search and plugin_describe are marked", async () => {
+    const calendar = blockedLocal[0]!;
+    const { search, describe, program } = fixture({
+      providers: [offlineMac, calendar],
+      grants: { [offlineMac.id]: "read-only" },
+    });
+    const write = `${namespaceOf(offlineMac)}.create_event`;
+    const readOnly = { code: "access_denied", message: "This plugin is set to Read-only." };
+    const outside = {
+      mac: await search({ namespace: namespaceOf(offlineMac) }),
+      calendar: await search({ namespace: namespaceOf(calendar) }),
+      described: await describe([write]),
+    };
+    const inside = await program(
+      `return {
+        mac: await tools.search({ namespace: ${JSON.stringify(offlineMac.slug)} }),
+        calendar: await tools.search({ namespace: ${JSON.stringify(calendar.slug)} }),
+        described: await tools.search.describe({ paths: [${JSON.stringify(write)}] }),
+      };`,
+    );
+    expect(inside).toMatchObject({ status: "completed", execution: { ok: true } });
+    const value = (inside as unknown as { execution: { value: typeof outside } }).execution.value;
+    for (const found of [outside, value]) {
+      expect(found.mac.items.find(({ path }) => path === write)).toMatchObject({
+        blocked: readOnly,
+      });
+      expect(found.mac.items.find(({ path }) => path !== write)).not.toHaveProperty("blocked");
+      expect(found.described.items).toMatchObject([{ path: write, blocked: readOnly }]);
+      expect(found.calendar.namespaces).toEqual([
+        expect.objectContaining({ blocked: calendar.blocked }),
+      ]);
+    }
+    expect(value.mac.items).toEqual(outside.mac.items);
+    expect(value.mac.namespaces).toEqual(outside.mac.namespaces);
+    expect(value.calendar.namespaces).toEqual(outside.calendar.namespaces);
+    expect(value.described.items).toEqual(outside.described.items);
+  });
+
+  it("fail a program's refused call with the Host's code, message and next step", async () => {
+    const calendar = blockedLocal[0]!;
+    const { program } = fixture({ providers: blockedLocal });
+    const result = await program(`return await ${namespaceOf(calendar)}.list_events({});`);
+    expect(result).toMatchObject({
+      status: "completed",
+      execution: {
+        ok: false,
+        error: {
+          kind: "ToolFailure",
+          response: {
+            code: calendar.blocked!.code,
+            message: calendar.blocked!.message,
+            recovery: { instructions: calendar.blocked!.next },
+          },
+        },
+      },
+    });
   });
 });

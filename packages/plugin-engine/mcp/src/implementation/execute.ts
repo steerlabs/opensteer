@@ -12,7 +12,6 @@ import {
   ToolSearchUnavailable,
   resolveLinkedAccounts,
   AccountChoiceUnsupported,
-  type App,
   type AppAccounts,
   type AppId,
   type Cursor,
@@ -21,7 +20,6 @@ import {
   type SearchableTools,
   type Tool as AppTool,
   type ToolRouter,
-  type ToolSearchItem,
   type ToolSearchListing,
   type ToolSearchScope,
   type ToolSearchTarget,
@@ -39,7 +37,13 @@ import {
 import { nearest } from "./suggestions.ts";
 import { withOperationSpan } from "./telemetry.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
-import { ToolCallRecorded, type McpBackend } from "../contracts/backend.ts";
+import {
+  ToolCallRecorded,
+  type McpApp,
+  type McpBackend,
+  type McpSearchItem,
+  type McpTool,
+} from "../contracts/backend.ts";
 import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
 import {
   AppAccountRequired,
@@ -55,6 +59,7 @@ import {
   defaultSearchLimits,
   DescribeInput,
   DescribeResult,
+  type McpBlocked,
   SearchInput,
   SearchResult,
   SearchItem,
@@ -239,7 +244,7 @@ function listTools<E extends Error>(
     let page = yield* list();
     // Later pages are pinned to the first page's version.
     const version = page.version;
-    const tools: AppTool[] = [...page.items];
+    const tools: McpTool[] = [...page.items];
     while (page.next !== undefined) {
       page = yield* list(version, page.next);
       tools.push(...page.items);
@@ -281,6 +286,8 @@ type Place = {
   readonly app: string;
   /** The labels of the linked accounts its calls use. */
   readonly accounts?: string;
+  /** What keeps the caller from all of its tools now. */
+  readonly blocked?: McpBlocked;
 };
 /** A loaded app, whose tools a program can call. */
 type Target = Place & {
@@ -299,7 +306,7 @@ type Target = Place & {
 type Entry = {
   /** Canonical path below `tools`. */
   readonly path: string;
-  readonly tool: AppTool;
+  readonly tool: McpTool;
   readonly target: Target;
 };
 /** An app whose current listing is kept as search rows. */
@@ -403,12 +410,16 @@ const summary = (tool: AppTool) =>
     defaultSearchLimits.descriptionChars,
   );
 
-/** An app's namespace, as results list it once. */
+/** An app's namespace, as results list it once, with what keeps the caller from the whole app. */
 const targetNamespace = (target: Place): SearchNamespace => ({
   path: CodeMode.toolExpression(target.path),
   app: target.app,
   ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
+  ...(target.blocked === undefined ? {} : { blocked: target.blocked }),
 });
+/** What keeps one tool alone from the caller; what keeps its app is said on its namespace. */
+const toolBlocked = (tool: McpTool) =>
+  tool.blocked === undefined ? {} : { blocked: tool.blocked };
 /** The namespaces a tool's path sits in: its app, and its router when that has a title. */
 const namespacesOf = (
   target: Place,
@@ -545,7 +556,7 @@ const rank = <E extends Error>(
     );
     // Each app has one target, so no item is listed under another.
     const items = ranked.items.flatMap(
-      (found): ReadonlyArray<{ found: ToolSearchItem; first: Found }> => {
+      (found): ReadonlyArray<{ found: McpSearchItem; first: Found }> => {
         const target = targets[found.target]?.target;
         return target === undefined
           ? []
@@ -617,6 +628,7 @@ const searchPage = <E extends Error>(
             ...(type.length > defaultSearchLimits.inputChars
               ? { inputTruncated: true as const }
               : {}),
+            ...toolBlocked(found.tool),
           };
           // Each namespace is listed once, with the first item in it, and counts toward that item.
           const listed = new Set(page.flatMap(({ added }) => added.map((space) => space.path)));
@@ -639,8 +651,9 @@ const searchPage = <E extends Error>(
 
 /**
  * One page of CodeMode's global `search()`, ranked as `tools.search` ranks, in the shape CodeMode's
- * own `search()` documents: each tool's expression, whole description and signature. Only the
- * tools on the page have their signatures rendered; `rendered` counts them.
+ * own `search()` documents: each tool's expression, whole description and signature. That shape
+ * has no namespaces, so what keeps a tool or its app ends the tool's description. Only the tools on
+ * the page have their signatures rendered; `rendered` counts them.
  */
 const globalSearchPage = <E extends Error>(
   searchable: Searchable<E>,
@@ -666,7 +679,12 @@ const globalSearchPage = <E extends Error>(
           Effect.tap(() => Effect.sync(rendered)),
           Effect.map((typed) => {
             const path = CodeMode.toolExpression(first.path);
-            return { path, description: found.tool.description, signature: `${path}${typed}` };
+            const reason = found.tool.blocked ?? first.target.blocked;
+            const description =
+              reason === undefined
+                ? found.tool.description
+                : `${found.tool.description}\nBlocked (${reason.code}): ${reason.message} Next: ${reason.next}`;
+            return { path, description, signature: `${path}${typed}` };
           }),
         ),
       (item) => jsonBytes(item) + 1,
@@ -705,6 +723,7 @@ const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>)
         path: CodeMode.toolExpression(entry.path),
         description: entry.tool.description,
         signature: yield* signature(yield* renderSchemas(entry.tool)),
+        ...toolBlocked(entry.tool),
       });
       for (const space of namespacesOf(entry.target, routerOf(entry)))
         namespaces.set(space.path, space);
@@ -787,7 +806,7 @@ export const programReach = (code: string) =>
     Effect.orElseSucceed((): Reach => ({ apps: new Set(), reason: "parse" })),
   );
 
-type ListedApp = Pick<App, "id" | "name" | "slug">;
+type ListedApp = Pick<McpApp, "id" | "name" | "slug" | "blocked">;
 /**
  * One app's discovery: why it failed, that a requirement has no linked account (it then exposes
  * no tools), or what was read with the accounts discovery lists it with.
@@ -921,7 +940,13 @@ function catalog(
         return true;
       });
     };
-    const unavailableApps = () => apps.flatMap((app) => unavailableOf(app.id));
+    // An app the caller is kept from says so with each entry, as its namespace does.
+    const unavailableApps = () =>
+      apps.flatMap((app) =>
+        unavailableOf(app.id).map((entry) =>
+          app.blocked === undefined ? entry : { ...entry, blocked: app.blocked },
+        ),
+      );
     /**
      * Report an app that exposes no tools, such as one that needs an account, once a search or
      * describe names it; otherwise its empty result would look like an app with no tools. A call
@@ -1067,6 +1092,7 @@ function catalog(
         path: app.slug,
         app: app.name,
         ...(accounts === "" ? {} : { accounts }),
+        ...(app.blocked === undefined ? {} : { blocked: app.blocked }),
       };
     };
     const routerFailures = (
