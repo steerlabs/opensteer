@@ -726,6 +726,42 @@ describe("ExecutionCoordinator", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     await coordinator.stop();
   });
+  it("retries a failed write after a claim instead of stranding the dispatched command", async () => {
+    const command = pendingCommand({ payload: { type: "run.interrupt" }, type: "run.interrupt" });
+    const time = manualClock();
+    let listed = true;
+    const store = backoffStore(() => (listed ? [command] : []));
+    store.value.claimCommand = vi.fn(async () => {
+      listed = false;
+      return { command: { ...command, status: "dispatched" as const }, events: [] };
+    }) as never;
+    store.retryCommand
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockResolvedValue(undefined);
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: vi.fn(async () => {
+          throw new CommandDispatchError("Runner connection was lost", "uncertain");
+        }),
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      clock: time.clock,
+      pollIntervalMs: 500,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => store.retryCommand.mock.calls.length === 1);
+    // The command left the pending listing; only the owed write can settle it.
+    await waitFor(() => time.timers().length > 0);
+    time.advance(500);
+    await waitFor(() => store.retryCommand.mock.calls.length === 2);
+    await coordinator.stop();
+  });
   it("drops the backoff of a command that has left the pending listing", async () => {
     const command = pendingCommand();
     const time = manualClock();
