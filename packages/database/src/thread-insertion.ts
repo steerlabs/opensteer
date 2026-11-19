@@ -1,3 +1,4 @@
+import { activePersonalMutation } from "./personal-mutation.js";
 import {
   OpensteerError,
   nextMarkColor,
@@ -81,7 +82,7 @@ export async function prepareThreadInsertion(
       .limit(6)
       .execute();
     const createdAt = new Date();
-    return transaction
+    const inserted = await transaction
       .insertInto("threads")
       .values({
         ...values,
@@ -92,5 +93,9 @@ export async function prepareThreadInsertion(
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    // A computer's detail counts the live tasks placed on it. Every production
+    // insert runs inside a personal mutation; a bare transaction has no readers to tell.
+    activePersonalMutation(transaction)?.bumpResource("machine");
+    return inserted;
   };
 }

@@ -88,6 +88,29 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
+  it("announces a computer's changed task count when a task is placed on it", async ({
+    storeFixture,
+  }) => {
+    const { createRunFixture, store, database } = storeFixture;
+    const fixture = await createRunFixture("placed-count");
+    const machineRevision = async () =>
+      (
+        await database
+          .selectFrom("clientSyncState")
+          .select("resourceRevisions")
+          .executeTakeFirstOrThrow()
+      ).resourceRevisions.machine;
+    const before = await machineRevision();
+    await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "placed-count",
+      modelSelection: testModelSelection,
+      title: "Placed",
+    });
+    expect(await machineRevision()).not.toBe(before);
+  });
   it("pages the owner's active listed tasks with filter-bound cursors", async ({
     storeFixture,
   }) => {

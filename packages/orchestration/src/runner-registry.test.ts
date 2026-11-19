@@ -3027,6 +3027,49 @@ describe("Runner connection fences and leases", () => {
     expect(registry.moduleReadiness(runnerId, "browser")).toBe("unavailable");
     expect(environmentId).toBeDefined();
   });
+  it("announces a Runner's module readiness once per report, and not for a repeat", async () => {
+    const onModuleReadiness = vi.fn(async () => undefined);
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
+        onModuleReadiness,
+      },
+    });
+    try {
+      const peer = new MemoryRunnerPeer("runner");
+      const identity = browserRunner(createId("runner"), "boot-1");
+      await registerAttached(
+        registry,
+        {
+          ...identity,
+          modules: {
+            ...identity.modules,
+            shell: { hostPublicKey: "ssh-ed25519 AAAA", platform: "darwin", fullDiskAccess: true },
+          },
+        },
+        peer,
+      );
+      const report = (checkedAt: string) => ({
+        ...fenceOf(peer),
+        modules: (["browser", "shell"] as const).map((module) => ({
+          checkedAt,
+          detail: null,
+          module,
+          readiness: "ready" as const,
+        })),
+        type: "runner.modules.report" as const,
+      });
+      await registry.handle(peer, report(new Date().toISOString()));
+      expect(onModuleReadiness).toHaveBeenCalledTimes(1);
+      expect((onModuleReadiness.mock.calls[0] as unknown[])[1]).toHaveLength(2);
+      // The same readiness checked again later changes nothing a reader sees.
+      await registry.handle(peer, report(new Date(Date.now() + 1_000).toISOString()));
+      expect(onModuleReadiness).toHaveBeenCalledTimes(1);
+    } finally {
+      await registry.close();
+    }
+  });
   it("refuses readiness for a module the Runner never advertised", async () => {
     const registry = new RunnerRegistry({
       hooks: {

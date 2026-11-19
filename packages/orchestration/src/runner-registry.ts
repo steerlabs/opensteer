@@ -264,7 +264,11 @@ export interface RunnerRegistryHooks {
    * A module said what it can actually do. Readiness never comes from a
    * heartbeat, so this is the only way a module becomes routable.
    */
-  onModuleReadiness?(identity: RunnerIdentity, report: RunnerModuleReadinessReport): Promise<void>;
+  /** Called once per report message, with only the modules whose readiness changed. */
+  onModuleReadiness?(
+    identity: RunnerIdentity,
+    reports: readonly RunnerModuleReadinessReport[],
+  ): Promise<void>;
   /** An auxiliary stream went away. Whatever it was serving must stop. */
   onAuxiliaryLost?(stream: RunnerAuxiliaryStream, reason: RunnerStreamLossReason): void;
   /**
@@ -2264,7 +2268,8 @@ export class RunnerRegistry {
         }
         break;
       }
-      case "runner.modules.report":
+      case "runner.modules.report": {
+        const changed: RunnerModuleReadinessReport[] = [];
         for (const report of message.modules) {
           if (connection.identity.modules[report.module] === undefined) {
             throw new OpensteerError({
@@ -2272,12 +2277,16 @@ export class RunnerRegistry {
               message: `Runner reported readiness for the unadvertised ${report.module} module`,
             });
           }
+          const previous = connection.readiness.get(report.module);
           connection.readiness.set(report.module, report);
-          if (this.#hooks.onModuleReadiness) {
-            await this.#runHook(() => this.#hooks.onModuleReadiness?.(connection.identity, report));
-          }
+          if (previous?.readiness !== report.readiness || previous.detail !== report.detail)
+            changed.push(report);
         }
+        // One announcement per report, and none for a repeat of what was known.
+        if (changed.length && this.#hooks.onModuleReadiness)
+          await this.#runHook(() => this.#hooks.onModuleReadiness?.(connection.identity, changed));
         break;
+      }
       case "runner.heartbeat":
         this.#renewLease(connection, message.sentAt);
         // A heartbeat is a bounded point-in-time observation, not execution
