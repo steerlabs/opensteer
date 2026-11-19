@@ -11,6 +11,7 @@ import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
 import {
   checkpointDatabaseName,
+  checkpointSessionMarker,
   dropOtherCheckpointFormats,
   indexedDbCheckpointStorage,
 } from "./personal-checkpoint-storage.js";
@@ -47,11 +48,16 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
   for (const key of Object.keys(window.sessionStorage))
     if (key.startsWith("opensteer.personal-stream.v")) window.sessionStorage.removeItem(key);
   void dropOtherCheckpointFormats(personalCacheFormat, origin);
+  // Saved private state is kept and read only under the session the Host last confirmed here.
+  const session = checkpointSessionMarker(origin);
   const streamCache =
     typeof indexedDB === "undefined"
       ? undefined
       : createPersonalStreamCache(
-          indexedDbCheckpointStorage(checkpointDatabaseName(personalCacheFormat, origin)),
+          indexedDbCheckpointStorage(
+            checkpointDatabaseName(personalCacheFormat, origin),
+            session.current,
+          ),
         );
   const client = new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
@@ -87,6 +93,21 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
   initializeBrowserMessageOutbox(client);
+  let marked: string | null | undefined;
+  client.subscribe(() => {
+    const snapshot = client.getSnapshot();
+    const next =
+      snapshot.session === "authenticated" && snapshot.deploymentId && snapshot.sessionId
+        ? JSON.stringify([snapshot.deploymentId, snapshot.sessionId])
+        : snapshot.session === "authentication-required"
+          ? null
+          : marked;
+    if (next === marked) return;
+    marked = next;
+    if (next === null) session.ended();
+    // Sign-out, expiry and revocation all end above; the saved state goes unread with them.
+    else if (next !== undefined) session.held(snapshot.deploymentId!, snapshot.sessionId!);
+  });
   window.addEventListener("pagehide", () => client.flushSavedState());
   void client.load().catch(() => undefined);
   return client;
