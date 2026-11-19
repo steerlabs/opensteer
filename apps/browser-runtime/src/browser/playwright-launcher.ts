@@ -911,7 +911,7 @@ class PlaywrightContextHandle implements BrowserContext {
     context.on("close", () => {
       this.closed = true;
       // A context's end ends its pages even when Playwright reports no page close.
-      for (const handle of [...this.pagesByPlaywrightPage.values()]) handle.confirmGone();
+      for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone();
     });
     this.openDialogs = openDialogs;
   }
@@ -1257,7 +1257,7 @@ class PlaywrightPageHandle implements BrowserPage {
   confirmGone(): void {
     if (this.gone) return;
     this.gone = true;
-    for (const listener of [...this.goneListeners]) listener();
+    for (const listener of this.goneListeners) listener();
   }
 
   onClose(listener: () => void): void {

@@ -1802,8 +1802,8 @@ export class SurfaceLedger {
       wakeCleanup = waking !== undefined;
       // Owned until confirmed; a caller's creation lock never waits on the engine.
       void this.pages.destroy(page, ending).catch(() => undefined);
-      const cleanup = await Promise.allSettled([
-        ...(registered
+      const cleanup = await Promise.allSettled(
+        registered
           ? [
               waking
                 ? registered.live?.page === page
@@ -1813,8 +1813,8 @@ export class SurfaceLedger {
             ]
           : cdp
             ? [cdp.detach()]
-            : []),
-      ]);
+            : [],
+      );
       const cleanupFailures = cleanup.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );
