@@ -940,6 +940,18 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
+  it("a view that cannot tell where the reader is (mid-layout) keeps the last place, not the latest", async () => {
+    const { f, targets, reader } = positioned();
+    f.detail.anchorTo(targets[1]!.id);
+    reader.setMeasure(() => null);
+    const repair = f.detailSnapshot();
+    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor, "a measurement that could not tell was taken for the latest").toBe(
+      targets[1]!.id,
+    );
+    reader.dispose();
+  });
+
   it("a repair with no jump under way rereads around the row in view, measured once at the repair", async () => {
     const { f, targets, pending, reader } = positioned();
     let measured = 0;

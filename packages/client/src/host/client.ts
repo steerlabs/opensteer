@@ -1207,7 +1207,7 @@ export interface HostClient extends TabsClient {
    * only when the client needs the reader's position: a repair, a subscription. Ordinary
    * scrolling is never reported. Null releases it.
    */
-  setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null): void;
+  setTranscriptPosition(threadId: string, measure: (() => string | undefined | null) | null): void;
   /**
    * The view has revealed the target of the reader's move under way (the linked message is on
    * screen, or the foot after Return to latest): the move has landed and gives up the position.

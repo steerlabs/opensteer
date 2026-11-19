@@ -55,6 +55,11 @@ export interface TranscriptState {
    * reader read on top of the old state (pages, overlay pages, queue entries) is read again.
    */
   readonly repairs: number;
+  /**
+   * Counts every snapshot installed, a subscription's cut or a repair, across generations: each
+   * replaced the rows the reader had on screen.
+   */
+  readonly cuts: number;
   /** The sequence of the last snapshot installed: an HTTP read as of an earlier one is stale. */
   readonly snapshotThrough?: string;
 }
@@ -75,6 +80,7 @@ const emptyState: TranscriptState = {
   inputQueue: null,
   assignments: new Map(),
   newest: true,
+  cuts: 0,
   repairs: 0,
 };
 
@@ -453,6 +459,7 @@ export class ThreadTranscriptStore {
       // An anchor in the newest window still reaches the tail: only a later page makes it history.
       newest: next.nextAfter == null,
       repairs: repair ? state.repairs + 1 : 0,
+      cuts: state.cuts + 1,
       snapshotThrough: through,
     });
   }

@@ -94,7 +94,9 @@ import { ThreadFind } from "./thread-find.js";
 import {
   anchorCorrection,
   findReadingAnchor,
+  neighbourKeys,
   readingAnchor,
+  restoreTarget,
   type ReadingAnchor,
 } from "./reading-position.js";
 import { BrandMark } from "./brand.js";
@@ -184,7 +186,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           thread={thread}
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
-          repairs={transcript.repairs ?? 0}
+          cuts={transcript.cuts ?? 0}
         />
       ) : null}
     </Gated>
@@ -203,8 +205,8 @@ interface ThreadViewProps {
   inputQueueError?: unknown;
   entries: readonly TranscriptEntry[];
   detailCurrent?: boolean;
-  /** Counts the Host's repairs of this conversation: each replaced the rows on screen. */
-  repairs?: number;
+  /** Counts the snapshots installed for this conversation (a subscription's or a repair's). */
+  cuts?: number;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -238,7 +240,7 @@ function ThreadView({
   requests,
   runQueue = noRuns,
   detailCurrent = true,
-  repairs = 0,
+  cuts = 0,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -555,10 +557,17 @@ function ThreadView({
     const anchor = restoring.current;
     const scroller = currentScroller();
     if (!anchor || !scroller) return;
-    const row = scroller.querySelector<HTMLElement>(
-      `[data-transcript-row="${CSS.escape(anchor.key)}"]`,
+    // The measured row; else its nearest surviving neighbour, older first; else the latest. It is
+    // applied again as rows lay out, so a reread that brings the row back puts the reader on it.
+    const row = restoreTarget(anchor, (key) =>
+      scroller.querySelector<HTMLElement>(`[data-transcript-row="${CSS.escape(key)}"]`),
     );
-    if (!row) return;
+    if (row === null) return;
+    if (row === "latest") {
+      setFollows(true);
+      keepTailInView();
+      return;
+    }
     const delta = anchorCorrection(
       anchor,
       row.getBoundingClientRect().top,
@@ -659,18 +668,24 @@ function ThreadView({
   // The reader's explicit moves (jumps, returns), numbered: a frame scheduled for one never acts
   // after a newer one.
   const moves = useRef(0);
-  /** Measures the row in view once, now, for a repair or a subscription the client is making. */
-  const measureNow = (): string | undefined => {
+  /**
+   * Measures the row in view once, now, for a repair or a subscription the client is making:
+   * undefined at the latest; null when it cannot tell (the view is mid-layout), which keeps the
+   * last place.
+   */
+  const measureNow = (): string | undefined | null => {
     const scroller = currentScroller();
     reading.current = null;
-    if (!scroller || (tailRef.current.follows && !historicalRef.current)) return undefined;
-    const anchor = findReadingAnchor(
-      scroller.getElementsByClassName("transcript__row"),
-      scroller.getBoundingClientRect().top,
-      (row) => (row as HTMLElement).dataset.transcriptRow,
-    );
-    reading.current = anchor;
-    return (anchor && rowItems().get(anchor.key)) ?? undefined;
+    if (!scroller) return null;
+    if (tailRef.current.follows && !historicalRef.current) return undefined;
+    const rows = scroller.getElementsByClassName("transcript__row");
+    const key = (row: Element) => (row as HTMLElement).dataset.transcriptRow;
+    const anchor = findReadingAnchor(rows, scroller.getBoundingClientRect().top, key);
+    const itemId = anchor && rowItems().get(anchor.key);
+    if (!anchor || !itemId) return null;
+    const index = Array.prototype.findIndex.call(rows, (row: Element) => key(row) === anchor.key);
+    reading.current = { ...anchor, neighbours: neighbourKeys(rows, index, key) };
+    return itemId;
   };
   const measure = useRef(measureNow);
   measure.current = measureNow;
@@ -678,18 +693,19 @@ function ThreadView({
     hostClient.setTranscriptPosition(thread.id, () => measure.current());
     return () => hostClient.setTranscriptPosition(thread.id, null);
   }, [hostClient, thread.id]);
-  // A repair replaces the rows on screen: the reader's row is put back where it stood, as soon as
-  // it is there again, and the reader stays where they were rather than at the foot.
-  const seenRepairs = useRef(repairs);
+  // A new cut (a repair, or a new subscription's snapshot) replaces the rows on screen: the row
+  // measured just before it is put back where it stood, or its nearest surviving neighbour, or
+  // the reader follows the latest. Never wherever the browser left the scroll.
+  const seenCuts = useRef(cuts);
   useLayoutEffect(() => {
-    if (seenRepairs.current === repairs) return;
-    seenRepairs.current = repairs;
+    if (seenCuts.current === cuts) return;
+    seenCuts.current = cuts;
     const measured = reading.current;
     reading.current = null;
     if (tailRef.current.follows || !measured) return;
     restoring.current = measured;
     restoreReading();
-  }, [repairs]);
+  }, [cuts]);
   useLayoutEffect(() => {
     keepTailInView();
   }, [conversation, inputQueue, keyboardInset, phoneStage, requests]);

@@ -27,6 +27,8 @@ export interface ThreadViewState {
   readonly generation?: number;
   /** Counts the Host's repairs of this scope: each replaced what the reader holds. */
   readonly repairs?: number;
+  /** Counts every snapshot installed (a subscription's cut or a repair): each replaced the rows. */
+  readonly cuts?: number;
   readonly pendingRequestIds?: readonly string[];
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
@@ -278,6 +280,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       requestChanged ||
       state.generation !== this.#view.generation ||
       state.repairs !== this.#view.repairs ||
+      state.cuts !== this.#view.cuts ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
@@ -298,6 +301,7 @@ export class ScopedThreadReader implements ThreadViewSource {
             : (this.#view.pendingRequestIds ?? []),
         generation: state.generation,
         repairs: state.repairs,
+        cuts: state.cuts,
         inputQueueError,
         synchronized: state.synchronized,
       });
@@ -458,7 +462,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   /** The view's one-shot measurement of the row in view, asked only when the position is needed. */
-  setMeasure(measure: (() => string | undefined) | undefined) {
+  setMeasure(measure: (() => string | undefined | null) | undefined) {
     this.#detail.measure = measure;
   }
 

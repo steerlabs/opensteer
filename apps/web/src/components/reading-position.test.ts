@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { anchorCorrection, findReadingAnchor, readingAnchor } from "./reading-position.js";
+import {
+  anchorCorrection,
+  findReadingAnchor,
+  neighbourKeys,
+  readingAnchor,
+  restoreTarget,
+} from "./reading-position.js";
 
 describe("reading position", () => {
   const rows = [
@@ -58,5 +64,34 @@ describe("finding the row in view", () => {
         "a scroll frame read rows in proportion to the transcript",
       ).toBeLessThan(20);
     }
+  });
+});
+
+describe("putting the reader back after a replacement", () => {
+  const anchor = { key: "c", offset: -30, neighbours: ["b", "a", "d", "e"] };
+  const drawn =
+    (...keys: string[]) =>
+    (key: string) =>
+      keys.includes(key) ? key : null;
+
+  it("is the measured row when it is still there", () => {
+    expect(restoreTarget(anchor, drawn("a", "b", "c", "d"))).toBe("c");
+  });
+  it("is the nearest surviving older neighbour, else the nearest newer one", () => {
+    expect(restoreTarget(anchor, drawn("a", "b", "d"))).toBe("b");
+    expect(restoreTarget(anchor, drawn("a", "d"))).toBe("a");
+    expect(restoreTarget(anchor, drawn("d", "e"))).toBe("d");
+  });
+  it("is the latest when nothing measured is left, never wherever the scroll was", () => {
+    expect(restoreTarget(anchor, drawn("x", "y"))).toBe("latest");
+  });
+  it("records the neighbours nearest first, older then newer", () => {
+    const rows = ["a", "b", "c", "d", "e"].map((key) => ({ key }) as unknown as Element);
+    expect(neighbourKeys(rows, 2, (row) => (row as unknown as { key: string }).key)).toEqual([
+      "b",
+      "a",
+      "d",
+      "e",
+    ]);
   });
 });

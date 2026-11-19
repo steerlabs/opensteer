@@ -4856,7 +4856,7 @@ export class MockHostClient implements HostClient {
     return result.ok ? result.data : undefined;
   }
 
-  setTranscriptPosition(_threadId: string, _measure: (() => string | undefined) | null) {}
+  setTranscriptPosition(_threadId: string, _measure: (() => string | undefined | null) | null) {}
 
   revealedTranscriptMove(_threadId: string) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {

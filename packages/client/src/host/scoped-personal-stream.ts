@@ -64,14 +64,13 @@ export interface ObservedDetail {
    * The view's one-shot measurement of the row in view: undefined at the latest messages. Asked
    * only when the position is needed (a repair, a subscription) and no move is under way.
    */
-  measure?: (() => string | undefined) | undefined;
+  measure?: (() => string | undefined | null) | undefined;
   /**
    * A move under way owns the position until it has landed (the view revealed its target) or
    * failed: its target is the anchor. `read` once its page is installed and the view is to reveal.
    */
   moving?:
-    | { readonly intent: number; readonly target: string | undefined; read?: boolean }
-    | undefined;
+    { readonly intent: number; readonly target: string | undefined; read?: boolean } | undefined;
   /**
    * The reader's explicit moves, numbered (a jump, a link, Return to latest). A jump's page, a
    * repair's reread and a subscription's first cut act only for the move they began under.
@@ -830,10 +829,12 @@ export class ScopedPersonalStream {
    * otherwise the view measures the row in view, once, now; otherwise the last explicit anchor.
    */
   #position(detail: ObservedDetail) {
+    // A measurement that cannot tell (null: the view is mid-layout) keeps the last place.
+    const measured = detail.moving ? undefined : detail.measure?.();
     const at = detail.moving
       ? detail.moving.target
-      : detail.measure
-        ? detail.measure()
+      : detail.measure && measured !== null
+        ? measured
         : detail.anchor;
     if (at === undefined) delete detail.anchor;
     else detail.anchor = at;

@@ -793,23 +793,42 @@ function ThreadPaneForUser(
     ({ viewableItems }: { viewableItems: readonly { item: TranscriptItem }[] }) => {
       const row = viewableItems[0]?.item;
       if (row?.kind !== "group") return;
-      const group = row.group;
-      const entry =
-        group.kind === "turn"
-          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
-          : group.entry;
-      visibleItem.current =
-        (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
+      visibleItem.current = rowItemId(row);
     },
   ).current;
   // Where the reader is, asked only when the client needs it (a repair, a subscription): the row
   // the list last reported at the top of the screen, or none while following the latest.
+  // Measured, the row also records its neighbours, nearest first (older, then newer), so a new cut
+  // that lost it puts the reader on the nearest one left, or at the latest.
   const following = useRef(true);
   following.current = atTail && !historical;
+  const measured = useRef<{ readonly targets: readonly string[] } | null>(null);
+  const shownItems = useRef<readonly TranscriptItem[]>([]);
   useEffect(() => {
-    hostClient.setTranscriptPosition(threadId, () =>
-      following.current ? undefined : visibleItem.current,
-    );
+    hostClient.setTranscriptPosition(threadId, () => {
+      measured.current = null;
+      if (following.current) return undefined;
+      const itemId = visibleItem.current;
+      // Nothing reported yet: the list cannot tell, and the last place stands.
+      if (itemId === undefined) return null;
+      const rows = shownItems.current;
+      const index = rows.findIndex((row) => rowItemId(row) === itemId);
+      const near = (from: number, to: number, step: number) => {
+        const ids: string[] = [];
+        for (let at = from; at !== to && ids.length < 25; at += step) {
+          const id = rowItemId(rows[at]!);
+          if (id) ids.push(id);
+        }
+        return ids;
+      };
+      measured.current = {
+        targets: [
+          itemId,
+          ...(index < 0 ? [] : [...near(index - 1, -1, -1), ...near(index + 1, rows.length, 1)]),
+        ],
+      };
+      return itemId;
+    });
     return () => hostClient.setTranscriptPosition(threadId, null);
   }, [hostClient, threadId]);
   const loadEarlier = useCallback(() => {
@@ -1185,6 +1204,33 @@ function ThreadPaneForUser(
     // Spaced as if the held turn were drawn, so drawing it later changes nothing below it.
     return heldHead === 0 ? rows : rows.slice(heldHead);
   }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
+  shownItems.current = items;
+
+  // A new cut (a repair, or a new subscription's snapshot) replaced the rows: the reader goes back
+  // to the row measured just before it, else its nearest surviving neighbour, else the latest.
+  // Until they drag, a reread that brings the measured row back puts them on it.
+  const cuts = threadDetail.cuts ?? 0;
+  const seenCuts = useRef(cuts);
+  const restoring = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    if (seenCuts.current !== cuts) {
+      seenCuts.current = cuts;
+      restoring.current = following.current ? null : (measured.current?.targets ?? null);
+      measured.current = null;
+    }
+    const targets = restoring.current;
+    if (!targets) return;
+    const index = targets
+      .map((target) => items.findIndex((row) => rowItemId(row) === target))
+      .find((found) => found >= 0);
+    if (index === undefined) {
+      follow(true);
+      scrollToLatest(false);
+      return;
+    }
+    listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0 });
+    if (rowItemId(items[index]!) === targets[0]) restoring.current = null;
+  }, [cuts, follow, items, scrollToLatest]);
 
   const queueFooter = useMemo(
     () =>
@@ -1482,6 +1528,7 @@ function ThreadPaneForUser(
           onViewableItemsChanged={onVisibleItems}
           onScrollBeginDrag={() => {
             dragging.current = true;
+            restoring.current = null;
           }}
           onScrollEndDrag={() => {
             dragging.current = false;
@@ -2056,4 +2103,15 @@ function useChannelName(teamId: string | null, channelId: string | null): string
     [session],
   );
   return useSyncExternalStore(subscribe, read, read);
+}
+
+/** The item a transcript row stands for: its first, which is what an anchor names. */
+function rowItemId(row: TranscriptItem): string | undefined {
+  if (row.kind !== "group") return undefined;
+  const group = row.group;
+  const entry =
+    group.kind === "turn"
+      ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+      : group.entry;
+  return (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
 }

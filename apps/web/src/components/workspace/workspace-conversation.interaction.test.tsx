@@ -964,7 +964,7 @@ describe("a conversation's foot", () => {
     // The Host's repairs of this conversation, as its reader counts them.
     let repairs = 0;
     const long = "thr_00000000-0000-4000-8000-000000000005";
-    let measure: (() => string | undefined) | null = null;
+    let measure: (() => string | undefined | null) | null = null;
     const anchors = vi.fn();
     const watch = (source: MockHostClient) => {
       const real = source.getThreadTranscript.bind(source);
@@ -977,7 +977,82 @@ describe("a conversation's foot", () => {
             const current = view.getSnapshot();
             const held = views.get(current) ?? new Map<number, object>();
             views.set(current, held);
-            if (!held.has(repairs)) held.set(repairs, { ...current, repairs });
+            if (!held.has(repairs)) held.set(repairs, { ...current, repairs, cuts: repairs + 1 });
+            return held.get(repairs) as typeof current;
+          },
+        };
+      });
+      // The one-shot measurement the view gives the client, and any report it might make.
+      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
+        measure = given;
+      });
+      Object.assign(source, { setTranscriptAnchor: anchors });
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
+    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
+    // Each row is 100px tall; `above` is what a repair adds over them.
+    const geometry = { content: rows().length * 100 + 400, above: 0 };
+    transcriptGeometry(geometry);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const index = rows().indexOf(this);
+      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
+      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+    });
+    const frame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
+    await frame();
+    expect(measure, "the view gave the client no way to ask").not.toBeNull();
+    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
+
+    // The reader scrolls up to stand 30px into the second row. Nobody is told.
+    await scrollTo(scroller, 130);
+    await frame();
+    expect(anchors).not.toHaveBeenCalled();
+    // The client asks, as it does when a repair arrives, before the repair changes the rows.
+    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
+
+    // A repair lays the conversation out again with 300px more above that row.
+    geometry.above = 300;
+    geometry.content += 300;
+    repairs = 1;
+    await act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: long,
+        content: [{ type: "text", text: "Arrived with the repair" }],
+        delivery: "queue",
+        idempotencyKey: "repair-arrival",
+      });
+    });
+    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
+    expect(element(".transcript__jump")).not.toBeNull();
+  });
+
+  it("a new subscription's snapshot, not only a repair, puts the measured row back where it stood", async () => {
+    // The Host's repairs of this conversation, as its reader counts them.
+    let repairs = 0;
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    let measure: (() => string | undefined | null) | null = null;
+    const anchors = vi.fn();
+    const watch = (source: MockHostClient) => {
+      const real = source.getThreadTranscript.bind(source);
+      const views = new WeakMap<object, Map<number, object>>();
+      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
+        const view = real(threadId);
+        return {
+          subscribe: view.subscribe,
+          getSnapshot: () => {
+            const current = view.getSnapshot();
+            const held = views.get(current) ?? new Map<number, object>();
+            views.set(current, held);
+            if (!held.has(repairs))
+              held.set(repairs, { ...current, repairs: 0, cuts: repairs + 1 });
             return held.get(repairs) as typeof current;
           },
         };

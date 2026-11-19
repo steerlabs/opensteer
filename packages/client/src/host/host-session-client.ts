@@ -363,7 +363,7 @@ export class HttpHostClient {
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
   /** Each task view's one-shot measurement of the row in view, for its reader. */
-  readonly #positionMeasures = new Map<string, () => string | undefined>();
+  readonly #positionMeasures = new Map<string, () => string | undefined | null>();
   /** When each assignment was last pushed, by a counter a read notes as it begins. */
   readonly #assignmentPushes = new Map<string, number>();
   /** Every task whose assignments were asked for under this viewer. */
@@ -1352,7 +1352,7 @@ export class HttpHostClient {
     this.#reader(threadId)?.revealed();
   }
 
-  setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null) {
+  setTranscriptPosition(threadId: string, measure: (() => string | undefined | null) | null) {
     // Kept for the task's reader, which may be made after the view mounts.
     if (measure) this.#positionMeasures.set(threadId, measure);
     else this.#positionMeasures.delete(threadId);

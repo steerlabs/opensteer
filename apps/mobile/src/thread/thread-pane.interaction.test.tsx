@@ -138,6 +138,8 @@ const harness = vi.hoisted(() => ({
   /** The notices this reader put away, one store value as a snapshot must be. */
   dismissed: new Set<string>(),
   /** Where the screen's bar options go, as the native stack would take them. */
+  /** The snapshots the fake transcript view says were installed: a test bumps it for a new cut. */
+  cuts: 0,
   setOptions: null as ((options: Record<string, unknown>) => void) | null,
   /** The transcript list's props as last rendered, to drive its native events. */
   list: null as null | {
@@ -850,6 +852,7 @@ afterEach(() => {
   harness.insets = { bottom: 0, left: 0, right: 0, top: 0 };
   harness.layouts.clear();
   harness.list = null;
+  harness.cuts = 0;
   harness.setOptions = null;
 });
 
@@ -1394,6 +1397,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
       hasMore: value.transcriptWindows[id]?.hasMore ?? false,
       hasNewer: false,
       moreRequests: false,
+      cuts: harness.cuts,
     };
   }
   function transcriptView(value: TranscriptFixtureSnapshot, id: string) {
@@ -1406,6 +1410,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
       existing.inputQueue === next.inputQueue &&
       existing.synchronized === next.synchronized &&
       existing.hasMore === next.hasMore &&
+      existing.cuts === next.cuts &&
       existing.runQueue.length === next.runQueue.length &&
       existing.runQueue.every((run, index) => run === next.runQueue[index])
     )
@@ -2571,6 +2576,62 @@ describe("a link into Chat", () => {
     });
     // The question is row 0; the reply that answered it is row 1.
     expect(harness.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
+  });
+
+  it("after a new cut puts the reader back on the row measured before it, or at the latest when it is gone", async () => {
+    const chat = chatAtWork();
+    const initial = snapshotFor({ entries: chat.entries, run: null, threadId: conversationId });
+    const host = fakeHost(initial);
+    const { rerender } = await mount(host, conversationId);
+    const list = () => harness.list!;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined | null)();
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 1000);
+    });
+    const rows = list().data!;
+    const at = rows.findIndex(
+      (row, index) => index > 0 && (row as { kind?: string }).kind === "group",
+    );
+    expect(at, "the conversation drew too few rows").toBeGreaterThan(0);
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[at] }] }));
+    act(() => {
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 0 },
+          contentSize: { height: 1000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    // The client asks, as it does just before a new cut replaces the rows.
+    expect(measure()).toEqual(expect.any(String));
+    harness.scrollToIndex.mockClear();
+    harness.cuts = 1;
+    await rerender();
+    expect(harness.scrollToIndex).toHaveBeenLastCalledWith({
+      animated: false,
+      index: at,
+      viewPosition: 0,
+    });
+
+    // Measured again; the next cut holds none of what was measured: the reader follows the latest.
+    expect(measure()).toEqual(expect.any(String));
+    harness.scrollToOffset.mockClear();
+    harness.cuts = 2;
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: [said("Something else entirely", null)],
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    expect(harness.scrollToOffset).toHaveBeenCalled();
   });
 
   it("goes to a linked reply in place, opening nothing over it", async () => {
