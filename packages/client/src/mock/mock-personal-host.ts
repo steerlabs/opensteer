@@ -112,6 +112,7 @@ export class MockPersonalHost {
               throughSequence: revision,
               snapshot,
             });
+            if (scope.kind !== "shell") this.#live(socket, state, held, true);
           } else if (scope.kind !== "shell" && subscriptionId !== "shell") {
             socket.deliver({
               type: "host.removed",
@@ -246,20 +247,37 @@ export class MockPersonalHost {
     else this.#live(socket, state, subscription);
   }
 
-  #live(socket: MockPersonalSocket, state: SocketState, subscription: Subscription) {
+  #live(
+    socket: MockPersonalSocket,
+    state: SocketState,
+    subscription: Subscription,
+    repair = false,
+  ) {
     const { scope, subscriptionId, generation } = subscription;
     if (scope.kind === "shell" || subscriptionId === "shell") return;
     const latest = this.client.scopedLive(scope, subscriptionId, generation, this.#through);
-    const current = new Set(latest.map(({ streamId }) => streamId));
-    for (const frame of state.live.get(subscriptionId) ?? []) {
-      if (frame.generation === generation && !current.has(frame.streamId)) {
-        const { item: _item, ...address } = frame;
-        socket.deliver({
-          ...address,
-          handle: ++state.handles,
-          afterSequence: this.#through,
-          update: { operation: "close" },
-        });
+    // After an inline repair, as the Host does: name the streams still open, which drops every
+    // other, then name each again. Otherwise a stream that ended is closed on its own.
+    if (repair)
+      socket.deliver({
+        type: "host.live-reset",
+        subscriptionId,
+        generation,
+        scope,
+        open: latest.slice(0, 16).map(({ runId, streamId }) => ({ runId, streamId })),
+      });
+    else {
+      const current = new Set(latest.map(({ streamId }) => streamId));
+      for (const frame of state.live.get(subscriptionId) ?? []) {
+        if (frame.generation === generation && !current.has(frame.streamId)) {
+          const { item: _item, ...address } = frame;
+          socket.deliver({
+            ...address,
+            handle: ++state.handles,
+            afterSequence: this.#through,
+            update: { operation: "close" },
+          });
+        }
       }
     }
     state.live.set(subscriptionId, latest);

@@ -5,7 +5,9 @@ import type {
   TranscriptItemResult,
   TranscriptOrderCursor,
 } from "@opensteer/protocol/transcript";
-import type { RunQueueEntry, TranscriptEntry } from "./client.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
+import { HostClientRequestError, type RunQueueEntry, type TranscriptEntry } from "./client.js";
+import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
 import { transcriptCard } from "./transcript-item-view.js";
@@ -23,6 +25,8 @@ export interface ThreadViewState {
   readonly inputQueue: PersonalInputQueue | null;
   readonly synchronized: boolean;
   readonly generation?: number;
+  /** Counts the Host's repairs of this scope: each replaced what the reader holds. */
+  readonly repairs?: number;
   readonly pendingRequestIds?: readonly string[];
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
@@ -49,8 +53,6 @@ export interface ThreadViewSource {
 }
 
 type Overlay = "requests" | "tools" | "nodes";
-type OverlayRead = Awaited<ReturnType<HostApiClient["thread.overlays.page"]>>;
-type OverlayPage = Extract<OverlayRead, { ok: true }>["data"];
 type RequestSummaries = NonNullable<
   ReturnType<ObservedDetail["transcript"]["getSnapshot"]>["snapshot"]
 >["pendingRequests"];
@@ -113,21 +115,17 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #listeners = new Set<() => void>();
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #liveCards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
-  readonly #overlayReads = new Map<Overlay, number>();
-  #queue: { generation: number; repairs: number; promise: Promise<PersonalInputQueue> } | undefined;
-  /** Overlay pages the person loaded past the cut, read again after a repair. */
-  readonly #overlayPages = new Map<Overlay, number>();
-  #overlayGeneration = 0;
+  /** Every read that installs into the detail: fenced by its generation and repair count. */
+  readonly #reads: FencedReads;
+  /** Overlay pages the person loaded past the cut; a repair reads them again to this depth. */
+  readonly #overlayDepth = new Map<Overlay, number>();
+  readonly #overlayLoaded = new Map<Overlay, { epoch: string; pages: number }>();
   #repairs = 0;
-  /** The queue cut last read to fill omitted entries: read once per queue revision and repair. */
+  /** The queue cut a tail read filled: it is read once per queue revision and repair. */
   #queueFilled: string | undefined;
-  #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
+  #queueFailure: { cut: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
-  /** A failed Request read tries again, backing off, while the same pending cut stands. */
-  #requestRetry: { timer: ReturnType<typeof setTimeout>; attempt: number } | undefined;
-  #requestAttempt = 0;
   readonly #reviewedRevisions = new Map<string, string>();
-  #historyRead = 0;
   #rows: ReadonlyMap<string, TranscriptItem> | undefined;
   #liveRows: ReadonlyMap<string, TranscriptItem> | undefined;
   #queueRows: unknown;
@@ -139,6 +137,7 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#detail = detail;
     this.#rpc = rpc;
     this.#bodies = bodies;
+    this.#reads = new FencedReads({ epoch: () => readEpoch(detail.transcript.getSnapshot()) });
     // Node progress is not merged here: each row reads its own from the item text store.
     const unsubscribe = listen ? detail.transcript.subscribe(() => this.#update()) : undefined;
     this.#release = () => unsubscribe?.();
@@ -146,6 +145,8 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   getSnapshot = () => this.#view;
+  #disposed = false;
+  #newest = true;
 
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
@@ -155,8 +156,8 @@ export class ScopedThreadReader implements ThreadViewSource {
   };
 
   dispose() {
-    this.#cancelRequestRetry();
-    this.#historyRead++;
+    this.#disposed = true;
+    this.#reads.dispose();
     this.#release();
     this.#listeners.clear();
   }
@@ -174,7 +175,12 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#bodyGeneration = state.generation;
     }
     let entries = this.#view.entries;
-    if (this.#rows !== state.items || this.#liveRows !== state.liveItems) {
+    if (
+      this.#rows !== state.items ||
+      this.#liveRows !== state.liveItems ||
+      this.#newest !== state.newest
+    ) {
+      this.#newest = state.newest;
       for (const [id, item] of this.#rows ?? [])
         if (state.items.get(id) !== item) this.#bodies.remove(this.#bodyKey(id));
       this.#rows = state.items;
@@ -220,41 +226,34 @@ export class ScopedThreadReader implements ThreadViewSource {
     const moreNodes = state.synchronized && state.snapshot?.overlayCursors?.nodes != null;
     const pending = state.snapshot?.pendingRequests;
     const inputQueueError =
-      this.#queueFailure?.generation === state.generation &&
-      this.#queueFailure.revision === state.snapshot?.queue?.revision
-        ? this.#queueFailure.error
-        : undefined;
+      this.#queueFailure?.cut === queueCut(state) ? this.#queueFailure.error : undefined;
     const requestChanged =
       pending !== this.#requestCut ||
       (state.synchronized && this.#requestGeneration !== state.generation);
     if (requestChanged) {
-      this.#cancelRequestRetry();
-      this.#requestAttempt = 0;
       this.#requestCut = pending;
       if (this.#requestGeneration !== state.generation || !state.synchronized)
         this.#reviewedRevisions.clear();
       if (state.synchronized) this.#requestGeneration = state.generation;
-      if (state.synchronized && pending?.length) this.#reviewRequests(pending, state.generation);
+      this.#reads.changed("requests");
+      if (state.synchronized && pending?.length)
+        void this.#reads
+          .request("requests", (read) => this.#readRequests(read), { observed: this.#observed })
+          .catch(() => undefined);
     }
     if (
       state.synchronized &&
       this.#detail.scope.kind === "thread" &&
-      this.#detail.controller &&
       missingQueueEntries(state) &&
       inputQueueError === undefined &&
-      this.#queue === undefined &&
-      this.#queueFilled !== queueCut(state)
+      this.#queueFilled !== queueCut(state) &&
+      !this.#reads.busy("queue")
     )
       void this.queue().catch(() => undefined);
-    if (this.#overlayGeneration !== state.generation) {
-      this.#overlayGeneration = state.generation;
-      this.#overlayPages.clear();
-      this.#repairs = state.repairs;
-    }
     if (state.synchronized && state.repairs !== this.#repairs) {
       this.#repairs = state.repairs;
-      void this.#afterRepair(state.generation, state.repairs).catch(() => undefined);
-    }
+      this.#afterRepair();
+    } else if (!state.synchronized) this.#repairs = state.repairs;
     const requests = !state.synchronized
       ? emptyThreadView.requests
       : requestChanged
@@ -276,6 +275,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       moreNodes !== this.#view.moreNodes ||
       requestChanged ||
       state.generation !== this.#view.generation ||
+      state.repairs !== this.#view.repairs ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
@@ -295,78 +295,44 @@ export class ScopedThreadReader implements ThreadViewSource {
             ? (pending?.map(({ id }) => id) ?? [])
             : (this.#view.pendingRequestIds ?? []),
         generation: state.generation,
+        repairs: state.repairs,
         inputQueueError,
         synchronized: state.synchronized,
       });
     }
   }
 
-  #reviewRequests(pending: RequestSummaries, generation: number) {
-    void this.#readRequests(pending, generation).then(
-      (complete) => {
-        if (!complete) this.#retryRequests(pending, generation);
-      },
-      () => this.#retryRequests(pending, generation),
+  /** The scope is subscribed and its cut current: reads may run and install. */
+  readonly #observed = () => {
+    const controller = this.#detail.controller;
+    return (
+      controller !== undefined &&
+      !controller.signal.aborted &&
+      this.#detail.transcript.getSnapshot().synchronized
     );
-  }
+  };
 
-  #retryRequests(pending: RequestSummaries, generation: number) {
-    const signal = this.#detail.controller?.signal;
+  /** Reads the full Requests behind the pending summaries this cut holds. */
+  async #readRequests(read: FencedRead) {
     const state = this.#detail.transcript.getSnapshot();
-    if (
-      !signal ||
-      signal.aborted ||
-      this.#requestRetry ||
-      state.generation !== generation ||
-      state.snapshot?.pendingRequests !== pending
-    )
-      return;
-    const attempt = ++this.#requestAttempt;
-    const delay = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
-    const timer = setTimeout(() => {
-      this.#requestRetry = undefined;
-      signal.removeEventListener("abort", stop);
-      this.#reviewRequests(pending, generation);
-    }, delay);
-    const stop = () => this.#cancelRequestRetry();
-    signal.addEventListener("abort", stop, { once: true });
-    this.#requestRetry = { timer, attempt };
-  }
-
-  #cancelRequestRetry() {
-    if (this.#requestRetry) clearTimeout(this.#requestRetry.timer);
-    this.#requestRetry = undefined;
-  }
-
-  /** Resolves false when some pending Request could not be read and needs another try. */
-  async #readRequests(pending: RequestSummaries, generation: number): Promise<boolean> {
-    const signal = this.#detail.controller?.signal;
-    if (!signal) return true;
+    const pending = state.snapshot?.pendingRequests ?? [];
     const { threadId } = this.#detail.scope;
     const held = new Map(this.#view.requests.map((request) => [request.id, request]));
     const missing = pending.filter(
       ({ id, revision }) => !held.has(id) || revision !== this.#reviewedRevisions.get(id),
     );
-    if (!missing.length) return true;
+    if (!missing.length) return;
     const reads = [];
     for (let i = 0; i < missing.length; i += 20) {
       const review = missing.slice(i, i + 20).map(({ id, revision }) => ({ id, revision }));
       reads.push(
-        this.#rpc["thread.requests.list"]({ threadId, review }, { signal }).then((result) => ({
-          review,
-          result,
-        })),
+        this.#rpc
+          ["thread.requests.list"]({ threadId, review }, { signal: read.signal })
+          .then((result) => ({ review, result })),
       );
     }
     const results = await Promise.all(reads);
-    const state = this.#detail.transcript.getSnapshot();
-    if (
-      signal.aborted ||
-      state.generation !== generation ||
-      state.snapshot?.pendingRequests !== pending
-    )
-      return true;
-    const failed = results.some(({ result }) => !result.ok);
+    if (!read.current()) return;
     const requests = new Map<string, Request & { reviewedRevision?: string | undefined }>(
       this.#view.requests.map((request) => [request.id, request]),
     );
@@ -393,168 +359,215 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#reviewedRevisions.set(id, revision);
       return [request];
     });
-    this.#publish({
-      ...this.#view,
-      requests: reviewed,
-    });
-    if (!failed) this.#requestAttempt = 0;
-    return !failed;
+    this.#publish({ ...this.#view, requests: reviewed });
+    // What could not be read is read again, backing off, while this cut stands.
+    const failed = results.find(({ result }) => !result.ok)?.result;
+    if (failed && !failed.ok) unwrapRpcResult(failed);
   }
 
-  /** The waiting messages; reads the Host once when the snapshot had no room for some. */
-  queue() {
+  /** The waiting messages; reads the tail once when the cut had no room for some. */
+  async queue(): Promise<PersonalInputQueue> {
     const state = this.#detail.transcript.getSnapshot();
     if (state.synchronized && state.inputQueue && !missingQueueEntries(state))
-      return Promise.resolve(state.inputQueue);
-    const existing = this.#queue;
-    if (existing?.generation === state.generation && existing.repairs === state.repairs)
-      return existing.promise;
-    const signal = this.#detail.controller?.signal;
-    if (!signal || !state.synchronized)
-      return Promise.reject(new Error("This conversation is syncing."));
-    const promise = this.#readQueue(state.generation, signal).finally(() => {
-      if (this.#queue?.promise === promise) {
-        this.#queue = undefined;
-        this.#update();
-      }
+      return state.inputQueue;
+    if (!this.#observed()) throw new Error("This conversation is syncing.");
+    await this.#reads.request("queue", (read) => this.#readQueue(read), {
+      observed: this.#observed,
     });
-    this.#queue = { generation: state.generation, repairs: state.repairs, promise };
-    return promise;
+    const now = this.#detail.transcript.getSnapshot();
+    if (!now.inputQueue) throw new Error("The conversation changed while reading its queue.");
+    return now.inputQueue;
   }
 
-  async #readQueue(generation: number, signal: AbortSignal): Promise<PersonalInputQueue> {
-    const revision = this.#detail.transcript.getSnapshot().snapshot?.queue?.revision ?? "0";
+  async #readQueue(read: FencedRead) {
+    const cut = queueCut(this.#detail.transcript.getSnapshot());
     try {
       const queue = unwrapRpcResult(
         await this.#rpc["thread.inputQueue.get"](
           { threadId: this.#detail.scope.threadId },
-          { signal },
+          { signal: read.signal },
         ),
       );
-      if (signal.aborted || this.#detail.transcript.getSnapshot().generation !== generation)
-        throw new Error("The conversation changed while reading its queue.");
+      if (!read.current()) return;
       if (queue.threadId !== this.#detail.scope.threadId)
         throw new Error("The Host returned a misaddressed input queue.");
+      const state = this.#detail.transcript.getSnapshot();
+      // A read the Host answered before the cut this client installed shows a queue since replaced.
+      if (
+        queue.asOfSequence !== undefined &&
+        state.snapshotThrough !== undefined &&
+        BigInt(queue.asOfSequence) < BigInt(state.snapshotThrough)
+      )
+        throw new HostClientRequestError({
+          code: "unavailable",
+          message: "The input queue was read before the conversation's latest cut.",
+          retryable: true,
+          status: 503,
+        });
       this.#queueFailure = undefined;
-      this.#queueFilled = queueCut(this.#detail.transcript.getSnapshot());
-      this.#detail.transcript.installQueueEntries(queue.items, generation);
-      return this.#detail.transcript.getSnapshot().inputQueue ?? queue;
+      this.#queueFilled = cut;
+      this.#detail.transcript.installQueueEntries(queue.items, state.generation);
     } catch (error) {
-      if (!signal.aborted && this.#detail.transcript.getSnapshot().generation === generation)
-        this.#queueFailure = { generation, revision, error };
+      if (read.current() && !classifyClientFailure(error).retryable) {
+        this.#queueFailure = { cut, error };
+        this.#update();
+      }
       throw error;
     }
   }
 
   /**
-   * A repair replaced the scope with the Host's cut. What the reader had read on top of the old
-   * state is read again: the page around its anchor, or the latest when it follows the tail, and
-   * as many overlay pages as the person had loaded. The queue and Requests reread by themselves.
+   * A repair replaced the scope with the Host's cut. What the reader had read on top of it is
+   * read again: around its anchor (or the latest at the tail), and the overlay pages the person
+   * had loaded. A history read already in flight runs again in the new cut instead, so a newer
+   * jump is never replaced by this reread. The queue and Requests reread by themselves.
    */
-  async #afterRepair(generation: number, repairs: number) {
-    const current = () => {
-      const state = this.#detail.transcript.getSnapshot();
-      return state.generation === generation && state.repairs === repairs;
-    };
+  #afterRepair() {
     const state = this.#detail.transcript.getSnapshot();
     const anchor = this.#detail.anchor;
-    const signal = this.#detail.controller?.signal;
-    if (anchor !== undefined && !state.items.has(anchor) && signal) {
-      const token = this.#detail.transcript.beginRead();
-      try {
-        const page = await this.#page(signal, null, undefined, anchor);
-        if (!current()) return;
-        if (page.kind === "page" && page.items.some(({ id }) => id === anchor))
-          this.#installPage([page, generation, "around", token], undefined);
-        else this.#detail.anchorTo(undefined);
-      } finally {
-        this.#detail.transcript.endRead(token);
-      }
-    }
-    if (this.#detail.anchor === undefined && !this.#detail.transcript.getSnapshot().newest)
-      await this.history("latest");
-    for (const [kind, pages] of this.#overlayPages)
-      for (let page = 0; page < pages && current(); page++)
-        if ((await this.#loadOverlayPage(kind)) === undefined) break;
+    if (
+      !this.#reads.busy("history") &&
+      (anchor !== undefined ? !state.items.has(anchor) : !state.newest)
+    )
+      void this.#reads
+        .request("history", (read) => this.#readHistory(read, { mode: "anchor" }), {
+          observed: this.#observed,
+        })
+        .catch(() => undefined);
+    for (const [kind, depth] of this.#overlayDepth)
+      if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
+  /** The row the reader is looking at as they scroll: none at the tail. */
   setAnchor(itemId: string | undefined) {
-    this.#detail.anchorTo(itemId);
+    this.#detail.anchorTo(itemId, true);
   }
 
-  async history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
+  /**
+   * Reads history for the reader. A newer request supersedes one in flight; one overtaken by a
+   * repair runs again in the new cut, so a jump lands even when a repair arrived first.
+   */
+  history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
+    if (this.#disposed) return Promise.resolve();
+    // The person waits on this read: a failure is theirs to see and retry. One asked for while the
+    // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
+    return this.#reads.request(
+      "history",
+      async (read) => {
+        if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
+          return;
+        await this.#readHistory(read, { mode, aroundMessageId });
+      },
+      { observed: () => !this.#disposed, retry: false },
+    );
+  }
+
+  #ready() {
+    return this.#observed() && this.#detail.transcript.getSnapshot().snapshot !== null;
+  }
+
+  /** Resolves once the scope is subscribed and its cut current; false when the read ended first. */
+  #untilObserved(signal: AbortSignal) {
+    return new Promise<boolean>((resolve) => {
+      const check = () => {
+        if (signal.aborted) finish(false);
+        else if (this.#ready()) finish(true);
+      };
+      const finish = (observed: boolean) => {
+        unsubscribe();
+        signal.removeEventListener("abort", check);
+        resolve(observed);
+      };
+      const unsubscribe = this.#detail.transcript.subscribe(check);
+      signal.addEventListener("abort", check);
+      check();
+    });
+  }
+
+  async #readHistory(
+    read: FencedRead,
+    intent: {
+      readonly mode: "earlier" | "newer" | "around" | "latest" | "anchor";
+      readonly aroundMessageId?: string | undefined;
+    },
+  ) {
     const state = this.#detail.transcript.getSnapshot();
-    const { generation, snapshot } = state;
-    const signal = this.#detail.controller?.signal;
-    if (!signal || !state.synchronized || !snapshot) return;
-    const before = mode === "earlier" ? snapshot.nextBefore : null;
-    const after = mode === "newer" ? snapshot.nextAfter : null;
-    if ((mode === "earlier" && !before) || (mode === "newer" && !after)) return;
-    const read = ++this.#historyRead;
+    const snapshot = state.snapshot;
+    if (!snapshot) return;
+    const { mode, aroundMessageId } = intent;
     const transcript = this.#detail.transcript;
     const token = transcript.beginRead();
     try {
-      await this.#history(mode, signal, generation, read, token, before, after, aroundMessageId);
+      if (mode === "anchor") {
+        const anchor = this.#detail.anchor;
+        if (anchor !== undefined && !state.items.has(anchor)) {
+          const page = await this.#page(read.signal, null, undefined, anchor);
+          // The reader scrolled on to a row this client holds: that is where they are now.
+          if (!read.current() || this.#detail.anchor !== anchor) return;
+          if (page.kind === "page" && page.items.some(({ id }) => id === anchor)) {
+            this.#installPage([page, state.generation, "around", token], undefined);
+            return;
+          }
+          // The Host no longer has the reader's row: the reader follows the latest messages.
+          this.#detail.anchorTo(undefined);
+        }
+        if (this.#detail.anchor !== undefined || transcript.getSnapshot().newest) return;
+        const latest = await this.#page(read.signal, null);
+        if (read.current() && latest.kind === "page")
+          this.#installPage([latest, state.generation, "latest", token], undefined);
+        return;
+      }
+      const before = mode === "earlier" ? snapshot.nextBefore : null;
+      const after = mode === "newer" ? snapshot.nextAfter : null;
+      if ((mode === "earlier" && !before) || (mode === "newer" && !after)) return;
+      const page = await this.#page(
+        read.signal,
+        before ?? null,
+        aroundMessageId,
+        undefined,
+        after ?? undefined,
+      );
+      if (!read.current()) return;
+      if (page.kind === "page") {
+        if (
+          aroundMessageId &&
+          !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
+        )
+          throw new HostClientRequestError({
+            code: "not_found",
+            message: "The requested message is unavailable.",
+            status: 404,
+          });
+        this.#installPage([page, state.generation, mode, token], aroundMessageId);
+        return;
+      }
+      const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
+      let reset = await this.#page(read.signal, null, aroundMessageId, anchor);
+      if (!read.current()) return;
+      if (anchor && (reset.kind !== "page" || !reset.items.some(({ id }) => id === anchor))) {
+        if (
+          !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
+          transcript.getSnapshot().items.has(anchor)
+        )
+          throw new Error("The history anchor is unavailable.");
+        this.#detail.anchorTo(undefined);
+        reset = await this.#page(read.signal, null, aroundMessageId);
+      }
+      if (read.current() && reset.kind === "page")
+        this.#installPage(
+          [
+            reset,
+            state.generation,
+            aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
+              ? "around"
+              : "latest",
+            token,
+          ],
+          aroundMessageId,
+        );
     } finally {
       transcript.endRead(token);
     }
-  }
-
-  async #history(
-    mode: "earlier" | "newer" | "around" | "latest",
-    signal: AbortSignal,
-    generation: number,
-    read: number,
-    token: number,
-    before: TranscriptOrderCursor | null | undefined,
-    after: TranscriptOrderCursor | null | undefined,
-    aroundMessageId: string | undefined,
-  ) {
-    const current = () =>
-      !signal.aborted &&
-      read === this.#historyRead &&
-      generation === this.#detail.transcript.getSnapshot().generation;
-    const page = await this.#page(
-      signal,
-      before ?? null,
-      aroundMessageId,
-      undefined,
-      after ?? undefined,
-    );
-    if (!current()) return;
-    if (page.kind === "page") {
-      if (
-        aroundMessageId &&
-        !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
-      )
-        throw new Error("The requested message is unavailable.");
-      this.#installPage([page, generation, mode, token], aroundMessageId);
-      return;
-    }
-    const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
-    let reset = await this.#page(signal, null, aroundMessageId, anchor);
-    if (!current()) return;
-    if (anchor && (reset.kind !== "page" || !reset.items.some(({ id }) => id === anchor))) {
-      if (
-        !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
-        this.#detail.transcript.getSnapshot().items.has(anchor)
-      )
-        throw new Error("The history anchor is unavailable.");
-      this.#detail.anchorTo(undefined);
-      reset = await this.#page(signal, null, aroundMessageId);
-    }
-    if (current() && reset.kind === "page")
-      this.#installPage(
-        [
-          reset,
-          generation,
-          aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
-            ? "around"
-            : "latest",
-          token,
-        ],
-        aroundMessageId,
-      );
   }
 
   #installPage(
@@ -567,8 +580,9 @@ export class ScopedThreadReader implements ThreadViewSource {
       const current = state.items.get(item.id);
       if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
     }
-    // The scope's anchor is where the reader is: none at the tail, the linked message after a jump.
-    if (state.newest) this.#detail.anchorTo(undefined);
+    // The scope's anchor is where the reader is: none back at the latest, the linked message after a
+    // jump. Paging keeps it: the reader still looks at the row they scrolled to.
+    if (args[2] === "latest" && state.newest) this.#detail.anchorTo(undefined);
     else if (aroundMessageId) {
       const target = args[0].items.find(
         (item) => item.kind === "message" && item.messageId === aroundMessageId,
@@ -641,55 +655,65 @@ export class ScopedThreadReader implements ThreadViewSource {
     return page;
   }
 
-  async loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
-    const page = await this.#loadOverlayPage(kind);
-    if (page) this.#overlayPages.set(kind, (this.#overlayPages.get(kind) ?? 0) + 1);
-    return page;
+  /** Loads one more page of `kind`; a repair reads the pages loaded so far again. */
+  async loadMoreOverlays(kind: Overlay): Promise<void> {
+    const state = this.#detail.transcript.getSnapshot();
+    if (!this.#observed() || !state.snapshot?.overlayCursors?.[kind]) return;
+    const loaded = this.#overlayLoaded.get(kind);
+    const pages = loaded?.epoch === readEpoch(state) ? loaded.pages : 0;
+    this.#overlayDepth.set(kind, Math.max(this.#overlayDepth.get(kind) ?? 0, pages + 1));
+    await this.#requestOverlays(kind, false);
   }
 
-  async #loadOverlayPage(kind: Overlay): Promise<OverlayPage | undefined> {
-    const { scope, controller } = this.#detail;
-    const state = this.#detail.transcript.getSnapshot();
-    const cursor = state.snapshot?.overlayCursors?.[kind];
-    if (!controller || !state.synchronized || !cursor || this.#overlayReads.has(kind)) return;
-    this.#overlayReads.set(kind, state.generation);
+  #requestOverlays(kind: Overlay, retry: boolean) {
+    return this.#reads.request(`overlay:${kind}`, (read) => this.#readOverlays(read, kind), {
+      observed: this.#observed,
+      retry,
+    });
+  }
+
+  /** Reads `kind`'s pages past the cut until the depth the person loaded, or the end. */
+  async #readOverlays(read: FencedRead, kind: Overlay) {
+    const { scope } = this.#detail;
     const nodeId = scope.kind === "node" ? scope.nodeId : null;
-    const token = this.#detail.transcript.beginRead();
-    try {
-      const result = await this.#rpc["thread.overlays.page"](
-        { threadId: scope.threadId, ...(nodeId ? { nodeId } : {}), kind, cursor },
-        { signal: controller.signal },
-      );
-      if (
-        controller.signal.aborted ||
-        this.#detail.transcript.getSnapshot().generation !== state.generation
-      )
-        return;
-      const page = unwrapRpcResult(result);
-      if (
-        page.threadId !== scope.threadId ||
-        page.nodeId !== nodeId ||
-        page.kind !== kind ||
-        page.entries.some(
-          (entry) =>
-            BigInt(entry.revision) > BigInt(page.revision) ||
-            (kind === "requests"
-              ? "position" in entry ||
-                entry.threadId !== scope.threadId ||
-                entry.status !== "pending"
-              : !("position" in entry) ||
-                entry.nodeId !== nodeId ||
-                entry.kind !== (kind === "tools" ? "tool" : "node")),
-        ) ||
-        (page.next !== null && (page.next === cursor || page.entries.length === 0))
-      )
-        throw new Error("The Host returned an overlay page for the wrong scope or cut.");
-      return this.#detail.transcript.installOverlays(kind, page, state.generation, token)
-        ? page
-        : undefined;
-    } finally {
-      this.#detail.transcript.endRead(token);
-      if (this.#overlayReads.get(kind) === state.generation) this.#overlayReads.delete(kind);
+    const epoch = readEpoch(this.#detail.transcript.getSnapshot());
+    for (;;) {
+      const state = this.#detail.transcript.getSnapshot();
+      const loaded = this.#overlayLoaded.get(kind);
+      const pages = loaded?.epoch === epoch ? loaded.pages : 0;
+      const cursor = state.snapshot?.overlayCursors?.[kind];
+      if (!cursor || pages >= (this.#overlayDepth.get(kind) ?? 0)) return;
+      const token = this.#detail.transcript.beginRead();
+      try {
+        const result = await this.#rpc["thread.overlays.page"](
+          { threadId: scope.threadId, ...(nodeId ? { nodeId } : {}), kind, cursor },
+          { signal: read.signal },
+        );
+        if (!read.current()) return;
+        const page = unwrapRpcResult(result);
+        if (
+          page.threadId !== scope.threadId ||
+          page.nodeId !== nodeId ||
+          page.kind !== kind ||
+          page.entries.some(
+            (entry) =>
+              BigInt(entry.revision) > BigInt(page.revision) ||
+              (kind === "requests"
+                ? "position" in entry ||
+                  entry.threadId !== scope.threadId ||
+                  entry.status !== "pending"
+                : !("position" in entry) ||
+                  entry.nodeId !== nodeId ||
+                  entry.kind !== (kind === "tools" ? "tool" : "node")),
+          ) ||
+          (page.next !== null && (page.next === cursor || page.entries.length === 0))
+        )
+          throw new Error("The Host returned an overlay page for the wrong scope or cut.");
+        if (!this.#detail.transcript.installOverlays(kind, page, state.generation, token)) return;
+        this.#overlayLoaded.set(kind, { epoch, pages: pages + 1 });
+      } finally {
+        this.#detail.transcript.endRead(token);
+      }
     }
   }
 
@@ -736,6 +760,11 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#bodies.put(key, value);
     return value;
   }
+}
+
+/** A detail's read epoch: a new subscription or a repair starts a new one. */
+function readEpoch(state: TranscriptState) {
+  return `${state.generation}:${state.repairs}`;
 }
 
 function queueCut(state: TranscriptState) {

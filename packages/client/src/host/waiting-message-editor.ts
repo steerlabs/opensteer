@@ -107,6 +107,10 @@ export async function openWaitingMessageEditor(
           renewing = false;
         });
     },
+    async read(revision: number) {
+      if (ended) throw new Error("This edit has already ended.");
+      return port.readRevision(threadId, messageId, revision, leaseId);
+    },
     async save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit> {
       if (ended) throw new Error("This edit has already ended.");
       const fingerprint = JSON.stringify([expectedRevision, content]);

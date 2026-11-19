@@ -5,6 +5,11 @@ import { messageDraftParts } from "./pending-send.js";
 export interface WaitingDraftSource {
   readonly revision: number;
   readonly content: readonly ContentPart[];
+  /**
+   * The full body at `revision`, read under the edit lease. Anything else (the queue's clipped
+   * preview) only shows: a draft opened from it is locked until the full body is read.
+   */
+  readonly full?: boolean;
 }
 
 /**
@@ -34,14 +39,17 @@ export interface WaitingDraft {
   /** The base version's words and how many parts it had, which `dirty` measures against. */
   readonly base: { readonly text: string; readonly parts: number };
   /**
-   * Shown from the queue's clipped preview while the full body is read. Nothing
-   * edits or saves it: the full body replaces it whole (`hydrateWaitingDraft`).
+   * Shown from the queue's clipped preview while the full body at `baseRevision` is read. Nothing
+   * edits or saves it: that full body replaces it whole (`hydrateWaitingDraft`). Every move to a
+   * new revision locks the field this way again, so a draft that can be saved was always built
+   * from the full body at the revision it names.
    */
   readonly loading: boolean;
 }
 
-/** A draft of `source` exactly as it stands; `loading` when `source` is only a preview. */
-export function openWaitingDraft(source: WaitingDraftSource, loading = false): WaitingDraft {
+/** A draft of `source` exactly as it stands; `loading` unless `source` is the full body. */
+export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
+  const loading = source.full !== true;
   const text = messageDraftParts(source.content).body;
   const parts = source.content.filter((part) => part.type !== "text");
   return {
@@ -77,24 +85,34 @@ export function removeWaitingDraftPart(draft: WaitingDraft, index: number): Wait
  */
 export function followWaitingDraft(draft: WaitingDraft, current: WaitingDraftSource): WaitingDraft {
   if (current.revision <= draft.baseRevision) return draft;
-  if (!draft.dirty) return openWaitingDraft(current, draft.loading);
+  // Untouched words move to the new version, locked until its full body is read.
+  if (!draft.dirty) return openWaitingDraft(current);
   return draft.conflict?.revision === current.revision ? draft : { ...draft, conflict: current };
 }
 
 /**
- * Installs the full body the lease read returned. A draft still showing the
- * preview is replaced whole: no words are ever kept from a preview. An open
- * draft (a lease taken again) follows it as `followWaitingDraft` does.
+ * Installs a full body read under the lease. A locked draft is replaced whole by the body at its
+ * revision or a newer one: no words are ever kept from a preview, and an older body leaves it
+ * locked. An open draft (a lease taken again) follows it as `followWaitingDraft` does.
  */
 export function hydrateWaitingDraft(
   draft: WaitingDraft,
-  current: WaitingDraftSource,
+  current: WaitingDraftSource & { readonly full: true },
 ): WaitingDraft {
-  if (draft.loading) return openWaitingDraft(current);
+  if (draft.loading)
+    return current.revision >= draft.baseRevision ? openWaitingDraft(current) : draft;
   return followWaitingDraft(draft, current);
 }
 
-/** Lets the person's words go for the newer version that arrived under them. */
+/** The revision whose full body a locked draft waits for; null when it can be edited. */
+export function waitingDraftAwaits(draft: WaitingDraft): number | null {
+  return draft.loading ? draft.baseRevision : null;
+}
+
+/**
+ * Lets the person's words go for the newer version that arrived under them; locked until that
+ * version's full body is read, unless the conflict carried it.
+ */
 export function reloadWaitingDraft(draft: WaitingDraft): WaitingDraft {
   return draft.conflict ? openWaitingDraft(draft.conflict) : draft;
 }

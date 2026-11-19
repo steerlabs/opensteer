@@ -180,6 +180,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           thread={thread}
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
+          repairs={transcript.repairs ?? 0}
         />
       ) : null}
     </Gated>
@@ -199,6 +200,8 @@ interface ThreadViewProps {
   inputQueueError?: unknown;
   entries: readonly TranscriptEntry[];
   detailCurrent?: boolean;
+  /** Counts the Host's repairs of this conversation: each replaced the rows on screen. */
+  repairs?: number;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -232,6 +235,7 @@ function ThreadView({
   requests,
   runQueue = noRuns,
   detailCurrent = true,
+  repairs = 0,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -613,7 +617,75 @@ function ThreadView({
     if (follows !== previous.follows) setFollows(follows);
   };
   const keepTailInView = () => readScroller(false);
-  const handleScroll = () => readScroller(true);
+  const handleScroll = () => {
+    readScroller(true);
+    if (readingFrame.current === null) readingFrame.current = requestAnimationFrame(measureReading);
+  };
+
+  /* ---- Reading position: the row in view ---- */
+
+  // Each row's first item, which is what the Host centres a repair or the next subscription on.
+  const rowItems = useMemo(() => {
+    let rows: Map<string, string> | undefined;
+    return () =>
+      (rows ??= new Map(
+        groupTranscriptEntries(conversation, { inputQueuePaused: thread.inputQueuePaused }).flatMap(
+          (group) => {
+            const first =
+              group.kind === "turn"
+                ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+                : group.entry;
+            return first
+              ? [[group.key, "itemId" in first ? (first.itemId ?? first.id) : first.id] as const]
+              : [];
+          },
+        ),
+      ));
+  }, [conversation, thread.inputQueuePaused]);
+  // The row the reader is looking at and where it stands, measured once a frame as they scroll.
+  const reading = useRef<ReadingAnchor | null>(null);
+  const readingFrame = useRef<number | null>(null);
+  const historicalRef = useRef(historical);
+  historicalRef.current = historical;
+  useEffect(
+    () => () => {
+      if (readingFrame.current !== null) cancelAnimationFrame(readingFrame.current);
+    },
+    [],
+  );
+  const measureReading = () => {
+    readingFrame.current = null;
+    const scroller = currentScroller();
+    // A position being put back is not where the reader chose to be until it is in place.
+    if (!scroller || restoring.current) return;
+    const top = scroller.getBoundingClientRect().top;
+    let anchor: ReadingAnchor | null = null;
+    for (const row of scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")) {
+      const box = row.getBoundingClientRect();
+      anchor = readingAnchor(
+        [{ key: row.dataset.transcriptRow!, top: box.top, bottom: box.bottom }],
+        top,
+      );
+      if (anchor) break;
+    }
+    reading.current = anchor;
+    if (tailRef.current.follows && !historicalRef.current)
+      hostClient.setTranscriptAnchor(thread.id, undefined);
+    else {
+      const itemId = anchor && rowItems().get(anchor.key);
+      if (itemId) hostClient.setTranscriptAnchor(thread.id, itemId);
+    }
+  };
+  // A repair replaces the rows on screen: the reader's row is put back where it stood, as soon as
+  // it is there again, and the reader stays where they were rather than at the foot.
+  const seenRepairs = useRef(repairs);
+  useLayoutEffect(() => {
+    if (seenRepairs.current === repairs) return;
+    seenRepairs.current = repairs;
+    if (tailRef.current.follows || !reading.current) return;
+    restoring.current = reading.current;
+    restoreReading();
+  }, [repairs]);
   useLayoutEffect(() => {
     keepTailInView();
   }, [conversation, inputQueue, keyboardInset, phoneStage, requests]);
@@ -741,18 +813,8 @@ function ThreadView({
         "itemId" in item ? (item.itemId ?? item.id) : item.id,
       );
     else if (anchorRow?.dataset.transcriptRow) {
-      const group = groupTranscriptEntries(conversation).find(
-        ({ key }) => key === anchorRow.dataset.transcriptRow,
-      );
-      const first =
-        group?.kind === "turn"
-          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
-          : group?.entry;
-      if (first)
-        hostClient.setTranscriptAnchor(
-          thread.id,
-          "itemId" in first ? (first.itemId ?? first.id) : first.id,
-        );
+      const first = rowItems().get(anchorRow.dataset.transcriptRow);
+      if (first) hostClient.setTranscriptAnchor(thread.id, first);
     }
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();

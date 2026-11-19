@@ -96,6 +96,10 @@ export interface ConnectionControllerOptions {
 
 /** Abort reasons that end a probe without failing the lease. */
 const probeAnsweredByProgress = new Error("A frame arrived while the probe was outstanding");
+/** A probe ended because frames arrived: the socket is alive, whatever became of its pong. */
+export function probeAnsweredByFrames(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason === probeAnsweredByProgress;
+}
 const probeSuspended = new Error("The app went to the background during the probe");
 
 export function createConnectionController(

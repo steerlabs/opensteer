@@ -149,6 +149,10 @@ const harness = vi.hoisted(() => ({
     readonly onScroll?: (event: object) => void;
     readonly onScrollBeginDrag?: () => void;
     readonly onScrollEndDrag?: () => void;
+    readonly onViewableItemsChanged?: (info: {
+      viewableItems: readonly { item: unknown }[];
+    }) => void;
+    readonly data?: readonly unknown[];
     readonly renderScrollComponent?: (props: object) => ReactElement<{
       readonly onContentInsetChange?: (insets: { bottom: number; top: number }) => void;
     }>;
@@ -263,7 +267,11 @@ vi.mock("react-native", async () => {
         aria-expanded={props.accessibilityState?.expanded}
         aria-label={props.accessibilityLabel}
         disabled={props.disabled}
-        onClick={props.onPress}
+        // As on a phone, the innermost Pressable takes the touch; one around it does not.
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onPress?.();
+        }}
       >
         {typeof props.children === "function" ? props.children({ pressed: false }) : props.children}
       </button>
@@ -1412,7 +1420,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
     activateThread: vi.fn(),
     observeThread: () => () => {},
     getThreadItemText: () => undefined,
-    setTranscriptAnchor: () => {},
+    setTranscriptAnchor: vi.fn((_threadId: string, _itemId: string | undefined) => {}),
     watchPersonalResource: () => () => {},
     getThreadTranscript: (id: string) => {
       return {
@@ -1456,6 +1464,15 @@ function fakeHost(initial: FixtureHostSnapshot) {
         ...editor,
         content: held.message.content,
         revision: held.message.edit?.revision ?? 0,
+        // A later version's full body, read under the same lease.
+        read: vi.fn(async (revision: number) => {
+          const now = snapshot.inputQueues[threadId]?.items.find(
+            ({ message }) => message.id === messageId,
+          );
+          if (!now || (now.message.edit?.revision ?? 0) !== revision)
+            throw new Error("That version is not the one waiting.");
+          return now.message.content;
+        }),
       };
     }),
     latestPlaceOfThread: () => null,
@@ -4139,6 +4156,23 @@ describe("a task", () => {
     );
   });
 
+  it("answers a long ask only while it stands unfolded in its bubble", async () => {
+    const whole = `@My agent ${"revert the last three merges and page the on-call, ".repeat(20)}`;
+    const ask = teammateAsk(whole);
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await settle();
+    // The whole ask is read and shown unfolded.
+    expect(hasButton(container, "Show less")).toBe(true);
+    expect(button(container, "Answer").disabled).toBe(false);
+    await press(container, "Show less");
+    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
+    await press(container, "Show more");
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
   it("ignores a decision tapped as the ask docks, then declines it", async () => {
     const ask = teammateAsk("@My agent can you check what's on your machine");
     const host = fakeHost(
@@ -4210,6 +4244,11 @@ describe("a task", () => {
     await tapWaiting(container, waiting.body);
     const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
     await act(async () => host.move(withWaiting(initial, first)));
+    // The newer version opens from its full body, read under the lease, never the queue's preview.
+    const opened = (await host.editWaitingMessage.mock.results[0]!.value) as {
+      read: ReturnType<typeof vi.fn>;
+    };
+    expect(opened.read).toHaveBeenCalledWith(1);
     expect(editField(container)?.value).toBe("Card fees and FX");
 
     await type(container, "Edit message", "Card fees, FX and the wire charge");
@@ -4421,6 +4460,45 @@ describe("a task", () => {
     await act(async () => host.move(queued));
     act(() => list().onContentSizeChange?.(390, 1200));
     expect(harness.scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  it("tells the client the row at the top of the screen as the reader scrolls, and none back at the latest", async () => {
+    const task = taskAtWork();
+    const host = fakeHost(
+      snapshotFor({
+        entries: task.entries,
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    await mount(host, workId);
+    const list = () => harness.list!;
+    const anchors = host.client.setTranscriptAnchor as unknown as ReturnType<typeof vi.fn>;
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 1000);
+    });
+    const row = list().data?.find((item) => (item as { kind?: string }).kind === "group") as {
+      group: { kind: string; turn?: { work: { id: string; itemId?: string }[] } };
+    };
+    expect(row, "The transcript drew no row").toBeDefined();
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: row }] }));
+    const scroll = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 1000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        list().onScrollEndDrag?.();
+      });
+    scroll(0);
+    expect(anchors).toHaveBeenLastCalledWith(workId, expect.any(String));
+    scroll(400);
+    expect(anchors).toHaveBeenLastCalledWith(workId, undefined);
   });
 
   it("shows Resume with a paused queue and no waiting messages", async () => {

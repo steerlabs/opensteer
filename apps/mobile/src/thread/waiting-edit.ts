@@ -7,6 +7,7 @@ import {
   reloadWaitingDraft,
   removeWaitingDraftPart,
   setWaitingDraftText,
+  waitingDraftAwaits,
   waitingDraftSave,
   type HostClient,
   type WaitingDraft,
@@ -156,6 +157,7 @@ export function useWaitingEdit(
                   draft: hydrateWaitingDraft(shown.draft, {
                     content: editor.content,
                     revision: editor.revision,
+                    full: true,
                   }),
                   failure: null,
                   phase: "open",
@@ -182,6 +184,44 @@ export function useWaitingEdit(
     },
     [hostClient, threadId],
   );
+
+  // A newer version locks the field until its full body is read under the lease.
+  const awaited = edit === null ? null : waitingDraftAwaits(edit.draft);
+  const phase = edit?.phase;
+  useEffect(() => {
+    const held = lease.current;
+    const editor = held?.editor;
+    if (awaited === null || !held || !editor || editor.revision === awaited) return;
+    let current = true;
+    editor.read(awaited).then(
+      (content) => {
+        if (!current || lease.current !== held) return;
+        setKept((shown) =>
+          shown?.messageId === held.messageId
+            ? {
+                ...shown,
+                draft: hydrateWaitingDraft(shown.draft, { content, revision: awaited, full: true }),
+              }
+            : shown,
+        );
+      },
+      (error: unknown) => {
+        if (!current || lease.current !== held) return;
+        setKept((shown) =>
+          shown?.messageId === held.messageId
+            ? {
+                ...shown,
+                failure:
+                  failureWords(error, editWords, "This message can’t be edited right now.") ?? "",
+              }
+            : shown,
+        );
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [awaited, phase]);
 
   const close = useCallback((): void => {
     letGo();
@@ -225,13 +265,10 @@ export function useWaitingEdit(
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
         // The preview shows while the full body is read; it cannot be edited or saved.
-        draft: openWaitingDraft(
-          {
-            content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
-            revision: item.revision,
-          },
-          true,
-        ),
+        draft: openWaitingDraft({
+          content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
+          revision: item.revision,
+        }),
         failure: null,
         gone: false,
         kind: item.kind,

@@ -12,6 +12,7 @@ import { controlBorderWidth, controlFontScaleLimit, material, radius, space } fr
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { AppText } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
+import { useAskShownWhole } from "./ask-shown.js";
 import { ComposerBar, composerLaneHeight } from "./composer-bar.js";
 import type { WaitingEditController } from "./waiting-edit.js";
 import { failureWords } from "../ui/client-feedback.js";
@@ -101,6 +102,8 @@ export function WaitingAskDock(props: {
   const { ask, decisions } = props;
   // A long ask's preview is clipped: Answer waits until its whole text is on screen.
   const body = useWaitingBody(props.hostClient, ask);
+  // And unfolded in its bubble: Answer approves what the person can read.
+  const whole = useAskShownWhole(ask.messageId) && body.status === "complete";
   const arrivedAt = useRef(Date.now());
   const settled = (): boolean => Date.now() - arrivedAt.current >= arrivalGuardMs;
   const pending = decisions.pending?.messageId === ask.messageId ? decisions.pending : null;
@@ -149,11 +152,11 @@ export function WaitingAskDock(props: {
         <AnswerPill
           {...(elsewhere === null ? { accessibilityHint: ask.consent.line } : {})}
           busy={pending?.decision === "approve"}
-          disabled={locked || elsewhere !== null || body.status !== "complete"}
+          disabled={locked || elsewhere !== null || !whole}
           fill
           label="Answer"
           onPress={() => {
-            if (settled() && body.status === "complete")
+            if (settled() && whole && body.status === "complete")
               void decisions.decide(ask, "approve", body.revision);
           }}
           tone="primary"

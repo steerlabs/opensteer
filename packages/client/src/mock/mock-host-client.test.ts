@@ -771,7 +771,8 @@ it("filters the mock task catalog to active listed work before paging", async ()
     const page = unwrap(
       await client.rpc["tasks.list"]({ active: true, limit: 1, ...(before ? { before } : {}) }),
     );
-    expect(page.window.totalItems).toBe(expected.length);
+    // As on the Host, only the first page counts the list.
+    expect(page.window.totalItems).toBe(before ? undefined : expected.length);
     ids.push(...page.tasks.map(({ thread }) => thread.id));
     before = page.window.nextBefore ?? undefined;
   } while (before);
