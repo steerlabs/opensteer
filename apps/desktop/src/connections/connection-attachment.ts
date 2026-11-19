@@ -170,7 +170,10 @@ export class ConnectionAttachment {
   }
 
   observe(observation: HostSessionObservation): void {
+    // A held attachment answers only to `attach()`: a session result published
+    // before the hold describes the Host that is restarting.
     if (
+      this.#held ||
       this.#attachment === null ||
       observation.deploymentId !== this.#deploymentId ||
       observation.attachmentKey !== this.#attachmentKey
