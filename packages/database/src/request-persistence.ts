@@ -119,22 +119,24 @@ export function refreshRequestState(
         },
       );
     }
-    mutation.change(
-      {
-        scopeKey,
-        entityKind: "request",
-        entityId: requestId,
-        operation: row.status === "pending" ? "upsert" : "remove",
-      },
-      () => ({
-        id: requestId,
-        revision: row.revision,
-        status: row.status,
-        kind: row.kind,
-        title,
-        threadId,
-      }),
-    );
+    // A subagent's Request is answered from its task as well as its own view.
+    for (const requestScope of new Set([scopeKey, `thread:${threadId}` as const]))
+      mutation.change(
+        {
+          scopeKey: requestScope,
+          entityKind: "request",
+          entityId: requestId,
+          operation: row.status === "pending" ? "upsert" : "remove",
+        },
+        () => ({
+          id: requestId,
+          revision: row.revision,
+          status: row.status,
+          kind: row.kind,
+          title,
+          threadId,
+        }),
+      );
 
     await refreshRequestAttention(tx, mutation, requestId);
     if (row.kind === "browser.password-sign-in" || row.kind === "computer.app.access")

@@ -1,12 +1,14 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
   OpensteerError,
+  utf8Prefix,
   type DeploymentId,
+  type ExecutionNode,
   type ExecutionNodeId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { messageViewFromRow } from "./thread-row-mappers.js";
+import { executionNodeFromRow, messageViewFromRow } from "./thread-row-mappers.js";
 import { clientSendKeyWireReserve, TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
@@ -15,6 +17,7 @@ import type {
   PlaceView,
   TranscriptItemTable,
 } from "./personal-state-schema.js";
+import type { ExecutionNodeTable } from "./schema.js";
 
 type Database = Kysely<DatabaseSchema>;
 type Read = Transaction<DatabaseSchema>;
@@ -263,10 +266,46 @@ export const itemColumns = [
   "view",
   "refs",
 ] as const;
+/** A node's facts as its card reads them: a row, or the same fields read as JSON. */
+export type NodeFacts = Omit<
+  Selectable<ExecutionNodeTable>,
+  "nativeRef" | "sessionRef" | "originCallId" | "startedAt" | "endedAt"
+> & { readonly startedAt: Date | string; readonly endedAt: Date | string | null };
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
   readonly place?: PlaceView | null;
   readonly body?: Selectable<TranscriptItemTable>["body"];
+  readonly node?: NodeFacts | null;
 };
+
+/**
+ * What a node's card draws, from the node itself: its times, model, phases and stop support. Its
+ * prompt is cut to the first line and its result to a preview; its own scope has the rest.
+ */
+export function nodeCardView(facts: NodeFacts): ExecutionNode {
+  const node = executionNodeFromRow({
+    ...facts,
+    startedAt: new Date(facts.startedAt),
+    endedAt: facts.endedAt === null ? null : new Date(facts.endedAt),
+  });
+  const line = node.prompt?.split("\n").find((text) => text.trim()) ?? null;
+  return {
+    ...node,
+    prompt: line === null ? null : utf8Prefix(line, 256),
+    result: node.result === null ? null : utf8Prefix(node.result, 1024),
+  };
+}
+
+/** A node card's facts, read beside it, in `NodeFacts`'s names. */
+const nodeFacts = sql<NodeFacts | null>`case when kind = 'node' then (
+  select jsonb_build_object('id',n.id,'runId',n.run_id,'attemptId',n.attempt_id,
+    'parentNodeId',n.parent_node_id,'kind',n.kind,'title',n.title,'status',n.status,
+    'model',n.model,'effort',n.effort,'phaseIndex',n.phase_index,'phases',n.phases,
+    'stopSupported',n.stop_supported,'stopping',n.stopping,'startedAt',n.started_at,
+    'endedAt',n.ended_at,'prompt',left(n.prompt,1024),'result',left(n.result,2048),
+    'inputTokens',n.input_tokens::text,'outputTokens',n.output_tokens::text,
+    'cachedInputTokens',n.cached_input_tokens::text,'cacheWriteTokens',n.cache_write_tokens::text,
+    'reasoningTokens',n.reasoning_tokens::text,'costUsd',n.cost_usd::text)
+  from execution_nodes n where n.id = transcript_items.execution_node_id) end`;
 
 export function itemView(row: Item) {
   const {
@@ -331,7 +370,11 @@ export function itemView(row: Item) {
         waitedSince,
       });
     case "node":
-      return TranscriptItemSchema.parse({ ...base, executionNodeId: row.executionNodeId });
+      return TranscriptItemSchema.parse({
+        ...base,
+        executionNodeId: row.executionNodeId,
+        ...(row.node ? { node: nodeCardView(row.node) } : {}),
+      });
     case "assignment":
     case "delegation":
       return TranscriptItemSchema.parse({
@@ -373,6 +416,7 @@ export function drawableItems(tx: Read, scope: DetailScope) {
     .selectFrom("transcriptItems")
     .select(itemColumns)
     .select(sql<PlaceView | null>`case when kind = 'place' then body end`.as("place"))
+    .select(nodeFacts.as("node"))
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"

@@ -203,18 +203,8 @@ export async function publishExecutionNode(
     const row = await tx
       .selectFrom("executionNodes")
       .innerJoin("runs", "runs.id", "executionNodes.runId")
-      .select([
-        "executionNodes.id",
-        "executionNodes.status",
-        "executionNodes.stopping",
-        "executionNodes.title",
-        "executionNodes.result",
-        "executionNodes.startedAt",
-        "executionNodes.parentNodeId",
-        "executionNodes.runId",
-        "executionNodes.attemptId",
-        "runs.threadId",
-      ])
+      .selectAll("executionNodes")
+      .select("runs.threadId")
       .where("executionNodes.id", "=", id)
       .executeTakeFirstOrThrow();
     mutation.react({
@@ -225,24 +215,30 @@ export async function publishExecutionNode(
       parentNodeId: row.parentNodeId,
       active: row.status === "running",
     });
-    await writeExecutionItem(tx, mutation, {
-      id: `node:${row.id}`,
-      kind: "node",
-      executionNodeId: row.id,
-      threadId: row.threadId,
-      runId: row.runId,
-      attemptId: row.attemptId,
-      nodeId: row.parentNodeId,
-      createdAt: row.startedAt,
-      visible: true,
-      isTurnStart: false,
-      // A settled subagent's row says what it found, as its card did on main.
-      view: transcriptPreview({
-        title: row.title,
-        status: row.stopping && row.status === "running" ? "stopping" : row.status,
-        ...(row.status !== "running" && row.result ? { preview: row.result } : {}),
-      }),
-    });
+    await writeExecutionItem(
+      tx,
+      mutation,
+      {
+        id: `node:${row.id}`,
+        kind: "node",
+        executionNodeId: row.id,
+        threadId: row.threadId,
+        runId: row.runId,
+        attemptId: row.attemptId,
+        nodeId: row.parentNodeId,
+        createdAt: row.startedAt,
+        visible: true,
+        isTurnStart: false,
+        // A settled subagent's row says what it found, as its card did on main.
+        view: transcriptPreview({
+          title: row.title,
+          status: row.stopping && row.status === "running" ? "stopping" : row.status,
+          ...(row.status !== "running" && row.result ? { preview: row.result } : {}),
+        }),
+      },
+      undefined,
+      row,
+    );
     // Runs after the card's own staged write, so the subject carries its new revision.
     mutation.stageTranscript(`node:${row.id}`, undefined, async () => {
       const subject = await nodeSubjectView(tx, row.threadId, row.id);

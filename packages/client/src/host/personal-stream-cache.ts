@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/protocol/personal-sync";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
-export const personalCacheFormat = 66;
+export const personalCacheFormat = 67;
 
 export interface PersonalCacheScope {
   readonly deploymentId: string;
