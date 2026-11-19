@@ -215,7 +215,7 @@ async function claudeAccount(f: StoreFixture, base: Awaited<ReturnType<typeof fi
 /** Holds a row so `work` can stop an admission at a known lock, then releases it. */
 async function holdingRow(
   f: StoreFixture,
-  table: "threads" | "personalSettings",
+  table: "threads" | "syncFence",
   id: string,
   work: (release: () => void) => Promise<void>,
 ) {
@@ -224,10 +224,9 @@ async function holdingRow(
   let held!: () => void;
   const holding = new Promise<void>((resolve) => (held = resolve));
   const blocker = f.database.transaction().execute(async (transaction) => {
-    if (table === "personalSettings")
-      await sql`select singleton_key from personal_settings where singleton_key = 'personal' for no key update`.execute(
-        transaction,
-      );
+    // Every personal commit takes the `client_sync_state` fence first.
+    if (table === "syncFence")
+      await sql`select deployment_id from client_sync_state for no key update`.execute(transaction);
     else await sql`select id from threads where id = ${id} for no key update`.execute(transaction);
     held();
     await released;
@@ -1343,7 +1342,7 @@ describeStore("managed memory passes", (it) => {
       backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     // Admission holds the occurrence until the personal mutation fence is released.
-    await holdingRow(f, "personalSettings", "personal", async (release) => {
+    await holdingRow(f, "syncFence", "personal", async (release) => {
       const admission = wake(f, light.trigger, occurrence.id, "in-flight");
       await lockWaiters(f, 1);
       const retry = s.instance.admissionSelection(occurrence.id, light.anchorThread!);

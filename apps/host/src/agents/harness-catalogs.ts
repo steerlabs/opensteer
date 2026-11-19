@@ -60,6 +60,12 @@ interface HarnessCatalogReader {
 }
 
 export const harnessCatalogMaxAgeMs = 30 * 60 * 1_000;
+/**
+ * How long a preparing, unavailable or error answer stands before it is asked
+ * again. The capture that recorded it just asked; a Runner reports finished
+ * preparation itself, so this is only the backstop for a lost report.
+ */
+export const harnessCatalogRetryMs = 30_000;
 
 export interface HarnessCatalogInventoryStore extends HarnessCatalogRecorder {
   listHarnessInstances(options?: {
@@ -325,8 +331,7 @@ export async function inspectHarnessCatalogsAfterUsageLimit(options: {
  * Sign-in required is settled: only an explicit refresh, profile change, sign-in
  * action or Runner invalidation may ask it again, never this pass.
  *
- * Returns when the oldest ready catalog goes stale, and whether any answer is
- * still unsettled (preparing, unavailable or error), so the caller can arm a
+ * Returns when the next catalog needs looking at, so the caller can arm a
  * deadline instead of polling.
  */
 export async function reconcileHarnessCatalogs(options: {
@@ -340,7 +345,7 @@ export async function reconcileHarnessCatalogs(options: {
     catalogs: readonly HarnessInstanceCatalog[],
   ) => void;
 }): Promise<HarnessCatalogConvergence> {
-  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null, unsettled: false };
+  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null };
   const now = options.now ?? Date.now();
   const [harnesses, stored] = await Promise.all([
     options.catalogs.listHarnessInstances({ environmentIds: options.connectedEnvironmentIds }),
@@ -349,24 +354,28 @@ export async function reconcileHarnessCatalogs(options: {
   const captured = new Map(stored.map((record) => [record.harnessInstanceId, record]));
   const pending = new Map<EnvironmentId, HarnessInspectionDefinitions[number][]>();
   const connected = new Set(options.connectedEnvironmentIds);
-  const next: { staleAt: number | null; unsettled: boolean } = { staleAt: null, unsettled: false };
-  const settleReady = (capturedAt: number) => {
-    const at = capturedAt + harnessCatalogMaxAgeMs;
+  const next: { staleAt: number | null } = { staleAt: null };
+  const lookAgainAt = (at: number) => {
     next.staleAt = next.staleAt === null ? at : Math.min(next.staleAt, at);
+  };
+  const lookAgain = (status: HarnessInstanceCatalog["status"], capturedAt: number) => {
+    if (status === "ready") lookAgainAt(capturedAt + harnessCatalogMaxAgeMs);
+    else if (status !== "authentication-required") lookAgainAt(capturedAt + harnessCatalogRetryMs);
   };
   for (const harness of harnesses) {
     if (!harness.enabled || harness.removedAt !== null || !connected.has(harness.environmentId)) {
       continue;
     }
     const record = captured.get(harness.id);
+    const age = record ? now - record.capturedAt.getTime() : 0;
     if (
       record?.environmentId === harness.environmentId &&
       (record.catalog.status === "authentication-required" ||
-        (record.catalog.status === "ready" &&
-          record.capturedAt.getTime() <= now &&
-          now - record.capturedAt.getTime() < harnessCatalogMaxAgeMs))
+        (age >= 0 &&
+          age <
+            (record.catalog.status === "ready" ? harnessCatalogMaxAgeMs : harnessCatalogRetryMs)))
     ) {
-      if (record.catalog.status === "ready") settleReady(record.capturedAt.getTime());
+      lookAgain(record.catalog.status, record.capturedAt.getTime());
       continue;
     }
     const definitions = pending.get(harness.environmentId) ?? [];
@@ -386,10 +395,7 @@ export async function reconcileHarnessCatalogs(options: {
         signal: options.signal,
       });
       return capture.then((catalogs) => {
-        for (const catalog of catalogs) {
-          if (catalog.status === "ready") settleReady(now);
-          else if (catalog.status !== "authentication-required") next.unsettled = true;
-        }
+        for (const catalog of catalogs) lookAgain(catalog.status, now);
         options.onCommitted?.(environmentId, catalogs);
       });
     }),
@@ -398,15 +404,14 @@ export async function reconcileHarnessCatalogs(options: {
     result.status === "rejected" ? [result.reason] : [],
   );
   if (failures.length > 0) throw new AggregateError(failures, "AI model catalog refresh failed");
-  return {
-    staleAt: next.staleAt === null ? null : new Date(next.staleAt),
-    unsettled: next.unsettled,
-  };
+  return { staleAt: next.staleAt === null ? null : new Date(next.staleAt) };
 }
 
 export interface HarnessCatalogConvergence {
-  /** When the oldest ready catalog of a connected environment needs looking at again. */
+  /**
+   * When a connected environment's catalog needs looking at again: a ready one
+   * at thirty minutes old, any other unsettled answer thirty seconds after it
+   * was recorded. Sign-in required waits for the person.
+   */
   readonly staleAt: Date | null;
-  /** Some answer is still preparing, unavailable or an error; look again after a backoff. */
-  readonly unsettled: boolean;
 }

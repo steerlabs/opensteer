@@ -2428,7 +2428,7 @@ export async function createHostRuntime(
             if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
           },
         });
-        return convergence.unsettled ? retryWithBackoff : convergence.staleAt;
+        return convergence.staleAt;
       },
     });
     runnerRegistry = runners;
