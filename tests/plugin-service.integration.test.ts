@@ -1,6 +1,6 @@
 import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
 import { EventEmitter, once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "vitest";
@@ -21,6 +21,8 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { createDatabase } from "../packages/database/src/connection.js";
+import { PluginAgentStore } from "../packages/database/src/index.js";
+import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   pluginFixtureFiles,
@@ -466,4 +468,81 @@ test("oversized execution results are refused before IPC and terminal state is p
   }
   expect(service.listExecutions()).toEqual([]);
   expect(await service.request("executions", {}, caller)).toEqual([]);
+});
+
+test("a skill refresh that failed fails no install and is repaired by the next, and a replay changes no author", async (context) => {
+  const clone = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-publication-"));
+  context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
+  const database = createDatabase({ connectionString: clone.url });
+  context.onTestFinished(() => database.destroy());
+  const personal = await seedPersonalFixture(database, directory);
+  const settings = new PluginAgentStore(database);
+  const registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1));
+  context.onTestFinished(() => registry.close());
+  const service = new PluginService({
+    databaseUrl: clone.url,
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32).fill(1),
+    origin: "https://fixture.invalid",
+    npmRegistry: registry.origin,
+    catalogUrl: registry.origin + "/catalog",
+    processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
+    bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
+  });
+  await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
+  context.onTestFinished(() => service.close());
+  const authors = (plugin: string, versions: string[]) =>
+    settings
+      .versionAuthors(
+        personal.userId,
+        versions.map((version) => ({ pluginId: plugin, version })),
+      )
+      .then((found) => versions.map((version) => found.get(`${plugin}\u0000${version}`)));
+  // Reviewed catalog source, then an agent's update of it.
+  const catalog = { kind: "catalog" as const, id: "fixture", key: "catalog-install" };
+  const first = await service.install(catalog, caller);
+  if (first.status !== "installed") throw new Error(JSON.stringify(first));
+  const plugin = first.plugin.id;
+  expect(await service.skillCache.get(plugin)).toMatchObject({ version: first.version.id });
+  // The skill record cannot be written while the update promotes.
+  const active = join(directory, "plugins", "active");
+  await rm(active, { recursive: true, force: true });
+  await writeFile(active, "not a folder");
+  const update = await service.install(
+    { kind: "files", plugin, files: pluginFixtureFiles(2), key: "agent-update" },
+    caller,
+  );
+  if (update.status !== "installed") throw new Error(JSON.stringify(update));
+  expect((await service.installed({ plugins: [plugin] }, caller))[0]).toMatchObject({
+    plugin: { activeVersion: update.version.id },
+  });
+  // The author was recorded with each promotion.
+  expect(await authors(plugin, [first.version.id, update.version.id])).toEqual([
+    "catalog",
+    "agent",
+  ]);
+  expect(
+    (await settings.settings(personal.userId)).find((row) => row.pluginId === plugin),
+  ).toMatchObject({
+    author: "agent",
+  });
+  // The catalog install replayed from its receipt repairs the skill record, which follows the
+  // active version, and changes no author.
+  await rm(active, { force: true });
+  expect(await service.install(catalog, caller)).toMatchObject({
+    status: "installed",
+    version: { id: first.version.id },
+  });
+  expect(await service.skillCache.get(plugin)).toMatchObject({ version: update.version.id });
+  expect(
+    (await settings.settings(personal.userId)).find((row) => row.pluginId === plugin),
+  ).toMatchObject({
+    author: "agent",
+  });
+  expect(await authors(plugin, [first.version.id, update.version.id])).toEqual([
+    "catalog",
+    "agent",
+  ]);
 });
