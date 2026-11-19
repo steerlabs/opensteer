@@ -1612,7 +1612,7 @@ export class HttpHostClient {
     this.#clearViewerReads();
     this.#invalidateAttention();
     this.#waitingRequestReads.stop("waiting-requests");
-    this.#waitingRequestStamp = "";
+    this.#waitingRequestWanted = "";
     this.#answeredRequests.clear();
     this.#resources.reset();
     this.#update({ ...emptySnapshot(this.#tabs), ...keep });
@@ -1962,33 +1962,33 @@ export class HttpHostClient {
   }
 
   /**
-   * Brings `waitingRequests` to what the Host states now. The list is current only for the stamp
-   * it was read at; any other stamp reads it again, and a read in flight that is overtaken
-   * installs nothing. A count of zero needs no read. Called on every shell change, on attach,
-   * on returning to the front and after a local answer.
+   * Brings `waitingRequests` to what the Host states now. There is one wanted stamp: a read is
+   * asked for only when the stamp differs from the one last asked for, or on attach, a return to
+   * the front or a local answer. A change while a read flies marks it to run once more when it
+   * lands; it never adds another waiter. Unrelated shell frames leave the stamp, and the read,
+   * alone. A count of zero needs no read.
    */
   #syncWaitingRequests(force = false) {
     const stamp = this.#requestStamp();
     if (stamp === undefined || this.#disposed) return;
+    const key = "waiting-requests";
     if (stamp.startsWith("0|")) {
-      this.#waitingRequestReads.stop("waiting-requests");
-      this.#waitingRequestStamp = stamp;
+      this.#waitingRequestReads.stop(key);
+      this.#waitingRequestWanted = stamp;
       if (this.#snapshot.waitingRequests.length)
         this.#update({ ...this.#snapshot, waitingRequests: [] });
       return;
     }
-    if (
-      !force &&
-      stamp === this.#waitingRequestStamp &&
-      !this.#waitingRequestReads.busy("waiting-requests")
-    )
-      return;
+    if (!force && stamp === this.#waitingRequestWanted) return;
+    // Behind, nothing is read; the return to the front asks again.
     if (this.#visibility === "background") return;
-    this.#readWaitingRequests();
+    this.#waitingRequestWanted = stamp;
+    if (this.#waitingRequestReads.busy(key)) this.#waitingRequestReads.changed(key);
+    else this.#readWaitingRequests();
   }
 
-  /** The stamp the installed `waitingRequests` were read at. */
-  #waitingRequestStamp = "";
+  /** The stamp the list was last asked to match; each run reads it as it starts. */
+  #waitingRequestWanted = "";
   /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
   #waitingRequestRuns = 0;
   /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
@@ -2026,7 +2026,6 @@ export class HttpHostClient {
       .request(
         "waiting-requests",
         async (read) => {
-          const stamp = this.#requestStamp();
           const run = ++this.#waitingRequestRuns;
           const read_: HostSnapshot["waitingRequests"][number][] = [];
           let before: string | null = null;
@@ -2045,7 +2044,7 @@ export class HttpHostClient {
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
-          if (!read.current() || stamp === undefined) return;
+          if (!read.current()) return;
           // An answer confirmed before this run began is the Host's truth now: a Request it still
           // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
           for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
@@ -2054,10 +2053,7 @@ export class HttpHostClient {
           const waitingRequests = read_.filter(
             ({ request }) => !this.#answeredRequests.has(request.id),
           );
-          this.#waitingRequestStamp = stamp;
           this.#update({ ...this.#snapshot, waitingRequests });
-          // The shell moved while this flew without overtaking it (a row outside the bound).
-          if (this.#requestStamp() !== stamp) queueMicrotask(() => this.#syncWaitingRequests());
         },
         { observed: () => !this.#disposed && this.#visibility !== "background" },
       )
