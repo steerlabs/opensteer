@@ -1395,6 +1395,12 @@ export async function createHostServer(
         }),
       );
     },
+    "machine.detail.get": async (input, context) =>
+      rpcSuccess(
+        hostApi["machine.detail.get"].success.parse(
+          await personalResources.machineDetail(requireRpcSession(context), input.machineId),
+        ),
+      ),
     "machines.list": async (_input, context) => {
       const session = requireRpcSession(context);
       return rpcSuccess(
@@ -1600,6 +1606,7 @@ export async function createHostServer(
     | "voice.stop"
     | "machine.access.history"
     | "machines.list"
+    | "machine.detail.get"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"

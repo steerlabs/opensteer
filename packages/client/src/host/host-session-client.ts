@@ -55,7 +55,13 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
+import type {
+  MachineInventoryEntry,
+  MachineSectionCounts,
+  MachineSummary,
+  PersonShowMessage,
+  PluginEngineStateView,
+} from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
@@ -1608,6 +1614,7 @@ export class HttpHostClient {
     this.#targetedControl.clear();
     this.#computerViews.clear();
     this.#ownerViews.clear();
+    this.#machineSections.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
     this.#tabs.clear();
@@ -2123,6 +2130,79 @@ export class HttpHostClient {
     if (first.kind === "machine")
       snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
     if (snapshot !== this.#snapshot) this.#update(snapshot);
+    if (first.kind === "machine") this.#syncMachineDetails();
+  }
+
+  /** What the inventory said each computer's heavy sections hold, by computer. */
+  readonly #machineSections = new Map<string, MachineSectionCounts>();
+  readonly #machineDetailReads = new FencedReads({
+    epoch: () => String(this.#viewerGeneration),
+  });
+
+  /**
+   * A computer from its inventory summary. Its heavy sections are what this client last read for
+   * it (until `machine.detail.get` answers), and null where the summary says this viewer is not
+   * shown them.
+   */
+  #machineFromEntry(entry: MachineInventoryEntry): MachineSummary {
+    const { sections, ...summary } = entry;
+    this.#machineSections.set(entry.id, sections);
+    const prior = this.#snapshot.machines.find(({ id }) => id === entry.id);
+    const computerUseShown = sections.computerUseSessions !== null || sections.ownerViews !== null;
+    return {
+      ...summary,
+      apps: sections.apps === null ? null : (prior?.apps ?? null),
+      access: sections.accessSessions === null ? null : (prior?.access ?? null),
+      computerUse: computerUseShown ? (prior?.computerUse ?? null) : null,
+    };
+  }
+
+  /**
+   * Reads each listed computer's heavy sections that this viewer is shown, one computer at a
+   * time, each read on its own: a computer whose sections cannot be read leaves the list, its
+   * status and its removal untouched.
+   */
+  #syncMachineDetails() {
+    const listed = new Set(this.#snapshot.machines.map(({ id }) => id));
+    for (const id of [...this.#machineSections.keys()])
+      if (!listed.has(id)) {
+        this.#machineSections.delete(id);
+        this.#machineDetailReads.stop(`machine:${id}`);
+      }
+    for (const [id, sections] of this.#machineSections) {
+      if (Object.values(sections).every((count) => count === null)) continue;
+      const key = `machine:${id}`;
+      if (this.#machineDetailReads.busy(key)) {
+        this.#machineDetailReads.changed(key);
+        continue;
+      }
+      void this.#machineDetailReads
+        .request(key, async (read) => {
+          const revision = this.#ownerViews.revision;
+          const { machine } = unwrapRpcResult(
+            await this.rpc["machine.detail.get"]({ machineId: id }, { signal: read.signal }),
+          );
+          if (!read.current()) return;
+          const current = this.#snapshot.machines.find((held) => held.id === id);
+          if (!current) return;
+          const merged = this.#ownerViews.reread(
+            {
+              ...current,
+              apps: machine.apps,
+              access: machine.access,
+              computerUse: machine.computerUse,
+            },
+            current,
+            revision,
+          );
+          this.#update({
+            ...this.#snapshot,
+            machines: this.#snapshot.machines.map((held) => (held.id === id ? merged : held)),
+            machineRevision: this.#snapshot.machineRevision + 1,
+          });
+        })
+        .catch(() => undefined);
+    }
   }
 
   /** The tab rows or layout of one read, replacing what the tab store holds in one step. */
@@ -2216,7 +2296,7 @@ export class HttpHostClient {
           ...snapshot,
           machines: mergeResourceRows(
             append ? snapshot.machines : [],
-            data.machines,
+            data.machines.map((entry) => this.#machineFromEntry(entry)),
             (row) => row.id,
           ),
         };
@@ -3409,6 +3489,7 @@ export class HttpHostClient {
     this.#taskReads.dispose();
     this.#assignmentReads.dispose();
     this.#waitingRequestReads.dispose();
+    this.#machineDetailReads.dispose();
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();

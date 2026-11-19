@@ -4,13 +4,13 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
+import { MachineInventoryEntrySchema } from "./machines.js";
 import {
   HostBootstrapEnvironmentSchema,
   IdentityConfigViewSchema,
   OwnerProfileViewSchema,
   PersonalEnvironmentsViewSchema,
   PersonalHarnessesViewSchema,
-  PersonalMachinesViewSchema,
   PersonalSettingsViewSchema,
 } from "./bootstrap.js";
 import {
@@ -136,7 +136,11 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
     ownerProfile: OwnerProfileViewSchema.nullable(),
   }),
   z.object({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
-  z.object({ kind: z.literal("machine"), machines: PersonalMachinesViewSchema }),
+  /** Each computer's bounded summary; its heavy sections are `machine.detail.get`. */
+  z.object({
+    kind: z.literal("machine"),
+    machines: z.array(MachineInventoryEntrySchema).max(400),
+  }),
   z.object({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
   z.object({
     kind: z.literal("harness-catalog"),

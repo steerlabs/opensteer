@@ -623,3 +623,4 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
   }
   return [...result, ...legacy.filter((machine) => machine.status === "pending")];
 }
+

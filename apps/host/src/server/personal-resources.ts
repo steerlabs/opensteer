@@ -23,6 +23,7 @@ import {
 import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { authorizedSyncState, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
 import {
+  machineInventoryEntry,
   maxHarnessModelsPerCatalog,
   rpcSuccess,
   type MachineListSummary,
@@ -107,6 +108,32 @@ export class PersonalResources {
           (await found) || isEligibleBrowserRunner(tx, ownerId, runnerId),
         Promise.resolve(false),
       );
+  }
+
+  /** One computer whole, for its own page, authorized exactly as the inventory row is. */
+  async machineDetail(session: AuthenticatedSession, machineId: string) {
+    const revision = this.#dependencies.resourceRevisions.get("machine");
+    return withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
+      await authorizedSyncState(tx, session.user.id);
+      const asOf = new Date();
+      const [row] = await readMachineResourceKeys(tx, session.user.id, {
+        id: machineId,
+        asOf,
+        limit: 1,
+      });
+      if (!row || row.id !== machineId)
+        throw new OpensteerError({ code: "not_found", message: "This computer is not here." });
+      const [machine] = await this.#machines(session, {
+        tx,
+        asOf,
+        deviceIds: row.source === "device" ? [row.id] : [],
+        pendingIds: row.source === "pending" ? [row.id] : [],
+      });
+      if (!machine)
+        throw new OpensteerError({ code: "not_found", message: "This computer is not here." });
+      const { pinnedThreads: _placed, ...held } = machine;
+      return { revision, machine: held };
+    });
   }
 
   async detail(session: AuthenticatedSession, input: ResourceInput) {
@@ -218,12 +245,11 @@ export class PersonalResources {
         const byId = new Map(values.map((machine) => [machine.id, machine]));
         return page(rows, (selected) => ({
           kind,
-          // The placed-task count is read only by `machines.list`; nothing here could keep it true.
+          // Bounded summaries; the placed-task count is only `machines.list`'s and the heavy
+          // sections only `machine.detail.get`'s.
           machines: selected.flatMap(({ id }) => {
             const machine = byId.get(id);
-            if (!machine) return [];
-            const { pinnedThreads: _placed, ...held } = machine;
-            return [held];
+            return machine ? [machineInventoryEntry(machine)] : [];
           }),
         }));
       }

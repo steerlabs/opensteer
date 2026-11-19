@@ -29,8 +29,9 @@ import {
  * and routing must be able to tell those apart.
  */
 export const MachineModuleSummarySchema = z.object({
-  checkedAt: z.string().nullable(),
-  detail: z.string().nullable(),
+  checkedAt: z.string().max(64).nullable(),
+  /** The Runner's report (at most 500 characters at ingress) or the Host's own short reason. */
+  detail: z.string().max(500).nullable(),
   readiness: RunnerModuleReadinessSchema,
 });
 export type MachineModuleSummary = z.infer<typeof MachineModuleSummarySchema>;
@@ -53,12 +54,13 @@ export const MachineDeviceSchema = z
     app: RunnerDeviceSchema.shape.app,
     form: z
       .string()
+      .max(64)
       .nullable()
       .transform((form) => {
         const parsed = RunnerDeviceFormSchema.safeParse(form);
         return parsed.success ? parsed.data : null;
       }),
-    platform: z.string(),
+    platform: z.string().max(64),
   })
   .transform((device) => {
     const platform = MachineDevicePlatformViewSchema.safeParse(device.platform);
@@ -76,6 +78,7 @@ export const MachineSummarySchema = z.object({
   phoneDisplay: DeviceViewSchema.shape.phoneDisplay.optional(),
   kind: z
     .string()
+    .max(64)
     .transform((kind) => MachineKindSchema.safeParse(kind).data ?? "unknown")
     .optional(),
   apps: z.array(MachineAppStatusSchema).max(computerAppMaxStatusEntries).nullable().default(null),
@@ -167,6 +170,63 @@ export const MachineListSummarySchema = MachineSummarySchema.extend({
   pinnedThreads: z.number().int().nonnegative().max(1_000_000),
 });
 export type MachineListSummary = z.infer<typeof MachineListSummarySchema>;
+
+/**
+ * How much each heavy section of a computer holds, for the list: null where this viewer is not
+ * shown that section (the same rule that makes it null in `machine.detail.get`).
+ */
+export const MachineSectionCountsSchema = z.object({
+  apps: z.number().int().nonnegative().max(computerAppMaxStatusEntries).nullable(),
+  accessSessions: z.number().int().nonnegative().max(machineAccessMaxActiveSessions).nullable(),
+  ownerViews: z.number().int().nonnegative().max(1_000).nullable(),
+  computerUseSessions: z.number().int().nonnegative().max(1_000).nullable(),
+});
+export type MachineSectionCounts = z.infer<typeof MachineSectionCountsSchema>;
+
+/**
+ * A computer as the `machine` inventory carries it: what lists, removal, status and placement
+ * read, each field bounded, so 64 of them sit far inside the inventory bound. Its heavy sections
+ * (apps, access, computer use) are read per computer through `machine.detail.get`; the list
+ * says only how much each holds.
+ */
+export const MachineInventoryEntrySchema = MachineSummarySchema.omit({
+  access: true,
+  apps: true,
+  computerUse: true,
+}).extend({
+  name: z.string().max(255),
+  detail: z.string().max(1_000).nullable(),
+  expiresAt: z.string().max(64).nullable(),
+  lastSeenAt: z.string().max(64).nullable(),
+  sections: MachineSectionCountsSchema,
+});
+export type MachineInventoryEntry = z.infer<typeof MachineInventoryEntrySchema>;
+/** Computers and devices one Personal Deployment holds, enrolled or waiting to enroll. */
+export const personalMachineLimit = 64;
+/**
+ * No inventory entry is larger than this, whatever every section of its computer holds: every
+ * field at its declared limit, every character three bytes. Real entries are a few KiB.
+ */
+export const machineInventoryEntryMaxBytes = 40 * 1024;
+
+/**
+ * A computer as the `machine` inventory carries it: everything but its heavy sections, which
+ * become counts. `machine.detail.get` serves the sections themselves.
+ */
+export function machineInventoryEntry(
+  machine: MachineSummary & { readonly pinnedThreads?: number },
+): MachineInventoryEntry {
+  const { access, apps, computerUse, pinnedThreads: _placed, ...entry } = machine;
+  return {
+    ...entry,
+    sections: {
+      apps: apps?.length ?? null,
+      accessSessions: access?.activeSessions.length ?? null,
+      ownerViews: computerUse ? (computerUse.ownerViews?.length ?? 0) : null,
+      computerUseSessions: computerUse?.sessions.length ?? null,
+    },
+  };
+}
 
 export const DeviceMachineSummarySchema = MachineSummarySchema.extend({
   ...DeviceViewSchema.shape,

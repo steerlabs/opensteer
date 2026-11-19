@@ -1,3 +1,4 @@
+import { machineInventoryEntry, type MachineSummary } from "@opensteer/protocol";
 import {
   MessageIdSchema,
   ExecutionNodeViewSchema,
@@ -621,7 +622,12 @@ export function mockScopedResource(
     case "harness":
       return { kind, harnesses: bootstrap.harnesses };
     case "machine":
-      return { kind, machines: bootstrap.machines };
+      return {
+        kind,
+        machines: (bootstrap.machines as readonly MachineSummary[]).map((machine) =>
+          machineInventoryEntry(machine),
+        ),
+      };
     case "tab":
     case "tab-layout":
       return { kind, tabs: bootstrap.tabs };
