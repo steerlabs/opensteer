@@ -176,15 +176,23 @@ func readForeground(ctx context.Context, dial ServiceDialer, installed func(cont
 }
 func pickForeground(executables []string, apps []InstalledApp) *Foreground {
 	var found *Foreground
+	ambiguous := false
 	for _, executable := range executables {
 		app := resolveForeground(executable, apps)
 		if app == nil {
 			continue
 		}
+		// Opensteer anywhere in front keeps its screen private, whatever else is flagged.
+		if app.AppID == opensteerAppID {
+			return app
+		}
 		if found != nil && found.AppID != app.AppID {
-			return nil
+			ambiguous = true
 		}
 		found = app
+	}
+	if ambiguous {
+		return nil
 	}
 	return found
 }

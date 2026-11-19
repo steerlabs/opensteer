@@ -164,25 +164,22 @@ func (s *screenSession) foreground(ctx context.Context) *Foreground {
 	return f
 }
 
-// settleForeground keeps Opensteer's own screen private if any reading around
-// the capture saw it, and otherwise names an app only when the readings agree.
-func settleForeground(readings ...*Foreground) *Foreground {
-	var found *Foreground
-	for _, f := range readings {
+// settleForeground keeps Opensteer's own screen private if any reading saw it.
+// Otherwise it names an app only when the readings before and after the capture
+// both exist and agree; accessibility is a fallback when neither exists.
+func settleForeground(first, last, ax *Foreground) *Foreground {
+	for _, f := range []*Foreground{first, last, ax} {
 		if f != nil && f.AppID == opensteerAppID {
 			return f
 		}
 	}
-	for _, f := range readings {
-		if f == nil {
-			continue
-		}
-		if found != nil && found.AppID != f.AppID {
-			return nil
-		}
-		found = f
+	if first == nil && last == nil {
+		return ax
 	}
-	return found
+	if first != nil && last != nil && first.AppID == last.AppID {
+		return first
+	}
+	return nil
 }
 
 func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guard func() error) (interface{}, error) {

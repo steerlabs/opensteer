@@ -22,7 +22,7 @@ func TestForegroundNamesOneLaunchableAppAmongIOS27Flags(t *testing.T) {
 	}
 	example := eligibleForegroundFixture(t, "example.app", "/private/var/containers/Example.app", "Example")
 	other := eligibleForegroundFixture(t, "other.app", "/var/containers/Other.app", "Other")
-	apps := []InstalledApp{example, other}
+	apps := []InstalledApp{example, other, eligibleForegroundFixture(t, opensteerAppID, "/var/Opensteer.app", "Opensteer")}
 	// iOS 27 flags SpringBoard and system UI services alongside the visible app.
 	system := []string{"/System/Library/CoreServices/SpringBoard.app/SpringBoard", "/Applications/InputUI.app/InputUI", "/Applications/DockFolderViewService.app/DockFolderViewService"}
 	pick := func(processes []interface{}) *Foreground {
@@ -43,8 +43,17 @@ func TestForegroundNamesOneLaunchableAppAmongIOS27Flags(t *testing.T) {
 	if f := settleForeground(&Foreground{AppID: "example.app"}, nil, &Foreground{AppID: opensteerAppID}); f == nil || f.AppID != opensteerAppID {
 		t.Fatal("a reading of Opensteer's own screen didn't keep it private")
 	}
-	if settleForeground(&Foreground{AppID: "example.app"}, &Foreground{AppID: "other.app"}) != nil {
-		t.Fatal("disagreeing readings named an app")
+	if f := pick(flagged(append(system, "/var/containers/Example.app/Example", "/var/Opensteer.app/Opensteer")...)); f == nil || f.AppID != opensteerAppID {
+		t.Fatalf("Opensteer flagged beside another app lost its privacy: %+v", f)
+	}
+	for _, readings := range [][3]*Foreground{
+		{{AppID: "example.app"}, {AppID: "other.app"}, nil},
+		{{AppID: "example.app"}, nil, nil},
+		{nil, {AppID: "example.app"}, nil},
+	} {
+		if settleForeground(readings[0], readings[1], readings[2]) != nil {
+			t.Fatalf("incomplete or disagreeing readings named an app: %+v", readings)
+		}
 	}
 	if resolveForeground("/elsewhere/Example.app/Example", apps) != nil {
 		t.Fatal("guessed identity from app name")
