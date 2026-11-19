@@ -21,6 +21,8 @@ import type { RunnerRegistry } from "@opensteer/orchestration";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import { resolveAutomaticModels, personalExecution } from "./automatic-models.js";
 import { isDeepStrictEqual } from "node:util";
+import type { Clock } from "@opensteer/shared/clock";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 
@@ -32,13 +34,40 @@ interface MemoryPassServiceOptions {
   readonly readAgentInstructions: (signal: AbortSignal) => Promise<string | null>;
   readonly onChanged: () => void;
   readonly onError: (error: unknown) => void;
+  readonly clock?: Clock;
 }
+
+/** How a provisioning pass ended: both exist, prerequisites are missing, or it failed and owes a retry. */
+type ProvisioningOutcome = "settled" | "waiting" | "retry";
 
 export class MemoryPassService {
   readonly options: MemoryPassServiceOptions;
   #settled = false;
+  readonly #drain: DeadlineDrain;
   constructor(options: MemoryPassServiceOptions) {
     this.options = options;
+    // Prerequisites that are missing arrive with a Runner registration or a
+    // finished Run, which wake this; a failed pass owes a retry and backs off.
+    this.#drain = new DeadlineDrain({
+      ...(options.clock ? { clock: options.clock } : {}),
+      drain: async () =>
+        this.#settled || (await this.reconcileMissing()) !== "retry" ? null : retryWithBackoff,
+      onError: options.onError,
+    });
+  }
+
+  /** Runs a provisioning pass now, and again on backoff while one fails. */
+  wake(): void {
+    this.#drain.wake();
+  }
+
+  /** Resolves once no pass is running. */
+  async idle(): Promise<void> {
+    await this.#drain.settled();
+  }
+
+  async close(): Promise<void> {
+    await this.#drain.close();
   }
 
   /**
@@ -50,10 +79,10 @@ export class MemoryPassService {
     return this.#settled;
   }
 
-  async reconcileMissing(): Promise<void> {
+  async reconcileMissing(): Promise<ProvisioningOutcome> {
     const expiresAt = Date.now() + 15_000;
     try {
-      await withDatabaseOperationSignal(AbortSignal.timeout(15_000), expiresAt, () =>
+      return await withDatabaseOperationSignal(AbortSignal.timeout(15_000), expiresAt, () =>
         this.ensureForPersonal(),
       );
     } catch (error) {
@@ -61,18 +90,19 @@ export class MemoryPassService {
         error instanceof OpensteerError &&
         ["conflict", "forbidden", "not_found", "unavailable"].includes(error.code)
       )
-        return;
+        return "waiting";
       this.options.onError(error);
+      return "retry";
     }
   }
 
-  async ensureForPersonal(): Promise<void> {
+  async ensureForPersonal(): Promise<ProvisioningOutcome> {
     const { store } = this.options;
     const initialized = await store.database
       .selectFrom("personalSettings")
       .select("ownerId")
       .executeTakeFirst();
-    if (!initialized) return;
+    if (!initialized) return "waiting";
     const settings = await personalSettings(store.database);
     const systemPrograms = await store.database
       .selectFrom("triggers")
@@ -100,7 +130,7 @@ export class MemoryPassService {
     }
     // Memory passes run on this computer, so they keep its clock.
     const zone = TimeZoneSchema.safeParse(Intl.DateTimeFormat().resolvedOptions().timeZone);
-    if (!zone.success) return;
+    if (!zone.success) return "waiting";
     const present = await store.database
       .selectFrom("triggers")
       .select("systemRole")
@@ -111,20 +141,21 @@ export class MemoryPassService {
     );
     if (!missing.length) {
       this.#settled = true;
-      return;
+      return "settled";
     }
     const environment = await store.database
       .selectFrom("executionEnvironments")
       .select("id")
       .where("runnerId", "=", settings.agentHome.computerId)
       .executeTakeFirst();
-    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 5))) return;
+    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 5)))
+      return "waiting";
     let instructions: string | null;
     try {
       instructions = await this.options.readAgentInstructions(AbortSignal.timeout(10_000));
     } catch (error) {
       this.options.onError(error);
-      return;
+      return "retry";
     }
     const off =
       instructions !== null && /^Memory: off at the person's request/mu.test(instructions);
@@ -145,7 +176,7 @@ export class MemoryPassService {
             modelSelection: ModelSelectionSchema.parse(prior.modelSelection),
           }
         : undefined);
-    if (!seed) return;
+    if (!seed) return "waiting";
 
     for (const systemRole of missing) {
       const created = await createMemoryPass(store.database, {
@@ -164,6 +195,8 @@ export class MemoryPassService {
         this.options.onChanged();
       }
     }
+    this.#settled = true;
+    return "settled";
   }
 
   async admissionSelection(

@@ -3285,9 +3285,10 @@ export async function createHostRuntime(
         store: accountDirectoryStore,
       });
     }
-    await memoryPasses.reconcileMissing();
+    memoryPasses.wake();
+    await memoryPasses.idle();
     reconcileMemoryPasses = () => {
-      if (!memoryPasses.settled) void memoryPasses.reconcileMissing();
+      if (!memoryPasses.settled) memoryPasses.wake();
     };
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
@@ -3468,6 +3469,7 @@ export async function createHostRuntime(
         await step("admission", () => admission.close());
         await step("Run finishes", () => finishLoop?.close());
         await step("task result returns", () => assignmentReturns?.close());
+        await step("memory passes", () => memoryPasses.close());
         await step("Request deadlines", () => deadlines?.close());
         removeMutationHooks?.();
         await step("plugin change notices", () => notices.close());

@@ -88,6 +88,7 @@ function service(
   f: StoreFixture,
   options: {
     off?: boolean;
+    clock?: import("@opensteer/shared/clock").Clock;
   } = {},
 ) {
   const preview = vi.fn(async () =>
@@ -105,6 +106,7 @@ function service(
     readAgentInstructions: preview,
     onChanged: vi.fn(),
     onError,
+    ...(options.clock ? { clock: options.clock } : {}),
   });
   return {
     instance,
@@ -530,6 +532,39 @@ describeStore("managed memory passes", (it) => {
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
     await s.instance.ensureForPersonal();
     expect(s.instance.settled).toBe(true);
+  });
+  it("retries provisioning after a transient failure with no further Run or registration", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "transient", { light: false });
+    let now = Date.now();
+    const timers = new Set<{ at: number; run: () => void }>();
+    const clock = {
+      now: () => now,
+      schedule(run: () => void, milliseconds: number) {
+        const timer = { at: now + milliseconds, run };
+        timers.add(timer);
+        return () => timers.delete(timer);
+      },
+    };
+    const s = service(f, { clock });
+    s.preview.mockRejectedValueOnce(new Error("Runner busy"));
+    s.instance.wake();
+    await s.instance.idle();
+    expect(await f.triggers.listForOwner({ ownerId: base.userId })).toEqual([]);
+    expect(s.instance.settled).toBe(false);
+    // The failed pass left a deadline: nothing else wakes it.
+    expect([...timers].map((timer) => timer.at - now)).toEqual([5_000]);
+    now += 5_000;
+    for (const timer of [...timers]) {
+      timers.delete(timer);
+      timer.run();
+    }
+    await s.instance.idle();
+    expect((await role(f, base.userId)).trigger.status).toBe("active");
+    expect(s.instance.settled).toBe(true);
+    expect(timers.size).toBe(0);
+    await s.instance.close();
   });
   it("creates both identities paused, with one reason, when memory is off", async ({
     storeFixture: f,
