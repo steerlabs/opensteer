@@ -42,7 +42,7 @@ export const personalLiveFrameMaxBytes = 16 * 1024;
 export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
-/** The open streams one live reset can name; the Host keeps no more per scope. */
+/** The most streams one live reset names; any other open stream is named again when it next changes. */
 export const personalLiveResetMaxStreams = 16;
 
 /** A frame's encoded size limit; senders and receivers measure the encoded bytes against it. */
@@ -438,7 +438,9 @@ export const ScopedHostMessageSchema = z
     liveTextFrame,
     /**
      * This scope's queued live state was dropped. Clear every live stream and provisional item of
-     * the scope except those in `open`; each of those is named again by a `host.live` replace.
+     * the scope except those in `open`; each of those is named again by a `host.live` replace. An
+     * open stream left out (past the count or the reread budget) is dropped too and comes back,
+     * with its whole tail, the next time it changes.
      */
     z.strictObject({
       type: z.literal("host.live-reset"),
