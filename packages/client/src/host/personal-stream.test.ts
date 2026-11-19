@@ -3214,7 +3214,12 @@ describe("task lists from the shell and its pages", () => {
       return seed % limit;
     };
     const statuses = ["running", "waiting", "idle", "failed"] as const;
-    const current = new Map(rows.map((row) => [row.id, row]));
+    type Row = Omit<(typeof rows)[number], "status" | "doneAt" | "revision"> & {
+      readonly status: string;
+      readonly doneAt: string | null;
+      readonly revision: string;
+    };
+    const current = new Map<string, Row>(rows.map((row) => [row.id, row]));
     try {
       await client.load();
       for (let step = 0; step < 150; step++) {
@@ -3252,7 +3257,7 @@ describe("task lists from the shell and its pages", () => {
           ).toBe(true);
         // Exactly the open tasks the client holds.
         const expected = [...current.values()]
-          .filter(({ doneAt, status }) => doneAt === null && status !== "archived")
+          .filter(({ doneAt }) => doneAt === null)
           .map(({ id: task }) => task)
           .sort();
         expect(open.map(({ id: task }) => task).sort(), label).toEqual(expected);

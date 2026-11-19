@@ -832,6 +832,26 @@ describe("WaitingInputs", () => {
     expect(editor.save).toHaveBeenCalledWith([{ text: "Words I have not saved", type: "text" }], 0);
   });
 
+  it("keeps typed words through a same-viewer history reset that empties and refills the queue", async () => {
+    const editor = fakeEditor("Old words");
+    const client = {
+      editWaitingMessage: vi.fn(async () => editor),
+      getSnapshot: () => ({ session: "authenticated" }),
+      subscribe: () => () => undefined,
+    } as unknown as HostClient;
+    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
+    const container = mount(render(client, inputs));
+    await clickWords(container, "mine");
+    await write(field(container)!, "Words I have not saved");
+    // The reset forgets what was read; the queue is read again a moment later.
+    await act(async () => root?.render(render(client, [])));
+    await act(async () => root?.render(render(client, inputs)));
+    expect(field(container)?.value).toBe("Words I have not saved");
+    expect(editor.cancel).not.toHaveBeenCalled();
+    await press(field(container)!, "Enter");
+    expect(editor.save).toHaveBeenCalledWith([{ text: "Words I have not saved", type: "text" }], 0);
+  });
+
   it("lets an untouched edit's lease go when its view goes away", async () => {
     const editor = fakeEditor("Old words");
     const client = {
