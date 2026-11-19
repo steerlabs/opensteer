@@ -103,6 +103,13 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
   });
 }
 
+export function replyPreview(content: readonly ContentPart[]) {
+  const firstText = content.find((part) => part.type === "text" && /\S/u.test(part.text));
+  return firstText?.type === "text"
+    ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
+    : null;
+}
+
 export async function projectLastReply(
   tx: Tx,
   reply: {
@@ -112,14 +119,9 @@ export async function projectLastReply(
   },
 ): Promise<void> {
   if (!contentSaysSomething(reply.content)) return;
-  const firstText = reply.content.find((part) => part.type === "text" && /\S/u.test(part.text));
-  const preview =
-    firstText?.type === "text"
-      ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
-      : null;
   await tx
     .updateTable("threads")
-    .set({ lastReplyMessageId: reply.id, lastReplyPreview: preview })
+    .set({ lastReplyMessageId: reply.id, lastReplyPreview: replyPreview(reply.content) })
     .where("id", "=", reply.threadId)
     .execute();
   await publishThreadSummary(tx, reply.threadId);

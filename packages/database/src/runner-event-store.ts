@@ -1,6 +1,7 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { executionDate } from "./personal-transaction.js";
-import { projectLastReply } from "./thread-status.js";
+import { projectThreadState, publishThreadSummary, replyPreview } from "./thread-status.js";
+import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
@@ -10,7 +11,6 @@ import {
   invalidateExecution,
   publishExecutionInput,
   recordExecutionRunChange,
-  updateExecutionThread,
   writeExecutionItem,
 } from "./execution-changes.js";
 import {
@@ -31,6 +31,7 @@ import {
 import {
   type EnvironmentId,
   type RunnerId,
+  type ThreadId,
   OpensteerError,
   MessageAuthorSchema,
   ReplyTargetSchema,
@@ -40,12 +41,7 @@ import {
   utf8Prefix,
 } from "@opensteer/core";
 import { type Transaction, sql, type Kysely, type Selectable } from "kysely";
-import {
-  type ChannelLinks,
-  systemPrincipalId,
-  jsonValue,
-  lockThreadRow,
-} from "./store-primitives.js";
+import { type ChannelLinks, systemPrincipalId, jsonValue } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import {
   finalizeRunTransaction,
@@ -58,7 +54,7 @@ import {
 } from "./assignment-store.js";
 import { requestInsert } from "./request-store.js";
 import { enqueueChannelConversationStatus, enqueueChannelReply } from "./channel-deliveries.js";
-import { assertActiveExecutionBinding as assertActiveExecutionBindingInStore } from "./execution-authority.js";
+import { executionBindingHolds, refuseExecutionBinding } from "./execution-authority.js";
 import { runReply } from "./run-reply.js";
 import { runHasActiveGrant, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { deliverConversationInputsInTransaction } from "./thread-inbox.js";
@@ -131,6 +127,34 @@ function assertRunnerEventTransition(
     });
   }
 }
+type StatementThread = Awaited<ReturnType<typeof lockStatementThread>>;
+
+/** lockThreadRow, also reading what a Runner message needs from the locked task. */
+async function lockStatementThread(
+  tx: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  channelInputs: boolean,
+) {
+  if (channelInputs) await lockThreadChannelAuthorities(tx, [threadId]);
+  return tx
+    .selectFrom("threads")
+    .select((eb) => [
+      "nextMessageSequence",
+      eb
+        .selectFrom("principals")
+        .select("displayName")
+        .where("id", "=", systemPrincipalId)
+        .where("kind", "=", "system")
+        .as("assistantName"),
+    ])
+    .where("id", "=", threadId)
+    .where("removedAt", "is", null)
+    .forNoKeyUpdate()
+    .executeTakeFirstOrThrow(
+      () => new OpensteerError({ code: "not_found", message: "Task not found" }),
+    );
+}
+
 async function publishRunnerMessage(
   tx: Transaction<DatabaseSchema>,
   mutation: PersonalMutation,
@@ -145,21 +169,47 @@ async function publishRunnerMessage(
     seedInRun: false,
     assigned: false,
   });
-  await tx.updateTable("messages").set({ published }).where("id", "=", row.id).execute();
-  await writeExecutionItem(tx, mutation, {
-    id: row.id,
-    kind: "message",
-    messageId: row.id,
-    createdAt: row.createdAt,
-    threadId: row.threadId,
-    runId: row.runId,
-    attemptId: attempt.id,
-    nodeId: null,
-    visible,
-    isTurnStart,
-    view,
-  });
-  if (message.kind === "assistant") await projectLastReply(tx, message);
+  if (published !== row.published)
+    await tx.updateTable("messages").set({ published }).where("id", "=", row.id).execute();
+  const reply = message.kind === "assistant" && contentSaysSomething(message.content);
+  // One task update takes the message's sequence, its transcript position and the last reply.
+  const thread = await tx
+    .updateTable("threads")
+    .set({
+      nextMessageSequence: sql`next_message_sequence + 1`,
+      updatedAt: new Date(),
+      ...(visible
+        ? {
+            nextTranscriptPosition: sql<string>`next_transcript_position + 1`,
+            revision: mutation.sequence,
+          }
+        : {}),
+      ...(reply
+        ? { lastReplyMessageId: message.id, lastReplyPreview: replyPreview(message.content) }
+        : {}),
+    })
+    .where("id", "=", row.threadId)
+    .returning("nextTranscriptPosition")
+    .executeTakeFirstOrThrow();
+  await writeExecutionItem(
+    tx,
+    mutation,
+    {
+      id: row.id,
+      kind: "message",
+      messageId: row.id,
+      createdAt: row.createdAt,
+      threadId: row.threadId,
+      runId: row.runId,
+      attemptId: attempt.id,
+      nodeId: null,
+      visible,
+      isTurnStart,
+      view,
+    },
+    { position: visible ? thread.nextTranscriptPosition : null },
+  );
+  if (reply) await publishThreadSummary(tx, row.threadId);
 }
 
 async function applyEventProjection(
@@ -168,6 +218,8 @@ async function applyEventProjection(
   event: PendingAgentEvent,
   links: ChannelLinks,
   attempt: RunAttemptRow,
+  run: RunRow,
+  thread: StatementThread,
   integration?: IntegrationCallSubject,
 ): Promise<{ duplicateRunUsage: boolean; revokedGrants: readonly RevokedRunGrant[] }> {
   let duplicateRunUsage = false;
@@ -206,48 +258,28 @@ async function applyEventProjection(
     contentSaysSomething(event.data.content)
   ) {
     // A Run's actor is its authority principal, not the assistant's identity.
-    const assistantPrincipal = await transaction
-      .selectFrom("principals")
-      .select("displayName")
-      .where("id", "=", systemPrincipalId)
-      .where("kind", "=", "system")
-      .executeTakeFirstOrThrow();
-    const runContext = await transaction
-      .selectFrom("runs")
-      .innerJoin("threads", "threads.id", "runs.threadId")
-      .select(["runs.actorPrincipalId", "threads.id as threadId", "threads.nextMessageSequence"])
-      .where("runs.id", "=", event.runId)
-      .forNoKeyUpdate("threads")
-      .executeTakeFirstOrThrow();
     const messageRow = await transaction
       .insertInto("messages")
       .values({
-        actorPrincipalId: runContext.actorPrincipalId,
+        actorPrincipalId: run.actorPrincipalId,
         author: jsonValue(
           MessageAuthorSchema.parse({
-            displayName: assistantPrincipal.displayName,
+            displayName: thread.assistantName,
             kind: "agent",
             runId: event.runId,
-            threadId: runContext.threadId,
+            threadId: run.threadId,
           }),
         ),
         createdAt: new Date(),
         content: jsonValue(event.data.content),
         id: event.data.messageId,
         kind: "assistant",
+        published: true,
         runId: event.runId,
-        sequence: runContext.nextMessageSequence,
+        sequence: thread.nextMessageSequence,
         threadId: event.threadId,
       })
       .returningAll()
-      .executeTakeFirstOrThrow();
-    await transaction
-      .updateTable("threads")
-      .set({
-        nextMessageSequence: sql`next_message_sequence + 1`,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
     await publishRunnerMessage(transaction, mutation, messageRow, attempt);
   }
@@ -291,19 +323,12 @@ async function applyEventProjection(
         ]),
         id: event.data.messageId,
         kind: "input",
+        published: true,
         runId: event.runId,
         sequence: call.nextMessageSequence,
         threadId: event.threadId,
       })
       .returningAll()
-      .executeTakeFirstOrThrow();
-    await transaction
-      .updateTable("threads")
-      .set({
-        nextMessageSequence: sql`next_message_sequence + 1`,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
     await publishRunnerMessage(transaction, mutation, messageRow, attempt);
   }
@@ -667,19 +692,25 @@ async function applyEventProjection(
         origin: "runner" as const,
       };
       if (event.type === "tool.started") {
-        await startPersonalToolCall(transaction, mutation, {
-          ...key,
-          tool: event.data.tool,
-          arguments: event.data.arguments,
-          ...(integration ? { integration } : {}),
-          ...(event.data.provisional ? { provisional: true } : {}),
-        });
+        await startPersonalToolCall(
+          transaction,
+          mutation,
+          {
+            ...key,
+            tool: event.data.tool,
+            arguments: event.data.arguments,
+            ...(integration ? { integration } : {}),
+            ...(event.data.provisional ? { provisional: true } : {}),
+          },
+          run,
+        );
       } else {
-        await completePersonalToolCall(transaction, mutation, {
-          ...key,
-          output: event.data.output,
-          isError: event.data.isError,
-        });
+        await completePersonalToolCall(
+          transaction,
+          mutation,
+          { ...key, output: event.data.output, isError: event.data.isError },
+          run,
+        );
       }
       break;
     }
@@ -878,34 +909,28 @@ export async function commitRunnerEvent(
         tx,
         mutation,
         statement,
-        async (digest, event, authority) => {
-          const run = await tx
-            .selectFrom("runs")
-            .selectAll()
-            .where("id", "=", event.runId)
-            .executeTakeFirstOrThrow();
-          const attempt = await tx
-            .selectFrom("runAttempts")
-            .selectAll()
-            .where("id", "=", authority.attemptId)
-            .executeTakeFirstOrThrow();
+        async (digest, event, authority, { run, attempt, ...context }) => {
           const lostExecution =
             event.type === "run.interrupted" && event.data.cause === "lease-lost";
-          await assertActiveExecutionBindingInStore(
-            tx,
-            {
-              bindingGeneration: event.bindingGeneration,
-              environmentId: input.environmentId,
-              requestedBy: run.requestedBy,
-              runId: run.id,
-              runnerBootId: input.runnerBootId,
-              runnerId: input.runnerId,
-              threadId: run.threadId,
-              ...(lostExecution ? { lostExecution } : {}),
-            },
-            executionNow,
-          );
-          await lockThreadRow(tx, event.threadId);
+          if (
+            !executionBindingHolds(
+              context.binding,
+              {
+                bindingGeneration: event.bindingGeneration,
+                environmentId: input.environmentId,
+                requestedBy: run.requestedBy,
+                runId: run.id,
+                runnerBootId: input.runnerBootId,
+                runnerId: input.runnerId,
+                threadId: run.threadId,
+                ...(lostExecution ? { lostExecution } : {}),
+              },
+              executionNow(),
+            ) ||
+            (!lostExecution && !context.threadAdmitted)
+          )
+            refuseExecutionBinding();
+          const thread = await lockStatementThread(tx, event.threadId, context.channelInputs);
           if (lostExecution) {
             assertRunnerEventTransition(run, event);
             const recovery = await recoverLostRunTransaction(tx, {
@@ -1031,6 +1056,8 @@ export async function commitRunnerEvent(
             event,
             links,
             attempt,
+            run,
+            thread,
             integration,
           );
           duplicateRunUsage = projection.duplicateRunUsage;
@@ -1048,7 +1075,8 @@ export async function commitRunnerEvent(
                   ? "status"
                   : null;
           if (transition) {
-            await updateExecutionThread(tx, run.threadId, new Date(event.emittedAt));
+            // The Run change below publishes the Run queue with the Run's new revision.
+            await projectThreadState(tx, run.threadId, new Date(event.emittedAt));
             await recordExecutionRunChange(tx, mutation, {
               runId: run.id,
               threadId: run.threadId,

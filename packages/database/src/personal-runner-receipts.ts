@@ -7,8 +7,11 @@ import {
   type RunnerId,
   type ThreadId,
 } from "@opensteer/core";
+import { sql, type Selectable } from "kysely";
+import type { ExecutionBindingFacts } from "./execution-authority.js";
 import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import type { FinishIntent, RunnerEventReceiptTable } from "./personal-state-schema.js";
+import type { RunAttemptTable, RunRow } from "./schema.js";
 import { storableJson } from "./storable-json.js";
 
 interface RunnerStatement<Data = unknown> {
@@ -62,20 +65,41 @@ type Authority = {
   readonly attemptId: import("@opensteer/core").RunAttemptId;
 };
 
-async function recordReceipt(tx: Tx, mutation: PersonalMutation, receipt: Receipt) {
+/** The rows a Runner statement was admitted against, read once under the Run lock. */
+export interface RunnerStatementContext {
+  readonly run: RunRow;
+  readonly attempt: Selectable<RunAttemptTable>;
+  /** Undefined when the Run has no active session or its requester is not the owner. */
+  readonly binding: ExecutionBindingFacts | undefined;
+  readonly threadAdmitted: boolean;
+  /** Whether queued Messaging inputs hold authority over this task. */
+  readonly channelInputs: boolean;
+}
+
+async function advanceOrdinal(tx: Tx, receipt: Receipt, unlessFinishing: boolean) {
   const advanced = await tx
     .updateTable("runs")
     .set({ nextRunnerOrdinal: receipt.ordinal + 1 })
     .where("id", "=", receipt.runId)
     .where("nextRunnerOrdinal", "=", receipt.ordinal)
+    .$if(unlessFinishing, (query) => query.where("finishIntent", "is", null))
     .executeTakeFirst();
-  if (advanced.numUpdatedRows !== 1n) throw new Error("Runner ordinal changed before receipt");
+  return advanced.numUpdatedRows === 1n;
+}
+
+function stageReceipt(tx: Tx, mutation: PersonalMutation, receipt: Receipt) {
   mutation.receipt(async (committedHead) => {
     await tx
       .insertInto("runnerEventReceipts")
       .values({ ...receipt, committedHead })
       .execute();
   });
+}
+
+async function recordReceipt(tx: Tx, mutation: PersonalMutation, receipt: Receipt) {
+  if (!(await advanceOrdinal(tx, receipt, false)))
+    throw new Error("Runner ordinal changed before receipt");
+  stageReceipt(tx, mutation, receipt);
 }
 
 function matchFinish(intent: FinishIntent, statement: RunnerStatement, digest: Buffer) {
@@ -103,45 +127,46 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     digest: Buffer,
     statement: Statement,
     authority: Authority,
+    context: RunnerStatementContext,
   ) => Promise<Exclude<Disposition, "terminal-noop">>,
   options?: { readonly now: number; readonly allowExpiredLease: boolean },
 ): Promise<
   { readonly throughOrdinal: number; readonly replayed: boolean } | { readonly finishing: true }
 > {
   const statement = storableJson(input);
-  const run = await tx
+  const loaded = await tx
     .selectFrom("runs")
+    .leftJoin("runnerEventReceipts as receipt", (join) =>
+      join.onRef("receipt.runId", "=", "runs.id").on("receipt.ordinal", "=", statement.ordinal),
+    )
+    .selectAll("runs")
     .select([
-      "id",
-      "threadId",
-      "environmentId",
-      "nextRunnerOrdinal",
-      "finishIntent",
-      "status",
-      "providerSessionId",
-      "bindingGeneration",
+      "receipt.runnerId as receiptRunnerId",
+      "receipt.runnerBootId as receiptRunnerBootId",
+      "receipt.bindingGeneration as receiptBindingGeneration",
+      "receipt.reportedDigest as receiptDigest",
     ])
-    .where("id", "=", statement.runId)
-    .forNoKeyUpdate()
+    .where("runs.id", "=", statement.runId)
+    .forNoKeyUpdate("runs")
     .executeTakeFirst();
-  if (!run || run.threadId !== statement.threadId || run.environmentId !== statement.environmentId)
+  if (
+    !loaded ||
+    loaded.threadId !== statement.threadId ||
+    loaded.environmentId !== statement.environmentId
+  )
     throw new OpensteerError({
       code: "forbidden",
       message: "Runner statement does not belong to that Run",
     });
+  const { receiptRunnerId, receiptRunnerBootId, receiptBindingGeneration, receiptDigest, ...run } =
+    loaded;
   const digest = reportedDigest(statement);
-  const receipt = await tx
-    .selectFrom("runnerEventReceipts")
-    .select(["runnerId", "runnerBootId", "bindingGeneration", "reportedDigest"])
-    .where("runId", "=", run.id)
-    .where("ordinal", "=", statement.ordinal)
-    .executeTakeFirst();
-  if (receipt) {
+  if (receiptDigest) {
     if (
-      receipt.runnerId !== statement.runnerId ||
-      receipt.runnerBootId !== statement.runnerBootId ||
-      receipt.bindingGeneration !== statement.bindingGeneration ||
-      !receipt.reportedDigest.equals(digest)
+      receiptRunnerId !== statement.runnerId ||
+      receiptRunnerBootId !== statement.runnerBootId ||
+      receiptBindingGeneration !== statement.bindingGeneration ||
+      !receiptDigest.equals(digest)
     )
       throw new OpensteerError({
         code: "conflict",
@@ -159,27 +184,78 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     return { finishing: true };
   }
 
-  const attempt = await tx
+  // The attempt, the Run's provider session and the authority facts behind them; nothing locks.
+  const bound = await tx
     .selectFrom("runAttempts")
-    .select(["id", "status", "endedAt"])
-    .where("runId", "=", run.id)
-    .where("bindingGeneration", "=", statement.bindingGeneration)
-    .where("runnerId", "=", statement.runnerId)
-    .where("runnerBootId", "=", statement.runnerBootId)
-    .orderBy("ordinal", "desc")
+    .leftJoin("providerSessions as session", (join) =>
+      join.on("session.id", "=", run.providerSessionId),
+    )
+    .leftJoin("runners as sessionRunner", "sessionRunner.id", "session.runnerId")
+    .selectAll("runAttempts")
+    .select((eb) => [
+      "session.id as sessionId",
+      "session.active as sessionActive",
+      "session.leaseExpiresAt as sessionLeaseExpiresAt",
+      "session.runnerId as sessionRunnerId",
+      "session.runnerBootId as sessionRunnerBootId",
+      "session.bindingGeneration as sessionBindingGeneration",
+      "session.harnessInstanceId as sessionHarnessInstanceId",
+      "session.status as sessionStatus",
+      "sessionRunner.id as sessionRunnerRowId",
+      "sessionRunner.revokedAt as sessionRunnerRevokedAt",
+      eb
+        .selectFrom("personalSettings")
+        .select("agentHomeComputerId")
+        .where("ownerId", "=", run.requestedBy)
+        .as("agentHomeComputerId"),
+      eb
+        .exists(
+          eb
+            .selectFrom("threads")
+            .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+            .innerJoin(
+              "personalSettings",
+              "personalSettings.agentHomeComputerId",
+              "executionEnvironments.runnerId",
+            )
+            .innerJoin("users", "users.id", "personalSettings.ownerId")
+            .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+            .select(sql.lit(1).as("admitted"))
+            .where("threads.id", "=", run.threadId)
+            .where("personalSettings.singletonKey", "=", "personal")
+            .where("personalSettings.ownerId", "=", run.requestedBy)
+            .where("users.disabledAt", "is", null)
+            .where("runners.revokedAt", "is", null),
+        )
+        .as("threadAdmitted"),
+      eb
+        .exists(
+          eb
+            .selectFrom("threadInputs")
+            .select(sql.lit(1).as("held"))
+            .where("threadInputs.threadId", "=", run.threadId)
+            .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+            .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress"),
+        )
+        .as("channelInputs"),
+    ])
+    .where("runAttempts.runId", "=", run.id)
+    .where("runAttempts.bindingGeneration", "=", statement.bindingGeneration)
+    .where("runAttempts.runnerId", "=", statement.runnerId)
+    .where("runAttempts.runnerBootId", "=", statement.runnerBootId)
+    .orderBy("runAttempts.ordinal", "desc")
     .limit(1)
     .executeTakeFirst();
   const terminal = !nonTerminalRunStatuses.some((status) => status === run.status);
-  const session = await tx
-    .selectFrom("providerSessions")
-    .select(["leaseExpiresAt", "active"])
-    .where("id", "=", run.providerSessionId)
-    .where("runnerId", "=", statement.runnerId)
-    .where("runnerBootId", "=", statement.runnerBootId)
-    .where("bindingGeneration", "=", statement.bindingGeneration)
-    .executeTakeFirst();
+  const session =
+    bound?.sessionId &&
+    bound.sessionRunnerId === statement.runnerId &&
+    bound.sessionRunnerBootId === statement.runnerBootId &&
+    bound.sessionBindingGeneration === statement.bindingGeneration
+      ? { active: bound.sessionActive!, leaseExpiresAt: bound.sessionLeaseExpiresAt }
+      : undefined;
   if (
-    !attempt ||
+    !bound ||
     !session ||
     run.bindingGeneration !== statement.bindingGeneration ||
     (!terminal &&
@@ -187,26 +263,59 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
         !session.leaseExpiresAt ||
         (!options?.allowExpiredLease &&
           session.leaseExpiresAt.getTime() <= (options?.now ?? mutation.state.now.getTime())) ||
-        (attempt.status === "current" && attempt.endedAt !== null)))
+        (bound.status === "current" && bound.endedAt !== null)))
   )
     throw new OpensteerError({
       code: "forbidden",
       message: "Runner statement binding is no longer current",
     });
+  const {
+    sessionId: _sessionId,
+    sessionActive,
+    sessionLeaseExpiresAt,
+    sessionRunnerId,
+    sessionRunnerBootId,
+    sessionBindingGeneration,
+    sessionHarnessInstanceId,
+    sessionStatus,
+    sessionRunnerRowId,
+    sessionRunnerRevokedAt,
+    agentHomeComputerId,
+    threadAdmitted,
+    channelInputs,
+    ...attempt
+  } = bound;
+  const context: RunnerStatementContext = {
+    run,
+    attempt,
+    binding:
+      sessionActive && agentHomeComputerId && sessionRunnerRowId
+        ? {
+            environmentId: run.environmentId,
+            finishIntent: run.finishIntent,
+            runHarnessInstanceId: run.harnessInstanceId,
+            requestedBy: run.requestedBy,
+            runStatus: run.status,
+            runBindingGeneration: run.bindingGeneration,
+            threadId: run.threadId,
+            agentHomeComputerId,
+            bindingGeneration: sessionBindingGeneration,
+            providerSessionHarnessInstanceId: sessionHarnessInstanceId!,
+            leaseExpiresAt: sessionLeaseExpiresAt,
+            runnerBootId: sessionRunnerBootId,
+            runnerId: sessionRunnerId,
+            providerSessionStatus: sessionStatus!,
+            revokedAt: sessionRunnerRevokedAt,
+          }
+        : undefined,
+    threadAdmitted: Boolean(threadAdmitted),
+    channelInputs: Boolean(channelInputs),
+  };
 
   const disposition = terminal
     ? "terminal-noop"
-    : await apply(digest, statement, { kind: attempt.status, attemptId: attempt.id });
-  const { finishIntent } = await tx
-    .selectFrom("runs")
-    .select("finishIntent")
-    .where("id", "=", run.id)
-    .executeTakeFirstOrThrow();
-  if (finishIntent) {
-    matchFinish(finishIntent, statement, digest);
-    return { finishing: true };
-  }
-  await recordReceipt(tx, mutation, {
+    : await apply(digest, statement, { kind: attempt.status, attemptId: attempt.id }, context);
+  const receipt: Receipt = {
     runId: run.id,
     ordinal: statement.ordinal,
     runnerId: statement.runnerId,
@@ -214,7 +323,18 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     bindingGeneration: statement.bindingGeneration,
     reportedDigest: digest,
     disposition,
-  });
+  };
+  if (!(await advanceOrdinal(tx, receipt, true))) {
+    const { finishIntent } = await tx
+      .selectFrom("runs")
+      .select("finishIntent")
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    if (!finishIntent) throw new Error("Runner ordinal changed before receipt");
+    matchFinish(finishIntent, statement, digest);
+    return { finishing: true };
+  }
+  stageReceipt(tx, mutation, receipt);
   return { throughOrdinal: statement.ordinal, replayed: false };
 }
 

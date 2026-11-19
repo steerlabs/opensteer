@@ -13,8 +13,9 @@ import { sql, type Selectable } from "kysely";
 import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import { personalArgumentDigest } from "./personal-runner-receipts.js";
 import type { ToolCallTable } from "./personal-state-schema.js";
+import type { RunRow } from "./schema.js";
 import { retainedToolImages, toolCallId, transcriptPreview } from "./transcript-store.js";
-import { itemView } from "./personal-sync-store.js";
+import { itemColumns, itemView } from "./personal-sync-store.js";
 import { storableJson } from "./storable-json.js";
 
 type ToolKey = Pick<
@@ -23,28 +24,57 @@ type ToolKey = Pick<
 >;
 type Transaction = PersonalMutationTransaction;
 type ToolResult = { readonly output: ToolOutput; readonly isError: boolean };
+// Everything but arguments: a card and its callers never read them back.
+const callColumns = [
+  "id",
+  "threadId",
+  "runId",
+  "attemptId",
+  "bindingGeneration",
+  "nodeId",
+  "callId",
+  "origin",
+  "tool",
+  "integration",
+  "status",
+  "isError",
+  "startedAt",
+  "completedAt",
+  "completionOrder",
+] as const;
+type CallCard = Pick<Selectable<ToolCallTable>, (typeof callColumns)[number]>;
 export interface HostToolEffectHandle {
   readonly toolCallId: string;
   readonly origin: Exclude<ToolKey["origin"], "runner">;
 }
 
-async function lockToolScope(tx: Transaction, key: ToolKey) {
-  const run = await tx
-    .selectFrom("runs")
-    .select(["threadId", "finishIntent", "status", "bindingGeneration", "assignmentId"])
-    .where("id", "=", key.runId)
-    .forNoKeyUpdate()
-    .executeTakeFirst();
+/**
+ * `locked` is a Run the caller already locked, with its task locked after it and known to be
+ * present; the Runner statement path passes the rows it admitted the statement against.
+ */
+async function lockToolScope(tx: Transaction, key: ToolKey, locked?: RunRow) {
+  const run =
+    locked?.id === key.runId
+      ? locked
+      : await tx
+          .selectFrom("runs")
+          .select(["threadId", "finishIntent", "status", "bindingGeneration", "assignmentId"])
+          .where("id", "=", key.runId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
   if (!run || run.threadId !== key.threadId)
     throw new OpensteerError({ code: "forbidden", message: "Tool call is outside its Run" });
   if (await assignmentWasCancelled(tx, run.assignmentId))
     throw new OpensteerError({ code: "forbidden", message: "Tool call assignment was cancelled" });
-  const thread = await tx
-    .selectFrom("threads")
-    .select(["id", "removedAt"])
-    .where("id", "=", key.threadId)
-    .forNoKeyUpdate()
-    .executeTakeFirst();
+  const thread =
+    run === locked
+      ? { removedAt: null }
+      : await tx
+          .selectFrom("threads")
+          .select(["id", "removedAt"])
+          .where("id", "=", key.threadId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
   if (!thread || thread.removedAt)
     throw new OpensteerError({ code: "forbidden", message: "Tool call task is unavailable" });
   if (key.nodeId) {
@@ -138,7 +168,7 @@ async function allocatePosition(tx: Transaction, key: ToolKey, revision: string)
 async function storeToolCard(
   tx: Transaction,
   mutation: PersonalMutation,
-  call: Selectable<ToolCallTable>,
+  call: CallCard,
   position: string,
 ) {
   const id = `tool:${call.id}`;
@@ -188,7 +218,7 @@ async function storeToolCard(
             view: eb.ref("excluded.view"),
           })),
         )
-        .returningAll()
+        .returning(itemColumns)
         .executeTakeFirstOrThrow();
       mutation.change(
         {
@@ -206,7 +236,7 @@ async function storeToolCard(
 async function currentCall(tx: Transaction, id: string) {
   return tx
     .selectFrom("toolCalls")
-    .selectAll()
+    .select([...callColumns, "output", "argumentDigest", "provisional"])
     .where("id", "=", id)
     .forNoKeyUpdate()
     .executeTakeFirst();
@@ -221,8 +251,9 @@ export async function startPersonalToolCall(
     readonly integration?: IntegrationCallSubject;
     readonly provisional?: true;
   },
+  locked?: RunRow,
 ) {
-  const run = await lockToolScope(tx, input);
+  const run = await lockToolScope(tx, input, locked);
   const tool = ToolIdentitySchema.parse(input.tool);
   const integration = input.integration
     ? IntegrationCallSubjectSchema.parse(input.integration)
@@ -247,9 +278,18 @@ export async function startPersonalToolCall(
         code: "conflict",
         message: "Tool call identity was already used",
       });
-    const matches = (existing.argumentDigest ?? personalArgumentDigest(existing.arguments)).equals(
-      digest,
-    );
+    const matches = (
+      existing.argumentDigest ??
+      personalArgumentDigest(
+        (
+          await tx
+            .selectFrom("toolCalls")
+            .select("arguments")
+            .where("id", "=", id)
+            .executeTakeFirstOrThrow()
+        ).arguments,
+      )
+    ).equals(digest);
     requireToolAdmission(run);
     if (input.origin !== "runner" && matches)
       return {
@@ -269,7 +309,7 @@ export async function startPersonalToolCall(
           integration: existing.integration ?? integration,
         })
         .where("id", "=", id)
-        .returningAll()
+        .returning([...callColumns, "output"])
         .executeTakeFirstOrThrow();
       const position =
         mutation.transcriptPlacement(`tool:${id}`)?.position ??
@@ -320,7 +360,7 @@ export async function startPersonalToolCall(
       completedAt: null,
       completionOrder: null,
     })
-    .returningAll()
+    .returning([...callColumns, "output"])
     .executeTakeFirstOrThrow();
   await storeToolCard(tx, mutation, call, position);
   mutation.react({
@@ -338,8 +378,9 @@ export async function completePersonalToolCall(
   tx: Transaction,
   mutation: PersonalMutation,
   input: ToolKey & ToolResult & { readonly origin: "runner" },
+  locked?: RunRow,
 ) {
-  return completeToolCall(tx, mutation, toolCallId(input), input);
+  return completeToolCall(tx, mutation, toolCallId(input), input, locked);
 }
 
 export async function completePersonalHostToolCall(
@@ -382,8 +423,9 @@ async function completeToolCall(
   mutation: PersonalMutation,
   id: string,
   input: ToolKey & ToolResult,
+  locked?: RunRow,
 ) {
-  const run = await lockToolScope(tx, input);
+  const run = await lockToolScope(tx, input, locked);
   const call = await currentCall(tx, id);
   if (call?.origin && call.origin !== input.origin)
     throw new OpensteerError({
@@ -412,7 +454,7 @@ async function completeToolCall(
         .updateTable("toolCalls")
         .set(final)
         .where("id", "=", id)
-        .returningAll()
+        .returning(callColumns)
         .executeTakeFirstOrThrow()
     : await tx
         .insertInto("toolCalls")
@@ -432,7 +474,7 @@ async function completeToolCall(
           startedAt: null,
           ...final,
         })
-        .returningAll()
+        .returning(callColumns)
         .executeTakeFirstOrThrow();
   await storeToolCard(tx, mutation, completed, order);
   const images = retainedToolImages(completed, output.images ?? [], order);
@@ -485,7 +527,7 @@ export async function interruptPersonalToolCalls(
           view: sql`view || jsonb_build_object('status','stopped','completedAt',${completedAt.toISOString()}::text)`,
         })
         .where("id", "=", id)
-        .returningAll()
+        .returning(itemColumns)
         .executeTakeFirst();
       if (!card) return;
       mutation.react({

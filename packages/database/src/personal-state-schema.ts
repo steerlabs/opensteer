@@ -367,9 +367,9 @@ const retainedStateDdl = `
     is_turn_start boolean not null check (not is_turn_start or (visible and kind = 'message' and node_id is null)),
     created_at timestamptz not null,
     message_id text unique,
-    tool_call_id text unique references tool_calls(id) on delete cascade,
-    request_id text unique references requests(id) on delete cascade,
-    execution_node_id text unique references execution_nodes(id) on delete cascade,
+    tool_call_id text references tool_calls(id) on delete cascade,
+    request_id text references requests(id) on delete cascade,
+    execution_node_id text references execution_nodes(id) on delete cascade,
     delegation_id text references delegations(id) on delete cascade,
     app_id text references apps(id) on delete cascade,
     binding_generation integer check (binding_generation >= 0),
@@ -402,6 +402,11 @@ const retainedStateDdl = `
       when 'place' then run_id is not null and body is not null and opensteer_valid_place(body)
       else false end)
   );
+  -- Most items are messages, so these sources are mostly NULL.
+  create unique index transcript_tool_call on transcript_items(tool_call_id) where tool_call_id is not null;
+  create unique index transcript_request on transcript_items(request_id) where request_id is not null;
+  create unique index transcript_execution_node on transcript_items(execution_node_id)
+    where execution_node_id is not null;
   create unique index transcript_run on transcript_items(run_id) where kind = 'run';
   create unique index transcript_delegation on transcript_items(thread_id,kind,delegation_id) where delegation_id is not null;
   create unique index transcript_app on transcript_items(thread_id,app_id) where app_id is not null;
@@ -505,6 +510,8 @@ const currentStateIndexes = `
   create index delegations_open_child on delegations(parent_assignment_id,id) where status = 'open';
   create index thread_inputs_pending_assignment on thread_inputs(assignment_id,message_id) where state = 'pending';
   create index requests_pending_origin_thread on requests(originating_thread_id,id) where status = 'pending';
+  create index thread_inputs_channel_authority on thread_inputs(thread_id)
+    where state in ('pending','claimed','unknown') and authority_source->>'kind'='channel-ingress';
   create index thread_inputs_current_channel_binding on thread_inputs((authority_source->>'bindingId'),message_id)
     where state in ('pending','unknown') and authority_source->>'kind'='channel-ingress';
   create index threads_current_recent on threads(asked_at desc,id desc)
@@ -516,6 +523,7 @@ const currentStateIndexes = `
   create index threads_removed on threads(id) where removed_at is not null;
   create index threads_last_reply_source on threads(last_reply_message_id) where last_reply_message_id is not null;
   create index messages_current_published on messages(thread_id,sequence desc) where published;
+  create index messages_run_sequence on messages(run_id,sequence desc);
   create index runs_current_queue on runs(thread_id,run_ordinal)
     where status in ('queued','starting','running','waiting');
   create index runs_current_latest on runs(thread_id,run_ordinal desc) where maintenance is null;
