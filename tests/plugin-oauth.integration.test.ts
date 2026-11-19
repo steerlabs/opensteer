@@ -96,14 +96,7 @@ const errors: unknown[] = [];
 const createdRequests: CreatePluginOAuthAttemptRequest[] = [];
 const providerEvents = new EventEmitter();
 
-type Kind =
-  | "managed"
-  | "custom"
-  | "mcp"
-  | "metadata"
-  | "confidential"
-  | "unpinned"
-  | "discovered";
+type Kind = "managed" | "custom" | "mcp" | "metadata" | "confidential" | "unpinned" | "discovered";
 /**
  * `confidential` declares `pkce: false` with a client secret; `unpinned` declares it without;
  * `discovered` declares it beside `discover`.
@@ -112,8 +105,8 @@ const declared = (kind: Kind) =>
   kind === "discovered"
     ? `{discover: "${providerOrigin}/resource", scopes: ["read"], pkce: false, tokenEndpointAuthMethod: "client_secret_post"}`
     : kind === "mcp" || kind === "metadata"
-    ? `{discover: "${providerOrigin}/${kind === "metadata" ? "metadata-resource" : "resource"}", scopes: ["read"]}`
-    : `{authorizationUrl: "${providerOrigin}/${kind}/authorize", tokenUrl: "${providerOrigin}/${kind}/token", scopes: ["read"]${kind === "confidential" ? `, pkce: false, tokenEndpointAuthMethod: "client_secret_post"` : kind === "unpinned" ? ", pkce: false" : ""}}`;
+      ? `{discover: "${providerOrigin}/${kind === "metadata" ? "metadata-resource" : "resource"}", scopes: ["read"]}`
+      : `{authorizationUrl: "${providerOrigin}/${kind}/authorize", tokenUrl: "${providerOrigin}/${kind}/token", scopes: ["read"]${kind === "confidential" ? `, pkce: false, tokenEndpointAuthMethod: "client_secret_post"` : kind === "unpinned" ? ", pkce: false" : ""}}`;
 const source = (kind: Kind, extraSite = false) => `
 import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
 const service = defineProvider({name: "OAuth fixture", hosts: ["api.fixture.invalid", "${new URL(providerOrigin).host}"${extraSite ? ', "other.fixture.invalid"' : ""}], auth: {oauth: oauth2(${declared(kind)})}});

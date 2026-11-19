@@ -199,7 +199,10 @@ test("builds every plugin against the Host's framework and checks other packages
   // checked before it is followed, so one from the registry back to a private address, even the
   // registry's own, is refused, as is a tarball URL elsewhere on a private address.
   registry.requests.length = 0;
-  const redirected = await install("fixture-label", `${registry.origin}/redirect.tgz#${integrity(good)}`);
+  const redirected = await install(
+    "fixture-label",
+    `${registry.origin}/redirect.tgz#${integrity(good)}`,
+  );
   expect(redirected).toMatchObject({ status: "build-error" });
   expect(JSON.stringify(redirected)).toContain("Refused to fetch");
   const elsewhere = await install(
