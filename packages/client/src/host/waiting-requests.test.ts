@@ -38,6 +38,8 @@ async function harness() {
     listCalls: 0,
     pageSize: undefined as number | undefined,
     dispatched: [] as unknown[],
+    /** Holds the next answer until released with whether the Host accepts it. */
+    holdAnswer: null as Promise<boolean> | null,
   };
   let foreground = () => {};
   let background = () => {};
@@ -63,6 +65,21 @@ async function harness() {
         const command = JSON.parse(String(init?.body)) as { type: string; requestId?: string };
         if (command.type === "request.respond") {
           control.dispatched.push(command);
+          const held = control.holdAnswer;
+          control.holdAnswer = null;
+          if (held && !(await held))
+            // The Host refuses it and changes nothing: no revision moves.
+            return Response.json(
+              {
+                ok: false,
+                error: {
+                  code: "conflict",
+                  message: "Review the latest request.",
+                  retryable: false,
+                },
+              },
+              { status: 409 },
+            );
           host.pending = host.pending.filter(({ request }) => request.id !== command.requestId);
           return Response.json({
             ok: true,
@@ -296,4 +313,53 @@ it("rereads the list on attach and return to the front only when the Host's Requ
   await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length - 1));
   await f.roundTrip();
   expect(f.control.listCalls).toBe(calls + 1);
+});
+
+it("puts back a Request whose answer the Host refuses while the app is behind, ready to answer", async () => {
+  const f = await harness();
+  await f.client.load();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length));
+  const target = f.all[0]!.request.id;
+  const verdict = Promise.withResolvers<boolean>();
+  f.control.holdAnswer = verdict.promise;
+  const answer = () =>
+    f.client.dispatch({
+      idempotencyKey: `request:answer:${crypto.randomUUID()}`,
+      expectedRevision: "1",
+      requestId: target,
+      response: { answers: { choice: ["yes"] }, kind: "form" },
+      type: "request.respond",
+    });
+  const refused = expect(answer()).rejects.toThrow();
+  expect(f.ids()).not.toContain(target);
+  f.background();
+  verdict.resolve(false);
+  await refused;
+  f.foreground();
+  await f.roundTrip();
+  expect(f.ids()).toContain(target);
+  // It can be answered again, and this time it goes.
+  await answer();
+  expect(f.ids()).not.toContain(target);
+});
+
+it("shows again on reattach a Request hidden only by an answer that never came back", async () => {
+  const f = await harness();
+  await f.client.load();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length));
+  const target = f.all[0]!.request.id;
+  // The answer never returns; the Host never received it.
+  f.control.holdAnswer = new Promise<boolean>(() => undefined);
+  void f.client
+    .dispatch({
+      idempotencyKey: "request:answer:lost",
+      expectedRevision: "1",
+      requestId: target,
+      response: { answers: { choice: ["yes"] }, kind: "form" },
+      type: "request.respond",
+    })
+    .catch(() => undefined);
+  expect(f.ids()).not.toContain(target);
+  for (const socket of f.personal.sockets) socket.close();
+  await vi.waitFor(() => expect(f.ids()).toContain(target), { timeout: 3_000 });
 });
