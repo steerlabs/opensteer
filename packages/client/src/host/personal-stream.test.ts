@@ -865,6 +865,23 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
+  it("a jump to a waiting message is a move: an older history jump answering after it lands nothing", async () => {
+    const { f, targets, pending, reader } = positioned();
+    const older = reader.history("around", targets[0]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    // The waiting message stands at the foot: the web jumps to it by returning to the latest.
+    const waiting = reader.history("latest");
+    // The older jump's page answers first; it is for a move the reader no longer wants.
+    pending[0]!.answer();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.answer();
+    await expect(waiting).resolves.toBe(true);
+    await expect(older, "the older jump spoke after the waiting-message jump").resolves.toBe(false);
+    expect(f.detail.anchor).toBeUndefined();
+    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
+    reader.dispose();
+  });
+
   it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
     const { f, targets, reader } = positioned();
     // Back from the background: a subscription that asked for no anchor.
@@ -3620,6 +3637,64 @@ describe("task lists from the shell and its pages", () => {
       );
       await vi.advanceTimersByTimeAsync(0);
       expect(done()!.window.totalItems).toBe(58);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("a Done continuation never sets the count: a fresher count read in between stands", async () => {
+    const held = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    const older = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(900 + index),
+      doneAt: minutesBefore(800 + index),
+    }));
+    const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+    const reads: {
+      input: { limit?: number; before?: string };
+      resolve: (response: Response) => void;
+    }[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const query = JSON.parse(url.searchParams.get("input") ?? "{}") as {
+        limit?: number;
+        before?: string;
+      };
+      return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      reads[0]!.resolve(taskPageResponse(host, held, { nextBefore: "done-1", totalItems: 100 }));
+      await opening;
+      expect(done()!.window.totalItems).toBe(100);
+      vi.useFakeTimers();
+      // An off-page task is reopened elsewhere: the count is read again once the pushes rest.
+      const reopened = createId("thread");
+      host.commit([
+        upsert("task", reopened, { ...task, id: reopened, revision: "2", doneAt: null }),
+      ]);
+      // Load earlier starts before that count read answers; its page is held.
+      void client.loadEarlierDoneTasks();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const continuation = reads.find(({ input }) => input.before === "done-1")!;
+      const count = reads.find(({ input }) => input.limit === 1)!;
+      expect(continuation && count, "both reads should be out").toBeTruthy();
+      count.resolve(taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 99 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems).toBe(99);
+      // The continuation answers after it, with no count of its own.
+      continuation.resolve(taskPageResponse(host, older, { nextBefore: null }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.entries.length).toBe(100);
+      expect(done()!.window.totalItems, "a continuation put back an older count").toBe(99);
     } finally {
       client.dispose();
     }

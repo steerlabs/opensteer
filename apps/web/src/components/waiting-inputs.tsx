@@ -16,9 +16,7 @@ import {
   hydrateWaitingDraft,
   messageAuthorName,
   mutationIdempotencyKey,
-  draftOfUnsentEdit,
   openWaitingDraft,
-  unsentEditOf,
   reloadWaitingDraft,
   removeWaitingDraftPart,
   setWaitingDraftText,
@@ -35,7 +33,6 @@ import {
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import { useWaitingBody } from "@opensteer/client/react";
-import { unsentEditScope, unsentEdits } from "./unsent-edits.js";
 import { TranscriptMessage } from "./agent-activity.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
@@ -263,34 +260,16 @@ function useInPlaceEdit(
         })
       : kept;
 
-  // The person's changed words are kept, durably, as they type: only Save, a send, a move or
-  // Discard ends them. Leaving this view only lets the lease go; the words wait for the return.
-  const scope = unsentEditScope(client);
-  const message = useRef(input);
-  if (input) message.current = input;
-  useEffect(() => {
-    const at = message.current;
-    if (!kept || !at || !scope || kept.loading) return;
-    const record = unsentEditOf(at.threadId, at.messageId, kept, Date.now());
-    if (record) void unsentEdits.put(scope, record).catch(() => undefined);
-    else void unsentEdits.remove(scope, at.threadId, at.messageId).catch(() => undefined);
-  }, [kept, scope]);
-  useEffect(() => {
-    // Words kept from before (a view that went away, a reload) open the edit again.
-    let current = true;
-    void unsentEdits.ready().then(() => {
-      const at = message.current;
-      if (current && at && scope && unsentEdits.get(scope, at.threadId, at.messageId)) open();
-    });
-    return () => {
-      current = false;
+  useEffect(
+    () => () => {
       const held = session.current;
       session.current = null;
       if (!held) return;
       held.closed = true;
       if (!held.saving) release(held);
-    };
-  }, []);
+    },
+    [],
+  );
   // A newer version locks the field until its full body is read under the lease.
   const awaited = draft ? waitingDraftAwaits(draft) : null;
   useEffect(() => {
@@ -330,16 +309,12 @@ function useInPlaceEdit(
       sending: null,
     };
     session.current = held;
-    // Words kept from before come back as they were, bound to their version. Otherwise the
-    // preview shows while the full body is read; it cannot be edited or saved.
-    const record = scope ? unsentEdits.get(scope, input.threadId, input.messageId) : undefined;
+    // The preview shows while the full body is read; it cannot be edited or saved.
     setKept(
-      record
-        ? draftOfUnsentEdit(record)
-        : openWaitingDraft({
-            content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
-            revision: input.revision,
-          }),
+      openWaitingDraft({
+        content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
+        revision: input.revision,
+      }),
     );
     setNotice(null);
     onOpenChange(true);
@@ -375,25 +350,7 @@ function useInPlaceEdit(
     setSaving(false);
     onOpenChange(false);
   };
-  /** The record the words being acted on are, so its end never takes words typed after it. */
-  const recordNow = () => {
-    const at = message.current;
-    return scope && at ? unsentEdits.get(scope, at.threadId, at.messageId) : undefined;
-  };
-  /** Ends the kept words once the action that took them completed. */
-  const endRecord = (record: ReturnType<typeof recordNow>) => {
-    if (scope && record)
-      void unsentEdits
-        .remove(scope, record.threadId, record.messageId, record)
-        .catch(() => undefined);
-  };
-  /** Discard: the person lets their words go, and the message goes on as it was. */
-  const close = () => {
-    const at = message.current;
-    if (scope && at)
-      void unsentEdits.remove(scope, at.threadId, at.messageId).catch(() => undefined);
-    finish(session.current);
-  };
+  const close = () => finish(session.current);
 
   /**
    * The draft with the words the field holds right now, including input it
@@ -440,10 +397,7 @@ function useInPlaceEdit(
         held.opening = client.editWaitingMessage(input.threadId, input.messageId);
         return held.opening;
       });
-      const record = recordNow();
       const edit = await editor.save(plan.content, plan.expectedRevision);
-      // The Host has the words now: only then do they stop being kept here.
-      endRecord(record);
       held.saving = false;
       // Saving ended the lease; there is nothing left to cancel.
       finish(held, true);
@@ -484,12 +438,9 @@ function useInPlaceEdit(
       };
       held.sending = submission;
     }
-    const record = recordNow();
     await outbox.enqueue(sendMessageCommand(input.threadId, submission), {
       expectedLogin: held.scope,
     });
-    // The outbox holds the words now: only then do they stop being kept here.
-    endRecord(record);
     held.sending = null;
     finish(held);
   };
