@@ -1071,6 +1071,8 @@ export interface WaitingMessageEditor {
   readonly leaseId: string;
   readonly revision: number;
   touch(): void;
+  /** The full body at `revision`, read under this lease: what a locked draft opens from. */
+  read(revision: number): Promise<readonly ContentPart[]>;
   save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit>;
   cancel(): Promise<void>;
 }

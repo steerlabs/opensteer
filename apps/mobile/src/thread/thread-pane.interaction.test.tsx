@@ -1460,6 +1460,15 @@ function fakeHost(initial: FixtureHostSnapshot) {
         ...editor,
         content: held.message.content,
         revision: held.message.edit?.revision ?? 0,
+        // A later version's full body, read under the same lease.
+        read: vi.fn(async (revision: number) => {
+          const now = snapshot.inputQueues[threadId]?.items.find(
+            ({ message }) => message.id === messageId,
+          );
+          if (!now || (now.message.edit?.revision ?? 0) !== revision)
+            throw new Error("That version is not the one waiting.");
+          return now.message.content;
+        }),
       };
     }),
     latestPlaceOfThread: () => null,
@@ -4214,6 +4223,11 @@ describe("a task", () => {
     await tapWaiting(container, waiting.body);
     const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
     await act(async () => host.move(withWaiting(initial, first)));
+    // The newer version opens from its full body, read under the lease, never the queue's preview.
+    const opened = (await host.editWaitingMessage.mock.results[0]!.value) as {
+      read: ReturnType<typeof vi.fn>;
+    };
+    expect(opened.read).toHaveBeenCalledWith(1);
     expect(editField(container)?.value).toBe("Card fees and FX");
 
     await type(container, "Edit message", "Card fees, FX and the wire charge");

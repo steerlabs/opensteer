@@ -133,6 +133,10 @@ function fakeEditor(
     cancel: vi.fn(async () => undefined),
     content: typeof body === "string" ? [{ text: body, type: "text" }] : body,
     leaseId: "lease",
+    read: vi.fn(
+      async (): Promise<readonly ContentPart[]> =>
+        typeof body === "string" ? [{ text: body, type: "text" }] : body,
+    ),
     revision: 0,
     save: vi.fn(async () => ({ editedAt: "2026-10-31T12:01:00.000Z", revision: 1 })),
     touch: vi.fn(),
@@ -687,8 +691,38 @@ describe("WaitingInputs", () => {
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }));
   });
 
+  it("a newer version under untouched words locks the field until its full body is read under the lease", async () => {
+    let body!: (content: readonly ContentPart[]) => void;
+    const editor = fakeEditor("Old words", {
+      read: vi.fn(
+        () =>
+          new Promise<readonly ContentPart[]>((resolve) => {
+            body = resolve;
+          }),
+      ),
+    });
+    const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
+    const old = ask("asked", "Old words");
+    const container = mount(render(client, inputsOf([old])));
+    await clickWords(container, "asked");
+    expect(field(container)?.value).toBe("Old words");
+    // Another device saved; the queue reports only a clipped preview of it.
+    await act(async () =>
+      root?.render(render(client, inputsOf([edited(old, "New words on i", 1)]))),
+    );
+    expect(editor.read).toHaveBeenCalledWith(1);
+    await press(field(container)!, "Enter");
+    expect(editor.save).not.toHaveBeenCalled();
+    expect(button(container, "Answer").disabled, "Answer approved a preview").toBe(true);
+    await act(async () => body([{ text: "New words on iPad, in full", type: "text" }]));
+    expect(field(container)?.value).toBe("New words on iPad, in full");
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
   it("keeps words typed over a newer version: nothing saves or approves them until reloaded", async () => {
     const editor = fakeEditor("Old words", {
+      // The version reloaded is read whole under the lease before it can be edited.
+      read: vi.fn(async () => [{ text: "New words on iPad", type: "text" as const }]),
       save: vi.fn(async () => ({ editedAt: "2026-10-31T12:02:00.000Z", revision: 2 })),
     });
     const decideTeamAsk = vi.fn(async () => undefined);
@@ -709,6 +743,7 @@ describe("WaitingInputs", () => {
     expect(editor.save).not.toHaveBeenCalled();
 
     await act(async () => button(container, "Reload").click());
+    expect(editor.read).toHaveBeenCalledWith(1);
     expect(field(container)?.value).toBe("New words on iPad");
     await write(field(container)!, "New words, then mine");
     await act(async () => button(container, "Save and answer").click());
