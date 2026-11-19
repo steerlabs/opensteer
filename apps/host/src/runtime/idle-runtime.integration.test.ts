@@ -22,7 +22,9 @@ integration("An idle personal Host", () => {
   let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
   let host: MachineAccessWireHost | undefined;
   let runner: CallerMachine | undefined;
+  let restoreQuery = () => {};
   afterEach(async () => {
+    restoreQuery();
     vi.useRealTimers();
     await runner?.close();
     await host?.close();
@@ -51,15 +53,16 @@ integration("An idle personal Host", () => {
     });
     const statements: string[] = [];
     // Every statement any pg client in this process sends, by its text.
-    const query = pg.Client.prototype.query as (...values: unknown[]) => unknown;
-    vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
-      this: pg.Client,
-      ...args: unknown[]
-    ): unknown {
+    const prototype = pg.Client.prototype as unknown as { query: (...args: unknown[]) => unknown };
+    const query = prototype.query;
+    restoreQuery = () => {
+      prototype.query = query;
+    };
+    prototype.query = function (this: pg.Client, ...args: unknown[]): unknown {
       const [text] = args as [string | { text?: string } | undefined];
       statements.push(typeof text === "string" ? text : (text?.text ?? "?"));
       return query.apply(this, args);
-    } as unknown as typeof pg.Client.prototype.query);
+    };
 
     // One heartbeat interval at a time, with each heartbeat answered, until
     // two whole minutes pass with no statement: registration's tail (catalog
