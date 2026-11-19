@@ -39,8 +39,19 @@ import {
   firstTaskId,
   setRoot,
   resetHistory,
+  storedMessageRecords,
+  until,
+  microtasksDrained,
 } from "./workspace.interaction.test-support.js";
 import { composerText } from "../composer-editor.test-support.js";
+
+/** The place the workspace shows now, as its address names it. */
+const shownPlace = () => new URLSearchParams(history.at(-1)?.search ?? "").get("tab");
+const chipTitles = () =>
+  [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
+/** Messages this page saved and has not yet seen answered. */
+const savedSends = () =>
+  storedMessageRecords().filter((raw) => raw.includes('"thread.sendMessage"'));
 describe("the review's findings", () => {
   it("F4 the pill's Retry, not the task, asks the connection to recover", async () => {
     await mount((source) => {
@@ -78,7 +89,9 @@ describe("the review's findings", () => {
     const other = placeList(client.getSnapshot()).find(
       (item) => item.key !== place.key && isMockPage(item),
     )!;
-    await settle(100);
+    await until("The shown page never became the chip", () =>
+      expect(chipTitles()).toEqual([place.title]),
+    );
     const answer = deferred<void>();
     const real = client.dispatch.bind(client);
     const started = Promise.withResolvers<void>();
@@ -94,18 +107,25 @@ describe("the review's findings", () => {
     await vi.waitFor(() => expect(started.promise).resolves.toBeUndefined(), { timeout: 1_000 });
     await vi.waitFor(() => expect(history.at(-1)!.path).toMatch(/^\/tasks\//u), { timeout: 1_000 });
     await act(async () => goTo!(-1));
-    await settle(100);
-    const field = element<HTMLElement>("[data-composer-input]");
     // The next draft is its own from the press: it follows the page, then freezes on typing.
-    expect(element(".context-chip__title").textContent).toBe(place.title);
+    const field = await until("The next draft never followed the page", () => {
+      expect(history.at(-1)!.path).toBe("/");
+      expect(chipTitles()).toEqual([place.title]);
+      return element<HTMLElement>("[data-composer-input]");
+    });
     await write(field, "Second draft typed before acknowledgement");
     await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
-    await settle(100);
+    // A frozen draft's chips are its own state, so the render showing the other tab is final.
+    await until("The other tab was never shown", () => expect(shownPlace()).toBe(other.key));
     expect(element(".context-chip__title").textContent).toBe(place.title);
     // Removed while the first send waits: a choice of the second draft's that sticks.
     await click(element(".context-chip__remove"));
+    expect(savedSends()).toHaveLength(1);
     await act(async () => answer.resolve());
-    await settle(150);
+    // The outbox lets the saved message go only once it has handled the Host's answer.
+    await until("The first send's answer was never handled", () =>
+      expect(savedSends()).toEqual([]),
+    );
     expect(history.at(-1)!.path).toBe("/");
     expect(composerText(element("[data-composer-input]"))).toBe(
       "Second draft typed before acknowledgement",
@@ -133,20 +153,22 @@ describe("the review's findings", () => {
         (button) => button.textContent?.includes(place.title),
       )!,
     );
-    await settle(50);
     // Picked and still being read: it stands as a chip, and the message waits for it.
-    expect(element(".context-chip--pending").getAttribute("aria-busy")).toBe("true");
+    await until("The pick never stood as a chip being read", () =>
+      expect(element(".context-chip--pending").getAttribute("aria-busy")).toBe("true"),
+    );
     expect(element<HTMLButtonElement>(".composer__send").disabled).toBe(true);
     await click(element(".context-chip__remove"));
     const dispatch = vi.spyOn(client, "dispatch");
     dispatch.mockImplementationOnce(async () => ({ type: "thread.sendMessage" }) as never);
     await click(element(".composer__send"));
-    await settle(50);
+    await until("Send never reached the Host", () => expect(dispatch).toHaveBeenCalled());
     const sent = dispatch.mock.calls[0]?.[0] as { content: readonly { type: string }[] };
     expect(sent.content.map((part) => part.type)).toEqual(["text"]);
     // The answer arrives for a draft that is gone; the empty reply takes nothing from it.
     await act(async () => reading.resolve(candidate));
-    await settle(100);
+    // The read's answer is handled by a promise chain with no timer: it has run by now.
+    await microtasksDrained();
     expect(document.querySelector(".context-chip")).toBeNull();
   });
 
@@ -183,11 +205,12 @@ describe("the review's findings", () => {
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(element(".place").className).toContain("place--launcher");
     await act(async () => gates[0]!.resolve());
-    await settle(50);
     // The answer shows its tab in place of the start page and keeps the conversation now open.
-    const opened = await open.mock.results[0]!.value;
+    const opened = await act(async () => open.mock.results[0]!.value);
+    await until("The opened tab never took the start page's place", () =>
+      expect(shownPlace()).toBe(opened.tabId),
+    );
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(new URLSearchParams(history.at(-1)!.search).get("tab")).toBe(opened.tabId);
     // Asked again, then another place chosen before the answer: the choice stands.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     await typeInto(element<HTMLInputElement>(".start-page__input"), "example.org");
@@ -198,7 +221,11 @@ describe("the review's findings", () => {
     await click(element(`.side-tab[data-place-key="${chosen.key}"] .side-tab__main`));
     const before = history.length;
     await act(async () => gates[1]!.resolve());
-    await settle(50);
+    // The late answer's tab is listed: that is when it would have taken the middle.
+    const late = await act(async () => open.mock.results[1]!.value);
+    await until("The late answer's tab was never listed", () =>
+      element(`.side-tab[data-place-key="${late.tabId}"]`),
+    );
     expect(history.length).toBe(before);
     expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
@@ -206,8 +233,9 @@ describe("the review's findings", () => {
 
   it("4 · Automations links keep the place in the middle", async () => {
     await mount((source) => `/automations${tabSearch(pageTab(source))}`);
-    await settle(200);
-    const sameMiddle = element(".place");
+    const sameMiddle = await until("The page never took the middle", () =>
+      element(`.place[data-place-key="${pageTab().key}"]`),
+    );
     await click(element(".automation-row"));
     expect(history.at(-1)!.path).toMatch(/^\/automations\/./u);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(pageTab())));
@@ -262,12 +290,8 @@ describe("the review's findings", () => {
     // suite that can outlast any fixed pause, so each step waits for the lease
     // count it expects — exactly that count, never a looser one.
     const leaseBecomes = (key: () => string, count: number) =>
-      vi.waitFor(
-        async () => {
-          await settle(10);
-          expect(leases.get(key())).toBe(count);
-        },
-        { interval: 0, timeout: 5_000 },
+      until(`The viewfinder's lease never became ${count}`, () =>
+        expect(leases.get(key())).toBe(count),
       );
     let viewfinderKey = "";
     await leaseBecomes(() => {
@@ -307,13 +331,19 @@ describe("the review's findings", () => {
         : rect.call(this);
     });
     await mount((source) => `/${tabSearch(pageTab(source))}`, { width: 390 });
-    await settle(300);
-    await click(element('.place [aria-label="Browser options"]'));
-    expect(
-      [...document.querySelectorAll(".popover [role=menuitem]")].map((item) =>
-        item.textContent?.trim(),
+    await click(
+      await until("The browser's options were never offered", () =>
+        element('.place [aria-label="Browser options"]'),
       ),
-    ).toEqual(expect.arrayContaining(["Back", "Forward", "Reload", "Fit page to view"]));
+    );
+    // The open menu follows the page: Fit appears once the page's size is known.
+    await until("Fit was never offered for a page of another size", () =>
+      expect(
+        [...document.querySelectorAll(".popover [role=menuitem]")].map((item) =>
+          item.textContent?.trim(),
+        ),
+      ).toEqual(expect.arrayContaining(["Back", "Forward", "Reload", "Fit page to view"])),
+    );
   });
 
   it("8 · ⌘K below the drawer breakpoint opens the drawer with Search focused", async () => {
@@ -324,11 +354,12 @@ describe("the review's findings", () => {
         new KeyboardEvent("keydown", { bubbles: true, key: "k", metaKey: true }),
       );
     });
-    await settle(50);
     const sidebar = element<HTMLElement>("#app-sidebar");
-    expect(sidebar.className).toContain("sidebar--open");
-    expect(sidebar.inert).toBe(false);
-    expect(document.activeElement?.id).toBe("sidebar-search");
+    await until("⌘K never opened the drawer with Search focused", () => {
+      expect(sidebar.className).toContain("sidebar--open");
+      expect(sidebar.inert).toBe(false);
+      expect(document.activeElement?.id).toBe("sidebar-search");
+    });
   });
 
   it("9 · closing a focused tab hands focus to its neighbour, a tab work holds included", async () => {
@@ -342,12 +373,13 @@ describe("the review's findings", () => {
       );
       close.focus();
       await click(close);
-      await settle(150);
       // No question first: a closed tab comes back with Reopen closed tab.
+      await until("The closed tab never handed focus to its neighbour", () => {
+        expect(close.isConnected).toBe(false);
+        expect(document.activeElement).not.toBe(document.body);
+        expect(document.activeElement?.closest(".side-tab, .side-new, .side-head")).not.toBeNull();
+      });
       expect(document.querySelector(".dialog")).toBeNull();
-      expect(close.isConnected).toBe(false);
-      expect(document.activeElement).not.toBe(document.body);
-      expect(document.activeElement?.closest(".side-tab, .side-new, .side-head")).not.toBeNull();
     }
   });
 
@@ -360,9 +392,11 @@ describe("the review's findings", () => {
         state: { focusRequest: waiting.request.id },
       };
     });
-    await settle(100);
-    const target = (history.at(-1) && document.activeElement?.closest("[data-request-id]")) ?? null;
-    expect(target).not.toBeNull();
+    const target = await until("The counted request was never focused", () => {
+      const focused = document.activeElement?.closest("[data-request-id]") ?? null;
+      expect(focused).not.toBeNull();
+      return focused;
+    });
     expect(target?.closest(".request-card")).not.toBeNull();
     const focusedId = target?.getAttribute("data-request-id");
     expect(
@@ -421,17 +455,19 @@ describe("the review's findings", () => {
       });
       return { pathname: `/tasks/${threadId}`, state: { focusRequest: request.id } };
     });
-    await settle(100);
+    // The conversation is open, with its composer; the asked-for request has not loaded.
+    await until("The conversation never opened", () => element(".thread [data-composer-input]"));
     expect(document.activeElement?.closest("[data-request-id]")).toBeNull();
     const { requestId } = hidden!;
     hidden = null;
     await act(async () => {
       for (const listener of listeners) listener();
     });
-    await settle(100);
-    expect(
-      document.activeElement?.closest("[data-request-id]")?.getAttribute("data-request-id"),
-    ).toBe(requestId);
+    await until("The late request was never focused once it loaded", () =>
+      expect(
+        document.activeElement?.closest("[data-request-id]")?.getAttribute("data-request-id"),
+      ).toBe(requestId),
+    );
   });
 
   it("11 · a place-only choice keeps the conversation's message anchor", async () => {
@@ -465,7 +501,7 @@ describe("stopping a task and finishing it: one Stop", () => {
     ].find((node) => node.querySelector(".picker__label")?.textContent === label) ?? null;
   async function openMenu() {
     await click(element(".conv-header__menu"));
-    await settle(40);
+    await until("The conversation menu never opened", () => element(".conversation-menu__actions"));
   }
   const thread = (id: string) => client.getSnapshot().threads.find((item) => item.id === id)!;
   const sidebarRow = (id: string) =>
@@ -480,8 +516,9 @@ describe("stopping a task and finishing it: one Stop", () => {
     await mount("/", { latencyMs: 3_000 });
     await write(element<HTMLElement>("[data-composer-input]"), text);
     await click(element(".composer__send"));
-    for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
-      await settle(50);
+    await until("The new task never opened", () =>
+      expect(history.at(-1)!.path).toMatch(/^\/tasks\//u),
+    );
     const threadId = decodeURIComponent(history.at(-1)!.path.replace("/tasks/", ""));
     expect(workerAssignment(client.getSnapshot().assignments, threadId)).toBeNull();
     expect(thread(threadId).status).toBe("running");
@@ -499,20 +536,23 @@ describe("stopping a task and finishing it: one Stop", () => {
     );
     expect(setDone).not.toHaveBeenCalled();
     await click(element('[role="dialog"] .btn--danger'));
-    await settle(100);
+    await until("Done never moved the task on", () => {
+      expect(thread(own).doneAt).not.toBeNull();
+      expect(sidebarRow(own)).toBeNull();
+      expect(history.at(-1)!.path).not.toBe(`/tasks/${own}`);
+    });
     expect(setDone).toHaveBeenCalledExactlyOnceWith(own, true);
-    expect(thread(own).doneAt).not.toBeNull();
-    expect(sidebarRow(own)).toBeNull();
-    expect(history.at(-1)!.path).not.toBe(`/tasks/${own}`);
     await act(async () => goTo!(-1));
-    await settle();
-    expect(element(".input-surface__done").textContent).toBe("Done · Sending reopens it");
+    await until("The done task's composer never said how to reopen it", () =>
+      expect(element(".input-surface__done").textContent).toBe("Done · Sending reopens it"),
+    );
     expect(document.querySelector("[data-composer-input]")).not.toBeNull();
     await openMenu();
     await click(menuRow("Reopen")!);
-    await settle(100);
-    expect(thread(own).doneAt).toBeNull();
-    expect(document.querySelector(".input-surface__done")).toBeNull();
+    await until("Reopen never reopened the task", () => {
+      expect(thread(own).doneAt).toBeNull();
+      expect(document.querySelector(".input-surface__done")).toBeNull();
+    });
   });
 
   it("dismisses Stop when its run ends and never turns that review into a different action", async () => {
@@ -522,8 +562,9 @@ describe("stopping a task and finishing it: one Stop", () => {
     expect(element(".conversation-menu__confirm").textContent).toContain("Its run stops now");
     // Another client ends the run while this client is still reading the question.
     await act(async () => client.stopRun(own));
-    await settle(100);
-    expect(document.querySelector(".conversation-menu__confirm")).toBeNull();
+    await until("The ended run never dismissed Stop", () =>
+      expect(document.querySelector(".conversation-menu__confirm")).toBeNull(),
+    );
     expect(document.querySelector(".conversation-menu__actions")).not.toBeNull();
     expect(menuRow("Mark Done")).not.toBeNull();
     expect(document.querySelector(".shell-error, .toast--error")).toBeNull();
@@ -532,15 +573,17 @@ describe("stopping a task and finishing it: one Stop", () => {
   it("a task stopped from its composer's square moves to Done, never resuming its paused input", async () => {
     const own = await startOwnTask("Price check standing desks");
     await click(button("Stop the run")!);
-    await settle(100);
-    expect(thread(own).inputQueuePaused).toBe(true);
+    await until("Stop never paused the task's input", () =>
+      expect(thread(own).inputQueuePaused).toBe(true),
+    );
     const resume = vi.spyOn(client, "resumeThreadInputQueue");
     await openMenu();
     await click(menuRow("Mark Done")!);
-    await settle(100);
-    expect(thread(own).doneAt).not.toBeNull();
+    await until("Mark Done never finished the task", () => {
+      expect(thread(own).doneAt).not.toBeNull();
+      expect(thread(own).inputQueuePaused).toBe(false);
+    });
     expect(resume).not.toHaveBeenCalled();
-    expect(thread(own).inputQueuePaused).toBe(false);
   });
 
   it("delegated work no task list holds offers Mark Done from its title menu", async () => {
@@ -561,27 +604,31 @@ describe("stopping a task and finishing it: one Stop", () => {
     });
     expect(thread(worker).listed).toBe(false);
     await act(async () => goTo!(`/tasks/${worker}`));
-    await settle(100);
+    await until("The delegated task never opened", () => {
+      expect(history.at(-1)!.path).toBe(`/tasks/${worker}`);
+      element(".conv-header__menu");
+    });
     await openMenu();
     await click(menuRow("Mark Done")!);
-    await settle(100);
-    expect(thread(worker).doneAt).not.toBeNull();
+    await until("Mark Done never finished the delegated task", () =>
+      expect(thread(worker).doneAt).not.toBeNull(),
+    );
     await openMenu();
     expect(menuRow("Reopen")).not.toBeNull();
   });
 
   it("work still under way offers Mark Done", async () => {
     await mount("/");
-    await settle(100);
     const list = taskList(client.getSnapshot());
     const underWay = list.working.filter(
       (row) => row.tone === "waiting" || row.tone === "needs-you",
     );
     expect(underWay.length).toBeGreaterThan(0);
-    for (const row of underWay) {
-      expect(row.stopped).toBe(false);
-      expect(sidebarRow(row.threadId)?.querySelector(".side-row-action")).not.toBeNull();
-    }
+    for (const row of underWay) expect(row.stopped).toBe(false);
+    await until("Work under way was never offered Mark Done", () => {
+      for (const row of underWay)
+        expect(sidebarRow(row.threadId)?.querySelector(".side-row-action")).not.toBeNull();
+    });
   });
 });
 
@@ -622,8 +669,10 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
       "the Mac app's Start page called itself a web browser",
     ).toBeNull();
     await click(element(".start-tile[aria-label^='Notes on']"));
-    await settle(80);
-    expect(element(".owner-view__view-only").textContent).toBe("View only");
+    await until("Notes was never shown as an owner view", () =>
+      expect(element(".owner-view__view-only").textContent).toBe("View only"),
+    );
+    const notesKey = element(".place").getAttribute("data-place-key");
     const use = element<HTMLButtonElement>(".owner-view__use");
     expect(use.textContent).toBe("Use on this Mac");
     await click(use);
@@ -641,8 +690,10 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     // Another Mac's app is never brought forward from here.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     await click(element(".start-tile[aria-label^='Keynote on Studio']"));
-    await settle(80);
-    expect(element(".owner-view__view-only").textContent).toBe("View only");
+    await until("Keynote was never shown as an owner view", () => {
+      expect(element(".place").getAttribute("data-place-key")).not.toBe(notesKey);
+      expect(element(".owner-view__view-only").textContent).toBe("View only");
+    });
     expect(document.querySelector(".owner-view__use")).toBeNull();
   });
 
@@ -650,8 +701,9 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     await mount("/?panel=browser", { shell: { deploymentAccess, desktopDeployment } });
     expect(element(".web-tab-notice").textContent).toContain("You’re in a web browser");
     await click(element(".start-tile[aria-label^='Notes on']"));
-    await settle(80);
-    expect(element(".owner-view__view-only").textContent).toBe("View only");
+    await until("Notes was never shown as an owner view", () =>
+      expect(element(".owner-view__view-only").textContent).toBe("View only"),
+    );
     expect(document.querySelector(".owner-view__use")).toBeNull();
   });
 });
@@ -743,11 +795,16 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
       },
       { shell: { desktopBridge, desktopDeployment } },
     );
-    await settle(100);
     // Until this Mac says whether it is a computer here, no link from another app is taken to bind.
+    await until("The app never asked whether this Mac is a computer here", () => {
+      expect(desktopBridge.getLocalExecutionStatus).toHaveBeenCalled();
+      element(".md-prose a");
+    });
     expect(deliver).toBeNull();
     await act(async () => statusAnswered.resolve());
-    await settle(50);
+    await until("The answer never let links from other apps in", () =>
+      expect(deliver).not.toBeNull(),
+    );
     const here = (url: unknown) => ({ kind: "page", url, guest: true, computerId: studio });
     const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
       (anchor) => anchor.textContent === "storage mount guide",
@@ -772,17 +829,23 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
         }),
       ),
     );
-    await settle();
-    const openIn = [...document.querySelectorAll<HTMLElement>(".popover [role=menuitem]")].find(
-      (node) => node.querySelector(".picker__label")?.textContent === "Open this page in…",
-    )!;
+    const openIn = await until("The tab's menu never offered Open this page in", () => {
+      const item = [...document.querySelectorAll<HTMLElement>(".popover [role=menuitem]")].find(
+        (node) => node.querySelector(".picker__label")?.textContent === "Open this page in…",
+      );
+      expect(item).toBeDefined();
+      return item!;
+    });
     await act(async () => openIn.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })));
-    await settle();
-    const guest = [
-      ...element('[role="menu"][aria-label="Open this page in"]').querySelectorAll<HTMLElement>(
-        "button",
-      ),
-    ].find((node) => node.querySelector(".picker__label")?.textContent === "Guest")!;
+    const guest = await until("Open this page in never offered Guest", () => {
+      const item = [
+        ...element('[role="menu"][aria-label="Open this page in"]').querySelectorAll<HTMLElement>(
+          "button",
+        ),
+      ].find((node) => node.querySelector(".picker__label")?.textContent === "Guest");
+      expect(item).toBeDefined();
+      return item!;
+    });
     const opened = open.mock.calls.length;
     await click(guest);
     await vi.waitFor(() => expect(open, "Open in never opened").toHaveBeenCalledTimes(opened + 1), {
@@ -806,13 +869,18 @@ describe("the v7 web review's findings", () => {
       await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     }
     await click(element(`.start-tile[aria-label^='${label}']`));
-    await settle(120);
+    await until(`${label} never took the middle`, () => {
+      expect(document.querySelector(".start-page")).toBeNull();
+      element(".place .owner-view");
+    });
   }
 
   it("M2 · the person's own view of the phone a task holds leaves the task's viewfinder on its own session", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
     await mount(`/tasks/${threadId}`);
-    await settle(200);
+    await until("The task's viewfinder never showed its phone", () =>
+      element(".viewfinder .place-canvas"),
+    );
     const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
     const before = client.runPlace(runId)!;
     const destination = runPlaceDestination(before, client.getSnapshot());
@@ -833,7 +901,9 @@ describe("the v7 web review's findings", () => {
   it("a phone's tab stays live through its task's end until the person closes it", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
     await mount(`/tasks/${threadId}`);
-    await settle(200);
+    await until("The task's viewfinder never showed its phone", () =>
+      element(".viewfinder .place-canvas"),
+    );
     const phone = () => placeList(client.getSnapshot()).find((place) => place.kind === "phone");
     const held = phone()!;
     const session = client
@@ -842,16 +912,23 @@ describe("the v7 web review's findings", () => {
       ?.computerUse?.sessions.find((candidate) => candidate.display)!;
     const activate = vi.spyOn(client, "activateTab");
     await act(async () => goTo!({ pathname: "/", search: `?panel=browser&tab=${held.key}` }));
-    await settle(120);
+    await until("The phone's own view never took the middle", () => element(".place .owner-view"));
     expect(activate).toHaveBeenCalledExactlyOnceWith(held.key, { wake: true });
-    expect(element(".place .owner-view")).toBeTruthy();
     const address = history.at(-1);
     const shown = client.tabViewer(held.key);
 
     await act(async () => {
       await client.rpc["integration.computer.session.stop"]({ sessionId: session.sessionId });
     });
-    await settle(120);
+    // The client has seen the agent's session end: that is when it could have moved the tab.
+    await until("The agent's session never ended", () =>
+      expect(
+        client
+          .getSnapshot()
+          .machines.flatMap((machine) => machine.computerUse?.sessions ?? [])
+          .some((candidate) => candidate.sessionId === session.sessionId),
+      ).toBe(false),
+    );
     // The agent stopping is not an event for the tab: same address, and the person's view stays.
     expect(history.at(-1)).toEqual(address);
     expect(client.tabViewer(held.key)?.kind).toBe(shown?.kind);
@@ -859,27 +936,35 @@ describe("the v7 web review's findings", () => {
 
     const activations = activate.mock.calls.length;
     await act(async () => client.closeTabs([held.key]));
-    await settle(120);
-    expect(phone()).toBeUndefined();
     // The middle moves on to the tab beside it; the closed phone is never opened again.
+    await until("The middle never moved on from the closed phone", () => {
+      expect(phone()).toBeUndefined();
+      expect(history.at(-1)?.search).not.toBe(address?.search);
+    });
     expect(activate.mock.calls.slice(activations).map(([id]) => id)).not.toContain(held.key);
-    expect(history.at(-1)?.search).not.toBe(address?.search);
   });
 
   it("M6 · clearing recent sites never fails an owner view the Host is opening", async () => {
     await mount("/?panel=browser");
     // Cleared while the Host opens the view, before its answer is read.
     const activateTab = client.activateTab;
-    vi.spyOn(client, "activateTab").mockImplementation(async (tabId) => {
+    const activating = vi.spyOn(client, "activateTab").mockImplementation(async (tabId) => {
       const opening = activateTab(tabId);
       await client.browserHistory.clear("bpr_00000000-0000-4000-8000-000000000001");
       return opening;
     });
     await click(element(".start-tile[aria-label^='Calendar on']"));
-    await settle(120);
+    await until("Calendar's own view never took the middle", () => {
+      expect(element(".owner-view").getAttribute("aria-label")).toContain("Calendar");
+      expect(new URLSearchParams(history.at(-1)!.search).has("tab")).toBe(true);
+      expect(activating).toHaveBeenCalled();
+    });
+    // The Host's answer has been read, by the time any failure would have been shown.
+    await act(async () => {
+      await Promise.allSettled(activating.mock.results.map((result) => result.value));
+    });
+    await microtasksDrained();
     expect(document.querySelector(".toast--error")).toBeNull();
-    expect(element(".owner-view").getAttribute("aria-label")).toContain("Calendar");
-    expect(new URLSearchParams(history.at(-1)!.search).has("tab")).toBe(true);
   });
 
   it("m1 · typed navigation reaches Host history and its retained icon appears in New tab", async () => {
@@ -895,22 +980,23 @@ describe("the v7 web review's findings", () => {
       "example.com/some/path?q=1",
     );
     await pressEnter(element(".browser-address input"));
-    await settle(1_100);
-    const result = await client.rpc["browser.history.get"]({ profileId });
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        entries: [{ url: "https://example.com/some/path?q=1", typedCount: 1, visitCount: 1 }],
-        icons: [{ origin: "https://example.com" }],
-      },
-    });
+    await until("The typed visit never reached Host history with its icon", async () =>
+      expect(await client.rpc["browser.history.get"]({ profileId })).toMatchObject({
+        ok: true,
+        data: {
+          entries: [{ url: "https://example.com/some/path?q=1", typedCount: 1, visitCount: 1 }],
+          icons: [{ origin: "https://example.com" }],
+        },
+      }),
+    );
     const readIcons = client.browserHistory.ports.icons.bind(client.browserHistory.ports);
     const raster = deferred<Awaited<ReturnType<typeof readIcons>>>();
     vi.spyOn(client.browserHistory.ports, "icons").mockReturnValueOnce(raster.promise);
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
-    await settle(60);
+    const mark = await until("New tab never showed the typed site", () =>
+      element('.start-tile[title="example.com"] .site-mark'),
+    );
     vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
-    const mark = element('.start-tile[title="example.com"] .site-mark');
     expect(mark.querySelector("svg")).not.toBeNull();
     expect(mark.textContent).toBe("");
     expect(mark.querySelector("img")).toBeNull();
@@ -947,8 +1033,9 @@ describe("the v7 web review's findings", () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });
-    await settle();
-    expect(document.activeElement).toBe(pill);
+    await until("Escape never returned the keyboard to the pill", () =>
+      expect(document.activeElement).toBe(pill),
+    );
     await click(pill);
     const row = [...document.querySelectorAll<HTMLElement>(".popover--profiles .picker__row")].find(
       (node) => node.querySelector(".picker__label")?.textContent === "Personal",
@@ -960,14 +1047,18 @@ describe("the v7 web review's findings", () => {
       tile.focus();
       tile.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     });
-    await settle();
-    const clear = [...document.querySelectorAll<HTMLElement>(".popover [role=menuitem]")].find(
-      (node) => node.textContent?.includes("Clear browsing history"),
-    )!;
+    const clear = await until("The tile's menu never offered Clear browsing history", () => {
+      const item = [...document.querySelectorAll<HTMLElement>(".popover [role=menuitem]")].find(
+        (node) => node.textContent?.includes("Clear browsing history"),
+      );
+      expect(item).toBeDefined();
+      return item!;
+    });
     await click(clear);
-    await settle(60);
-    expect(document.querySelector("section[aria-label^='Recent sites']")).toBeNull();
-    expect(document.activeElement).toBe(field);
+    await until("Clearing never removed Recent sites and kept the keyboard in search", () => {
+      expect(document.querySelector("section[aria-label^='Recent sites']")).toBeNull();
+      expect(document.activeElement).toBe(field);
+    });
   });
 });
 
@@ -983,7 +1074,16 @@ describe("a computer that can't show its apps, on the start page", () => {
   }
   async function setStatus(name: string, status: "online" | "offline" | "update-pending") {
     await act(async () => client.setMachineStatus(machine(name).id, status));
-    await settle();
+    await until(`The start page never showed ${name} ${status}`, () =>
+      expect(captions(".start-apps__away").includes(name)).toBe(status !== "online"),
+    );
+  }
+  /** A computer's readiness changes; the start page folds it once it is drawn so. */
+  async function needsOwner(name: string) {
+    await act(async () => client.setComputerUseReadiness(machine(name).id, "permission-required"));
+    await until(`The start page never folded ${name}`, () =>
+      expect(captions(".start-apps__away")).toContain(name),
+    );
   }
 
   it("an offline computer folds into one quiet line after the rest; its apps are found but never opened, and unfold in their own place when it's back", async () => {
@@ -1033,16 +1133,16 @@ describe("a computer that can't show its apps, on the start page", () => {
     expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone", "Phone"]);
     expect(document.querySelector(".start-apps__away")).toBeNull();
     await click(element(".start-tile[aria-label^='Keynote on Studio']"));
-    await settle(120);
+    await until("Keynote's own view never took the middle", () =>
+      expect(element(".owner-view").getAttribute("aria-label")).toContain("Keynote"),
+    );
     expect(asked).toHaveBeenCalledTimes(1);
-    expect(element(".owner-view").getAttribute("aria-label")).toContain("Keynote");
   });
 
   it("a computer waiting on its owner folds into a line that opens its page, where the steps are", async () => {
     await openStartPage();
     const mini = machine("Mac mini");
-    await act(async () => client.setComputerUseReadiness(mini.id, "permission-required"));
-    await settle();
+    await needsOwner("Mac mini");
     expect(captions()).toEqual(["Studio Mac", "Phone", "Phone", "Mac mini"]);
     const line = element<HTMLButtonElement>(".start-apps__away button.start-apps__row");
     expect(element(".start-apps__status", line).textContent).toBe("Needs permission");
@@ -1064,8 +1164,7 @@ describe("a computer that can't show its apps, on the start page", () => {
   it("typed, an app whose computer waits on its owner says so, the keyboard reaches it, and Enter opens the computer's page", async () => {
     await openStartPage();
     const mini = machine("Mac mini");
-    await act(async () => client.setComputerUseReadiness(mini.id, "permission-required"));
-    await settle();
+    await needsOwner("Mac mini");
     const field = element<HTMLInputElement>(".start-page__input");
     await act(async () => field.focus());
     await typeInto(field, "notes");
@@ -1086,10 +1185,7 @@ describe("a computer that can't show its apps, on the start page", () => {
 
   it("a line that stops needing its owner and is only away hands the keyboard to the search field", async () => {
     await openStartPage();
-    await act(async () =>
-      client.setComputerUseReadiness(machine("Mac mini").id, "permission-required"),
-    );
-    await settle();
+    await needsOwner("Mac mini");
     const line = element<HTMLButtonElement>(".start-apps__away button.start-apps__row");
     await act(async () => line.focus());
     expect(document.activeElement).toBe(line);

@@ -52,39 +52,12 @@ function lostSendSettled() {
   expect(saved[0]).not.toContain('"lease"');
 }
 
-/**
- * Waits until `check` passes, with React's pending work flushed before each try. Nothing here
- * waits a fixed time: a test waits for what it is about, and a miss names what never happened.
- */
-async function until<T>(never: string, check: () => T | Promise<T>): Promise<T> {
-  return vi.waitFor(
-    async () => {
-      await act(async () => {});
-      try {
-        return await check();
-      } catch (error) {
-        throw new Error(`${never}: ${error instanceof Error ? error.message : String(error)}`, {
-          cause: error,
-        });
-      }
-    },
-    { timeout: 2_000, interval: 5 },
-  );
-}
 /** The place the workspace shows now, as its address names it. */
 const shownPlace = () => new URLSearchParams(history.at(-1)?.search ?? "").get("tab");
 const chipTitles = () =>
   [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
 /** Every explicit pick has been read: none is still pending. */
 const picksRead = () => document.querySelector(".context-chip--pending") === null;
-/**
- * Lets a promise chain that uses no timer run to its end: every microtask queued before a
- * macrotask runs ahead of it. Used only where the test proves something did not happen, after the
- * one answer that could have made it happen.
- */
-async function microtasksDrained() {
-  await act(() => new Promise<void>((resolve) => setImmediate(resolve)));
-}
 
 import {
   root,
@@ -101,6 +74,8 @@ import {
   firstTaskId,
   setRoot,
   storedMessageRecords,
+  until,
+  microtasksDrained,
 } from "./workspace.interaction.test-support.js";
 import { composerDraftKey, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";

@@ -383,6 +383,36 @@ async function settle(ms = 30) {
   await stillCurrent(started);
 }
 
+/**
+ * Waits until `check` passes, with React's pending work flushed before each try. A test waits for
+ * what it is about, never a fixed time; a miss names what never happened. The deadline sits well
+ * inside the 5 s test timeout.
+ */
+async function until<T>(never: string, check: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(
+    async () => {
+      await act(async () => {});
+      try {
+        return await check();
+      } catch (error) {
+        throw new Error(`${never}: ${error instanceof Error ? error.message : String(error)}`, {
+          cause: error,
+        });
+      }
+    },
+    { timeout: 2_000, interval: 5 },
+  );
+}
+
+/**
+ * Lets work that uses no timer run to its end: every microtask queued before a macrotask runs
+ * ahead of it. Only for proving something did not happen, after the one answer that could have
+ * made it happen and whose handling is a promise chain with no timer.
+ */
+async function microtasksDrained() {
+  await act(() => new Promise<void>((resolve) => setImmediate(resolve)));
+}
+
 function element<T extends Element>(selector: string, scope: ParentNode = document): T {
   const match = scope.querySelector<T>(selector);
   if (!match) throw new Error(`Missing ${selector}`);
@@ -481,6 +511,8 @@ export {
   mount,
   stubLayout,
   settle,
+  until,
+  microtasksDrained,
   element,
   click,
   placeParams,
