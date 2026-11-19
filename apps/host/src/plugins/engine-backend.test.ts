@@ -56,6 +56,7 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
     { caller: "fixture", mode: "automatic" },
     {
       authorize: () => Effect.succeed({ allowed: true, grants: {} }),
+      updating: () => undefined,
       providers: () =>
         Effect.sync(() => {
           localProviderReads();

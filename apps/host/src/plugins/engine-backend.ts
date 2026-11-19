@@ -24,7 +24,7 @@ import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-erro
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
-import { pluginAccessBlocked } from "./target-blocked.js";
+import { pluginAccessBlocked, pluginUpdatingBlocked } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
@@ -65,6 +65,8 @@ export interface EngineHostCallbacks {
     execution?: string;
   }): Effect.Effect<PluginAuthorizationResult, Error>;
   providers(): Effect.Effect<PluginHostProvider[], Error>;
+  /** Why a plugin is not served until it is rebuilt for this Host's framework, if it is not. */
+  updating(app: string): string | undefined;
   call(
     input: {
       execution: string;
@@ -212,9 +214,11 @@ export function compositeBackend(
             activeVersion: version(entry),
           })),
         ];
-        for (const { id, slug } of listing) {
+        for (const { id, slug, name } of listing) {
           namespaces.set(id, slug);
-          const blocked = pluginAccessBlocked(grants?.[id], false);
+          const blocked =
+            pluginUpdatingBlocked(name, host.updating(id)) ??
+            pluginAccessBlocked(grants?.[id], false);
           if (blocked) appBlockers.set(id, blocked);
         }
         for (const provider of providers) {
@@ -342,6 +346,17 @@ export function compositeBackend(
       }),
     callTool: (input, options) =>
       Effect.gen(function* () {
+        // Nothing of a plugin that waits for its rebuild runs: the call is answered, unsent.
+        const updating = pluginUpdatingBlocked(
+          namespaces.get(input.app) ?? "This plugin",
+          host.updating(input.app),
+        );
+        if (updating)
+          return {
+            status: "completed",
+            value: { kind: "blocked", blocked: updating },
+            toolError: true,
+          };
         const permission = yield* permissionFor("callTool", input.app, input.tool);
         const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
         if (blocked)

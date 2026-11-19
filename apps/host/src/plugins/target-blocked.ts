@@ -52,3 +52,23 @@ export function pluginAccessBlocked(
     next: "The person can change this plugin’s access in Plugins. Continue with the tools you can use.",
   };
 }
+
+/**
+ * A plugin that is not served until it is rebuilt for this version of Opensteer: nothing of it
+ * ran, and the same call succeeds once the rebuild finishes.
+ */
+export function pluginUpdatingBlocked(
+  name: string,
+  reason: string | undefined,
+): Blocked | undefined {
+  if (reason === undefined) return undefined;
+  return {
+    code: "plugin_updating",
+    message:
+      `${name} is updating for this version of Opensteer, so nothing was sent to it. ${reason}`.slice(
+        0,
+        2000,
+      ),
+    next: "Try the same call again in a minute; it was not run. The person can see the update in Plugins.",
+  };
+}

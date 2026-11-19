@@ -472,12 +472,14 @@ export type PluginEngine = Omit<
     ) => ReturnType<FlatPluginEngine["apps"]["copy"]>;
     /**
      * Host-only: leave the app with no active version, as one whose build failed has, keeping its
-     * versions, accounts and data. A person or agent activates or deploys a version again.
+     * versions, accounts and data, only while `expectedVersion` is still the active one. Reports
+     * whether it did. A person or agent activates or deploys a version again.
      */
     readonly deactivate: (input: {
       readonly owner: OwnerId;
       readonly app: AppId;
-    }) => Effect.Effect<void, StorageError | AppNotFound>;
+      readonly expectedVersion: VersionId;
+    }) => Effect.Effect<boolean, StorageError | AppNotFound>;
     /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor

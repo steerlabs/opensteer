@@ -204,7 +204,8 @@ export const compileWorkerApp = (
             sizes.plugin,
           ],
         }),
-      catch: (cause) => sizes.failure() ?? json.failure() ?? compileFailure(cause),
+      catch: (cause) =>
+        dependencies.failure() ?? sizes.failure() ?? json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)

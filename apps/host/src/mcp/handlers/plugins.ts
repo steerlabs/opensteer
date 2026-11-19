@@ -1,5 +1,5 @@
 import { pluginCaller } from "../../plugins/plugin-authority.js";
-import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
+import { pluginTargetBlocked, pluginUpdatingBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
@@ -124,22 +124,27 @@ export class PluginToolHandlers {
             const needsAccount = Object.values(detail.readiness).some(
               ({ state }) => state !== "usable",
             );
-            const blocked = !plugin.activeVersion
-              ? {
-                  code: "unavailable",
-                  message: `${plugin.name} has no active version.`,
-                  next: "The person can choose an active version in Plugins; continue without it until then.",
-                }
-              : needsAccount
-                ? pluginTargetBlocked({
-                    id: plugin.id,
-                    name: plugin.name,
-                    reason: `${plugin.name} needs account setup.`,
-                    requirements: plugin.requirements.accounts,
-                    readiness: detail.readiness,
-                    canRequestAccount: c.caller.kind === "run",
-                  })
-                : undefined;
+            const blocked = detail.updating
+              ? pluginUpdatingBlocked(plugin.name, detail.updating.reason)
+              : !plugin.activeVersion
+                ? {
+                    code: "unavailable",
+                    message: (detail.buildFailure
+                      ? `${plugin.name} has no active version: its build failed. ${detail.buildFailure.message}`
+                      : `${plugin.name} has no active version.`
+                    ).slice(0, 2_000),
+                    next: "The person can choose an active version in Plugins; continue without it until then.",
+                  }
+                : needsAccount
+                  ? pluginTargetBlocked({
+                      id: plugin.id,
+                      name: plugin.name,
+                      reason: `${plugin.name} needs account setup.`,
+                      requirements: plugin.requirements.accounts,
+                      readiness: detail.readiness,
+                      canRequestAccount: c.caller.kind === "run",
+                    })
+                  : undefined;
             return {
               ...(blocked ? { blocked } : {}),
               id: plugin.id,

@@ -161,11 +161,23 @@ function PluginContent({
             .join(" · ")}
         />
       </div>
-      {plugin.status === "not-built" ? (
-        <p className="notice notice--error" role="status">
-          This plugin has no working version. Its last build failed, so agents can't use it. Ask
-          your agent to fix it, or roll back to an earlier version below.
+      {plugin.updating ? (
+        <p className="notice" role="status">
+          Updating for this version of Opensteer. Agents can use it again when it finishes.{" "}
+          {plugin.updating.reason}
         </p>
+      ) : plugin.status === "not-built" ? (
+        <>
+          <p className="notice notice--error" role="status">
+            This plugin has no working version. Its last build failed, so agents can't use it. Ask
+            your agent to fix it, or roll back to an earlier version below.
+          </p>
+          {plugin.buildFailure ? (
+            <pre className="plugin-arguments" tabIndex={0}>
+              {plugin.buildFailure}
+            </pre>
+          ) : null}
+        </>
       ) : status.tone === "attention" ? (
         <p className="notice notice--warn" role="status">
           Connect an account below before agents can use {plugin.name}.

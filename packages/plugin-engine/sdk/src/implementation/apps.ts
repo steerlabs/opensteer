@@ -33,6 +33,8 @@ import type { PluginEngine } from "../contracts/pluginEngine.ts";
 import {
   RuntimeBuildFailed,
   RuntimeAppsDependencyMissing,
+  RuntimeBuildUnavailable,
+  RuntimeProtocolFailed,
   RuntimeProtocolUnsupported,
   type Runtime,
 } from "../contracts/runtime.ts";
@@ -92,6 +94,12 @@ const versionBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFai
     location === undefined || detail?.includes(location.file) === true
       ? ""
       : ` in ${location.file}${location.line === undefined ? "" : `:${location.line}${location.column === undefined ? "" : `:${location.column}`}`}`;
+  // A package the registry did not serve, a compiler that did not answer, or a store that failed
+  // says nothing about the source.
+  const retryable =
+    error.unanswered === true ||
+    stage === "retain" ||
+    (stage === "dependencies" && dependency !== undefined && dependency !== "apps");
   return new VersionBuildFailed({
     owner,
     name,
@@ -99,6 +107,7 @@ const versionBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFai
     stage,
     ...(location === undefined ? {} : { location }),
     message: `App build failed at the ${stage} stage${where}${detail === undefined ? "." : `: ${detail}`}`,
+    ...(retryable ? { retryable: true as const } : {}),
   });
 };
 
@@ -551,6 +560,11 @@ export const makeApps = (
               stage: "migrate",
               reason: message,
               message,
+              // The app's data facet failing to answer says nothing about its migrations.
+              ...(Schema.is(RuntimeProtocolFailed)(error) ||
+              Schema.is(RuntimeBuildUnavailable)(error)
+                ? { retryable: true as const }
+                : {}),
             });
           }),
           Effect.withSpan("sdk.apps.migrate"),
@@ -884,7 +898,7 @@ export const makeApps = (
       transaction(db, (tx) =>
         Effect.gen(function* () {
           const app = yield* lockApp(tx, input);
-          if (app.activeVersion === null) return;
+          if (app.activeVersion !== input.expectedVersion) return false;
           // Activation's own sequence: a source reconciling an earlier activation stands down.
           yield* query(() =>
             tx.updateMany("apps", {
@@ -897,6 +911,7 @@ export const makeApps = (
             }),
           );
           yield* webhookSourcesPending(tx, app.id);
+          return true;
         }),
       ).pipe(Effect.withSpan("sdk.apps.deactivate")),
     activate: (input: Parameters<PluginEngine["apps"]["activate"]>[0]) =>

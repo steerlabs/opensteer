@@ -226,6 +226,50 @@ const nextCursor = (more: boolean, last: { id: string; at: string } | undefined,
     ? Buffer.from(JSON.stringify({ filter, at: last.at, id: last.id })).toString("base64url")
     : undefined;
 
+/**
+ * Rebuilds after an upgrade: a per-plugin claim that one engine process holds at a time (a
+ * session advisory lock on a connection of its own, taken before any row lock), and the
+ * diagnostic of a rebuild that failed for good, kept with the version that failed.
+ */
+export const rebuildStore = (sql: SqlClient.SqlClient) => ({
+  claim: <A, E>(app: string, work: Effect.Effect<A, E>) =>
+    sql.reserve.pipe(
+      Effect.flatMap((connection) =>
+        Effect.acquireUseRelease(
+          connection.execute(
+            "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+            [`plugin-rebuild:${app}`],
+            undefined,
+          ),
+          () => work,
+          () =>
+            connection
+              .execute(
+                "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                [`plugin-rebuild:${app}`],
+                undefined,
+              )
+              .pipe(Effect.orDie),
+        ),
+      ),
+      Effect.scoped,
+    ),
+  failed: (app: string, failure: { readonly version: string; readonly message: string }) =>
+    sql`INSERT INTO opensteer_plugin_rebuild_failures (app, version, message)
+      VALUES (${app}, ${failure.version}, ${failure.message.slice(0, 4_000)})
+      ON CONFLICT (app) DO UPDATE SET version = EXCLUDED.version, message = EXCLUDED.message,
+        failed_at = clock_timestamp()`.pipe(Effect.asVoid),
+  cleared: (app: string) =>
+    sql`DELETE FROM opensteer_plugin_rebuild_failures WHERE app = ${app}`.pipe(Effect.asVoid),
+});
+
+/** Why a plugin's rebuild failed for good, with the version that failed, if it did. */
+export const readRebuildFailure = (sql: SqlClient.SqlClient, app: string) =>
+  sql<{ version: string; message: string }>`
+    SELECT version, message FROM opensteer_plugin_rebuild_failures WHERE app = ${app}`.pipe(
+    Effect.map((rows) => rows[0] ?? null),
+  );
+
 export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
   sql
     .unsafe(
@@ -243,6 +287,14 @@ export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
         sql.unsafe(
           `CREATE TABLE IF NOT EXISTS opensteer_resource_creations (owner text NOT NULL, key text NOT NULL, kind text NOT NULL, result jsonb NOT NULL, PRIMARY KEY (owner, key, kind))`,
         ),
+      ),
+      Effect.andThen(
+        sql.unsafe(`
+  CREATE TABLE IF NOT EXISTS opensteer_plugin_rebuild_failures (
+    app text PRIMARY KEY REFERENCES plugin_engine_apps(id) ON DELETE CASCADE,
+    version text NOT NULL, message text NOT NULL,
+    failed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+  )`),
       ),
       Effect.andThen(
         sql.unsafe(`

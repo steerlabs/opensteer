@@ -51,6 +51,9 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           ),
         });
     const installLock = yield* Semaphore.make(1);
+    // An install fails inside the compiler's resolver, which reports it as its own diagnostic; the
+    // first one is kept so the build fails with it, typed, rather than as a compile error.
+    let failed: RuntimeBuildFailed | undefined;
     const { context } = yield* captureTelemetry;
     const install = (name: string, version: string, transitive = true) =>
       installLock.withPermits(1)(
@@ -103,6 +106,14 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           });
         }).pipe(Effect.withSpan("runtime.cloud.dependencies")),
       );
+    const kept = <A, R>(effect: Effect.Effect<A, RuntimeBuildFailed, R>) =>
+      effect.pipe(
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            failed ??= error;
+          }),
+        ),
+      );
     const plugin: Plugin = {
       name: "pluginEngine-imported-dependencies",
       setup(build) {
@@ -112,7 +123,9 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
             args.kind === "import-rule" &&
             (args.path === "tailwindcss" || args.path.startsWith("tailwindcss/"))
           ) {
-            await Effect.runPromiseWith(context)(install("tailwindcss", tailwind.version, false));
+            await Effect.runPromiseWith(context)(
+              kept(install("tailwindcss", tailwind.version, false)),
+            );
             return undefined;
           }
           const parts = args.path.split("/");
@@ -120,7 +133,7 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           if (name === undefined || !Object.hasOwn(dependencies, name)) return undefined;
           const version = dependencies[name];
           if (version === undefined) return undefined;
-          await Effect.runPromiseWith(context)(install(name, version));
+          await Effect.runPromiseWith(context)(kept(install(name, version)));
           // Let the existing resolver apply package exports, conditions, and asset handling.
           return undefined;
         });
@@ -128,6 +141,8 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
     };
     return {
       plugin,
+      /** The first install that failed while the compiler resolved imports, if one did. */
+      failure: () => failed,
       framework: Effect.sync(() => {
         if (dependencies.apps === undefined) return false;
         for (const [path, content] of Object.entries(host.apps.files))

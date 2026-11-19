@@ -248,7 +248,7 @@ function InstalledRow({ plugin }: { readonly plugin: PluginSummaryView }) {
           ) : null}
         </span>
       </span>
-      {plugin.status !== "ready" ? (
+      {plugin.status !== "ready" && !plugin.updating ? (
         <span className="btn btn--small">{plugin.status === "not-built" ? "Fix" : "Connect"}</span>
       ) : (
         <Icon name="chevron-right" />

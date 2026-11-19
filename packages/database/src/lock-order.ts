@@ -110,6 +110,9 @@ export const databaseLockOrder = [
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
   "advisory:integration-catalog-definition",
+  // One plugin engine process rebuilds a plugin after an upgrade at a time; its claim precedes
+  // every row the rebuild then writes.
+  "advisory:plugin-rebuild",
   // Plugin updates reconcile their MCP installation while holding the package row.
   "plugins",
   "plugin_versions",
@@ -319,6 +322,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     if (key.startsWith(prefix)) return `advisory:${domain}`;
   const prefixes = [
     "plugin-owner-consent",
+    "plugin-rebuild",
     "personal-tab-reopen",
     "browser-source-pairing",
     "browser-sources-owner",

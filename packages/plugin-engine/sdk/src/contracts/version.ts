@@ -113,6 +113,11 @@ export class VersionBuildFailed extends Schema.TaggedError<VersionBuildFailed>()
     location: Schema.optional(SourceLocation),
     /** The stage, location and underlying failure, such as the compiler's own errors. */
     message: Schema.String,
+    /**
+     * The failure says nothing about the source: a package registry, the compiler, the build
+     * store or the app's data facet did not answer, so building the same source again may succeed.
+     */
+    retryable: Schema.optional(Schema.Literal(true)),
   },
   {
     httpApiStatus: 422,

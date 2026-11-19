@@ -141,6 +141,16 @@ export const EngineAccountMetadataSchema = z.object({
   ),
 });
 export type EngineAccountMetadata = z.infer<typeof EngineAccountMetadataSchema>;
+/**
+ * A plugin's rebuild for this Host's framework, as its owner sees it: `updating` while it is not
+ * served until the rebuild finishes, and `buildFailure` when its source did not build and left it
+ * with no active version.
+ */
+export const EngineRebuildSchema = z.strictObject({
+  updating: z.strictObject({ reason: z.string().min(1).max(2_000) }).optional(),
+  buildFailure: z.strictObject({ version: id, message: z.string().max(4_000) }).optional(),
+});
+export type EngineRebuild = z.infer<typeof EngineRebuildSchema>;
 export const VersionSchema = z.object({ id }).catchall(JsonSchema);
 const toolIndex = z
   .object({
@@ -260,6 +270,7 @@ export const operations = {
       z.strictObject({
         plugin: PluginSchema,
         ...EngineAccountMetadataSchema.shape,
+        ...EngineRebuildSchema.shape,
         versions: z.array(VersionSchema).optional(),
         versionCount: z.number().int().optional(),
       }),
@@ -276,6 +287,7 @@ export const operations = {
       tools: toolIndex.nullable(),
       skills: EngineSkillCatalogSchema.nullable(),
       ...EngineAccountMetadataSchema.shape,
+      ...EngineRebuildSchema.shape,
       versions: z.array(VersionSchema),
       schedules: z.array(EngineScheduleSchema),
       webhooks: z.array(EngineWebhookSchema),

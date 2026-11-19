@@ -271,19 +271,22 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
         {
           key: "status",
           kind: "status",
-          tone:
-            plugin.status === "not-built"
+          tone: plugin.updating
+            ? pluginTone[status.tone]
+            : plugin.status === "not-built"
               ? "bad"
               : status.tone === "attention"
                 ? "attention"
                 : pluginTone[status.tone],
-          label:
-            plugin.status === "not-built"
+          label: plugin.updating
+            ? `Updating for this version of Opensteer. Agents can use it again when it finishes. ${plugin.updating.reason}`
+            : plugin.status === "not-built"
               ? "This plugin has no working version. Ask your agent to fix it, or use an earlier version below."
               : status.tone === "attention"
                 ? `Connect an account below before agents can use ${plugin.name}.`
                 : status.label,
           detail: [
+            plugin.status === "not-built" && !plugin.updating ? plugin.buildFailure : null,
             pluginAuthorText(plugin.author),
             active?.createdAt ? `version from ${when(active.createdAt)}` : null,
           ]
