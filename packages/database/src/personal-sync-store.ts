@@ -1,10 +1,13 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
+  answeredQuestion,
+  answeredQuestionWithin,
   OpensteerError,
   utf8Prefix,
   type DeploymentId,
   type ExecutionNode,
   type ExecutionNodeId,
+  type Request,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -272,11 +275,17 @@ export type NodeFacts = Omit<
   Selectable<ExecutionNodeTable>,
   "nativeRef" | "sessionRef" | "originCallId" | "startedAt" | "endedAt"
 > & { readonly startedAt: Date | string; readonly endedAt: Date | string | null };
+/** A settled agent question's facts, read beside its card like a node's. */
+export type QuestionFacts = Pick<Request, "kind" | "presentation" | "response" | "status">;
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
   readonly place?: PlaceView | null;
   readonly body?: Selectable<TranscriptItemTable>["body"];
   readonly node?: NodeFacts | null;
+  readonly question?: QuestionFacts | null;
 };
+
+/** The most a settled question's record adds to its card, beside the card's 2 KB view. */
+const answeredQuestionBytes = 3 * 1024;
 
 /**
  * What a node's card draws, from the node itself: its times, model, phases and stop support. Its
@@ -308,13 +317,22 @@ const nodeFacts = sql<NodeFacts | null>`case when kind = 'node' then (
     'reasoningTokens',n.reasoning_tokens::text,'costUsd',n.cost_usd::text)
   from execution_nodes n where n.id = transcript_items.execution_node_id) end`;
 
+/**
+ * A settled agent question's facts, read beside its card when drawn, so every
+ * receipt shows the same record however long ago it was answered.
+ */
+const questionFacts = sql<QuestionFacts | null>`case when kind = 'request' then (
+  select jsonb_build_object('kind',r.kind,'status',r.status,'presentation',r.presentation,
+    'response',r.response)
+  from requests r where r.id = transcript_items.request_id
+    and r.kind = 'person.question' and r.status in ('fulfilled','declined')) end`;
+
 export function itemView(row: Item) {
   const {
     version,
     completedAt,
     tool,
     requestKind,
-    question,
     waitedSince,
     endedAt,
     replyMessageId,
@@ -364,14 +382,16 @@ export function itemView(row: Item) {
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });
-    case "request":
+    case "request": {
+      const question = row.question ? answeredQuestion(row.question) : null;
       return TranscriptItemSchema.parse({
         ...base,
         requestId: row.requestId,
         requestKind,
         waitedSince,
-        question,
+        ...(question ? { question: answeredQuestionWithin(question, answeredQuestionBytes) } : {}),
       });
+    }
     case "node":
       return TranscriptItemSchema.parse({
         ...base,
@@ -420,6 +440,7 @@ export function drawableItems(tx: Read, scope: DetailScope) {
     .select(itemColumns)
     .select(sql<PlaceView | null>`case when kind = 'place' then body end`.as("place"))
     .select(nodeFacts.as("node"))
+    .select(questionFacts.as("question"))
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"

@@ -1,6 +1,4 @@
 import {
-  answeredQuestion,
-  answeredQuestionWithin,
   OpensteerError,
   RequestSchema,
   requestOutcomeText,
@@ -27,21 +25,14 @@ export function assertRequestRevision(row: Pick<RequestRow, "revision">, expecte
     });
 }
 
-/** The most a settled question's record adds to its thread item, beside the item's own view. */
-const answeredQuestionBytes = 3 * 1024;
-
 export function describeTranscriptRequest(request: Request) {
-  const question = answeredQuestion(request);
-  return {
-    ...transcriptPreview({
-      title: request.presentation.title,
-      status: request.status,
-      preview: requestOutcomeText(request),
-      requestKind: request.kind,
-      ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
-    }),
-    ...(question ? { question: answeredQuestionWithin(question, answeredQuestionBytes) } : {}),
-  };
+  return transcriptPreview({
+    title: request.presentation.title,
+    status: request.status,
+    preview: requestOutcomeText(request),
+    requestKind: request.kind,
+    ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
+  });
 }
 
 export async function lockRequestThreads(
@@ -123,7 +114,7 @@ export function refreshRequestState(
             .returningAll()
             .executeTakeFirstOrThrow();
           // The receipt is drawn where `itemView` places it, which may be the task for a node's ask.
-          const shown = itemView(item);
+          const shown = itemView({ ...item, question: request });
           mutation.change(
             {
               scopeKey: shown.nodeId ? `node:${shown.nodeId}` : `thread:${threadId}`,

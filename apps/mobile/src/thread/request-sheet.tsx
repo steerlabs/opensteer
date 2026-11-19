@@ -39,6 +39,7 @@ import { PluginRequestBody } from "./plugin-request-body.js";
 import { useScreenShowing } from "./screen-showing.js";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
+  answeredQuestion,
   isPhoneDisplayDefinitionId,
   requestAgentProposedDetail,
   requestAgentProposedLabel,
@@ -82,6 +83,7 @@ import { readLine, useScreenRead } from "../ui/client-feedback.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
+import { AnsweredQuestionView } from "./answered-question.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
@@ -314,15 +316,29 @@ function SettledRequest(props: {
   readonly request: Request;
 }): ReactNode {
   const { request } = props;
+  const question = answeredQuestion(request);
+  const [open, setOpen] = useState(false);
   return (
     <ScrollView contentContainerStyle={styles.settled} style={styles.referenced}>
-      <View style={styles.settledHead}>
-        <Symbol name="hand.raised" size={18} tint={color.muted} />
-        <AppText role="caption" tone="muted">
-          {settledWords[request.status]}
-        </AppText>
-      </View>
-      <AppText role="title">{requestTitleLine(request)}</AppText>
+      {question && request.resolvedAt ? (
+        <AnsweredQuestionView
+          answeredAt={request.resolvedAt}
+          onToggle={() => setOpen(!open)}
+          open={open}
+          question={question}
+          title={requestTitleLine(request)}
+        />
+      ) : (
+        <>
+          <View style={styles.settledHead}>
+            <Symbol name="hand.raised" size={18} tint={color.muted} />
+            <AppText role="caption" tone="muted">
+              {settledWords[request.status]}
+            </AppText>
+          </View>
+          <AppText role="title">{requestTitleLine(request)}</AppText>
+        </>
+      )}
       <AnswerRow>
         <AnswerPill label="Open task" onPress={props.onOpenTask} tone="secondary" />
         <AnswerPill label="Close" onPress={props.onClose} tone="secondary" />

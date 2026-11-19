@@ -1,5 +1,4 @@
 import type {
-  AnsweredQuestion,
   AppId,
   AssignmentSummary,
   DelegationId,
@@ -138,7 +137,6 @@ export interface TranscriptPreview {
   readonly completedAt?: string;
   readonly tool?: ToolIdentity | null;
   readonly requestKind?: Request["kind"];
-  readonly question?: AnsweredQuestion;
   readonly waitedSince?: string;
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
@@ -643,6 +641,15 @@ export async function applyTaskApprovalReceipts(database: Kysely<DatabaseSchema>
       where visible and ${sql.raw(taskItemsPredicate)};
     update client_sync_state set epoch = gen_random_uuid();
   `.execute(database);
+}
+
+export const answeredQuestionRecordsMigrationName = "0040_answered_question_records";
+/**
+ * An answered question's card now carries what was asked and the answer, read beside it, so
+ * every client's sync starts over: a cursor from before it holds those cards without them.
+ */
+export async function applyAnsweredQuestionRecords(database: Kysely<DatabaseSchema>) {
+  await sql`update client_sync_state set epoch = gen_random_uuid()`.execute(database);
 }
 
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {

@@ -29,7 +29,9 @@ export type AnsweredQuestion = z.infer<typeof AnsweredQuestionSchema>;
  * still open, cancelled or withdrawn, or one with a secret field, whose answer
  * is never shown again.
  */
-export function answeredQuestion(request: Request): AnsweredQuestion | null {
+export function answeredQuestion(
+  request: Pick<Request, "kind" | "presentation" | "response" | "status">,
+): AnsweredQuestion | null {
   if (
     request.kind !== "person.question" ||
     request.presentation.kind !== "form" ||
@@ -39,7 +41,7 @@ export function answeredQuestion(request: Request): AnsweredQuestion | null {
   const { detail, fields } = request.presentation;
   const asked = detail ? { detail } : {};
   if (request.status === "declined") return { ...asked, outcome: "dismissed", answers: [] };
-  if (request.status !== "fulfilled" || request.response.kind !== "form") return null;
+  if (request.status !== "fulfilled" || request.response?.kind !== "form") return null;
   const { answers } = request.response;
   return {
     ...asked,

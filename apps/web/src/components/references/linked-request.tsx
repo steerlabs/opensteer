@@ -1,8 +1,9 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useSearchParams } from "react-router";
-import { RequestIdSchema, type Request } from "@opensteer/core";
+import { RequestIdSchema, type AnsweredQuestion, type Request } from "@opensteer/core";
 import { requestReceipt, type HostClient } from "@opensteer/client/host";
 import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
+import { AnsweredQuestionView } from "../answered-question.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
@@ -112,13 +113,31 @@ function LinkedRequest({
   const receipt = requestReceipt(request);
   return (
     <Dialog onClose={onClose} title="Request">
-      <div className="ref-request">
-        <p className="ref-request__status">
-          <Icon name={request.status === "fulfilled" ? "check-circle" : "stop"} />
-          {receipt.outcome}
-        </p>
-        <p className="ref-request__title">{receipt.title}</p>
-      </div>
+      {receipt.question ? (
+        <AnsweredQuestionDialogBody
+          answeredAt={receipt.createdAt}
+          question={receipt.question}
+          title={receipt.title}
+        />
+      ) : (
+        <div className="ref-request">
+          <p className="ref-request__status">
+            <Icon name={request.status === "fulfilled" ? "check-circle" : "stop"} />
+            {receipt.outcome}
+          </p>
+          <p className="ref-request__title">{receipt.title}</p>
+        </div>
+      )}
     </Dialog>
   );
+}
+
+/** A settled question read whole: what was asked and the answer, as its thread row shows it. */
+function AnsweredQuestionDialogBody(props: {
+  answeredAt: string;
+  question: AnsweredQuestion;
+  title: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return <AnsweredQuestionView {...props} onOpenChange={setOpen} open={open} />;
 }

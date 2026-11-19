@@ -64,6 +64,7 @@ import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
+import { AnsweredQuestionView } from "./answered-question.js";
 import { MessageFold } from "./message-fold.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -1720,80 +1721,31 @@ function OwnMessage(props: {
 const ignoreDeliveryAction = () => {};
 
 /**
- * A question an agent asked, as the thread keeps it once answered: what it
- * asked about, then the answer. One cut to fit reads whole once opened.
+ * An answered question in its thread: the record the thread carries, read
+ * whole from its Request when the reader opens one that was cut to fit.
  */
 function AnsweredQuestionRow(props: { readonly entry: AnsweredQuestionEntry }): ReactNode {
   const { entry } = props;
   const scope = useContext(TaskScopeContext);
   const [open, setOpen] = useState(false);
-  const { question, error, reload } = useAnsweredQuestion({
+  const { question, read, reload } = useAnsweredQuestion({
     client: scope?.hostClient ?? null,
     threadId: scope?.threadId ?? null,
     requestId: entry.requestId,
     question: entry.question,
     open,
   });
-  const dismissed = question.outcome === "dismissed";
-  const several = question.answers.length > 1;
-  const excerpt = question.truncated === true;
   return (
-    <View accessibilityLabel={`Question: ${entry.title}`} style={styles.answered}>
-      <View style={styles.answeredHead}>
-        <Symbol
-          name={dismissed ? "stop.circle" : "checkmark.circle"}
-          size={13}
-          tint={color.green}
-        />
-        <AppText role="caption" tone="muted">
-          {dismissed ? "Dismissed" : "You answered"} · {formatClockTime(entry.createdAt)}
-        </AppText>
-      </View>
-      <AppText role="secondaryMedium">{entry.title}</AppText>
-      {question.detail ? (
-        <MessageFold
-          lines={answeredDetailLines}
-          mine={false}
-          more={excerpt}
-          onToggle={() => setOpen(!open)}
-          open={open}
-        >
-          <Markdown excerpt={excerpt} text={question.detail} />
-        </MessageFold>
-      ) : null}
-      {question.answers.map(({ prompt, answer }, index) => (
-        <View key={index} style={styles.answeredAnswer}>
-          {several || prompt.trim() !== entry.title.trim() ? (
-            <AppText role="caption" tone="muted">
-              {prompt}
-            </AppText>
-          ) : null}
-          <AnsweredWords words={answer.join(", ")} />
-        </View>
-      ))}
-      {open && error ? (
-        <Pressable accessibilityRole="button" onPress={reload}>
-          <AppText role="caption" tone="muted">
-            Couldn’t load the whole question. Tap to retry.
-          </AppText>
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
-/** Body lines of what was asked before Show more: a short draft whole. */
-const answeredDetailLines = 8;
-
-/** The person's answer, folded like the words of a message when it runs long. */
-function AnsweredWords(props: { readonly words: string }): ReactNode {
-  const [open, setOpen] = useState(false);
-  return (
-    <MessageFold lines={6} mine={false} more={false} onToggle={() => setOpen(!open)} open={open}>
-      <View style={styles.answeredWords}>
-        <AppText role="secondary">{props.words}</AppText>
-      </View>
-    </MessageFold>
+    <AnsweredQuestionView
+      answeredAt={entry.createdAt}
+      cut={entry.question.truncated === true}
+      onRetry={reload}
+      onToggle={() => setOpen(!open)}
+      open={open}
+      question={question}
+      read={read}
+      title={entry.title}
+    />
   );
 }
 
@@ -2025,20 +1977,6 @@ export function WorkingIndicator({
 }
 
 const styles = StyleSheet.create({
-  answered: {
-    borderLeftColor: color.line,
-    borderLeftWidth: 2,
-    gap: space[8],
-    paddingLeft: space[12],
-  },
-  answeredAnswer: { alignItems: "flex-start", gap: space[4] },
-  answeredHead: { alignItems: "center", flexDirection: "row", gap: space[6] },
-  answeredWords: {
-    backgroundColor: color.greenWash,
-    borderRadius: radius.md,
-    paddingHorizontal: space[12],
-    paddingVertical: space[4],
-  },
   earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   call: {
     alignItems: "center",
