@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import {
   PersonalResourceReads,
   type PersonalResourceReadOptions,
+  inventoryBound,
   readerGraceMs,
   runnerSettleMs,
 } from "./personal-resource-reads.js";
@@ -338,4 +339,49 @@ test("a kind is watched exactly while some reader that read it is mounted, or wi
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("an inventory past its kind's bound stops as it arrives, keeps the last complete one, and says so", async () => {
+  let pagesRead = 0;
+  let large = false;
+  const applied: unknown[][] = [];
+  const unreadable: [PersonalResourceKind, boolean][] = [];
+  const reads = new PersonalResourceReads({
+    read: async (kind, cursor) => {
+      pagesRead++;
+      const revision = reads.revision(kind) ?? "1";
+      // Past the first revision the Host pages without end, 60 KiB at a time.
+      return {
+        ok: true,
+        data: {
+          revision,
+          next: large ? String(Number(cursor ?? 0) + 1) : null,
+          data: { kind, padding: large ? "m".repeat(60 * 1024) : "", revision } as never,
+        },
+      };
+    },
+    apply: (pages) => applied.push([...pages]),
+    canRead: () => true,
+    watchChanged: () => undefined,
+    unreadable: (kind, value) => unreadable.push([kind, value]),
+  });
+  const release = reads.watch("harness", () => {});
+  await vi.waitFor(() => expect(applied).toHaveLength(1));
+  large = true;
+  pagesRead = 0;
+  reads.changed({ harness: "2" });
+  await vi.waitFor(() => expect(unreadable).toEqual([["harness", true]]));
+  // It stopped at the bound: about 2 MiB of 60 KiB pages, not more.
+  expect(pagesRead).toBeLessThanOrEqual(Math.ceil(inventoryBound("harness") / (60 * 1024)) + 1);
+  expect(applied).toHaveLength(1);
+  expect(reads.interests().installed).toEqual({ harness: "1" });
+  // The next revision reads again, and a complete answer clears the report.
+  large = false;
+  reads.changed({ harness: "3" });
+  await vi.waitFor(() => expect(reads.interests().installed).toEqual({ harness: "3" }));
+  expect(unreadable).toEqual([
+    ["harness", true],
+    ["harness", false],
+  ]);
+  release();
 });

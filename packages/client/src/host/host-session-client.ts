@@ -699,6 +699,14 @@ export class HttpHostClient {
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      unreadable: (kind, unreadable) => {
+        const held = this.#snapshot.unreadableResources ?? [];
+        if (held.includes(kind) === unreadable) return;
+        this.#update({
+          ...this.#snapshot,
+          unreadableResources: unreadable ? [...held, kind] : held.filter((each) => each !== kind),
+        });
+      },
       loaded: (kind) => {
         if (this.#snapshot.loadedResources.includes(kind)) return;
         this.#update({

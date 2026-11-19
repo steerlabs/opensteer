@@ -840,6 +840,8 @@ export interface HostSnapshot {
    * fields are unknown rather than empty: a surface says it is loading, never "none".
    */
   loadedResources: readonly import("@opensteer/protocol/resources").PersonalResourceKind[];
+  /** Kinds whose newest read could not be installed (too large or malformed); the last complete one stays. */
+  unreadableResources?: readonly import("@opensteer/protocol/resources").PersonalResourceKind[];
   runQueue: RunQueueEntry[];
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
