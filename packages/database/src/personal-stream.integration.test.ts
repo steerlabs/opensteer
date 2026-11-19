@@ -1,4 +1,10 @@
-import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import {
+  readPersonalScopeCut,
+  readTranscriptItem,
+  readTranscriptPage,
+} from "./personal-sync-store.js";
+import { writeExecutionItem } from "./execution-changes.js";
+import { applyTaskApprovalReceipts } from "./personal-state-schema.js";
 import { readTranscriptOverlays } from "./personal-overlay-store.js";
 import { RequestSchema, createId, type Request } from "@opensteer/core";
 import { sql } from "kysely";
@@ -7,7 +13,7 @@ import { expect, test } from "vitest";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { publishExecutionNode } from "./execution-nodes.js";
 import { refreshRequestAttention } from "./personal-attention-store.js";
-import { refreshRequestState, requestInsert } from "./request-persistence.js";
+import { lockRequestThreads, refreshRequestState, requestInsert } from "./request-persistence.js";
 import { liveRequest, pendingEvent } from "./store.integration.test-support.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
@@ -868,5 +874,227 @@ test("a settled subagent's card carries what it found", async () => {
     });
   } finally {
     await fixture.close();
+  }
+});
+
+test("draws a subagent's settled approval once, in its task, and nothing else of the subagent", async () => {
+  const f = await createPersonalStateFixture("task-approval-receipt");
+  const { database, run, attemptId } = f;
+  try {
+    const nodeId = createId("executionNode");
+    await database
+      .insertInto("executionNodes")
+      .values({
+        id: nodeId,
+        attemptId,
+        runId: run.runId,
+        status: "running",
+        kind: "subagent",
+        effort: null,
+        phaseIndex: null,
+        phases: sql`'[]'::jsonb`,
+        title: "researcher",
+        startedAt: new Date(),
+        endedAt: null,
+        nativeRef: "fixture",
+        originCallId: null,
+        parentNodeId: null,
+        prompt: null,
+        result: null,
+        sessionRef: null,
+        model: null,
+      })
+      .execute();
+    // The subagent's own step and words, which stay in its history.
+    await commitPersonalMutation(database, async (tx, mutation) => {
+      await startPersonalToolCall(tx, mutation, {
+        runId: run.runId,
+        threadId: run.threadId,
+        attemptId,
+        bindingGeneration: run.bindingGeneration,
+        origin: "host-harness",
+        nodeId,
+        callId: "harness:child-command",
+        tool: { namespace: "harness", name: "shell" },
+        arguments: { command: "ls" },
+      });
+      await writeExecutionItem(tx, mutation, {
+        id: `node-message:${nodeId}`,
+        kind: "node-message",
+        createdAt: new Date(),
+        threadId: run.threadId,
+        runId: run.runId,
+        attemptId,
+        nodeId,
+        visible: true,
+        isTurnStart: false,
+        body: "Reading the release notes.",
+        view: { preview: "Reading the release notes." },
+      });
+    });
+    const ask = (
+      kind: "harness.approval" | "harness.input",
+      asker: typeof nodeId | null,
+      settled?: true,
+    ) => {
+      const id = createId("request");
+      return RequestSchema.parse({
+        ...liveRequest({
+          id,
+          harnessInstanceId: run.harnessInstance.id,
+          requestedBy: run.userId,
+          runId: run.runId,
+          threadId: run.threadId,
+          presentation: {
+            kind: "choice",
+            title: "Run this command?",
+            options: [{ id: "allow", label: "Allow once", hint: "allow-once" }],
+          },
+        }),
+        kind,
+        payload: { kind },
+        ...(asker ? { originatingNodeId: asker } : {}),
+        ...(settled
+          ? {
+              status: "fulfilled",
+              response: { kind: "choice", optionId: "allow" },
+              resolvedAt: new Date().toISOString(),
+              resolvedBy: run.userId,
+            }
+          : {}),
+      });
+    };
+    const approval = ask("harness.approval", nodeId);
+    const question = ask("harness.input", nodeId, true);
+    const rootApproval = ask("harness.approval", null, true);
+    for (const request of [approval, question, rootApproval])
+      await commitPersonalMutation(database, async (tx) => {
+        await tx.insertInto("requests").values(requestInsert(request)).execute();
+        await refreshRequestState(tx, request.id);
+      });
+    const task = {
+      viewerId: run.userId,
+      scope: { kind: "thread", threadId: run.threadId },
+    } as const;
+    const node = {
+      viewerId: run.userId,
+      scope: { kind: "node", threadId: run.threadId, nodeId },
+    } as const;
+    // Pending, it is answered from either the task or the subagent.
+    for (const read of [task, node])
+      expect(await readTranscriptOverlays(database, { ...read, kind: "requests" })).toMatchObject({
+        entries: [expect.objectContaining({ id: approval.id })],
+      });
+    const { sequence: before } = await database
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
+    await commitPersonalMutation(database, async (tx) => {
+      await lockRequestThreads(tx, [run.threadId]);
+      await tx
+        .updateTable("requests")
+        .set({
+          status: "fulfilled",
+          response: sql`${JSON.stringify({ kind: "choice", optionId: "allow" })}::jsonb`,
+          resolvedAt: new Date(),
+          resolvedBy: run.userId,
+        })
+        .where("id", "=", approval.id)
+        .execute();
+      await refreshRequestState(tx, approval.id);
+    });
+    const changes = await database
+      .selectFrom("clientChanges")
+      .select(["sequence", "scopeKey", "entityKind", "entityId", "operation", "payload"])
+      .where("sequence", ">", before)
+      .where("entityId", "in", [approval.id, `request:${approval.id}`])
+      .where("scopeKey", "!=", "shell")
+      .orderBy("scopeKey")
+      .orderBy("entityKind")
+      .execute();
+    // One commit takes the question away from both views and puts one receipt in the task.
+    expect(new Set(changes.map(({ sequence }) => sequence)).size).toBe(1);
+    expect(
+      changes.map(({ scopeKey, entityKind, operation }) => [scopeKey, entityKind, operation]),
+    ).toEqual([
+      [`node:${nodeId}`, "request", "remove"],
+      [`thread:${run.threadId}`, "item", "upsert"],
+      [`thread:${run.threadId}`, "request", "remove"],
+    ]);
+    const published = changes.find(({ entityKind }) => entityKind === "item")!.payload;
+    const page = await readTranscriptPage(database, task);
+    const anchored = await readTranscriptPage(database, {
+      ...task,
+      anchorItemId: `request:${approval.id}`,
+    });
+    const single = await readTranscriptItem(database, {
+      ...task,
+      itemId: `request:${approval.id}`,
+    });
+    const nodePage = await readTranscriptPage(database, node);
+    if (page.kind !== "page" || anchored.kind !== "page" || nodePage.kind !== "page")
+      throw new Error("Expected history pages");
+    const receipt = page.items.find(({ id }) => id === `request:${approval.id}`);
+    expect(receipt).toEqual(published);
+    expect(receipt).toMatchObject({
+      nodeId: null,
+      requestKind: "harness.approval",
+      view: { title: "Run this command?", status: "fulfilled", preview: "Fulfilled · Allow once" },
+    });
+    expect(anchored.items.find(({ id }) => id === receipt!.id)).toEqual(receipt);
+    expect(single).toMatchObject({ kind: "item", item: receipt });
+    // The task shows its own receipts and the subagent's approval; the subagent's question,
+    // step and words stay in its own history.
+    expect(page.items.filter(({ kind }) => kind === "request").map(({ id }) => id)).toEqual(
+      [rootApproval.id, approval.id].map((id) => `request:${id}`),
+    );
+    expect(nodePage.items.map(({ kind, id }) => [kind, id])).toEqual([
+      ["tool", expect.any(String)],
+      ["node-message", `node-message:${nodeId}`],
+      ["request", `request:${question.id}`],
+    ]);
+    expect(
+      await readTranscriptItem(database, { ...node, itemId: `request:${approval.id}` }),
+    ).toEqual({ kind: "unavailable" });
+    // The canonical row still names the subagent that asked.
+    expect(
+      await database
+        .selectFrom("transcriptItems")
+        .select(["nodeId", "attemptId", "runId"])
+        .where("id", "=", `request:${approval.id}`)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nodeId, attemptId, runId: run.runId });
+  } finally {
+    await f.close();
+  }
+});
+
+test("starts every scope over after the approval placement change", async () => {
+  const f = await createPersonalStateFixture("task-approval-epoch");
+  const { database, run } = f;
+  try {
+    const state = await database
+      .selectFrom("clientSyncState")
+      .select(["deploymentId", "epoch", "sequence"])
+      .executeTakeFirstOrThrow();
+    const cursor = {
+      deploymentId: state.deploymentId,
+      epoch: state.epoch,
+      viewerId: run.userId,
+      scopeKey: `thread:${run.threadId}` as const,
+      afterSequence: state.sequence,
+    };
+    const resume = () =>
+      readPersonalScopeCut(database, {
+        viewerId: run.userId,
+        scope: { kind: "thread", threadId: run.threadId },
+        cursor,
+        snapshot: async () => "snapshot",
+      });
+    expect(await resume()).toMatchObject({ kind: "replay" });
+    await applyTaskApprovalReceipts(database);
+    expect(await resume()).toMatchObject({ kind: "snapshot", snapshot: "snapshot" });
+  } finally {
+    await f.close();
   }
 });

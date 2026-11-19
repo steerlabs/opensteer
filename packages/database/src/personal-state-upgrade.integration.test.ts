@@ -1,5 +1,5 @@
-import { readTranscriptItem } from "./personal-sync-store.js";
-import { createId } from "@opensteer/core";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import { RequestSchema, createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -9,6 +9,7 @@ import {
   migrationProvider,
   personalCurrentStateMigrationName,
 } from "./migrations.js";
+import { taskApprovalReceiptsMigrationName } from "./personal-state-schema.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -75,6 +76,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         "0036_one_plugin_per_owner_name",
         "0037_plugin_package_format",
         personalCurrentStateMigrationName,
+        taskApprovalReceiptsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
@@ -720,6 +722,29 @@ test("resumes offline settlement of a Run with a large live node set", async () 
         'fixture:done', 'completed', clock_timestamp(), clock_timestamp(), '[]'::jsonb,
         ${"Lost in PayButton.tsx:42.\n" + "x".repeat(480)}
       from run_attempts where run_id=${run.runId} and status='current'`.execute(database);
+    // A subagent's settled approval from before the upgrade, stored on the subagent that asked.
+    const approval = RequestSchema.parse({
+      ...liveRequest({
+        harnessInstanceId: run.harnessInstance.id,
+        id: createId("request"),
+        requestedBy: run.userId,
+        runId: run.runId,
+        threadId: run.threadId,
+        presentation: {
+          kind: "choice",
+          title: "Run this command?",
+          options: [{ id: "allow", label: "Allow once", hint: "allow-once" }],
+        },
+      }),
+      kind: "harness.approval",
+      payload: { kind: "harness.approval" },
+      originatingNodeId: "nod_90000000-0000-4000-8000-000000000999",
+      status: "fulfilled",
+      response: { kind: "choice", optionId: "allow" },
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: run.userId,
+    });
+    await database.insertInto("requests").values(requestInsert(approval)).execute();
     await preparePersonalConversion(database);
     const stopped = new Error("Stop after the first node batch");
     await expect(
@@ -751,6 +776,27 @@ test("resumes offline settlement of a Run with a large live node set", async () 
     );
     expect(found.rows[0]?.view.preview).toBe(`Lost in PayButton.tsx:42. ${"x".repeat(480)}`);
     expect(found.rows[0]?.view.truncated).toBeUndefined();
+    // Converted on the subagent, its approval is drawn in the task, and only there.
+    const scope = { kind: "thread", threadId: run.threadId } as const;
+    const task = await readTranscriptPage(database, {
+      viewerId: run.userId,
+      scope,
+      anchorItemId: `request:${approval.id}`,
+    });
+    const subagent = await readTranscriptItem(database, {
+      viewerId: run.userId,
+      scope: { ...scope, kind: "node", nodeId: approval.originatingNodeId! },
+      itemId: `request:${approval.id}`,
+    });
+    if (task.kind !== "page") throw new Error("Expected history");
+    expect(task.items.filter(({ kind }) => kind === "request")).toEqual([
+      expect.objectContaining({
+        id: `request:${approval.id}`,
+        nodeId: null,
+        view: expect.objectContaining({ preview: "Fulfilled · Allow once" }),
+      }),
+    ]);
+    expect(subagent).toEqual({ kind: "unavailable" });
   } finally {
     await fixture.close();
   }

@@ -16,7 +16,11 @@ import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
-import { applyPersonalStateSchema } from "./personal-state-schema.js";
+import {
+  applyPersonalStateSchema,
+  applyTaskApprovalReceipts,
+  taskApprovalReceiptsMigrationName,
+} from "./personal-state-schema.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -589,6 +593,7 @@ export function migrationProvider(options?: {
         ...(options?.personalCurrentState !== false
           ? {
               [personalCurrentStateMigrationName]: { up: applyPersonalStateSchema },
+              [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
             }
           : {}),
       };
