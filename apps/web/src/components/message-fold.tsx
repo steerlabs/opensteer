@@ -39,12 +39,13 @@ export function MessageFold({
     if (!fold || !words) return;
     // Measured against the fold's own line, not its clamped box, so a message
     // opened before it was ever folded still knows whether it needs Show less.
-    // The words' box grows as Markdown arrives or the column narrows.
+    // The words' box grows as Markdown arrives or the column narrows. Measured
+    // only once laid out: a transcript row the browser is skipping is never
+    // forced through layout just to decide its Show more.
     const measure = () =>
       setOverflowing(
         words.offsetHeight > lines * parseFloat(getComputedStyle(fold).lineHeight) + 1,
       );
-    measure();
     return observeResize([words], measure);
   }, [lines]);
   return (

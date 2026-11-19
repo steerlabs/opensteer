@@ -34,6 +34,7 @@ import {
   Fragment,
   Suspense,
   lazy,
+  type ComponentProps,
   useEffect,
   useId,
   useLayoutEffect,
@@ -157,7 +158,45 @@ import { act, failureWords } from "./use-action.js";
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
 const markdownChunk = import("./markdown.js");
-const Markdown = lazy(() => markdownChunk);
+const LazyMarkdown = lazy(() => markdownChunk);
+
+/**
+ * Where a long transcript's rows scroll, while the browser skips the ones off screen. A row's
+ * Markdown is parsed once it comes within a screen of view; until then its words stand as plain
+ * text, so Find and assistive reading still have them. Without skipping (an engine that would not
+ * hold the reader's place as a row above grows), every body is parsed as it is drawn.
+ */
+const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
+const undeferredRows = 40;
+
+function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
+  const scroller = useContext(DeferredBodies);
+  const [near, setNear] = useState(scroller === null);
+  const plain = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    const element = plain.current;
+    const root = scroller?.() ?? null;
+    if (near || !element) return;
+    if (!root || typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some(({ isIntersecting }) => isIntersecting)) setNear(true);
+      },
+      { root, rootMargin: "100% 0px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [near, scroller]);
+  if (near) return <LazyMarkdown {...props} />;
+  return (
+    <p className="md-prose md-prose--plain" ref={plain}>
+      {props.bare ? props.text : readableMarkdown(props.text)}
+    </p>
+  );
+}
 
 const TranscriptLive = createContext(true);
 /**
@@ -340,6 +379,7 @@ export function AgentTranscript({
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
+  scroller = null,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -399,6 +439,11 @@ export function AgentTranscript({
    */
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
+  /**
+   * The element a long transcript scrolls in. Given, and where the browser skips off-screen rows,
+   * a row's Markdown is parsed only as it nears view.
+   */
+  scroller?: (() => HTMLElement | null) | null;
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
@@ -529,6 +574,11 @@ export function AgentTranscript({
         : null,
     [ownerPanel, ownerTurn],
   );
+  // Read once: the start-up check that decides whether rows are skipped finishes long before this.
+  const [skipping] = useState(
+    () => typeof document !== "undefined" && document.documentElement.dataset.rowSkipping !== "off",
+  );
+  const deferBodies = skipping ? scroller : null;
   const imageScope = useMemo(
     () => (attachmentReader && threadId ? { client: attachmentReader, threadId } : null),
     [attachmentReader, threadId],
@@ -536,6 +586,8 @@ export function AgentTranscript({
   const drawnRows = rows.map(({ group, key }, index) => (
     <TranscriptRow
       continued={places?.[index]?.continued === true}
+      // The newest rows are where a reader opens a conversation: they are parsed at once.
+      deferBodies={index < rows.length - undeferredRows ? deferBodies : null}
       group={group}
       joined={places?.[index]?.joined === true}
       key={key}
@@ -607,6 +659,7 @@ export function AgentTranscript({
 
 interface TranscriptRowProps {
   readonly continued: boolean;
+  readonly deferBodies: (() => HTMLElement | null) | null;
   readonly group: TranscriptGroup;
   readonly joined: boolean;
   readonly renderTask: TaskRenderer | undefined;
@@ -623,6 +676,7 @@ interface TranscriptRowProps {
 const TranscriptRow = memo(
   function TranscriptRow({
     continued,
+    deferBodies,
     group,
     joined,
     renderTask,
@@ -632,7 +686,7 @@ const TranscriptRow = memo(
     viewerUserId,
   }: TranscriptRowProps) {
     return (
-      <>
+      <DeferredBodies value={deferBodies}>
         {time ? <p className="transcript__time">{time}</p> : null}
         <div
           className="transcript__row"
@@ -657,12 +711,13 @@ const TranscriptRow = memo(
             />
           )}
         </div>
-      </>
+      </DeferredBodies>
     );
   },
   // `renderTask` is a screen's inline renderer; an assignment row redraws when its entry does.
   (previous: TranscriptRowProps, next: TranscriptRowProps) =>
     previous.continued === next.continued &&
+    previous.deferBodies === next.deferBodies &&
     previous.joined === next.joined &&
     previous.time === next.time &&
     previous.reveal === next.reveal &&
