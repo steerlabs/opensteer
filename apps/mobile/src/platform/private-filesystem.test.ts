@@ -34,7 +34,11 @@ class MemoryDocumentFilesystem implements DocumentFilesystem {
     create: () => {
       this.directories.add(uri);
     },
-    list: () => [...this.files.keys()].filter((path) => path.startsWith(`${uri}/`)),
+    // As Expo does: the entries directly inside, each a file object with its own URI.
+    list: () =>
+      [...this.files.keys()]
+        .filter((path) => path.startsWith(`${uri}/`) && !path.slice(uri.length + 1).includes("/"))
+        .map((path) => this.file(path)),
   });
 
   readonly file = (
@@ -204,6 +208,15 @@ describe("createDocumentPrivateFilesystem", () => {
     platform.interrupt = () => undefined;
     expect(await files.readFile(catalog, 1_024)).toBeNull();
     expect(await files.fileExists(catalog)).toBe(false);
+  });
+
+  it("names the files in a directory, journals included, and none for a missing one", async () => {
+    const { files, platform } = open();
+    await files.writeFileAtomic(`${root}cache/a b.json`, "a");
+    platform.files.set(`${root}cache/b.json.new`, new Uint8Array());
+    platform.files.set(`${root}cache/nested/c.json`, new Uint8Array());
+    expect((await files.listFiles(`${root}cache`)).toSorted()).toEqual(["a b.json", "b.json.new"]);
+    expect(await files.listFiles(`${root}missing`)).toEqual([]);
   });
 
   it("removes the journal along with the file", async () => {

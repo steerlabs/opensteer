@@ -99,7 +99,7 @@ test("every other format's database is deleted, for every origin", async () => {
     "opensteer-message-outbox",
   ])
     await indexedDbCheckpointStorage(name).write("shell", "x", guard);
-  await dropOtherCheckpointFormats(66);
+  await dropOtherCheckpointFormats(66, "http://a");
   await vi.waitFor(async () =>
     expect((await indexedDB.databases()).map(({ name }) => name).sort()).toEqual([
       "opensteer-message-outbox",
@@ -108,3 +108,45 @@ test("every other format's database is deleted, for every origin", async () => {
     ]),
   );
 });
+
+test.each([
+  ["absent", undefined],
+  ["failing", () => Promise.reject(new Error("Not allowed."))],
+])(
+  "without a working database listing (%s), older formats are still deleted",
+  async (_case, list) => {
+    const factory = new IDBFactory();
+    vi.stubGlobal("indexedDB", factory);
+    const stored = new Map<string, string>();
+    const localStorage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+    };
+    vi.stubGlobal("window", { localStorage });
+    // One opened by an earlier build that did not register it, one this origin registered.
+    const unregistered = checkpointDatabaseName(65, "http://a");
+    await new Promise<void>((resolve) => {
+      const request = factory.open(unregistered, 1);
+      request.onsuccess = () => {
+        request.result.close();
+        resolve();
+      };
+    });
+    const registered = checkpointDatabaseName(65, "http://b");
+    await indexedDbCheckpointStorage(registered).write("shell", "x", guard);
+    await indexedDbCheckpointStorage(checkpointDatabaseName(66, "http://a")).write(
+      "shell",
+      "x",
+      guard,
+    );
+    const real = factory.databases.bind(factory);
+    Object.defineProperty(factory, "databases", { configurable: true, value: list });
+    await dropOtherCheckpointFormats(66, "http://a");
+    expect((await real()).map(({ name }) => name).toSorted()).toEqual([
+      checkpointDatabaseName(66, "http://a"),
+    ]);
+    expect(localStorage.getItem("opensteer.personal-stream.databases")).toBe(
+      JSON.stringify([checkpointDatabaseName(66, "http://a")]),
+    );
+  },
+);

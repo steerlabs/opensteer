@@ -25,3 +25,9 @@ export interface PrivateFilesystem {
     signal?: AbortSignal,
   ): Promise<void>;
 }
+
+/** A private filesystem that can also name the files in one directory, as a phone's can. */
+export interface ListingPrivateFilesystem extends PrivateFilesystem {
+  /** The names of the files directly in `path`, journal files included; none when it is absent. */
+  listFiles(path: string, signal?: AbortSignal): Promise<readonly string[]>;
+}
