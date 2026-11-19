@@ -30,10 +30,12 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     const scopeKey = "shell" as const;
     const write = (hold?: boolean) =>
       commitPersonalMutation(database, async (_tx, mutation) => {
-        mutation.change(
-          { scopeKey, entityKind: "visit", entityId: "fence-order", operation: "upsert" },
-          () => ({ revision: mutation.sequence }),
-        );
+        mutation.change({
+          scopeKey,
+          entityKind: "visit",
+          entityId: "fence-order",
+          operation: "remove",
+        });
         if (hold) {
           ready.resolve();
           await withTimeout(release.promise, 5_000, {
@@ -60,10 +62,12 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     ]);
     await expect(
       commitPersonalMutation(database, async (_tx, mutation) => {
-        mutation.change(
-          { scopeKey, entityKind: "visit", entityId: "fence-order", operation: "upsert" },
-          () => ({ revision: mutation.sequence }),
-        );
+        mutation.change({
+          scopeKey,
+          entityKind: "visit",
+          entityId: "fence-order",
+          operation: "remove",
+        });
         throw new Error("rollback");
       }),
     ).rejects.toThrow("rollback");
@@ -72,12 +76,13 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
       .selectFrom("clientChanges")
       .select(["sequence", "payload"])
       .where("scopeKey", "=", scopeKey)
+      .where("entityId", "=", "fence-order")
       .orderBy("sequence")
       .execute();
     expect(changes).toEqual(
       [1n, 2n, 3n].map((offset) => ({
         sequence: (initial + offset).toString(),
-        payload: { revision: (initial + offset).toString() },
+        payload: {},
       })),
     );
   } finally {

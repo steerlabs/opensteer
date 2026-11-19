@@ -1043,7 +1043,11 @@ integration("Host vertical slice", () => {
     ]);
 
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    const { connected, disconnected } = observeRunnerDisconnect(realtimeSocket, environmentId);
+    const { connected, disconnected } = observeRunnerDisconnect(
+      realtimeSocket,
+      environmentId,
+      origin,
+    );
     await connected;
     runnerSocket.close();
     await disconnected;
@@ -1495,7 +1499,11 @@ integration("Host vertical slice", () => {
     const disconnectRecovery = vi.spyOn(runtime.store, "failActiveRunsForRunnerDisconnect");
     stopCatalogResponder();
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    const { connected, disconnected } = observeRunnerDisconnect(realtimeSocket, environmentId);
+    const { connected, disconnected } = observeRunnerDisconnect(
+      realtimeSocket,
+      environmentId,
+      `http://127.0.0.1:${hostPort}`,
+    );
     await connected;
     runnerSocket.terminate();
     await disconnected;
@@ -3419,7 +3427,7 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
   await ready;
 }
 
-function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId) {
+function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId, origin: string) {
   const connected = Promise.withResolvers<void>();
   const disconnected = Promise.withResolvers<void>();
   const deadline = setTimeout(

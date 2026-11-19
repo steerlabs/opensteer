@@ -442,6 +442,31 @@ test("pushes only watched revisions that differ from what the client installed",
   }
 });
 
+test("a socket whose shell read is refused hears no resource revision", async () => {
+  const resourceRevisions = vi.fn(() => ({ settings: "4" }));
+  const send = vi.fn(async () => true);
+  const closed = Promise.withResolvers<string>();
+  const socket = new PersonalSyncSocket({
+    read: async () => {
+      throw Object.assign(new Error("Deployment subscription forbidden"), { code: "forbidden" });
+    },
+    resourceRevisions,
+    send,
+    close: (reason) => closed.resolve(reason),
+  });
+  socket.attach({
+    type: "client.attach",
+    apiVersion: 64,
+    generation: 1,
+    interests: ["settings"],
+    installed: {},
+  });
+  socket.resourcesChanged(new Set(["settings"]));
+  await deadline(closed.promise, "The refused socket was never closed");
+  expect(resourceRevisions).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+});
+
 test("coalesces live text for its synchronized detail after the durable barrier", async () => {
   vi.useFakeTimers();
   const threadId = createId("thread");

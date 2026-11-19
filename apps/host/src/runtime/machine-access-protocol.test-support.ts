@@ -393,6 +393,8 @@ function primaryFence(message: RunnerConnectionFence): RunnerConnectionFence {
 
 export interface TargetMachine {
   reportFullDiskAccess(fullDiskAccess: boolean): void;
+  /** A readiness change on the live connection: a runtime fact, never a durable row. */
+  reportShellReadiness(readiness: "ready" | "unavailable"): void;
   /** The display name the Deployment knows this computer by; refusals name it. */
   readonly name: string;
   /** The environment this computer names whenever it is running agents. */
@@ -534,6 +536,7 @@ export async function connectTargetMachine(
       primary.socket.send(
         JSON.stringify({ ...primary.fence, type: "runner.shell.full-disk-access", fullDiskAccess }),
       ),
+    reportShellReadiness: (readiness) => reportShellReadiness(primary, readiness),
     hostKeyPath: prepared.hostKeyPath,
     get hostPublicKey() {
       return prepared.descriptor.hostPublicKey;
@@ -582,13 +585,14 @@ export function acknowledgeCommands(
   });
 }
 
-function reportShellReadiness(primary: PrimaryConnection): void {
+function reportShellReadiness(
+  primary: PrimaryConnection,
+  readiness: "ready" | "unavailable" = "ready",
+): void {
   primary.socket.send(
     JSON.stringify({
       ...primary.fence,
-      modules: [
-        { checkedAt: new Date().toISOString(), detail: null, module: "shell", readiness: "ready" },
-      ],
+      modules: [{ checkedAt: new Date().toISOString(), detail: null, module: "shell", readiness }],
       type: "runner.modules.report",
     }),
   );
