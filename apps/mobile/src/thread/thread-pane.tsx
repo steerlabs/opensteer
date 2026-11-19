@@ -728,7 +728,7 @@ function ThreadPaneForUser(
         .catch(() => setFailure({ key: Date.now(), resource: "that update", retry: open }));
     };
     open();
-  }, [anchorMessageId, follow, hostClient, threadId]);
+  }, [anchorMessageId, follow, hostClient, threadDetail.synchronized, threadId]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = useCallback((): void => {

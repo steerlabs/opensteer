@@ -2472,6 +2472,22 @@ describe("a voice conversation while Opensteer is replying", () => {
   });
 });
 
+describe("a cold link", () => {
+  it("starts reading around the linked message once the conversation is synchronized", async () => {
+    const chat = chatAtWork();
+    const initial = snapshotFor({
+      entries: chat.entries.slice(0, 6),
+      run: null,
+      threadId: conversationId,
+    });
+    const host = fakeHost({ ...initial, connection: "connecting" });
+    await mount(host, conversationId, { messageId: chat.noteA.id });
+    expect(host.loadTranscriptAround).not.toHaveBeenCalled();
+    await act(async () => host.move(initial));
+    expect(host.loadTranscriptAround).toHaveBeenCalledWith(conversationId, chat.noteA.id);
+  });
+});
+
 describe("a link into Chat", () => {
   it("opens the Activity of the reply whose steps hold the linked message, at that reply", async () => {
     const chat = chatAtWork();

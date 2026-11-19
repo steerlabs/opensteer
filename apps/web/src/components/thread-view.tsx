@@ -943,8 +943,9 @@ function ThreadView({
   const [anchoredMessageId, releaseAnchor] = useAnchoredMessageId();
   const [linkSearch, setLinkSearch] = useSearchParams();
   const anchored = useRef<string | null>(null);
+  // The jump reads history, which only a synchronized detail can do: the anchor waits for it.
   useEffect(() => {
-    if (!anchoredMessageId || anchored.current === anchoredMessageId) return;
+    if (!anchoredMessageId || !detailCurrent || anchored.current === anchoredMessageId) return;
     anchored.current = anchoredMessageId;
     // A Run's link names the message that started it; its Activity opens once that is loaded.
     const runId = linkSearch.get("runId");
@@ -954,7 +955,7 @@ function ThreadView({
         if (found && runId && conversational) openActivity({ kind: "run", runId }, null);
       })
       .catch(reportActionError);
-  }, [anchoredMessageId]);
+  }, [anchoredMessageId, detailCurrent]);
 
   const releaseLinkParam = (name: string) =>
     setLinkSearch(
