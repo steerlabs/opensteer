@@ -33,7 +33,7 @@ const snapshot = {
   attention: [],
   attentionHasMore: false,
   activeTaskIds: [],
-  activeHasMore: false,
+  activeNextBefore: null,
   recentTaskIds: [],
   nextBefore: null,
   taskCounts: { active: 0, open: 0 },

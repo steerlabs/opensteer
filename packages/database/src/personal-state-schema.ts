@@ -540,7 +540,8 @@ const currentStateIndexes = `
   create index thread_inputs_current_channel_binding on thread_inputs((authority_source->>'bindingId'),message_id)
     where state in ('pending','unknown') and authority_source->>'kind'='channel-ingress';
   create index threads_current_recent on threads(asked_at desc,id desc)
-    where listed and removed_at is null and done_at is null and status <> 'archived';
+    where listed and removed_at is null and done_at is null
+      and status not in ('archived','running','waiting');
   create index threads_current_active on threads(asked_at desc,id desc)
     where listed and removed_at is null and done_at is null and status in ('running','waiting');
   create index threads_current_done on threads(done_at desc,id desc)

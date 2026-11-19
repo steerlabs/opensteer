@@ -26,6 +26,15 @@ type Tx = PersonalMutationTransaction;
 type SyncState = Awaited<ReturnType<typeof authorizedSyncState>>;
 type Task = Awaited<ReturnType<ReturnType<typeof currentTasks>["executeTakeFirstOrThrow"]>>;
 
+function encodeTaskBoundary(
+  boundary: { readonly at: string; readonly id: ThreadId } | null,
+  window: "active" | "recent",
+) {
+  return boundary
+    ? Buffer.from(JSON.stringify({ ...boundary, window })).toString("base64url")
+    : null;
+}
+
 export function taskView(task: Task) {
   return {
     id: task.id,
@@ -36,6 +45,7 @@ export function taskView(task: Task) {
     purpose: task.purpose,
     askedAt: task.askedAt.toISOString(),
     doneAt: task.doneAt?.toISOString() ?? null,
+    doneReason: task.doneReason,
     pendingRequestCount: task.pendingRequestCount,
     lastReplyPreview: task.lastReplyPreview,
     failurePreview: task.failurePreview,
@@ -79,13 +89,9 @@ export async function buildPersonalShellSnapshot(
     tasks: window.tasks.map(taskView),
     recentTaskIds: window.recent,
     activeTaskIds: window.active,
-    activeHasMore: window.activeHasMore,
+    activeNextBefore: encodeTaskBoundary(window.activeNextBefore, "active"),
     taskCounts: window.taskCounts,
-    nextBefore: window.recentNextBefore
-      ? Buffer.from(JSON.stringify({ ...window.recentNextBefore, window: "recent" })).toString(
-          "base64url",
-        )
-      : null,
+    nextBefore: encodeTaskBoundary(window.recentNextBefore, "recent"),
     visits: window.visits.map((visit) => ({
       ...visit,
       lastVisitedAt: visit.lastVisitedAt.toISOString(),

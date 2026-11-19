@@ -7,6 +7,7 @@ import { expect } from "vitest";
 import { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
 import { readTranscriptPage } from "./personal-sync-store.js";
 import { readPersonalTaskPage } from "./personal-task-store.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import {
   describeStore,
@@ -260,11 +261,18 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", other.thread.id)
       .execute();
-    const page = () =>
-      readPersonalTaskPage(database, {
-        viewerId: f.userId,
-        window: "recent",
-      });
+    const page = async () => {
+      const [active, settled] = await Promise.all(
+        (["active", "recent"] as const).map((window) =>
+          readPersonalTaskPage(database, { viewerId: f.userId, window }),
+        ),
+      );
+      return {
+        tasks: [...active!.tasks, ...settled!.tasks].sort(
+          (left, right) => right.askedAt.getTime() - left.askedAt.getTime(),
+        ),
+      };
+    };
     expect((await page()).tasks.map(({ id }) => id)).toEqual([other.thread.id, f.thread.id]);
     const steer = await store.enqueueThreadInput({
       content: [
@@ -436,6 +444,58 @@ describeStore("Deployment snapshot history", (it) => {
     });
     expect((await page()).tasks[0]!.id).toBe(other.thread.id);
   });
+  it("lists active tasks beside the settled window and counts Done with its quiet reason", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("settled-window");
+    const create = async (key: string) =>
+      (
+        await store.createThread({
+          createdBy: f.userId,
+          environmentId: f.environmentId,
+          harnessInstanceId: f.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          title: key,
+        })
+      ).thread.id;
+    const settled = await create("settled-open");
+    const done = [await create("done-quiet"), await create("done-person")];
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date(), doneReason: "quiet" })
+      .where("id", "=", done[0]!)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date() })
+      .where("id", "=", done[1]!)
+      .execute();
+    const shell = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (shell.kind !== "snapshot") throw new Error("Expected a shell cut");
+    expect(shell.snapshot.activeTaskIds).toEqual([f.thread.id]);
+    expect(shell.snapshot.recentTaskIds).toEqual([settled]);
+    expect(shell.snapshot.activeNextBefore).toBeNull();
+    const page = await readPersonalTaskPage(database, {
+      viewerId: f.userId,
+      window: "done",
+      limit: 1,
+    });
+    expect(page).toMatchObject({ hasMore: true, totalItems: 2 });
+    expect(page.tasks).toHaveLength(1);
+    await commitPersonalMutation(database, (tx) => publishThreadSummary(tx, done[0]!));
+    const pushed = await database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("scopeKey", "=", "shell")
+      .where("entityKind", "=", "task")
+      .where("entityId", "=", done[0]!)
+      .orderBy("sequence", "desc")
+      .executeTakeFirstOrThrow();
+    expect(pushed.payload).toMatchObject({ doneReason: "quiet" });
+  });
+
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({
     storeFixture,
   }) => {

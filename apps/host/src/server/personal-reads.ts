@@ -427,7 +427,7 @@ export function createPersonalReads(
     },
     "tasks.page": async (input, context) => {
       const viewerId = requireSession(context).user.id;
-      const window = input.done ? "done" : "recent";
+      const window = input.done ? "done" : input.active ? "active" : "recent";
       const result = await withPersonalSyncRead(database, async (tx) => {
         const page = await readPersonalTaskPage(tx, {
           viewerId,
@@ -467,7 +467,7 @@ export function createPersonalReads(
           window: {
             hasMore,
             itemCount: tasks.length,
-            totalItems: tasks.length,
+            totalItems: page.totalItems,
             byteCount,
             nextBefore:
               hasMore && last ? Buffer.from(JSON.stringify(last)).toString("base64url") : null,

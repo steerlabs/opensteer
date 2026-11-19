@@ -10,6 +10,7 @@ import {
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
+  ThreadDoneReasonSchema,
   ThreadViewSchema,
   UserIdSchema,
 } from "@opensteer/core";
@@ -165,6 +166,8 @@ const task = z.object({
   purpose: TaskPurposeSchema,
   askedAt: z.iso.datetime(),
   doneAt: z.iso.datetime().nullable(),
+  /** `quiet` when the task moved to Done by itself rather than by a person or its agent. */
+  doneReason: ThreadDoneReasonSchema.nullable(),
   pendingRequestCount: z.int().nonnegative(),
   lastReplyPreview: z.string().max(1120).nullable(),
   failurePreview: z.string().max(1120).nullable(),
@@ -265,10 +268,10 @@ export const PersonalShellSnapshotSchema = z.object({
       can: PersonalCapabilitiesViewSchema,
     })
     .optional(),
-  /** Every running and waiting task, newest first, unless `activeHasMore`. */
+  /** Running and waiting tasks, newest first; `activeNextBefore` pages any rest (`tasks.page` active). */
   activeTaskIds: z.array(ThreadIdSchema).max(200),
-  activeHasMore: z.boolean(),
-  /** The newest open tasks; `nextBefore` pages the rest with `tasks.page`. */
+  activeNextBefore: z.string().max(4096).nullable(),
+  /** The newest settled open tasks; `nextBefore` pages the rest with `tasks.page`. */
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
