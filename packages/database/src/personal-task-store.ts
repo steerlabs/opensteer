@@ -126,16 +126,29 @@ export async function readTaskPageThreads(
   const rows = await tx
     .selectFrom("threads")
     .selectAll("threads")
-    .select([
-      threadContinuationIdentitySelection,
-      threadPendingRequestsSelection,
-      threadProviderSessionSelection,
-      threadVisitSelection,
-    ])
+    .select(taskPageThreadSelections())
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
     .where("threads.id", "in", ids)
     .execute();
+  return taskPageThreadsFromRows(tx, rows);
+}
+
+/** The derived columns a task row needs besides its own, selectable or returnable. */
+// A function: this module and thread-status import each other, so a constant can be undefined.
+export function taskPageThreadSelections() {
+  return [
+    threadContinuationIdentitySelection,
+    threadPendingRequestsSelection,
+    threadProviderSessionSelection,
+    threadVisitSelection,
+  ] as const;
+}
+
+export async function taskPageThreadsFromRows(
+  tx: PersonalMutationTransaction,
+  rows: Parameters<typeof threadsFromRows>[0],
+) {
   const returnHints = await compactionReturnHints(
     tx,
     rows.filter((row) => row.providerSessionId !== null).map((row) => row.id),

@@ -278,14 +278,18 @@ export function updateAttentionLinkContribution(
   }
 }
 
+export const unreadTaskSql = sql<boolean>`(select listed and purpose='task' and status<>'archived'
+    and removed_at is null and latest_run_completed_at is not null
+    and (last_visited_at is null or latest_run_completed_at>last_visited_at)
+  from threads t left join thread_visits v on v.thread_id=t.id and v.user_id=t.created_by
+  where t.id=threads.id)`;
+
 export async function unreadTaskContribution(tx: Tx, threadId: ThreadId) {
-  const unread = (
-    await sql<{ unread: boolean }>`
-    select listed and purpose='task' and status<>'archived' and removed_at is null and latest_run_completed_at is not null
-      and (last_visited_at is null or latest_run_completed_at>last_visited_at) as unread
-    from threads t left join thread_visits v on v.thread_id=t.id and v.user_id=t.created_by where t.id=${threadId}
-  `.execute(tx)
-  ).rows[0];
+  const unread = await tx
+    .selectFrom("threads")
+    .select(unreadTaskSql.as("unread"))
+    .where("id", "=", threadId)
+    .executeTakeFirst();
   return Number(unread?.unread ?? false);
 }
 
@@ -294,7 +298,9 @@ export async function refreshLatestRunCompletion(
   mutation: PersonalMutation,
   threadId: ThreadId,
   before: number,
-) {
+  /** The caller changed nothing else unread depends on, so an unchanged completion keeps it. */
+  onlyCompletion = false,
+): Promise<{ readonly latestRunCompletedAt: Date | null } | undefined> {
   const completion = sql<Date | null>`(select case when status in ('completed','interrupted','failed') then completed_at end
       from runs where thread_id=${threadId} and maintenance is null order by run_ordinal desc limit 1)`;
   const changed = await tx
@@ -302,10 +308,13 @@ export async function refreshLatestRunCompletion(
     .set({ latestRunCompletedAt: completion, revision: mutation.sequence })
     .where("id", "=", threadId)
     .where(sql<boolean>`latest_run_completed_at is distinct from ${completion}`)
+    .returning("latestRunCompletedAt")
     .executeTakeFirst();
+  if (!changed && onlyCompletion) return undefined;
   const delta = (await unreadTaskContribution(tx, threadId)) - before;
   if (delta) mutation.count("unreadTaskCount", delta);
-  if (delta || changed.numUpdatedRows > 0n) await publishThreadSummary(tx, threadId);
+  if (delta || changed) await publishThreadSummary(tx, threadId);
+  return changed;
 }
 
 export async function requireFreshPersonalAttention(tx: Tx) {
