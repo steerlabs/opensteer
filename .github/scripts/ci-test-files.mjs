@@ -60,6 +60,13 @@ export const optInIntegrationBenchmarks = [
   "tests/team-mobile-network.integration.test.ts",
   "tests/team-performance.integration.test.ts",
 ];
+// These write and verify a package of the most files one may hold, over 10,000 real files
+// each. They need the integration lane's time, not its database.
+export const fileBoundIntegrationTests = [
+  "apps/host/src/local-servers/folder-plugin-package.integration.test.ts",
+  "apps/runner/src/skills/plugin-cache.integration.test.ts",
+  "packages/agent-plugins/src/loader.integration.test.ts",
+];
 // Real Windows behaviour (the supervisor's Job, cmd, junctions, a non-administrator token).
 // Only the native-windows lane runs them, through vitest.windows.config.ts.
 export const windowsTestInclude = [

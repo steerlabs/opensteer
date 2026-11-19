@@ -117,3 +117,61 @@ test("a same-named local provider cannot hide either plugin or an unrelated tool
     if (app.id !== "app_server_fixture") expect(localProviderReads).not.toHaveBeenCalled();
   }
 });
+
+test("a listing kept while a plugin was Off marks its writes once the plugin is Read-only", async () => {
+  const app = AppId.make("app_cloud");
+  const tool = (name: string, readOnly: boolean) =>
+    Schema.decodeUnknownSync(Tool)({
+      app,
+      version: "dpl_fixture",
+      name,
+      description: name,
+      inputSchema: { type: "object" },
+      readOnly,
+    });
+  const engine = {
+    tools: {
+      list: () =>
+        Effect.succeed({
+          version: VersionId.make("dpl_fixture"),
+          accounts: { app: {}, user: {} },
+          items: [tool("read", true), tool("write", false)],
+          routers: [],
+        }),
+    },
+  } as unknown as PluginEngine;
+  const accounts = {
+    accounts: () => Effect.succeed({ app: {}, user: {} }),
+  } as unknown as ReturnType<typeof engineAccounts>;
+  let access: "off" | "read-only" = "off";
+  const backend = compositeBackend(
+    engine,
+    accounts,
+    OwnerId.make("owner"),
+    { caller: "fixture", mode: "automatic" },
+    {
+      authorize: () => Effect.sync(() => ({ allowed: true, grants: { [app]: access } })),
+      providers: () => Effect.succeed([]),
+      updating: () => undefined,
+      call: () => Effect.succeed({ kind: "value", value: null }),
+    },
+  );
+  const run = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.runPromise(effect.pipe(Effect.provideService(CurrentMcpExecution, "fixture")));
+  const { listing } = await run(backend.searchableTools({ app }));
+  const search = () =>
+    run(
+      backend.searchTools({
+        query: "",
+        offset: 0,
+        limit: 10,
+        targets: [{ app, listing, accounts: { app: {}, user: {} }, labels: [], scopes: [] }],
+      }),
+    );
+  expect((await search()).items.map(({ tool }) => tool.blocked)).toEqual([undefined, undefined]);
+  access = "read-only";
+  const blocked = (await search()).items.map(({ tool }) => [tool.name, tool.blocked]);
+  expect(blocked[0]).toEqual(["read", undefined]);
+  expect(blocked[1]?.[0]).toBe("write");
+  expect(blocked[1]?.[1]).toBeDefined();
+});

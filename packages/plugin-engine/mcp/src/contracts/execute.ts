@@ -255,6 +255,16 @@ export const ExecuteInput = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(defaultMcpRuntimeLimits.maxCodeChars)),
 });
 /**
+ * Why the caller cannot use an app, or one tool of it, now: a code, what keeps it and the next step,
+ * as the product decides them (see `McpApp` and `McpTool`).
+ */
+export const McpBlocked = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  next: Schema.String,
+});
+export type McpBlocked = typeof McpBlocked.Type;
+/**
  * Incomplete or failing apps stay visible as explicit discovery diagnostics. Absent fields are
  * omitted: execution results are MCP JSON, which has no undefined.
  */
@@ -264,6 +274,8 @@ export const UnavailableApp = Schema.Struct({
   reason: Schema.String,
   /** Only this router's tools are missing; the rest of the app loaded. */
   router: Schema.optionalKey(Schema.String),
+  /** What keeps the caller from the whole app now, as its namespace says. */
+  blocked: Schema.optionalKey(McpBlocked),
 });
 /**
  * One admitted tool call in call order. `failure` calls threw, or returned a result that says the
@@ -419,6 +431,8 @@ export const SearchNamespace = Schema.Struct({
   accounts: Schema.optionalKey(Schema.String),
   /** The title of the router that groups these tools. */
   router: Schema.optionalKey(Schema.String),
+  /** What keeps every tool of this app from the caller now, said once for all of them. */
+  blocked: Schema.optionalKey(McpBlocked),
 });
 export type SearchNamespace = typeof SearchNamespace.Type;
 /** One tool, short enough that a page of them fits in an execute result. */
@@ -427,10 +441,15 @@ export const SearchItem = Schema.Struct({
   path: Schema.String,
   /** The first line of the tool's description. */
   description: Schema.String,
-  /** The input type on one line, without documentation. */
-  input: Schema.String,
+  /**
+   * The input type on one line, without documentation. Absent for a tool the caller is kept from
+   * (see `blocked` here and on its namespace) until it may call the tool.
+   */
+  input: Schema.optionalKey(Schema.String),
   /** The input type was cut; tools.search.describe returns it whole. */
   inputTruncated: Schema.optionalKey(Schema.Literal(true)),
+  /** What keeps this tool alone from the caller now; what keeps its app is on the namespace. */
+  blocked: Schema.optionalKey(McpBlocked),
 });
 /**
  * One page of ranked matches. `remaining` counts the matches after this page; `next` is the input
@@ -456,11 +475,17 @@ export const DescribeInput = Schema.Struct({
 });
 /**
  * Full detail for each path found: the whole description and the TypeScript signature with its
- * input and output types. A path that names no tool is in `missing`, with the closest paths.
+ * input and output types; a tool the caller is kept from has no signature until it may call it.
+ * A path that names no tool is in `missing`, with the closest paths.
  */
 export const DescribeResult = Schema.Struct({
   items: Schema.Array(
-    Schema.Struct({ path: Schema.String, description: Schema.String, signature: Schema.String }),
+    Schema.Struct({
+      path: Schema.String,
+      description: Schema.String,
+      signature: Schema.optionalKey(Schema.String),
+      blocked: Schema.optionalKey(McpBlocked),
+    }),
   ),
   namespaces: Schema.Array(SearchNamespace),
   missing: Schema.Array(

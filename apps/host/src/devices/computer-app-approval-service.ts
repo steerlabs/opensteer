@@ -45,6 +45,7 @@ import type { ComputerAppDefinition } from "@opensteer/integration-core/computer
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
 import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import {
   ComputerUseInstalledAppsParamsSchema,
   PhoneDisplayInstalledAppsParamsSchema,
@@ -176,6 +177,11 @@ export interface ComputerAppApprovalServiceOptions {
     ownerUserId: UserId,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly localMcpSecrets: Pick<LocalMcpSecrets, "saved" | "update">;
+  /** What allowing a server's launch covers, and what changed since its owner last allowed it. */
+  readonly localServerReview: (
+    serverId: IntegrationServerId,
+    launch: LocalMcpLaunch,
+  ) => Promise<string>;
   readonly onConnectionsChanged: () => void;
   readonly onInputAccessWithdrawn?: (deviceId: DeviceId) => void | Promise<void>;
   /**
@@ -209,6 +215,7 @@ export class ComputerAppApprovalService {
   readonly #listCallableTools: ComputerAppApprovalServiceOptions["listCallableTools"];
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
   readonly #localMcpSecrets: ComputerAppApprovalServiceOptions["localMcpSecrets"];
+  readonly #localServerReview: ComputerAppApprovalServiceOptions["localServerReview"];
   readonly #onConnectionsChanged: () => void;
   readonly #onInputAccessWithdrawn: (deviceId: DeviceId) => void | Promise<void>;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
@@ -223,6 +230,7 @@ export class ComputerAppApprovalService {
     this.#listCallableTools = options.listCallableTools;
     this.#listConnections = options.listConnections;
     this.#localMcpSecrets = options.localMcpSecrets;
+    this.#localServerReview = options.localServerReview;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onInputAccessWithdrawn = options.onInputAccessWithdrawn ?? (() => undefined);
     this.#onLocalServerApproved = options.onLocalServerApproved;
@@ -300,8 +308,16 @@ export class ComputerAppApprovalService {
     const named = { request, app, ...(name === undefined ? {} : { name }) };
     if (request.kind !== "server" || !request.server) return named;
     const { launch, serverId } = request.server;
+    // The review says why it is asked: for which task, what allowing covers, and what changed.
+    const review = await this.#localServerReview(serverId, launch);
     return {
       ...named,
+      request: {
+        ...request,
+        reason: [request.threadTitle ? `For “${request.threadTitle}”.` : null, review]
+          .filter(Boolean)
+          .join(" "),
+      },
       savedSecrets: await this.#localMcpSecrets.saved(
         serverId,
         launch,
@@ -345,6 +361,9 @@ export class ComputerAppApprovalService {
       });
     if (request.kind === "server") {
       const server = request.server;
+      // What is allowed is the package the review showed; one altered since is refused here.
+      if (input.decision === "allow" && server)
+        await this.#localServerReview(server.serverId, server.launch);
       // Checked before admission; the values are sealed inside the approval.
       const secrets =
         input.decision === "allow" && server

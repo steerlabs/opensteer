@@ -278,10 +278,15 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
         next: expect.stringContaining("app_access_request"),
       },
     });
+    // The write it may not make is named without its input type or signature.
+    expect(
+      (discovery.items as { path: string }[]).find((item) => item.path === createEvent),
+    ).not.toHaveProperty("input");
     const blockedDescription = await gateway.call("plugin_describe", { paths: [createEvent] });
     expect((blockedDescription.items as { blocked?: unknown }[])[0]).toMatchObject({
       blocked: { code: "access_denied", next: expect.stringContaining('dataApp "calendar"') },
     });
+    expect((blockedDescription.items as object[])[0]).not.toHaveProperty("signature");
     let sent = helper.invocations.length;
     const readOnly = await pluginCall(gateway, createEvent, {
       start: "2026-10-01T09:00",
@@ -297,6 +302,50 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
           next: `To create_event, call app_access_request with dataApp "calendar", computerId "${computer.runnerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
         },
       },
+    });
+    expect(helper.invocations).toHaveLength(sent);
+    // A program finds the same marker in its own search and describe, and its refused call
+    // fails with the Host's code.
+    const calendarNamespace = localNamespace(
+      "calendar-studio-mac",
+      `app_device_${calendar.connection.id}`,
+    );
+    const inProgram = await gateway.call("plugin_execute", {
+      code: `const found = await tools.search({ namespace: ${JSON.stringify(calendarNamespace)} });
+const described = await tools.search.describe({ paths: [${JSON.stringify(createEvent)}] });
+let refused = null;
+try { await ${createEvent}({ start: "2026-10-01T09:00", end: "2026-10-01T10:00", title: "Dentist" }); }
+catch (error) { refused = JSON.parse(error.message); }
+return { found, described, refused };`,
+    });
+    const program = (
+      inProgram as {
+        result: {
+          execution: {
+            value: {
+              found: { items: { path: string; blocked?: unknown }[] };
+              described: { items: { path: string; blocked?: unknown }[] };
+              refused: unknown;
+            };
+          };
+        };
+      }
+    ).result.execution.value;
+    const blockedWrite = {
+      code: "access_denied",
+      message: "Calendar on Studio Mac allows reading only.",
+    };
+    expect(program.found.items.find(({ path }) => path === createEvent)).toMatchObject({
+      blocked: blockedWrite,
+    });
+    expect(program.found.items.find(({ path }) => path === listEvents)).not.toHaveProperty(
+      "blocked",
+    );
+    expect(program.described.items).toMatchObject([{ path: createEvent, blocked: blockedWrite }]);
+    expect(program.refused).toMatchObject({
+      code: "access_denied",
+      message: "Calendar on Studio Mac allows reading only.",
+      recovery: { instructions: expect.stringContaining("app_access_request") },
     });
     expect(helper.invocations).toHaveLength(sent);
 
@@ -441,29 +490,36 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     });
     expect(helper.invocations).toHaveLength(sent + 1);
 
-    // Offline: the provider says so instead of listing tools, and nothing is rerouted.
+    // Offline: its tools stay listed as they are, the call says it is offline, and nothing is
+    // rerouted.
     await computer.close();
+    // The person's Plugins screen says it is offline; an agent's listing does not.
     await waitForCondition(async () => {
-      const found = await gateway.call("plugin_search", { query: "list_events" });
-      return !JSON.stringify(found.items).includes(
-        localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+      const owned = await testRpcData(
+        host.origin,
+        "plugins.installed.list",
+        {},
+        { headers: host.ownerHeaders },
       );
+      return JSON.stringify(owned.local).includes("Studio Mac is offline");
     }, 30_000);
     const offlineSearch = await gateway.call("plugin_search", {
       namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
     });
-    expect(JSON.stringify(offlineSearch)).toContain("Studio Mac is offline");
-    expect(offlineSearch.unavailableApps).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          blocked: {
-            code: "unavailable",
-            message: expect.stringContaining("Studio Mac is offline"),
-            next: "Continue without it and tell the person what the message says.",
-          },
-        }),
-      ]),
-    );
+    expect(offlineSearch).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
+      unavailableApps: [],
+    });
+    expect(JSON.stringify(offlineSearch)).not.toContain("offline");
+    // Its writes keep their own read-only marker; nothing marks the reads or the namespace.
+    expect(
+      (offlineSearch.items as { path: string; blocked?: unknown }[]).find(
+        ({ path }) => path === listEvents,
+      ),
+    ).not.toHaveProperty("blocked");
+    expect(offlineSearch.namespaces).toEqual([
+      expect.not.objectContaining({ blocked: expect.anything() }),
+    ]);
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",

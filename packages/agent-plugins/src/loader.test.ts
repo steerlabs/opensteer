@@ -1,47 +1,14 @@
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { fixture } from "./loader.test-support.js";
 import {
-  snapshotLocalServerPackage,
-  type LocalServerPackageRegistration,
+  pluginPackageManifest,
+  PluginPackageMismatchError,
   pluginSnapshotDigest,
   readPluginSnapshot,
+  readVerifiedPluginSnapshot,
 } from "./loader.js";
-
-async function fixture(
-  work: (
-    root: string,
-    load: (
-      registration: LocalServerPackageRegistration,
-    ) => ReturnType<typeof snapshotLocalServerPackage>,
-  ) => Promise<void>,
-) {
-  const base = await mkdtemp(join(tmpdir(), "opensteer-local-package-"));
-  const root = join(base, "source");
-  await mkdir(root);
-  try {
-    await work(root, (registration) =>
-      snapshotLocalServerPackage({
-        pluginId: "fixture",
-        directory: root,
-        dataDirectory: join(base, "data"),
-        registration,
-      }),
-    );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-}
 
 test("pins typed registration and package bytes in an immutable snapshot without reading retired manifests", async () =>
   fixture(async (root, load) => {
@@ -157,4 +124,55 @@ test("validates skills and keeps approved text immutable", async () =>
     expect(await readFile(join(plugin.root, "skills/summarize-mail/SKILL.md"), "utf8")).toContain(
       "Original instructions",
     );
+  }));
+
+test("names a file tree by a manifest no other tree shares, whatever order it was read in", () => {
+  const file = (path: string, bytes: string) => ({ path, mode: 0o644, bytes: Buffer.from(bytes) });
+  // Under a digest of path, mode and bytes run together, these two trees hashed the same input.
+  const one = [file("a", "xb\u0000420\u0000y")];
+  const two = [file("a", "x"), file("b", "y")];
+  const concatenated = (files: typeof one) =>
+    Buffer.concat(
+      files.flatMap(({ path, mode, bytes }) => [Buffer.from(`${path}\0${mode}\0`), bytes]),
+    );
+  expect(concatenated(one)).toEqual(concatenated(two));
+  expect(pluginSnapshotDigest(one)).not.toBe(pluginSnapshotDigest(two));
+  const tree = [file("bin/server.txt", "server"), file("bin.txt", "text"), file("Z", "upper")];
+  expect(pluginSnapshotDigest(tree)).toBe(pluginSnapshotDigest([...tree].reverse()));
+  expect(JSON.parse(pluginPackageManifest(tree))).toEqual({
+    format: "opensteer.plugin-package/2",
+    files: [
+      { path: "Z", mode: 0o644, size: 5, sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      { path: "bin.txt", mode: 0o644, size: 4, sha256: expect.any(String) },
+      { path: "bin/server.txt", mode: 0o644, size: 6, sha256: expect.any(String) },
+    ],
+  });
+  expect(() => pluginSnapshotDigest([file("a", "1"), file("a", "2")])).toThrow("twice");
+  expect(() => pluginSnapshotDigest([file("../a", "1")])).toThrow("relative file path");
+});
+
+test("a folder whose paths sort differently by name and by path registers and reads back as its digest", async () =>
+  fixture(async (root, load) => {
+    await mkdir(join(root, "bin"));
+    await writeFile(join(root, "bin/server.txt"), "server");
+    await writeFile(join(root, "bin.txt"), "text");
+    const plugin = await load({ name: "example", launch: { command: "node" } });
+    const digest = plugin.root.split("/").at(-1)!;
+    expect(
+      (await readVerifiedPluginSnapshot(plugin.root, digest)).map(({ path }) => path).sort(),
+    ).toEqual(["bin.txt", "bin/server.txt", "local-server-registration.json"]);
+  }));
+
+test("a stored snapshot altered after registration is refused, and written again on the next one", async () =>
+  fixture(async (root, load) => {
+    await writeFile(join(root, "server.js"), "approved");
+    const plugin = await load({ name: "example", launch: { command: "node" } });
+    const digest = plugin.root.split("/").at(-1)!;
+    await writeFile(join(plugin.root, "server.js"), "changed");
+    await expect(readVerifiedPluginSnapshot(plugin.root, digest)).rejects.toBeInstanceOf(
+      PluginPackageMismatchError,
+    );
+    const again = await load({ name: "example", launch: { command: "node" } });
+    expect(again.root).toBe(plugin.root);
+    expect(await readFile(join(plugin.root, "server.js"), "utf8")).toBe("approved");
   }));

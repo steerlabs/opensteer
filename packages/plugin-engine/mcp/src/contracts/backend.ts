@@ -24,7 +24,10 @@ import type {
   EventSubscriptionKey,
   EventsUnavailable,
   SubscribeEvent,
+  Tool,
+  ToolSearchItem,
 } from "@opensteer/plugin-engine-sdk/core";
+import type { McpBlocked } from "./execute.ts";
 import { Context, type Effect } from "effect";
 
 /** A subscription key without its principal: the product binds that to the caller. */
@@ -45,6 +48,25 @@ export type McpEventError =
   | EventSubscriptionInvalid
   | EventCallbackFailed
   | EventsUnavailable;
+
+/**
+ * An app as discovery lists it to one caller, with what keeps the caller from all of its tools now.
+ * Discovery, for a search or describe and inside a program alike, says it once on the app's
+ * namespace. It never authorizes or refuses anything: `callTool` checks every call on its own.
+ */
+export type McpApp = Pick<App, "id" | "name" | "slug" | "activeVersion"> & {
+  readonly blocked?: McpBlocked;
+};
+/** A tool as discovery lists it to one caller, with what keeps the caller from it alone now. */
+export type McpTool = Tool & { readonly blocked?: McpBlocked };
+/** A page of tools as discovery lists them to one caller. */
+export type McpToolPage = Omit<ToolPage, "items"> & { readonly items: ReadonlyArray<McpTool> };
+/** A ranked tool as discovery lists it to one caller. */
+export type McpSearchItem = Omit<ToolSearchItem, "tool"> & { readonly tool: McpTool };
+/** A page of ranked tools as discovery lists them to one caller. */
+export type McpSearchPage = Omit<ToolSearchPage, "items"> & {
+  readonly items: ReadonlyArray<McpSearchItem>;
+};
 
 /**
  * The catalog and calls available to one authenticated caller. Products own
@@ -76,7 +98,7 @@ export interface McpBackend<E extends Error> {
       /** Restrict the inventory to apps whose tools this caller may reach. */
       readonly toolsOnly?: boolean;
     },
-  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeVersion">>, E>;
+  ) => Effect.Effect<ReadonlyArray<McpApp>, E>;
   /**
    * The caller's linked accounts for the app, by user requirement; skills use the same authority.
    * App requirements are not listed: operations name `{ app: {}, user }` and the backend fills the
@@ -87,7 +109,7 @@ export interface McpBackend<E extends Error> {
   readonly listTools: (
     input: Parameters<PluginEngine["tools"]["list"]>[0],
     options?: ToolListOptions,
-  ) => Effect.Effect<ToolPage, E>;
+  ) => Effect.Effect<McpToolPage, E>;
   /**
    * Authorize the app and its selected accounts as for `listTools`, then keep the target's current
    * listing as search rows. Only failed routers the caller may discover are returned.
@@ -103,7 +125,7 @@ export interface McpBackend<E extends Error> {
    */
   readonly searchTools: (
     input: Parameters<PluginEngine["tools"]["search"]>[0],
-  ) => Effect.Effect<ToolSearchPage, E>;
+  ) => Effect.Effect<McpSearchPage, E>;
   /** Check execution permission again; prior discovery does not authorize this call. */
   readonly callTool: (
     input: Parameters<PluginEngine["tools"]["call"]>[0],

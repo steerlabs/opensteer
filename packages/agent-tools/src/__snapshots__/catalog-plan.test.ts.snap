@@ -2032,7 +2032,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "List installed plugins, newest versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace, with tool counts. Plugins page: pass cursor to continue; null ends it, and local tools come with the first page. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
+    "description": "List installed plugins, newest versions, connected account links, agent access and status, and local tools (device data apps and local servers) sharing the tools.<slug> namespace, with tool counts; a server awaiting launch approval appears only here. One list: pass cursor to continue; null ends it. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

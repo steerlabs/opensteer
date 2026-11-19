@@ -58,29 +58,38 @@ export class PluginToolHandlers {
     this.options = options;
   }
   /**
-   * What an agent sees of its plugins, small enough for its context with many installed: local
-   * tools counted (plugin_search finds their tools), plugins a page at a time with their newest
-   * versions, and one plugin with every kept version when it asks by id.
+   * What an agent sees of its plugins, small enough for its context with many installed: plugins
+   * and local tools (device data apps and local servers, counted; plugin_search finds their tools)
+   * in one list a page at a time, plugins with their newest versions, and one plugin with every
+   * kept version when it asks by id. A local server waiting for its first approved launch has no
+   * tools yet; this list is where it appears, blocked with why.
    */
   async list(c: ToolCall<"opensteer_plugin_list">) {
     const context = this.options.authority.admit(c.caller);
-    const first = !c.input.cursor && !c.input.pluginId;
     const settings = await this.options.settings.settings(c.caller.userId);
     const [plugins, local] = await Promise.all([
       this.options.service.list({}, context, c.signal),
-      first ? (this.options.localProviders?.providers(context) ?? []) : [],
+      c.input.pluginId ? [] : (this.options.localProviders?.providers(context) ?? []),
     ]);
     const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
+    const entries = [
+      ...plugins.map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
+      ...local
+        .filter(({ id }) => access(id) !== "off")
+        .map((provider) => ({ kind: "local" as const, id: provider.id })),
+    ];
     const page = c.input.pluginId
-      ? { items: plugins.filter(({ id }) => id === c.input.pluginId), cursor: null }
-      : keysetPage(plugins, (plugin) => `${plugin.slug}\u0000${plugin.id}`, {
-          scope: "agent-plugins",
+      ? { items: entries.filter(({ id }) => id === c.input.pluginId), cursor: null }
+      : // By id, which never changes: a device renamed between pages moves its slug, not its place.
+        keysetPage(entries, (entry) => entry.id, {
+          scope: "agent-plugins/id",
           cursor: c.input.cursor,
           max: 25,
         });
-    const installed = page.items.length
+    const pagePlugins = page.items.filter(({ kind }) => kind === "plugin");
+    const installed = pagePlugins.length
       ? await this.options.service.installed(
-          { plugins: page.items.map(({ id }) => id), versions: true },
+          { plugins: pagePlugins.map(({ id }) => id), versions: true },
           owner,
           c.signal,
         )
@@ -88,26 +97,24 @@ export class PluginToolHandlers {
     let versionCursor: string | null = null;
     return {
       // An agent sees one list: local tools are addressed as tools.<slug> like plugins.
-      local: local
-        .filter(({ id }) => access(id) !== "off")
-        .slice(0, 100)
-        .map((provider) => ({
-          id: provider.id,
-          name: provider.name,
-          slug: provider.slug,
-          access: access(provider.id) as "all" | "read-only",
-          status: provider.unavailable ? "unavailable" : "active",
-          ...(provider.unavailable
-            ? {
-                unavailable: provider.unavailable,
-                blocked: provider.blocked,
-              }
-            : {}),
-          toolCount: provider.tools.length,
-          readOnlyToolCount: provider.tools.filter(({ readOnly }) => readOnly === true).length,
-        })),
+      local: page.items.flatMap(({ kind, id }) => {
+        const provider = kind === "local" ? local.find((entry) => entry.id === id) : undefined;
+        if (!provider) return [];
+        return [
+          {
+            id: provider.id,
+            name: provider.name,
+            slug: provider.slug,
+            access: access(provider.id) as "all" | "read-only",
+            status: provider.blocked ? ("unavailable" as const) : ("active" as const),
+            ...(provider.blocked ? { blocked: provider.blocked } : {}),
+            toolCount: provider.tools.length,
+            readOnlyToolCount: provider.tools.filter(({ readOnly }) => readOnly === true).length,
+          },
+        ];
+      }),
       plugins: await Promise.all(
-        page.items
+        pagePlugins
           .flatMap(({ id }) => installed.find(({ plugin }) => plugin.id === id) ?? [])
           .map(async (detail) => {
             const { plugin } = detail;

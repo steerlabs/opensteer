@@ -1186,7 +1186,7 @@ export async function createHostRuntime(
         if (!pluginOAuth) throw new Error("Plugin sign-in is unavailable");
         return pluginOAuth.broker(operation, input);
       },
-      providers: async (caller) => (await localProviders?.providers(caller, true)) ?? [],
+      providers: async (caller) => (await localProviders?.providers(caller)) ?? [],
       providerCall: async (input, signal, elicit) => {
         if (!localProviders)
           throw new PluginServiceError("unavailable", "Local tools are starting");
@@ -1683,7 +1683,6 @@ export async function createHostRuntime(
       isRunnerConnected,
       onConnectionsChanged,
       onSettingsChanged,
-      personal: true,
       secretVault: integrationVault,
       store: integrationPlatformStore,
     });
@@ -1831,6 +1830,7 @@ export async function createHostRuntime(
       actorUserId: null,
       requestId: "startup:ensure-built-in-integrations",
     });
+    await localServers.upgradePackages();
     await localServers.requestLocalServerApprovals();
     for (const event of await store.recoverThreadWorkQueues()) publishDeploymentEvent(event);
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
