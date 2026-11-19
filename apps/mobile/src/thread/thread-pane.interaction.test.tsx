@@ -4259,8 +4259,6 @@ describe("a task", () => {
     expect(host.editor.cancel).not.toHaveBeenCalled();
   });
 
-
-
   it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
