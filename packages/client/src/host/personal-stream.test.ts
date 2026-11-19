@@ -835,9 +835,11 @@ test("keeps reading a catalog a screen still shows after a hand watch ends", asy
     const { kind, cursor } = JSON.parse(url.searchParams.get("input") ?? "{}");
     if (url.pathname !== "/v1/rpc/resources.detail.get" || kind !== "harness-catalog")
       return host.fetch(input, init);
-    if (!cursor) return reply("1", "first-model", "next");
+    if (!cursor) return reply(String(host.client.getSnapshot().revision), "first-model", "next");
     secondPageSignal ??= init?.signal;
-    return secondPage.promise.then(() => reply("1", "second-model", null));
+    return secondPage.promise.then(() =>
+      reply(String(host.client.getSnapshot().revision), "second-model", null),
+    );
   };
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
@@ -857,10 +859,11 @@ test("keeps reading a catalog a screen still shows after a hand watch ends", asy
     await vi.waitFor(
       () => {
         expect(secondPageSignal).toBeDefined();
-        expect(models()).toEqual(["first-model"]);
       },
       { timeout: 1000 },
     );
+    // Half an inventory never paints: the first page waits for the rest.
+    expect(models()).toBeUndefined();
     // The screen read `environments`, which keeps its catalog watched for this viewer.
     release();
     expect(secondPageSignal?.aborted).toBe(false);

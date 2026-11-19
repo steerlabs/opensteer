@@ -1,5 +1,6 @@
 import { utf8ByteLength } from "@opensteer/core";
 import {
+  personalResourceKinds,
   pluginChangeResources,
   type PersonalResourceKind,
   type PersonalResourceRevisions,
@@ -7,9 +8,12 @@ import {
 } from "@opensteer/protocol/resources";
 import type { z } from "zod";
 import type { PersonalResourcePort } from "./scoped-personal-stream.js";
+import { FencedReads, type FencedRead } from "./fenced-reads.js";
 
 type Detail = z.infer<typeof PersonalResourceDetailSchema>;
-type Page = { readonly ok: true; readonly data: Detail } | { readonly ok: false };
+type Page =
+  | { readonly ok: true; readonly data: Detail }
+  | { readonly ok: false; readonly error: { readonly message: string } };
 
 /** Kinds whose revision is the whole news: a consumer rereads its own view when it moves. */
 const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
@@ -37,8 +41,10 @@ export interface PersonalResourceReadOptions {
 /**
  * The Host pushes only `{kind: revision}`; this reads a kind's detail when a
  * surface watches it and the pushed revision differs from the one installed.
- * Revisions compare only for equality. One read per kind runs at a time, so an
- * older answer can never land after a newer one.
+ * Revisions compare only for equality. Reads are fenced (`FencedReads`): one per
+ * kind, a push while one flies supersedes it, all of a kind's pages install
+ * together and only while nothing newer arrived, and a failure retries with
+ * backoff while the kind is watched.
  */
 export class PersonalResourceReads implements PersonalResourcePort {
   readonly #options: PersonalResourceReadOptions;
@@ -46,10 +52,10 @@ export class PersonalResourceReads implements PersonalResourcePort {
   readonly #known = new Map<PersonalResourceKind, string>();
   readonly #installed = new Map<PersonalResourceKind, string>();
   readonly #retained = new Map<PersonalResourceKind, () => void>();
-  readonly #reads = new Map<
-    PersonalResourceKind,
-    { controller: AbortController; stale: boolean }
-  >();
+  /** The older revision a read last answered after a newer push, so it is not reread forever. */
+  readonly #behind = new Map<PersonalResourceKind, string>();
+  #viewer = 0;
+  readonly #reads = new FencedReads({ epoch: () => String(this.#viewer) });
 
   constructor(options: PersonalResourceReadOptions) {
     this.#options = options;
@@ -65,8 +71,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
     return () => {
       if (!listeners.delete(listener) || listeners.size) return;
       this.#listeners.delete(kind);
-      this.#reads.get(kind)?.controller.abort();
-      this.#reads.delete(kind);
+      this.#reads.stop(kind);
       this.#options.watchChanged();
     };
   }
@@ -92,9 +97,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
       if (signalKinds.has(kind)) this.#installed.set(kind, revision);
       else if (this.#installed.has(kind) && this.#installed.get(kind) !== revision)
         this.#options.behind?.(kind);
-      const read = this.#reads.get(kind);
-      if (read) read.stale = true;
-      else this.#read(kind);
+      // What flies is judged when it lands: older than this push, it installs nothing.
+      this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
   }
@@ -105,8 +109,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   abort() {
-    for (const { controller } of this.#reads.values()) controller.abort();
-    this.#reads.clear();
+    for (const kind of personalResourceKinds) this.#reads.stop(kind);
   }
 
   /** A kind whose data lives only with its listeners is read again by the next one. */
@@ -125,9 +128,11 @@ export class PersonalResourceReads implements PersonalResourcePort {
     const retained = [...this.#retained.values()];
     this.#retained.clear();
     for (const release of retained) release();
+    this.#viewer++;
     this.abort();
     this.#known.clear();
     this.#installed.clear();
+    this.#behind.clear();
   }
 
   #read(kind: PersonalResourceKind) {
@@ -138,45 +143,71 @@ export class PersonalResourceReads implements PersonalResourcePort {
     if (
       signalKinds.has(kind) ||
       (installed !== undefined && installed === known) ||
+      // One in flight is judged against the newest push when it lands.
+      this.#reads.busy(kind) ||
       !this.#listeners.has(kind) ||
-      this.#reads.has(kind) ||
       !this.#options.canRead()
     )
       return;
-    const controller = new AbortController();
-    const request = { controller, stale: false };
-    this.#reads.set(kind, request);
-    const current = () => !controller.signal.aborted && this.#reads.get(kind) === request;
-    const pages = async (): Promise<string | undefined> => {
-      let cursor: string | undefined;
-      let bytes = 0;
-      const cursors = new Set<string>();
-      do {
-        const page = await this.#options.read(kind, cursor, controller.signal);
-        if (!page.ok || !current() || page.data.data.kind !== kind) return;
-        const { next, revision } = page.data;
-        bytes += utf8ByteLength(JSON.stringify(page.data));
-        if (bytes > inventoryBytes || (next && cursors.has(next))) return;
-        this.#options.apply(page.data.data, cursor !== undefined, next !== null);
-        if (next === null) return revision;
-        cursors.add(next);
-        cursor = next;
-      } while (cursor);
-      return undefined;
-    };
-    void pages()
-      .catch(() => undefined)
-      .then((revision) => {
-        if (!current()) return;
-        this.#reads.delete(kind);
-        if (revision !== undefined) {
-          const first = !this.#installed.has(kind);
-          this.#installed.set(kind, revision);
-          if (first) this.#options.loaded?.(kind);
-          // Read after the push it answers, so it is at least as new as anything pushed before.
-          if (!request.stale) this.#known.set(kind, revision);
-        }
-        if (revision !== undefined || request.stale) this.#read(kind);
-      });
+    const observed = () => this.#listeners.has(kind) && this.#options.canRead();
+    void this.#reads
+      .request(kind, (read) => this.#job(kind, read), observed)
+      .catch(() => undefined);
   }
+
+  /** Every page of one kind, installed together and only while nothing newer has arrived. */
+  async #job(kind: PersonalResourceKind, read: FencedRead) {
+    const pages: Detail[] = [];
+    let cursor: string | undefined;
+    let bytes = 0;
+    const cursors = new Set<string>();
+    for (;;) {
+      const page = await this.#options.read(kind, cursor, read.signal);
+      if (!read.current()) return;
+      if (!page.ok) throw Object.assign(new Error(page.error.message), page.error);
+      if (page.data.data.kind !== kind) return;
+      bytes += utf8ByteLength(JSON.stringify(page.data));
+      if (bytes > inventoryBytes || (page.data.next && cursors.has(page.data.next))) return;
+      pages.push(page.data);
+      if (page.data.next === null) break;
+      cursors.add(page.data.next);
+      cursor = page.data.next;
+    }
+    if (!read.current()) return;
+    const { revision } = pages.at(-1)!;
+    const known = this.#known.get(kind);
+    // The Host pushed something newer while this read flew: it paints nothing and reads again,
+    // once; a second identical answer waits for the next push rather than spin.
+    if (known !== undefined && newerRevision(known, revision)) {
+      if (this.#behind.get(kind) !== revision) {
+        this.#behind.set(kind, revision);
+        this.#reads.changed(kind);
+      }
+      return;
+    }
+    this.#behind.delete(kind);
+    pages.forEach((page, index) =>
+      this.#options.apply(page.data, index > 0, index < pages.length - 1),
+    );
+    const first = !this.#installed.has(kind);
+    this.#installed.set(kind, revision);
+    // Installed with no push since it began, so it is at least as new as anything pushed before.
+    this.#known.set(kind, revision);
+    if (first) this.#options.loaded?.(kind);
+  }
+}
+
+/**
+ * Whether `a` is a later revision than `b`. Only revisions of one Host boot compare: the durable
+ * sequence, then the boot's runtime counter. Across boots any difference counts as newer, so the
+ * client reads again rather than keep what an older boot said.
+ */
+export function newerRevision(a: string, b: string): boolean {
+  if (a === b) return false;
+  const [durableA, bootA, countA] = a.split(".");
+  const [durableB, bootB, countB] = b.split(".");
+  if (bootA !== undefined && bootB !== undefined && bootA !== bootB) return true;
+  const durable = BigInt(durableA!) - BigInt(durableB!);
+  if (durable !== 0n) return durable > 0n;
+  return Number(countA ?? 0) > Number(countB ?? 0);
 }
