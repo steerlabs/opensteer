@@ -3436,7 +3436,11 @@ export class HttpHostClient {
       held = {
         stamp,
         entries: mergeTaskEntries(held?.entries ?? [], page.entries),
-        window: page.window,
+        // Only a list's first page counts it; a continuation keeps that count.
+        window: {
+          ...page.window,
+          totalItems: page.window.totalItems ?? held?.window.totalItems ?? 0,
+        },
       };
       this.#donePages = held;
       this.#publishTasks();

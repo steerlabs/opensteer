@@ -664,6 +664,46 @@ test("a link opened while the scope resubscribes waits for its cut and lands, ra
   reader.dispose();
 });
 
+test("a live reset keeps only the streams it names: every other stream's text and held frame goes", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const attemptId = createId("runAttempt");
+  const kept = { runId, streamId: "kept" };
+  const dropped = { runId: createId("run"), streamId: "dropped" };
+  const live = (stream: { runId: string; streamId: string }, itemId: string, after = "1") =>
+    f.stream.receive({
+      ...f.address,
+      type: "host.live",
+      handle: 1,
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      attemptId,
+      bindingGeneration: 1,
+      ...stream,
+      itemId,
+      afterSequence: after,
+      update: { operation: "replace", text: "words", offset: 0, totalLength: 5, incomplete: false },
+    } as never);
+  live(kept, "node:a");
+  live(dropped, "node:b");
+  // A frame past the cut waits for it; its stream is not one the reset names.
+  live({ runId: dropped.runId, streamId: "later" }, "node:c", "2");
+  expect(f.detail.text.get("node:b")?.text).toBe("words");
+  expect(f.stream.receive({ ...f.address, type: "host.live-reset", open: [kept] } as never)).toBe(
+    true,
+  );
+  expect(f.detail.text.get("node:a")?.text).toBe("words");
+  expect(f.detail.text.get("node:b")).toBeUndefined();
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [],
+  });
+  expect(f.detail.text.get("node:c"), "a held frame of a closed stream applied").toBeUndefined();
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
@@ -2509,7 +2549,7 @@ function taskPageResponse(
     status?: "idle" | "running";
     doneReason?: "quiet";
   }[],
-  window: { nextBefore: string | null; totalItems: number },
+  window: { nextBefore: string | null; totalItems?: number },
 ) {
   const environmentId = new MockHostClient({ latencyMs: 0 }).getSnapshot().threads[0]!
     .environmentId;
@@ -2536,7 +2576,7 @@ function taskPageResponse(
       window: {
         nextBefore: window.nextBefore,
         hasMore: window.nextBefore !== null,
-        totalItems: window.totalItems,
+        ...(window.totalItems === undefined ? {} : { totalItems: window.totalItems }),
         byteCount: 0,
         itemCount: rows.length,
       },
@@ -2813,6 +2853,31 @@ describe("task lists from the shell and its pages", () => {
       client.dispose();
     }
   });
+  it("keeps Done's count from its first page; a continuation does not carry one", async () => {
+    const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+    const rows = Array.from({ length: 3 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const before = JSON.parse(url.searchParams.get("input") ?? "{}").before as string | undefined;
+      return before
+        ? taskPageResponse(host, rows.slice(2), { nextBefore: null })
+        : taskPageResponse(host, rows.slice(0, 2), { nextBefore: "page-1", totalItems: 3 });
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      await client.loadDoneTasks();
+      await vi.waitFor(() => expect(done()?.entries).toHaveLength(3));
+      expect(done()!.window.totalItems).toBe(3);
+    } finally {
+      client.dispose();
+    }
+  });
 });
 
 test("after a repair the reader reads again the latest page, its loaded overlay pages and the queue tail", async () => {
@@ -3072,6 +3137,44 @@ describe("reads that race a repair", () => {
       await vi.waitFor(() =>
         expect(reader.getSnapshot().inputQueue?.items.at(-1)?.canSteer).toBe(true),
       );
+    } finally {
+      reader.dispose();
+    }
+  });
+
+  it("a queue read answered as of an earlier cut than the one installed is not installed, and is read again", async () => {
+    vi.useFakeTimers();
+    const head = createId("message");
+    const tail = createId("message");
+    const f = racing([head, tail], [head]);
+    f.stream.receive(f.cut("2"));
+    const queue = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.inputQueue.get": queue.fn } as never,
+      new TranscriptBodies(),
+    );
+    const answer = (asOfSequence: string) => ({
+      ok: true,
+      data: {
+        threadId,
+        revision: asOfSequence,
+        asOfSequence,
+        paused: true,
+        steerRunId: null,
+        items: [waitingEntry(head, "v"), waitingEntry(tail, `as of ${asOfSequence}`)],
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(1));
+      queue.answers[0]!(answer("1"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.detail.transcript.getSnapshot().queueEntries.has(tail)).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(queue.fn, "the stale queue was never read again").toHaveBeenCalledTimes(2);
+      queue.answers[1]!(answer("2"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reader.getSnapshot().inputQueue?.items.at(-1)?.message.preview).toBe("as of 2");
     } finally {
       reader.dispose();
     }

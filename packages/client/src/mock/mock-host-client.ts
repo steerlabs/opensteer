@@ -2673,7 +2673,8 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
             hasMore: end < entries.length,
             itemCount: page.length,
             nextBefore: end < entries.length ? String(end) : null,
-            totalItems: entries.length,
+            // As on the Host, only a list's first page counts it.
+            ...(start === 0 ? { totalItems: entries.length } : {}),
           },
         }),
       );
@@ -2836,14 +2837,17 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       });
       return rpcSuccess(hostApi["thread.browserUsage.get"].success.parse({ threadId, uses }));
     },
-    "thread.inputQueue.get": async (input) =>
-      rpcSuccess(
-        mockInputQueue(
+    "thread.inputQueue.get": async (input) => {
+      const revision = String(client.getSnapshot().revision);
+      return rpcSuccess({
+        ...mockInputQueue(
           client.loadThreadInputQueue(input.threadId),
-          String(client.getSnapshot().revision),
+          revision,
           (leaseId, messageId) => client.isLocalEditLease(messageId, leaseId),
         ),
-      ),
+        asOfSequence: revision,
+      });
+    },
     "thread.message.revisions.list": async (input) => {
       if (input.leaseId !== undefined) {
         const current = client

@@ -152,6 +152,21 @@ export class ItemTextStore {
     return "applied";
   }
 
+  /**
+   * The Host dropped this scope's queued live state and named the streams still open: every other
+   * stream's text goes. A kept stream's text stays until the Host's replace for it arrives.
+   */
+  keep(open: readonly { readonly runId: string; readonly streamId: string }[]) {
+    const kept = new Set(open.map(({ runId, streamId }) => JSON.stringify([runId, streamId])));
+    for (const id of [...this.#items.keys()]) {
+      const identity = this.#identities.get(id);
+      const [, runId, , , streamId] = identity ? (JSON.parse(identity.key) as string[]) : [];
+      if (kept.has(JSON.stringify([runId, streamId]))) continue;
+      this.#identities.delete(id);
+      this.#delete(id);
+    }
+  }
+
   finishItem(id: string) {
     const current = this.#identities.get(id);
     if (current) this.#close(current.key, current.barrier.toString());

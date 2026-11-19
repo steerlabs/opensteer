@@ -490,7 +490,12 @@ export class ScopedPersonalStream {
       this.#resources?.changed(frame.revisions);
       return;
     }
-    if (frame.type === "host.live" || frame.type === "host.removed") return;
+    if (
+      frame.type === "host.live" ||
+      frame.type === "host.live-reset" ||
+      frame.type === "host.removed"
+    )
+      return;
     if (frame.scope.kind !== "shell") return;
     // A cut behind what this client holds means the Host's history moved back.
     if (
@@ -649,6 +654,10 @@ export class ScopedPersonalStream {
       this.#live(detail, frame);
       return;
     }
+    if (frame.type === "host.live-reset") {
+      this.#liveReset(detail, frame);
+      return;
+    }
     // The Host's first reply confirms a saved cut it resumed from; a snapshot or removal replaces it.
     const unconfirmed = detail.unconfirmed;
     if (unconfirmed) {
@@ -697,6 +706,22 @@ export class ScopedPersonalStream {
       }
     }
     this.#checkpoint(detail.scope, detail);
+  }
+
+  /**
+   * The Host dropped this scope's queued live state: only the streams it names are still open, and
+   * each is named again by a replace. Every other stream's text, held frame and provisional card goes.
+   */
+  #liveReset(detail: ObservedDetail, frame: Extract<Frame, { type: "host.live-reset" }>) {
+    const open = new Set(frame.open.map(({ runId, streamId }) => `${runId}\n${streamId}`));
+    for (const [key, live] of detail.held ?? []) {
+      if (open.has(`${live.runId}\n${live.streamId}`)) continue;
+      detail.held!.delete(key);
+      detail.heldBytes -= bytes(live);
+    }
+    detail.text.keep(frame.open);
+    for (const id of detail.transcript.getSnapshot().liveItems.keys())
+      if (!detail.text.get(id)) detail.transcript.liveItem(undefined, id, true);
   }
 
   #live(detail: ObservedDetail, frame: Live) {

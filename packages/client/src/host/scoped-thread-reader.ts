@@ -386,6 +386,18 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (queue.threadId !== this.#detail.scope.threadId)
         throw new Error("The Host returned a misaddressed input queue.");
       const state = this.#detail.transcript.getSnapshot();
+      // A read the Host answered before the cut this client installed shows a queue since replaced.
+      if (
+        queue.asOfSequence !== undefined &&
+        state.snapshotThrough !== undefined &&
+        BigInt(queue.asOfSequence) < BigInt(state.snapshotThrough)
+      )
+        throw new HostClientRequestError({
+          code: "unavailable",
+          message: "The input queue was read before the conversation's latest cut.",
+          retryable: true,
+          status: 503,
+        });
       this.#queueFailure = undefined;
       this.#queueFilled = cut;
       this.#detail.transcript.installQueueEntries(queue.items, state.generation);
