@@ -4259,12 +4259,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
           { timeout: 4_000 },
         );
       };
-      // Both asks must wait at the personal commit fence.
+      // Both asks must wait at the personal commit fence: the client_sync_state row every
+      // personal commit takes first (it no longer also locks personal_settings).
       const barrier = wide.transaction().execute(async (transaction) => {
         await transaction
-          .selectFrom("personalSettings")
-          .select("ownerId")
-          .where("ownerId", "=", first.userId)
+          .selectFrom("clientSyncState")
+          .select("deploymentId")
           .forUpdate()
           .execute();
         acquired.resolve();
