@@ -1847,6 +1847,14 @@ export class HttpHostClient {
       this.#activePages = [];
       this.#activeCursor = shell.activeNextBefore;
     }
+    if ((replaced || attached) && this.#doneCount) {
+      // A new cut (an attach, a repair, a history reset) may stand on a different history: the
+      // held count keeps showing, but its horizon goes, so the Host's next count is always taken,
+      // and that count is asked for now.
+      this.#doneCount = { count: this.#doneCount.count, asOf: -1n };
+      this.#doneChangedAt = state.through === null ? 0n : BigInt(state.through);
+      this.#countDoneSoon();
+    }
     const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;

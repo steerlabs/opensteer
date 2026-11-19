@@ -3746,6 +3746,50 @@ describe("task lists from the shell and its pages", () => {
     }
   });
 
+  it("a new shell cut drops the held count's horizon, so a restored Host's lower count is taken", async () => {
+    const rows = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    const lists = { recentTaskIds: [task.id] };
+    const host = scriptedHost({ tasks: [task], lists });
+    const reads: { input: { limit?: number }; resolve: (response: Response) => void }[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const query = JSON.parse(url.searchParams.get("input") ?? "{}") as { limit?: number };
+      return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+    });
+    const answer = async (asOf: string, count: number) => {
+      const response = taskPageResponse(host, rows, { nextBefore: "done-1", totalItems: count });
+      const body = (await response.json()) as { data: { asOfSequence: string } };
+      body.data.asOfSequence = asOf;
+      return Response.json(body);
+    };
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      // Read through 150 while the socket was behind.
+      reads[0]!.resolve(await answer("150", 40));
+      await opening;
+      expect(done()!.window.totalItems).toBe(40);
+      // The Host is restored, same Deployment and epoch, to 120 with different Done membership,
+      // and sends its new cut.
+      host.repairShell([task], lists);
+      // Done is read again in the new cut; the restored Host's count at 120 is the one to show.
+      await vi.waitFor(() => expect(reads.length).toBeGreaterThan(1), { timeout: 3_000 });
+      for (const read of reads.slice(1)) read.resolve(await answer("120", 33));
+      await vi.waitFor(() =>
+        expect(done()!.window.totalItems, "the restored Host's count was refused").toBe(33),
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("a Done continuation never sets the count: a fresher count read in between stands", async () => {
     const held = Array.from({ length: 50 }, (_, index) => ({
       id: createId("thread"),
