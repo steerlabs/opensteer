@@ -15,7 +15,7 @@ it.each([
   [
     "a full batch that delivered nothing",
     { ...none, held: 100, heldUntil: new Date(9), more: true },
-    "backoff",
+    { backoffNoLaterThan: new Date(9) },
   ],
   ["a short clean batch, nothing left", { ...none, settled: 3 }, null],
   [
@@ -26,6 +26,13 @@ it.each([
   ["a return behind a full parent inbox", { ...none, waiting: 1 }, "backoff"],
   ["a failed return after others settled", { ...none, settled: 4, failures: [failure] }, "backoff"],
   ["a failed full batch", { ...none, failures: [failure], more: true }, "backoff"],
+  [
+    "a failure beside a held return: backoff, but no later than the hold",
+    { ...none, held: 1, heldUntil: new Date(2_000), failures: [failure] },
+    { backoffNoLaterThan: new Date(2_000) },
+  ],
+  // The hold ended between the delivery decision and arming: still armed, due now.
+  ["a hold that has already ended", { ...none, held: 1, heldUntil: new Date(1) }, new Date(1)],
 ] as const)("%s", async (_, drained, armed) => {
   const result = await assignmentReturnPass(async () => drained, vi.fn());
   expect(typeof result === "symbol" ? "backoff" : result).toEqual(armed);
