@@ -307,6 +307,15 @@ function PluginCatalog() {
       </label>
       <EngineNotice engine={list.loading ? engine : null} />
       <SettingsError message={apps.data ? null : apps.error} />
+      {!apps.data && apps.error ? (
+        <button
+          className="btn plugins-retry"
+          onClick={() => void apps.reload().catch(() => undefined)}
+          type="button"
+        >
+          Try again
+        </button>
+      ) : null}
       {deviceApps.length ? <DeviceAppRows apps={deviceApps} onSetUp={setSettingUp} /> : null}
       <SettingsError
         message={
