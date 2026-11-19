@@ -8,6 +8,7 @@ import {
   type ConnectionController,
   type ConnectionLease,
   type ConnectionPresentation,
+  probeAnsweredByFrames,
 } from "../connections/connection-controller.js";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
@@ -151,6 +152,7 @@ import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
+import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
@@ -302,25 +304,45 @@ export class HttpHostClient {
   readonly #bodies = new TranscriptBodies();
   readonly #threadReaders = new Map<string, () => void>();
   readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
-  /** Where the open-task list continues once the person or a refill has read past the shell. */
-  #taskWindow: { nextBefore: string | null; hasMore: boolean } | undefined;
-  /** Tasks removed since the shell cut, with the cut they left at, so a slower page cannot restore them. */
-  readonly #removedTasks = new Map<string, bigint>();
-  /**
-   * Each task's latest pushed Done membership and the cut it arrived at, so a Done page read
-   * before it cannot undo it, whether the Done list was held then or not.
-   */
-  readonly #doneMoves = new Map<string, { readonly done: boolean; readonly at: bigint }>();
-  /** How many settled rows the person had loaded when a shell repair replaced the lists. */
-  #taskDepth = 0;
-  /** Where running and waiting tasks past the shell's active window continue; null when all are held. */
+  /** Task page reads, fenced by the viewer and the shell cut they extend. */
+  readonly #taskReads = new FencedReads({
+    epoch: () => `${this.#viewerGeneration}:${this.#shellCut}`,
+  });
+  /** Counts shell cuts: a repair or a new attach replaces the rows pages were read against. */
+  #shellCut = 0;
+  /** Open tasks read past the shell's settled window, the cut they extend, and where they go on. */
+  #openPages:
+    | {
+        readonly cut: number;
+        readonly entries: readonly TaskEntry[];
+        readonly window: { readonly nextBefore: string | null; readonly hasMore: boolean };
+      }
+    | undefined;
+  /** Running and waiting tasks past the shell's active window, and where they go on. */
+  #activePages: readonly TaskEntry[] = [];
   #activeCursor: string | null = null;
-  #activeRead: Promise<void> | undefined;
+  /** Done as the Host counted it, read to `#doneDepth`, stamped with what it was read against. */
+  #donePages:
+    | {
+        readonly stamp: string;
+        readonly entries: readonly TaskEntry[];
+        readonly window: TaskListState["window"];
+      }
+    | undefined;
+  /** Settled open rows the person has asked to see; and Done rows (0 until Done opens). */
+  #openDepth: number = personalShellSettledTasks;
+  #doneDepth = 0;
+  /** Counts pushes that may move Done membership: a Done read from before one is read again. */
+  #doneChanges = 0;
+  /** Tasks the shell removed in this cut: a page read before cannot bring one back. */
+  readonly #removedTasks = new Set<string>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
-  readonly #assignmentReads = new Map<string, "read" | AbortController>();
+  /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
+  readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+  readonly #assignmentsRead = new Set<string>();
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -639,12 +661,6 @@ export class HttpHostClient {
   readonly #lifecycleDisposers: (() => void)[] = [];
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
-
-  /** Per task list, the one read of a later page in flight, for the viewer that asked. */
-  readonly #taskPageLoads = new Map<
-    string | null,
-    { readonly generation: number; readonly promise: Promise<void> }
-  >();
 
   #disposed = false;
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
@@ -1376,9 +1392,8 @@ export class HttpHostClient {
       } else if (state.repairs !== subscribedRepairs) {
         // A repair replaced the scope: its assignments are read again, as on a new subscription.
         subscribedRepairs = state.repairs;
-        const read = this.#assignmentReads.get(threadId);
-        if (read && read !== "read") read.abort();
-        this.#assignmentReads.delete(threadId);
+        this.#assignmentsRead.delete(threadId);
+        this.#assignmentReads.changed(`assignments:${threadId}`);
         reread = true;
         readsDue = true;
       }
@@ -1440,9 +1455,8 @@ export class HttpHostClient {
   }
 
   #clearDetailReads(threadId: string) {
-    const read = this.#assignmentReads.get(threadId);
-    if (read && read !== "read") read.abort();
-    this.#assignmentReads.delete(threadId);
+    this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentsRead.delete(threadId);
     this.#automationReads.delete(threadId);
     this.#readAutomations.delete(threadId);
     this.#browserUsageRead.delete(threadId);
@@ -1463,8 +1477,9 @@ export class HttpHostClient {
   }
 
   #clearViewerReads() {
-    for (const read of this.#assignmentReads.values()) if (read !== "read") read.abort();
-    this.#assignmentReads.clear();
+    for (const threadId of this.#assignmentsRead)
+      this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentsRead.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#browserUsageRead.clear();
@@ -1472,9 +1487,14 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#deniedAssignments.clear();
-    this.#doneTasksStale = false;
-    this.#doneTaskRefresh = undefined;
-    this.#taskPageLoads.clear();
+    for (const key of ["open", "active", "done"]) this.#taskReads.stop(key);
+    this.#openPages = undefined;
+    this.#activePages = [];
+    this.#activeCursor = null;
+    this.#donePages = undefined;
+    this.#openDepth = personalShellSettledTasks;
+    this.#doneDepth = 0;
+    this.#removedTasks.clear();
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1688,58 +1708,27 @@ export class HttpHostClient {
     // A new shell cut replaces the lists; between cuts every row is applied where it is held.
     const replaced = old?.snapshot?.recentTaskIds !== shell.recentTaskIds;
     if (replaced) {
-      // A repair keeps the window the person loaded: the rows are read again to the same depth.
-      if (this.#taskWindow && old?.snapshot?.viewerId === shell.viewerId)
-        this.#taskDepth = Math.max(this.#taskDepth, settledEntries(this.#snapshot.tasks).length);
-      this.#taskWindow = undefined;
+      // Pages were read against the old rows: they are read again, to the depth the person had
+      // loaded, from the new cut's cursors. Until then the old pages stay on screen.
+      this.#shellCut++;
       this.#removedTasks.clear();
+      this.#activePages = [];
       this.#activeCursor = shell.activeNextBefore;
     }
     const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
-    let doneTasks = this.#snapshot.doneTasks;
+    let doneMoved = false;
     if (taskChanges) {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
-        const done = doneTasks[mainDoneTasks];
-        this.#doneMoves.delete(row.id);
-        this.#doneMoves.set(row.id, {
-          done: !("removed" in row) && row.doneAt !== null,
-          at: BigInt(state.through ?? "0"),
-        });
-        if (this.#doneMoves.size > 256)
-          this.#doneMoves.delete(this.#doneMoves.keys().next().value!);
+        const doneListed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
+        // A change that may move Done membership makes any Done read from before it stale.
+        if (doneListed || (!("removed" in row) && row.doneAt !== null)) doneMoved = true;
         if ("removed" in row) {
-          this.#removedTasks.delete(row.id);
-          this.#removedTasks.set(row.id, BigInt(state.through ?? "0"));
-          if (this.#removedTasks.size > 256)
-            this.#removedTasks.delete(this.#removedTasks.keys().next().value!);
-          if (done?.entries.some(({ thread }) => thread.id === row.id))
-            doneTasks = {
-              [mainDoneTasks]: {
-                ...done,
-                entries: done.entries.filter(({ thread }) => thread.id !== row.id),
-              },
-            };
+          this.#removedTasks.add(row.id);
           continue;
         }
-        // A held Done row takes the change through the thread state; only membership moves here.
-        const listed = done?.entries.some(({ thread }) => thread.id === row.id);
-        if (done && listed !== (row.doneAt !== null))
-          doneTasks = {
-            [mainDoneTasks]: {
-              window: {
-                ...done.window,
-                totalItems: Math.max(0, done.window.totalItems + (listed ? -1 : 1)),
-              },
-              entries: listed
-                ? done.entries.filter(({ thread }) => thread.id !== row.id)
-                : [...done.entries, this.#shellEntry(row)].sort((left, right) =>
-                    compareTaskOrder(left.thread, right.thread),
-                  ),
-            },
-          };
         if (held)
           this.#threadState.reconcile(
             {
@@ -1758,8 +1747,10 @@ export class HttpHostClient {
           );
       }
     }
-    if (this.#snapshot.doneTasks[mainDoneTasks] && old?.snapshot && replaced)
-      this.#doneTasksStale = true;
+    if (doneMoved && this.#doneDepth > 0) {
+      this.#doneChanges++;
+      this.#taskReads.changed("done");
+    }
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
@@ -1787,36 +1778,7 @@ export class HttpHostClient {
       attentionChanged ||
       connection !== this.#snapshot.connection
     ) {
-      let taskLists: Pick<HostSnapshot, "tasks" | "activeTasks"> | undefined;
-      if (tasksChanged) {
-        // Rows from pages the person loaded stay until a task change or a new cut replaces them.
-        const loaded = replaced
-          ? []
-          : (this.#snapshot.tasks?.entries ?? []).filter(
-              ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
-            );
-        const open = [...[...state.tasks.values()].map((row) => this.#shellEntry(row)), ...loaded]
-          .filter(({ thread }) => thread.doneAt === null && thread.status !== "archived")
-          .sort((left, right) => compareTaskOrder(left.thread, right.thread));
-        const window = this.#taskWindow ?? {
-          nextBefore: shell.nextBefore,
-          hasMore: shell.nextBefore !== null,
-        };
-        taskLists = {
-          tasks: {
-            entries: open,
-            window: {
-              ...window,
-              totalItems: open.length,
-              byteCount: 0,
-              itemCount: open.length,
-            },
-          },
-          activeTasks: open.filter(
-            ({ thread }) => thread.status === "running" || thread.status === "waiting",
-          ),
-        };
-      }
+      const taskLists = tasksChanged || taskChanges ? this.#taskLists(state) : undefined;
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update(
         {
@@ -1824,7 +1786,6 @@ export class HttpHostClient {
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
-          doneTasks,
           ...(attentionChanged
             ? {
                 attentionSummaries: [...state.attention.values()],
@@ -1843,10 +1804,7 @@ export class HttpHostClient {
         taskChanges,
       );
     }
-    if (state.synchronized && (tasksChanged || !old?.synchronized)) {
-      this.#refillTasks();
-      this.#readActiveTasks();
-    }
+    if (state.synchronized && (tasksChanged || !old?.synchronized)) this.#requestTaskReads();
     if (attached) {
       this.#connectionAdmit?.();
       this.#finishLoad();
@@ -1855,7 +1813,6 @@ export class HttpHostClient {
       this.#reverifyCapabilities();
       this.#resources.resume();
     }
-    if (state.synchronized) this.#refreshStaleDoneTasks();
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
@@ -2148,15 +2105,13 @@ export class HttpHostClient {
 
   #ensureAssignments(threadId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    if (this.#assignmentReads.has(threadId)) return;
-    const read = new AbortController();
-    this.#assignmentReads.set(threadId, read);
-    void this.#readAssignments(threadId, read.signal)
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.#assignmentReads.get(threadId) === read)
-          this.#assignmentReads.set(threadId, "read");
-      });
+    const key = `assignments:${threadId}`;
+    if (this.#assignmentsRead.has(threadId) || this.#assignmentReads.busy(key)) return;
+    void this.#assignmentReads
+      .request(key, (read) => this.#readAssignments(threadId, read), {
+        observed: () => !this.#disposed && this.#showsThread(threadId),
+      })
+      .catch(() => undefined);
   }
 
   #ensureAutomations(threadId: string, again = false): void {
@@ -2221,26 +2176,15 @@ export class HttpHostClient {
    * whole family, every open Assignment however far back it was handed out, so work under way is
    * never missing. A Host without `task-family-v1` gives the newest page alone.
    */
-  async #readAssignments(threadId: string, signal: AbortSignal): Promise<void> {
-    const more = await this.#readAssignmentPages(threadId, false, signal);
-    if (more && this.#capabilities?.includes("task-family-v1"))
-      await this.#readAssignmentPages(threadId, true, signal);
-  }
-
-  /** Says whether the newest page left older Assignments out. */
-  async #readAssignmentPages(
-    threadId: string,
-    open: boolean,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const current = () => !signal.aborted && this.#viewerStillCurrent(generation, userId);
-    let before: string | null = null;
-    do {
-      let response;
+  /**
+   * Reads a task's assignments: its newest page and, when that left some out, every open one. The
+   * result replaces what this client held for the task: an open assignment neither read returns
+   * has finished, even when the feed's update for it was skipped by a repair.
+   */
+  async #readAssignments(threadId: string, read: FencedRead): Promise<void> {
+    const list = async (open: boolean, before: string | null) => {
       try {
-        response = unwrapRpcResult(
+        const response = unwrapRpcResult(
           await this.rpc["thread.assignments.list"](
             {
               threadId,
@@ -2248,23 +2192,38 @@ export class HttpHostClient {
               ...(open ? { open } : {}),
               ...(before === null ? {} : { before }),
             },
-            { signal },
+            { signal: read.signal },
           ),
         );
+        if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
+        return response;
       } catch (error) {
-        if (current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        if (read.current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!current()) return false;
-      if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
-      this.#update({
-        ...this.#snapshot,
-        assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
-      });
-      if (!open) return response.window.hasMore;
-      before = response.window.hasMore ? response.window.nextBefore : null;
-    } while (before !== null);
-    return false;
+    };
+    const newest = await list(false, null);
+    const found = [...newest.assignments];
+    let complete = !newest.window.hasMore;
+    if (newest.window.hasMore && this.#capabilities?.includes("task-family-v1")) {
+      let before: string | null = null;
+      do {
+        const page = await list(true, before);
+        found.push(...page.assignments);
+        before = page.window.hasMore ? page.window.nextBefore : null;
+      } while (before !== null);
+      complete = true;
+    }
+    if (!read.current()) return;
+    const assignments = mergeAssignments(this.#snapshot.assignments, found);
+    if (complete) {
+      const returned = new Set<string>(found.map(({ id }) => id));
+      for (const [id, held] of Object.entries(assignments))
+        if (held.parentThreadId === threadId && held.status === "open" && !returned.has(id))
+          delete assignments[id];
+    }
+    this.#assignmentsRead.add(threadId);
+    this.#update({ ...this.#snapshot, assignments });
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
@@ -3316,11 +3275,16 @@ export class HttpHostClient {
   }
 
   loadDoneTasks(): Promise<void> {
-    return this.#readFirstTaskPage("done:*");
+    this.#doneDepth = Math.max(this.#doneDepth, taskPageSize);
+    return this.#requestDone();
   }
 
   loadEarlierDoneTasks(): Promise<void> {
-    return this.#loadEarlier("done:*");
+    this.#doneDepth = Math.max(
+      this.#doneDepth,
+      (this.#donePages?.entries.length ?? 0) + taskPageSize,
+    );
+    return this.#requestDone();
   }
 
   async setIdleCompactionPolicy(
@@ -3364,159 +3328,148 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, quietTaskDays: result.quietTaskDays });
   }
 
-  #doneTasksStale = false;
-  #doneTaskRefresh: Promise<void> | undefined;
-
-  #refreshStaleDoneTasks() {
-    if (!this.#doneTasksStale || this.#doneTaskRefresh || this.#visibility === "background") return;
-    const viewer = this.#viewerGeneration;
-    this.#doneTasksStale = false;
-    // The refresh reads again as deep as the person had loaded Done.
-    const depth = this.#snapshot.doneTasks[mainDoneTasks]?.entries.length ?? 0;
-    const deepen = async (): Promise<void> => {
-      const done = this.#snapshot.doneTasks[mainDoneTasks];
-      if (
-        viewer !== this.#viewerGeneration ||
-        !done?.window.hasMore ||
-        done.entries.length >= depth
-      )
-        return;
-      await this.#readTaskPage("done:*", done.window.nextBefore);
-      if (this.#snapshot.doneTasks[mainDoneTasks] !== done) await deepen();
-    };
-    const refresh = this.#readTaskPage("done:*", null)
-      .then(
-        async (applied) => {
-          if (!applied && viewer === this.#viewerGeneration) this.#doneTasksStale = true;
-          else if (applied) await deepen();
-        },
-        () => {
-          if (viewer === this.#viewerGeneration) this.#doneTasksStale = true;
-        },
-      )
-      .finally(() => {
-        if (this.#doneTaskRefresh === refresh) this.#doneTaskRefresh = undefined;
-      });
-    this.#doneTaskRefresh = refresh;
-  }
-
-  async #readFirstTaskPage(scope: string | null): Promise<void> {
-    if (scope && this.#doneTaskRefresh) return this.#doneTaskRefresh;
-    await this.#readTaskPage(scope, null);
-  }
-
   loadEarlierTasks(): Promise<void> {
-    return this.#loadEarlier(null);
+    this.#openDepth = Math.max(
+      this.#openDepth,
+      settledEntries(this.#snapshot.tasks).length + taskPageSize,
+    );
+    return this.#requestOpen();
   }
 
-  /** Every running and waiting task is listed: those past the shell's window are paged in. */
-  #readActiveTasks() {
-    if (this.#activeCursor === null || this.#activeRead) return;
-    const viewer = this.#viewerGeneration;
-    const read = this.#readTaskPage(null, this.#activeCursor, true)
-      .then(
-        () => {
-          if (viewer === this.#viewerGeneration) this.#readActiveTasks();
-        },
-        () => undefined,
-      )
-      .finally(() => {
-        if (this.#activeRead === read) this.#activeRead = undefined;
-      });
-    this.#activeRead = read;
+  /** Task reads run while the socket is attached and the app is in front. */
+  readonly #tasksObserved = () =>
+    !this.#disposed && this.#stream.ready && this.#visibility !== "background";
+
+  /** Starts the task reads the lists still need; each is one fenced job that reads to its depth. */
+  #requestTaskReads() {
+    if (!this.#stream.shell.getSnapshot().synchronized || !this.#tasksObserved()) return;
+    const tasks = this.#snapshot.tasks;
+    if (
+      tasks?.window.hasMore &&
+      this.#settledInCut() < this.#openDepth &&
+      !this.#taskReads.busy("open")
+    )
+      void this.#requestOpen().catch(() => undefined);
+    if (this.#activeCursor !== null && !this.#taskReads.busy("active"))
+      void this.#taskReads
+        .request("active", (read) => this.#readActive(read), { observed: this.#tasksObserved })
+        .catch(() => undefined);
+    if (
+      this.#doneDepth > 0 &&
+      this.#donePages?.stamp !== this.#doneStamp() &&
+      !this.#taskReads.busy("done")
+    )
+      void this.#requestDone().catch(() => undefined);
+  }
+
+  #requestOpen() {
+    return this.#taskReads.request("open", (read) => this.#readOpen(read), {
+      observed: this.#tasksObserved,
+    });
+  }
+
+  #requestDone() {
+    return this.#taskReads.request("done", (read) => this.#readDone(read), {
+      observed: this.#tasksObserved,
+    });
+  }
+
+  #doneStamp() {
+    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneChanges}`;
+  }
+
+  /** Reads open tasks past the shell's settled window until `#openDepth` settled rows, or the end. */
+  async #readOpen(read: FencedRead) {
+    for (;;) {
+      const shell = this.#stream.shell.getSnapshot().snapshot;
+      if (!shell) return;
+      const pages = this.#openPages?.cut === this.#shellCut ? this.#openPages : undefined;
+      const window = pages?.window ?? {
+        nextBefore: shell.nextBefore,
+        hasMore: shell.nextBefore !== null,
+      };
+      if (!window.hasMore || window.nextBefore === null || this.#settledInCut() >= this.#openDepth)
+        return;
+      const page = await this.#taskPage({ before: window.nextBefore }, read);
+      if (!read.current()) return;
+      this.#openPages = {
+        cut: this.#shellCut,
+        entries: mergeTaskEntries(pages?.entries ?? [], page.entries),
+        window: { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore },
+      };
+      this.#publishTasks();
+    }
+  }
+
+  /** Settled open rows this cut holds: the shell's own and the pages read against it. */
+  #settledInCut() {
+    const state = this.#stream.shell.getSnapshot();
+    const ids = new Set<string>();
+    const settled = (thread: { doneAt: string | null; status: string }) =>
+      thread.doneAt === null &&
+      thread.status !== "archived" &&
+      thread.status !== "running" &&
+      thread.status !== "waiting";
+    for (const row of state.tasks.values()) if (settled(row)) ids.add(row.id);
+    if (this.#openPages?.cut === this.#shellCut)
+      for (const { thread } of this.#openPages.entries)
+        if (!state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id) && settled(thread))
+          ids.add(thread.id);
+    return ids.size;
+  }
+
+  /** Reads every running and waiting task past the shell's active window. */
+  async #readActive(read: FencedRead) {
+    while (this.#activeCursor !== null) {
+      const page = await this.#taskPage({ active: true, before: this.#activeCursor }, read);
+      if (!read.current()) return;
+      this.#activePages = mergeTaskEntries(this.#activePages, page.entries);
+      this.#activeCursor = page.window.hasMore ? page.window.nextBefore : null;
+      this.#publishTasks();
+    }
   }
 
   /**
-   * Reads earlier open tasks until the settled list holds its window (the shell's 25, or the depth
-   * the person had loaded before a repair), one page at a time, while the Host has more.
+   * Reads Done to `#doneDepth`. Pages read against the current stamp are continued; a push that
+   * may move Done membership, or a new shell cut, starts it again from the first page.
    */
-  #refillTasks() {
-    const tasks = this.#snapshot.tasks;
-    const want = Math.max(personalShellSettledTasks, this.#taskDepth);
-    if (!this.#stream.shell.getSnapshot().synchronized || !tasks?.window.hasMore) {
-      if (!tasks?.window.hasMore) this.#taskDepth = 0;
-      return;
+  async #readDone(read: FencedRead) {
+    const stamp = this.#doneStamp();
+    let held = this.#donePages?.stamp === stamp ? this.#donePages : undefined;
+    for (;;) {
+      if (
+        held &&
+        (!held.window.hasMore ||
+          held.window.nextBefore === null ||
+          held.entries.length >= this.#doneDepth)
+      )
+        return;
+      const before = held?.window.nextBefore;
+      const page = await this.#taskPage({ done: true, ...(before ? { before } : {}) }, read);
+      if (!read.current()) return;
+      held = {
+        stamp,
+        entries: mergeTaskEntries(held?.entries ?? [], page.entries),
+        window: page.window,
+      };
+      this.#donePages = held;
+      this.#publishTasks();
     }
-    if (settledEntries(tasks).length >= want) {
-      this.#taskDepth = 0;
-      return;
-    }
-    if (this.#taskPageLoads.has(null)) return;
-    const viewer = this.#viewerGeneration;
-    void this.loadEarlierTasks().then(
-      () => {
-        if (viewer === this.#viewerGeneration && this.#snapshot.tasks !== tasks)
-          this.#refillTasks();
-      },
-      () => undefined,
-    );
   }
 
-  #loadEarlier(scope: string | null): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const pending = this.#taskPageLoads.get(scope);
-    if (pending?.generation === generation) return pending.promise;
-    const promise = this.#loadEarlierTasks(scope).finally(() => {
-      if (this.#taskPageLoads.get(scope)?.promise === promise) this.#taskPageLoads.delete(scope);
-    });
-    this.#taskPageLoads.set(scope, { generation, promise });
-    return promise;
-  }
-
-  async #loadEarlierTasks(scope: string | null): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    const window = this.#heldTasks(scope)?.window;
-    const cursor = window?.hasMore ? window.nextBefore : null;
-    if (cursor) await this.#readTaskPage(scope, cursor);
-  }
-
-  #heldTasks(scope: string | null): TaskListState | null {
-    return scope === null
-      ? this.#snapshot.tasks
-      : (this.#snapshot.doneTasks[mainDoneTasks] ?? null);
-  }
-
-  #reconcilePageThread(
-    thread: ThreadSummary,
-    sequence: Sequence,
-    compact?: { readonly inputQueuePaused?: boolean | undefined },
+  /** One page of tasks, as entries; a shell row newer than the page's cut stands for its own. */
+  async #taskPage(
+    input: { readonly done?: true; readonly active?: true; readonly before?: string },
+    read: FencedRead,
   ) {
-    const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
-    return reconciled.pendingRequests === thread.pendingRequests
-      ? reconciled
-      : { ...reconciled, pendingRequests: thread.pendingRequests };
-  }
-
-  async #readTaskPage(
-    scope: string | null,
-    before: string | null,
-    active = false,
-  ): Promise<boolean> {
-    const cut = this.#stream.shell.getSnapshot();
-    const viewer = this.#viewerGeneration;
     const page = unwrapRpcResult(
-      await this.rpc["tasks.page"]({
-        ...(scope ? { done: true } : {}),
-        ...(active ? { active: true } : {}),
-        ...(before ? { before } : {}),
-        limit: 50,
-      }),
+      await this.rpc["tasks.page"]({ ...input, limit: taskPageSize }, { signal: read.signal }),
     );
-    const current = this.#stream.shell.getSnapshot();
-    // A page lands whatever the shell did meanwhile: rows merge by revision, and a task the
-    // shell removed after the page's cut stays removed.
-    if (
-      viewer !== this.#viewerGeneration ||
-      current.snapshot?.recentTaskIds !== cut.snapshot?.recentTaskIds
-    )
-      return false;
+    const rows = this.#stream.shell.getSnapshot().tasks;
     const asOf = BigInt(page.asOfSequence);
-    const entries = page.tasks.flatMap((entry) => {
-      const removedAt = this.#removedTasks.get(entry.thread.id);
-      if (removedAt !== undefined && removedAt > asOf) return [];
-      const row = current.tasks.get(entry.thread.id);
+    const entries = page.tasks.flatMap((entry): TaskEntry[] => {
+      if (this.#removedTasks.has(entry.thread.id)) return [];
+      const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
       return [
         {
@@ -3528,55 +3481,76 @@ export class HttpHostClient {
         },
       ];
     });
-    const held = this.#heldTasks(scope);
-    // Loaded pages are not evicted: they are what the person asked to see, in the order shown.
-    // Active pages join the open list; its settled window and cursor stay as they are.
-    let merged = active
-      ? {
-          entries: mergeTaskEntries(held?.entries ?? [], entries),
-          window: held?.window ?? page.window,
-        }
-      : mergeTasks(before ? held : null, { entries, window: page.window });
-    if (active) this.#activeCursor = page.window.hasMore ? page.window.nextBefore : null;
-    if (scope) {
-      // Done membership pushed after this page's cut wins over the page, held list or not.
-      let entries = merged.entries;
-      for (const [id, move] of this.#doneMoves) {
-        if (move.at <= asOf) continue;
-        const listed = entries.some(({ thread }) => thread.id === id);
-        const row = current.tasks.get(id);
-        if (move.done && !listed && row)
-          entries = [...entries, this.#shellEntry(row)].sort((left, right) =>
-            compareTaskOrder(left.thread, right.thread),
-          );
-        else if (!move.done && listed) entries = entries.filter(({ thread }) => thread.id !== id);
-        else continue;
-        merged = {
-          ...merged,
-          window: {
-            ...merged.window,
-            totalItems: Math.max(0, merged.window.totalItems + (move.done ? 1 : -1)),
-          },
-        };
-      }
-      merged = { ...merged, entries };
-    }
-    if (!scope && !active)
-      this.#taskWindow = { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore };
-    this.#update(
-      scope
-        ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: merged } }
-        : {
-            ...this.#snapshot,
-            tasks: merged,
-            activeTasks: merged.entries.filter(
-              ({ thread }) =>
-                thread.doneAt === null &&
-                (thread.status === "running" || thread.status === "waiting"),
-            ),
-          },
-    );
-    return true;
+    return { entries, window: page.window };
+  }
+
+  #publishTasks() {
+    const state = this.#stream.shell.getSnapshot();
+    if (!state.snapshot) return;
+    this.#update({ ...this.#snapshot, ...this.#taskLists(state) });
+  }
+
+  /**
+   * The task lists: the shell's keyed rows, then the rows pages read past it. A row the shell
+   * holds speaks for itself; a task the shell removed is gone. Done is what the Host counted at
+   * its last read, less tasks a push has since reopened or removed; a push that may add one
+   * reads Done again.
+   */
+  #taskLists(
+    state: ReturnType<PersonalShellStore["getSnapshot"]>,
+  ): Pick<HostSnapshot, "tasks" | "activeTasks" | "doneTasks"> {
+    const shell = state.snapshot!;
+    const paged = (entries: readonly TaskEntry[]) =>
+      entries.filter(
+        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
+      );
+    const byId = new Map<string, TaskEntry>();
+    for (const entry of [
+      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
+      ...paged(this.#openPages?.entries ?? []),
+      ...paged(this.#activePages),
+    ])
+      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
+    const open = [...byId.values()]
+      .filter(({ thread }) => thread.doneAt === null && thread.status !== "archived")
+      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const window =
+      this.#openPages?.cut === this.#shellCut
+        ? this.#openPages.window
+        : { nextBefore: shell.nextBefore, hasMore: shell.nextBefore !== null };
+    const done = this.#donePages;
+    return {
+      tasks: {
+        entries: open,
+        window: { ...window, totalItems: open.length, byteCount: 0, itemCount: open.length },
+      },
+      activeTasks: open.filter(
+        ({ thread }) => thread.status === "running" || thread.status === "waiting",
+      ),
+      doneTasks: done
+        ? {
+            [mainDoneTasks]: {
+              window: done.window,
+              entries: done.entries.flatMap((entry) => {
+                if (this.#removedTasks.has(entry.thread.id)) return [];
+                // A held row takes a pushed change through the thread state.
+                return state.tasks.get(entry.thread.id)?.doneAt === null ? [] : [entry];
+              }),
+            },
+          }
+        : {},
+    };
+  }
+
+  #reconcilePageThread(
+    thread: ThreadSummary,
+    sequence: Sequence,
+    compact?: { readonly inputQueuePaused?: boolean | undefined },
+  ) {
+    const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
+    return reconciled.pendingRequests === thread.pendingRequests
+      ? reconciled
+      : { ...reconciled, pendingRequests: thread.pendingRequests };
   }
 
   async setTaskDone(threadId: string, done: boolean): Promise<void> {
@@ -3727,11 +3701,14 @@ export class HttpHostClient {
       reconnectOnForeground: () =>
         this.#backgroundShellGeneration !== this.#stream.shell.getSnapshot().generation,
       probe: async (signal) => {
-        await this.#probeSocket(signal);
-        signal.throwIfAborted();
+        // Frames that arrive while the pong is slow prove the socket alive just as the pong does.
+        await this.#probeSocket(signal).catch((error: unknown) => {
+          if (!probeAnsweredByFrames(signal)) throw error;
+        });
+        if (signal.aborted && !probeAnsweredByFrames(signal)) signal.throwIfAborted();
         if (this.#visibility === "foreground" && this.#backgroundShellGeneration !== undefined) {
           this.#resumeForeground();
-          this.#refreshStaleDoneTasks();
+          this.#requestTaskReads();
           if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
             this.#invalidateAttention(true);
           this.#resources.resume();
@@ -4564,9 +4541,8 @@ function settledEntries(list: TaskListState | null) {
   );
 }
 
-function mergeTasks(held: TaskListState | null, page: TaskListState): TaskListState {
-  return { entries: mergeTaskEntries(held?.entries ?? [], page.entries), window: page.window };
-}
+/** Rows a task page asks for: the Host's page size, within its response budget. */
+const taskPageSize = 50;
 
 function modelLabel(
   selection: Thread["modelSelection"],
