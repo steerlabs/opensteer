@@ -94,3 +94,31 @@ it("offers nothing when there is no old data, or it can't be read", async () => 
   );
   expect(unreadable.get().state).toEqual({ phase: "none" });
 });
+
+it("shows a failed conversion on one screen: its step and kept version, Try again and Start fresh", async () => {
+  const { StartFreshScreen } = await import("../components/start-fresh-screen.js");
+  const onRetry = vi.fn();
+  const onStartFresh = vi.fn();
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  roots.push(root);
+  const detail =
+    "Opensteer couldn't finish converting this computer's data (step \"verify\"). Nothing was lost: a copy from before this update is kept, and Opensteer 0.1.678 can open it. Try again, or Start fresh to continue with new data.";
+  act(() =>
+    root.render(
+      <StartFreshScreen
+        conversion={{ detail, onRetry }}
+        moves={oldData.entries}
+        onNotNow={vi.fn()}
+        onStartFresh={onStartFresh}
+      />,
+    ),
+  );
+  expect(container.textContent).toContain('step "verify"');
+  expect(container.textContent).toContain("Opensteer 0.1.678 can open it");
+  const buttons = [...container.querySelectorAll("button")].map((button) => button.textContent);
+  expect(buttons).toEqual(["Try again", "Start fresh"]);
+  act(() => container.querySelectorAll("button")[0]!.click());
+  expect(onRetry).toHaveBeenCalledTimes(1);
+  expect(onStartFresh).not.toHaveBeenCalled();
+});

@@ -1792,6 +1792,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   ): Promise<void> {
     if (!manifest.databaseInitialized) return;
     const gate = !(await this.#files.personalStateConverted(manifest));
+    // The first gated update pinned the pre-conversion copy. Until a healthy
+    // start, a later update's cluster may be partly converted, so it is never
+    // pinned in its place: the pristine copy stays the one kept and named.
+    const keptFrom = gate ? await this.#files.pinnedSnapshotSourceVersion(manifest) : null;
+    if (keptFrom !== null) {
+      this.#log("personal-database-snapshot-kept", { from: keptFrom });
+      return;
+    }
     const started = performance.now();
     try {
       const snapshot = await this.#files.snapshotDatabase(manifest, toRelease, this.#now(), gate);
