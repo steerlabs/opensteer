@@ -150,6 +150,7 @@ import { DelegationLine } from "./task-line.js";
 import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
 import { transcriptRowOf, useTranscriptWindow } from "./transcript-window.js";
+import { TranscriptMemoryScope, useRemembered } from "./transcript-memory.js";
 import { act, failureWords } from "./use-action.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
@@ -550,64 +551,66 @@ export function AgentTranscript({
     }
 
   return (
-    <DeliveryFeedback value={deliveryFeedback}>
-      <TranscriptLive value={live}>
-        <AgentsLive value={live}>
-          <AgentReader value={agents}>
-            <AgentFolds>
-              <RequestShown value={requestShown}>
-                <ConversationMode value={conversation}>
-                  <ReplyWith value={onReply}>
-                    <OpenActivity value={onOpenActivity}>
-                      <ActivityOfTurn value={activities}>
-                        <ActivityOpenedFrom value={activityOwner}>
-                          <ActivityAnchor value={onActivityAnchor}>
-                            <TaskViews value={renderTask}>
-                              <TranscriptHostClientContext value={attachmentReader}>
-                                <ReaderComputers value={computers}>
-                                  <TranscriptBrowserUses value={browserUses}>
-                                    <TranscriptBrowsers value={browserSessions}>
-                                      <Speakers value={speakers}>
-                                        <TranscriptImageContext
-                                          value={
-                                            attachmentReader && threadId
-                                              ? { client: attachmentReader, threadId }
-                                              : null
-                                          }
-                                        >
-                                          {drawnRows}
-                                          {indicator === null ? null : indicator.kind ===
-                                            "typing" ? (
-                                            // No turn has begun, so there is no Activity to open yet.
-                                            <div className="turn turn--conversation">
-                                              <Typing />
-                                            </div>
-                                          ) : (
-                                            <WorkingIndicator label={indicator.label} />
-                                          )}
-                                          {passwordsOffer === null
-                                            ? null
-                                            : renderPasswordsSuggestion?.(passwordsOffer)}
-                                          {queued}
-                                        </TranscriptImageContext>
-                                      </Speakers>
-                                    </TranscriptBrowsers>
-                                  </TranscriptBrowserUses>
-                                </ReaderComputers>
-                              </TranscriptHostClientContext>
-                            </TaskViews>
-                          </ActivityAnchor>
-                        </ActivityOpenedFrom>
-                      </ActivityOfTurn>
-                    </OpenActivity>
-                  </ReplyWith>
-                </ConversationMode>
-              </RequestShown>
-            </AgentFolds>
-          </AgentReader>
-        </AgentsLive>
-      </TranscriptLive>
-    </DeliveryFeedback>
+    <TranscriptMemoryScope>
+      <DeliveryFeedback value={deliveryFeedback}>
+        <TranscriptLive value={live}>
+          <AgentsLive value={live}>
+            <AgentReader value={agents}>
+              <AgentFolds>
+                <RequestShown value={requestShown}>
+                  <ConversationMode value={conversation}>
+                    <ReplyWith value={onReply}>
+                      <OpenActivity value={onOpenActivity}>
+                        <ActivityOfTurn value={activities}>
+                          <ActivityOpenedFrom value={activityOwner}>
+                            <ActivityAnchor value={onActivityAnchor}>
+                              <TaskViews value={renderTask}>
+                                <TranscriptHostClientContext value={attachmentReader}>
+                                  <ReaderComputers value={computers}>
+                                    <TranscriptBrowserUses value={browserUses}>
+                                      <TranscriptBrowsers value={browserSessions}>
+                                        <Speakers value={speakers}>
+                                          <TranscriptImageContext
+                                            value={
+                                              attachmentReader && threadId
+                                                ? { client: attachmentReader, threadId }
+                                                : null
+                                            }
+                                          >
+                                            {drawnRows}
+                                            {indicator === null ? null : indicator.kind ===
+                                              "typing" ? (
+                                              // No turn has begun, so there is no Activity to open yet.
+                                              <div className="turn turn--conversation">
+                                                <Typing />
+                                              </div>
+                                            ) : (
+                                              <WorkingIndicator label={indicator.label} />
+                                            )}
+                                            {passwordsOffer === null
+                                              ? null
+                                              : renderPasswordsSuggestion?.(passwordsOffer)}
+                                            {queued}
+                                          </TranscriptImageContext>
+                                        </Speakers>
+                                      </TranscriptBrowsers>
+                                    </TranscriptBrowserUses>
+                                  </ReaderComputers>
+                                </TranscriptHostClientContext>
+                              </TaskViews>
+                            </ActivityAnchor>
+                          </ActivityOpenedFrom>
+                        </ActivityOfTurn>
+                      </OpenActivity>
+                    </ReplyWith>
+                  </ConversationMode>
+                </RequestShown>
+              </AgentFolds>
+            </AgentReader>
+          </AgentsLive>
+        </TranscriptLive>
+      </DeliveryFeedback>
+    </TranscriptMemoryScope>
   );
 }
 
@@ -625,7 +628,7 @@ function TurnView({
   const live = useContext(TranscriptLive);
   const conversation = useContext(ConversationMode);
   const renderTask = useContext(TaskViews);
-  const [chosen, setChosen] = useState<boolean | null>(null);
+  const [chosen, setChosen] = useRemembered<boolean | null>(`turn:${turnKey}`, null);
   const open = turnOpen(turn, chosen);
   const handledReveal = useRef<typeof reveal>(null);
   const targetInWork =
@@ -1121,7 +1124,7 @@ function ReplyBubble({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useRemembered(`expanded:${preview.id}`, false);
   const message = useTranscriptMessage(client, threadId, preview, expanded);
   const replyWith = useContext(ReplyWith);
   const openActivity = useContext(OpenActivity);
@@ -1561,7 +1564,10 @@ function TurnContent({
   status?: boolean;
   turn: Turn;
 }) {
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useRemembered(
+    `earlier-steps:${turn.runId ?? turn.work[0]?.id ?? ""}`,
+    false,
+  );
   const active = turnState(turn) !== "settled";
   const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
@@ -1850,7 +1856,7 @@ export function SubagentSteps({
 }
 
 function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; turn: Turn }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useRemembered(`steps:${row.entries[0]?.id ?? row.key}`, false);
   const [only] = row.entries;
   const single = row.entries.length === 1 ? only : undefined;
   const computer =
@@ -1919,7 +1925,7 @@ function SubagentMessage({
   entry: Extract<SubagentDetailEntry, { kind: "message" }>;
   scope?: TranscriptTextScope | undefined;
 }) {
-  const [expanded, expand] = useState(false);
+  const [expanded, expand] = useRemembered(`expanded:${entry.id}`, false);
   const text = useTranscriptText({
     ...scope,
     itemId: entry.id,
@@ -1952,7 +1958,7 @@ function Reasoning({
   active: boolean;
   scope?: TranscriptTextScope | undefined;
 }) {
-  const [open, setOpen] = useState(active || entry.state === "streaming");
+  const [open, setOpen] = useRemembered(`open:${entry.id}`, active || entry.state === "streaming");
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
   const content = useTranscriptText({
@@ -1991,7 +1997,7 @@ function Step({
   head: ActivityStepHead;
   mark?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useRemembered(`open:${entry.id}`, false);
   const className = [
     "trace-step",
     compact ? "trace-step--compact" : "",
@@ -2039,7 +2045,9 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
       </TranscriptImageContext>
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
-      {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}
+      {body.argumentsText ? (
+        <Section label="Input" owner={preview.id} text={body.argumentsText} />
+      ) : null}
       {detail.loading ? (
         <LoadingRows label="Loading output" rows={2} />
       ) : detail.error ? (
@@ -2057,7 +2065,7 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
       ) : body.output ? (
         <>
           <CopyMark label="Copy output" text={tool.output?.text ?? body.output} />
-          <Section label={body.outputLabel} text={body.output} />
+          <Section label={body.outputLabel} owner={preview.id} text={body.output} />
         </>
       ) : tool.state === "running" || body.summary ? null : (
         <span className="trace-step__empty">No output</span>
@@ -2066,7 +2074,7 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   );
 }
 
-function OpenSection({ label, text }: { label: string; text: string }) {
+function OpenSection({ label, text }: { label: string; owner: string; text: string }) {
   return (
     <>
       <span className="eyebrow eyebrow--micro">{label}</span>
@@ -2076,8 +2084,8 @@ function OpenSection({ label, text }: { label: string; text: string }) {
 }
 
 /** Verbatim text a reader asks for: named, and closed until then. */
-function DisclosedSection({ label, text }: { label: string; text: string }) {
-  const [open, setOpen] = useState(false);
+function DisclosedSection({ label, owner, text }: { label: string; owner: string; text: string }) {
+  const [open, setOpen] = useRemembered(`disclosed:${owner}:${label}`, false);
   return (
     <div className={open ? "trace-disclosure trace-disclosure--open" : "trace-disclosure"}>
       <button
@@ -2233,7 +2241,7 @@ function Reply({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useRemembered(`expanded:${preview.id}`, false);
   const message = useTranscriptMessage(client, threadId, preview, expanded);
   const streaming = wasStreaming || message.streaming === true;
   return (
@@ -2410,7 +2418,7 @@ function OwnMessage({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  const [open, setOpen] = useRemembered(`open:${previewMessage.id}`, reveal !== null);
   const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const outbox = client ? hostMessageOutbox(client) : null;
   const computer = useClientConnectionName(client?.connection ?? null);
@@ -2637,7 +2645,7 @@ function RecoveryNote({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  const [open, setOpen] = useRemembered(`open:${previewMessage.id}`, reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
@@ -2751,7 +2759,7 @@ function InputMessage({
   const conversation = useContext(ConversationMode);
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  const [open, setOpen] = useRemembered(`open:${previewMessage.id}`, reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
