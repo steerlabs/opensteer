@@ -136,7 +136,36 @@ it("sends the durable item before its close and discards the pending suffix", as
   expect(fixture.live.read(fixture.scope)).toEqual([]);
 });
 
-async function liveFixture() {
+it("holds a provisional reply until its thread's tail is known, then draws it after every durable card", async () => {
+  fixture.live.close();
+  fixture.socket.close("replaced");
+  fixture = await liveFixture({ tail: null });
+  fixture.accept({ stream: "assistant", op: "replace", text: "Reply", length: 5 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(fixture.frames()).toEqual([]);
+  fixture.live.observeTail(fixture.threadId, "5");
+  await vi.advanceTimersByTimeAsync(100);
+  expect(fixture.frames()[0]).toMatchObject({
+    type: "host.live",
+    item: { id: fixture.itemId, position: "6" },
+    update: { operation: "replace", text: "Reply" },
+  });
+});
+
+it("moves a provisional reply past a tool step that committed before it", async () => {
+  fixture.accept({ stream: "assistant", op: "replace", text: "Reply", length: 5 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(fixture.frames()[0]).toMatchObject({ item: { position: "3" } });
+  fixture.live.observeTail(fixture.threadId, "7");
+  await vi.advanceTimersByTimeAsync(100);
+  const moved = fixture.frames().at(-1);
+  expect(moved).toMatchObject({ type: "host.live", item: { id: fixture.itemId, position: "8" } });
+  fixture.accept({ stream: "assistant", op: "append", at: 5, text: " more" });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(fixture.frames().at(-1)).toMatchObject({ item: { position: "8" } });
+});
+
+async function liveFixture(options: { readonly tail?: string | null } = {}) {
   const runId = createId("run");
   const threadId = createId("thread");
   const attemptId = createId("runAttempt");
@@ -211,6 +240,8 @@ async function liveFixture() {
   });
   const live = new PersonalLiveText({ publishLive: socket.offerLive.bind(socket) }, () => {});
   live.track(runId, { attemptId, bindingGeneration: 1, threadId });
+  // The runtime reads the tail when it tracks a Run.
+  if (options.tail !== null) live.observeTail(threadId, options.tail ?? "2");
   socket.subscribe({ type: "client.subscribe", subscriptionId: "detail:0", generation: 1, scope });
   await vi.advanceTimersByTimeAsync(0);
   expect(deliveries[0]?.type).toBe("host.synchronized");
@@ -232,6 +263,7 @@ async function liveFixture() {
     live,
     socket,
     scope,
+    threadId,
     itemId,
     deliveries,
     accept,

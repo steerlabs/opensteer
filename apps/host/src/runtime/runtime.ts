@@ -683,6 +683,9 @@ export async function createHostRuntime(
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
         refreshReturnHints(notice.resourceKinds);
+        // A durable card can pass an on-screen provisional one: move that card to the new tail.
+        for (const threadId of liveText.provisionalThreads())
+          if (notice.changedScopes.has(`thread:${threadId}`)) readLiveTail(threadId);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
       react: (reaction) => {

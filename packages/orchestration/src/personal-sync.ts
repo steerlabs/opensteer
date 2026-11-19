@@ -70,6 +70,8 @@ interface Credit {
 export interface LiveDeliveryOptions {
   readonly immediate?: boolean;
   readonly replace?: boolean;
+  /** The stream's card changed: send its identity (`host.live`) again, not only its text. */
+  readonly identify?: boolean;
 }
 
 interface PendingLive {
@@ -372,7 +374,7 @@ export class PersonalSyncSocket {
         (subscribed.kind === "node" && scope.kind === "node" && subscribed.nodeId !== scope.nodeId)
       )
         continue;
-      this.#queueLive(current, update, options);
+      this.#queueLive(current, update, options, options?.identify === true);
     }
   }
 
