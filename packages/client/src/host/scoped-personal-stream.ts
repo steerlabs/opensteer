@@ -40,8 +40,6 @@ export type ScopedPersonalIdentity = Pick<
   "deploymentId" | "epoch" | "viewerId"
 >;
 const detailIds = ["detail:0", "detail:1", "detail:2", "detail:3"] as const;
-/** How long the reader's scrolling must rest before its new position is reported. */
-export const anchorSettleMs = 500;
 const shellScope = { kind: "shell" } as const;
 
 export function scopeKey(scope: PersonalScope): PersonalResumeCursor["scopeKey"] {
@@ -55,26 +53,31 @@ export interface ObservedDetail {
   readonly text: ItemTextStore;
   observers: number;
   slot?: DetailId | undefined;
-  /** Where the reader is: absent at the latest messages. Change it through `anchorTo`. */
-  anchor?: string;
   /**
-   * Moves the anchor and tells the Host, so a repair or the next subscription centres there. A
-   * jump tells it at once; ordinary scrolling (`settled`) once the reader has stopped moving.
+   * Where the reader is, as the last explicit move or the last measurement left it: absent at the
+   * latest messages. Ordinary scrolling never changes it.
    */
-  anchorTo(itemId: string | undefined, settled?: boolean): void;
+  anchor?: string;
+  /** Sets the anchor for an explicit move (a jump, a link, Return to latest) and tells the Host. */
+  anchorTo(itemId: string | undefined): void;
   /**
-   * The reader's intended position, numbered: each move a person makes (a jump, Return to latest,
-   * a scroll report) takes the next number. A jump's page, a repair's reread and a subscription's
-   * first cut act only for the intent they began under; anything older is ignored.
+   * The view's one-shot measurement of the row in view: undefined at the latest messages. Asked
+   * only when the position is needed (a repair, a subscription) and no move is under way.
+   */
+  measure?: (() => string | undefined) | undefined;
+  /** A move under way owns the position until it lands or fails: its target is the anchor. */
+  moving?: { readonly intent: number; readonly target: string | undefined } | undefined;
+  /**
+   * The reader's explicit moves, numbered (a jump, a link, Return to latest). A jump's page, a
+   * repair's reread and a subscription's first cut act only for the move they began under.
    */
   intent: number;
   /** Takes the next intent number, for a move the reader is about to make. */
   intend(): number;
   /** The intent current when this scope last subscribed: its first cut answers that one. */
   subscribedIntent: number;
-  /** The anchor the Host was last told on this subscription, and a scroll's pending report. */
+  /** The anchor the Host was last told on this subscription. */
   sentAnchor?: string | null;
-  anchorTimer?: ReturnType<typeof setTimeout> | undefined;
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
@@ -187,7 +190,7 @@ export class ScopedPersonalStream {
       liveBytes: 0,
       revision: 0,
       subscriptions: 0,
-      anchorTo: (itemId, settled) => this.#anchorTo(detail, itemId, settled),
+      anchorTo: (itemId) => this.#anchorTo(detail, itemId),
       intent: 0,
       intend: () => ++detail.intent,
       subscribedIntent: 0,
@@ -699,7 +702,14 @@ export class ScopedPersonalStream {
       detail.intent === detail.subscribedIntent
     )
       delete detail.anchor;
-    // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
+    // A snapshot after `host.synchronized` is the Host's inline repair and applies in place. Where
+    // the reader is goes with it, measured now, before the repair replaces what is on screen.
+    if (
+      frame.type === "host.snapshot" &&
+      "items" in frame.snapshot &&
+      detail.transcript.getSnapshot().synchronized
+    )
+      this.#position(detail);
     if (!detail.transcript.apply(frame, this.#identity)) {
       this.#subscribe(detail, false, true);
       return;
@@ -804,20 +814,24 @@ export class ScopedPersonalStream {
     });
   }
 
-  #anchorTo(detail: ObservedDetail, itemId: string | undefined, settled = false) {
-    // A scroll report is the reader's own move; the reader's bookkeeping for a move under way is not.
-    if (settled) detail.intent++;
-    // Reads go by the newest anchor at once; only the report to the Host waits for scrolling to stop.
+  #anchorTo(detail: ObservedDetail, itemId: string | undefined) {
     if (itemId === undefined) delete detail.anchor;
     else detail.anchor = itemId;
-    if (detail.anchorTimer) clearTimeout(detail.anchorTimer);
-    detail.anchorTimer = settled
-      ? setTimeout(() => {
-          detail.anchorTimer = undefined;
-          this.#sendAnchor(detail);
-        }, anchorSettleMs)
-      : undefined;
-    if (!settled) this.#sendAnchor(detail);
+    this.#sendAnchor(detail);
+  }
+
+  /**
+   * Where the reader is, at the moment it is needed: a move under way owns it with its target;
+   * otherwise the view measures the row in view, once, now; otherwise the last explicit anchor.
+   */
+  #position(detail: ObservedDetail) {
+    const at = detail.moving
+      ? detail.moving.target
+      : detail.measure
+        ? detail.measure()
+        : detail.anchor;
+    if (at === undefined) delete detail.anchor;
+    else detail.anchor = at;
   }
 
   #sendAnchor(detail: ObservedDetail) {
@@ -990,6 +1004,8 @@ export class ScopedPersonalStream {
       !repair && detail.transcript.canCheckpoint()
         ? this.#cursor(detail.scope, detail.transcript.getSnapshot().through)
         : detail.unconfirmed?.saved.cursor;
+    // The subscription centres on where the reader is now.
+    this.#position(detail);
     const subscription = {
       subscriptionId: slot,
       scope: detail.scope,
@@ -1004,8 +1020,6 @@ export class ScopedPersonalStream {
   }
 
   #deactivate(detail: ObservedDetail) {
-    if (detail.anchorTimer) clearTimeout(detail.anchorTimer);
-    detail.anchorTimer = undefined;
     if (detail.slot) this.#slots.delete(detail.slot);
     detail.slot = undefined;
     detail.revision++;

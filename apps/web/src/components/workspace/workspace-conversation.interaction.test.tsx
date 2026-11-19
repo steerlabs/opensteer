@@ -960,11 +960,12 @@ describe("a conversation's foot", () => {
     expect(latest, "a superseded link returned the reader to the latest").not.toHaveBeenCalled();
   });
 
-  it("tells the Host the row in view as the reader scrolls, and puts that row back where it stood after a repair", async () => {
+  it("tells nobody as the reader scrolls; asked at a repair, it names the row in view and puts it back where it stood", async () => {
     // The Host's repairs of this conversation, as its reader counts them.
     let repairs = 0;
     const long = "thr_00000000-0000-4000-8000-000000000005";
-    let anchors!: { readonly mock: { readonly calls: readonly unknown[][] } };
+    let measure: (() => string | undefined) | null = null;
+    const anchors = vi.fn();
     const watch = (source: MockHostClient) => {
       const real = source.getThreadTranscript.bind(source);
       const views = new WeakMap<object, Map<number, object>>();
@@ -981,7 +982,11 @@ describe("a conversation's foot", () => {
           },
         };
       });
-      anchors = vi.spyOn(source, "setTranscriptAnchor");
+      // The one-shot measurement the view gives the client, and any report it might make.
+      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
+        measure = given;
+      });
+      Object.assign(source, { setTranscriptAnchor: anchors });
       return source;
     };
     await mount(`/tasks/${long}`, { hostClient: watch });
@@ -1002,17 +1007,15 @@ describe("a conversation's foot", () => {
       act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
     await frame();
-    expect(anchors.mock.calls.at(-1), "A reader at the foot is at the latest").toEqual([
-      long,
-      undefined,
-    ]);
+    expect(measure, "the view gave the client no way to ask").not.toBeNull();
+    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
 
-    // The reader scrolls up to stand 30px into the second row.
+    // The reader scrolls up to stand 30px into the second row. Nobody is told.
     await scrollTo(scroller, 130);
     await frame();
-    const reading = anchors.mock.calls.at(-1);
-    expect(reading?.[0]).toBe(long);
-    expect(reading?.[1], "The row in view was not told to the Host").toEqual(expect.any(String));
+    expect(anchors).not.toHaveBeenCalled();
+    // The client asks, as it does when a repair arrives, before the repair changes the rows.
+    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
 
     // A repair lays the conversation out again with 300px more above that row.
     geometry.above = 300;

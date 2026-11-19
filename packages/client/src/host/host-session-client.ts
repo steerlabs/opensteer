@@ -369,6 +369,8 @@ export class HttpHostClient {
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
+  /** Each task view's one-shot measurement of the row in view, for its reader. */
+  readonly #positionMeasures = new Map<string, () => string | undefined>();
   /** When each assignment was last pushed, by a counter a read notes as it begins. */
   readonly #assignmentPushes = new Map<string, number>();
   /** Every task whose assignments were asked for under this viewer. */
@@ -1353,8 +1355,11 @@ export class HttpHostClient {
     }
   }
 
-  setTranscriptAnchor(threadId: string, itemId: string | undefined) {
-    this.#reader(threadId)?.setAnchor(itemId);
+  setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null) {
+    // Kept for the task's reader, which may be made after the view mounts.
+    if (measure) this.#positionMeasures.set(threadId, measure);
+    else this.#positionMeasures.delete(threadId);
+    this.#reader(threadId)?.setMeasure(measure ?? undefined);
   }
 
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
@@ -1402,7 +1407,9 @@ export class HttpHostClient {
     const scope = this.#detailScope(threadId);
     if (!scope || this.#threadReaders.has(threadId)) return;
     const detail = this.#stream.detail(scope);
-    this.#scopeReaders.set(threadId, new ScopedThreadReader(detail, this.rpc, this.#bodies));
+    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
+    reader.setMeasure(this.#positionMeasures.get(threadId));
+    this.#scopeReaders.set(threadId, reader);
     let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
     let placeQueue: NonNullable<
       ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]

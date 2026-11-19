@@ -1202,7 +1202,12 @@ export interface HostClient extends TabsClient {
     itemId: string,
     nodeId?: string,
   ): Promise<import("@opensteer/protocol/transcript").TranscriptItemResult | undefined>;
-  setTranscriptAnchor(threadId: string, itemId: string | undefined): void;
+  /**
+   * The view's one-shot measurement of the row in view (undefined at the latest messages), asked
+   * only when the client needs the reader's position: a repair, a subscription. Ordinary
+   * scrolling is never reported. Null releases it.
+   */
+  setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null): void;
   watchPersonalResource(
     kind: import("@opensteer/protocol/resources").PersonalResourceKind,
     listener: () => void,

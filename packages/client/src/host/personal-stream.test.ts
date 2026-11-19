@@ -509,7 +509,7 @@ test("retains the moved item's anchor across a history reset and refuses a respo
     }),
   } as unknown as import("@opensteer/protocol").HostApiClient;
   const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
-  reader.setAnchor(item.id);
+  f.detail.anchorTo(item.id);
   await expect(reader.history("earlier")).rejects.toThrow("history anchor");
   const installed = f.detail.transcript.getSnapshot().items.get(item.id);
   await reader.history("earlier");
@@ -559,13 +559,12 @@ test("the scope's anchor follows the reader: set by a jump, cleared on return to
   await reader.history("latest");
   expect(f.detail.anchor).toBeUndefined();
   // The open subscription heard each move, so a repair centres where the reader is.
-  expect(anchors()).toEqual([old.id, "latest"]);
+  expect(anchors()).toEqual([old.messageId, old.id, "latest"]);
   expect(resubscribe().anchorItemId).toBeUndefined();
   reader.dispose();
 });
 
-test("scrolling keeps the anchor on the row in view, told to the Host once the reader stops; a jump is told at once", async () => {
-  vi.useFakeTimers();
+test("scrolling tells nobody; a jump is told at once, and paging keeps the reader's row", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
@@ -597,32 +596,19 @@ test("scrolling keeps the anchor on the row in view, told to the Host once the r
     f.sent.flatMap((frame) =>
       frame.type === "client.anchor" ? [frame.anchorItemId ?? "latest"] : [],
     );
-  // Ordinary scrolling: reads use the newest row at once, the Host hears only where it rested.
-  reader.setAnchor(item.id);
-  reader.setAnchor(earlier.id);
-  expect(f.detail.anchor).toBe(earlier.id);
-  expect(anchors()).toEqual([]);
-  await vi.advanceTimersByTimeAsync(500);
-  expect(anchors()).toEqual([earlier.id]);
-  // Paging earlier keeps the reader's row, even when the window still reaches the tail.
+  // The view can be asked where the reader is; it is never told so as they scroll.
+  let inView: string | undefined = earlier.id;
+  reader.setMeasure(() => inView);
   await reader.history("earlier");
-  expect(f.detail.anchor).toBe(earlier.id);
-  // A scroll still settling loses to a jump, which is told at once.
-  reader.setAnchor(item.id);
+  expect(anchors()).toEqual([]);
+  // A jump is the reader's move: the Host hears its target at once, then the row it landed on.
   await reader.history("around", linked.messageId);
-  expect(anchors()).toEqual([earlier.id, linked.id]);
-  await vi.advanceTimersByTimeAsync(500);
-  expect(anchors()).toEqual([earlier.id, linked.id]);
-  // A repair centred on a row in the newest window is still the tail: the reader keeps following.
-  reader.setAnchor(item.id);
-  await vi.advanceTimersByTimeAsync(500);
+  expect(anchors()).toEqual([linked.messageId, linked.id]);
+  // A repair with the jump done measures the row in view, once, and centres there.
+  inView = linked.id;
   const repair = f.detailSnapshot();
-  f.stream.receive({
-    ...repair,
-    snapshot: { ...repair.snapshot, anchorItemId: item.id, nextAfter: null },
-  });
-  expect(f.detail.transcript.getSnapshot().newest).toBe(true);
-  expect(f.detail.anchor).toBe(item.id);
+  f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: linked.id } });
+  expect(f.detail.anchor).toBe(linked.id);
   expect(reader.getSnapshot().repairs).toBe(1);
   reader.dispose();
 });
@@ -846,21 +832,24 @@ describe("the reader's intended position", () => {
     const { f, targets, pending, reader } = positioned();
     const jump = reader.history("around", targets[0]!.messageId);
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    reader.setAnchor(targets[2]!.id);
+    // A newer move (a link to another message) is asked for while the first read is out.
+    const newer = reader.history("around", targets[2]!.messageId);
     pending[0]!.fail();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.answer();
+    await expect(newer).resolves.toBe(true);
     await expect(jump, "a superseded jump's failure reached its caller").resolves.toBe(false);
     expect(f.detail.anchor).toBe(targets[2]!.id);
-    // Return to latest, overtaken by a scroll, says it did not land, so no caller acts on it.
+    // A jump stays the reader's position through scrolling: nothing a scroll does supersedes it.
     const latest = reader.history("latest");
-    await vi.waitFor(() => expect(pending).toHaveLength(2));
-    reader.setAnchor(targets[1]!.id);
-    pending[1]!.answer();
-    await expect(latest).resolves.toBe(false);
-    expect(f.detail.anchor).toBe(targets[1]!.id);
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!.answer();
+    await expect(latest).resolves.toBe(true);
+    expect(f.detail.anchor).toBeUndefined();
     // A failure of the move still current is the caller's to show.
     const current = reader.history("around", targets[3]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(3));
-    pending[2]!.fail();
+    await vi.waitFor(() => expect(pending).toHaveLength(4));
+    pending[3]!.fail();
     await expect(current).rejects.toThrow("connection was lost");
     reader.dispose();
   });
@@ -882,15 +871,14 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
-  it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
-    const { f, targets, reader } = positioned();
-    // Back from the background: a subscription that asked for no anchor.
+  it("a resubscription's first cut does not erase a jump made after it subscribed", async () => {
+    const { f, targets, pending, reader } = positioned();
     f.stream.setBackground(true);
     f.stream.setBackground(false);
     const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
     expect(subscribe.anchorItemId).toBeUndefined();
-    // The reader scrolls up on the rows still on screen while that cut is in flight.
-    reader.setAnchor(targets[2]!.id);
+    // A link is opened while that cut is in flight.
+    void reader.history("around", targets[2]!.messageId);
     const address = {
       scope: subscribe.scope,
       subscriptionId: subscribe.subscriptionId,
@@ -898,11 +886,53 @@ describe("the reader's intended position", () => {
     };
     const cut = f.detailSnapshot();
     f.stream.receive({ ...cut, ...address, snapshot: { ...cut.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor, "the cut erased the newer scroll").toBe(targets[2]!.id);
+    expect(f.detail.anchor, "the cut erased the newer jump").toBe(targets[2]!.messageId);
+    expect(pending).toHaveLength(0);
     reader.dispose();
   });
 
-  it("under any interleaving of jumps, returns to latest, scrolls, failures, repairs and resubscribes, only the latest move speaks", async () => {
+  it("a jump owns the position through scrolling and a repair: the repair centres on its target, and it lands", async () => {
+    const { f, targets, pending, reader } = positioned();
+    // The view, asked, would say the reader is on targets[1]; they scrolled there after linking.
+    reader.setMeasure(() => targets[1]!.id);
+    const jump = reader.history("around", targets[3]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const repair = f.detailSnapshot();
+    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor, "the repair took a measurement over the jump").toBe(
+      targets[3]!.messageId,
+    );
+    // The page asked for before the repair is read again in the new cut, for the same jump.
+    pending.shift()!.answer();
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    pending.shift()!.answer();
+    await expect(jump).resolves.toBe(true);
+    expect(f.detail.anchor).toBe(targets[3]!.id);
+    reader.dispose();
+  });
+
+  it("a repair with no jump under way rereads around the row in view, measured once at the repair", async () => {
+    const { f, targets, pending, reader } = positioned();
+    let measured = 0;
+    reader.setMeasure(() => {
+      measured++;
+      return targets[1]!.id;
+    });
+    const repair = f.detailSnapshot();
+    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
+    expect(measured).toBe(1);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect(pending[0]!.query.anchorItemId).toBe(targets[1]!.id);
+    pending[0]!.answer();
+    await vi.waitFor(() =>
+      expect(f.detail.transcript.getSnapshot().items.has(targets[1]!.id)).toBe(true),
+    );
+    expect(f.detail.anchor).toBe(targets[1]!.id);
+    reader.dispose();
+  });
+
+  it("under any interleaving of jumps, returns to latest, scrolls, failures, repairs and resubscribes, only the latest move speaks, and a repair outside a move uses the row in view", async () => {
     let seed = 11;
     const next = (limit: number) => {
       seed = (seed * 1103515245 + 12345) % 2 ** 31;
@@ -912,7 +942,10 @@ describe("the reader's intended position", () => {
       const { f, targets, pending, reader, settle } = positioned();
       const asked: { promise: Promise<boolean>; move: number }[] = [];
       let moves = 0;
-      let last: { kind: "jump" | "latest" | "scroll"; target: number } | null = null;
+      let last: { kind: "jump" | "latest"; target: number } | null = null;
+      // Where the view says the reader is, if asked: scrolling changes it and tells nobody.
+      let inView: number | undefined;
+      reader.setMeasure(() => (inView === undefined ? undefined : targets[inView]!.id));
       for (let step = 0; step < 14; step++) {
         const action = next(8);
         if (action <= 1) {
@@ -929,10 +962,7 @@ describe("the reader's intended position", () => {
           // Expo's and web's Return to latest: the same call, judged by what it resolves.
           asked.push({ promise: reader.history("latest"), move: moves });
         } else if (action === 3) {
-          const target = next(targets.length);
-          moves++;
-          last = { kind: "scroll", target };
-          reader.setAnchor(targets[target]!.id);
+          inView = next(targets.length);
         } else if (action === 4) {
           f.stream.receive(f.detailSnapshot());
         } else if (action === 5) {
@@ -970,7 +1000,7 @@ describe("the reader's intended position", () => {
       const label = `run ${run}`;
       for (const [index, { move }] of asked.entries()) {
         const outcome = outcomes[index]!;
-        const latest = last?.kind !== "scroll" && move === moves;
+        const latest = move === moves;
         if (outcome.status === "rejected")
           expect(latest, `${label}: a superseded move ${index} reported a failure`).toBe(true);
         else if (outcome.value)
@@ -978,7 +1008,6 @@ describe("the reader's intended position", () => {
       }
       const final = outcomes.at(-1);
       const landed = final?.status === "fulfilled" && final.value === true;
-      if (last?.kind === "scroll") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
       if (last?.kind === "jump" && landed)
         expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
       if (last?.kind === "latest" && landed) expect(f.detail.anchor, label).toBeUndefined();

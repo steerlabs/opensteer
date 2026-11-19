@@ -4870,7 +4870,7 @@ export class MockHostClient implements HostClient {
     return result.ok ? result.data : undefined;
   }
 
-  setTranscriptAnchor() {}
+  setTranscriptPosition(_threadId: string, _measure: (() => string | undefined) | null) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
     const key = `${threadId}:${kind}`;
     const cursor =

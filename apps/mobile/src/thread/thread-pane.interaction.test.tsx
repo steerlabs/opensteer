@@ -1420,7 +1420,9 @@ function fakeHost(initial: FixtureHostSnapshot) {
     activateThread: vi.fn(),
     observeThread: () => () => {},
     getThreadItemText: () => undefined,
-    setTranscriptAnchor: vi.fn((_threadId: string, _itemId: string | undefined) => {}),
+    setTranscriptPosition: vi.fn(
+      (_threadId: string, _measure: (() => string | undefined) | null) => {},
+    ),
     watchPersonalResource: () => () => {},
     getThreadTranscript: (id: string) => {
       return {
@@ -4491,7 +4493,7 @@ describe("a task", () => {
     expect(harness.scrollToOffset).not.toHaveBeenCalled();
   });
 
-  it("tells the client the row at the top of the screen as the reader scrolls, and none back at the latest", async () => {
+  it("tells nobody as the reader scrolls; asked, it names the row at the top of the screen, and none at the latest", async () => {
     const task = taskAtWork();
     const host = fakeHost(
       snapshotFor({
@@ -4502,7 +4504,8 @@ describe("a task", () => {
     );
     await mount(host, workId);
     const list = () => harness.list!;
-    const anchors = host.client.setTranscriptAnchor as unknown as ReturnType<typeof vi.fn>;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined)();
     act(() => {
       list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
       list().onContentSizeChange?.(390, 1000);
@@ -4524,10 +4527,13 @@ describe("a task", () => {
         });
         list().onScrollEndDrag?.();
       });
+    const registered = position.mock.calls.length;
     scroll(0);
-    expect(anchors).toHaveBeenLastCalledWith(workId, expect.any(String));
+    // Scrolling tells nobody; the client asks only when it needs the reader's place.
+    expect(position.mock.calls.length).toBe(registered);
+    expect(measure()).toEqual(expect.any(String));
     scroll(400);
-    expect(anchors).toHaveBeenLastCalledWith(workId, undefined);
+    expect(measure()).toBeUndefined();
   });
 
   it("shows Resume with a paused queue and no waiting messages", async () => {

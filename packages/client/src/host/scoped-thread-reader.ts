@@ -429,7 +429,8 @@ export class ScopedThreadReader implements ThreadViewSource {
     const anchor = this.#detail.anchor;
     if (
       !this.#reads.busy("history") &&
-      (anchor !== undefined ? !state.items.has(anchor) : !state.newest)
+      !this.#detail.moving &&
+      (anchor !== undefined ? !holdsAnchor(state.items.values(), anchor) : !state.newest)
     )
       void this.#reads
         .request("history", (read) => this.#readHistory(read, { mode: "anchor" }), {
@@ -440,9 +441,9 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
-  /** The row the reader is looking at as they scroll: none at the tail. */
-  setAnchor(itemId: string | undefined) {
-    this.#detail.anchorTo(itemId, true);
+  /** The view's one-shot measurement of the row in view, asked only when the position is needed. */
+  setMeasure(measure: (() => string | undefined) | undefined) {
+    this.#detail.measure = measure;
   }
 
   /**
@@ -457,6 +458,13 @@ export class ScopedThreadReader implements ThreadViewSource {
     // A jump or Return to latest is a move of the reader's: it takes the next intent number, and
     // only that intent's page may land. Paging earlier or newer moves no one.
     const intent = mode === "around" || mode === "latest" ? this.#detail.intend() : undefined;
+    if (intent !== undefined) {
+      // The move owns the position from now until it lands or fails: a repair or subscription
+      // meanwhile centres on its target, and the Host is told at once.
+      const target = mode === "around" ? aroundMessageId : undefined;
+      this.#detail.moving = { intent, target };
+      this.#detail.anchorTo(target);
+    }
     // The person waits on this read: a failure is theirs to see and retry. One asked for while the
     // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
     return this.#reads
@@ -486,6 +494,7 @@ export class ScopedThreadReader implements ThreadViewSource {
    */
   #settled(intent: number | undefined, succeeded: boolean) {
     if (intent === undefined) return true;
+    if (this.#detail.moving?.intent === intent) this.#detail.moving = undefined;
     if (this.#detail.intent !== intent) return false;
     return succeeded ? this.#landed === intent : true;
   }
@@ -537,11 +546,11 @@ export class ScopedThreadReader implements ThreadViewSource {
     try {
       if (mode === "anchor") {
         const anchor = this.#detail.anchor;
-        if (anchor !== undefined && !state.items.has(anchor)) {
+        if (anchor !== undefined && !holdsAnchor(state.items.values(), anchor)) {
           const page = await this.#page(read.signal, null, undefined, anchor);
           // The reader scrolled on to a row this client holds: that is where they are now.
           if (!current()) return;
-          if (page.kind === "page" && page.items.some(({ id }) => id === anchor)) {
+          if (page.kind === "page" && holdsAnchor(page.items, anchor)) {
             this.#installPage([page, state.generation, "around", token], undefined, intent);
             return;
           }
@@ -581,10 +590,10 @@ export class ScopedThreadReader implements ThreadViewSource {
       const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
       let reset = await this.#page(read.signal, null, aroundMessageId, anchor);
       if (!current()) return;
-      if (anchor && (reset.kind !== "page" || !reset.items.some(({ id }) => id === anchor))) {
+      if (anchor && (reset.kind !== "page" || !holdsAnchor(reset.items, anchor))) {
         if (
           !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
-          transcript.getSnapshot().items.has(anchor)
+          holdsAnchor(transcript.getSnapshot().items.values(), anchor)
         )
           throw new Error("The history anchor is unavailable.");
         this.#detail.anchorTo(undefined);
@@ -595,9 +604,7 @@ export class ScopedThreadReader implements ThreadViewSource {
           [
             reset,
             state.generation,
-            aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
-              ? "around"
-              : "latest",
+            aroundMessageId || (anchor && holdsAnchor(reset.items, anchor)) ? "around" : "latest",
             token,
           ],
           aroundMessageId,
@@ -854,4 +861,11 @@ export function transcriptBodyKey(
     generation,
     itemId,
   ]);
+}
+
+/** Whether `items` hold the anchor: a row's own id, or a jump's target message. */
+function holdsAnchor(items: Iterable<TranscriptItem>, anchor: string) {
+  for (const item of items)
+    if (item.id === anchor || (item.kind === "message" && item.messageId === anchor)) return true;
+  return false;
 }

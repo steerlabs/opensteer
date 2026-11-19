@@ -627,16 +627,11 @@ function ThreadView({
       viewport: scroller.clientHeight,
     };
     if (follows !== previous.follows) setFollows(follows);
-    return own;
   };
   const keepTailInView = () => readScroller(false);
-  const handleScroll = () => {
-    // Only the reader's own scroll is a move of theirs; layout and a jump's own scrolling are not.
-    if (readScroller(true) && readingFrame.current === null)
-      readingFrame.current = requestAnimationFrame(measureReading);
-  };
+  const handleScroll = () => readScroller(true);
 
-  /* ---- Reading position: the row in view ---- */
+  /* ---- Reading position: the row in view, measured when asked ---- */
 
   // Each row's first item, which is what the Host centres a repair or the next subscription on.
   const rowItems = useMemo(() => {
@@ -656,50 +651,43 @@ function ThreadView({
         ),
       ));
   }, [conversation, thread.inputQueuePaused]);
-  // The row the reader is looking at and where it stands, measured once a frame as they scroll.
+  // The row the reader was looking at, and where it stood, when the client last asked: a repair
+  // puts it back there. Ordinary scrolling reports nothing.
   const reading = useRef<ReadingAnchor | null>(null);
-  const readingFrame = useRef<number | null>(null);
   const historicalRef = useRef(historical);
   historicalRef.current = historical;
-  useEffect(
-    () => () => {
-      if (readingFrame.current !== null) cancelAnimationFrame(readingFrame.current);
-    },
-    [],
-  );
-  // The reader's moves (jumps, returns, their own scrolls), numbered: a frame scheduled for one
-  // never acts after a newer one. The client's intent decides what lands; this keeps the view's
-  // own follow-up to it.
+  // The reader's explicit moves (jumps, returns), numbered: a frame scheduled for one never acts
+  // after a newer one.
   const moves = useRef(0);
-  const measureReading = () => {
-    readingFrame.current = null;
-    moves.current++;
+  /** Measures the row in view once, now, for a repair or a subscription the client is making. */
+  const measureNow = (): string | undefined => {
     const scroller = currentScroller();
-    // A position being put back is not where the reader chose to be until it is in place.
-    if (!scroller || restoring.current) return;
-    // Following the latest, there is no row to name and nothing to measure.
-    if (tailRef.current.follows && !historicalRef.current) {
-      reading.current = null;
-      hostClient.setTranscriptAnchor(thread.id, undefined);
-      return;
-    }
+    reading.current = null;
+    if (!scroller || (tailRef.current.follows && !historicalRef.current)) return undefined;
     const anchor = findReadingAnchor(
       scroller.getElementsByClassName("transcript__row"),
       scroller.getBoundingClientRect().top,
       (row) => (row as HTMLElement).dataset.transcriptRow,
     );
     reading.current = anchor;
-    const itemId = anchor && rowItems().get(anchor.key);
-    if (itemId) hostClient.setTranscriptAnchor(thread.id, itemId);
+    return (anchor && rowItems().get(anchor.key)) ?? undefined;
   };
+  const measure = useRef(measureNow);
+  measure.current = measureNow;
+  useEffect(() => {
+    hostClient.setTranscriptPosition(thread.id, () => measure.current());
+    return () => hostClient.setTranscriptPosition(thread.id, null);
+  }, [hostClient, thread.id]);
   // A repair replaces the rows on screen: the reader's row is put back where it stood, as soon as
   // it is there again, and the reader stays where they were rather than at the foot.
   const seenRepairs = useRef(repairs);
   useLayoutEffect(() => {
     if (seenRepairs.current === repairs) return;
     seenRepairs.current = repairs;
-    if (tailRef.current.follows || !reading.current) return;
-    restoring.current = reading.current;
+    const measured = reading.current;
+    reading.current = null;
+    if (tailRef.current.follows || !measured) return;
+    restoring.current = measured;
     restoreReading();
   }, [repairs]);
   useLayoutEffect(() => {
@@ -822,16 +810,6 @@ function ThreadView({
       ? [...anchorRow.querySelectorAll<HTMLElement>("[data-message-id]")].find(visible)
       : undefined;
     const anchor = anchorMessage ?? anchorRow;
-    const item = entries.find(({ id }) => id === anchorMessage?.dataset.messageId);
-    if (item)
-      hostClient.setTranscriptAnchor(
-        thread.id,
-        "itemId" in item ? (item.itemId ?? item.id) : item.id,
-      );
-    else if (anchorRow?.dataset.transcriptRow) {
-      const first = rowItems().get(anchorRow.dataset.transcriptRow);
-      if (first) hostClient.setTranscriptAnchor(thread.id, first);
-    }
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();
     if (scroller)
@@ -913,12 +891,6 @@ function ThreadView({
     // A newer move of the reader's (another jump, Return to latest, a scroll) took over: this jump
     // says nothing about its message and leaves the reader where that move put them.
     if (!landed) return false;
-    const anchored = hostClient
-      .getThreadTranscript(thread.id)
-      ?.getSnapshot()
-      .entries.find((entry) => entry.kind === "message" && entry.id === messageId);
-    if (anchored?.kind === "message")
-      hostClient.setTranscriptAnchor(thread.id, anchored.itemId ?? anchored.id);
     if (
       !(hostClient.getThreadTranscript(thread.id)?.getSnapshot().entries ?? []).some(
         (entry) => entry.kind === "message" && entry.id === messageId,

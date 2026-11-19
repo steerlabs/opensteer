@@ -801,10 +801,19 @@ function ThreadPaneForUser(
         (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
     },
   ).current;
+  // Where the reader is, asked only when the client needs it (a repair, a subscription): the row
+  // the list last reported at the top of the screen, or none while following the latest.
+  const following = useRef(true);
+  following.current = atTail && !historical;
+  useEffect(() => {
+    hostClient.setTranscriptPosition(threadId, () =>
+      following.current ? undefined : visibleItem.current,
+    );
+    return () => hostClient.setTranscriptPosition(threadId, null);
+  }, [hostClient, threadId]);
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
     paging.current = true;
-    if (visibleItem.current) hostClient.setTranscriptAnchor(threadId, visibleItem.current);
     setFailure(null);
     setLoadingEarlier(true);
     void hostClient
@@ -1327,10 +1336,6 @@ function ThreadPaneForUser(
     }
     tail.current = readTail(tail.current, contentOffset.y, max, true);
     const follows = tail.current.follows;
-    // Where the reader is, for a repair or the next subscription to centre on: the row at the top
-    // of the screen, or none while they follow the latest. The client tells the Host once they rest.
-    if (follows && !historical) hostClient.setTranscriptAnchor(threadId, undefined);
-    else if (visibleItem.current) hostClient.setTranscriptAnchor(threadId, visibleItem.current);
     // Only a change repaints: a scroll fires many times a second and the pill
     // is the only thing on screen that depends on it.
     setAtTail((current) => (current === follows ? current : follows));
