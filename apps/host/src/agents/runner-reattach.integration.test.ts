@@ -318,8 +318,8 @@ integration("Runs that outlive their connection", () => {
       .execute();
   }
   async function expectCompletedExactlyOnce(active: VerticalStack, runId: RunId): Promise<void> {
-    const stored = await storedRunnerReceipts(active, runId);
-    expect(stored.map((row) => Number(row.ordinal))).toEqual(stored.map((_row, index) => index));
+    // A terminal Run keeps no receipts; its replies prove each statement applied once.
+    expect(await storedRunnerReceipts(active, runId)).toEqual([]);
     expect(await run(active, runId)).toEqual({ failure: null, status: "completed" });
     expect(await assistantRows(active, runId)).toHaveLength(messages);
   }
@@ -428,20 +428,13 @@ integration("Runs that outlive their connection", () => {
     ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", signal, "next");
     expect((await run(active, runId)).status).toBe("completed");
-    expect((await storedRunnerReceipts(active, runId)).slice(0, lostEvents.length)).toEqual(
-      lostEvents,
-    );
-    const recoveredEvents = await storedRunnerReceipts(active, runId);
-    expect(recoveredEvents).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(
-      recoveredEvents
-        .slice(lostEvents.length)
-        .every(
-          (receipt) =>
-            receipt.bindingGeneration > lostEvents.at(-1)!.bindingGeneration &&
-            receipt.disposition === "applied",
-        ),
-    ).toBe(true);
+    const recovered = await active.host.store.database
+      .selectFrom("runs")
+      .select(["nextRunnerOrdinal", "bindingGeneration"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(recovered.nextRunnerOrdinal).toBe(lostEvents.length + completedStreamEventTypes.length);
+    expect(recovered.bindingGeneration).toBeGreaterThan(lostEvents.at(-1)!.bindingGeneration);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("recovers at once after a lost lease, though the engine never ended the stopped turn", async () => {
@@ -521,18 +514,13 @@ integration("Runs that outlive their connection", () => {
     expect(Date.now() - reconnectedAt).toBeLessThan(requestTimeoutMs / 2);
     const [stuck, resumed] = await turnPids();
     expect(resumed).not.toBe(stuck);
-    const events = await storedRunnerReceipts(active, runId);
-    expect(events).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(
-      events
-        .slice(lostEvents.length)
-        .every(
-          (receipt) =>
-            receipt.bindingGeneration > lostEvents.at(-1)!.bindingGeneration &&
-            receipt.disposition === "applied",
-        ),
-    ).toBe(true);
-    expect(events.slice(0, lostEvents.length)).toEqual(lostEvents);
+    const ended = await active.host.store.database
+      .selectFrom("runs")
+      .select(["nextRunnerOrdinal", "bindingGeneration"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(ended.nextRunnerOrdinal).toBe(lostEvents.length + completedStreamEventTypes.length);
+    expect(ended.bindingGeneration).toBeGreaterThan(lostEvents.at(-1)!.bindingGeneration);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("keeps a turn running through a Host restart and finishes it exactly once", async () => {

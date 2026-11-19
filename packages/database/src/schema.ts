@@ -717,7 +717,6 @@ export interface ThreadTable {
   /** Set only while Done, when the Host moved the task there because nothing touched it. */
   doneReason: Generated<ThreadDoneReason | null>;
   pendingRequestCount: Generated<number>;
-  requestCountChanged: Generated<boolean>;
   revision: Generated<string>;
   nextTranscriptPosition: Generated<string>;
   transcriptOrderRevision: Generated<string>;

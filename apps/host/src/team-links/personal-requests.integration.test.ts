@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { teamOperationId } from "./operation-id.js";
 import { expect, onTestFinished, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -9,6 +10,7 @@ import {
   TeamTurnContextSchema,
   type RunId,
   type TeamSource,
+  type ThreadId,
 } from "@opensteer/core";
 import { TeamRunRequestSchema } from "@opensteer/protocol";
 import {
@@ -26,6 +28,24 @@ import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
+
+/** The task's stored pending count and the count its last published summary carried. */
+async function pendingBadge(database: StoreFixture["database"], taskId: ThreadId) {
+  const task = await database
+    .selectFrom("threads")
+    .select("pendingRequestCount")
+    .where("id", "=", taskId)
+    .executeTakeFirstOrThrow();
+  const summary = await database
+    .selectFrom("clientChanges")
+    .select("payload")
+    .where("entityKind", "=", "thread")
+    .where("entityId", "=", taskId)
+    .orderBy("sequence", "desc")
+    .limit(1)
+    .executeTakeFirstOrThrow();
+  return [task.pendingRequestCount, summary.payload.pendingRequestCount];
+}
 
 async function consentFixture(base: StoreFixture) {
   const personal = await base.createRunFixture("Consent");
@@ -481,6 +501,33 @@ describeStore("personal team consent and returns", (it) => {
       .execute();
     expect(runs).toHaveLength(1);
   });
+  it("deletes a queued Run's receipts when its ask is cancelled", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    const { runId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    // A steer or recovery requeues a Run that already admitted statements under a binding.
+    await sql`insert into runner_event_receipts(run_id,ordinal,runner_id,runner_boot_id,binding_generation,
+        reported_digest,disposition,committed_head)
+      values (${runId},0,'runner','boot',1,sha256('statement'::bytea),'applied',0)`.execute(
+      f.database,
+    );
+    await f.publisher.cancel(f.origin.teamId, f.frame.request.id);
+    expect(
+      await f.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", runId!)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "interrupted" });
+    expect(
+      await f.database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", runId!)
+        .execute(),
+    ).toEqual([]);
+  });
   it("keeps cancellation nonterminal if input cleanup cannot commit", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
     await f.publisher.deliver(f.origin.teamId, f.frame);
@@ -799,6 +846,7 @@ describeStore("personal team consent and returns", (it) => {
           title: "My task",
           idempotencyKey: "adopt-ask",
         });
+      if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([1, 1]);
       await f.database
         .updateTable("personalTeamRequests")
         .set({ consentExpiresAt: new Date(0) })
@@ -817,6 +865,7 @@ describeStore("personal team consent and returns", (it) => {
       expect((await f.store.mirror(f.origin.teamId, f.frame.request.id))?.terminalState).toBe(
         "cancelled",
       );
+      if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([0, 0]);
     });
 
   it("admits consent-gated work on arrival, replays approval after a lost ack, and resolves device races", async ({
@@ -860,6 +909,7 @@ describeStore("personal team consent and returns", (it) => {
         .where("messageId", "=", arrival.receipt.inputId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "awaiting-approval" });
+    expect(await pendingBadge(f.database, arrival.receipt.taskId)).toEqual([1, 1]);
     expect(await needsYouPage(f.database, { userId: f.userId })).toMatchObject({
       count: 1,
       entries: [{ kind: "team-ask", presentation: f.frame.presentation }],
@@ -909,6 +959,7 @@ describeStore("personal team consent and returns", (it) => {
       replyTarget: { kind: "team-thread", requestId: f.frame.request.id },
     });
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(0);
+    expect(await pendingBadge(f.database, saved.taskId!)).toEqual([0, 0]);
     const provider = await f.database
       .selectFrom("providerSessions")
       .select("personalContext")

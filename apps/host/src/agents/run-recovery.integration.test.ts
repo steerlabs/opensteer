@@ -2102,16 +2102,15 @@ integration.sequential("Run recovery acceptance", () => {
       "assistant.message",
       "run.completed",
     ]);
-    const stored = await store.database
-      .selectFrom("runnerEventReceipts")
-      .select(["ordinal", "disposition"])
-      .where("runId", "=", runId)
-      .where("bindingGeneration", "=", successorGeneration)
-      .orderBy("ordinal")
-      .execute();
-    expect(stored).toEqual(
-      emitted.map((event) => ({ ordinal: String(event.runnerOrdinal), disposition: "applied" })),
-    );
+    // A terminal Run keeps no receipts; its ordinal shows every statement was admitted.
+    expect(await receiptsOf(current.active, runId)).toEqual([]);
+    expect(
+      await store.database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: emitted.at(-1)!.runnerOrdinal + 1 });
     const statement = emitted.find((event) => event.type === "assistant.message")!;
     const { messageId } = recordSchema.parse(statement.data);
     const reply = await store.database
@@ -2139,7 +2138,6 @@ integration.sequential("Run recovery acceptance", () => {
       fence,
       successorGeneration,
       emitted,
-      stored,
     });
   }, 120_000);
 

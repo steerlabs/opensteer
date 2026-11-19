@@ -3,7 +3,7 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { utf8ByteLength, utf8Prefix, type RunId, type ThreadId } from "@opensteer/core";
 import { sql, type Insertable, type Selectable, type Kysely, type InferResult } from "kysely";
 import { type PersonalMutation, type PersonalMutationTransaction } from "./personal-mutation.js";
-import { itemView } from "./personal-sync-store.js";
+import { itemColumns, itemView } from "./personal-sync-store.js";
 import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
@@ -123,19 +123,22 @@ export async function recordExecutionRunChange(
   mutation.react({ type: "runChanged", environmentId: run.environmentId, ...input });
 }
 
+/** `fresh` carries the position a caller reserved for an item whose source row it just inserted. */
 export async function writeExecutionItem(
   tx: PersonalMutationTransaction,
   mutation: PersonalMutation,
   item: Omit<Insertable<TranscriptItemTable>, "position" | "revision">,
+  fresh?: { readonly position: string | null },
 ) {
-  const old =
-    mutation.transcriptPlacement(item.id) ??
-    (await tx
-      .selectFrom("transcriptItems")
-      .select(["position", "nodeId", "visible"])
-      .where("id", "=", item.id)
-      .executeTakeFirst());
-  let position = old?.position ?? null;
+  const old = fresh
+    ? undefined
+    : (mutation.transcriptPlacement(item.id) ??
+      (await tx
+        .selectFrom("transcriptItems")
+        .select(["position", "nodeId", "visible"])
+        .where("id", "=", item.id)
+        .executeTakeFirst()));
+  let position = fresh?.position ?? old?.position ?? null;
   if (item.visible && position === null) {
     const thread = await tx
       .updateTable("threads")
@@ -199,7 +202,12 @@ export async function writeExecutionItem(
             revision: mutation.sequence,
           }),
         )
-        .returningAll()
+        // A card draws from its view; only a place also draws from its bounded body.
+        .returning([
+          ...itemColumns,
+          "visible",
+          sql<TranscriptItemTable["body"]>`case when kind = 'place' then body end`.as("body"),
+        ])
         .executeTakeFirstOrThrow();
       const scopeKey = card.nodeId
         ? (`node:${card.nodeId}` as const)

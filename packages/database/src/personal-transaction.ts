@@ -40,7 +40,6 @@ export async function runOfflineSettlement<Result>(
   transaction: Transaction<DatabaseSchema>,
   settle: () => Promise<Result>,
 ): Promise<Result> {
-  await sql`select singleton_key from personal_settings for no key update`.execute(transaction);
   held.add(transaction);
   offlineSettlements.add(transaction);
   try {
@@ -76,8 +75,6 @@ export async function lockPersonalSyncState<Schema>(transaction: Transaction<Sch
     }>`select deployment_id from client_sync_state limit 1 for no key update`.execute(transaction)
   ).rows[0];
   if (!state) throw new Error("Personal sync state is missing");
-  // Settings follow enrollment of the hosting computer during first-owner setup.
-  await sql`select singleton_key from personal_settings for no key update`.execute(transaction);
   held.add(transaction);
   return state.deploymentId;
 }

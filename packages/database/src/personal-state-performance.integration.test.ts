@@ -181,6 +181,17 @@ async function measure(events: number) {
       );
       settingsMs.push(performance.now() - started);
     }
+    // A task keeps one input row per message it was ever sent.
+    await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,
+        idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state,delivered_at)
+      select 'msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),input.thread_id,input.actor_principal_id,
+        input.authority_source,input.causal_chain_id,input.idempotency_key||':perf:'||n,'queue',n,
+        input.request_fingerprint,input.requested_by,'delivered',now()
+      from thread_inputs input cross join generate_series(1,${Math.min(messageCount, 50_000)}) n
+      where input.thread_id=${run.threadId} limit ${Math.min(messageCount, 50_000)}`.execute(
+      target,
+    );
+    await sql`analyze thread_inputs, messages, transcript_items`.execute(target);
     const explain = async (query: ReturnType<typeof sql>) =>
       (await sql`explain(analyze,buffers,format json) ${query}`.execute(target)).rows;
     const plans = {
@@ -205,7 +216,21 @@ async function measure(events: number) {
       receipts: await explain(
         sql`select reported_digest from runner_event_receipts where run_id=${run.runId} and ordinal=0 limit 1`,
       ),
+      channelAuthority:
+        await explain(sql`select 1 from thread_inputs where thread_id=${run.threadId}
+        and state in ('pending','claimed','unknown') and authority_source->>'kind'='channel-ingress'`),
+      // A Run with no reply is the worst case: nothing stops the scan early.
+      runReply:
+        await explain(sql`select content,id,sequence from messages where thread_id=${run.threadId}
+        and run_id='run_00000000-0000-4000-8000-000000000000' and kind='assistant'
+        and addressed_to_user_id is null order by sequence desc limit 1`),
+      toolCard: await explain(
+        sql`select id from transcript_items where tool_call_id=(select id from tool_calls limit 1)`,
+      ),
     };
+    expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
+    expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
+    expect(JSON.stringify(plans.toolCard)).toContain("transcript_tool_call");
     expect(JSON.stringify(plans.detail)).toContain("transcript_root");
     expect(shellBytes).toBeLessThanOrEqual(96 * 1024);
     expect(detailBytes).toBeLessThanOrEqual(128 * 1024);

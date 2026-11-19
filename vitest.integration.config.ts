@@ -10,8 +10,12 @@ import { DefaultReporter } from "vitest/reporters";
 import IntegrationFailureReporter from "./packages/database/src/integration-failure-reporter.test-support.js";
 import { RunRecordReporter } from "./packages/database/src/run-record.test-support.js";
 
-const personalStateBenchmark =
-  "packages/database/src/personal-state-performance.integration.test.ts";
+const benchmarkSwitches: Record<string, string> = {
+  "packages/database/src/personal-state-performance.integration.test.ts":
+    "OPENSTEER_PERSONAL_STATE_PERF",
+  "packages/database/src/personal-write-performance.integration.test.ts":
+    "OPENSTEER_PERSONAL_WRITE_PERF",
+};
 
 export default defineConfig({
   // Shared across worktrees, like the unit suite's: last-failed and slowest files run first.
@@ -31,10 +35,8 @@ export default defineConfig({
     include: integrationTestInclude,
     exclude: [
       ...configDefaults.exclude,
-      ...optInIntegrationBenchmarks.filter((file) =>
-        file === personalStateBenchmark
-          ? process.env.OPENSTEER_PERSONAL_STATE_PERF !== "1"
-          : process.env.OPENSTEER_TEAM_PERF !== "1",
+      ...optInIntegrationBenchmarks.filter(
+        (file) => process.env[benchmarkSwitches[file] ?? "OPENSTEER_TEAM_PERF"] !== "1",
       ),
     ],
     pool: "forks",

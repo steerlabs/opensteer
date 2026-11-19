@@ -283,9 +283,8 @@ integration("live streaming across the deployment", () => {
         .where("runId", "=", runId)
         .execute(),
     ]);
-    expect(receipts.map(({ ordinal }) => Number(ordinal))).toEqual(
-      receipts.map((_row, index) => index),
-    );
+    // A terminal Run keeps no receipts.
+    expect(receipts).toEqual([]);
     expect(retained.filter(({ kind }) => kind === "reasoning")).toHaveLength(messages);
     expect(calls).toHaveLength(messages * commandsPerMessage);
     expect(calls.every((call) => call.startedAt && call.status === "completed")).toBe(true);

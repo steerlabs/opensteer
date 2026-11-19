@@ -215,7 +215,7 @@ export async function readPersonalScopeCut<Snapshot>(
   });
 }
 
-const itemColumns = [
+export const itemColumns = [
   "id",
   "threadId",
   "runId",

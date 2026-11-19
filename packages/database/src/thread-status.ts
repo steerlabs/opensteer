@@ -11,9 +11,9 @@ import {
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction, type UpdateObject } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
@@ -22,14 +22,33 @@ import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
 
+/** Publishes the task once per commit, after every change this commit makes to it. */
 export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<void> {
   if (isOfflineSettlement(tx)) return;
-  await commitPersonalMutation(tx, async (tx, mutation) => {
+  await commitPersonalMutation(tx, async (_tx, mutation) => mutation.deferSummary(threadId));
+}
+
+/** Publishes the task now, folding the caller's own task update into the publishing one. */
+export async function writeThreadSummary(
+  tx: Tx,
+  threadId: ThreadId,
+  changes: UpdateObject<DatabaseSchema, "threads"> = {},
+): Promise<{ readonly nextTranscriptPosition: string }> {
+  if (isOfflineSettlement(tx))
+    return tx
+      .updateTable("threads")
+      .set(changes)
+      .where("id", "=", threadId)
+      .returning("nextTranscriptPosition")
+      .executeTakeFirstOrThrow();
+  return commitPersonalMutation(tx, async (tx, mutation) => {
+    mutation.summaryWritten(threadId);
     const row = await tx
       .updateTable("threads")
-      .set({ revision: mutation.sequence })
+      .set({ ...changes, revision: mutation.sequence })
       .where("id", "=", threadId)
       .returning([
+        "nextTranscriptPosition",
         "id",
         "title",
         "revision",
@@ -91,7 +110,15 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         operation: "remove",
       });
     }
+    return row;
   });
+}
+
+export function replyPreview(content: readonly ContentPart[]) {
+  const firstText = content.find((part) => part.type === "text" && /\S/u.test(part.text));
+  return firstText?.type === "text"
+    ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
+    : null;
 }
 
 /** Republishes the `thread` values of these tasks, so their detail viewers see a derived change. */
@@ -118,14 +145,9 @@ export async function projectLastReply(
   },
 ): Promise<void> {
   if (!contentSaysSomething(reply.content)) return;
-  const firstText = reply.content.find((part) => part.type === "text" && /\S/u.test(part.text));
-  const preview =
-    firstText?.type === "text"
-      ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
-      : null;
   await tx
     .updateTable("threads")
-    .set({ lastReplyMessageId: reply.id, lastReplyPreview: preview })
+    .set({ lastReplyMessageId: reply.id, lastReplyPreview: replyPreview(reply.content) })
     .where("id", "=", reply.threadId)
     .execute();
   await publishThreadSummary(tx, reply.threadId);
@@ -218,6 +240,9 @@ export async function projectThreadState(
 }
 
 export async function threadMutationHead(tx: Tx, threadId: ThreadId) {
+  // A summary this commit has yet to write already belongs to its head.
+  const mutation = activePersonalMutation(tx);
+  if (mutation?.summaryPending(threadId)) return SequenceSchema.parse(mutation.sequence);
   const state = await tx
     .selectFrom("clientSyncState")
     .select(

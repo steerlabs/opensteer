@@ -1,3 +1,4 @@
+import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
@@ -719,6 +720,7 @@ async function finalizeRunOutcome(
     })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
+  if (mutation) deleteTerminalRunReceipts(transaction, mutation, run.id);
   if (run.assignmentId) {
     await settleAssignmentAfterRun(transaction, {
       assignmentId: run.assignmentId,
