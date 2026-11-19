@@ -30,6 +30,12 @@ import apps from "apps/package.json" with { type: "json" };
  */
 export interface WorkerHost {
   readonly registry?: string;
+  /**
+   * Fetch over a network that reaches public addresses only. Dependency installs use it for every
+   * request not addressed to the registry's own origin, and for every redirect; without it a build
+   * reaches only its registry.
+   */
+  readonly publicFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   readonly apps: {
     /** Package-relative paths and contents, as in the package archive. */
     readonly files: Readonly<Record<string, string>>;

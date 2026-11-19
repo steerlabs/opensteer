@@ -31,7 +31,7 @@ const registryOrPinned = (version: string) =>
  */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
-    const { registry } = host;
+    const { registry, publicFetch } = host;
     const manifest = filesystem.read("package.json");
     const dependencies =
       manifest === null
@@ -73,7 +73,11 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
                   list: (prefix) => filesystem.list(prefix),
                   flush: () => filesystem.flush(),
                 },
-                { transitive, ...(registry === undefined ? {} : { registry }) },
+                {
+                  transitive,
+                  ...(registry === undefined ? {} : { registry }),
+                  ...(publicFetch === undefined ? {} : { publicFetch }),
+                },
               ),
             catch: (cause) =>
               new RuntimeBuildFailed({

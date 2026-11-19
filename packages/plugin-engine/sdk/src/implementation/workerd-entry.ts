@@ -306,6 +306,7 @@ class AppApi extends RpcTarget {
           request.files,
           {
             ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            publicFetch: (input, init) => this.#env.PUBLIC_FETCH.fetch(new Request(input, init)),
             apps: { files: frameworkFiles },
           },
           request.public ?? [],

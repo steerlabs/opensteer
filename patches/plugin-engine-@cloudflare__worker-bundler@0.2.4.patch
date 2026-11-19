@@ -21,7 +21,7 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
    list(prefix?: string): string[];
    flush(): Promise<void>;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
+index 53dd55f4cd0292a11050505c4824afe0cac15d33..167268f162be7784de188f06fc1ff183bfa3af38 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -331,6 +331,8 @@ declare function handleAssetRequest(
@@ -33,12 +33,17 @@ index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb
    /**
     * Input files — keys are paths relative to project root, values are file contents.
     * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
-@@ -499,6 +501,8 @@ interface InstallResult {
+@@ -499,6 +501,13 @@ interface InstallResult {
  //#endregion
  //#region src/installer.d.ts
  interface InstallOptions {
 +  /** Skip dependency traversal for a self-contained framework archive. Default: true. */
 +  transitive?: boolean;
++  /**
++   * Fetch for every request that is not addressed to the registry's own origin, redirects included:
++   * one whose network reaches public addresses only. Without it only the registry is reached.
++   */
++  publicFetch?: (input: string, init?: RequestInit) => Promise<Response>;
    /**
     * Include devDependencies (default: false)
     */
@@ -117,26 +122,41 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
-index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b60b7040e4 100644
+index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad97503f0cf 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
-@@ -381,7 +381,7 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
+@@ -49,11 +49,11 @@ function isTextFile(path) {
+ * Fetch with a timeout.
+ * Throws an error if the request takes longer than the specified timeout.
+ */
+-async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
++async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS, fetcher = fetch) {
+ 	const controller = new AbortController();
+ 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+ 	try {
+-		return await fetch(url, {
++		return await fetcher(url, {
+ 			...options,
+ 			signal: controller.signal
+ 		});
+@@ -381,7 +381,8 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
  * @returns Metadata about the installation
  */
  async function installDependencies(fileSystem, options = {}) {
 -	const { dev = false, registry = NPM_REGISTRY } = options;
-+	const { dev = false, registry = NPM_REGISTRY, transitive = true } = options;
++	const { dev = false, registry = NPM_REGISTRY, transitive = true, publicFetch } = options;
++	const egress = buildEgress(registry, publicFetch);
  	const result = {
  		installed: [],
  		warnings: []
-@@ -407,14 +407,16 @@ async function installDependencies(fileSystem, options = {}) {
+@@ -407,14 +408,16 @@ async function installDependencies(fileSystem, options = {}) {
  		if (Object.keys(depsToInstall).length === 0) return result;
  		const installedPackages = /* @__PURE__ */ new Set();
  		const inProgress = /* @__PURE__ */ new Map();
 -		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry)));
 +		// Unpacked archives are the install's memory peak: unpack a few at a time.
-+		const extract = limitConcurrency(TARBALL_EXTRACT_CONCURRENCY, (name, metadata) => fetchPackageFiles(name, metadata, { buildInputsOnly: true }));
-+		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
++		const extract = limitConcurrency(TARBALL_EXTRACT_CONCURRENCY, (name, metadata) => fetchPackageFiles(name, metadata, { buildInputsOnly: true, egress }));
++		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, egress)));
  	} else if (pyprojectTomlContent) return await installDependenciesPython(fileSystem, pyprojectTomlContent);
  	return result;
  }
@@ -144,14 +164,15 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
  * Install a single package and its dependencies recursively.
  */
 -async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry) {
-+async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract) {
++async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, egress) {
  	if (installedPackages.has(name)) return;
  	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
  		installedPackages.add(name);
-@@ -424,6 +426,27 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+@@ -424,7 +427,28 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  	if (existing) return existing;
  	const installPromise = (async () => {
  		try {
+-			const metadata = await fetchPackageMetadata(name, registry);
 +			// A tarball named by URL installs only with the integrity its URL's fragment gives
 +			// (`#sha512-…`), checked as a registry tarball's digest is. Read its manifest from the
 +			// archive; do not execute package scripts.
@@ -167,16 +188,17 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
 +				installedPackages.add(name);
 +				for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
 +				result.installed.push(`${name}@${manifest.version}`);
-+				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
++				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, egress)));
 +				return;
 +			}
 +			// Only the registry and integrity-pinned tarballs are installed: a Git, file or aliased
 +			// dependency has no digest to check.
 +			if (/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[.\/~]|^[^\s@\/]+\/[^\s\/]+$/.test(versionRange)) throw new Error(`${name}@${versionRange} is not a registry package; a plugin build installs packages from the registry, or from a tarball URL with its integrity`);
- 			const metadata = await fetchPackageMetadata(name, registry);
++			const metadata = await fetchPackageMetadata(name, registry, egress);
  			const version = resolveVersion(versionRange, metadata);
  			if (!version) {
-@@ -437,10 +460,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+ 				result.warnings.push(`Could not resolve version for ${name}@${versionRange}`);
+@@ -437,10 +461,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  			}
  			installedPackages.add(name);
  			result.installed.push(`${name}@${version}`);
@@ -185,14 +207,64 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
  			for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
  			const deps = versionMetadata.dependencies ?? {};
 -			await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry)));
-+			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
++			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, egress)));
  		} catch (error) {
  			const message = error instanceof Error ? error.message : String(error);
  			result.warnings.push(`Failed to install ${name}: ${message}`);
-@@ -475,82 +498,111 @@ function resolveVersion(range, metadata) {
+@@ -456,9 +480,9 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+ /**
+ * Fetch package metadata from npm registry.
+ */
+-async function fetchPackageMetadata(name, registry) {
++async function fetchPackageMetadata(name, registry, egress) {
+ 	const url = `${registry}/${name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : name}`;
+-	const response = await fetchWithTimeout(url, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } });
++	const response = await egress(url, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } });
+ 	if (!response.ok) {
+ 		const hint = response.status === 404 ? " (package not found — check the name in package.json or set the `registry` option if it lives on a private registry)" : "";
+ 		throw new Error(`Registry returned ${response.status} ${response.statusText} for "${name}" at ${url}${hint}`);
+@@ -475,82 +499,141 @@ function resolveVersion(range, metadata) {
  	const versions = Object.keys(metadata.versions);
  	return semver.maxSatisfying(versions, range) ?? void 0;
  }
++/** Redirects one registry or tarball request follows. */
++const MAX_REDIRECTS = 5;
+ /**
+-* Fetch and extract package files from npm tarball.
++* A build's egress for package metadata and archives. A request the installer addresses to the
++* configured registry's own origin uses the Worker's network, since an operator may run a private
++* registry. Anything else, including every redirect, even one back to the registry, goes only to
++* an https address and only through `publicFetch`, whose network reaches public addresses alone.
++* Redirects are followed by hand, so each hop is checked before it is fetched. Without
++* `publicFetch` only the registry is reached.
+ */
+-async function fetchPackageFiles(name, metadata) {
+-	const tarballUrl = metadata.dist?.tarball;
+-	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
+-	const response = await fetchWithTimeout(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
+-	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
+-	const buffer = await response.arrayBuffer();
+-	return extractTarball(new Uint8Array(buffer));
++function buildEgress(registry, publicFetch) {
++	const registryOrigin = new URL(registry).origin;
++	return async (url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) => {
++		let target = new URL(url);
++		for (let hop = 0;; hop++) {
++			const own = hop === 0 && target.origin === registryOrigin;
++			if (!own && (target.protocol !== "https:" || publicFetch === void 0)) throw new Error(`Refused to fetch ${target.href}${hop === 0 ? "" : ` (a redirect from ${url})`}: a plugin build reaches its registry, and otherwise only public https addresses`);
++			const response = await fetchWithTimeout(target.href, {
++				...options,
++				redirect: "manual"
++			}, timeoutMs, own ? fetch : publicFetch);
++			if (![301, 302, 303, 307, 308].includes(response.status)) return response;
++			await response.body?.cancel();
++			const location = response.headers.get("location");
++			if (location === null) throw new Error(`The redirect from ${target.href} names no location`);
++			if (hop >= MAX_REDIRECTS) throw new Error(`Fetching ${url} redirected more than ${MAX_REDIRECTS} times`);
++			target = new URL(location, target);
++		}
++	};
++}
 +/** Tarballs one install unpacks at once. */
 +const TARBALL_EXTRACT_CONCURRENCY = 3;
 +/** Run at most `limit` calls of `task` at once; later calls wait in order. */
@@ -209,21 +281,24 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
 +			waiting.shift()?.();
 +		}
 +	};
-+}
+ }
  /**
- * Fetch and extract package files from npm tarball.
-+*
+-* Extract files from a gzipped tarball.
++* Fetch and extract package files from npm tarball.
+ *
+-* npm packages are distributed as .tgz files (gzipped tar).
+-* Package contents are usually enclosed by one archive directory, which is
+-* removed by `parseTar` so returned paths are relative to the package root.
 +* `buildInputsOnly` keeps only files a bundle can read: no source maps, type
 +* declarations or package documentation.
  */
--async function fetchPackageFiles(name, metadata) {
+-async function extractTarball(data) {
+-	return parseTar(await decompress(data));
 +async function fetchPackageFiles(name, metadata, options = {}) {
- 	const tarballUrl = metadata.dist?.tarball;
- 	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
- 	const response = await fetchWithTimeout(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
- 	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
--	const buffer = await response.arrayBuffer();
--	return extractTarball(new Uint8Array(buffer));
++	const tarballUrl = metadata.dist?.tarball;
++	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
++	const response = await options.egress(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
++	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
 +	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
 +	const keep = options.buildInputsOnly === true ? isBuildInput : isTextFile;
 +	const archive = new Uint8Array(await response.arrayBuffer());
@@ -231,21 +306,11 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
 +	return extractTarball(new Response(archive).body, keep);
  }
  /**
--* Extract files from a gzipped tarball.
--*
--* npm packages are distributed as .tgz files (gzipped tar).
--* Package contents are usually enclosed by one archive directory, which is
--* removed by `parseTar` so returned paths are relative to the package root.
+-* Decompress gzip data using DecompressionStream.
 +* Check a registry tarball against the digest its version metadata publishes: the strongest
 +* `dist.integrity` hash (SHA-512, SHA-384 or SHA-256), else the SHA-1 `dist.shasum`. A version
 +* that publishes neither is refused.
  */
--async function extractTarball(data) {
--	return parseTar(await decompress(data));
--}
--/**
--* Decompress gzip data using DecompressionStream.
--*/
 -async function decompress(data) {
 -	const ds = new DecompressionStream("gzip");
 -	const writer = ds.writable.getWriter();
@@ -357,7 +422,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b6
  	}
  	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
  	const files = {};
-@@ -560,6 +612,70 @@ function parseTar(data) {
+@@ -560,6 +643,70 @@ function parseTar(data) {
  	}
  	return files;
  }

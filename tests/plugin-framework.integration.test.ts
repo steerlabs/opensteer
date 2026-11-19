@@ -79,6 +79,11 @@ test("builds every plugin against the Host's framework and checks other packages
     },
   };
   const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
+    // A redirect the registry's origin answers with, back to its own tarball.
+    if (request.url === "/redirect.tgz") {
+      response.writeHead(302, { location: "/fixture-label.tgz" }).end();
+      return true;
+    }
     const name = request.url?.slice(1).replace(/\.tgz$/u, "") ?? "";
     const entry = packages[name];
     if (entry === undefined) return false;
@@ -189,4 +194,19 @@ test("builds every plugin against the Host's framework and checks other packages
   expect(registry.requests.map((request) => request.slice(host.length)).sort()).toEqual(
     ["/fixture-label.tgz", "/fixture-label.tgz", "/fixture-wrapper", "/fixture-wrapper.tgz"].sort(),
   );
+
+  // A build reaches its registry, and otherwise public https addresses only. Each redirect is
+  // checked before it is followed, so one from the registry back to a private address, even the
+  // registry's own, is refused, as is a tarball URL elsewhere on a private address.
+  registry.requests.length = 0;
+  const redirected = await install("fixture-label", `${registry.origin}/redirect.tgz#${integrity(good)}`);
+  expect(redirected).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(redirected)).toContain("Refused to fetch");
+  const elsewhere = await install(
+    "fixture-label",
+    `http://localhost:${new URL(registry.origin).port}/fixture-label.tgz#${integrity(good)}`,
+  );
+  expect(elsewhere).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(elsewhere)).toContain("Refused to fetch");
+  expect(registry.requests.map((request) => request.slice(host.length))).toEqual(["/redirect.tgz"]);
 });
