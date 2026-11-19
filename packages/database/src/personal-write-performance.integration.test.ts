@@ -191,9 +191,10 @@ test.skipIf(!enabled)(
             out,
             JSON.stringify({ roundTrips, runnerStatementsPerSecond, results }, null, 2) + "\n",
           );
-          expect(roundTrips["runner assistant text"]).toBeLessThanOrEqual(12);
-          expect(roundTrips["runner tool start"]).toBeLessThanOrEqual(12);
-          expect(roundTrips["runner tool completion"]).toBeLessThanOrEqual(12);
+          // Each includes one amortized feed prune; see the design's write-path budget.
+          expect(roundTrips["runner assistant text"]).toBeLessThanOrEqual(15);
+          expect(roundTrips["runner tool start"]).toBeLessThanOrEqual(15);
+          expect(roundTrips["runner tool completion"]).toBeLessThanOrEqual(15);
         } finally {
           await fixture.close();
         }
