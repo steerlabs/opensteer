@@ -339,7 +339,9 @@ export class HttpHostClient {
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
-  readonly #assignmentReads = new Map<string, "read" | AbortController>();
+  /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
+  readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+  readonly #assignmentsRead = new Set<string>();
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -1376,9 +1378,8 @@ export class HttpHostClient {
       } else if (state.repairs !== subscribedRepairs) {
         // A repair replaced the scope: its assignments are read again, as on a new subscription.
         subscribedRepairs = state.repairs;
-        const read = this.#assignmentReads.get(threadId);
-        if (read && read !== "read") read.abort();
-        this.#assignmentReads.delete(threadId);
+        this.#assignmentsRead.delete(threadId);
+        this.#assignmentReads.changed(`assignments:${threadId}`);
         reread = true;
         readsDue = true;
       }
@@ -1440,9 +1441,8 @@ export class HttpHostClient {
   }
 
   #clearDetailReads(threadId: string) {
-    const read = this.#assignmentReads.get(threadId);
-    if (read && read !== "read") read.abort();
-    this.#assignmentReads.delete(threadId);
+    this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentsRead.delete(threadId);
     this.#automationReads.delete(threadId);
     this.#readAutomations.delete(threadId);
     this.#browserUsageRead.delete(threadId);
@@ -1463,8 +1463,9 @@ export class HttpHostClient {
   }
 
   #clearViewerReads() {
-    for (const read of this.#assignmentReads.values()) if (read !== "read") read.abort();
-    this.#assignmentReads.clear();
+    for (const threadId of this.#assignmentsRead)
+      this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentsRead.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#browserUsageRead.clear();
@@ -2090,15 +2091,13 @@ export class HttpHostClient {
 
   #ensureAssignments(threadId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    if (this.#assignmentReads.has(threadId)) return;
-    const read = new AbortController();
-    this.#assignmentReads.set(threadId, read);
-    void this.#readAssignments(threadId, read.signal)
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.#assignmentReads.get(threadId) === read)
-          this.#assignmentReads.set(threadId, "read");
-      });
+    const key = `assignments:${threadId}`;
+    if (this.#assignmentsRead.has(threadId) || this.#assignmentReads.busy(key)) return;
+    void this.#assignmentReads
+      .request(key, (read) => this.#readAssignments(threadId, read), {
+        observed: () => !this.#disposed && this.#showsThread(threadId),
+      })
+      .catch(() => undefined);
   }
 
   #ensureAutomations(threadId: string, again = false): void {
@@ -2163,26 +2162,15 @@ export class HttpHostClient {
    * whole family, every open Assignment however far back it was handed out, so work under way is
    * never missing. A Host without `task-family-v1` gives the newest page alone.
    */
-  async #readAssignments(threadId: string, signal: AbortSignal): Promise<void> {
-    const more = await this.#readAssignmentPages(threadId, false, signal);
-    if (more && this.#capabilities?.includes("task-family-v1"))
-      await this.#readAssignmentPages(threadId, true, signal);
-  }
-
-  /** Says whether the newest page left older Assignments out. */
-  async #readAssignmentPages(
-    threadId: string,
-    open: boolean,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const current = () => !signal.aborted && this.#viewerStillCurrent(generation, userId);
-    let before: string | null = null;
-    do {
-      let response;
+  /**
+   * Reads a task's assignments: its newest page and, when that left some out, every open one. The
+   * result replaces what this client held for the task: an open assignment neither read returns
+   * has finished, even when the feed's update for it was skipped by a repair.
+   */
+  async #readAssignments(threadId: string, read: FencedRead): Promise<void> {
+    const list = async (open: boolean, before: string | null) => {
       try {
-        response = unwrapRpcResult(
+        const response = unwrapRpcResult(
           await this.rpc["thread.assignments.list"](
             {
               threadId,
@@ -2190,23 +2178,38 @@ export class HttpHostClient {
               ...(open ? { open } : {}),
               ...(before === null ? {} : { before }),
             },
-            { signal },
+            { signal: read.signal },
           ),
         );
+        if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
+        return response;
       } catch (error) {
-        if (current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        if (read.current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!current()) return false;
-      if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
-      this.#update({
-        ...this.#snapshot,
-        assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
-      });
-      if (!open) return response.window.hasMore;
-      before = response.window.hasMore ? response.window.nextBefore : null;
-    } while (before !== null);
-    return false;
+    };
+    const newest = await list(false, null);
+    const found = [...newest.assignments];
+    let complete = !newest.window.hasMore;
+    if (newest.window.hasMore && this.#capabilities?.includes("task-family-v1")) {
+      let before: string | null = null;
+      do {
+        const page = await list(true, before);
+        found.push(...page.assignments);
+        before = page.window.hasMore ? page.window.nextBefore : null;
+      } while (before !== null);
+      complete = true;
+    }
+    if (!read.current()) return;
+    const assignments = mergeAssignments(this.#snapshot.assignments, found);
+    if (complete) {
+      const returned = new Set<string>(found.map(({ id }) => id));
+      for (const [id, held] of Object.entries(assignments))
+        if (held.parentThreadId === threadId && held.status === "open" && !returned.has(id))
+          delete assignments[id];
+    }
+    this.#assignmentsRead.add(threadId);
+    this.#update({ ...this.#snapshot, assignments });
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */

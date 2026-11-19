@@ -2161,6 +2161,127 @@ test("opening a task reads each follow-up once, beside its snapshot, and the fam
   }
 });
 
+test("a repaired task drops an open assignment its reread no longer returns, and a read in flight across the repair installs nothing", async () => {
+  const seed = Object.values(new MockHostClient({ latencyMs: 0 }).getSnapshot().assignments)[0]!;
+  const finished = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+  };
+  const stale = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+  };
+  const lists: ((assignments: (typeof seed)[]) => void)[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const assignments = await new Promise<(typeof seed)[]>((resolve) => lists.push(resolve));
+      return Response.json({
+        ok: true,
+        data: {
+          assignments,
+          threadId,
+          window: {
+            byteCount: 0,
+            hasMore: false,
+            itemCount: assignments.length,
+            nextBefore: null,
+            totalItems: assignments.length,
+          },
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detail: Extract<ScopedClientMessage, { type: "client.subscribe" }> | undefined;
+  const deliverDetail = () => {
+    const address = {
+      scope: detail!.scope,
+      subscriptionId: detail!.subscriptionId,
+      generation: detail!.generation,
+      throughSequence: "1",
+    };
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      snapshot: {
+        thread: detailThread(task),
+        items: [item],
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: null,
+      },
+    } as never);
+    socket.deliver({ ...address, type: "host.synchronized" } as never);
+  };
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe") {
+          detail = message;
+          deliverDetail();
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+  });
+  const held = () => Object.keys(client.getSnapshot().assignments).sort();
+  try {
+    await client.load();
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(lists).toHaveLength(1));
+    lists[0]!([finished]);
+    await vi.waitFor(() => expect(held()).toEqual([finished.id]));
+    // A repair while the task is open: the feed's update that finished the assignment was skipped.
+    deliverDetail();
+    await vi.waitFor(() => expect(lists).toHaveLength(2));
+    // A second repair lands while that reread flies: its answer is from before it, and is not installed.
+    deliverDetail();
+    lists[1]!([finished, stale]);
+    await vi.waitFor(() => expect(lists).toHaveLength(3));
+    expect(held()).toEqual([finished.id]);
+    lists[2]!([]);
+    await vi.waitFor(() => expect(held()).toEqual([]));
+  } finally {
+    client.dispose();
+  }
+});
+
 test("a subagent progress tick notifies only that row's text subscriber, not the task view", () => {
   const f = fixture();
   f.syncShell();
