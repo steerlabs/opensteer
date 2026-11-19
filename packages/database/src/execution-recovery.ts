@@ -1,3 +1,4 @@
+import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { drainAssignmentCancellation } from "./assignment-store.js";
 import { drainRevokedChannelInputs } from "./channel-store.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
@@ -278,7 +279,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
     .orderBy("runs.id", "asc")
     .execute();
   for (const candidate of obsolete) {
-    await commitPersonalMutation(database, async (transaction) => {
+    await commitPersonalMutation(database, async (transaction, mutation) => {
       const run = await transaction
         .selectFrom("runs")
         .selectAll()
@@ -301,6 +302,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         })
         .where("id", "=", run.id)
         .execute();
+      deleteTerminalRunReceipts(transaction, mutation, run.id);
       await transaction
         .updateTable("commands")
         .set({

@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { afterEach, expect, it, vi } from "vitest";
-import { createId, OpensteerError, type Thread } from "@opensteer/core";
+import { createId, OpensteerError, type Thread, type ToolOutput } from "@opensteer/core";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import { agentToolHostRoutePath } from "@opensteer/protocol/agent-tool-relay";
 import type { RunCaller } from "./agent-caller.js";
@@ -9,7 +9,12 @@ import { registerAgentToolRoute } from "./agent-tool-route.js";
 import type { ToolCall } from "./handlers/types.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-type ToolCallRow = Awaited<ReturnType<AgentToolActivityStore["complete"]>>["call"];
+type ToolCallRow = Awaited<ReturnType<AgentToolActivityStore["complete"]>>["call"] & {
+  readonly arguments: unknown;
+  readonly argumentDigest: Buffer | null;
+  readonly provisional: boolean;
+  readonly output: ToolOutput | null;
+};
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));

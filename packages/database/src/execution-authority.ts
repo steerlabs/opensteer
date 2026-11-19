@@ -21,6 +21,54 @@ export interface ActiveExecutionBindingInput {
   readonly runnerId: RunnerId;
   readonly threadId: ThreadId;
 }
+/** The Run, its active provider session and the hosting computer, as one binding check reads them. */
+export interface ExecutionBindingFacts {
+  readonly environmentId: EnvironmentId;
+  readonly finishIntent: unknown;
+  readonly runHarnessInstanceId: string;
+  readonly requestedBy: UserId;
+  readonly runStatus: string;
+  readonly runBindingGeneration: number | null;
+  readonly threadId: ThreadId;
+  readonly agentHomeComputerId: RunnerId;
+  readonly bindingGeneration: number | null;
+  readonly providerSessionHarnessInstanceId: string;
+  readonly leaseExpiresAt: Date | null;
+  readonly runnerBootId: string | null;
+  readonly runnerId: RunnerId | null;
+  readonly providerSessionStatus: string;
+  readonly revokedAt: Date | null;
+}
+export function executionBindingHolds(
+  binding: ExecutionBindingFacts | undefined,
+  input: ActiveExecutionBindingInput,
+  now: number,
+): boolean {
+  return (
+    binding !== undefined &&
+    binding.finishIntent === null &&
+    binding.environmentId === input.environmentId &&
+    binding.runHarnessInstanceId === binding.providerSessionHarnessInstanceId &&
+    binding.threadId === input.threadId &&
+    binding.requestedBy === input.requestedBy &&
+    binding.runnerId === input.runnerId &&
+    binding.agentHomeComputerId === input.runnerId &&
+    binding.runnerBootId === input.runnerBootId &&
+    binding.revokedAt === null &&
+    binding.bindingGeneration === input.bindingGeneration &&
+    binding.runBindingGeneration === input.bindingGeneration &&
+    binding.leaseExpiresAt !== null &&
+    (input.lostExecution === true || binding.leaseExpiresAt.getTime() > now) &&
+    ["starting", "running", "waiting"].includes(binding.runStatus) &&
+    !["stopped", "broken"].includes(binding.providerSessionStatus)
+  );
+}
+export function refuseExecutionBinding(): never {
+  throw new OpensteerError({
+    code: "forbidden",
+    message: "Execution capability came from a stale or invalid binding",
+  });
+}
 export async function assertActiveExecutionBinding(
   database: Database,
   input: ActiveExecutionBindingInput,
@@ -52,29 +100,11 @@ export async function assertActiveExecutionBinding(
     .where("providerSessions.active", "=", true)
     .executeTakeFirst();
   if (
-    !binding ||
-    binding.finishIntent !== null ||
-    binding.environmentId !== input.environmentId ||
-    binding.runHarnessInstanceId !== binding.providerSessionHarnessInstanceId ||
-    binding.threadId !== input.threadId ||
-    binding.requestedBy !== input.requestedBy ||
-    binding.runnerId !== input.runnerId ||
-    binding.agentHomeComputerId !== input.runnerId ||
-    binding.runnerBootId !== input.runnerBootId ||
-    binding.revokedAt !== null ||
-    binding.bindingGeneration !== input.bindingGeneration ||
-    binding.runBindingGeneration !== input.bindingGeneration ||
-    binding.leaseExpiresAt === null ||
-    (input.lostExecution !== true && binding.leaseExpiresAt.getTime() <= executionNow()) ||
-    !["starting", "running", "waiting"].includes(binding.runStatus) ||
-    ["stopped", "broken"].includes(binding.providerSessionStatus) ||
+    !executionBindingHolds(binding, input, executionNow()) ||
     (input.lostExecution !== true &&
       !(await admitThreadExecution(database, input.threadId, input.requestedBy)))
   )
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Execution capability came from a stale or invalid binding",
-    });
+    refuseExecutionBinding();
 }
 export async function assignmentWasCancelled(
   database: Database,

@@ -409,7 +409,15 @@ integration("Host vertical slice", () => {
       .where("runId", "=", turn.run.id)
       .orderBy("ordinal")
       .execute();
-    expect(receipts.map(({ ordinal }) => Number(ordinal))).toEqual([0, 1, 2]);
+    // The completed Run admitted three statements and keeps no receipts.
+    expect(receipts).toEqual([]);
+    expect(
+      await runtime.store.database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 3 });
     const inventory = await testRpcData(
       origin,
       "machines.list",

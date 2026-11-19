@@ -715,13 +715,14 @@ it("publishes count-only approval changes to the subscribed task and shell", asy
     });
     const db = host.store.database;
     const changeApproval = (state: "awaiting-approval" | "cancelled") =>
-      commitPersonalMutation(db, async (tx) => {
+      commitPersonalMutation(db, async (tx, mutation) => {
         await tx
           .selectFrom("threads")
           .select("id")
           .where("id", "=", input.message.threadId)
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
+        mutation.touchThread(input.message.threadId);
         await tx
           .updateTable("threadInputs")
           .set({

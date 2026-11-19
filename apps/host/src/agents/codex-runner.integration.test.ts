@@ -169,9 +169,8 @@ integration("Host, Runner, and Codex harness integration", () => {
       .where("runId", "=", turn.runId)
       .orderBy("ordinal", "asc")
       .execute();
-    expect(persistedRunnerEvents.map((event) => event.ordinal)).toEqual(
-      persistedRunnerEvents.map((_event, index) => String(index)),
-    );
+    // A terminal Run keeps no receipts.
+    expect(persistedRunnerEvents).toEqual([]);
     await expect(
       host.store.database
         .selectFrom("runs")
@@ -181,7 +180,7 @@ integration("Host, Runner, and Codex harness integration", () => {
     ).resolves.toMatchObject({
       startedAt: expect.any(Date),
       completedAt: expect.any(Date),
-      nextRunnerOrdinal: persistedRunnerEvents.length,
+      nextRunnerOrdinal: expect.any(Number),
       status: "completed",
     });
     await expect(

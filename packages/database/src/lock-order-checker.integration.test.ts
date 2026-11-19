@@ -351,6 +351,29 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
+  it("accepts a multi-row feed prune only under the deployment fence", async () => {
+    await client.query("create temporary table client_changes (id text primary key)");
+    await client.query("insert into client_changes values ('a'), ('b')");
+    try {
+      await client.query("begin");
+      try {
+        await expect(client.query("delete from client_changes where id <= 'b'")).rejects.toThrow(
+          /unordered multi-row client_changes/is,
+        );
+      } finally {
+        await client.query("rollback");
+      }
+      await client.query("begin");
+      try {
+        await client.query("select * from client_sync_state where id='a' for no key update");
+        await client.query("delete from client_changes where id <= 'b'");
+      } finally {
+        await client.query("rollback");
+      }
+    } finally {
+      await client.query("drop table pg_temp.client_changes");
+    }
+  });
   it("accepts a multi-row UPDATE of rows an ordered read already fenced", async () => {
     await client.query("begin");
     try {

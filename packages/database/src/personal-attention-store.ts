@@ -120,6 +120,7 @@ export async function refreshRequestAttention(
   const pending = source.status === "pending";
   const delta = Number(pending) - Number(previous !== null);
   if (delta) {
+    mutation.touchThread(source.originatingThreadId);
     mutation.count("pendingRequestCount", delta);
     if (source.kind === "device.access") mutation.count("pendingDeviceAccessRequestCount", delta);
     mutation.count("needsYouCount", delta);

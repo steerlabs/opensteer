@@ -1069,14 +1069,21 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toMatchObject({
       status: "broken",
     });
+    // The failed Run admitted ordinals 0-3 and, being terminal, keeps no receipts.
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 4 });
     expect(
       await database
         .selectFrom("runnerEventReceipts")
         .select("ordinal")
         .where("runId", "=", turn.run.id)
-        .orderBy("ordinal")
         .execute(),
-    ).toEqual([0, 1, 2, 3].map((ordinal) => ({ ordinal: String(ordinal) })));
+    ).toEqual([]);
   });
   it("recovers what a replaced Runner boot left, and fences a racing terminal outcome", async ({
     storeFixture,

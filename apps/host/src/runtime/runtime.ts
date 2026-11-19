@@ -8,7 +8,6 @@ import {
 import { createRunFinishDrain, republishThreads } from "@opensteer/database";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
-import { PersonalRetentionDeadline } from "@opensteer/orchestration";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
@@ -523,7 +522,6 @@ export async function createHostRuntime(
   let authorityLease: DeploymentAuthorityLease | undefined;
   let notificationDispatcher: NotificationDispatcher | undefined;
   let removeMutationHooks: (() => void) | undefined;
-  let retention: PersonalRetentionDeadline | undefined;
   let deadlines: RequestDeadlines | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
@@ -675,10 +673,6 @@ export async function createHostRuntime(
       console.warn("Personal mutation follow-up failed", {
         code: error instanceof OpensteerError ? error.code : "internal",
       });
-    retention = new PersonalRetentionDeadline(
-      () => commitPersonalMutation(database, async () => undefined),
-      reportMutationFailure,
-    );
     const refreshReturnHints = createReturnHintRefresh({
       watched: () => realtime.watchedThreads(),
       republish: (threadIds) =>
@@ -693,7 +687,6 @@ export async function createHostRuntime(
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
         resourceRevisions.committed(notice.resourceKinds, notice.head);
-        retention?.update(notice);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
       react: (reaction) => {
@@ -3424,7 +3417,6 @@ export async function createHostRuntime(
         await step("Run finishes", () => finishLoop?.close());
         await step("task result returns", () => assignmentReturns?.close());
         await step("Request deadlines", () => deadlines?.close());
-        await step("personal retention", () => retention?.close());
         removeMutationHooks?.();
         await step("plugin change notices", () => notices.close());
         await step("plugin engine", () => pluginService?.close());
@@ -3452,7 +3444,6 @@ export async function createHostRuntime(
     await assignmentReturns?.close();
     await catalogConvergence?.close();
     await deadlines?.close();
-    retention?.close();
     removeMutationHooks?.();
     await pluginChangeNotices?.close();
     await authorityLease?.close();
