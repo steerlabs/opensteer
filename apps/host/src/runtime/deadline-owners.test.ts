@@ -22,16 +22,20 @@ type Exit =
 
 function owner(kind: "requests" | "leases", exit: Exit) {
   let due = exit.startsWith("due") || exit === "settle-throws" || exit === "capped-progress";
-  // A capped sweep: each pass settles one page and commits, the next page is still due.
+  // A capped sweep: each pass settles one page, and the next page is still due.
   let pages = exit === "capped-progress" ? 2 : 0;
-  let head = 0;
   const settle = vi.fn(async () => {
     if (exit === "settle-throws") throw new Error("database down");
-    if (exit === "due-then-done") due = false;
-    if (exit === "capped-progress") {
-      head++;
-      if (--pages < 0) due = false;
+    if (exit === "due-then-done") {
+      due = false;
+      return 1;
     }
+    if (exit === "capped-progress") {
+      if (--pages < 0) due = false;
+      return 100;
+    }
+    // Kept: nothing settled, whatever else commits meanwhile.
+    return 0;
   });
   const next = vi.fn(async () => {
     if (exit === "next-throws") throw new Error("database down");
@@ -41,7 +45,7 @@ function owner(kind: "requests" | "leases", exit: Exit) {
   });
   const drain: DeadlineDrain =
     kind === "requests"
-      ? new RequestDeadlines({ next, settle, onError: () => undefined, progressMark: () => head })
+      ? new RequestDeadlines({ next, settle, onError: () => undefined })
       : executionLeaseDrain(
           {
             nextExecutionDeadline: next,

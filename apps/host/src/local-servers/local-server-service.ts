@@ -185,9 +185,11 @@ export class LocalServerService {
    * Asks each computer about the servers pinned to it that it has not
    * approved as they now launch, and sends each one its approvals again.
    */
-  async requestLocalServerApprovals(): Promise<void> {
+  /** Answers how many local server approvals it requested or changed. */
+  async requestLocalServerApprovals(): Promise<number> {
     const changed = await this.#store.localMcp.requestApprovals();
     if (changed.length > 0) this.#onConnectionsChanged();
+    return changed.length;
   }
 
   /**

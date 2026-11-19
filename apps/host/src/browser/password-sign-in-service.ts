@@ -145,7 +145,7 @@ export class PasswordSignInService {
   readonly #background = new Set<Promise<unknown>>();
   #closePromise: Promise<void> | undefined;
   #closed = false;
-  #reconciling: Promise<void> | undefined;
+  #reconciling: Promise<number> | undefined;
 
   constructor(options: PasswordSignInServiceOptions) {
     this.#authority = options.authority;
@@ -201,8 +201,9 @@ export class PasswordSignInService {
     return Number.isFinite(deadline) ? new Date(deadline) : null;
   }
 
-  async settleDeadlines(): Promise<void> {
-    await this.#reconcileOperations();
+  /** Settles what is due; answers how many operations it settled, cancelled or forgot. */
+  async settleDeadlines(): Promise<number> {
+    return this.#reconcileOperations();
   }
 
   requestChanged(change: Extract<PersonalCommitReaction, { type: "requestChanged" }>): void {
@@ -1019,14 +1020,15 @@ export class PasswordSignInService {
     );
   }
 
-  #reconcileOperations(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
+  #reconcileOperations(): Promise<number> {
+    if (this.#closed) return Promise.resolve(0);
     return (this.#reconciling ??= this.#reconcileCurrentOperations().finally(() => {
       this.#reconciling = undefined;
     }));
   }
 
-  async #reconcileCurrentOperations() {
+  async #reconcileCurrentOperations(): Promise<number> {
+    let acted = 0;
     for (const lease of this.#leases.values()) this.#liveLease(lease.loginRef);
     for (const operation of this.#operations.values()) {
       if (operation.settlement) {
@@ -1034,21 +1036,26 @@ export class PasswordSignInService {
           operation.requestId &&
           !operation.settled &&
           (operation.settlementRetryAt ?? 0) <= this.#now()
-        )
+        ) {
           await this.#finish(operation, operation.settlement);
+          if (operation.settled) acted++;
+        }
         if (
           !operation.opening &&
           (operation.requestId
             ? operation.authorityEnded && operation.settled
             : this.#now() >= operation.expiresAt)
-        )
+        ) {
           this.#forget(operation);
+          acted++;
+        }
         continue;
       }
       const now = this.#now();
       if (!operation.cancelSent && now >= operation.expiresAt) {
         await this.#cancel(operation, "expired");
         await this.#finish(operation, { status: "fulfilled", response: { outcome: "expired" } });
+        acted++;
         continue;
       }
       if (operation.cancelSent) {
@@ -1060,24 +1067,31 @@ export class PasswordSignInService {
             operation,
             operation.cancelSent === "declined" ? { status: "declined" } : interrupted(),
           );
+          acted++;
         }
         continue;
       }
       if (operation.requestId) {
         const request = await this.#requests.get(operation.requestId);
         if (operation.settlement) continue;
-        if (!request || request.status !== "pending")
+        if (!request || request.status !== "pending") {
           await this.#cancel(
             operation,
             request?.status === "withdrawn" ? "withdrawn" : "authority-lost",
           );
+          acted++;
+        }
       } else {
         const permitted = await this.#requests.hasActiveRunPasswordSignInAuthority(
           authority(operation.starter),
         );
-        if (!operation.settlement && !permitted) await this.#cancel(operation, "authority-lost");
+        if (!operation.settlement && !permitted) {
+          await this.#cancel(operation, "authority-lost");
+          acted++;
+        }
       }
     }
+    return acted;
   }
 
   async #cancel(operation: Operation, reason: PasswordSignInCancelReason): Promise<void> {

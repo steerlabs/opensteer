@@ -533,10 +533,12 @@ export class ComputerAppApprovalService {
    * linked to one would sit pending forever, so the sweep declines it and
    * delivers the same continuation a decline anywhere else does.
    */
-  async expireComputerAppSetupRequests(): Promise<void> {
+  /** Answers how many expired setup Requests it settled. */
+  async expireComputerAppSetupRequests(): Promise<number> {
     const settled = await this.#store.expireDeviceComputerAppSetupRequests();
-    if (settled.requestIds.length === 0) return;
+    if (settled.requestIds.length === 0) return 0;
     this.#onConnectionsChanged();
+    return settled.requestIds.length;
   }
 
   async cancelComputerAppSetup(input: {

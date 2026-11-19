@@ -3318,15 +3318,14 @@ export async function createHostRuntime(
         ];
         return !local || (stored && stored <= local) ? stored : local;
       },
-      progressMark: () => syncHead,
-      settle: async (now) => {
-        await passwordSignIns.settleDeadlines();
-        await store.requests.expirePasswordSignIns(now);
-        await linkServices?.requests.expireUndecidedAsks();
-        await store.expireThreadInputLeases();
-        await devices.computerAppApprovals.expireComputerAppSetupRequests();
-        await localServers.requestLocalServerApprovals();
-      },
+      // Progress is what these sweeps settled, never another writer's commit.
+      settle: async (now) =>
+        (await passwordSignIns.settleDeadlines()) +
+        (await store.requests.expirePasswordSignIns(now)) +
+        ((await linkServices?.requests.expireUndecidedAsks()) ?? 0) +
+        (await store.expireThreadInputLeases()).settled +
+        (await devices.computerAppApprovals.expireComputerAppSetupRequests()) +
+        (await localServers.requestLocalServerApprovals()),
       onError: reportMutationFailure,
     });
     deadlines.start();
