@@ -11,6 +11,7 @@ import {
   type HostClient,
   type WorkflowView,
 } from "@opensteer/client/host";
+import { useLiveAgentCard } from "@opensteer/client/react";
 import {
   createContext,
   memo,
@@ -263,9 +264,9 @@ export const AgentRow = memo(function AgentRow(props: AgentRowProps): ReactNode 
 export function AgentStep(props: AgentRowProps): ReactNode {
   const scope = useContext(AgentScopeContext);
   const lines = useLines();
-  const stopLine = useSubagentStopLine(scope?.hostClient, props.card);
+  const card = useLiveAgentCard(scope?.hostClient, props.card);
+  const stopLine = useSubagentStopLine(scope?.hostClient, card);
   if (scope === null) return null;
-  const { card } = props;
   const compact = props.compact === true;
   const line = props.line ?? stopLine;
   const children = card.children;

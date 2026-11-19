@@ -2665,3 +2665,43 @@ test("opening a task reads each follow-up once, beside its snapshot, and the fam
     client.dispose();
   }
 });
+
+test("a subagent progress tick notifies only that row's text subscriber, not the task view", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const reader = new ScopedThreadReader(f.detail, {} as never, new TranscriptBodies());
+  const entries = reader.getSnapshot().entries;
+  const view = vi.fn();
+  const row = vi.fn();
+  const other = vi.fn();
+  reader.subscribe(view);
+  f.detail.text.subscribe("node:a", row);
+  f.detail.text.subscribe("node:b", other);
+  const attemptId = createId("runAttempt");
+  for (let tick = 1; tick <= 5; tick++)
+    f.stream.receive({
+      ...f.address,
+      type: "host.live",
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      runId,
+      attemptId,
+      bindingGeneration: 1,
+      streamId: "progress",
+      itemId: "node:a",
+      afterSequence: "1",
+      update: {
+        operation: "replace",
+        text: `step ${tick}`,
+        offset: 0,
+        totalLength: 6,
+        incomplete: false,
+      },
+    });
+  expect(f.detail.text.get("node:a")?.text).toBe("step 5");
+  expect(row).toHaveBeenCalledTimes(5);
+  expect(other).not.toHaveBeenCalled();
+  expect(view).not.toHaveBeenCalled();
+  expect(reader.getSnapshot().entries).toBe(entries);
+  reader.dispose();
+});

@@ -1580,6 +1580,7 @@ function ThreadPaneForUser(
       {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule
           hostClient={hostClient}
+          observed={showing}
           onOpen={openRunningNow}
           reachable={live}
           threadId={threadId}
@@ -1672,6 +1673,7 @@ function ThreadPaneForUser(
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
               <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
+                  observed={showing}
                   variant={conversational ? "conversation" : "work"}
                   voice={false}
                   accessMode={thread.accessMode}

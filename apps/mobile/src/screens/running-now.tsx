@@ -12,6 +12,7 @@ import { RunningCommandView, RunningRowView, useRunningNow } from "../thread/run
 import { AgentEngine, AgentGround, threadEngine } from "../thread/agent-mark.js";
 import { AgentsLive } from "../thread/subagent-rows.js";
 import { useShowsLive } from "../ui/connection-live.js";
+import { useScreenShowing } from "../thread/screen-showing.js";
 
 export type RunningNowScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -77,7 +78,7 @@ function RunningList(props: {
     hostClient,
     useCallback((snapshot) => threadEngine(snapshot, threadId), [threadId]),
   );
-  const model = useRunningNow(hostClient, threadId, reachable);
+  const model = useRunningNow(hostClient, threadId, reachable, useScreenShowing());
   const empty = model === null;
   useEffect(() => {
     if (empty && navigation.isFocused()) navigation.goBack();

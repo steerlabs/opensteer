@@ -707,6 +707,7 @@ describe("a turn's subagents", () => {
     const listeners = new Set<() => void>();
     const hostClient = {
       getSnapshot: () => current,
+      getThreadItemText: () => undefined,
       subscribe: (listener: () => void) => {
         listeners.add(listener);
         return () => listeners.delete(listener);

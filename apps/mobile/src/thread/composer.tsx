@@ -108,6 +108,8 @@ import { setTaskDone, useTaskDoneLine } from "../threads/task-row.js";
  * down here is said beside the bar, and the draft stays.
  */
 export function Composer(props: {
+  /** Whether its pane is in front; one stacked out of sight holds no subscription. */
+  readonly observed?: boolean;
   readonly variant?: "conversation" | "work";
   /** What this Thread may do without asking, named in AI settings. */
   readonly accessMode: ThreadAccessMode;
@@ -235,7 +237,7 @@ export function Composer(props: {
   // The fact that the run stopped can land just after the connection is back,
   // after the ready revision's check: it settles the line as it arrives.
   const { stopRunId } = props;
-  const detail = useThreadTranscript(props.hostClient, threadId);
+  const detail = useThreadTranscript(props.hostClient, threadId, props.observed ?? true);
   const stopEvidence =
     stopRunId !== null &&
     detail.synchronized &&
