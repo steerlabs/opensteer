@@ -1476,7 +1476,7 @@ export class BrowserController {
     ) {
       const id = this.ledger.surfaceIdForTarget(message.command.parameters.targetId);
       if (id) {
-        await this.ledger.closeSurface(id);
+        await this.ledger.closeSurface(id, "agent-closed");
         await this.drainTabs();
         await this.send({
           type: "cdp.result",
@@ -1667,7 +1667,7 @@ export class BrowserController {
       if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
-        await this.ledger.closeSurface(message.surfaceId);
+        await this.ledger.closeSurface(message.surfaceId, "person-closed");
       } finally {
         this.closingSurfaces.delete(message.surfaceId);
       }
@@ -3257,7 +3257,7 @@ export class BrowserController {
       typeof command.parameters?.targetId === "string"
     ) {
       const closing = this.ledger.surfaceIdForTarget(command.parameters.targetId);
-      if (closing) await this.ledger.closeSurface(closing);
+      if (closing) await this.ledger.closeSurface(closing, "agent-closed");
     }
     let attachedActivity: AttachedActivity | undefined;
     if (attachTargetId) {
@@ -3696,7 +3696,8 @@ export class BrowserController {
         if (!last && !durableClose)
           throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
-      if (!last && this.ledger.stateOf(surface.id)) await this.ledger.closeSurface(surface.id);
+      if (!last && this.ledger.stateOf(surface.id))
+        await this.ledger.closeSurface(surface.id, "host-closed");
       if (last) {
         this.updateTab(surface.id, true);
       }

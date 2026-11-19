@@ -55,6 +55,9 @@ export interface PageCapturePort {
 
 export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
+/** A renderer after its page ended: gone, still serving other pages, or still running alone. */
+export type RendererExit = "exited" | "shared" | "running";
+
 export class BrowserPaintTimeoutError extends Error {
   constructor(message = "Browser paint wait timed out.") {
     super(message);
@@ -105,11 +108,18 @@ export interface BrowserPage {
   readonly openedInBackground?: boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
+  /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */
   close(): Promise<void>;
+  /** True only once the engine confirms the native page gone, never while a close is under way. */
   isClosed(): boolean;
   offClose(listener: () => void): void;
   offMetadataChanged(listener: () => void): void;
+  /** The engine's one confirmation that the native page is gone. */
   onClose(listener: () => void): void;
+  /** The renderer died; the page stays until it is closed. Returns the unsubscribe. */
+  onRendererGone?(listener: () => void): () => void;
+  /** After the page is gone: what became of the renderer it last used, null when unknown. */
+  rendererExit?(): RendererExit | null;
   onMetadataChanged(listener: () => void): void;
   opener(): Promise<BrowserPage | null>;
   targetId(): Promise<string>;

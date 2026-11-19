@@ -35,6 +35,12 @@ import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
 import { TabSleeper, type TabSleepPass } from "./browser/tab-sleeper.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
+import {
+  PageOwnership,
+  type BrowserPageDiagnostic,
+  type PageCounts,
+  type PageEndReason,
+} from "./browser/page-ownership.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
 import { HostRelayAuthenticator } from "./passkeys/host-relay.js";
@@ -63,7 +69,10 @@ export interface BrowserRuntimeOptions {
   loginAuthority?: BrowserLoginAuthority;
   ticketVerifier: AttachTicketVerifier;
   onOpenTiming?: (diagnostic: BrowserOpenTiming) => void;
-  onSleepPass?: (pass: TabSleepPass) => void;
+  /** Each reported sleep pass, with the runtime's native page counts. */
+  onSleepPass?: (pass: TabSleepPass & { readonly pages: PageCounts }) => void;
+  /** Page endings, sleep refusals, stuck closes, renderer crashes and exits. */
+  onPageDiagnostic?: (diagnostic: BrowserPageDiagnostic) => void;
   onHostCleanupFailure?: (diagnostic: {
     readonly kind: "fresh" | "local";
     readonly stage: string;
@@ -218,6 +227,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly sleeper: TabSleeper;
+  /** Every native page this runtime holds, across sessions and hosts. */
+  readonly pages: PageOwnership;
   private shuttingDown = false;
   private readonly attempts = new Set<AbortController>();
   private shutdownResult: Promise<void> | undefined;
@@ -246,11 +257,14 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new TypeError("The initial browser viewport is invalid.");
     }
     this.launcher = options.launcher;
+    this.pages = new PageOwnership({ onDiagnostic: options.onPageDiagnostic });
     this.sleeper = new TabSleeper({
       memoryBudgetBytes: options.memoryBudgetBytes,
       hostCost: this.launcher.hostCost,
       rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
-      onPass: options.onSleepPass,
+      onPass: options.onSleepPass
+        ? (pass) => options.onSleepPass!({ ...pass, pages: this.pages.counts() })
+        : undefined,
       hosts: () =>
         [...this.hosts.values()].map((host) => ({
           key: host.identity.key,
@@ -536,7 +550,7 @@ export class BrowserRuntime implements NativePresentationSource {
             "The deletion binding does not match the browser host.",
           );
         host.helperCancellation.abort();
-        await this.cleanupHost(host);
+        await this.cleanupHost(host, "profile-closed");
       }
       if (claim.erasure === "deleted") return "deleted" as const;
       const released = await engine.release(store.directory(binding));
@@ -736,17 +750,20 @@ export class BrowserRuntime implements NativePresentationSource {
             const creating = host.browser.context.createPage();
             void creating.then(
               (page) => {
-                if (signal.aborted) void boundedCleanup(page.close()).catch(() => undefined);
+                if (signal.aborted)
+                  void this.pages.destroy(page, "open-failed").catch(() => undefined);
               },
               () => undefined,
             );
             rootPage = await wait(creating);
+            this.pages.track(rootPage);
           }
 
           signal.throwIfAborted();
           stage = "session-initialize";
           const sessionRouter = host.router;
           ledger = new SurfaceLedger(host.browser.context, {
+            pages: this.pages,
             creationOrigin: claims.creationOrigin,
             navigationVersion: claims.navigationVersion,
             beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
@@ -869,12 +886,12 @@ export class BrowserRuntime implements NativePresentationSource {
           await boundedCleanup(
             settleCleanup([
               async () => controller?.close(),
-              async () => ledger?.closeOwnedPages(),
+              async () => ledger?.closeOwnedPages("open-failed"),
               async () => ledger?.close(),
               () => files.dispose(),
               async () => {
-                if (createdHost && host) await this.cleanupHost(host);
-                else if (rootPage) await rootPage.close();
+                if (createdHost && host) await this.cleanupHost(host, "open-failed");
+                else if (rootPage) await this.pages.destroy(rootPage, "open-failed");
               },
             ]),
           ).catch((cleanupError: unknown) => {
@@ -940,7 +957,7 @@ export class BrowserRuntime implements NativePresentationSource {
         }
         stage = "profile-close";
         host.holdUntilClosed = true;
-        await wait(this.cleanupHost(host));
+        await wait(this.cleanupHost(host, "profile-closed"));
         host = undefined;
         stage = "profile-state";
       }
@@ -1091,7 +1108,7 @@ export class BrowserRuntime implements NativePresentationSource {
     } catch (error) {
       if (createdHost && host) {
         const { kind } = host.identity;
-        await boundedCleanup(this.cleanupHost(host)).catch((error: unknown) =>
+        await boundedCleanup(this.cleanupHost(host, "open-failed")).catch((error: unknown) =>
           this.reportHostCleanupFailure(kind, "acquire-rollback", error),
         );
       }
@@ -1140,7 +1157,7 @@ export class BrowserRuntime implements NativePresentationSource {
       await this.lanes.drain();
       await this.preparation?.catch(() => undefined);
       const results = await Promise.allSettled(
-        [...this.hosts.values()].map((host) => this.cleanupHost(host)),
+        [...this.hosts.values()].map((host) => this.cleanupHost(host, "runtime-shutdown")),
       );
       const failures = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
@@ -1150,6 +1167,7 @@ export class BrowserRuntime implements NativePresentationSource {
       this.hosts.clear();
       this.sessions.clear();
       await this.localStore?.close();
+      this.pages.stop();
       this.state = "closed";
     })();
     this.shutdownResult = withTimeout(operation, shutdownTimeoutMs, {
@@ -1180,7 +1198,7 @@ export class BrowserRuntime implements NativePresentationSource {
       const closeHost = host.sessions.size === 0;
       try {
         await settleCleanup([
-          ...closeSession(active),
+          ...closeSession(active, "session-ended"),
           () => active.files.dispose(),
           ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
             ? [() => this.cleanupHost(host)]
@@ -1209,11 +1227,11 @@ export class BrowserRuntime implements NativePresentationSource {
       await Promise.all(
         [...host.sessions.values()].map((session) => session.controller.close("retired")),
       );
-      await this.cleanupHost(host);
+      await this.cleanupHost(host, "host-retired");
       this.updateState();
     });
   }
-  private cleanupHost(host: BrowserHost): Promise<void> {
+  private cleanupHost(host: BrowserHost, reason: PageEndReason = "session-ended"): Promise<void> {
     if (this.hosts.get(host.identity.key) !== host) return Promise.resolve();
     if (host.cleanup) return host.cleanup.result;
     const result = (async () => {
@@ -1221,7 +1239,7 @@ export class BrowserRuntime implements NativePresentationSource {
       host.passkeys?.close();
       host.signIns.close();
       host.helperCancellation.abort();
-      const quiesced = boundedCleanup(this.quiesceHost(host), "session teardown");
+      const quiesced = boundedCleanup(this.quiesceHost(host, reason), "session teardown");
       const importsDrained = boundedCleanup(
         host.stateImports.run(async () => {}),
         "cookie import drain",
@@ -1270,12 +1288,15 @@ export class BrowserRuntime implements NativePresentationSource {
     }
   }
 
-  private async quiesceHost(host: BrowserHost): Promise<void> {
+  private async quiesceHost(host: BrowserHost, reason: PageEndReason): Promise<void> {
     if (host.quiesced) return;
     const sessions = [...host.sessions.values()];
     for (const session of sessions) endPresentations(session);
     await settleCleanup(
-      sessions.flatMap((session) => [...closeSession(session), () => session.files.dispose()]),
+      sessions.flatMap((session) => [
+        ...closeSession(session, reason),
+        () => session.files.dispose(),
+      ]),
     );
     for (const session of sessions) {
       this.sleeper.remove(session.sessionId);
@@ -1304,11 +1325,11 @@ function endPresentations(session: ActiveSession): void {
   for (const close of session.presentations) close();
 }
 
-function closeSession(session: ActiveSession): Array<() => Promise<void>> {
+function closeSession(session: ActiveSession, reason: PageEndReason): Array<() => Promise<void>> {
   return [
     () => session.host.router.unregisterSession(session.sessionId),
     () => session.controller.close(),
-    () => session.ledger.closeOwnedPages(),
+    () => session.ledger.closeOwnedPages(reason),
     () => session.ledger.close(),
   ];
 }

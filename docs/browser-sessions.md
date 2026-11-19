@@ -44,6 +44,13 @@ in-page state than other engines; phones and Playwright promise only a descripto
 Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
 while the durable descriptor still permits reopening.
 
+The runtime owns every native page it makes until the engine confirms it gone: Electron's
+WebContents `destroyed`, or Playwright's page `close` or its context ending. A settled close proves
+nothing. A page asked to end stays owned as closing and is asked again with backoff, except after a
+failed sleep, which returns the page to service; no open, wake or close waits on another page's
+native close past a bound, and a tab gets no replacement page while its previous one may live.
+Page diagnostics carry ids, states, reasons, counts and durations, never a URL, title or page content.
+
 ## Agents address tabs
 
 Agents see what the person sees: profiles and one list of tabs. Browser Harness is a disposable

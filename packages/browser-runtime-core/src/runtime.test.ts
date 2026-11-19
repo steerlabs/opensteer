@@ -2,6 +2,7 @@ import { defaultBrowserViewport } from "@opensteer/browser-core";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserLauncher } from "./browser/backend.js";
+import type { BrowserPageDiagnostic } from "./browser/page-ownership.js";
 import { BrowserRuntimeError } from "./errors.js";
 import { BrowserRuntime } from "./runtime.js";
 import {
@@ -339,21 +340,30 @@ describe("BrowserRuntime", () => {
           sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
         }),
       );
+      const diagnostics: BrowserPageDiagnostic[] = [];
       const runtime = new BrowserRuntime({
         launcher,
+        onPageDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
         runtimeId: "runtime_test",
         sessionFilesRoot: testSessionFilesRoot(),
         ticketVerifier: verifier,
       });
+      const endings = () =>
+        diagnostics.flatMap((diagnostic) =>
+          diagnostic.event === "browser.page.ended" ? [diagnostic.reason] : [],
+        );
 
       const idle = await runtime.attach("fresh-ticket", new FakeSink());
       await idle.close();
       await vi.advanceTimersByTimeAsync(5);
       expect(runtime.health()).toMatchObject({ profileHostCount: 0 });
+      expect(endings()).toEqual(["session-ended"]);
 
       await runtime.attach("second-ticket", new FakeSink());
       await runtime.shutdown();
       expect(runtime.health().state).toBe("closed");
+      expect(endings()).toEqual(["session-ended", "runtime-shutdown"]);
+      expect(runtime.pages.counts().states).toEqual({ provisional: 0, live: 0, closing: 0 });
     } finally {
       vi.useRealTimers();
     }

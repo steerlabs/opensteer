@@ -401,12 +401,14 @@ export class TabSleeper {
           if (pending.size) await Promise.all(pending);
           if (this.closed) break;
         }
-        if (
-          this.sessions.get(id) !== session ||
-          (this.nextProbe.get(record) ?? 0) > Date.now() ||
-          this.blocked(id, record, Date.now())
-        )
+        if (this.sessions.get(id) !== session || (this.nextProbe.get(record) ?? 0) > Date.now())
           continue;
+        const refusal = this.blocked(id, record, Date.now());
+        if (refusal) {
+          if (deadline <= Date.now() || this.releasing)
+            session.ledger.refuseSleep(record.id, refusal);
+          continue;
+        }
         if (
           deadline > Date.now() &&
           // A page can share its process, so measure again before asking another

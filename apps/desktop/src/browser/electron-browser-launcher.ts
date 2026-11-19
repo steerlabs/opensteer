@@ -22,6 +22,7 @@ import {
   type BrowserPage,
   type BrowserPartitionKey,
   type BrowserRendererUsage,
+  type RendererExit,
   type CdpSession,
   type EngineClipboard,
   type HumanInputObservation,
@@ -1105,6 +1106,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   readonly #webContents: WebContents;
   readonly #onPageCleanupFailure: (() => void) | undefined;
   #closePromise: Promise<void> | undefined;
+  /** The main frame's renderer when the page was asked to close; a destroyed page cannot say. */
+  #rendererPid = 0;
   #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
   readonly #opener: ElectronBrowserPage | null;
@@ -2137,6 +2140,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   async #disposeContents(): Promise<void> {
     const contents = this.#webContents;
     if (contents.isDestroyed()) return;
+    try {
+      this.#rendererPid = contents.getOSProcessId();
+    } catch {
+      this.#rendererPid = 0;
+    }
     const destroyed = Promise.withResolvers<void>();
     contents.once("destroyed", destroyed.resolve);
     try {
@@ -2156,12 +2164,30 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     }
   }
 
+  /** The confirmation is the WebContents' own `destroyed`; a settled close or destroy call is not. */
   isClosed(): boolean {
     return this.#webContents.isDestroyed();
   }
 
   onClose(listener: () => void): void {
     this.#webContents.on("destroyed", listener);
+  }
+
+  onRendererGone(listener: () => void): () => void {
+    this.#webContents.on("render-process-gone", listener);
+    return () => this.#webContents.off("render-process-gone", listener);
+  }
+
+  rendererExit(): RendererExit | null {
+    const pid = this.#rendererPid;
+    if (pid <= 0) return null;
+    if (!app.getAppMetrics().some((metric) => metric.pid === pid)) return "exited";
+    for (const contents of webContents.getAllWebContents()) {
+      if (contents.isDestroyed()) continue;
+      for (const frame of contents.mainFrame?.framesInSubtree ?? [])
+        if (!frame.isDestroyed() && frame.osProcessId === pid) return "shared";
+    }
+    return "running";
   }
 
   offClose(listener: () => void): void {

@@ -7,6 +7,7 @@ export * from "./browser/presentation.js";
 export * from "./browser/session-files.js";
 export * from "./browser/sign-in.js";
 export * from "./browser/site-cookies.js";
+export * from "./browser/page-ownership.js";
 export * from "./browser/surface-ledger.js";
 export { BrowserRuntimeError } from "./errors.js";
 export * from "./local-profile-store.js";

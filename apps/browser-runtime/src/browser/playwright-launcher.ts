@@ -910,6 +910,8 @@ class PlaywrightContextHandle implements BrowserContext {
     this.context = context;
     context.on("close", () => {
       this.closed = true;
+      // A context's end ends its pages even when Playwright reports no page close.
+      for (const handle of [...this.pagesByPlaywrightPage.values()]) handle.confirmGone();
     });
     this.openDialogs = openDialogs;
   }
@@ -1000,6 +1002,9 @@ class PlaywrightPageHandle implements BrowserPage {
   private cdpChannel: CdpSession | null = null;
   private closing = false;
   private closePromise: Promise<void> | null = null;
+  /** The confirmation: Playwright's page close event, or its context ending. */
+  private gone = false;
+  private readonly goneListeners = new Set<() => void>();
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -1032,6 +1037,7 @@ class PlaywrightPageHandle implements BrowserPage {
     page.on("requestfinished", (request) => this.uploads.delete(request));
     page.on("requestfailed", (request) => this.uploads.delete(request));
     page.once("close", () => this.uploads.clear());
+    page.once("close", () => this.confirmGone());
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
     });
@@ -1226,24 +1232,45 @@ class PlaywrightPageHandle implements BrowserPage {
 
   close(): Promise<void> {
     this.closing = true;
-    this.closePromise ??= (async () => {
+    if (this.closePromise) return this.closePromise;
+    const closing = (async () => {
       // Native close can wait on a navigation still held by this private debugger.
       await this.cdpChannel?.detach();
       if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
     })();
-    return this.closePromise;
+    this.closePromise = closing;
+    // A close that settles with the page still open can be asked again.
+    const settled = () => {
+      if (this.isClosed() || this.closePromise !== closing) return;
+      this.closePromise = null;
+      this.closing = false;
+    };
+    void closing.then(settled, settled);
+    return closing;
   }
 
+  /** Closing refuses new debugger sessions; only the confirmation makes the page closed. */
   isClosed(): boolean {
-    return this.closing || this.page.isClosed();
+    return this.gone || this.page.isClosed();
+  }
+
+  confirmGone(): void {
+    if (this.gone) return;
+    this.gone = true;
+    for (const listener of [...this.goneListeners]) listener();
   }
 
   onClose(listener: () => void): void {
-    this.page.on("close", listener);
+    this.goneListeners.add(listener);
   }
 
   offClose(listener: () => void): void {
-    this.page.off("close", listener);
+    this.goneListeners.delete(listener);
+  }
+
+  onRendererGone(listener: () => void): () => void {
+    this.page.on("crash", listener);
+    return () => this.page.off("crash", listener);
   }
 
   onMetadataChanged(listener: () => void): void {

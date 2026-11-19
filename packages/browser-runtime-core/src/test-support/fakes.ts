@@ -270,6 +270,17 @@ export class FakePage implements BrowserPage {
     return this.closed;
   }
 
+  private readonly rendererListeners = new Set<() => void>();
+  /** The renderer dies; the page stays until it is closed, as in Chromium. */
+  crashRenderer(): void {
+    for (const listener of this.rendererListeners) listener();
+  }
+
+  onRendererGone(listener: () => void): () => void {
+    this.rendererListeners.add(listener);
+    return () => this.rendererListeners.delete(listener);
+  }
+
   onClose(listener: () => void): void {
     this.closeListeners.add(listener);
   }
