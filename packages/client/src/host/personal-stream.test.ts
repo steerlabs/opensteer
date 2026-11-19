@@ -559,6 +559,69 @@ test("the scope's anchor follows the reader: set by a jump, cleared on return to
   reader.dispose();
 });
 
+test("scrolling keeps the anchor on the row in view, told to the Host once the reader stops; a jump is told at once", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const earlier = { ...item, id: "earlier", messageId: createId("message"), position: "0" };
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const page = (items: TranscriptItem[]) => ({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items,
+    },
+  });
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce(page([earlier]))
+    .mockResolvedValueOnce(page([linked, item]));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const anchors = () =>
+    f.sent.flatMap((frame) =>
+      frame.type === "client.anchor" ? [frame.anchorItemId ?? "latest"] : [],
+    );
+  // Ordinary scrolling: reads use the newest row at once, the Host hears only where it rested.
+  reader.setAnchor(item.id);
+  reader.setAnchor(earlier.id);
+  expect(f.detail.anchor).toBe(earlier.id);
+  expect(anchors()).toEqual([]);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(anchors()).toEqual([earlier.id]);
+  // Paging earlier keeps the reader's row, even when the window still reaches the tail.
+  await reader.history("earlier");
+  expect(f.detail.anchor).toBe(earlier.id);
+  // A scroll still settling loses to a jump, which is told at once.
+  reader.setAnchor(item.id);
+  await reader.history("around", linked.messageId);
+  expect(anchors()).toEqual([earlier.id, linked.id]);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(anchors()).toEqual([earlier.id, linked.id]);
+  // A repair centred on a row in the newest window is still the tail: the reader keeps following.
+  reader.setAnchor(item.id);
+  await vi.advanceTimersByTimeAsync(500);
+  const repair = f.detailSnapshot();
+  f.stream.receive({
+    ...repair,
+    snapshot: { ...repair.snapshot, anchorItemId: item.id, nextAfter: null },
+  });
+  expect(f.detail.transcript.getSnapshot().newest).toBe(true);
+  expect(f.detail.anchor).toBe(item.id);
+  expect(reader.getSnapshot().repairs).toBe(1);
+  reader.dispose();
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {

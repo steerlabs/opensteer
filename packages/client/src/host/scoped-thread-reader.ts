@@ -25,6 +25,8 @@ export interface ThreadViewState {
   readonly inputQueue: PersonalInputQueue | null;
   readonly synchronized: boolean;
   readonly generation?: number;
+  /** Counts the Host's repairs of this scope: each replaced what the reader holds. */
+  readonly repairs?: number;
   readonly pendingRequestIds?: readonly string[];
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
@@ -265,6 +267,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       moreNodes !== this.#view.moreNodes ||
       requestChanged ||
       state.generation !== this.#view.generation ||
+      state.repairs !== this.#view.repairs ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
@@ -284,6 +287,7 @@ export class ScopedThreadReader implements ThreadViewSource {
             ? (pending?.map(({ id }) => id) ?? [])
             : (this.#view.pendingRequestIds ?? []),
         generation: state.generation,
+        repairs: state.repairs,
         inputQueueError,
         synchronized: state.synchronized,
       });
@@ -414,8 +418,9 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
+  /** The row the reader is looking at as they scroll: none at the tail. */
   setAnchor(itemId: string | undefined) {
-    this.#detail.anchorTo(itemId);
+    this.#detail.anchorTo(itemId, true);
   }
 
   /**
@@ -451,7 +456,8 @@ export class ScopedThreadReader implements ThreadViewSource {
         const anchor = this.#detail.anchor;
         if (anchor !== undefined && !state.items.has(anchor)) {
           const page = await this.#page(read.signal, null, undefined, anchor);
-          if (!read.current()) return;
+          // The reader scrolled on to a row this client holds: that is where they are now.
+          if (!read.current() || this.#detail.anchor !== anchor) return;
           if (page.kind === "page" && page.items.some(({ id }) => id === anchor)) {
             this.#installPage([page, state.generation, "around", token], undefined);
             return;
@@ -528,8 +534,9 @@ export class ScopedThreadReader implements ThreadViewSource {
       const current = state.items.get(item.id);
       if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
     }
-    // The scope's anchor is where the reader is: none at the tail, the linked message after a jump.
-    if (state.newest) this.#detail.anchorTo(undefined);
+    // The scope's anchor is where the reader is: none back at the latest, the linked message after a
+    // jump. Paging keeps it: the reader still looks at the row they scrolled to.
+    if (args[2] === "latest" && state.newest) this.#detail.anchorTo(undefined);
     else if (aroundMessageId) {
       const target = args[0].items.find(
         (item) => item.kind === "message" && item.messageId === aroundMessageId,

@@ -447,7 +447,8 @@ export class ThreadTranscriptStore {
       queueEntries,
       inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
       assignments: emptyState.assignments,
-      newest: next.anchorItemId == null && next.nextAfter == null,
+      // An anchor in the newest window still reaches the tail: only a later page makes it history.
+      newest: next.nextAfter == null,
       repairs: repair ? state.repairs + 1 : 0,
     });
   }

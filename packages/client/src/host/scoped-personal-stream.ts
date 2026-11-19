@@ -40,6 +40,8 @@ export type ScopedPersonalIdentity = Pick<
   "deploymentId" | "epoch" | "viewerId"
 >;
 const detailIds = ["detail:0", "detail:1", "detail:2", "detail:3"] as const;
+/** How long the reader's scrolling must rest before its new position is reported. */
+export const anchorSettleMs = 500;
 const shellScope = { kind: "shell" } as const;
 
 export function scopeKey(scope: PersonalScope): PersonalResumeCursor["scopeKey"] {
@@ -55,8 +57,14 @@ export interface ObservedDetail {
   slot?: DetailId | undefined;
   /** Where the reader is: absent at the latest messages. Change it through `anchorTo`. */
   anchor?: string;
-  /** Moves the anchor and tells the Host, so a repair or the next subscription centres there. */
-  anchorTo(itemId: string | undefined): void;
+  /**
+   * Moves the anchor and tells the Host, so a repair or the next subscription centres there. A
+   * jump tells it at once; ordinary scrolling (`settled`) once the reader has stopped moving.
+   */
+  anchorTo(itemId: string | undefined, settled?: boolean): void;
+  /** The anchor the Host was last told on this subscription, and a scroll's pending report. */
+  sentAnchor?: string | null;
+  anchorTimer?: ReturnType<typeof setTimeout> | undefined;
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
@@ -165,7 +173,7 @@ export class ScopedPersonalStream {
       liveBytes: 0,
       revision: 0,
       subscriptions: 0,
-      anchorTo: (itemId) => this.#anchorTo(detail, itemId),
+      anchorTo: (itemId, settled) => this.#anchorTo(detail, itemId, settled),
     };
     this.#details.set(key, detail);
     return detail;
@@ -752,16 +760,29 @@ export class ScopedPersonalStream {
     });
   }
 
-  #anchorTo(detail: ObservedDetail, itemId: string | undefined) {
-    if (detail.anchor === itemId) return;
+  #anchorTo(detail: ObservedDetail, itemId: string | undefined, settled = false) {
+    // Reads go by the newest anchor at once; only the report to the Host waits for scrolling to stop.
     if (itemId === undefined) delete detail.anchor;
     else detail.anchor = itemId;
-    if (!detail.slot) return;
+    if (detail.anchorTimer) clearTimeout(detail.anchorTimer);
+    detail.anchorTimer = settled
+      ? setTimeout(() => {
+          detail.anchorTimer = undefined;
+          this.#sendAnchor(detail);
+        }, anchorSettleMs)
+      : undefined;
+    if (!settled) this.#sendAnchor(detail);
+  }
+
+  #sendAnchor(detail: ObservedDetail) {
+    const anchor = detail.anchor ?? null;
+    if (!detail.slot || detail.sentAnchor === anchor) return;
+    detail.sentAnchor = anchor;
     this.#send?.({
       type: "client.anchor",
       subscriptionId: detail.slot,
       generation: detail.transcript.getSnapshot().generation,
-      ...(itemId === undefined ? {} : { anchorItemId: itemId }),
+      ...(anchor === null ? {} : { anchorItemId: anchor }),
     });
   }
 
@@ -922,11 +943,14 @@ export class ScopedPersonalStream {
       ...(cursor ? { cursor } : {}),
       ...(detail.anchor ? { anchorItemId: detail.anchor } : {}),
     } satisfies Omit<Subscribe, "type">;
+    detail.sentAnchor = detail.anchor ?? null;
     if (!attaching) this.#send?.({ type: "client.subscribe", ...subscription });
     return subscription;
   }
 
   #deactivate(detail: ObservedDetail) {
+    if (detail.anchorTimer) clearTimeout(detail.anchorTimer);
+    detail.anchorTimer = undefined;
     if (detail.slot) this.#slots.delete(detail.slot);
     detail.slot = undefined;
     detail.revision++;
