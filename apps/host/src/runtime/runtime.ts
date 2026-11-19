@@ -530,6 +530,7 @@ export async function createHostRuntime(
   let finishLoop: DeadlineDrain | undefined;
   let assignmentReturns: DeadlineDrain | undefined;
   let reconcileMemoryPasses: (() => void) | undefined;
+  let wakeTriggerSchedules: (() => void) | undefined;
   let catalogConvergence: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
@@ -1699,6 +1700,9 @@ export async function createHostRuntime(
           break;
         case "automationFailuresChanged":
           notifyAutomationFailures();
+          break;
+        case "triggerSchedulesChanged":
+          wakeTriggerSchedules?.();
           break;
         case "runnerRevoked":
           void runnerRegistry?.revoke(reaction.runnerId).catch(reportMutationFailure);
@@ -3321,6 +3325,7 @@ export async function createHostRuntime(
       },
       store: triggerStore,
     });
+    wakeTriggerSchedules = () => triggerScheduleLoop.wake();
     triggerScheduleLoop.start();
     watchService.start();
     channels.start();
