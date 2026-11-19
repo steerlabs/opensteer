@@ -1286,6 +1286,9 @@ export class HttpHostClient {
       | NonNullable<ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]>["thread"]
       | undefined;
     let detailGeneration = 0;
+    let subscribedGeneration = 0;
+    let readsDue = false;
+    let reread = false;
     let previousAssignments:
       ReturnType<typeof detail.transcript.getSnapshot>["assignments"] | undefined;
     const clearPlaces = () => {
@@ -1339,6 +1342,17 @@ export class HttpHostClient {
         const threads = upsertThread(this.#snapshot.threads, thread);
         if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
       }
+      // Assignments and automations are read as the subscription opens, beside its snapshot.
+      if (detail.slot && subscribedGeneration !== state.generation) {
+        reread = subscribedGeneration !== 0;
+        subscribedGeneration = state.generation;
+        readsDue = true;
+      }
+      if (readsDue && this.#snapshot.session === "authenticated" && this.#showsThread(threadId)) {
+        readsDue = false;
+        this.#ensureAssignments(threadId);
+        this.#ensureAutomations(threadId, reread);
+      }
       if (!state.synchronized || !this.#showsThread(threadId)) return;
       if (placeItems !== state.items || placeQueue !== state.snapshot?.queue) {
         placeItems = state.items;
@@ -1372,8 +1386,6 @@ export class HttpHostClient {
       if (detailGeneration !== state.generation) {
         const reattached = detailGeneration !== 0;
         detailGeneration = state.generation;
-        this.#ensureAssignments(threadId);
-        this.#ensureAutomations(threadId, reattached);
         // Browser usage notices only reach synchronized details.
         this.#ensureBrowserUsage(threadId, reattached ? "full" : "missing");
       }
@@ -2298,20 +2310,22 @@ export class HttpHostClient {
   }
 
   /**
-   * The newest page, which is all the history a family shows, and every open
-   * Assignment however far back it was handed out, so work under way is never
-   * missing. A Host without `task-family-v1` gives the newest page alone.
+   * The newest page, which is all the history a family shows, and, when that page is not the
+   * whole family, every open Assignment however far back it was handed out, so work under way is
+   * never missing. A Host without `task-family-v1` gives the newest page alone.
    */
   async #readAssignments(threadId: string, signal: AbortSignal): Promise<void> {
-    await Promise.all([
-      this.#readAssignmentPages(threadId, false, signal),
-      ...(this.#capabilities?.includes("task-family-v1")
-        ? [this.#readAssignmentPages(threadId, true, signal)]
-        : []),
-    ]);
+    const more = await this.#readAssignmentPages(threadId, false, signal);
+    if (more && this.#capabilities?.includes("task-family-v1"))
+      await this.#readAssignmentPages(threadId, true, signal);
   }
 
-  async #readAssignmentPages(threadId: string, open: boolean, signal: AbortSignal): Promise<void> {
+  /** Says whether the newest page left older Assignments out. */
+  async #readAssignmentPages(
+    threadId: string,
+    open: boolean,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
     const current = () => !signal.aborted && this.#viewerStillCurrent(generation, userId);
@@ -2334,14 +2348,16 @@ export class HttpHostClient {
         if (current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!current()) return;
+      if (!current()) return false;
       if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
       this.#update({
         ...this.#snapshot,
         assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
       });
-      before = open && response.window.hasMore ? response.window.nextBefore : null;
+      if (!open) return response.window.hasMore;
+      before = response.window.hasMore ? response.window.nextBefore : null;
     } while (before !== null);
+    return false;
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */

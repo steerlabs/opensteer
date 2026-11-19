@@ -2564,3 +2564,104 @@ test("a task observed after the socket opened paints its saved cut and resumes f
   expect(stream.detail(threadScope).transcript.getSnapshot().items.has(item.id)).toBe(true);
   release();
 });
+
+test("opening a task reads each follow-up once, beside its snapshot, and the family's open work only when the newest page is not all of it", async () => {
+  const calls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    calls.push(name);
+    if (name === "thread.assignments.list")
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detailSent = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      const deliverDetail = (
+        subscription: Pick<
+          Extract<ScopedClientMessage, { type: "client.subscribe" }>,
+          "scope" | "subscriptionId" | "generation"
+        >,
+      ) => {
+        const address = {
+          scope: subscription.scope,
+          subscriptionId: subscription.subscriptionId,
+          generation: subscription.generation,
+          throughSequence: "1",
+        };
+        detailSent++;
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          snapshot: {
+            thread: detailThread(task),
+            items: [item],
+            activeItems: [],
+            pendingRequests: [],
+            nextBefore: null,
+          },
+        } as never);
+        socket.deliver({ ...address, type: "host.synchronized" } as never);
+      };
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe") deliverDetail(message);
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+            resourceRevisions: revisions("0"),
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    capabilities: ["task-family-v1"],
+  });
+  try {
+    await client.load();
+    calls.length = 0;
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(detailSent).toBe(1));
+    await vi.waitFor(() => expect(calls).toContain("thread.browserUsage.get"));
+    expect(calls.sort()).toEqual([
+      "thread.assignments.list",
+      "thread.browserUsage.get",
+      "triggers.list",
+    ]);
+  } finally {
+    client.dispose();
+  }
+});
