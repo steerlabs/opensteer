@@ -4,11 +4,14 @@ import {
   type ExecutionNodeId,
   type RunAttemptId,
   type RunId,
+  type ThreadId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { transcriptPreview } from "./transcript-store.js";
+import { itemView } from "./personal-sync-store.js";
+import { executionNodeFromRow } from "./thread-row-mappers.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import type { DatabaseSchema, ExecutionNodeTable } from "./schema.js";
 
@@ -199,15 +202,6 @@ export async function publishExecutionNode(
       ])
       .where("executionNodes.id", "=", id)
       .executeTakeFirstOrThrow();
-    mutation.change(
-      {
-        scopeKey: `node:${id}`,
-        entityKind: "collection",
-        entityId: "node-subject",
-        operation: "invalidate",
-      },
-      () => ({ revision: mutation.sequence }),
-    );
     mutation.react({
       type: "nodeProgressPlacement",
       runId: row.runId,
@@ -232,7 +226,40 @@ export async function publishExecutionNode(
         status: row.stopping && row.status === "running" ? "stopping" : row.status,
       }),
     });
+    // Runs after the card's own staged write, so the subject carries its new revision.
+    mutation.stageTranscript(`node:${row.id}`, undefined, async () => {
+      const subject = await nodeSubjectView(tx, row.threadId, row.id);
+      if (subject)
+        mutation.change(
+          { scopeKey: `node:${row.id}`, entityKind: "node", entityId: row.id, operation: "upsert" },
+          () => subject,
+        );
+    });
   });
+}
+
+/** A node scope's subject: the node's card with its full node view. */
+export async function nodeSubjectView(
+  tx: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  nodeId: ExecutionNodeId,
+) {
+  const node = await tx
+    .selectFrom("executionNodes as node")
+    .innerJoin("runs as run", "run.id", "node.runId")
+    .selectAll("node")
+    .where("node.id", "=", nodeId)
+    .where("run.threadId", "=", threadId)
+    .executeTakeFirst();
+  const card = await tx
+    .selectFrom("transcriptItems")
+    .selectAll()
+    .where("id", "=", `node:${nodeId}`)
+    .where("threadId", "=", threadId)
+    .executeTakeFirst();
+  if (!node || !card) return undefined;
+  const subject = itemView(card);
+  return subject.kind === "node" ? { ...subject, node: executionNodeFromRow(node) } : undefined;
 }
 
 /** A node the Runner names must be one this Run's engine reported. */

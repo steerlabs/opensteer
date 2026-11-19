@@ -2028,13 +2028,12 @@ function mockItemsPage(
   const boundary = input.before ?? input.after;
   if (
     boundary &&
-    (boundary.orderRevision !== revision ||
-      boundary.threadId !== threadId ||
+    (boundary.threadId !== threadId ||
       boundary.nodeId !== (nodeId ?? null) ||
       boundary.viewerId !== snapshot.user?.id ||
       boundary.deploymentId !== snapshot.deploymentId)
   )
-    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+    return rpcSuccess({ kind: "history-reset" as const });
   const all = mockScopedItems(snapshot, threadId, nodeId, revision, client.nodeEvents);
   const anchor = input.anchorItemId ?? input.aroundMessageId;
   const index = anchor
@@ -2046,13 +2045,11 @@ function mockItemsPage(
     return input.anchorItemId
       ? rpcSuccess({
           kind: "history-reset" as const,
-          orderRevision: revision,
           anchorUnavailable: true as const,
         })
       : rpcNotFound("Item unavailable.");
   const indexAtCursor = boundary ? all.findIndex(({ id }) => id === boundary.beforeId) : -1;
-  if (boundary && indexAtCursor < 0)
-    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+  if (boundary && indexAtCursor < 0) return rpcSuccess({ kind: "history-reset" as const });
   const limit = input.limit ?? 50;
   const end = input.before
     ? indexAtCursor
@@ -2069,13 +2066,12 @@ function mockItemsPage(
     threadId,
     nodeId: nodeId ? ExecutionNodeIdSchema.parse(nodeId) : null,
     items,
-    orderRevision: revision,
     revision,
     hasMore,
-    nextBefore: hasMore ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
+    nextBefore: hasMore ? mockScopedCursor(snapshot, threadId, nodeId, items[0]) : null,
     nextAfter:
       items.length && items.at(-1) !== all.at(-1)
-        ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
+        ? mockScopedCursor(snapshot, threadId, nodeId, items.at(-1))
         : null,
   });
 }
@@ -4717,6 +4713,7 @@ export class MockHostClient implements HostClient {
       anchor,
       revision,
       this.#state.nodeEvents,
+      (leaseId, messageId) => this.#state.isLocalEditLease(messageId, leaseId),
     );
   }
 

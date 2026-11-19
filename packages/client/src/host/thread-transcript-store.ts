@@ -1,5 +1,6 @@
+import type { AssignmentSummary } from "@opensteer/core";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
-import type { PersonalInputQueue } from "@opensteer/protocol";
+import type { PersonalInputQueue, WaitingInputView } from "@opensteer/protocol";
 import type {
   TranscriptPageSchema,
   TranscriptItem,
@@ -8,14 +9,7 @@ import type {
 
 type Frame = Extract<
   ScopedHostMessage,
-  {
-    type:
-      | "host.snapshot"
-      | "host.changes"
-      | "host.synchronized"
-      | "host.removed"
-      | "host.snapshot-required";
-  }
+  { type: "host.snapshot" | "host.changes" | "host.synchronized" | "host.removed" }
 >;
 type DetailSnapshot = Extract<
   Extract<Frame, { type: "host.snapshot" }>["snapshot"],
@@ -23,7 +17,20 @@ type DetailSnapshot = Extract<
 >;
 type Listener = () => void;
 type Page = import("zod").infer<typeof TranscriptPageSchema>;
-export type VersionedInputQueue = PersonalInputQueue;
+type RequestSummary = DetailSnapshot["pendingRequests"][number];
+type Pending =
+  | {
+      readonly kind: "item";
+      readonly id: string;
+      readonly sequence: string;
+      readonly value?: TranscriptItem;
+    }
+  | {
+      readonly kind: "request";
+      readonly id: string;
+      readonly sequence: string;
+      readonly value?: RequestSummary;
+    };
 
 export interface TranscriptState {
   readonly generation: number;
@@ -34,16 +41,14 @@ export interface TranscriptState {
   readonly historyIds: readonly string[];
   readonly activeIds: ReadonlySet<string>;
   readonly readRevision: string;
-  readonly cursorScope?:
-    Omit<TranscriptOrderCursor, "beforeId" | "beforePosition" | "orderRevision"> | undefined;
+  readonly cursorScope?: Omit<TranscriptOrderCursor, "beforeId" | "beforePosition"> | undefined;
   readonly liveItems: ReadonlyMap<string, TranscriptItem>;
   readonly removed: boolean;
-  readonly stale: ReadonlySet<string>;
-  readonly overlayRevisions: ReadonlyMap<string, string>;
   readonly snapshot: DetailSnapshot | null;
-  readonly inputQueue: VersionedInputQueue | null;
-  readonly inputQueueRevision: string;
-  readonly orderRevision: string;
+  /** Waiting messages keyed by message id; `snapshot.queue.inputs` orders them. */
+  readonly queueEntries: ReadonlyMap<string, WaitingInputView>;
+  readonly inputQueue: PersonalInputQueue | null;
+  readonly assignments: ReadonlyMap<string, AssignmentSummary | null>;
   readonly newest: boolean;
 }
 
@@ -58,18 +63,20 @@ const emptyState: TranscriptState = {
   readRevision: "0",
   liveItems: new Map(),
   removed: false,
-  stale: new Set(),
-  overlayRevisions: new Map(),
   snapshot: null,
+  queueEntries: new Map(),
   inputQueue: null,
-  inputQueueRevision: "0",
-  orderRevision: "0",
+  assignments: new Map(),
   newest: true,
 };
 
 function comparePosition(a: TranscriptItem, b: TranscriptItem) {
   const delta = BigInt(a.position) - BigInt(b.position);
   return delta < 0n ? -1 : delta > 0n ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function newer(held: { readonly revision: string } | undefined, revision: string) {
+  return !held || BigInt(held.revision) < BigInt(revision);
 }
 
 export function displayedItemIds(state: TranscriptState): readonly string[] {
@@ -90,9 +97,45 @@ export function finalizedItemText(item: TranscriptItem | undefined): boolean {
   );
 }
 
+/** A running tool or node: it stays in the open-work overlay whatever the history window. */
+function openWork(item: TranscriptItem) {
+  return (item.kind === "tool" || item.kind === "node") && !finalizedItemText(item);
+}
+
+function inputQueueOf(
+  threadId: string,
+  queue: DetailSnapshot["queue"],
+  entries: ReadonlyMap<string, WaitingInputView>,
+  previous: PersonalInputQueue | null,
+): PersonalInputQueue | null {
+  if (!queue) return null;
+  const items = queue.inputs.flatMap((id) => entries.get(id) ?? []);
+  if (
+    previous &&
+    previous.revision === queue.revision &&
+    previous.paused === queue.paused &&
+    previous.steerRunId === queue.steerRunId &&
+    previous.items.length === items.length &&
+    previous.items.every((item, index) => item === items[index])
+  )
+    return previous;
+  return {
+    threadId: threadId as PersonalInputQueue["threadId"],
+    revision: queue.revision,
+    paused: queue.paused,
+    steerRunId: queue.steerRunId,
+    items,
+  };
+}
+
 export class ThreadTranscriptStore {
   readonly #listeners = new Set<Listener>();
   #state: TranscriptState = emptyState;
+  // Changes that land while a page read is in flight, so the page cannot undo them.
+  readonly #pending = new Map<string, Pending>();
+  readonly #reads = new Set<number>();
+  #readCount = 0;
+  #lostReads = 0;
 
   getSnapshot = () => this.#state;
 
@@ -103,8 +146,36 @@ export class ThreadTranscriptStore {
     };
   };
 
+  /** Starts recording changes for a page read; pass the token to the install and to endRead. */
+  beginRead() {
+    const token = ++this.#readCount;
+    this.#reads.add(token);
+    return token;
+  }
+
+  endRead(token: number) {
+    this.#reads.delete(token);
+    if (!this.#reads.size) this.#pending.clear();
+  }
+
+  #record(change: Pending) {
+    if (!this.#reads.size) return;
+    const key = `${change.kind}:${change.id}`;
+    this.#pending.delete(key);
+    this.#pending.set(key, change);
+    if (this.#pending.size <= 2000) return;
+    this.#pending.clear();
+    this.#lostReads = this.#readCount;
+  }
+
+  #readable(token: number | undefined) {
+    return token === undefined || (this.#reads.has(token) && token > this.#lostReads);
+  }
+
   begin(generation: number, retained: boolean) {
     if (generation <= this.#state.generation) return;
+    this.#pending.clear();
+    this.#lostReads = this.#readCount;
     this.#set({
       ...(retained ? this.#state : emptyState),
       generation,
@@ -123,52 +194,13 @@ export class ThreadTranscriptStore {
       case "host.removed":
         this.#set({ ...emptyState, generation: state.generation, removed: true });
         return true;
-      case "host.snapshot-required":
-        this.#set({ ...state, through: null, synchronized: false });
-        return true;
       case "host.synchronized":
         if (frame.throughSequence !== state.through) return false;
         if (!state.synchronized) this.#set({ ...state, synchronized: true });
         return true;
       case "host.snapshot": {
-        if ("tasks" in frame.snapshot || state.synchronized) return false;
-        const items = new Map<string, TranscriptItem>();
-        for (const item of [...frame.snapshot.activeItems, ...frame.snapshot.items]) {
-          const previous = items.get(item.id);
-          if (previous && BigInt(previous.revision) >= BigInt(item.revision)) continue;
-          const held = state.items.get(item.id);
-          items.set(item.id, held?.revision === item.revision ? held : item);
-        }
-        const historyIds = frame.snapshot.items.map(({ id }) => id);
-        this.#set({
-          ...state,
-          through: frame.throughSequence,
-          snapshot: frame.snapshot,
-          synchronized: false,
-          removed: false,
-          liveItems: emptyState.liveItems,
-          items,
-          historyIds,
-          activeIds: new Set(frame.snapshot.activeItems.map(({ id }) => id)),
-          ids: sortedIds(items),
-          readRevision: "0",
-          cursorScope: authority
-            ? {
-                ...authority,
-                threadId: frame.scope.threadId,
-                nodeId: frame.scope.kind === "node" ? frame.scope.nodeId : null,
-              }
-            : (frame.snapshot.nextBefore ?? frame.snapshot.nextAfter ?? undefined),
-          orderRevision: frame.snapshot.orderRevision,
-          inputQueueRevision: frame.snapshot.inputQueueRevision,
-          inputQueue:
-            state.inputQueue?.revision === frame.snapshot.inputQueueRevision
-              ? state.inputQueue
-              : null,
-          newest: frame.snapshot.anchorItemId == null && frame.snapshot.nextAfter == null,
-          stale: new Set(),
-          overlayRevisions: new Map(),
-        });
+        if ("tasks" in frame.snapshot) return false;
+        this.#snapshot(frame.snapshot, frame.throughSequence, frame.scope, authority);
         return true;
       }
       case "host.changes": {
@@ -178,106 +210,138 @@ export class ThreadTranscriptStore {
         )
           return false;
         let items: Map<string, TranscriptItem> | undefined;
-        let stale: Set<string> | undefined;
-        let overlayRevisions: Map<string, string> | undefined;
         let ids: string[] | undefined;
         let historyIds: string[] | undefined;
         let activeIds: Set<string> | undefined;
         let liveItems: Map<string, TranscriptItem> | undefined;
+        let queueEntries: Map<string, WaitingInputView> | undefined;
+        let assignments: Map<string, AssignmentSummary | null> | undefined;
         let snapshot = state.snapshot;
-        let orderRevision = state.orderRevision;
-        let inputQueueRevision = state.inputQueueRevision;
-        let inputQueue = state.inputQueue;
         for (const change of frame.changes) {
-          if (change.operation === "invalidate") {
-            stale ??= new Set(state.stale);
-            if (change.entityId === "input-queue") {
-              const revision = change.value.revision ?? change.sequence;
-              if (BigInt(revision) > BigInt(inputQueueRevision)) {
-                inputQueueRevision = revision;
-                inputQueue = null;
+          switch (change.entityKind) {
+            case "thread":
+              if (!snapshot) break;
+              if (change.operation === "remove") return false;
+              if (newer(snapshot.thread, change.value.revision))
+                snapshot = { ...snapshot, thread: change.value };
+              break;
+            case "run-queue":
+              if (!snapshot) break;
+              if (change.operation === "upsert") {
+                if (newer(snapshot.queue, change.value.revision))
+                  snapshot = { ...snapshot, queue: change.value };
+              } else {
+                const { queue: _removed, ...rest } = snapshot;
+                snapshot = rest;
               }
+              break;
+            case "queue-entry": {
+              const held = (queueEntries ?? state.queueEntries).get(change.entityId);
+              if (change.operation === "remove") {
+                if (held) (queueEntries ??= new Map(state.queueEntries)).delete(change.entityId);
+              } else if (!held || held.message.revision <= change.value.message.revision)
+                (queueEntries ??= new Map(state.queueEntries)).set(change.entityId, change.value);
+              break;
             }
-            if (change.entityId === "history-order")
-              orderRevision = change.value.revision ?? change.sequence;
-            if (["requests", "tools", "nodes"].includes(change.entityId)) {
-              overlayRevisions ??= new Map(state.overlayRevisions);
-              overlayRevisions.set(change.entityId, change.value.revision ?? change.sequence);
+            case "assignment":
+              (assignments ??= new Map(state.assignments)).set(
+                change.entityId,
+                change.operation === "upsert" ? change.value : null,
+              );
+              break;
+            case "node":
+              if (!snapshot) break;
+              if (change.operation === "upsert") {
+                if (newer(snapshot.nodeSubject, change.value.revision))
+                  snapshot = { ...snapshot, nodeSubject: change.value };
+              }
+              break;
+            case "request": {
+              this.#record({
+                kind: "request",
+                id: change.entityId,
+                sequence: change.sequence,
+                ...(change.operation === "upsert" ? { value: change.value } : {}),
+              });
+              if (!snapshot) break;
+              const previous = snapshot.pendingRequests.find(({ id }) => id === change.entityId);
+              if (
+                previous &&
+                change.operation === "upsert" &&
+                !newer(previous, change.value.revision)
+              )
+                break;
+              const requests = snapshot.pendingRequests.filter(
+                (request) => request.id !== change.entityId,
+              );
+              if (change.operation === "upsert" && change.value.status === "pending")
+                requests.push(change.value);
+              snapshot = { ...snapshot, pendingRequests: requests };
+              break;
             }
-            stale.add(change.entityId);
-            continue;
-          }
-          if (snapshot && change.entityKind === "thread") {
-            if (change.operation === "remove") return false;
-            if (BigInt(change.value.revision) > BigInt(snapshot.thread.revision))
-              snapshot = { ...snapshot, thread: change.value };
-          }
-          if (snapshot && change.entityKind === "run-queue") {
-            if (change.operation === "upsert") {
-              if (BigInt(change.value.revision) > BigInt(snapshot.queue?.revision ?? "-1"))
-                snapshot = { ...snapshot, queue: change.value };
-            } else {
-              const { queue: _removed, ...rest } = snapshot;
-              snapshot = rest;
-            }
-          }
-          if (snapshot && change.entityKind === "request") {
-            const previous = snapshot.pendingRequests.find(({ id }) => id === change.entityId);
-            if (
-              previous &&
-              change.operation === "upsert" &&
-              BigInt(previous.revision) >= BigInt(change.value.revision)
-            )
-              continue;
-            const requests = snapshot.pendingRequests.filter(
-              (request) => request.id !== change.entityId,
-            );
-            if (change.operation === "upsert" && change.value.status === "pending")
-              requests.push(change.value);
-            snapshot = { ...snapshot, pendingRequests: requests };
-          }
-          if (change.entityKind !== "item") continue;
-          const provisional = (liveItems ?? state.liveItems).has(change.entityId);
-          if (provisional) {
-            liveItems ??= new Map(state.liveItems);
-            liveItems.delete(change.entityId);
-          }
-          const id = change.entityId;
-          const previous = (items ?? state.items).get(id);
-          if (change.operation === "remove") {
-            if (!previous || BigInt(previous.revision) > BigInt(change.sequence)) continue;
-            items ??= new Map(state.items);
-            items.delete(id);
-            ids ??= [...state.ids];
-            removeId(ids, id);
-            historyIds ??= [...state.historyIds];
-            removeId(historyIds, id);
-            if ((activeIds ?? state.activeIds).has(id)) {
-              activeIds ??= new Set(state.activeIds);
-              activeIds.delete(id);
-            }
-            orderRevision = change.sequence;
-          } else {
-            const next = change.value;
-            if (previous && BigInt(previous.revision) >= BigInt(next.revision)) continue;
-            const history = historyIds ?? state.historyIds;
-            const first = (items ?? state.items).get(history[0] ?? "");
-            const last = (items ?? state.items).get(history.at(-1) ?? "");
-            const inHistory =
-              provisional ||
-              ((!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
-                (state.newest || !last || comparePosition(next, last) <= 0));
-            const active = (activeIds ?? state.activeIds).has(id);
-            if (!previous && !inHistory && !active) continue;
-            items ??= new Map(state.items);
-            items.set(id, next);
-            if (previous?.position !== next.position) {
-              ids ??= [...state.ids];
-              insertId(ids, next, items);
-              historyIds ??= [...state.historyIds];
-              if (inHistory) insertId(historyIds, next, items);
-              else removeId(historyIds, id);
-              if (previous) orderRevision = change.sequence;
+            case "item": {
+              this.#record({
+                kind: "item",
+                id: change.entityId,
+                sequence: change.sequence,
+                ...(change.operation === "upsert" ? { value: change.value } : {}),
+              });
+              const provisional = (liveItems ?? state.liveItems).has(change.entityId);
+              if (provisional) {
+                liveItems ??= new Map(state.liveItems);
+                liveItems.delete(change.entityId);
+              }
+              const id = change.entityId;
+              const previous = (items ?? state.items).get(id);
+              if (change.operation === "remove") {
+                if (!previous || BigInt(previous.revision) > BigInt(change.sequence)) break;
+                items ??= new Map(state.items);
+                items.delete(id);
+                ids ??= [...state.ids];
+                removeId(ids, id);
+                historyIds ??= [...state.historyIds];
+                removeId(historyIds, id);
+                if ((activeIds ?? state.activeIds).has(id)) {
+                  activeIds ??= new Set(state.activeIds);
+                  activeIds.delete(id);
+                }
+                break;
+              }
+              const next = change.value;
+              if (previous && !newer(previous, next.revision)) break;
+              const history = historyIds ?? state.historyIds;
+              const first = (items ?? state.items).get(history[0] ?? "");
+              const last = (items ?? state.items).get(history.at(-1) ?? "");
+              const inHistory =
+                provisional ||
+                ((!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
+                  (state.newest || !last || comparePosition(next, last) <= 0));
+              const wasActive = (activeIds ?? state.activeIds).has(id);
+              const active = openWork(next);
+              if (wasActive !== active) {
+                activeIds ??= new Set(state.activeIds);
+                if (active) activeIds.add(id);
+                else activeIds.delete(id);
+              }
+              if (!inHistory && !active && !history.includes(id)) {
+                if (previous) {
+                  items ??= new Map(state.items);
+                  items.delete(id);
+                  ids ??= [...state.ids];
+                  removeId(ids, id);
+                }
+                break;
+              }
+              items ??= new Map(state.items);
+              items.set(id, next);
+              if (!previous || previous.position !== next.position) {
+                ids ??= [...state.ids];
+                insertId(ids, next, items);
+                historyIds ??= [...state.historyIds];
+                if (inHistory) insertId(historyIds, next, items);
+                else removeId(historyIds, id);
+              }
+              break;
             }
           }
         }
@@ -288,30 +352,107 @@ export class ThreadTranscriptStore {
             items,
             activeIds ?? state.activeIds,
             snapshot,
-            orderRevision,
             state.newest ? "latest" : "earlier",
             state.cursorScope,
           );
           ids = ids.filter((id) => items!.has(id));
         }
+        if (snapshot?.queue && (queueEntries || snapshot.queue !== state.snapshot?.queue)) {
+          const listed = new Set<string>(snapshot.queue.inputs);
+          for (const id of (queueEntries ?? state.queueEntries).keys())
+            if (!listed.has(id)) (queueEntries ??= new Map(state.queueEntries)).delete(id);
+        }
+        const entries = queueEntries ?? state.queueEntries;
         this.#set({
           ...state,
           through: frame.throughSequence,
           snapshot,
           liveItems: liveItems ?? state.liveItems,
-          orderRevision,
-          inputQueueRevision,
-          inputQueue,
           items: items ?? state.items,
           ids: ids ?? state.ids,
           historyIds: historyIds ?? state.historyIds,
           activeIds: activeIds ?? state.activeIds,
-          stale: stale ?? state.stale,
-          overlayRevisions: overlayRevisions ?? state.overlayRevisions,
+          queueEntries: entries,
+          inputQueue: inputQueueOf(
+            frame.scope.threadId,
+            snapshot?.queue,
+            entries,
+            state.inputQueue,
+          ),
+          assignments: assignments ?? state.assignments,
         });
         return true;
       }
     }
+  }
+
+  // A snapshot before `host.synchronized` is the subscription's cut; after it, the Host's inline
+  // repair. A repair keeps earlier pages the reader loaded when they still meet the new window.
+  #snapshot(
+    next: DetailSnapshot,
+    through: string,
+    scope: Extract<Frame["scope"], { threadId: string }>,
+    authority?: Pick<PersonalResumeCursor, "deploymentId" | "viewerId" | "epoch">,
+  ) {
+    const state = this.#state;
+    const items = new Map<string, TranscriptItem>();
+    for (const item of [...next.activeItems, ...next.items]) {
+      const previous = items.get(item.id);
+      if (previous && !newer(previous, item.revision)) continue;
+      const held = state.items.get(item.id);
+      items.set(item.id, held?.revision === item.revision ? held : item);
+    }
+    let historyIds = next.items.map(({ id }) => id);
+    let nextBefore = next.nextBefore;
+    const first = next.items[0];
+    const repair = state.synchronized && state.snapshot !== null;
+    if (repair && first && next.nextBefore) {
+      const earlier = state.historyIds.filter((id) => {
+        const held = state.items.get(id);
+        return held && comparePosition(held, first) < 0;
+      });
+      const meets = state.historyIds.some((id) => {
+        const held = state.items.get(id);
+        return held && comparePosition(held, first) >= 0;
+      });
+      if (earlier.length && meets) {
+        for (const id of earlier) if (!items.has(id)) items.set(id, state.items.get(id)!);
+        historyIds = [...earlier, ...historyIds];
+        nextBefore = state.snapshot!.nextBefore;
+      }
+    }
+    const queueEntries = new Map(
+      (next.inputQueue ?? []).map((entry) => [entry.message.id as string, entry]),
+    );
+    if (repair && next.queue)
+      for (const id of next.queue.inputs)
+        if (!queueEntries.has(id) && state.queueEntries.has(id))
+          queueEntries.set(id, state.queueEntries.get(id)!);
+    const snapshot = { ...next, nextBefore };
+    this.#set({
+      ...state,
+      through,
+      snapshot,
+      synchronized: state.synchronized,
+      removed: false,
+      liveItems: repair ? state.liveItems : emptyState.liveItems,
+      items,
+      historyIds,
+      activeIds: new Set(next.activeItems.map(({ id }) => id)),
+      ids: stableIds(state.ids, sortedIds(items)),
+      readRevision: "0",
+      cursorScope: authority
+        ? {
+            ...authority,
+            threadId: scope.threadId,
+            nodeId: scope.kind === "node" ? scope.nodeId : null,
+          }
+        : (next.nextBefore ?? next.nextAfter ?? state.cursorScope ?? undefined),
+      queueEntries,
+      inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
+      assignments: repair ? state.assignments : emptyState.assignments,
+      newest: next.anchorItemId == null && next.nextAfter == null,
+    });
   }
 
   liveItem(item: TranscriptItem | undefined, itemId: string, close: boolean) {
@@ -333,60 +474,69 @@ export class ThreadTranscriptStore {
     this.#set({ ...state, liveItems });
   }
 
-  installQueue(queue: VersionedInputQueue, generation: number) {
+  /** Fills waiting messages the snapshot had no room for; pushed values stay authoritative. */
+  installQueueEntries(entries: readonly WaitingInputView[], generation: number) {
     const state = this.#state;
-    if (
-      generation !== state.generation ||
-      !state.synchronized ||
-      BigInt(queue.revision) < BigInt(state.inputQueueRevision) ||
-      (state.inputQueue && BigInt(queue.revision) <= BigInt(state.inputQueue.revision))
-    )
-      return false;
-    const stale = new Set(state.stale);
-    stale.delete("input-queue");
-    this.#set({ ...state, inputQueue: queue, inputQueueRevision: queue.revision, stale });
+    const queue = state.snapshot?.queue;
+    if (generation !== state.generation || !state.synchronized || !queue) return false;
+    const listed = new Set<string>(queue.inputs);
+    let queueEntries: Map<string, WaitingInputView> | undefined;
+    for (const entry of entries) {
+      const id = entry.message.id;
+      if (!listed.has(id) || state.queueEntries.has(id)) continue;
+      (queueEntries ??= new Map(state.queueEntries)).set(id, entry);
+    }
+    if (!queueEntries) return true;
+    this.#set({
+      ...state,
+      queueEntries,
+      inputQueue: inputQueueOf(state.snapshot!.thread.id, queue, queueEntries, state.inputQueue),
+    });
     return true;
   }
 
-  installPage(page: Page, generation: number, mode: "earlier" | "newer" | "around" | "latest") {
+  installPage(
+    page: Page,
+    generation: number,
+    mode: "earlier" | "newer" | "around" | "latest",
+    read?: number,
+  ) {
     const state = this.#state;
     if (
       state.generation !== generation ||
       !state.synchronized ||
       !state.snapshot ||
       state.through === null ||
-      BigInt(page.revision) < BigInt(state.through) ||
-      BigInt(page.orderRevision) < BigInt(state.orderRevision)
+      !this.#readable(read)
     )
       return false;
     const merge = mode === "earlier" || mode === "newer";
     const items = new Map([...state.items].filter(([id]) => merge || state.activeIds.has(id)));
     for (const item of page.items) {
       const previous = state.items.get(item.id);
-      items.set(
-        item.id,
-        previous && BigInt(previous.revision) >= BigInt(item.revision) ? previous : item,
-      );
+      items.set(item.id, previous && !newer(previous, item.revision) ? previous : item);
     }
     const historyIds = [
       ...new Set([...(merge ? state.historyIds : []), ...page.items.map(({ id }) => id)]),
-    ].sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
+    ];
+    const nextBefore = mode === "newer" ? state.snapshot.nextBefore : page.nextBefore;
+    const newest =
+      mode !== "around" && (mode === "earlier" ? state.newest : page.nextAfter == null);
+    this.#replay(items, historyIds, nextBefore != null, newest);
+    historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
     const snapshot = trimWindow(
       historyIds,
       items,
       state.activeIds,
       {
         ...state.snapshot,
-        nextBefore: mode === "newer" ? state.snapshot.nextBefore : page.nextBefore,
+        nextBefore,
         nextAfter:
           mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null),
       },
-      page.orderRevision,
       mode === "earlier" ? "earlier" : "latest",
       state.cursorScope,
     );
-    const stale = new Set(state.stale);
-    stale.delete("history-order");
     let liveItems: Map<string, TranscriptItem> | undefined;
     for (const { id } of page.items) {
       if (!state.liveItems.has(id)) continue;
@@ -399,9 +549,7 @@ export class ThreadTranscriptStore {
       ids: stableIds(state.ids, sortedIds(items)),
       items,
       liveItems: liveItems ?? state.liveItems,
-      stale,
       readRevision: maxRevision(state.readRevision, page.revision),
-      orderRevision: page.orderRevision,
       newest: mode !== "around" && snapshot?.nextAfter == null,
     });
     return true;
@@ -411,11 +559,11 @@ export class ThreadTranscriptStore {
     kind: "requests" | "tools" | "nodes",
     page: {
       revision: string;
-      entries: readonly (TranscriptItem | DetailSnapshot["pendingRequests"][number])[];
+      entries: readonly (TranscriptItem | RequestSummary)[];
       next: string | null;
     },
     generation: number,
-    replace = false,
+    read?: number,
   ) {
     const state = this.#state;
     if (
@@ -423,7 +571,7 @@ export class ThreadTranscriptStore {
       !state.synchronized ||
       !state.snapshot ||
       state.through === null ||
-      BigInt(page.revision) < BigInt(state.through)
+      !this.#readable(read)
     )
       return false;
     const snapshot = { ...state.snapshot };
@@ -434,51 +582,93 @@ export class ThreadTranscriptStore {
     const items = new Map(state.items);
     const activeIds = new Set(state.activeIds);
     if (kind === "requests") {
-      const requests = new Map(
-        (replace ? [] : snapshot.pendingRequests).map((request) => [request.id, request]),
+      const requests = new Map<string, RequestSummary>(
+        snapshot.pendingRequests.map((request) => [request.id, request]),
       );
       for (const entry of page.entries) {
         if ("position" in entry) continue;
-        const previous = requests.get(entry.id);
-        if (!previous || BigInt(entry.revision) > BigInt(previous.revision))
-          requests.set(entry.id, entry);
+        if (newer(requests.get(entry.id), entry.revision)) requests.set(entry.id, entry);
+      }
+      for (const change of this.#pending.values()) {
+        if (change.kind !== "request") continue;
+        const held = requests.get(change.id);
+        if (change.value?.status === "pending") {
+          if (newer(held, change.value.revision)) requests.set(change.id, change.value);
+        } else if (!held || BigInt(held.revision) <= BigInt(change.sequence))
+          requests.delete(change.id);
       }
       snapshot.pendingRequests = [...requests.values()].slice(-100);
     } else {
-      if (replace) {
-        const history = new Set(state.historyIds);
-        for (const id of activeIds) {
-          if (items.get(id)?.kind !== (kind === "tools" ? "tool" : "node")) continue;
-          activeIds.delete(id);
-          if (!history.has(id)) items.delete(id);
-        }
-      }
       for (const entry of page.entries) {
         if (!("position" in entry)) continue;
-        activeIds.add(entry.id);
         const held = items.get(entry.id);
-        if (!held || BigInt(entry.revision) > BigInt(held.revision)) items.set(entry.id, entry);
+        if (newer(held, entry.revision)) items.set(entry.id, entry);
+        if (openWork(items.get(entry.id)!)) activeIds.add(entry.id);
+      }
+      for (const change of this.#pending.values()) {
+        if (change.kind !== "item" || !activeIds.has(change.id)) continue;
+        const held = items.get(change.id)!;
+        if (change.value && newer(held, change.value.revision)) items.set(change.id, change.value);
+        else if (!change.value && BigInt(held.revision) <= BigInt(change.sequence))
+          items.delete(change.id);
+        const current = items.get(change.id);
+        if (current && openWork(current)) continue;
+        activeIds.delete(change.id);
+        if (current && !state.historyIds.includes(change.id)) items.delete(change.id);
       }
     }
-    const stale = new Set(state.stale);
-    stale.delete(kind);
     this.#set({
       ...state,
       snapshot,
       items,
       activeIds,
-      stale,
       readRevision: maxRevision(state.readRevision, page.revision),
       ids: stableIds(state.ids, sortedIds(items)),
     });
     return true;
   }
 
+  // Applies the changes recorded during a page read on top of the page.
+  #replay(
+    items: Map<string, TranscriptItem>,
+    historyIds: string[],
+    hasEarlier: boolean,
+    newest: boolean,
+  ) {
+    if (!this.#pending.size) return;
+    const window = historyIds.map((id) => items.get(id)!).sort(comparePosition);
+    const first = window[0];
+    const last = window.at(-1);
+    const removed = new Set<string>();
+    for (const change of this.#pending.values()) {
+      if (change.kind !== "item") continue;
+      const held = items.get(change.id);
+      if (!change.value) {
+        if (held && BigInt(held.revision) <= BigInt(change.sequence)) removed.add(change.id);
+        continue;
+      }
+      if (held) {
+        if (newer(held, change.value.revision)) items.set(change.id, change.value);
+        continue;
+      }
+      if (
+        (!hasEarlier || !first || comparePosition(change.value, first) >= 0) &&
+        (newest || !last || comparePosition(change.value, last) <= 0)
+      ) {
+        items.set(change.id, change.value);
+        historyIds.push(change.id);
+      }
+    }
+    for (const id of removed) {
+      items.delete(id);
+      removeId(historyIds, id);
+    }
+  }
+
   canCheckpoint(state = this.#state) {
     return (
       state.snapshot !== null &&
       state.through !== null &&
-      state.stale.size === 0 &&
       state.newest &&
       BigInt(state.through) >= BigInt(state.readRevision) &&
       (state.historyIds.length <= 50 || state.cursorScope !== undefined) &&
@@ -488,26 +678,21 @@ export class ThreadTranscriptStore {
   }
 
   checkpoint(state = this.#state): DetailSnapshot | undefined {
-    const { snapshot, items, orderRevision, inputQueueRevision } = state;
+    const { snapshot, items } = state;
     if (!snapshot || !this.canCheckpoint(state)) return;
     const history = state.historyIds.slice(-50).map((id) => items.get(id)!);
     const boundary = history[0];
     const nextBefore =
       state.historyIds.length > history.length && boundary && state.cursorScope
-        ? {
-            ...state.cursorScope,
-            orderRevision,
-            beforeId: boundary.id,
-            beforePosition: boundary.position,
-          }
+        ? { ...state.cursorScope, beforeId: boundary.id, beforePosition: boundary.position }
         : snapshot.nextBefore;
+    const { inputQueue: _inputQueue, ...rest } = snapshot;
     return {
-      ...snapshot,
+      ...rest,
       nextBefore,
       items: history,
       activeItems: [...state.activeIds].map((id) => items.get(id)!),
-      orderRevision,
-      inputQueueRevision,
+      ...(state.inputQueue ? { inputQueue: state.inputQueue.items } : {}),
     };
   }
 
@@ -557,7 +742,6 @@ function trimWindow(
   items: Map<string, TranscriptItem>,
   activeIds: ReadonlySet<string>,
   snapshot: DetailSnapshot | null,
-  orderRevision: string,
   edge: "earlier" | "latest",
   fallback?: TranscriptState["cursorScope"],
 ) {
@@ -570,7 +754,6 @@ function trimWindow(
   const boundary = items.get((edge === "earlier" ? historyIds.at(-1) : historyIds[0])!)!;
   const cursor = {
     ...template,
-    orderRevision,
     beforeId: boundary.id,
     beforePosition: boundary.position,
   };

@@ -591,7 +591,7 @@ export class ChannelStore {
     readonly ownerUserId: UserId;
   }): Promise<ChannelBinding> {
     const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    const binding = await commitPersonalMutation(this.#database, async (transaction, mutation) => {
+    const binding = await commitPersonalMutation(this.#database, async (transaction) => {
       const binding = await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       if (binding.revision !== input.expectedRevision) {
@@ -618,12 +618,6 @@ export class ChannelStore {
           message: "Channel access policy changed while it was being edited",
         });
       }
-      mutation.change({
-        scopeKey: "shell",
-        entityKind: "collection",
-        entityId: "channels",
-        operation: "invalidate",
-      });
       return channelBindingFromRow(row);
     });
     await drainRevokedChannelInputs(this.#database, input.bindingId);
@@ -637,7 +631,7 @@ export class ChannelStore {
     readonly externalUserId: string;
     readonly ownerUserId: UserId;
   }): Promise<ChannelAccessGrant> {
-    const grant = await commitPersonalMutation(this.#database, async (transaction, mutation) => {
+    const grant = await commitPersonalMutation(this.#database, async (transaction) => {
       await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       const grant = await transaction
@@ -680,12 +674,6 @@ export class ChannelStore {
           message: "Channel access request changed while it was being reviewed",
         });
       }
-      mutation.change({
-        scopeKey: "shell",
-        entityKind: "collection",
-        entityId: "channels",
-        operation: "invalidate",
-      });
       if (row.requestIngressId) {
         const text =
           input.decision === "approved"
@@ -713,7 +701,7 @@ export class ChannelStore {
     status: "connected" | "paused" | "revoked",
     administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
-    await commitPersonalMutation(this.#database, (transaction, mutation) =>
+    await commitPersonalMutation(this.#database, (transaction) =>
       administrationCommand(transaction, administration, async () => {
         const connection = await transaction
           .selectFrom("integrationConnections")
@@ -727,12 +715,6 @@ export class ChannelStore {
         if (!connection) {
           throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
         }
-        mutation.change({
-          scopeKey: "shell",
-          entityKind: "collection",
-          entityId: "channels",
-          operation: "invalidate",
-        });
         if (status === "revoked") {
           await revokeChannelConnectionsInTransaction(transaction, [connectionId]);
           return;
@@ -768,7 +750,7 @@ export class ChannelStore {
     readonly bindingId: ChannelBindingId;
     readonly ownerUserId: UserId;
   }): Promise<boolean> {
-    const revoked = await commitPersonalMutation(this.#database, (transaction, mutation) =>
+    const revoked = await commitPersonalMutation(this.#database, (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const binding = await transaction
           .selectFrom("channelBindings")
@@ -792,12 +774,6 @@ export class ChannelStore {
           .set({ status: "revoked", updatedAt: new Date() })
           .where("id", "=", input.bindingId)
           .executeTakeFirstOrThrow();
-        mutation.change({
-          scopeKey: "shell",
-          entityKind: "collection",
-          entityId: "channels",
-          operation: "invalidate",
-        });
         return true;
       }),
     );

@@ -28,7 +28,11 @@ import {
   type PersonalResourceKind,
   type PersonalResourceView,
 } from "@opensteer/protocol/resources";
-import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
+import {
+  TranscriptItemSchema,
+  transcriptMessageRefLimits,
+  type TranscriptItem,
+} from "@opensteer/protocol/transcript";
 import { type PersonalInputQueue } from "@opensteer/protocol";
 import type { TranscriptFixtureSnapshot, ThreadSummary, TranscriptEntry } from "../host/client.js";
 import { messageBody } from "../host/transcript.js";
@@ -55,7 +59,6 @@ export function mockScopedTask(
     title: thread.title,
     id: thread.id,
     revision,
-    thread,
     status: thread.status,
     inputQueuePaused: thread.inputQueuePaused,
     purpose: thread.purpose,
@@ -68,6 +71,7 @@ export function mockScopedTask(
   };
 }
 
+/** Every listed task as a row; the client sorts its lists from the rows themselves. */
 export function mockScopedShell(
   snapshot: MockTranscriptSnapshot,
   toThread: (summary: ThreadSummary) => Thread,
@@ -75,13 +79,34 @@ export function mockScopedShell(
   revision = String(snapshot.revision),
 ) {
   const recent = (snapshot.tasks?.entries ?? []).slice(0, 25);
-  const active = snapshot.activeTasks.slice(0, 10);
+  const active = snapshot.activeTasks;
   const threads = new Map([...recent, ...active].map((entry) => [entry.thread.id, entry]));
-  const pinned = snapshot.threads.find(({ id }) => id === selected);
-  if (pinned && !threads.has(pinned.id))
-    threads.set(pinned.id, { thread: pinned, lastReply: null, failure: null });
-  const tasks = [...threads.values()].map(({ thread, lastReply, failure }) =>
-    mockScopedTask(toThread(thread), revision, lastReply, failure),
+  for (const thread of snapshot.threads)
+    if ((thread.listed || thread.id === selected) && !threads.has(thread.id))
+      threads.set(thread.id, { thread, lastReply: null, failure: null });
+  const tasks = [...threads.values()]
+    .slice(0, 256)
+    .map(({ thread, lastReply, failure }) =>
+      mockScopedTask(toThread(thread), revision, lastReply, failure),
+    );
+  const listed = new Set<string>(tasks.map(({ id }) => id));
+  const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
+  const attention = (snapshot.needsYou?.entries ?? []).slice(0, 200).map((entry) =>
+    entry.kind === "request"
+      ? {
+          id: entry.request.id,
+          kind: "request",
+          threadId: entry.originThreadId,
+          revision,
+          title: entry.title,
+        }
+      : {
+          id: entry.requestId,
+          kind: "team-ask",
+          threadId: entry.task?.threadId ?? null,
+          revision,
+          title: "Teammate ask",
+        },
   );
 
   return PersonalNetworkShellSnapshotSchema.parse({
@@ -97,34 +122,24 @@ export function mockScopedShell(
     },
     epoch: mockPersonalEpoch,
     tasks,
-    recentTaskIds: recent.map(({ thread }) => thread.id),
-    activeTaskIds: active.map(({ thread }) => thread.id),
+    recentTaskIds: recent.map(({ thread }) => thread.id).filter((id) => listed.has(id)),
+    activeTaskIds: activeIds,
+    activeHasMore: false,
     nextBefore: snapshot.tasks?.window.nextBefore ?? null,
+    taskCounts: {
+      active: activeIds.length,
+      open: snapshot.tasks?.window.totalItems ?? recent.length,
+    },
     visits: Object.entries(snapshot.threadVisits).flatMap(([threadId, lastVisitedAt]) =>
-      threads.has(threadId) ? [{ threadId, lastVisitedAt, revision }] : [],
+      listed.has(threadId) ? [{ threadId, lastVisitedAt, revision }] : [],
     ),
     counts: {
       pendingRequestCount: snapshot.waitingRequests.length,
       needsYouCount: snapshot.needsYou?.count ?? 0,
-      unreadTaskCount: tasks.filter(({ thread }) => threads.get(thread.id)?.thread.unread).length,
+      unreadTaskCount: [...threads.values()].filter(({ thread }) => thread.unread).length,
     },
-    attention: (snapshot.needsYou?.entries ?? []).slice(0, 20).map((entry) =>
-      entry.kind === "request"
-        ? {
-            id: entry.request.id,
-            kind: "request",
-            threadId: entry.originThreadId,
-            revision,
-            title: entry.title,
-          }
-        : {
-            id: entry.requestId,
-            kind: "team-ask",
-            threadId: entry.task?.threadId ?? null,
-            revision,
-            title: "Teammate ask",
-          },
-    ),
+    attention,
+    attentionHasMore: (snapshot.needsYou?.entries.length ?? 0) > attention.length,
     resourceRevisions: PersonalResourceRevisionsSchema.parse(
       Object.fromEntries(personalResourceKinds.map((kind) => [kind, revision])),
     ),
@@ -171,23 +186,30 @@ function mockScopedItem(
     isTurnStart: entry.kind === "message" && entry.messageKind === "input",
   };
   switch (entry.kind) {
-    case "message":
+    case "message": {
+      const refs = {
+        attachments: entry.attachments?.slice(0, transcriptMessageRefLimits.attachments) ?? [],
+        pages: entry.pages?.slice(0, transcriptMessageRefLimits.pages) ?? [],
+        places: entry.places?.slice(0, transcriptMessageRefLimits.places) ?? [],
+      };
       return TranscriptItemSchema.parse({
         ...value,
         kind: entry.kind,
         messageId: MessageIdSchema.parse(entry.id),
         messageKind: entry.messageKind,
         author: entry.author,
+        ...Object.fromEntries(Object.entries(refs).filter(([, list]) => list.length)),
         view: {
           preview: entry.body.slice(0, 400),
           truncated:
             entry.body.length > 400 ||
-            !!entry.attachments?.length ||
-            !!entry.pages?.length ||
-            !!entry.places?.length,
+            refs.attachments.length < (entry.attachments?.length ?? 0) ||
+            refs.pages.length < (entry.pages?.length ?? 0) ||
+            refs.places.length < (entry.places?.length ?? 0),
           published: entry.published ?? true,
         },
       });
+    }
     case "tool":
       return TranscriptItemSchema.parse({
         ...value,
@@ -335,7 +357,6 @@ export function mockScopedCursor(
   snapshot: MockTranscriptSnapshot,
   threadId: string,
   nodeId: string | undefined,
-  revision: string,
   oldest: TranscriptItem | undefined,
 ) {
   return oldest
@@ -345,7 +366,6 @@ export function mockScopedCursor(
         epoch: mockPersonalEpoch,
         threadId: ThreadIdSchema.parse(threadId),
         nodeId: nodeId ? ExecutionNodeIdSchema.parse(nodeId) : null,
-        orderRevision: revision,
         beforePosition: oldest.position,
         beforeId: oldest.id,
       }
@@ -360,9 +380,12 @@ export function mockScopedDetail(
   anchor?: string,
   revision = String(snapshot.revision),
   nodeEvents: readonly AgentEventView[] = [],
+  ownsLease: (leaseId: string, messageId: string) => boolean = () => false,
 ) {
   const thread = snapshot.threads.find(({ id }) => id === threadId);
   if (!thread) return;
+  const queued = snapshot.inputQueues[threadId];
+  const inputQueue = queued ? mockInputQueue(queued, revision, ownsLease) : undefined;
   const node = nodeId
     ? snapshot.transcripts[threadId]?.find(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
@@ -387,23 +410,21 @@ export function mockScopedDetail(
   const start = Math.max(0, end - 50);
   const items = all.slice(start, end);
   return PersonalDetailSnapshotSchema.parse({
-    thread: mockScopedTask(toThread(thread), revision, null, null),
+    thread: { ...mockScopedTask(toThread(thread), revision, null, null), thread: toThread(thread) },
     ...(anchor ? { anchorItemId: anchorIndex === -1 ? null : anchor } : {}),
-    orderRevision: revision,
-    inputQueueRevision: revision,
     items,
     activeItems: [...tools, ...nodes].slice(0, 20),
     ...(node ? { nodeSubject: mockScopedItem(node, "1", revision) } : {}),
     pendingRequests: requests.slice(0, 20),
-    nextBefore: start ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
-    nextAfter:
-      end < all.length
-        ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
-        : null,
+    nextBefore: start ? mockScopedCursor(snapshot, threadId, nodeId, items[0]) : null,
+    nextAfter: end < all.length ? mockScopedCursor(snapshot, threadId, nodeId, items.at(-1)) : null,
     overlayCursors,
+    ...(nodeId ? {} : { inputQueue: inputQueue?.items ?? [] }),
     queue: {
       revision,
       paused: thread.inputQueuePaused,
+      steerRunId: inputQueue?.steerRunId ?? null,
+      inputs: inputQueue?.items.map(({ message }) => message.id) ?? [],
       runs: snapshot.runQueue
         .filter((run) => run.threadId === threadId)
         .slice(0, 2)

@@ -1109,6 +1109,7 @@ function ReplyBubble({
           more={index === parts.length - 1 ? more : null}
           only={parts.length === 1}
           part={part}
+          streaming={message.streaming === true && index === parts.length - 1}
         />
       ))}
       {parts.length === 0 ? <div className="reply__line">{more}</div> : null}
@@ -1128,10 +1129,13 @@ function ReplyBubblePart({
   more,
   only,
   part,
+  streaming,
 }: {
   more: ReactNode;
   only: boolean;
   part: ReplyPart;
+  /** The reply is still arriving and this is its last part. */
+  streaming: boolean;
 }) {
   const label =
     part.kind === "code" ? "Copy code" : part.kind === "draft" ? "Copy draft" : "Copy message";
@@ -1160,6 +1164,7 @@ function ReplyBubblePart({
           >
             <Markdown
               bare={part.kind === "code"}
+              streaming={streaming}
               text={part.kind === "code" ? part.source : part.text}
             />
           </Suspense>

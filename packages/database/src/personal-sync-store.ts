@@ -166,13 +166,13 @@ export async function readPersonalScopeCut<Snapshot>(
     if (selected.kind !== "shell" && !(await authorizedDetail(tx, input.viewerId, selected)))
       return { kind: "removed" as const, state };
     const scopeKey = personalScopeKey(selected);
-    if (!cursor)
-      return { kind: "snapshot" as const, state, snapshot: await input.snapshot(tx, state) };
-    if (cursor.scopeKey !== scopeKey || cursor.epoch !== state.epoch)
-      return { kind: "snapshot-required" as const, reason: "scope-changed" as const, state };
+    // The Host repairs any scope it cannot replay with a snapshot on the same subscription.
+    const snapshot = async () =>
+      ({ kind: "snapshot" as const, state, snapshot: await input.snapshot(tx, state) }) as const;
+    if (!cursor || cursor.scopeKey !== scopeKey || cursor.epoch !== state.epoch) return snapshot();
     const after = BigInt(cursor.afterSequence);
     if (after > BigInt(state.sequence) || after < BigInt(state.prunedThroughSequence))
-      return { kind: "snapshot-required" as const, reason: "cursor-unavailable" as const, state };
+      return snapshot();
     if (after === BigInt(state.sequence)) return { kind: "replay" as const, state, commits: [] };
     const changes = await tx
       .selectFrom("clientChanges")
@@ -185,19 +185,13 @@ export async function readPersonalScopeCut<Snapshot>(
       .orderBy("ordinal")
       .limit(replayMaxRows + 1)
       .execute();
-    if (changes.length > replayMaxRows)
-      return { kind: "snapshot-required" as const, reason: "replay-overflow" as const, state };
+    if (changes.length > replayMaxRows || changes.some((row) => row.operation === "reset"))
+      return snapshot();
     let previous = cursor.afterSequence;
     let batch: ReplayChange[] = [];
     let bytes = 0;
     const commits: ScopeCommit[] = [];
     for (const row of changes) {
-      if (
-        row.operation === "invalidate" &&
-        row.entityKind === "collection" &&
-        row.entityId === "scope"
-      )
-        return { kind: "snapshot-required" as const, reason: "scope-invalidated" as const, state };
       const last = batch.at(-1);
       if (last && last.sequence !== row.sequence) {
         commits.push({ fromSequence: previous, throughSequence: last.sequence, changes: batch });
@@ -207,8 +201,7 @@ export async function readPersonalScopeCut<Snapshot>(
       const { payload, ...change } = row;
       const value = row.operation === "remove" ? change : { ...change, value: payload };
       bytes += Buffer.byteLength(JSON.stringify(value));
-      if (bytes > replayMaxBytes)
-        return { kind: "snapshot-required" as const, reason: "replay-overflow" as const, state };
+      if (bytes > replayMaxBytes) return snapshot();
       batch.push(value);
     }
     const last = batch.at(-1);
@@ -242,6 +235,7 @@ export const itemColumns = [
   "blockId",
   "bindingGeneration",
   "view",
+  "refs",
 ] as const;
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
   readonly place?: PlaceView | null;
@@ -284,6 +278,7 @@ export function itemView(row: Item) {
     case "message":
       return TranscriptItemSchema.parse({
         ...base,
+        ...row.refs,
         messageId: row.messageId,
         messageKind,
         author: messageAuthor,
@@ -343,7 +338,6 @@ export interface TranscriptCursor {
   readonly viewerId: UserId;
   readonly threadId: ThreadId;
   readonly nodeId: ExecutionNodeId | null;
-  readonly orderRevision: string;
   readonly beforePosition: string;
   readonly beforeId: string;
 }
@@ -411,7 +405,6 @@ export function readTranscriptPage(
     const scope = input.scope;
     const nodeId = scope.kind === "node" ? scope.nodeId : null;
     const cursor = input.cursor ?? input.after;
-    const revision = thread.transcriptOrderRevision;
     if (
       cursor &&
       (cursor.deploymentId !== state.deploymentId ||
@@ -423,8 +416,8 @@ export function readTranscriptPage(
         code: "forbidden",
         message: "The transcript cursor belongs to another scope",
       });
-    if (cursor && (cursor.epoch !== state.epoch || cursor.orderRevision !== revision))
-      return { kind: "history-reset" as const, orderRevision: revision };
+    // Keyset cursors stay valid while cards move or hide; only a new epoch resets history.
+    if (cursor && cursor.epoch !== state.epoch) return { kind: "history-reset" as const };
     const limit = Math.max(1, Math.min(input.limit ?? 100, 100));
     const maxBytes = Math.max(8192, Math.min(input.maxBytes ?? 128 * 1024, 128 * 1024));
     const from = drawableItems(tx, scope);
@@ -448,7 +441,6 @@ export function readTranscriptPage(
             viewerId: input.viewerId,
             threadId: thread.id,
             nodeId,
-            orderRevision: revision,
             beforePosition: boundary.position,
             beforeId: boundary.id,
           }
@@ -466,7 +458,6 @@ export function readTranscriptPage(
       const hasMore = candidates.length > selected.length;
       return {
         kind: "page" as const,
-        orderRevision: revision,
         revision: state.sequence,
         items: selected.map(itemView),
         hasMore,
@@ -533,7 +524,6 @@ export function readTranscriptPage(
     const nextBefore = hasMore ? makeCursor(oldest) : null;
     return {
       kind: "page" as const,
-      orderRevision: revision,
       revision: state.sequence,
       items: [...rows.reverse(), ...newer].map(itemView),
       hasMore,

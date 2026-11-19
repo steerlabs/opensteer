@@ -661,8 +661,7 @@ describeStore("personal team consent and returns", (it) => {
         .selectFrom("clientChanges")
         .select("sequence")
         .where("scopeKey", "=", `thread:${identity.threadId}`)
-        .where("entityKind", "=", "collection")
-        .where("entityId", "=", "input-queue")
+        .where("entityKind", "=", "run-queue")
         .execute();
     const before = (await inputEvents()).length;
     await expect(

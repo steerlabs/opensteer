@@ -2,7 +2,6 @@ import { isOfflineSettlement, personalTransactionDatabase } from "./personal-tra
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { publishThreadCard } from "./message-visibility.js";
 import { transcriptPreview } from "./transcript-store.js";
-import { invalidateThreadCollection } from "./thread-status.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -130,20 +129,21 @@ export async function publishAssignmentSummaries(
   if (isOfflineSettlement(tx)) return;
   await commitPersonalMutation(tx, async (tx, mutation) => {
     const assignment = await assignmentSummaryInTransaction(tx, row);
+    const bounded = {
+      ...assignment,
+      objectivePreview: utf8Prefix(assignment.objectivePreview, 320),
+      resultPreview:
+        assignment.resultPreview === null ? null : utf8Prefix(assignment.resultPreview, 320),
+      workerThread: {
+        ...assignment.workerThread,
+        title: utf8Prefix(assignment.workerThread.title, 192),
+      },
+    };
     const view = transcriptPreview({
       title: assignment.workerThread.title,
       status: assignment.status,
       preview: assignment.resultPreview ?? assignment.objectivePreview,
-      assignment: {
-        ...assignment,
-        objectivePreview: utf8Prefix(assignment.objectivePreview, 320),
-        resultPreview:
-          assignment.resultPreview === null ? null : utf8Prefix(assignment.resultPreview, 320),
-        workerThread: {
-          ...assignment.workerThread,
-          title: utf8Prefix(assignment.workerThread.title, 192),
-        },
-      },
+      assignment: bounded,
     });
     await publishThreadCard(tx, mutation, {
       id: `assignment:${row.id}`,
@@ -166,7 +166,15 @@ export async function publishAssignmentSummaries(
           view,
         });
       }
-      await invalidateThreadCollection(tx, row.parentThreadId, "assignments");
+      mutation.change(
+        {
+          scopeKey: `thread:${row.parentThreadId}`,
+          entityKind: "assignment",
+          entityId: row.id,
+          operation: "upsert",
+        },
+        () => bounded,
+      );
     }
     if (wakeReturn && row.status !== "open" && row.resultStatus === "pending") {
       const database = personalTransactionDatabase(tx);

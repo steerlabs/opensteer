@@ -25,7 +25,6 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
   });
   const items = new Map<string, TranscriptItem>();
   const scope = { kind: "thread", threadId };
-  let generation = 1;
   const synchronized = waitForMessage(
     socket,
     (message) =>
@@ -39,17 +38,6 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
     if (!decoded.success) return;
     const message = decoded.data;
     if (message.subscriptionId === "detail:0") {
-      if (message.type === "host.snapshot-required") {
-        socket.send(
-          JSON.stringify({
-            type: "client.subscribe",
-            subscriptionId: "detail:0",
-            generation: ++generation,
-            scope,
-          }),
-        );
-        return;
-      }
       if (message.type === "host.snapshot" && "items" in message.snapshot) {
         items.clear();
         for (const item of message.snapshot.items) items.set(item.id, item);

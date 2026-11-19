@@ -101,11 +101,27 @@ export class PersonalLiveText {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #timerAt = Infinity;
   readonly #request: (runId: RunId) => void;
+  readonly #readTail: (threadId: ThreadId) => void;
   readonly #repairs = new Set<RunId>();
+  /** Where the next durable card of each tracked thread goes, so provisional cards draw last. */
+  readonly #tails = new Map<ThreadId, string>();
 
-  constructor(hub: Pick<RealtimeHub, "publishLive">, request: (runId: RunId) => void) {
+  constructor(
+    hub: Pick<RealtimeHub, "publishLive">,
+    request: (runId: RunId) => void,
+    readTail: (threadId: ThreadId) => void = () => undefined,
+  ) {
     this.#hub = hub;
     this.#request = request;
+    this.#readTail = readTail;
+  }
+
+  /** Records a thread's last allocated transcript position. */
+  observeTail(threadId: ThreadId, lastPosition: string) {
+    if (![...this.#bindings.values()].some((binding) => binding.threadId === threadId)) return;
+    const next = (BigInt(lastPosition) + 1n).toString();
+    const known = this.#tails.get(threadId);
+    if (known === undefined || BigInt(next) > BigInt(known)) this.#tails.set(threadId, next);
   }
 
   knows(runId: RunId, bindingGeneration: number) {
@@ -212,10 +228,11 @@ export class PersonalLiveText {
         afterSequence,
       };
       const createdAt = existing?.frame.item?.createdAt ?? new Date().toISOString();
+      if (!existing) this.#readTail(threadId);
       const card = {
         id: itemId,
         revision: afterSequence,
-        position: "1",
+        position: existing?.frame.item?.position ?? this.#tails.get(threadId) ?? "1",
         runId,
         attemptId,
         nodeId,
@@ -427,7 +444,11 @@ export class PersonalLiveText {
     if (stream.subject) this.#hub.publishLive(stream.subject, frame);
   }
 
-  finish(change: Extract<PersonalCommitReaction, { type: "runFinished" }>, afterSequence: string) {
+  /** Ends every live stream of the Run; later frames from that binding are ignored. */
+  finish(
+    change: Extract<PersonalCommitReaction, { type: "runFinished" | "runLiveClosed" }>,
+    afterSequence: string,
+  ) {
     if (!this.knows(change.runId, change.bindingGeneration ?? 0)) return;
     for (const { frame, scope } of this.#runs.get(change.runId)?.values() ?? []) {
       this.closeItem({
@@ -439,10 +460,14 @@ export class PersonalLiveText {
       });
     }
     this.#dropRun(change.runId);
+    const threadId = this.#bindings.get(change.runId)?.threadId;
     this.#bindings.delete(change.runId);
+    if (threadId && ![...this.#bindings.values()].some((binding) => binding.threadId === threadId))
+      this.#tails.delete(threadId);
   }
 
   close() {
+    this.#tails.clear();
     this.#clearTimer();
     this.#pending.clear();
     this.#runs.clear();

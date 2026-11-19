@@ -1,6 +1,5 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { currentTasks } from "./personal-task-store.js";
-import { taskView } from "./personal-snapshot-store.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
 import { transcriptIdentity, transcriptPreview } from "./transcript-store.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
@@ -1784,21 +1783,11 @@ export function recordRunTabPlace(
       })
       .returningAll()
       .executeTakeFirstOrThrow();
-    const current = await currentTasks(tx, owner.ownerId)
-      .where("id", "=", thread.id)
-      .executeTakeFirstOrThrow();
     const scopeKey = `thread:${thread.id}` as const;
     mutation.change({ scopeKey, entityKind: "item", entityId: item.id, operation: "upsert" }, () =>
       itemView(item),
     );
-    mutation.change(
-      { scopeKey, entityKind: "thread", entityId: thread.id, operation: "upsert" },
-      () => taskView(current),
-    );
-    mutation.change(
-      { scopeKey, entityKind: "collection", entityId: "run-queue", operation: "invalidate" },
-      () => ({ revision: mutation.sequence }),
-    );
+    await publishThreadSummary(tx, thread.id);
     return true;
   });
 }

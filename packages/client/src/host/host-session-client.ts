@@ -26,6 +26,7 @@ import {
   PersonalShellSnapshotSchema,
   personalDetailFrameMaxBytes,
   affectedPersonalSubscriptions,
+  personalShellSettledTasks,
 } from "@opensteer/protocol/personal-sync";
 import {
   pluginCategoryResources,
@@ -152,7 +153,7 @@ import {
 import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
-import { mergeTaskEntries } from "./task-entries.js";
+import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
@@ -247,13 +248,6 @@ export interface HttpHostClientOptions {
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
 const attachmentCacheByteBudget = 32 * 1024 * 1024;
 const resourceInventoryByteBudget = 1024 * 1024;
-const returnHintResources: ReadonlySet<PersonalResourceKind> = new Set([
-  "settings",
-  "environment",
-  "harness",
-  "harness-catalog",
-  "machine",
-]);
 
 type AttachmentRead = {
   readonly controller: AbortController;
@@ -316,10 +310,14 @@ export class HttpHostClient {
     PersonalResourceKind,
     { revision: string; complete: boolean }
   >();
-  readonly #returnHintRevisions = new Map<PersonalResourceKind, string>();
   readonly #threadReaders = new Map<string, () => void>();
   readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
+  /** Where the open-task list continues once the person or a refill has read past the shell. */
+  #taskWindow: { nextBefore: string | null; hasMore: boolean } | undefined;
+  /** Tasks removed since the shell cut, with the cut they left at, so a slower page cannot restore them. */
+  readonly #removedTasks = new Map<string, bigint>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
+  #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
   readonly #assignmentReads = new Map<string, "read" | AbortController>();
@@ -1284,6 +1282,8 @@ export class HttpHostClient {
       | NonNullable<ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]>["thread"]
       | undefined;
     let detailGeneration = 0;
+    let previousAssignments:
+      ReturnType<typeof detail.transcript.getSnapshot>["assignments"] | undefined;
     const clearPlaces = () => {
       for (const runId of placedRuns) this.#runPlaces.forget(runId);
       placedRuns.clear();
@@ -1306,6 +1306,20 @@ export class HttpHostClient {
           threadLookups: { ...Object.fromEntries(lookups), [threadId]: "missing" },
         });
         return;
+      }
+      if (state.assignments !== previousAssignments) {
+        const changed = [...state.assignments].filter(
+          ([id, value]) => previousAssignments?.get(id) !== value,
+        );
+        previousAssignments = state.assignments;
+        if (changed.length) {
+          const assignments = mergeAssignments(
+            this.#snapshot.assignments,
+            changed.flatMap(([, value]) => value ?? []),
+          );
+          for (const [id, value] of changed) if (value === null) delete assignments[id];
+          this.#update({ ...this.#snapshot, assignments });
+        }
       }
       const row = state.snapshot?.thread;
       if (row && row !== previousThread) {
@@ -1591,6 +1605,19 @@ export class HttpHostClient {
     };
   };
 
+  #shellEntry(row: Parameters<typeof compactThread>[0]): TaskEntry {
+    const cached = this.#shellEntries.get(row);
+    if (cached) return cached;
+    const thread = this.#reconcilePageThread(
+      compactThread(row),
+      SequenceSchema.parse(row.revision),
+      row,
+    );
+    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    this.#shellEntries.set(row, entry);
+    return entry;
+  }
+
   #publishShell() {
     const state = this.#stream.shell.getSnapshot();
     const old = this.#publishedShell;
@@ -1611,10 +1638,6 @@ export class HttpHostClient {
       this.#threadRenames.clear();
       this.#threadIcons.clear();
       this.#resourceRevisions.clear();
-      this.#returnHintRevisions.clear();
-      if (shellAuthority)
-        for (const kind of returnHintResources)
-          this.#returnHintRevisions.set(kind, shellAuthority.resourceRevisions[kind]);
       this.#environmentCatalogs.clear();
       this.#environmentAuth.clear();
       this.#bodies.clear();
@@ -1624,33 +1647,58 @@ export class HttpHostClient {
       this.#invalidateAttention();
       for (const { controller } of this.#resourceReads.values()) controller.abort();
       this.#resourceReads.clear();
-      this.#update(emptySnapshot(this.#tabs));
+      const { connection, connectionInterrupted, network } = this.#snapshot;
+      this.#update({ ...emptySnapshot(this.#tabs), connection, connectionInterrupted, network });
     }
     const shell = state.snapshot;
     if (!shell || this.#disposed) return;
-    const connection = state.synchronized
-      ? "connected"
-      : this.#snapshot.connection === "connected"
-        ? "connecting"
-        : this.#snapshot.connection;
+    // Only the socket moves the connection; a scope repair on an open socket leaves it alone.
+    const attachment = this.#stream.ready ? this.#stream.attachment : undefined;
+    const attached = attachment !== undefined && this.#syncedAttachment !== attachment;
+    if (attached) this.#syncedAttachment = attachment;
+    const connection = attached ? "connected" : this.#snapshot.connection;
     const session = shell.session;
-    const tasksChanged =
-      old?.tasks !== state.tasks ||
-      old.taskIds !== state.taskIds ||
-      old.snapshot?.recentTaskIds !== shell.recentTaskIds ||
-      old.snapshot?.activeTaskIds !== shell.activeTaskIds ||
-      old.snapshot?.nextBefore !== shell.nextBefore;
+    // A new shell cut replaces the lists; between cuts every row is applied where it is held.
+    const replaced = old?.snapshot?.recentTaskIds !== shell.recentTaskIds;
+    if (replaced) {
+      this.#taskWindow = undefined;
+      this.#removedTasks.clear();
+    }
+    const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
+    let doneTasks = this.#snapshot.doneTasks;
     if (taskChanges) {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
+        const done = doneTasks[mainDoneTasks];
         if ("removed" in row) {
-          if (held?.doneAt) this.#doneTasksStale = true;
+          this.#removedTasks.delete(row.id);
+          this.#removedTasks.set(row.id, BigInt(state.through ?? "0"));
+          if (this.#removedTasks.size > 256)
+            this.#removedTasks.delete(this.#removedTasks.keys().next().value!);
+          if (done?.entries.some(({ thread }) => thread.id === row.id))
+            doneTasks = {
+              [mainDoneTasks]: {
+                ...done,
+                entries: done.entries.filter(({ thread }) => thread.id !== row.id),
+              },
+            };
           continue;
         }
-        if (this.#snapshot.doneTasks[mainDoneTasks] && (held?.doneAt ?? null) !== row.doneAt)
-          this.#doneTasksStale = true;
+        // A held Done row takes the change through the thread state; only membership moves here.
+        const listed = done?.entries.some(({ thread }) => thread.id === row.id);
+        if (done && listed !== (row.doneAt !== null))
+          doneTasks = {
+            [mainDoneTasks]: {
+              ...done,
+              entries: listed
+                ? done.entries.filter(({ thread }) => thread.id !== row.id)
+                : [...done.entries, this.#shellEntry(row)].sort((left, right) =>
+                    compareTaskOrder(left.thread, right.thread),
+                  ),
+            },
+          };
         if (held)
           this.#threadState.reconcile(
             {
@@ -1667,13 +1715,7 @@ export class HttpHostClient {
           );
       }
     }
-    if (
-      this.#snapshot.doneTasks[mainDoneTasks] &&
-      old?.snapshot &&
-      !state.synchronized &&
-      state.tasks !== old.tasks &&
-      !taskChanges
-    )
+    if (this.#snapshot.doneTasks[mainDoneTasks] && old?.snapshot && replaced)
       this.#doneTasksStale = true;
     if (
       session &&
@@ -1705,52 +1747,44 @@ export class HttpHostClient {
     ) {
       let taskLists: Pick<HostSnapshot, "tasks" | "activeTasks"> | undefined;
       if (tasksChanged) {
-        const entries = state.taskIds.flatMap((id) => {
-          const row = state.tasks.get(id);
-          if (!row) return [];
-          const cached = this.#shellEntries.get(row);
-          if (cached) return [cached];
-          const thread = this.#reconcilePageThread(
-            row.thread
-              ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
-              : compactThread(row),
-            SequenceSchema.parse(row.revision),
-            row.thread ? undefined : row,
-          );
-          const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
-          this.#shellEntries.set(row, entry);
-          return [entry];
-        });
-        const byId = new Map(entries.map((entry) => [entry.thread.id, entry]));
-        const members = (ids: readonly string[]) => ids.flatMap((id) => byId.get(id) ?? []);
-        const recent = shell.recentTaskIds
-          ? members(shell.recentTaskIds)
-          : entries.filter(({ thread }) => thread.doneAt === null);
+        // Rows from pages the person loaded stay until a task change or a new cut replaces them.
+        const loaded = replaced
+          ? []
+          : (this.#snapshot.tasks?.entries ?? []).filter(
+              ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
+            );
+        const open = [...[...state.tasks.values()].map((row) => this.#shellEntry(row)), ...loaded]
+          .filter(({ thread }) => thread.doneAt === null && thread.status !== "archived")
+          .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+        const window = this.#taskWindow ?? {
+          nextBefore: shell.nextBefore,
+          hasMore: shell.nextBefore !== null,
+        };
         taskLists = {
           tasks: {
-            entries: recent,
+            entries: open,
             window: {
-              nextBefore: shell.nextBefore ?? null,
-              hasMore: shell.nextBefore != null,
-              totalItems: recent.length,
+              ...window,
+              totalItems: open.length,
               byteCount: 0,
-              itemCount: recent.length,
+              itemCount: open.length,
             },
           },
-          activeTasks: shell.activeTaskIds
-            ? members(shell.activeTaskIds)
-            : entries.filter(
-                ({ thread }) => thread.status === "running" || thread.status === "waiting",
-              ),
+          activeTasks: open.filter(
+            ({ thread }) => thread.status === "running" || thread.status === "waiting",
+          ),
         };
+        if (state.synchronized && window.hasMore && open.length < personalShellSettledTasks)
+          void this.loadEarlierTasks().catch(() => undefined);
       }
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update(
         {
           ...this.#snapshot,
           connection,
-          connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
+          connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
+          doneTasks,
           teamReplyRevision: state.teamReplyRevision,
           ...(attentionChanged
             ? {
@@ -1770,7 +1804,7 @@ export class HttpHostClient {
         taskChanges,
       );
     }
-    if (state.synchronized && !old?.synchronized) {
+    if (attached) {
       this.#connectionAdmit?.();
       this.#finishLoad();
       this.references.reconnect();
@@ -1783,7 +1817,7 @@ export class HttpHostClient {
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
-      (!old?.synchronized || attentionChanged)
+      (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
   }
@@ -1831,29 +1865,6 @@ export class HttpHostClient {
       this.#resourceRevisions.delete(kind);
       if (kind === "tab" && installed) this.#tabs.markInventoryStale();
       else this.#clearResource(kind);
-    }
-    if (returnHintResources.has(kind)) {
-      const known = summary ? installed?.revision : revision;
-      const previous = this.#returnHintRevisions.get(kind);
-      if (known && (!previous || BigInt(known) > BigInt(previous))) {
-        this.#returnHintRevisions.set(kind, known);
-        const id = this.#activeThreadId;
-        if (
-          previous &&
-          id &&
-          this.#snapshot.threads.some((row) => row.id === id && row.returnHint)
-        ) {
-          this.#threadState.forget(id);
-          this.#update({
-            ...this.#snapshot,
-            threads: this.#snapshot.threads.map((row) =>
-              row.id === id ? { ...row, returnHint: null } : row,
-            ),
-          });
-          const scope = this.#detailScope(id);
-          if (scope) this.#stream.repairDetail(scope);
-        }
-      }
     }
     this.#readResource(kind);
   }
@@ -1930,7 +1941,7 @@ export class HttpHostClient {
     if (
       !installed ||
       !this.#stream.resources.isObserved(kind) ||
-      !this.#stream.shell.getSnapshot().synchronized ||
+      !this.#stream.ready ||
       BigInt(installed.revision) < BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0") ||
       this.#visibility === "background" ||
       this.#resourceReads.has(kind) ||
@@ -2373,7 +2384,7 @@ export class HttpHostClient {
       !this.#showsThread(threadId)
     )
       return;
-    if (!this.#stream.shell.getSnapshot().synchronized) return;
+    if (!this.#stream.ready) return;
     const pending = this.#browserUsageReads.get(threadId);
     if (pending) {
       if (mode === "full") pending.again = "full";
@@ -3085,7 +3096,13 @@ export class HttpHostClient {
         ),
       );
       signal.throwIfAborted();
-      const queue = await this.#reader(threadId)?.queue();
+      // The lease just taken is checked against the Host itself, not the feed racing behind it.
+      const queue = unwrapRpcResult(
+        await this.rpc["thread.inputQueue.get"](
+          { threadId: ThreadIdSchema.parse(threadId) },
+          { signal },
+        ),
+      );
       signal.throwIfAborted();
       const held = queue?.items.find(({ message }) => message.id === messageId);
       const current = page.revisions[0];
@@ -3491,7 +3508,6 @@ export class HttpHostClient {
 
   async #readTaskPage(scope: string | null, before: string | null): Promise<boolean> {
     const cut = this.#stream.shell.getSnapshot();
-    const held = this.#heldTasks(scope);
     const viewer = this.#viewerGeneration;
     const page = unwrapRpcResult(
       await this.rpc["tasks.page"]({
@@ -3501,25 +3517,34 @@ export class HttpHostClient {
       }),
     );
     const current = this.#stream.shell.getSnapshot();
+    // A page lands whatever the shell did meanwhile: rows merge by revision, and a task the
+    // shell removed after the page's cut stays removed.
     if (
       viewer !== this.#viewerGeneration ||
-      cut.generation !== current.generation ||
-      current.through === null ||
-      BigInt(page.asOfSequence) < BigInt(current.through) ||
-      this.#heldTasks(scope) !== held
+      current.snapshot?.recentTaskIds !== cut.snapshot?.recentTaskIds
     )
       return false;
-    const merged = mergeTasks(before ? held : null, {
-      entries: page.tasks.map((entry) => ({
-        ...entry,
-        thread: this.#reconcilePageThread(
-          toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-          page.asOfSequence,
-        ),
-      })),
-      window: page.window,
+    const asOf = BigInt(page.asOfSequence);
+    const entries = page.tasks.flatMap((entry) => {
+      const removedAt = this.#removedTasks.get(entry.thread.id);
+      if (removedAt !== undefined && removedAt > asOf) return [];
+      const row = current.tasks.get(entry.thread.id);
+      if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
+      return [
+        {
+          ...entry,
+          thread: this.#reconcilePageThread(
+            toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+            page.asOfSequence,
+          ),
+        },
+      ];
     });
+    const held = this.#heldTasks(scope);
+    const merged = mergeTasks(before ? held : null, { entries, window: page.window });
     const bounded = { ...merged, entries: merged.entries.slice(-256) };
+    if (!scope)
+      this.#taskWindow = { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore };
     this.#update(
       scope
         ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: bounded } }
@@ -3894,7 +3919,6 @@ export class HttpHostClient {
             this.#viewerGeneration++;
             this.#stream.clear(true);
             this.#resourceRevisions.clear();
-            this.#returnHintRevisions.clear();
             this.#clearViewerReads();
             this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
           } else {
@@ -3910,14 +3934,13 @@ export class HttpHostClient {
           this.#clearAttachmentReads();
         }
         if (event.code === unsupportedVersionCloseCode) this.#socketFailed(updateRequired());
-        else if (!this.#stream.shell.getSnapshot().synchronized)
-          void this.#diagnoseHandshake(attempt.signal);
+        else if (!this.#stream.ready) void this.#diagnoseHandshake(attempt.signal);
         else this.#socketFailed();
       }
     });
     socket.addEventListener("error", () => {
       if (this.#socket !== socket) return;
-      if (this.#stream.shell.getSnapshot().synchronized) this.#socketFailed();
+      if (this.#stream.ready) this.#socketFailed();
       else void this.#diagnoseHandshake(attempt.signal);
     });
   }
@@ -4052,7 +4075,6 @@ export class HttpHostClient {
     this.#stream.clear(true);
     this.#bodies.clear();
     this.#resourceRevisions.clear();
-    this.#returnHintRevisions.clear();
     this.#environmentCatalogs.clear();
     this.#environmentAuth.clear();
     this.#clearViewerReads();

@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { ItemTextStore } from "./item-text-store.js";
 import { transcriptCard } from "./transcript-item-view.js";
 import { ThreadTranscriptStore } from "./thread-transcript-store.js";
+import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
 const scope = { kind: "thread" as const, threadId: createId("thread") };
 const subscriptionId = "detail:0" as const;
@@ -47,9 +48,7 @@ test("applies a whole commit while retaining structural identities on a content 
       type: "host.snapshot",
       throughSequence: "1",
       snapshot: {
-        thread,
-        orderRevision: "0",
-        inputQueueRevision: "0",
+        thread: detailThread(thread),
         items: [item],
         pendingRequests: [],
         activeItems: [],
@@ -115,9 +114,7 @@ test("keeps sent and blocked Team delivery on the answering Run across status an
       type: "host.snapshot",
       throughSequence: "1",
       snapshot: {
-        thread,
-        orderRevision: "0",
-        inputQueueRevision: "0",
+        thread: detailThread(thread),
         items: [running],
         pendingRequests: [],
         activeItems: [],
@@ -171,7 +168,6 @@ test("keeps sent and blocked Team delivery on the answering Run across status an
         threadId: scope.threadId,
         nodeId: null,
         revision: "4",
-        orderRevision: "0",
         items: [{ ...running, revision: "3" }],
         nextBefore: null,
         nextAfter: null,
@@ -330,7 +326,6 @@ test("sliding a history window retains a cursor immediately beside either evicte
     epoch: crypto.randomUUID(),
     threadId: scope.threadId,
     nodeId: null,
-    orderRevision: "1",
     beforeId: boundary.id,
     beforePosition: boundary.position,
   });
@@ -340,9 +335,7 @@ test("sliding a history window retains a cursor immediately beside either evicte
     type: "host.snapshot",
     throughSequence: "1",
     snapshot: {
-      thread,
-      orderRevision: "1",
-      inputQueueRevision: "1",
+      thread: detailThread(thread),
       items: latest,
       activeItems: [],
       pendingRequests: [],
@@ -355,7 +348,6 @@ test("sliding a history window retains a cursor immediately beside either evicte
     threadId: scope.threadId,
     nodeId: null,
     revision: "1",
-    orderRevision: "1",
     items: all.slice(from, end),
     hasMore: from > 0,
     nextBefore: from ? cursor(all[from]!) : null,
@@ -369,4 +361,178 @@ test("sliding a history window retains a cursor immediately beside either evicte
   store.installPage(page(250, 300), 1, "newer");
   expect(store.getSnapshot().ids).toEqual(all.slice(50).map(({ id }) => id));
   expect(store.getSnapshot().snapshot?.nextBefore?.beforeId).toBe(all[50]!.id);
+});
+
+test("history pages land during a Run and keep an unhide or removal made while they were read", () => {
+  const store = new ThreadTranscriptStore();
+  store.begin(1, false);
+  const address = { subscriptionId, generation: 1, scope };
+  const message = (position: number, revision = "1") => {
+    const id = createId("message");
+    return { ...item, id, messageId: id, position: String(position), revision };
+  };
+  const all = Array.from({ length: 10 }, (_, index) => message((index + 1) * 10));
+  const cursor = (boundary: typeof item) => ({
+    deploymentId: createId("deployment"),
+    viewerId: createId("user"),
+    epoch: crypto.randomUUID(),
+    threadId: scope.threadId,
+    nodeId: null,
+    beforeId: boundary.id,
+    beforePosition: boundary.position,
+  });
+  const latest = all.slice(5);
+  store.apply({
+    ...address,
+    type: "host.snapshot",
+    throughSequence: "5",
+    snapshot: {
+      thread: detailThread(thread),
+      items: latest,
+      activeItems: [],
+      pendingRequests: [],
+      nextBefore: cursor(latest[0]!),
+    },
+  });
+  store.apply({ ...address, type: "host.synchronized", throughSequence: "5" });
+  let through = 5;
+  const commit = (...changes: object[]) => {
+    const from = String(through++);
+    expect(
+      store.apply({
+        ...address,
+        type: "host.changes",
+        fromSequence: from,
+        throughSequence: String(through),
+        changes: changes.map((change, ordinal) => ({
+          ...change,
+          ordinal,
+          sequence: String(through),
+        })) as never,
+      }),
+    ).toBe(true);
+  };
+  const reply = message(200, "6");
+  const unhidden = message(25, "7");
+  const removed = all[3]!;
+  const read = store.beginRead();
+  // A Run streams a reply, an older message is unhidden and another is hidden while the page is read.
+  commit({ operation: "upsert", entityKind: "item", entityId: reply.id, value: reply });
+  commit({ operation: "upsert", entityKind: "item", entityId: unhidden.id, value: unhidden });
+  commit({ operation: "remove", entityKind: "item", entityId: removed.id });
+  expect(store.getSnapshot().items.has(unhidden.id)).toBe(false);
+  expect(
+    store.installPage(
+      {
+        kind: "page",
+        threadId: scope.threadId,
+        nodeId: null,
+        revision: "5",
+        items: all.slice(0, 5),
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: cursor(all[4]!),
+      },
+      1,
+      "earlier",
+      read,
+    ),
+  ).toBe(true);
+  store.endRead(read);
+  const ids = store.getSnapshot().historyIds;
+  expect(ids).toContain(unhidden.id);
+  expect(ids).not.toContain(removed.id);
+  expect(ids).toEqual(
+    [...all.filter(({ id }) => id !== removed.id), unhidden, reply]
+      .sort((a, b) => Number(a.position) - Number(b.position))
+      .map(({ id }) => id),
+  );
+  expect(store.getSnapshot().snapshot?.nextBefore).toBeNull();
+
+  // Jumping to a message also lands while changes arrive.
+  const jump = store.beginRead();
+  commit({
+    operation: "upsert",
+    entityKind: "item",
+    entityId: reply.id,
+    value: { ...reply, revision: String(through + 1), view: { preview: "B" } },
+  });
+  expect(
+    store.installPage(
+      {
+        kind: "page",
+        threadId: scope.threadId,
+        nodeId: null,
+        revision: "8",
+        items: all.slice(0, 3),
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: cursor(all[2]!),
+      },
+      1,
+      "around",
+      jump,
+    ),
+  ).toBe(true);
+  store.endRead(jump);
+  expect(store.getSnapshot().historyIds).toEqual(all.slice(0, 3).map(({ id }) => id));
+});
+
+test("an inline repair replaces the scope in place and keeps earlier pages that still meet it", () => {
+  const store = new ThreadTranscriptStore();
+  store.begin(1, false);
+  const address = { subscriptionId, generation: 1, scope };
+  const all = Array.from({ length: 80 }, (_, index) => {
+    const id = createId("message");
+    return { ...item, id, messageId: id, position: String(index + 1) };
+  });
+  const cursor = (boundary: typeof item) => ({
+    deploymentId: createId("deployment"),
+    viewerId: createId("user"),
+    epoch: crypto.randomUUID(),
+    threadId: scope.threadId,
+    nodeId: null,
+    beforeId: boundary.id,
+    beforePosition: boundary.position,
+  });
+  const cut = (items: typeof all, throughSequence: string) =>
+    store.apply({
+      ...address,
+      type: "host.snapshot",
+      throughSequence,
+      snapshot: {
+        thread: detailThread(thread),
+        items,
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: cursor(items[0]!),
+      },
+    });
+  cut(all.slice(30, 80), "1");
+  store.apply({ ...address, type: "host.synchronized", throughSequence: "1" });
+  store.installPage(
+    {
+      kind: "page",
+      threadId: scope.threadId,
+      nodeId: null,
+      revision: "1",
+      items: all.slice(0, 30),
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: cursor(all[29]!),
+    },
+    1,
+    "earlier",
+  );
+  const edited = { ...all[79]!, revision: "9", view: { preview: "Edited while away" } };
+  // The Host could not replay the gap and sends the latest window on the same subscription.
+  expect(cut([...all.slice(31, 79), edited], "9")).toBe(true);
+  const state = store.getSnapshot();
+  expect(state.synchronized).toBe(true);
+  expect(state.through).toBe("9");
+  expect(state.historyIds).toEqual(
+    [...all.slice(0, 31), ...all.slice(31, 79), edited].map(({ id }) => id),
+  );
+  expect(state.items.get(edited.id)).toBe(edited);
+  expect(state.snapshot?.nextBefore).toBeNull();
 });

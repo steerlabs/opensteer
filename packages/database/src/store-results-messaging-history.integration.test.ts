@@ -1084,12 +1084,7 @@ describeStore("PostgreSQL store", (it) => {
         .where("scopeKey", "=", `thread:${fixture.thread.id}`)
         .where("sequence", "=", resumed.asOfSequence)
         .execute(),
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ entityKind: "run-queue" }),
-        { entityKind: "collection", entityId: "input-queue" },
-      ]),
-    );
+    ).toEqual(expect.arrayContaining([{ entityKind: "run-queue", entityId: fixture.thread.id }]));
     await expect(
       database
         .selectFrom("runs")

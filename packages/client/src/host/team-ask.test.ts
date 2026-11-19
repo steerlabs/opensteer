@@ -307,7 +307,7 @@ it("refreshes the loaded Needs you range without losing an older review or retai
       },
       ...asks.filter((entry) => entry !== asks[50] && entry !== asks[51]),
     ];
-    transport.invalidateShell();
+    transport.repairShell();
     await vi.waitFor(
       () =>
         expect(client.getSnapshot().needsYou?.count, "Needs you refresh never arrived").toBe(

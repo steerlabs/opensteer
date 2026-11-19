@@ -13,6 +13,7 @@ import type {
 import {
   PersonalChangeSchema,
   personalChangesFrameMaxBytes,
+  personalShellEntityKinds,
 } from "@opensteer/protocol/personal-sync";
 import {
   isConstraintViolation,
@@ -76,11 +77,14 @@ function postgresJsonOverhead(value: unknown): number {
 
 function validChangeScope(identity: ChangeIdentity) {
   const kind = identity.entityKind;
-  if (kind === "collection") return true;
-  if (identity.scopeKey === "shell")
-    return kind === "task" || kind === "visit" || kind === "attention";
-  if (kind === "thread" || kind === "item" || kind === "request") return true;
-  return kind === "run-queue" && identity.scopeKey.startsWith("thread:");
+  if (kind === "scope") return false;
+  const shell = (personalShellEntityKinds as readonly string[]).includes(kind);
+  if (identity.scopeKey === "shell") return shell;
+  if (shell) return false;
+  const root = identity.scopeKey.startsWith("thread:");
+  if (kind === "run-queue" || kind === "queue-entry" || kind === "assignment") return root;
+  if (kind === "node") return !root;
+  return true;
 }
 
 interface CommitNotice {
@@ -146,6 +150,13 @@ export type PersonalCommitReaction =
       readonly active: boolean;
     }
   | {
+      readonly type: "runLiveClosed";
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly attemptId: RunAttemptId | null;
+      readonly bindingGeneration: number | null;
+    }
+  | {
       readonly type: "liveClosed";
       readonly itemId: string;
       readonly runId: RunId;
@@ -209,7 +220,7 @@ class Mutation {
   readonly resourceKinds = new Set<PersonalResourceKind>();
   readonly authorityScopes = new Set<ScopeAuthority>();
   readonly #scopes = new Map<PersonalScopeKey, Map<string, Change>>();
-  readonly #invalidated = new Set<PersonalScopeKey>();
+  readonly #resetScopes = new Set<PersonalScopeKey>();
   readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
   readonly #observations = new Set<() => void>();
@@ -233,7 +244,7 @@ class Mutation {
   #scopeBytes = 0;
   #privacyPurge = false;
   #reset = false;
-  #invalidateOnly = false;
+  #resetOnly = false;
 
   constructor(state: State & { now: Date }) {
     this.state = state;
@@ -248,10 +259,9 @@ class Mutation {
 
   change(identity: ChangeIdentity, build: () => Record<string, unknown> = () => ({})) {
     const scope = identity.scopeKey;
-    if (this.#reset || this.#invalidated.has(scope)) return;
-    if (this.#invalidateOnly) {
-      this.#invalidate(scope);
-      this.#boundCommit();
+    if (this.#reset || this.#resetScopes.has(scope)) return;
+    if (this.#resetOnly) {
+      this.resetScope(scope);
       return;
     }
     const { scopeKey: _scopeKey, ...address } = identity;
@@ -262,8 +272,7 @@ class Mutation {
       ...(identity.operation === "remove" ? {} : { value: build() }),
     });
     if (!parsed.success || !validChangeScope(identity)) {
-      this.#invalidate(scope);
-      this.#boundCommit();
+      this.resetScope(scope);
       return;
     }
     const change = parsed.data;
@@ -296,8 +305,7 @@ class Mutation {
       "clientSendKey" in payload ||
       Buffer.byteLength(JSON.stringify(payload)) + postgresJsonOverhead(payload) > maxChangeBytes
     ) {
-      this.#invalidate(scope);
-      this.#boundCommit();
+      this.resetScope(scope);
       return;
     }
     const changes = this.#scopes.get(scope) ?? new Map<string, Change>();
@@ -313,12 +321,19 @@ class Mutation {
       changes.size > maxCommitRows ||
       scopeBytes + Buffer.byteLength(scope) + scopeEnvelopeReserve > maxCommitBytes
     )
-      this.#invalidate(scope);
+      this.#markReset(scope);
     this.#boundCommit();
   }
 
-  #invalidate(scope: PersonalScopeKey) {
-    this.#invalidated.add(scope);
+  /** The scope's subscribers get a fresh snapshot instead of this commit's rows. */
+  resetScope(scope: PersonalScopeKey) {
+    if (this.#reset || this.#resetScopes.has(scope)) return;
+    this.#markReset(scope);
+    this.#boundCommit();
+  }
+
+  #markReset(scope: PersonalScopeKey) {
+    this.#resetScopes.add(scope);
     const previous = this.#scopes.get(scope);
     if (previous) {
       this.#scopeChanges -= previous.size;
@@ -326,9 +341,9 @@ class Mutation {
     }
     const change: Change = {
       scopeKey: scope,
-      entityKind: "collection",
+      entityKind: "scope",
       entityId: "scope",
-      operation: "invalidate",
+      operation: "reset",
       payload: {},
       bytes: 160,
     };
@@ -337,18 +352,18 @@ class Mutation {
     this.#scopeBytes += change.bytes;
   }
 
+  // An oversized commit is repaired by snapshots, never by closing sockets: a reset is not a revocation.
   #boundCommit() {
     if (this.#scopeChanges <= maxCommitRows && this.#scopeBytes <= maxCommitBytes) return;
-    if (!this.#invalidateOnly) {
-      this.#invalidateOnly = true;
-      for (const scope of this.#scopes.keys()) this.#invalidate(scope);
+    if (!this.#resetOnly) {
+      this.#resetOnly = true;
+      for (const scope of this.#scopes.keys()) this.#markReset(scope);
       this.#boundCommit();
       return;
     }
     this.#reset = true;
     this.#scopes.clear();
-    this.#invalidated.clear();
-    this.authorityScopes.add("deployment");
+    this.#resetScopes.clear();
   }
 
   bumpResource(kind: PersonalResourceKind) {
@@ -532,6 +547,7 @@ export type PersonalMutation = Pick<
   | "sequence"
   | "state"
   | "change"
+  | "resetScope"
   | "count"
   | "bumpResource"
   | "purge"

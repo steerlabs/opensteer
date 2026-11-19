@@ -1,7 +1,9 @@
 import {
+  AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
   ExecutionNodeIdSchema,
+  MessageIdSchema,
   RequestIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
@@ -18,6 +20,7 @@ import {
   PersonalCapabilitiesViewSchema,
   PersonalSessionSurfaceSchema,
 } from "./bootstrap.js";
+import { WaitingInputViewSchema } from "./personal-input-queue.js";
 import {
   InstalledResourceRevisionsSchema,
   PersonalResourceInterestsSchema,
@@ -37,7 +40,7 @@ export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 64 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
 export const personalResourceFrameMaxBytes = 32 * 1024;
-export const personalShellFrameMaxBytes = 96 * 1024;
+export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
 
@@ -162,8 +165,9 @@ const task = z.object({
   lastReplyPreview: z.string().max(1120).nullable(),
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
-  thread: ThreadViewSchema.optional(),
 });
+/** A task row plus the full Thread detail view, return hint included. */
+export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });
 const visit = z.object({
   threadId: ThreadIdSchema,
   lastVisitedAt: z.iso.datetime(),
@@ -185,6 +189,10 @@ export const PersonalRequestSummarySchema = z.object({
   title: z.string().max(240),
   threadId: ThreadIdSchema,
 });
+/** Accepted team replies changed; clients reread the visible reply they wait on. */
+export const PersonalSignalIdSchema = z.enum(["team-replies"]);
+const signal = z.strictObject({ revision: PersonalRevisionSchema });
+export const personalInputQueueMaxEntries = 100;
 const queue = z.object({
   revision: PersonalRevisionSchema,
   runs: z
@@ -200,13 +208,20 @@ const queue = z.object({
     )
     .max(2),
   paused: z.boolean(),
+  /** The Run a waiting message can be steered into now. */
+  steerRunId: RunIdSchema.nullable(),
+  /** Every waiting message in queue order; `queue-entry` rows carry their values. */
+  inputs: z.array(MessageIdSchema).max(personalInputQueueMaxEntries),
 });
+const nodeSubject = TranscriptItemSchema.refine(
+  (item) => item.kind === "node" && item.node !== undefined,
+);
 export const PersonalDetailSnapshotSchema = z.object({
-  thread: task,
-  orderRevision: PersonalRevisionSchema,
-  inputQueueRevision: PersonalRevisionSchema,
-  nodeSubject: TranscriptItemSchema.optional(),
+  thread: PersonalDetailThreadSchema,
+  nodeSubject: nodeSubject.optional(),
   queue: queue.optional(),
+  /** Values for `queue.inputs`, oldest first, while they fit the frame. */
+  inputQueue: z.array(WaitingInputViewSchema).max(personalInputQueueMaxEntries).optional(),
   items: z.array(TranscriptItemSchema).max(50),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),
@@ -226,13 +241,16 @@ const counts = z.object({
   needsYouCount: z.int().nonnegative(),
   unreadTaskCount: z.int().nonnegative(),
 });
+export const personalShellSettledTasks = 25;
 export const PersonalShellSnapshotSchema = z.object({
   deploymentId: DeploymentIdSchema,
   viewerId: UserIdSchema,
   epoch: z.uuid(),
-  tasks: z.array(task).max(36),
-  visits: z.array(visit).max(36),
-  attention: z.array(attention).max(20),
+  tasks: z.array(task).max(256),
+  visits: z.array(visit).max(256),
+  /** Every pending attention row unless `attentionHasMore`. */
+  attention: z.array(attention).max(200),
+  attentionHasMore: z.boolean(),
   counts,
   resourceRevisions: PersonalResourceRevisionsSchema,
   session: z
@@ -243,9 +261,13 @@ export const PersonalShellSnapshotSchema = z.object({
       can: PersonalCapabilitiesViewSchema,
     })
     .optional(),
-  nextBefore: z.string().max(4096).nullable().optional(),
-  recentTaskIds: z.array(ThreadIdSchema).max(25).optional(),
-  activeTaskIds: z.array(ThreadIdSchema).max(10).optional(),
+  /** Every running and waiting task, newest first, unless `activeHasMore`. */
+  activeTaskIds: z.array(ThreadIdSchema).max(200),
+  activeHasMore: z.boolean(),
+  /** The newest open tasks; `nextBefore` pages the rest with `tasks.page`. */
+  recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
+  nextBefore: z.string().max(4096).nullable(),
+  taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
   resources: z
     .array(
       z.object({
@@ -267,20 +289,22 @@ const change = {
   ordinal: z.int().min(0).max(127),
   entityId: z.string().min(1).max(600),
 };
-const entityKind = z.enum([
-  "task",
-  "visit",
-  "attention",
-  "collection",
+export const personalShellEntityKinds = ["task", "visit", "attention", "signal"] as const;
+export const personalDetailEntityKinds = [
   "thread",
   "run-queue",
+  "queue-entry",
+  "assignment",
   "request",
   "item",
+  "node",
+] as const;
+export const PersonalEntityKindSchema = z.enum([
+  ...personalShellEntityKinds,
+  ...personalDetailEntityKinds,
 ]);
-function upsert<Kind extends z.infer<typeof entityKind>, Value extends z.ZodType>(
-  kind: Kind,
-  value: Value,
-) {
+type EntityKind = z.infer<typeof PersonalEntityKindSchema>;
+function upsert<Kind extends EntityKind, Value extends z.ZodType>(kind: Kind, value: Value) {
   return z.strictObject({
     ...change,
     operation: z.literal("upsert"),
@@ -289,21 +313,24 @@ function upsert<Kind extends z.infer<typeof entityKind>, Value extends z.ZodType
   });
 }
 
+/** One keyed entity's bounded current value, or its removal. */
 export const PersonalChangeSchema = z.union([
-  z.strictObject({ ...change, operation: z.literal("remove"), entityKind }),
   z.strictObject({
     ...change,
-    operation: z.literal("invalidate"),
-    entityKind: z.literal("collection"),
-    value: z.strictObject({ revision: PersonalRevisionSchema.optional() }),
+    operation: z.literal("remove"),
+    entityKind: PersonalEntityKindSchema,
   }),
   upsert("task", task),
   upsert("visit", visit),
   upsert("attention", attention),
-  upsert("thread", task),
+  upsert("signal", signal),
+  upsert("thread", PersonalDetailThreadSchema),
   upsert("run-queue", queue),
+  upsert("queue-entry", WaitingInputViewSchema),
+  upsert("assignment", AssignmentSummarySchema),
   upsert("request", PersonalRequestSummarySchema),
   upsert("item", TranscriptItemSchema),
+  upsert("node", nodeSubject),
 ]);
 
 const shellProgress = z.strictObject({
@@ -375,17 +402,6 @@ export const ScopedHostMessageSchema = z
       shellProgress: shellProgress.optional(),
     }),
     z.strictObject({
-      type: z.literal("host.snapshot-required"),
-      ...durableAddress,
-      reason: z.enum([
-        "scope-changed",
-        "cursor-unavailable",
-        "scope-invalidated",
-        "replay-overflow",
-        "pressure",
-      ]),
-    }),
-    z.strictObject({
       type: z.literal("host.removed"),
       ...address,
       scope: detailScope,
@@ -414,11 +430,7 @@ export const ScopedHostMessageSchema = z
   .refine((frame) => {
     if (frame.type === "host.resource")
       return utf8ByteLength(JSON.stringify(frame)) <= personalResourceFrameMaxBytes;
-    if (
-      frame.type === "host.synchronized" ||
-      frame.type === "host.snapshot-required" ||
-      frame.type === "host.removed"
-    ) {
+    if (frame.type === "host.synchronized" || frame.type === "host.removed") {
       if (utf8ByteLength(JSON.stringify(frame)) > personalControlFrameMaxBytes) return false;
     }
     const isShell = frame.scope.kind === "shell";
@@ -430,28 +442,27 @@ export const ScopedHostMessageSchema = z
         if (snapshot.session && snapshot.session.user.id !== snapshot.viewerId) return false;
         const ids = new Set(snapshot.tasks.map(({ id }) => id));
         return (
-          [...(snapshot.recentTaskIds ?? []), ...(snapshot.activeTaskIds ?? [])].every((id) =>
-            ids.has(id),
-          ) &&
+          [...snapshot.recentTaskIds, ...snapshot.activeTaskIds].every((id) => ids.has(id)) &&
           [...snapshot.tasks, ...snapshot.visits, ...snapshot.attention].every(({ revision }) =>
             withinCut(revision, frame.throughSequence),
-          ) &&
-          snapshot.tasks.every((task) => !task.thread || task.thread.id === task.id)
+          )
         );
       }
       if (frame.scope.kind === "shell") return false;
       const snapshot = frame.snapshot;
       const scope = frame.scope;
+      const queued = new Set(snapshot.queue?.inputs);
       return (
         snapshot.thread.id === scope.threadId &&
-        (!snapshot.thread.thread || snapshot.thread.thread.id === scope.threadId) &&
+        snapshot.thread.thread.id === scope.threadId &&
         [
           snapshot.thread.revision,
-          snapshot.orderRevision,
-          snapshot.inputQueueRevision,
           snapshot.queue?.revision ?? "0",
           ...(snapshot.queue?.runs.map(({ revision }) => revision) ?? []),
         ].every((revision) => withinCut(revision, frame.throughSequence)) &&
+        (!snapshot.inputQueue ||
+          (scope.kind === "thread" &&
+            snapshot.inputQueue.every((entry) => queued.has(entry.message.id)))) &&
         (!snapshot.nodeSubject ||
           (scope.kind === "node" &&
             snapshot.nodeSubject.kind === "node" &&
@@ -479,41 +490,84 @@ export const ScopedHostMessageSchema = z
       );
     }
     if (frame.type !== "host.changes") return true;
-    const scope = frame.scope;
-    return frame.changes.every((row) => {
-      if (row.entityKind === "collection")
-        return (
-          row.operation !== "invalidate" ||
-          row.value.revision === undefined ||
-          withinCut(row.value.revision, frame.throughSequence)
-        );
-      const shellEntity =
-        row.entityKind === "task" || row.entityKind === "visit" || row.entityKind === "attention";
-      if (shellEntity !== isShell) return false;
-      if (row.operation !== "upsert") return true;
-      if (!withinCut(row.value.revision, frame.throughSequence)) return false;
-      if (row.entityKind === "run-queue")
-        return (
-          row.entityId === "run-queue" &&
-          row.value.runs.every(({ revision }) => withinCut(revision, row.value.revision))
-        );
-      if (row.entityKind === "visit") return row.entityId === row.value.threadId;
-      if (row.entityId !== row.value.id) return false;
-      if (row.entityKind === "thread")
-        return (
-          scope.kind !== "shell" &&
-          scope.threadId === row.entityId &&
-          (!row.value.thread || row.value.thread.id === row.entityId)
-        );
-      if (row.entityKind === "request")
-        return scope.kind !== "shell" && scope.threadId === row.value.threadId;
-      if (row.entityKind === "item")
-        return row.value.nodeId === (scope.kind === "node" ? scope.nodeId : null);
-      if (row.entityKind === "task")
-        return !row.value.thread || row.value.thread.id === row.entityId;
-      return true;
-    });
+    return frame.changes.every((row) =>
+      personalChangeFitsScope(frame.scope, row, frame.throughSequence),
+    );
   });
+
+/** Whether a change may appear in a scope's feed at a cut. */
+export function personalChangeFitsScope(
+  scope: PersonalScope,
+  row: PersonalChange,
+  through: string,
+): boolean {
+  const shellEntity = (personalShellEntityKinds as readonly string[]).includes(row.entityKind);
+  if (shellEntity !== (scope.kind === "shell")) return false;
+  if (row.operation === "remove") return true;
+  if (scope.kind === "shell") {
+    switch (row.entityKind) {
+      case "task":
+        return row.entityId === row.value.id && withinCut(row.value.revision, through);
+      case "visit":
+        return row.entityId === row.value.threadId && withinCut(row.value.revision, through);
+      case "attention":
+        return row.entityId === row.value.id && withinCut(row.value.revision, through);
+      case "signal":
+        return (
+          PersonalSignalIdSchema.safeParse(row.entityId).success &&
+          withinCut(row.value.revision, through)
+        );
+      default:
+        return false;
+    }
+  }
+  switch (row.entityKind) {
+    case "thread":
+      return (
+        scope.threadId === row.entityId &&
+        row.value.id === row.entityId &&
+        row.value.thread.id === row.entityId &&
+        withinCut(row.value.revision, through)
+      );
+    case "run-queue":
+      return (
+        scope.kind === "thread" &&
+        row.entityId === scope.threadId &&
+        withinCut(row.value.revision, through) &&
+        row.value.runs.every(({ revision }) => withinCut(revision, row.value.revision))
+      );
+    case "queue-entry":
+      return scope.kind === "thread" && row.entityId === row.value.message.id;
+    case "assignment":
+      return (
+        scope.kind === "thread" &&
+        row.entityId === row.value.id &&
+        row.value.parentThreadId === scope.threadId
+      );
+    case "request":
+      return (
+        row.entityId === row.value.id &&
+        row.value.threadId === scope.threadId &&
+        withinCut(row.value.revision, through)
+      );
+    case "item":
+      return (
+        row.entityId === row.value.id &&
+        row.value.nodeId === (scope.kind === "node" ? scope.nodeId : null) &&
+        withinCut(row.value.revision, through)
+      );
+    case "node":
+      return (
+        scope.kind === "node" &&
+        row.entityId === scope.nodeId &&
+        row.value.kind === "node" &&
+        row.value.executionNodeId === scope.nodeId &&
+        withinCut(row.value.revision, through)
+      );
+    default:
+      return false;
+  }
+}
 
 function withinCut(revision: string, through: string) {
   return (

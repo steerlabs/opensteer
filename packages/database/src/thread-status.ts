@@ -11,29 +11,16 @@ import {
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
-import { sql, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
+import { readTaskPageThreads } from "./personal-task-store.js";
+import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
-
-export async function invalidateThreadCollection(tx: Tx, threadId: ThreadId, collection: string) {
-  if (isOfflineSettlement(tx)) return;
-  await commitPersonalMutation(tx, async (_tx, mutation) => {
-    mutation.change(
-      {
-        scopeKey: `thread:${threadId}`,
-        entityKind: "collection",
-        entityId: collection,
-        operation: "invalidate",
-      },
-      () => ({ revision: mutation.sequence }),
-    );
-  });
-}
 
 export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<void> {
   if (isOfflineSettlement(tx)) return;
@@ -57,6 +44,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         "latestRunCompletedAt",
         "listed",
         "removedAt",
+        "createdBy",
       ])
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
@@ -74,7 +62,10 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
       failurePreview: row.failurePreview,
       latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
     };
-    if (row.removedAt) {
+    const thread = row.removedAt
+      ? undefined
+      : (await readTaskPageThreads(tx, row.createdBy, [threadId])).get(threadId);
+    if (!thread) {
       mutation.change({
         scopeKey: threadScope,
         entityKind: "thread",
@@ -84,7 +75,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
     } else {
       mutation.change(
         { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
-        () => view,
+        () => ({ ...view, thread }),
       );
     }
     if (row.listed && row.status !== "archived" && !row.removedAt) {
@@ -108,6 +99,21 @@ export function replyPreview(content: readonly ContentPart[]) {
   return firstText?.type === "text"
     ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
     : null;
+}
+
+/** Republishes the `thread` values of these tasks, so their detail viewers see a derived change. */
+export function republishThreads(database: Kysely<DatabaseSchema>, threadIds: readonly ThreadId[]) {
+  return commitPersonalMutation(database, async (tx) => {
+    if (!threadIds.length) return;
+    const live = await tx
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "in", threadIds)
+      .where("removedAt", "is", null)
+      .orderBy("id")
+      .execute();
+    for (const { id } of live) await publishThreadSummary(tx, id);
+  });
 }
 
 export async function projectLastReply(
@@ -138,29 +144,7 @@ export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId)
         .where("id", "=", runId)
         .where("threadId", "=", threadId)
         .execute();
-    const thread = await tx
-      .selectFrom("threads")
-      .select("inputQueuePaused")
-      .where("id", "=", threadId)
-      .executeTakeFirstOrThrow();
-    const runs = await tx
-      .selectFrom("runs")
-      .select(["id", "status", "revision"])
-      .select(sql<boolean>`finish_intent is not null`.as("finishing"))
-      .where("threadId", "=", threadId)
-      .where(sql<boolean>`status in ('queued','starting','running','waiting')`)
-      .orderBy("runOrdinal")
-      .limit(2)
-      .execute();
-    mutation.change(
-      {
-        scopeKey: `thread:${threadId}`,
-        entityKind: "run-queue",
-        entityId: threadId,
-        operation: "upsert",
-      },
-      () => ({ revision: mutation.sequence, runs, paused: thread.inputQueuePaused }),
-    );
+    await publishThreadQueues(tx, threadId);
   });
 }
 
@@ -231,7 +215,6 @@ export async function projectThreadState(
       current.latestRunCompletedAt?.getTime() !== thread.latestRunCompletedAt?.getTime()
     )
       await publishThreadSummary(tx, threadId);
-    if (changed || force) await invalidateThreadCollection(tx, threadId, "return-hint");
     if (status !== thread.status) await refreshAssignmentWorkerSummaries(tx, threadId);
   });
 }

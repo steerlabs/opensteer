@@ -1,4 +1,10 @@
-import { createId, DeviceIdSchema, MessageViewSchema, RequestSchema } from "@opensteer/core";
+import {
+  BrowserPageContentPartSchema,
+  createId,
+  DeviceIdSchema,
+  MessageViewSchema,
+  RequestSchema,
+} from "@opensteer/core";
 import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
 import { expect, it } from "vitest";
 import { conversationTurn, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
@@ -418,4 +424,60 @@ it("keeps a node's message and live reasoning in its detail card family", () => 
     nodeId,
     state: "stopped",
   });
+});
+
+it("draws a message's attachments, pages and places from its card, with no body read", () => {
+  const attachment = {
+    type: "artifact" as const,
+    artifactId: "artifact-1",
+    mediaType: "image/png",
+    name: "shot.png",
+  };
+  const page = BrowserPageContentPartSchema.parse({
+    type: "browser-page",
+    sessionId: `bsn_${crypto.randomUUID()}`,
+    tabId: "tab-1",
+    title: "Docs",
+    url: "https://example.com",
+  });
+  const place = {
+    type: "phone" as const,
+    machineId: DeviceIdSchema.parse(createId("device")),
+    display: "main",
+    name: "Pixel",
+  };
+  const cases = [
+    { name: "an attachment-only reply", item: { ...message(""), attachments: [attachment] } },
+    {
+      name: "short text and an attachment",
+      item: { ...message("See"), attachments: [attachment] },
+    },
+    { name: "pages and places", item: { ...message("Open"), pages: [page], places: [place] } },
+    {
+      name: "the reader's own message",
+      item: {
+        ...message("Here"),
+        messageKind: "input" as const,
+        isTurnStart: true,
+        author: { kind: "human" as const, principalId: "me", displayName: "Me" },
+        attachments: [attachment],
+      },
+    },
+  ];
+  for (const { name, item } of cases) {
+    const card = itemCard(item);
+    expect(card, name).toMatchObject({
+      kind: "message",
+      previewTruncated: false,
+      ...("attachments" in item ? { attachments: item.attachments } : {}),
+      ...("pages" in item ? { pages: item.pages, places: item.places } : {}),
+    });
+  }
+  // References past the card's bounds stay in the body, which the card still offers.
+  const cut = itemCard({
+    ...message(""),
+    attachments: [attachment],
+    view: { preview: "", truncated: true },
+  });
+  expect(cut).toMatchObject({ previewTruncated: true, attachments: [attachment] });
 });

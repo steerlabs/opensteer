@@ -55,8 +55,13 @@ export interface ObservedDetail {
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
+  /** Live bytes received since this scope last acknowledged anything. */
+  liveBytes: number;
   revision: number;
 }
+
+/** The Host pauses a scope after 256 KiB of unacknowledged live text; ack well before that. */
+const liveAckBytes = 32 * 1024;
 
 function bytes(value: unknown) {
   return utf8ByteLength(JSON.stringify(value));
@@ -78,8 +83,10 @@ export class ScopedPersonalStream {
   #background = false;
   #shellReady = false;
   #earlyBytes = 0;
+  #attachment = 0;
   #watchPending = false;
   readonly #early: ScopedHostMessage[] = [];
+  readonly #deferred = new Set<ObservedDetail>();
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
@@ -102,6 +109,7 @@ export class ScopedPersonalStream {
       text: new ItemTextStore(),
       observers: 0,
       heldBytes: 0,
+      liveBytes: 0,
       revision: 0,
     };
     this.#details.set(key, detail);
@@ -247,9 +255,20 @@ export class ScopedPersonalStream {
     );
   }
 
+  /** Counts sockets; a scope repair on one socket keeps its attachment. */
+  get attachment() {
+    return this.#attachment;
+  }
+
+  /** The current socket has delivered its first shell cut. */
+  get ready() {
+    return this.#shellReady;
+  }
+
   attach(send: (message: ScopedClientMessage) => void) {
     this.disconnect();
     this.#send = send;
+    this.#attachment++;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
     this.resources.begin(generation);
@@ -277,6 +296,7 @@ export class ScopedPersonalStream {
     this.#shellReady = false;
     this.#early.length = 0;
     this.#earlyBytes = 0;
+    this.#deferred.clear();
     for (const detail of this.#slots.values()) this.#deactivate(detail);
     this.shell.begin(++this.#generation, true);
   }
@@ -353,32 +373,34 @@ export class ScopedPersonalStream {
     if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(frame))
       throw new Error("Personal scope frame exceeds its encoded limit.");
     if (!this.#send) return true;
+    if (frame.type === "host.live") this.#creditLive(frame, wireBytes ?? bytes(frame));
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
-    else if (this.#shellReady) this.#receiveDetail(frame);
-    else {
-      if (frame.type === "host.live" || !this.#currentDetail(frame)) return true;
-      const size = wireBytes ?? bytes(frame);
-      if (this.#earlyBytes + size > 256 * 1024 || this.#early.length >= 128)
-        throw new Error("Detail arrived before its shell cut.");
-      this.#earlyBytes += size;
-      this.#early.push(frame);
-    }
+    else if (this.#shellReady || frame.type === "host.live") this.#receiveDetail(frame);
+    else this.#hold(frame, wireBytes ?? bytes(frame));
     return true;
   }
 
-  repairDetail(scope: DetailScope) {
-    const detail = this.peekDetail(scope);
-    if (detail?.slot && detail.transcript.getSnapshot().synchronized)
-      this.#subscribe(detail, false, true);
+  // Durable detail waits for the socket's first shell cut, which carries the viewer identity.
+  // Past the buffer cap the detail is set aside and resubscribed once the shell is ready.
+  #hold(frame: ScopedHostMessage, size: number) {
+    const detail = this.#currentDetail(frame);
+    if (!detail || this.#deferred.has(detail)) return;
+    if (this.#earlyBytes + size <= 256 * 1024 && this.#early.length < 128) {
+      this.#earlyBytes += size;
+      this.#early.push(frame);
+      return;
+    }
+    this.#deferred.add(detail);
+    const kept = this.#early.filter((held) => this.#currentDetail(held) !== detail);
+    this.#early.splice(0, this.#early.length, ...kept);
+    this.#earlyBytes = kept.reduce((total, held) => total + bytes(held), 0);
   }
 
-  repairShell(resetHistory = false) {
+  /** Resubscribes the shell; only an explicit refresh or a broken frame order asks for this. */
+  repairShell() {
     if (!this.#send) return;
-    this.#shellReady = false;
-    this.#early.length = 0;
-    this.#earlyBytes = 0;
     const generation = ++this.#generation;
-    this.shell.begin(generation, !resetHistory, resetHistory);
+    this.shell.begin(generation, true);
     this.resources.begin(generation);
     this.#send({
       type: "client.subscribe",
@@ -400,14 +422,15 @@ export class ScopedPersonalStream {
     }
     if (frame.type === "host.live" || frame.type === "host.removed") return;
     if (frame.scope.kind !== "shell") return;
-    const cursorAhead =
+    // A cut behind what this client holds means the Host's history moved back.
+    if (
+      frame.type === "host.snapshot" &&
       previous.through !== null &&
-      (frame.type === "host.snapshot-required" || frame.type === "host.snapshot") &&
-      BigInt(frame.throughSequence) < BigInt(previous.through);
-    if (cursorAhead) {
+      BigInt(frame.throughSequence) < BigInt(previous.through)
+    ) {
       this.#discardViewerCheckpoints();
-      this.repairShell(true);
-      return;
+      this.shell.resetHistory();
+      for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
     }
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
       const { deploymentId, viewerId, epoch, resourceRevisions } = frame.snapshot;
@@ -427,13 +450,14 @@ export class ScopedPersonalStream {
       this.#sessionId = sessionId;
       this.resources.updateRevisions(frame.generation, resourceRevisions);
     }
-    if (frame.type === "host.snapshot-required" || !this.shell.apply(frame)) {
-      if (frame.type === "host.snapshot-required") this.shell.apply(frame);
-      this.repairShell();
-      return;
-    }
-    if (frame.type === "host.changes" && this.shell.getSnapshot().invalidated.size) {
-      this.#ack(frame);
+    // Readiness is set before the shell publishes its first synchronized cut on this socket.
+    const firstCut =
+      frame.type === "host.synchronized" &&
+      !this.#shellReady &&
+      frame.throughSequence === previous.through;
+    if (firstCut) this.#shellReady = true;
+    // A frame that does not follow this cut breaks the Host's ordering; start the scope over.
+    if (!this.shell.apply(frame)) {
       this.repairShell();
       return;
     }
@@ -450,11 +474,13 @@ export class ScopedPersonalStream {
     if (progress) this.resources.updateRevisions(frame.generation, progress.resourceRevisions);
     this.#ack(frame);
     this.#checkpoint(shellScope);
-    if (frame.type === "host.synchronized") {
-      this.#shellReady = true;
+    if (firstCut) {
       const early = this.#early.splice(0);
       this.#earlyBytes = 0;
       for (const pending of early) this.#receiveDetail(pending);
+      const deferred = [...this.#deferred];
+      this.#deferred.clear();
+      for (const detail of deferred) if (detail.slot) this.#subscribe(detail);
     }
   }
 
@@ -503,11 +529,8 @@ export class ScopedPersonalStream {
         throw new Error("Transcript snapshot omitted its anchor.");
       delete detail.anchor;
     }
-    if (
-      frame.type === "host.snapshot-required" ||
-      !detail.transcript.apply(frame, this.#identity)
-    ) {
-      if (frame.type === "host.snapshot-required") detail.transcript.apply(frame);
+    // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
+    if (!detail.transcript.apply(frame, this.#identity)) {
       this.#subscribe(detail, false, true);
       return;
     }
@@ -523,11 +546,6 @@ export class ScopedPersonalStream {
         if (change.operation === "remove" || finalizedItemText(change.value))
           detail.text.finishItem(change.entityId);
       }
-    const stale = detail.transcript.getSnapshot().stale;
-    if (stale.has("run-queue") || stale.has("node-subject")) {
-      this.#subscribe(detail, false, true);
-      return;
-    }
     if (detail.held) {
       for (const [key, live] of detail.held) {
         if (BigInt(frame.throughSequence) < BigInt(live.afterSequence)) continue;
@@ -584,6 +602,22 @@ export class ScopedPersonalStream {
     }
   }
 
+  // Live frames spend the socket's credit; any ack after them returns it.
+  #creditLive(frame: Live, size: number) {
+    const detail = this.#currentDetail(frame);
+    if (!detail || this.#background) return;
+    detail.liveBytes += size;
+    const through = detail.transcript.getSnapshot().through;
+    if (detail.liveBytes < liveAckBytes || through === null) return;
+    detail.liveBytes = 0;
+    this.#send?.({
+      type: "client.ack",
+      subscriptionId: frame.subscriptionId,
+      generation: frame.generation,
+      throughSequence: through,
+    });
+  }
+
   #resync(frame: Live) {
     this.#send?.({
       type: "client.live.resync",
@@ -596,6 +630,10 @@ export class ScopedPersonalStream {
 
   #ack(frame: Extract<ScopedHostMessage, { throughSequence: string }>) {
     if (frame.type !== "host.snapshot" && frame.type !== "host.changes") return;
+    if (frame.subscriptionId !== "shell") {
+      const detail = this.#slots.get(frame.subscriptionId);
+      if (detail) detail.liveBytes = 0;
+    }
     this.#send?.({
       type: "client.ack",
       subscriptionId: frame.subscriptionId,
@@ -670,6 +708,7 @@ export class ScopedPersonalStream {
     detail.revision++;
     detail.held = undefined;
     detail.heldBytes = 0;
+    detail.liveBytes = 0;
     detail.slot = slot;
     this.#slots.set(slot, detail);
     detail.transcript.begin(generation, true);
@@ -739,8 +778,7 @@ export class ScopedPersonalStream {
     const cursor = this.#cursor(scope, state.through);
     const key = this.#key(scope);
     if (!cursor || !key || !state.synchronized) return;
-    if (detail ? !detail.transcript.canCheckpoint() : this.shell.getSnapshot().invalidated.size > 0)
-      return;
+    if (detail && !detail.transcript.canCheckpoint()) return;
     const authority = this.#authority;
     const current = () =>
       authority === this.#authority &&

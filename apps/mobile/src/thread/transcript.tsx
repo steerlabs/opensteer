@@ -513,6 +513,7 @@ function ReplyBubble(props: {
           onReply={reply}
           part={part}
           reportId={message.id}
+          streaming={message.streaming === true && index === parts.length - 1}
           tail={!props.continued && index === parts.length - 1}
           whole={parts.length > 1 ? message.body : undefined}
         />
@@ -557,6 +558,8 @@ function ReplyPartRow(props: {
   readonly onReply: (() => void) | undefined;
   readonly part: ReplyPart;
   readonly reportId: string;
+  /** The reply is still arriving and this is its last part. */
+  readonly streaming: boolean;
   readonly tail: boolean;
   readonly whole: string | undefined;
 }): ReactNode {
@@ -587,7 +590,7 @@ function ReplyPartRow(props: {
           ) : part.kind === "draft" ? (
             <PlainProse text={part.text} tone="reply" />
           ) : (
-            <Markdown look="bubble" text={part.text} />
+            <Markdown look="bubble" streaming={props.streaming} text={part.text} />
           )}
         </Bubble>
       </MessageHold>

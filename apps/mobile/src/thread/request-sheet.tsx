@@ -178,14 +178,12 @@ function SubscribedRequestSheet(props: {
     transcript.requests.find(({ id, status }) => id === requestId && status === "pending") ?? null;
   const reviewing =
     !transcript.synchronized ||
-    transcript.requestsRefreshing ||
     transcript.pendingRequestIds?.includes(requestId) ||
     transcript.moreRequests;
   useEffect(() => {
     if (
       !transcript.synchronized ||
       pending ||
-      transcript.requestsRefreshing ||
       transcript.pendingRequestIds?.includes(requestId) ||
       !transcript.moreRequests
     )
@@ -198,7 +196,6 @@ function SubscribedRequestSheet(props: {
     threadId,
     transcript.moreRequests,
     transcript.pendingRequestIds,
-    transcript.requestsRefreshing,
     transcript.synchronized,
   ]);
   // Admitted and gone can both ask to close; only the sheet itself may go back.

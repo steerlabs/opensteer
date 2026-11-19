@@ -13,11 +13,12 @@ import {
 } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { itemView } from "./personal-sync-store.js";
-import { invalidateThreadCollection, publishThreadSummary } from "./thread-status.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { messageEditFromRow } from "./thread-row-mappers.js";
 import { describeTranscriptMessage } from "./transcript-store.js";
 import type { TranscriptItemTable } from "./personal-state-schema.js";
 import { sql, type Insertable, type RawBuilder } from "kysely";
+import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 
 /** A published report is visible before consumption; waiting work is not. */
 export function publishedMessagePredicate(inputAlias: string): RawBuilder<boolean> {
@@ -84,7 +85,7 @@ export async function syncTranscriptMessage(
             .executeTakeFirst()
         : seed;
     const edit = messageEditFromRow(message);
-    const { published, visible, isTurnStart, view } = describeTranscriptMessage({
+    const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
       kind: message.kind,
       content: MessageContentSchema.parse(message.content),
       author: message.author,
@@ -117,6 +118,7 @@ export async function syncTranscriptMessage(
       isTurnStart: visible && prior?.visible && !move ? prior.isTurnStart : isTurnStart,
       runId,
       view,
+      refs: refs === null ? null : sql<TranscriptMessageRefs>`${JSON.stringify(refs)}::jsonb`,
     };
     const scopeKey = `thread:${message.threadId}` as const;
     mutation.stageTranscript(messageId, { ...fields, nodeId: null }, async () => {
@@ -143,23 +145,12 @@ export async function syncTranscriptMessage(
       else if (prior?.visible)
         mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
     });
-    if (!visible && !prior?.visible)
-      await invalidateThreadCollection(tx, message.threadId, "messages");
     if (orderChanged) {
       await tx
         .updateTable("threads")
         .set({ transcriptOrderRevision: mutation.sequence })
         .where("id", "=", message.threadId)
         .execute();
-      mutation.change(
-        {
-          scopeKey,
-          entityKind: "collection",
-          entityId: "transcript-order",
-          operation: "invalidate",
-        },
-        () => ({ revision: mutation.sequence }),
-      );
     }
     if (visible && message.kind === "assistant") {
       const updated = await tx
@@ -203,7 +194,6 @@ export async function publishThreadCard(
       .set({ transcriptOrderRevision: mutation.sequence })
       .where("id", "=", card.threadId)
       .execute();
-    await invalidateThreadCollection(tx, card.threadId, "transcript-order");
   }
   mutation.stageTranscript(
     card.id,

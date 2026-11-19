@@ -88,9 +88,11 @@ test("a replay cut either sees its whole commit or the new retention floor", asy
     });
     // One prune frees a whole chunk: 513 rows, rounded up to whole commits.
     const floor = (BigInt(head) + BigInt(511 - state.retainedChangeCount)).toString();
-    expect(await readPersonalScopeCut(database, read)).toMatchObject({
-      kind: "snapshot-required",
-      reason: "cursor-unavailable",
+    expect(
+      await readPersonalScopeCut(database, { ...read, snapshot: async () => "repaired" }),
+    ).toMatchObject({
+      kind: "snapshot",
+      snapshot: "repaired",
       state: { prunedThroughSequence: floor, retainedChangeCount: 4096 + 1 - 513 },
     });
     const resourceHead = await commitPersonalMutation(database, async (_tx, mutation) => {
@@ -118,7 +120,7 @@ test("a replay cut either sees its whole commit or the new retention floor", asy
   }
 });
 
-test("a scope that exceeds its commit budget gets one invalidation", async () => {
+test("a scope that exceeds its commit budget is reset and repaired by snapshot", async () => {
   const fixture = await createPersonalStateFixture("oversize-scope");
   const { database, run } = fixture;
   try {
@@ -166,17 +168,15 @@ test("a scope that exceeds its commit budget gets one invalidation", async () =>
     expect(built).toBeLessThan(12);
     expect(
       await database.selectFrom("clientChanges").select(["entityId", "operation"]).execute(),
-    ).toEqual([{ entityId: "scope", operation: "invalidate" }]);
+    ).toEqual([{ entityId: "scope", operation: "reset" }]);
     expect(
       await readPersonalScopeCut(database, {
         viewerId: run.userId,
         scope: { kind: "shell" },
         cursor,
-        snapshot: async () => {
-          throw new Error("Expected replay");
-        },
+        snapshot: async () => "repaired",
       }),
-    ).toMatchObject({ kind: "snapshot-required", reason: "scope-invalidated" });
+    ).toMatchObject({ kind: "snapshot", snapshot: "repaired" });
   } finally {
     await fixture.close();
   }
@@ -237,14 +237,9 @@ test("retention rounds up to a complete commit and purges old scope cursors", as
           scopeKey: "shell",
           afterSequence,
         },
-        snapshot: async () => {
-          throw new Error("Expected replay negotiation");
-        },
+        snapshot: async () => "repaired",
       });
-    expect(await read(point.sequence)).toMatchObject({
-      kind: "snapshot-required",
-      reason: "cursor-unavailable",
-    });
+    expect(await read(point.sequence)).toMatchObject({ kind: "snapshot", snapshot: "repaired" });
     expect(await read(purged)).toMatchObject({
       kind: "replay",
       state: { retainedChangeCount: 0 },

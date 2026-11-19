@@ -8,7 +8,6 @@ import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
-  invalidateExecution,
   publishExecutionInput,
   recordExecutionRunChange,
   writeExecutionItem,
@@ -162,7 +161,7 @@ async function publishRunnerMessage(
   attempt: RunAttemptRow,
 ) {
   const message = messageFromRow(row);
-  const { published, visible, isTurnStart, view } = describeTranscriptMessage({
+  const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
     ...message,
     edited: false,
     admittedSeed: false,
@@ -206,6 +205,7 @@ async function publishRunnerMessage(
       visible,
       isTurnStart,
       view,
+      refs,
     },
     { position: visible ? thread.nextTranscriptPosition : null },
   );
@@ -1085,7 +1085,7 @@ export async function commitRunnerEvent(
             if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
           }
           if (event.type === "run.context-measured" || event.type === "run.compaction")
-            invalidateExecution(mutation, run.threadId, "return-hint");
+            await publishThreadSummary(tx, run.threadId);
           return "applied";
         },
         {

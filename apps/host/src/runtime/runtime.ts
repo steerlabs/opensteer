@@ -7,7 +7,8 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { createRunFinishDrain } from "@opensteer/database";
+import { createRunFinishDrain, republishThreads } from "@opensteer/database";
+import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
@@ -28,7 +29,7 @@ import { PluginService, PluginServiceError } from "../plugins/plugin-service.js"
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
-import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, ThreadIdSchema, type DeviceId } from "@opensteer/core";
 import { TabStore, AgentToolActivityStore } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -606,8 +607,18 @@ export async function createHostRuntime(
     });
     const realtime = new RealtimeHub();
     const resourceObservations = new PersonalResourceObservations();
-    const liveText = new PersonalLiveText(realtime, (runId) =>
-      runnerRegistry?.requestLiveProgress(runId),
+    const readLiveTail = (threadId: import("@opensteer/core").ThreadId) =>
+      void database
+        .selectFrom("threads")
+        .select("nextTranscriptPosition")
+        .where("id", "=", threadId)
+        .executeTakeFirst()
+        .then((row) => row && liveText.observeTail(threadId, row.nextTranscriptPosition))
+        .catch(reportMutationFailure);
+    const liveText = new PersonalLiveText(
+      realtime,
+      (runId) => runnerRegistry?.requestLiveProgress(runId),
+      readLiveTail,
     );
     const trackLiveRun = async (runId: RunId, bindingGeneration: number) => {
       if (liveText.knows(runId, bindingGeneration)) return;
@@ -623,6 +634,7 @@ export async function createHostRuntime(
         .executeTakeFirst();
       if (!current) return;
       liveText.track(runId, { ...current, bindingGeneration });
+      readLiveTail(current.threadId);
       const nodes = await database
         .selectFrom("executionNodes")
         .select(["id as nodeId", "parentNodeId"])
@@ -655,11 +667,21 @@ export async function createHostRuntime(
       console.warn("Personal mutation follow-up failed", {
         code: error instanceof OpensteerError ? error.code : "internal",
       });
+    const refreshReturnHints = createReturnHintRefresh({
+      watched: () => realtime.watchedThreads(),
+      republish: (threadIds) =>
+        republishThreads(
+          database,
+          threadIds.map((id) => ThreadIdSchema.parse(id)),
+        ),
+      onError: reportMutationFailure,
+    });
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
         resourceObservations.committed(notice.resourceKinds, notice.head);
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
+        refreshReturnHints(notice.resourceKinds);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
       react: (reaction) => {
@@ -1758,6 +1780,9 @@ export async function createHostRuntime(
           break;
         case "nodeProgressPlacement":
           liveText.placeNode(reaction, syncHead);
+          break;
+        case "runLiveClosed":
+          liveText.finish(reaction, syncHead);
           break;
         case "liveClosed":
           liveText.closeItem(reaction);

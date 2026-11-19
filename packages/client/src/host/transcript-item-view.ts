@@ -35,6 +35,9 @@ export function transcriptCard(
         messageKind,
         body: preview,
         published: view.published ?? true,
+        ...(item.attachments ? { attachments: item.attachments } : {}),
+        ...(item.pages ? { pages: item.pages } : {}),
+        ...(item.places ? { places: item.places } : {}),
       };
       return body?.kind === "message"
         ? (hydrateTranscriptMessage(message, body.message) ?? undefined)

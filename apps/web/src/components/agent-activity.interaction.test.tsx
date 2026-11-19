@@ -1002,7 +1002,7 @@ it("loads output only on expansion, retries a failure, and reuses it when reopen
   const threadId = seed
     .getSnapshot()
     .threads.find(({ title }) => title === "Subagents everywhere")!.id;
-  const thread = seed.scopedShell(threadId).tasks.find(({ id }) => id === threadId);
+  const thread = seed.scopedDetail(threadId)!.thread;
   const revision = String(seed.getSnapshot().revision);
   const item = TranscriptItemSchema.parse({
     id: "tool:check",
@@ -1024,8 +1024,6 @@ it("loads output only on expansion, retries a failure, and reuses it when reopen
       items: [item],
       activeItems: [],
       pendingRequests: [],
-      orderRevision: revision,
-      inputQueueRevision: revision,
       nextBefore: null,
     }),
   );

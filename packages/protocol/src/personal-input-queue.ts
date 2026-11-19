@@ -14,7 +14,7 @@ import {
 import { z } from "zod";
 import { PersonalRevisionSchema } from "./resources.js";
 
-const WaitingInputViewSchema = z.object({
+export const WaitingInputViewSchema = z.object({
   message: z.object({
     id: MessageIdSchema,
     clientSendKey: z.string().min(1).max(255).optional(),
@@ -62,3 +62,4 @@ export const PersonalInputQueueViewSchema = z
   .refine((queue) => utf8ByteLength(JSON.stringify(queue)) <= 96 * 1024);
 
 export type PersonalInputQueue = z.infer<typeof PersonalInputQueueViewSchema>;
+export type WaitingInputView = z.infer<typeof WaitingInputViewSchema>;

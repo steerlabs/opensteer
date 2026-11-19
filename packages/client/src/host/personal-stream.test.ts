@@ -23,6 +23,7 @@ import {
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
+import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
@@ -79,13 +80,20 @@ const revisions = (revision: string) =>
     Object.fromEntries(personalResourceKinds.map((kind) => [kind, revision])),
   );
 const counts = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
+const shellLists = {
+  activeTaskIds: [],
+  activeHasMore: false,
+  recentTaskIds: [],
+  nextBefore: null,
+  taskCounts: { active: 0, open: 0 },
+  attentionHasMore: false,
+};
 const cursor: TranscriptOrderCursor = {
   deploymentId,
   viewerId,
   epoch,
   threadId,
   nodeId: null,
-  orderRevision: "1",
   beforeId: item.id,
   beforePosition: item.position,
 };
@@ -115,6 +123,7 @@ function fixture(cache?: PersonalStreamCache) {
       visits: [],
       attention: [],
       counts,
+      ...shellLists,
       resourceRevisions: revisions("0"),
     },
   });
@@ -123,11 +132,9 @@ function fixture(cache?: PersonalStreamCache) {
     type: "host.snapshot" as const,
     throughSequence: "1",
     snapshot: {
-      thread: task,
+      thread: detailThread(task),
       items,
       activeItems: [],
-      orderRevision: "1",
-      inputQueueRevision: "1",
       pendingRequests: [],
       nextBefore: cursor,
     },
@@ -188,7 +195,7 @@ test("rejects details ahead of the cut and installs an entire mixed commit befor
   expect(
     f.stream.receive({
       ...ahead,
-      snapshot: { ...ahead.snapshot, thread: { ...task, revision: "2" } },
+      snapshot: { ...ahead.snapshot, thread: { ...detailThread(task), revision: "2" } },
     }),
   ).toBe(false);
   const notices = vi.fn();
@@ -206,15 +213,15 @@ test("rejects details ahead of the cut and installs an entire mixed commit befor
           ordinal: 0,
           sequence: "2",
           operation: "upsert",
-          value: { ...task, title: "Renamed", revision: "2" },
+          value: { ...detailThread(task), title: "Renamed", revision: "2" },
         },
         {
           entityKind: "run-queue",
-          entityId: "run-queue",
+          entityId: threadId,
           ordinal: 1,
           sequence: "2",
           operation: "upsert",
-          value: { revision: "2", paused: true, runs: [] },
+          value: { revision: "2", paused: true, runs: [], steerRunId: null, inputs: [] },
         },
         {
           entityKind: "request",
@@ -266,11 +273,13 @@ test("fences a pending write at generation replacement and checkpoints installed
   f.syncDetail();
   await entered.promise;
   try {
+    // A frame that skips part of the feed makes the client start the scope over.
     f.stream.receive({
       ...f.address,
-      type: "host.snapshot-required",
-      reason: "cursor-unavailable",
-      throughSequence: "2",
+      type: "host.changes",
+      fromSequence: "4",
+      throughSequence: "5",
+      changes: [],
     });
     const next = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
     expect(next.generation).toBeGreaterThan(f.address.generation);
@@ -328,9 +337,10 @@ test("restores matching resource watches on shell repair and ignores stale insta
   expect(f.stream.resources.get("machine")?.view.entries[0]?.id).toBe("a");
   f.stream.receive({
     ...f.shell,
-    type: "host.snapshot-required",
+    type: "host.changes",
+    fromSequence: "2",
     throughSequence: "3",
-    reason: "cursor-unavailable",
+    changes: [],
   });
   expect(f.sent.at(-1)).toMatchObject({
     type: "client.resources.watch",
@@ -380,26 +390,16 @@ test("background cancels detail reads and foreground resumes its still-observed 
   ]);
 });
 
-test("drops an item read overtaken by a durable removal and retries an older queue response once", async () => {
+test("drops an item read overtaken by a durable removal", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
   const point = Promise.withResolvers<unknown>();
-  const queue = Promise.withResolvers<unknown>();
-  const inputQueue = (revision: string) => ({
-    ok: true,
-    data: { threadId, revision, paused: false, steerRunId: null, items: [] },
-  });
   const rpc = {
     "transcript.item.get": vi.fn(() => point.promise),
-    "thread.inputQueue.get": vi
-      .fn()
-      .mockReturnValueOnce(queue.promise)
-      .mockResolvedValueOnce(inputQueue("2")),
   } as unknown as import("@opensteer/protocol").HostApiClient;
   const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
   const read = reader.body(item.id);
-  const readQueue = reader.queue();
   f.stream.receive({
     ...f.address,
     type: "host.changes",
@@ -407,24 +407,13 @@ test("drops an item read overtaken by a durable removal and retries an older que
     throughSequence: "2",
     changes: [
       { entityKind: "item", entityId: item.id, operation: "remove", sequence: "2", ordinal: 0 },
-      {
-        entityKind: "collection",
-        entityId: "input-queue",
-        operation: "invalidate",
-        sequence: "2",
-        ordinal: 1,
-        value: { revision: "2" },
-      },
     ],
   });
   point.resolve({
     ok: true,
     data: { item, body: { kind: "text", text: "gone" }, truncated: false },
   });
-  queue.resolve(inputQueue("1"));
   expect(await read).toBeUndefined();
-  expect(await readQueue).toMatchObject({ revision: "2" });
-  expect(rpc["thread.inputQueue.get"]).toHaveBeenCalledTimes(2);
   reader.dispose();
 });
 
@@ -525,15 +514,14 @@ test("retains the moved item's anchor across a history reset and refuses a respo
     threadId,
     nodeId: null,
     revision: "2",
-    orderRevision: "2",
     hasMore: false,
     nextBefore: null,
   };
   const read = vi
     .fn()
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset", orderRevision: "2" } })
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
     .mockResolvedValueOnce({ ok: true, data: { ...page, items: [] } })
-    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset", orderRevision: "2" } })
+    .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
     .mockResolvedValueOnce({ ok: true, data: { ...page, items: [moved] } });
   const rpc = {
     "thread.items.page": read,
@@ -617,25 +605,28 @@ test("carries a scoped task update into held rows and drops old task pages after
         if (frame.type !== "client.attach" && frame.type !== "client.subscribe") return;
         if (frame.type === "client.subscribe" && frame.scope.kind !== "shell") return;
         address = { ...address, generation: frame.generation };
-        socket.deliver({
-          ...address,
-          type: "host.snapshot",
-          throughSequence: head,
-          snapshot: {
-            deploymentId,
-            viewerId,
-            epoch,
-            session,
-            tasks: [{ ...task, status, revision: head }],
-            visits: [],
-            attention: [],
-            counts,
-            resourceRevisions: revisions("0"),
-          },
-        });
+        cut();
         socket.deliver({ ...address, type: "host.synchronized", throughSequence: head });
       })),
   });
+  const cut = () =>
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      throughSequence: head,
+      snapshot: {
+        deploymentId,
+        viewerId,
+        epoch,
+        session,
+        tasks: [{ ...task, status, revision: head }],
+        visits: [],
+        attention: [],
+        counts,
+        ...shellLists,
+        resourceRevisions: revisions("0"),
+      },
+    });
   try {
     await client.load();
     await client.loadDoneTasks();
@@ -680,12 +671,8 @@ test("carries a scoped task update into held rows and drops old task pages after
     await vi.waitFor(() => expect(reads, "The old task page never started").toBe(2));
     head = "2";
     status = "idle";
-    socket!.deliver({
-      ...address,
-      type: "host.snapshot-required",
-      reason: "cursor-unavailable",
-      throughSequence: head,
-    });
+    // The Host's history moved back: it repairs the shell inline with an older cut.
+    cut();
     expect(client.getSnapshot().tasks?.entries[0]?.thread.status).toBe("idle");
     late.resolve(Response.json(page));
     await request;
@@ -730,28 +717,14 @@ test("refreshes a loaded Done window after a hidden shell replacement, once on r
     await client.load();
     await client.loadDoneTasks();
     expect(reads).toBe(1);
-    const [socket] = host.sockets;
-    const attach = JSON.parse(socket!.sent[0]!) as Extract<
-      ScopedClientMessage,
-      { type: "client.attach" }
-    >;
     background();
-    socket!.deliver({
-      type: "host.snapshot-required",
-      reason: "scope-invalidated",
-      subscriptionId: "shell",
-      scope: shellScope,
-      generation: attach.generation,
-      throughSequence: String(mock.getSnapshot().revision),
-    });
-    await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"));
+    host.repairShell();
+    expect(client.getSnapshot().connection).toBe("connected");
     expect(reads).toBe(1);
 
     foreground();
     await client.load();
-    await vi.waitFor(() => expect(reads).toBe(2));
-    const [resumed] = host.sockets;
-    expect(JSON.parse(resumed!.sent[0]!).cursor).toBeDefined();
+    await vi.waitFor(() => expect(reads, "the Done window was never refreshed").toBe(2));
 
     background();
     foreground();
@@ -798,10 +771,11 @@ test("attaches without a cursor when a warm-cache preflight is retryable", async
             viewerId,
             epoch,
             session,
-            tasks: [task],
+            tasks: [{ ...task, status: "idle" }],
             visits: [],
             attention: [],
             counts,
+            ...shellLists,
             recentTaskIds: [threadId],
             activeTaskIds: [],
             resourceRevisions: revisions("0"),
@@ -863,6 +837,7 @@ test("uses no timers or network reads when an attached personal client is idle",
           visits: [],
           attention: [],
           counts,
+          ...shellLists,
           resourceRevisions: revisions("0"),
           resources: [
             {
@@ -1064,6 +1039,7 @@ test("retains stale tab inventory until replacement and keeps its independent la
             visits: [],
             attention: [],
             counts,
+            ...shellLists,
             resourceRevisions: revisions("1"),
             resources: [
               { kind: "tab", revision: "1", view },
@@ -1163,7 +1139,6 @@ test.each(["message", "reasoning"] as const)(
           threadId,
           nodeId: null,
           revision: "3",
-          orderRevision: "1",
           items: [final, tool],
           nextBefore: null,
           hasMore: false,
@@ -1293,7 +1268,6 @@ test("keeps the latest publication and distinct place markers across overlapping
       revisited,
     ],
     revision: "1",
-    orderRevision: "1",
     hasMore: false,
     nextBefore: null,
   };
@@ -1384,7 +1358,11 @@ test("evicts inactive scope previews before they exceed the structural budget", 
       scope,
       type: "host.snapshot",
       throughSequence: "1",
-      snapshot: { ...snapshot, thread: { ...task, id: scope.threadId }, nextBefore: null },
+      snapshot: {
+        ...snapshot,
+        thread: detailThread({ ...task, id: scope.threadId }),
+        nextBefore: null,
+      },
     });
     const store = f.stream.detail(scope);
     expect(store.transcript.getSnapshot().items.size).toBe(50);
@@ -1413,7 +1391,7 @@ test("reconnects from unaffected complete cuts when an authority close names a r
     ...otherAddress,
     snapshot: {
       ...f.detailSnapshot().snapshot,
-      thread: { ...task, id: other.threadId },
+      thread: detailThread({ ...task, id: other.threadId }),
       nextBefore: null,
     },
   });
@@ -1499,55 +1477,102 @@ test("replays a full saved history window with updated and removed active overla
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.has(other.id)).toBe(false);
 });
 
-test("refreshes a quiet input queue after two in-flight reads are overtaken", async () => {
+test("keeps the waiting-message tray from queue values and reads only entries the cut left out", async () => {
   const f = fixture();
   f.syncShell();
-  f.syncDetail();
-  type QueueRead = Awaited<
-    ReturnType<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>
-  >;
-  const first = Promise.withResolvers<QueueRead>();
-  const second = Promise.withResolvers<QueueRead>();
-  const answer = (revision: string): QueueRead => ({
-    ok: true,
-    data: { threadId, revision, paused: false, steerRunId: null, items: [] },
+  const waiting = (id: string, preview: string) => ({
+    message: {
+      id: id as import("@opensteer/core").MessageId,
+      revision: 0,
+      author: { kind: "human" as const, principalId: viewerId, displayName: "Owner" },
+      createdAt: time,
+      preview,
+      truncated: false,
+    },
+    input: {
+      messageId: id as import("@opensteer/core").MessageId,
+      state: "pending" as const,
+      queueRank: "1",
+    },
+    ask: null,
+    canEdit: true,
+    canCancel: true,
+    canMove: true,
+    canSteer: false,
+    lease: null,
   });
-  const queue = vi
-    .fn<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>()
-    .mockReturnValueOnce(first.promise)
-    .mockReturnValueOnce(second.promise)
-    .mockResolvedValue(answer("3"));
+  const a = createId("message");
+  const b = createId("message");
+  const c = createId("message");
+  const queue = (revision: string, inputs: string[]) => ({
+    revision,
+    runs: [],
+    paused: false,
+    steerRunId: null,
+    inputs: inputs as import("@opensteer/core").MessageId[],
+  });
+  const snapshot = f.detailSnapshot();
+  f.stream.receive({
+    ...snapshot,
+    snapshot: { ...snapshot.snapshot, queue: queue("1", [a, b]), inputQueue: [waiting(a, "A")] },
+  });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const read = vi.fn(async () => ({
+    ok: true as const,
+    data: {
+      threadId,
+      revision: "1",
+      paused: false,
+      steerRunId: null,
+      items: [waiting(a, "stale A"), waiting(b, "B")],
+    },
+  }));
   const reader = new ScopedThreadReader(
     f.detail,
-    { "thread.inputQueue.get": queue } as unknown as import("@opensteer/protocol").HostApiClient,
+    { "thread.inputQueue.get": read } as unknown as import("@opensteer/protocol").HostApiClient,
     new TranscriptBodies(),
   );
-  const invalidate = (fromSequence: string, throughSequence: string) =>
+  try {
+    // The cut had room for A only; one read fills B and never overrides the pushed A.
+    await vi.waitFor(() =>
+      expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview)).toEqual([
+        "A",
+        "B",
+      ]),
+    );
+    const trays: (readonly string[] | null)[] = [];
+    reader.subscribe(() =>
+      trays.push(
+        reader.getSnapshot().inputQueue?.items.map(({ message }) => message.preview) ?? null,
+      ),
+    );
     f.stream.receive({
       ...f.address,
       type: "host.changes",
-      fromSequence,
-      throughSequence,
+      fromSequence: "1",
+      throughSequence: "2",
       changes: [
         {
-          operation: "invalidate",
-          entityKind: "collection",
-          entityId: "input-queue",
-          sequence: throughSequence,
+          entityKind: "queue-entry",
+          entityId: c,
+          operation: "upsert",
+          sequence: "2",
           ordinal: 0,
-          value: { revision: throughSequence },
+          value: waiting(c, "C"),
         },
+        {
+          entityKind: "run-queue",
+          entityId: threadId,
+          operation: "upsert",
+          sequence: "2",
+          ordinal: 1,
+          value: queue("2", [c, a]),
+        },
+        { entityKind: "queue-entry", entityId: b, operation: "remove", sequence: "2", ordinal: 2 },
       ],
     });
-  try {
-    invalidate("1", "2");
-    first.resolve(answer("1"));
-    await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
-    invalidate("2", "3");
-    second.resolve(answer("2"));
-    await vi.waitFor(() =>
-      expect(f.detail.transcript.getSnapshot().inputQueue?.revision).toBe("3"),
-    );
+    expect(trays).toEqual([["C", "A"]]);
+    expect(read).toHaveBeenCalledTimes(1);
   } finally {
     reader.dispose();
   }
@@ -1565,7 +1590,6 @@ test("does not install a history page that contains another node's item", async 
       threadId,
       nodeId: null,
       items: [wrong],
-      orderRevision: "1",
       revision: "2",
       nextBefore: null,
       hasMore: false,
@@ -1632,7 +1656,6 @@ test("pages a node across a missed window and ignores a released holder's earlie
       threadId,
       nodeId,
       revision: "1",
-      orderRevision: "1",
       items: lines.slice(from, end),
       hasMore: from !== 0,
       nextBefore: from === 0 ? null : boundary(lines[from]!),
@@ -1666,93 +1689,6 @@ test("pages a node across a missed window and ignores a released holder's earlie
     previous.dispose();
     current.dispose();
     release();
-  }
-});
-
-test("hides an invalidated Request prefix until its current membership has been read", async () => {
-  const f = fixture();
-  f.syncShell();
-  const frame = f.detailSnapshot();
-  const summary = {
-    id: requestId,
-    status: "pending",
-    kind: "person.question",
-    title: "Review",
-    revision: "1",
-    threadId,
-  };
-  f.stream.receive({
-    ...frame,
-    snapshot: {
-      ...frame.snapshot,
-      pendingRequests: [summary],
-      overlayCursors: { requests: "old" },
-    },
-  });
-  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
-  type Rpc = import("@opensteer/protocol").HostApiClient;
-  const next = Promise.withResolvers<Awaited<ReturnType<Rpc["thread.overlays.page"]>>>();
-  const overlays = vi.fn<Rpc["thread.overlays.page"]>().mockReturnValue(next.promise);
-  const reader = new ScopedThreadReader(
-    f.detail,
-    {
-      "thread.inputQueue.get": async () => ({
-        ok: true,
-        data: {
-          threadId,
-          revision: "1",
-          paused: false,
-          steerRunId: null,
-          items: [],
-        },
-      }),
-      "thread.requests.list": async () => ({
-        ok: true,
-        data: {
-          threadId,
-          requests: [{ id: requestId, originatingThreadId: threadId, status: "pending" }],
-          reviewedRevisions: { [requestId]: "1" },
-        },
-      }),
-      "thread.overlays.page": overlays,
-    } as unknown as Rpc,
-    new TranscriptBodies(),
-  );
-  try {
-    await vi.waitFor(() => expect(reader.getSnapshot().requests).toHaveLength(1));
-    f.stream.receive({
-      ...f.address,
-      type: "host.changes",
-      fromSequence: "1",
-      throughSequence: "2",
-      changes: [
-        {
-          sequence: "2",
-          ordinal: 0,
-          operation: "invalidate",
-          entityKind: "collection",
-          entityId: "requests",
-          value: { revision: "2" },
-        },
-      ],
-    });
-    expect(reader.getSnapshot()).toMatchObject({
-      requests: [],
-      moreRequests: false,
-      requestsRefreshing: true,
-    });
-    expect(overlays).toHaveBeenCalledWith(
-      { threadId, kind: "requests", expectedRevision: "2" },
-      expect.anything(),
-    );
-    next.resolve({
-      ok: true,
-      data: { threadId, nodeId: null, kind: "requests", revision: "2", entries: [], next: null },
-    });
-    await vi.waitFor(() => expect(reader.getSnapshot().requestsRefreshing).toBe(false));
-    expect(reader.getSnapshot().requests).toEqual([]);
-  } finally {
-    reader.dispose();
   }
 });
 
@@ -1796,12 +1732,10 @@ test("a named socket close purges its task and resumes the unaffected scope", as
             ...address,
             type: "host.snapshot",
             snapshot: {
-              thread: { ...task, id: scope.threadId },
+              thread: detailThread({ ...task, id: scope.threadId }),
               items: [item],
               activeItems: [],
               pendingRequests: [],
-              orderRevision: "1",
-              inputQueueRevision: "1",
               nextBefore: null,
             },
           });
@@ -1830,6 +1764,7 @@ test("a named socket close purges its task and resumes the unaffected scope", as
               visits: [],
               attention: [],
               counts,
+              ...shellLists,
               resourceRevisions: revisions("0"),
             },
           });
@@ -1902,4 +1837,529 @@ test("rejects a valid changes object padded past its encoded frame cap", () => {
   expect(stream.receive(JSON.parse(frame), frame.length)).toBe(true);
   expect(stream.receive(JSON.parse(frame), personalChangesFrameMaxBytes)).toBe(true);
   expect(() => stream.receive(JSON.parse(padded), padded.length)).toThrow(/encoded limit/);
+});
+
+type Subscribe = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+type DetailAddress = Pick<Subscribe, "scope" | "subscriptionId" | "generation">;
+
+/** A Host that answers attach and subscribe with a cut, and lets a test push commits. */
+function scriptedHost(
+  options: {
+    readonly tasks?: readonly object[];
+    readonly items?: TranscriptItem[];
+    readonly lists?: Readonly<Record<string, unknown>>;
+  } = {},
+) {
+  const tasks = (options.tasks ?? [task]) as (typeof task)[];
+  const items = options.items ?? [item];
+  const sent: ScopedClientMessage[] = [];
+  let socket!: MockPersonalSocket;
+  let head = 1;
+  let shell = { subscriptionId: "shell" as const, scope: shellScope, generation: 0 };
+  const details = new Map<string, DetailAddress>();
+  const delivered = new Map<string, string>();
+  const shellCut = () => {
+    delivered.set("shell", String(head));
+    socket.deliver({
+      ...shell,
+      type: "host.snapshot",
+      throughSequence: String(head),
+      snapshot: {
+        deploymentId,
+        viewerId,
+        epoch,
+        session,
+        tasks,
+        visits: [],
+        attention: [],
+        counts,
+        ...shellLists,
+        ...(options.lists as typeof shellLists | undefined),
+        resourceRevisions: revisions("0"),
+      },
+    });
+    socket.deliver({ ...shell, type: "host.synchronized", throughSequence: String(head) });
+  };
+  const detailCut = ({ scope, subscriptionId, generation }: DetailAddress) => {
+    if (scope.kind !== "thread" || subscriptionId === "shell") return;
+    const address = { scope, subscriptionId, generation };
+    details.set(scope.threadId, address);
+    delivered.set(scope.threadId, String(head));
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      throughSequence: String(head),
+      snapshot: {
+        thread: detailThread(
+          tasks.find(({ id }) => id === scope.threadId) ?? { ...task, id: scope.threadId },
+        ),
+        items,
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: null,
+        queue: { revision: "1", runs: [], paused: false, steerRunId: null, inputs: [] },
+        inputQueue: [],
+      },
+    });
+    socket.deliver({ ...address, type: "host.synchronized", throughSequence: String(head) });
+  };
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const frame = JSON.parse(raw) as ScopedClientMessage;
+      sent.push(frame);
+      if (frame.type === "client.attach") {
+        shell = { ...shell, generation: frame.generation };
+        queueMicrotask(() => {
+          shellCut();
+          if (frame.selected) detailCut(frame.selected);
+        });
+      }
+      if (frame.type === "client.subscribe")
+        queueMicrotask(() => {
+          if (frame.subscriptionId === "shell") {
+            shell = { ...shell, generation: frame.generation };
+            shellCut();
+          } else detailCut(frame);
+        });
+    }));
+  return {
+    connect,
+    sent,
+    socket: () => socket,
+    head: () => String(head),
+    details,
+    /** Delivers one commit to the shell and/or a detail scope. */
+    commit(
+      shellChanges: readonly unknown[],
+      detail?: { threadId: string; changes: readonly unknown[] },
+    ) {
+      head++;
+      const through = String(head);
+      const rows = (changes: readonly unknown[]) =>
+        changes.map((change, ordinal) => ({
+          ...(change as object),
+          sequence: through,
+          ordinal,
+        }));
+      // Each subscription's feed chains from the last commit it was sent.
+      if (shellChanges.length) {
+        socket.deliver({
+          ...shell,
+          type: "host.changes",
+          fromSequence: delivered.get("shell") ?? "1",
+          throughSequence: through,
+          changes: rows(shellChanges),
+        } as never);
+        delivered.set("shell", through);
+      }
+      const address = detail && details.get(detail.threadId);
+      if (address) {
+        socket.deliver({
+          ...address,
+          type: "host.changes",
+          fromSequence: delivered.get(detail.threadId) ?? "1",
+          throughSequence: through,
+          changes: rows(detail.changes),
+        } as never);
+        delivered.set(detail.threadId, through);
+      }
+      return through;
+    },
+    live(threadId: string, itemId: string, text: string, offset = 0) {
+      const address = details.get(threadId)!;
+      socket.deliver({
+        ...address,
+        type: "host.live",
+        liveBootId: "00000000-0000-4000-8000-000000000001",
+        runId,
+        attemptId: createId("runAttempt"),
+        bindingGeneration: 1,
+        streamId: "reply",
+        itemId,
+        afterSequence: String(head),
+        update: { operation: "append", text, offset, totalLength: offset + text.length },
+      } as never);
+    },
+  };
+}
+
+function scriptedClient(host: ReturnType<typeof scriptedHost>, fetch?: typeof globalThis.fetch) {
+  return new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    webSocketFactory: host.connect,
+    capabilities: [],
+    fetch:
+      fetch ??
+      (async () =>
+        Response.json({
+          ok: false,
+          error: { code: "not_found", message: "Unavailable", retryable: false },
+        })),
+  });
+}
+
+test("a shell repair on an open socket keeps the connection, its reconnect work and live text", async () => {
+  const host = scriptedHost();
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const connections: string[] = [];
+    client.subscribe(() => connections.push(client.getSnapshot().connection));
+    const reads = fetch.mock.calls.length;
+    const repaired = client.refresh();
+    host.live(threadId, "live-reply", "Hello");
+    await repaired;
+    await vi.waitFor(() =>
+      expect(
+        host.sent.filter((frame) => frame.type === "client.subscribe"),
+        "the shell repair was never sent",
+      ).toHaveLength(1),
+    );
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(client.getThreadItemText(threadId)?.get("live-reply")?.text).toBe("Hello");
+    expect(connections.every((connection) => connection === "connected")).toBe(true);
+    expect(fetch.mock.calls.length).toBe(reads);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("an early detail past the buffer is set aside and resubscribed after the shell cut", () => {
+  const f = fixture();
+  f.stream.receive(f.detailSnapshot());
+  for (let sequence = 1; sequence <= 130; sequence++)
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(sequence),
+      throughSequence: String(sequence + 1),
+      changes: [],
+    });
+  expect(f.sent.filter((frame) => frame.type === "client.subscribe")).toHaveLength(0);
+  f.syncShell();
+  expect(f.sent.filter((frame) => frame.type === "client.subscribe")).toMatchObject([
+    { subscriptionId: f.address.subscriptionId, scope: threadScope },
+  ]);
+  expect(f.detail.transcript.getSnapshot().items.size).toBe(0);
+});
+
+const upsert = (entityKind: string, entityId: string, value: unknown) => ({
+  operation: "upsert",
+  entityKind,
+  entityId,
+  value,
+});
+
+test("a whole Run arrives as values: no resubscribe after attach and no connection change", async () => {
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const client = scriptedClient(host);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const subscribes = () => host.sent.filter((frame) => frame.type === "client.subscribe").length;
+    const attached = subscribes();
+    const connections = new Set<string>();
+    client.subscribe(() => connections.add(client.getSnapshot().connection));
+    const reader = client.getThreadTranscript(threadId)!;
+    let revision = 1;
+    const row = (status: "running" | "idle", extra: object = {}) => ({
+      ...task,
+      status,
+      revision: String(++revision),
+      ...extra,
+    });
+    const queue = (runs: object[], inputs: string[]) => ({
+      revision: String(revision),
+      runs,
+      paused: false,
+      steerRunId: null,
+      inputs,
+    });
+    const run = (status: string) => ({
+      id: runId,
+      revision: String(revision),
+      status,
+      finishing: false,
+      createdAt: time,
+      runOrdinal: 1,
+    });
+    const tool = (status: string) => ({
+      ...item,
+      kind: "tool",
+      id: "tool-1",
+      toolCallId: "call-1",
+      position: "2",
+      revision: String(revision),
+      messageId: undefined,
+      view: { status },
+    });
+    const node = (status: string) => ({
+      ...item,
+      kind: "node",
+      id: "node:1",
+      executionNodeId: nodeId,
+      position: "3",
+      revision: String(revision),
+      messageId: undefined,
+      view: { status },
+    });
+    const waitingId = createId("message");
+    const waiting = {
+      message: {
+        id: waitingId,
+        revision: 0,
+        author: { kind: "human", principalId: viewerId, displayName: "Owner" },
+        createdAt: time,
+        preview: "Next",
+        truncated: false,
+      },
+      input: { messageId: waitingId, state: "pending", queueRank: "1" },
+      ask: null,
+      canEdit: true,
+      canCancel: true,
+      canMove: true,
+      canSteer: true,
+      lease: null,
+    };
+    const strip = <T extends object>(value: T) => JSON.parse(JSON.stringify(value)) as T;
+    // The Run starts.
+    let next = row("running");
+    host.commit([upsert("task", threadId, next)], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, detailThread(next)),
+        upsert("run-queue", threadId, queue([run("running")], [])),
+      ],
+    });
+    expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.id)).toEqual([threadId]);
+    expect(reader.getSnapshot().runQueue).toMatchObject([{ id: runId, status: "running" }]);
+    // A tool and a subagent run, and the person queues a message.
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("item", "tool-1", strip(tool("running"))),
+        upsert("item", "node:1", strip(node("running"))),
+      ],
+    });
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("queue-entry", waitingId, waiting),
+        upsert("run-queue", threadId, queue([run("running")], [waitingId])),
+      ],
+    });
+    expect(reader.getSnapshot().inputQueue?.items.map(({ message }) => message.id)).toEqual([
+      waitingId,
+    ]);
+    revision++;
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("item", "node:1", strip(node("done"))),
+        upsert("item", "tool-1", strip(tool("done"))),
+      ],
+    });
+    // The Run takes the queued message and finishes.
+    next = row("idle", { latestRunCompletedAt: time });
+    host.commit([upsert("task", threadId, next)], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, detailThread(next)),
+        upsert("run-queue", threadId, queue([], [])),
+        { operation: "remove", entityKind: "queue-entry", entityId: waitingId },
+      ],
+    });
+    expect(client.getSnapshot().activeTasks).toEqual([]);
+    expect(reader.getSnapshot()).toMatchObject({ runQueue: [], inputQueue: { items: [] } });
+    expect(reader.getSnapshot().entries.map(({ id }) => id)).toEqual([item.id, "tool-1", "node:1"]);
+    expect(subscribes()).toBe(attached);
+    expect([...connections]).toEqual(["connected"]);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("every running task stays listed while others finish, and loaded task pages survive a change", async () => {
+  const running = Array.from({ length: 12 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Task ${index + 1}`,
+    askedAt: new Date(Date.parse(time) - index * 60_000).toISOString(),
+  }));
+  const settled = Array.from({ length: 25 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Settled ${index + 1}`,
+    status: "idle" as const,
+    askedAt: new Date(Date.parse(time) - (index + 20) * 60_000).toISOString(),
+  }));
+  const host = scriptedHost({
+    tasks: [...running, ...settled],
+    lists: {
+      activeTaskIds: running.map(({ id }) => id),
+      recentTaskIds: [...running, ...settled].slice(0, 25).map(({ id }) => id),
+      nextBefore: "older",
+    },
+  });
+  const older = createId("thread");
+  const pages: unknown[] = [];
+  const client = scriptedClient(host, async (input) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+    pages.push(JSON.parse(url.searchParams.get("input") ?? "{}"));
+    const listed = new MockHostClient({ latencyMs: 0 }).getSnapshot().threads[0]!;
+    return Response.json({
+      ok: true,
+      data: {
+        asOfSequence: host.head(),
+        tasks: [
+          {
+            thread: {
+              ...detailThread({ ...task, id: older, title: "Older", status: "idle" }).thread,
+              askedAt: "2026-11-01T00:00:00.000Z",
+              environmentId: listed.environmentId,
+            },
+            lastReply: null,
+            failure: null,
+          },
+        ],
+        window: { nextBefore: null, hasMore: false, totalItems: 1, byteCount: 0, itemCount: 1 },
+      },
+    });
+  });
+  try {
+    await client.load();
+    expect(client.getSnapshot().activeTasks).toHaveLength(12);
+    await client.loadEarlierTasks();
+    expect(pages).toEqual([{ before: "older", limit: 50 }]);
+    const ids = () => client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id) ?? [];
+    expect(ids()).toContain(older);
+    host.commit(
+      running.slice(0, 10).map((row, index) =>
+        upsert("task", row.id, {
+          ...row,
+          status: "idle",
+          revision: "2",
+          latestRunCompletedAt: time,
+          title: `Finished ${index}`,
+        }),
+      ),
+    );
+    expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.id)).toEqual(
+      running.slice(10).map(({ id }) => id),
+    );
+    expect(ids()).toContain(older);
+    expect(ids()).toHaveLength(12 + 25 + 1);
+    expect(host.sent.filter((frame) => frame.type === "client.subscribe")).toEqual([]);
+    expect(pages).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("keeps a visit that arrives before its task", () => {
+  const f = fixture();
+  f.syncShell();
+  const later = createId("thread");
+  const commit = (fromSequence: string, change: object) =>
+    f.stream.receive({
+      ...f.shell,
+      type: "host.changes",
+      fromSequence,
+      throughSequence: String(Number(fromSequence) + 1),
+      changes: [{ ...change, sequence: String(Number(fromSequence) + 1), ordinal: 0 }],
+    });
+  commit("1", upsert("visit", later, { threadId: later, lastVisitedAt: time, revision: "2" }));
+  commit("2", upsert("task", later, { ...task, id: later, revision: "3" }));
+  const state = f.stream.shell.getSnapshot();
+  expect(state.tasks.has(later)).toBe(true);
+  expect(state.visits.get(later)?.lastVisitedAt).toBe(time);
+});
+
+test("acknowledges live text about every 32 KiB so a long reply keeps flowing, and stops once unobserved", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const chunk = "x".repeat(4000);
+  const attempt = createId("runAttempt");
+  let offset = 0;
+  const live = () => {
+    f.stream.receive({
+      ...f.address,
+      type: "host.live",
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      runId,
+      attemptId: attempt,
+      bindingGeneration: 1,
+      streamId: "reply",
+      itemId: "live-reply",
+      afterSequence: "1",
+      update: { operation: "append", text: chunk, offset, totalLength: offset + chunk.length },
+    });
+    offset += chunk.length;
+  };
+  const acks = () => f.sent.filter((frame) => frame.type === "client.ack").length;
+  const before = acks();
+  for (let index = 0; index < 160; index++) live();
+  // 640 KB of text, far past the Host's 256 KiB pause, arrived and was acknowledged as it came.
+  expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
+  expect(acks() - before).toBeGreaterThanOrEqual(18);
+  f.stream.setBackground(true);
+  const background = acks();
+  for (let index = 0; index < 20; index++) live();
+  expect(acks()).toBe(background);
+  f.stream.setBackground(false);
+  f.stream.select(undefined);
+  const released = acks();
+  for (let index = 0; index < 20; index++) live();
+  expect(acks()).toBe(released);
+});
+
+test("shows a task's new return hint from its republished thread value, with no read", async () => {
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const reads = fetch.mock.calls.length;
+    const hint = { eligible: true, sessionRevision: "7", sourceRunId: runId, eligibleAt: 1_000 };
+    const value = detailThread({ ...task, status: "idle" as const, revision: "2" });
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, { ...value, thread: { ...value.thread, returnHint: hint } }),
+      ],
+    });
+    expect(client.getSnapshot().threads.find(({ id }) => id === threadId)?.returnHint).toEqual(
+      hint,
+    );
+    expect(fetch.mock.calls.length).toBe(reads);
+    expect(host.sent.filter((frame) => frame.type === "client.subscribe")).toEqual([]);
+  } finally {
+    client.dispose();
+  }
 });

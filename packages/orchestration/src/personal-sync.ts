@@ -13,9 +13,7 @@ type Address = Pick<Subscribe, "subscriptionId" | "generation">;
 type Id = Address["subscriptionId"];
 type CutFrame = Extract<
   ScopedHostMessage,
-  {
-    type: "host.snapshot" | "host.changes" | "host.snapshot-required" | "host.removed";
-  }
+  { type: "host.snapshot" | "host.changes" | "host.removed" }
 >;
 type WithoutAddress<T> = T extends CutFrame ? Omit<T, keyof Address> : never;
 type Watch = Extract<ScopedClientMessage, { type: "client.resources.watch" }>;
@@ -58,6 +56,8 @@ interface Credit {
   readonly bytes: number;
   readonly changes: number;
   readonly durable: boolean;
+  /** A live frame's credit returns with the first acknowledgement after it. */
+  readonly acks: number;
 }
 
 export interface LiveDeliveryOptions {
@@ -80,10 +80,13 @@ interface Subscription {
   bytes: number;
   changes: number;
   acknowledged: bigint;
+  acks: number;
   dispatchedThrough: bigint | null;
   sending: boolean;
   synchronized: boolean;
-  needsRepair: boolean;
+  /** The next read ignores the cursor, so the Host repairs this scope with a snapshot. */
+  repair: boolean;
+  removed: boolean;
   pauseCount: number;
   readonly live: Map<string, PendingLive>;
   readonly sentLive: Map<string, number>;
@@ -166,10 +169,12 @@ export class PersonalSyncSocket {
       bytes: 0,
       changes: 0,
       acknowledged: 0n,
+      acks: 0,
       dispatchedThrough: null,
       sending: false,
       synchronized: false,
-      needsRepair: false,
+      repair: false,
+      removed: false,
       live: new Map(),
       sentLive: new Map(),
       pauseCount: [...this.#fences].filter((matches) => matches(request.scope)).length,
@@ -198,6 +203,7 @@ export class PersonalSyncSocket {
       return;
     }
     if (through > current.acknowledged) current.acknowledged = through;
+    current.acks++;
     if (this.#releaseCredits(current)) this.#reschedule();
   }
 
@@ -206,9 +212,10 @@ export class PersonalSyncSocket {
     let kept = 0;
     for (const credit of current.credit) {
       if (
-        credit.durable &&
-        BigInt(credit.through) <= current.acknowledged &&
-        !this.#inFlight.has(credit)
+        !this.#inFlight.has(credit) &&
+        (credit.durable
+          ? BigInt(credit.through) <= current.acknowledged
+          : credit.acks < current.acks)
       ) {
         current.bytes -= credit.bytes;
         current.changes -= credit.changes;
@@ -287,11 +294,18 @@ export class PersonalSyncSocket {
     current.checkCredit?.();
   }
 
+  /** Threads with a detail subscription on this socket (at most four). */
+  watchedThreads() {
+    return [...this.#subscriptions.values()].flatMap(({ request, removed }) =>
+      request.scope.kind === "shell" || removed ? [] : [request.scope.threadId],
+    );
+  }
+
   observesThread(threadId: string) {
     return [...this.#subscriptions.values()].some(
-      ({ request, synchronized, needsRepair, pauseCount }) =>
+      ({ request, synchronized, removed, pauseCount }) =>
         synchronized &&
-        !needsRepair &&
+        !removed &&
         pauseCount === 0 &&
         request.scope.kind !== "shell" &&
         request.scope.threadId === threadId,
@@ -303,7 +317,7 @@ export class PersonalSyncSocket {
       const subscribed = current.request.scope;
       if (
         !current.synchronized ||
-        current.needsRepair ||
+        current.removed ||
         subscribed.kind !== scope.kind ||
         subscribed.threadId !== scope.threadId ||
         (subscribed.kind === "node" && scope.kind === "node" && subscribed.nodeId !== scope.nodeId)
@@ -317,7 +331,7 @@ export class PersonalSyncSocket {
     const current = this.#subscriptions.get(request.subscriptionId);
     if (
       !current?.synchronized ||
-      current.needsRepair ||
+      current.removed ||
       current.request.generation !== request.generation ||
       current.request.scope.kind === "shell"
     )
@@ -441,12 +455,13 @@ export class PersonalSyncSocket {
       !this.#matches(current) ||
       current.pauseCount > 0 ||
       current.sending ||
-      current.needsRepair ||
+      current.removed ||
       (!this.#initialShellReady && current.request.subscriptionId !== "shell")
     )
       return;
     if (
       current.synchronized &&
+      !current.repair &&
       current.pendingHead <= BigInt(current.cursor?.afterSequence ?? 0) &&
       !current.resources?.dirty &&
       this.#readyLive(current).length === 0
@@ -467,12 +482,17 @@ export class PersonalSyncSocket {
 
   async #drain(current: Subscription) {
     const { request, controller } = current;
-    if (current.synchronized && current.pendingHead <= BigInt(current.cursor?.afterSequence ?? 0)) {
+    if (
+      current.synchronized &&
+      !current.repair &&
+      current.pendingHead <= BigInt(current.cursor?.afterSequence ?? 0)
+    ) {
       await this.#sendResources(current);
       await this.#sendLive(current);
       return;
     }
-    const cursor = current.cursor;
+    const cursor = current.repair ? null : current.cursor;
+    current.repair = false;
     const cut = await this.#port.read(
       request.scope,
       cursor,
@@ -483,8 +503,8 @@ export class PersonalSyncSocket {
     if (!this.#matches(current)) return;
     const address = { subscriptionId: request.subscriptionId, generation: request.generation };
     for (const frame of cut.frames) {
-      if (frame.type === "host.snapshot-required" || frame.type === "host.removed") {
-        if (await this.#send(current, { ...frame, ...address })) current.needsRepair = true;
+      if (frame.type === "host.removed") {
+        if (await this.#send(current, { ...frame, ...address })) current.removed = true;
         return;
       }
       const sent = await this.#send(current, { ...frame, ...address });
@@ -598,19 +618,8 @@ export class PersonalSyncSocket {
     const parsed = ScopedHostMessageSchema.safeParse(frame);
     if (!parsed.success) {
       if (frame.type !== "host.changes") throw parsed.error;
-      const sent = await this.#send(
-        current,
-        {
-          type: "host.snapshot-required",
-          subscriptionId: frame.subscriptionId,
-          scope: frame.scope,
-          generation: frame.generation,
-          throughSequence: frame.throughSequence,
-          reason: "replay-overflow",
-        },
-        stillCurrent,
-      );
-      if (sent) current.needsRepair = true;
+      // A replay that does not fit one frame is repaired by a snapshot on the next drain.
+      current.repair = true;
       return false;
     }
     const encoded = JSON.stringify(parsed.data);
@@ -618,28 +627,27 @@ export class PersonalSyncSocket {
     const changes = frame.type === "host.changes" ? frame.changes.length : 0;
     if (bytes > scopeBudget || changes > 128)
       throw new Error("A single personal frame exceeded its credit");
-    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Keep this frame and its cut while the subscription waits for capacity.
+      // A scope out of credit pauses with this frame and its cut until the client acknowledges.
       while (guard() && !this.#hasCredit(current, bytes, changes)) {
         const available = Promise.withResolvers<void>();
         current.checkCredit = () => {
           if (!guard() || this.#hasCredit(current, bytes, changes)) available.resolve();
         };
-        deadline ??= setTimeout(() => this.close("Personal sync credit expired"), 5000);
         await available.promise;
       }
     } finally {
       delete current.checkCredit;
-      clearTimeout(deadline);
     }
     if (!guard()) return false;
     const durable = frame.type === "host.snapshot" || frame.type === "host.changes";
+    const live = frame.type === "host.live";
     const credit: Credit = {
       through: "throughSequence" in frame ? frame.throughSequence : "0",
       bytes,
       changes,
       durable,
+      acks: current.acks,
     };
     current.credit.push(credit);
     this.#inFlight.set(credit, current);
@@ -665,7 +673,7 @@ export class PersonalSyncSocket {
       return sent && this.#matches(current);
     } finally {
       this.#inFlight.delete(credit);
-      if (!durable || !sent) {
+      if ((!durable && !live) || !sent) {
         const index = current.credit.indexOf(credit);
         if (index >= 0) {
           current.credit.splice(index, 1);
@@ -673,7 +681,7 @@ export class PersonalSyncSocket {
           current.changes -= changes;
         }
       }
-      if (this.#releaseCredits(current) || !durable || !sent || !this.#matches(current))
+      if (this.#releaseCredits(current) || (!durable && !live) || !sent || !this.#matches(current))
         this.#reschedule();
     }
   }

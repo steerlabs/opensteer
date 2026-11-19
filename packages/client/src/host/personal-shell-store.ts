@@ -2,7 +2,7 @@ import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 
 type Frame = Extract<
   ScopedHostMessage,
-  { type: "host.snapshot" | "host.changes" | "host.snapshot-required" | "host.synchronized" }
+  { type: "host.snapshot" | "host.changes" | "host.synchronized" }
 >;
 type ShellSnapshot = Extract<
   Extract<Frame, { type: "host.snapshot" }>["snapshot"],
@@ -13,6 +13,10 @@ type TaskChange = Task | { readonly id: string; readonly removed: true };
 type Visit = ShellSnapshot["visits"][number];
 type Attention = ShellSnapshot["attention"][number];
 
+/**
+ * The shell is the latest snapshot's rows plus every upsert since. Lists are sorted locally from
+ * fields the rows carry; nothing here asks the Host to resend the shell.
+ */
 interface ShellState {
   readonly history: number;
   readonly generation: number;
@@ -24,8 +28,6 @@ interface ShellState {
   readonly taskChanges: readonly TaskChange[];
   readonly visits: ReadonlyMap<string, Visit>;
   readonly attention: ReadonlyMap<string, Attention>;
-  readonly taskIds: readonly string[];
-  readonly invalidated: ReadonlySet<string>;
 }
 
 const emptyShell: ShellState = {
@@ -39,9 +41,11 @@ const emptyShell: ShellState = {
   taskChanges: [],
   visits: new Map(),
   attention: new Map(),
-  taskIds: [],
-  invalidated: new Set(),
 };
+
+function newer(prior: { readonly revision: string } | undefined, revision: string) {
+  return !prior || BigInt(prior.revision) < BigInt(revision);
+}
 
 export class PersonalShellStore {
   readonly #listeners = new Set<() => void>();
@@ -56,15 +60,20 @@ export class PersonalShellStore {
     };
   };
 
-  begin(generation: number, retain: boolean, resetHistory = false) {
+  begin(generation: number, retain: boolean) {
     if (generation <= this.#state.generation) return;
     this.#replace({
       ...(retain ? this.#state : emptyShell),
       taskChanges: emptyShell.taskChanges,
       generation,
-      history: this.#state.history + Number(resetHistory),
+      history: this.#state.history,
       synchronized: false,
     });
+  }
+
+  /** Starts a new history for the same viewer, as when the Host's sequence moved back. */
+  resetHistory() {
+    this.#replace({ ...this.#state, history: this.#state.history + 1, through: null });
   }
 
   apply(frame: Frame) {
@@ -76,10 +85,7 @@ export class PersonalShellStore {
     )
       return false;
     switch (frame.type) {
-      case "host.snapshot-required":
-        this.#replace({ ...old, through: null, synchronized: false });
-        return true;
-      case "host.synchronized":
+      case "host.synchronized": {
         if (old.through !== frame.throughSequence) return false;
         const snapshot =
           old.snapshot && frame.shellProgress
@@ -88,8 +94,10 @@ export class PersonalShellStore {
         if (!old.synchronized || snapshot !== old.snapshot)
           this.#replace({ ...old, snapshot, synchronized: true });
         return true;
+      }
       case "host.snapshot": {
-        if (!("tasks" in frame.snapshot) || old.synchronized) return false;
+        // After `host.synchronized` a snapshot is the Host's inline repair of this scope.
+        if (!("tasks" in frame.snapshot)) return false;
         const snapshot = frame.snapshot;
         const sameViewer =
           old.snapshot?.epoch === snapshot.epoch &&
@@ -102,7 +110,6 @@ export class PersonalShellStore {
             return [task.id, prior?.revision === task.revision ? prior : task];
           }),
         );
-        const taskIds = snapshot.tasks.map(({ id }) => id);
         this.#replace({
           ...old,
           through: frame.throughSequence,
@@ -110,15 +117,8 @@ export class PersonalShellStore {
           snapshot,
           tasks,
           taskChanges: emptyShell.taskChanges,
-          synchronized: false,
           visits: new Map(snapshot.visits.map((visit) => [visit.threadId, visit])),
           attention: new Map(snapshot.attention.map((item) => [item.id, item])),
-          taskIds:
-            taskIds.length === old.taskIds.length &&
-            taskIds.every((id, index) => id === old.taskIds[index])
-              ? old.taskIds
-              : taskIds,
-          invalidated: new Set(),
         });
         return true;
       }
@@ -132,39 +132,18 @@ export class PersonalShellStore {
         const taskChanges: TaskChange[] = [];
         let visits: Map<string, Visit> | undefined;
         let attention: Map<string, Attention> | undefined;
-        let invalidated: Set<string> | undefined;
-        let ids = old.taskIds;
         let teamReplyRevision = old.teamReplyRevision;
-        function invalidate(id: string) {
-          (invalidated ??= new Set(old.invalidated)).add(id);
-        }
         for (const change of frame.changes) {
-          if (change.operation === "invalidate") {
-            if (change.entityId === "team-replies") teamReplyRevision = frame.throughSequence;
-            else invalidate(change.entityId);
-            continue;
-          }
           const id = change.entityId;
           switch (change.entityKind) {
             case "task": {
               const prior = (tasks ?? old.tasks).get(id);
               if (change.operation === "remove") {
                 taskChanges.push({ id, removed: true });
-                if (!prior) break;
-                (tasks ??= new Map(old.tasks)).delete(id);
-                ids = ids.filter((taskId) => taskId !== id);
-                invalidate("tasks");
-              } else if (!prior || BigInt(prior.revision) < BigInt(change.value.revision)) {
+                if (prior) (tasks ??= new Map(old.tasks)).delete(id);
+              } else if (newer(prior, change.value.revision)) {
                 taskChanges.push(change.value);
-                if (prior) (tasks ??= new Map(old.tasks)).set(id, change.value);
-                if (
-                  prior
-                    ? prior.askedAt !== change.value.askedAt ||
-                      prior.doneAt !== change.value.doneAt ||
-                      prior.status !== change.value.status
-                    : change.value.doneAt === null
-                )
-                  invalidate("tasks");
+                (tasks ??= new Map(old.tasks)).set(id, change.value);
               }
               break;
             }
@@ -172,29 +151,27 @@ export class PersonalShellStore {
               const prior = (visits ?? old.visits).get(id);
               if (change.operation === "remove") {
                 if (prior) (visits ??= new Map(old.visits)).delete(id);
-              } else if (!prior || BigInt(prior.revision) < BigInt(change.value.revision)) {
-                if ((tasks ?? old.tasks).has(id))
-                  (visits ??= new Map(old.visits)).set(id, change.value);
-              }
+              } else if (newer(prior, change.value.revision))
+                (visits ??= new Map(old.visits)).set(id, change.value);
               break;
             }
             case "attention": {
               const prior = (attention ?? old.attention).get(id);
               if (change.operation === "remove") {
                 if (prior) (attention ??= new Map(old.attention)).delete(id);
-                invalidate("needs-you");
-              } else if (!prior || BigInt(prior.revision) < BigInt(change.value.revision)) {
-                if (prior) (attention ??= new Map(old.attention)).set(id, change.value);
-                else invalidate("needs-you");
-              }
+              } else if (newer(prior, change.value.revision))
+                (attention ??= new Map(old.attention)).set(id, change.value);
+              break;
             }
+            case "signal":
+              if (id === "team-replies") teamReplyRevision = frame.throughSequence;
+              break;
           }
         }
         this.#replace({
           ...old,
           through: frame.throughSequence,
           teamReplyRevision,
-          taskIds: ids,
           snapshot:
             old.snapshot && frame.shellProgress
               ? { ...old.snapshot, ...frame.shellProgress }
@@ -203,7 +180,6 @@ export class PersonalShellStore {
           taskChanges: taskChanges.length ? taskChanges : emptyShell.taskChanges,
           visits: visits ?? old.visits,
           attention: attention ?? old.attention,
-          invalidated: invalidated ?? old.invalidated,
         });
         return true;
       }
@@ -223,19 +199,22 @@ export class PersonalShellStore {
       tasks,
       visits,
       attention,
-      taskIds: old.taskIds.filter((id) => id !== threadId),
-      invalidated: new Set([...old.invalidated, "tasks"]),
+      taskChanges: [{ id: threadId, removed: true }],
     });
   }
 
   checkpoint(state = this.#state): ShellSnapshot | undefined {
-    const { snapshot, tasks, taskIds, visits, attention, invalidated } = state;
-    if (!snapshot || invalidated.size) return;
+    const { snapshot, tasks, visits, attention } = state;
+    if (!snapshot) return;
+    const rows = [...tasks.values()].slice(-256);
+    const listed = new Set(rows.map(({ id }) => id));
     return {
       ...snapshot,
-      tasks: taskIds.flatMap((id) => tasks.get(id) ?? []),
-      visits: [...visits.values()],
-      attention: [...attention.values()],
+      tasks: rows,
+      activeTaskIds: snapshot.activeTaskIds.filter((id) => listed.has(id)),
+      recentTaskIds: snapshot.recentTaskIds.filter((id) => listed.has(id)),
+      visits: [...visits.values()].slice(-256),
+      attention: [...attention.values()].slice(0, 200),
     };
   }
 

@@ -1,5 +1,9 @@
 import {
   AppIdSchema,
+  ArtifactContentPartSchema,
+  BrowserPageContentPartSchema,
+  ComputerAppContentPartSchema,
+  PhoneContentPartSchema,
   DeploymentIdSchema,
   DelegationIdSchema,
   ExecutionNodeIdSchema,
@@ -39,7 +43,6 @@ export const TranscriptOrderCursorSchema = z.strictObject({
   viewerId: UserIdSchema,
   threadId: ThreadIdSchema,
   nodeId: ExecutionNodeIdSchema.nullable(),
-  orderRevision: PersonalRevisionSchema,
   beforePosition: TranscriptPositionSchema,
   beforeId: TranscriptItemIdSchema,
 });
@@ -83,9 +86,35 @@ const clientSendKey = z.string().min(1).max(255);
 // Covers JSON escaping and the field name when a sender reads their item.
 export const clientSendKeyWireReserve = 6 * 255 + 20;
 
+/** At most this many references of each kind ride on a message card; the body has the rest. */
+export const transcriptMessageRefLimits = { attachments: 6, pages: 4, places: 4 } as const;
+/** The references' combined JSON size; references past it are left to the body. */
+export const transcriptMessageRefsMaxBytes = 4 * 1024;
+export const TranscriptMessageRefsSchema = z.object({
+  attachments: z
+    .array(z.object(ArtifactContentPartSchema.shape))
+    .max(transcriptMessageRefLimits.attachments)
+    .optional(),
+  pages: z
+    .array(z.object(BrowserPageContentPartSchema.shape))
+    .max(transcriptMessageRefLimits.pages)
+    .optional(),
+  places: z
+    .array(
+      z.discriminatedUnion("type", [
+        z.object(ComputerAppContentPartSchema.shape),
+        z.object(PhoneContentPartSchema.shape),
+      ]),
+    )
+    .max(transcriptMessageRefLimits.places)
+    .optional(),
+});
+export type TranscriptMessageRefs = z.infer<typeof TranscriptMessageRefsSchema>;
+
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
   z.object({
     ...card,
+    ...TranscriptMessageRefsSchema.shape,
     kind: z.literal("message"),
     messageId: MessageIdSchema,
     clientSendKey: clientSendKey.optional(),
@@ -157,7 +186,6 @@ export const TranscriptPageSchema = z.object({
   kind: z.literal("page"),
   threadId: ThreadIdSchema,
   nodeId: ExecutionNodeIdSchema.nullable(),
-  orderRevision: PersonalRevisionSchema,
   revision: PersonalRevisionSchema,
   items: z.array(TranscriptItemSchema).max(100),
   hasMore: z.boolean(),
@@ -172,7 +200,6 @@ export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
   TranscriptPageSchema,
   z.object({
     kind: z.literal("history-reset"),
-    orderRevision: PersonalRevisionSchema,
     anchorUnavailable: z.literal(true).optional(),
   }),
 ]);

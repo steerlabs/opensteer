@@ -508,12 +508,7 @@ integration("notification decision boundary", () => {
           })
           .where("id", "=", target.runId)
           .execute();
-        mutation.change({
-          scopeKey: `thread:${target.threadId}`,
-          entityKind: "collection",
-          entityId: "scope",
-          operation: "invalidate",
-        });
+        mutation.resetScope(`thread:${target.threadId}`);
         mutation.react({
           ...target,
           type: "runFinished",
