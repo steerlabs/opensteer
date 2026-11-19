@@ -20,6 +20,7 @@ import {
   dropSpecialistsMigrationName,
   onePluginPerOwnerNameMigrationName,
   pluginPackageFormatMigrationName,
+  pluginRebuildFailuresMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -839,6 +840,39 @@ describe("fresh personal/team lineage", () => {
     expect(
       await database.selectFrom("pluginVersions").select(["id", "packageFormat"]).execute(),
     ).toEqual([{ id: "version-before", packageFormat: null }]);
+  });
+  it("keeps rebuild failures in public, dropping the engine schema's table, as a fresh database does", async () => {
+    await migrateToLatest(database);
+    const fresh = await catalog();
+    const constraints = () =>
+      sql<{ definition: string }>`select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'public.plugin_rebuild_failures'::regclass order by 1`
+        .execute(database)
+        .then(({ rows }) => rows);
+    const freshConstraints = await constraints();
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    await migrateToLatest(database, migrationsBefore(pluginRebuildFailuresMigrationName));
+    // The table a developer database kept in the engine's schema before this migration.
+    await sql`create schema if not exists plugin_engine;
+      create table plugin_engine.opensteer_plugin_rebuild_failures (app text primary key,
+        version text not null, message text not null);
+      insert into plugin_engine.opensteer_plugin_rebuild_failures values ('app', 'v', 'saved')`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    expect(await catalog()).toEqual(fresh);
+    expect(await constraints()).toEqual(freshConstraints);
+    expect(
+      (
+        await sql`select to_regclass('plugin_engine.opensteer_plugin_rebuild_failures') as found`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ found: null }]);
+    expect(
+      (await sql`select * from public.plugin_rebuild_failures`.execute(database)).rows,
+    ).toEqual([]);
+    await sql`drop schema plugin_engine cascade`.execute(database);
   });
   it("drops specialist storage and settings from databases made before specialists were removed", async () => {
     await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));
