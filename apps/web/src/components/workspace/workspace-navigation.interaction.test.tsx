@@ -38,7 +38,8 @@ import {
   goTo,
   resize,
   mount,
-  settle,
+  until,
+  isMockPage,
   element,
   click,
   placeParams,
@@ -85,11 +86,12 @@ describe("Settings returns to the workspace exactly as it was", () => {
 
     const beforeBack = history.length;
     await click(element(".settings-navigation__back"));
-    await settle(100);
-    expect(history.slice(beforeBack)).toEqual([
-      { path: `/tasks/${threadId}`, search: canonical.search, type: "PUSH" },
-    ]);
-    expect(element(".thread")).toBeTruthy();
+    await until("Back never returned to the conversation", () => {
+      expect(history.slice(beforeBack)).toEqual([
+        { path: `/tasks/${threadId}`, search: canonical.search, type: "PUSH" },
+      ]);
+      expect(element(".thread")).toBeTruthy();
+    });
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
   });
 
@@ -101,7 +103,9 @@ describe("Settings returns to the workspace exactly as it was", () => {
       return `/tasks/${threadId}`;
     });
     await act(async () => goTo!("/computers"));
-    await settle();
+    await until("The legacy alias was never replaced", () =>
+      expect(history.at(-1)!.path).toBe("/settings/devices"),
+    );
     expect(history.slice(-2)).toEqual([
       { path: "/computers", search: "", type: "PUSH" },
       { path: "/settings/devices", search: "", type: "REPLACE" },
@@ -110,11 +114,12 @@ describe("Settings returns to the workspace exactly as it was", () => {
 
     const beforeBack = history.length;
     await click(element(".settings-navigation__back"));
-    await settle(100);
-    expect(history.slice(beforeBack)).toEqual([
-      { path: `/tasks/${threadId}`, search: "", type: "PUSH" },
-    ]);
-    expect(element(".thread")).toBeTruthy();
+    await until("Back never returned to the conversation", () => {
+      expect(history.slice(beforeBack)).toEqual([
+        { path: `/tasks/${threadId}`, search: "", type: "PUSH" },
+      ]);
+      expect(element(".thread")).toBeTruthy();
+    });
   });
 
   it("returns to a conversation-only address without reopening the remembered browser", async () => {
@@ -134,7 +139,9 @@ describe("Settings returns to the workspace exactly as it was", () => {
       (thread) => thread.purpose === "task" && thread.id !== threadId,
     )!;
     await act(async () => goTo!(`/tasks/${conversationOnly.id}`));
-    await settle();
+    await until("The conversation never opened", () =>
+      expect(history.at(-1)!.path).toBe(`/tasks/${conversationOnly.id}`),
+    );
     expect(history.at(-1)).toMatchObject({
       path: `/tasks/${conversationOnly.id}`,
       search: "",
@@ -145,11 +152,12 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await openSettingsFromWorkspace();
     const beforeBack = history.length;
     await click(element(".settings-navigation__back"));
-    await settle(100);
-    expect(history.slice(beforeBack)).toEqual([
-      { path: `/tasks/${conversationOnly.id}`, search: "", type: "PUSH" },
-    ]);
-    expect(element(".thread")).toBeTruthy();
+    await until("Back never returned to the conversation", () => {
+      expect(history.slice(beforeBack)).toEqual([
+        { path: `/tasks/${conversationOnly.id}`, search: "", type: "PUSH" },
+      ]);
+      expect(element(".thread")).toBeTruthy();
+    });
     expect(document.querySelector(".place")).toBeNull();
   });
 
@@ -158,7 +166,10 @@ describe("Settings returns to the workspace exactly as it was", () => {
     expect(element(".settings-layout")).toBeTruthy();
     const beforeBack = history.length;
     await click(element(".settings-navigation__back"));
-    await settle(100);
+    await until("Back never returned Home", () => {
+      expect(history[beforeBack]).toEqual({ path: "/", search: "", type: "PUSH" });
+      expect(element(".thread")).toBeTruthy();
+    });
     const [home, ...named] = history.slice(beforeBack);
     expect(home).toEqual({ path: "/", search: "", type: "PUSH" });
     // Home names its blank draft in place; nothing else moves.
@@ -218,7 +229,9 @@ describe("selection actions own exactly their axis, one history entry each", () 
     expect(element(".popover--conversation-menu").textContent).not.toContain("Started here");
     expect(document.querySelector(".popover--conversation-menu .task-family__row")).toBeNull();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await settle();
+    await until("Escape never closed the conversation menu", () =>
+      expect(document.querySelector(".popover--conversation-menu")).toBeNull(),
+    );
     await click(element(".task-family-button"));
     // The menu is this conversation's: no search across every task, which the sidebar has.
     expect(document.querySelector(".popover--conversation-menu input")).toBeNull();
@@ -249,8 +262,9 @@ describe("selection actions own exactly their axis, one history entry each", () 
       task = source.getSnapshot().threads.find(({ status }) => status === "running")!.id;
       return `/tasks/${task}`;
     });
-    await settle(400);
-    const viewfinder = element<HTMLButtonElement>(".viewfinder:not(:disabled)");
+    const viewfinder = await until("The running task's viewfinder never became usable", () =>
+      element<HTMLButtonElement>(".viewfinder:not(:disabled)"),
+    );
     const key = viewfinder.dataset.placeKey!;
     const before = history.length;
     await click(viewfinder);
@@ -265,16 +279,40 @@ describe("nothing but the person navigates", () => {
   it("agent activity, catalog churn and a completion cause no navigation", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const before = history.length;
-    await settle(1_200);
-    // A task finishing is a completion; the middle and the conversation stay put.
     const running = client
       .getSnapshot()
       .threads.find((thread) => thread.status === "running" && thread.listed);
     expect(running).toBeDefined();
+    // Agent activity: the running task starts acting in another page.
+    const acted = placeList(client.getSnapshot()).find(
+      (item) => isMockPage(item) && item.key !== pageTab().key,
+    )!;
+    await act(async () => client.actInPlace(running!.id, acted.key));
+    await until("The agent's activity never reached the sidebar", () =>
+      element(
+        `.side-tab[data-place-key="${acted.key}"] .occupant-mark[data-thread-id="${running!.id}"]`,
+      ),
+    );
+    // Catalog churn: a tab this page never asked for joins the list.
+    const churn = await act(async () =>
+      client.openTab({
+        kind: "page",
+        url: "https://churn.example/",
+        profileId: client.getSnapshot().browserProfiles[0]!.id,
+      }),
+    );
+    await until("The new tab never joined the sidebar", () =>
+      element(`.side-tab[data-place-key="${churn.tabId}"]`),
+    );
+    // A task finishing is a completion; the middle and the conversation stay put.
     await act(async () => {
       await client.stopRun(running!.id).catch(() => undefined);
     });
-    await settle(300);
+    await until("The task's run never ended", () =>
+      expect(
+        client.getSnapshot().threads.find((thread) => thread.id === running!.id)?.status,
+      ).not.toBe("running"),
+    );
     expect(history.length).toBe(before);
   });
 
@@ -297,7 +335,9 @@ describe("nothing but the person navigates", () => {
     await mount(
       (source) => `/tasks/${delegating(source)}?panel=browser&browser=bsn_old&browserTab=old`,
     );
-    await settle(100);
+    await until("The older address was never canonicalised", () =>
+      expect(new URLSearchParams(history.at(-1)!.search).has("browser")).toBe(false),
+    );
     const replaces = history.filter((step) => step.type === "REPLACE");
     expect(replaces).toHaveLength(1);
     const params = new URLSearchParams(history.at(-1)!.search);
@@ -318,16 +358,18 @@ describe("the conversation survives layout changes", () => {
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: ".", metaKey: true }));
     });
-    await settle();
-    expect(document.querySelector(".place")).toBeNull();
+    await until("⌘. never hid the computer", () =>
+      expect(document.querySelector(".place")).toBeNull(),
+    );
     expect(element("[data-composer-input]")).toBe(field);
     expect(composerText(field)).toBe("Keep this");
     expect(document.activeElement).toBe(field);
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: ".", metaKey: true }));
     });
-    await settle();
-    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
+    await until("⌘. never showed the computer again", () =>
+      expect(element(".place").getAttribute("data-place-key")).toBe(place.key),
+    );
     expect(element("[data-composer-input]")).toBe(field);
     expect(composerText(field)).toBe("Keep this");
   });
@@ -344,8 +386,9 @@ describe("the conversation survives layout changes", () => {
     expect(document.querySelector(".place")).toBeNull();
     expect(element(".conv-header--area .conv-header__name").textContent).toBe("New task");
     // The menu's button went with the dock; focus carries on in the page.
-    await settle();
-    expect(element(".workspace__conversation").contains(document.activeElement)).toBe(true);
+    await until("Focus never carried on in the page", () =>
+      expect(element(".workspace__conversation").contains(document.activeElement)).toBe(true),
+    );
   });
 });
 
@@ -353,7 +396,9 @@ describe("breakpoints change layout, never the conversation", () => {
   it("keeps the textarea, its draft, the chip and focus from 1440 to 820 to 390 and back", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    await settle(100);
+    await until("The shown page never became the chip", () =>
+      expect(element(".context-chip__title").textContent).toBe(place.title),
+    );
     const field = element<HTMLElement>("[data-composer-input]");
     field.focus();
     await act(async () => {
@@ -385,12 +430,13 @@ describe("focus never lands on the body", () => {
     await act(async () => {
       await client.stopRun(occupant.threadId).catch(() => undefined);
     });
-    await settle(300);
-    expect(face.isConnected).toBe(false);
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(
-      element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`),
-    );
+    await until("The face never left and handed focus to its tab row", () => {
+      expect(face.isConnected).toBe(false);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`),
+      );
+    });
   });
 });
 
@@ -533,14 +579,16 @@ describe("sidebar Tasks until Done", () => {
     const next = taskAfter(openTasks(), open.threadId);
     expect(next).not.toBeNull();
     await click(element(`[aria-label="Mark Done: ${open.title}"]`));
-    await settle();
-    expect(history.at(-1)).toMatchObject({ path: `/tasks/${next}`, type: "PUSH" });
+    await until("Done never moved on to the next task", () =>
+      expect(history.at(-1)).toMatchObject({ path: `/tasks/${next}`, type: "PUSH" }),
+    );
 
     const other = doable(client.getSnapshot()).find((item) => item.threadId !== next)!;
     const entries = history.length;
     await click(element(`[aria-label="Mark Done: ${other.title}"]`));
-    await settle();
-    expect(doneRows().some((item) => item.threadId === other.threadId)).toBe(true);
+    await until("The other task never moved to Done", () =>
+      expect(doneRows().some((item) => item.threadId === other.threadId)).toBe(true),
+    );
     expect(history.slice(entries)).toEqual([]);
   });
 
@@ -591,8 +639,9 @@ describe("native places", () => {
     await mount("/");
     const phone = placeList(client.getSnapshot()).find((item) => item.kind === "phone")!;
     await click(element(`.side-tab[data-place-key="${phone.key}"] .side-tab__main`));
-    await settle(50);
-    expect(element(".place .computer-watch__app").textContent).toBe(phone.title);
+    await until("The phone's display was never shown", () =>
+      expect(element(".place .computer-watch__app").textContent).toBe(phone.title),
+    );
     expect(element(".place .computer-watch__stop").textContent).toBe("Stop");
   });
 });
@@ -605,14 +654,17 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toMatchObject(scoped);
 
     await act(async () => goTo!(-1));
-    await settle();
+    await until("Back never returned to the channel", () =>
+      expect(history.at(-1)!.path).toBe(`/teams/${mockTeamId}/c/${mockTeamChannelId}`),
+    );
     const find = new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true });
     await act(async () => {
       window.dispatchEvent(find);
     });
     expect(find.defaultPrevented).toBe(true);
-    await settle();
-    expect(history.at(-1)).toMatchObject(scoped);
+    await until("⌘F never searched the channel", () =>
+      expect(history.at(-1)).toMatchObject(scoped),
+    );
   });
 
   it("switches to each side's exact address and follows Back and Forward", async () => {
@@ -975,9 +1027,10 @@ describe("a channel and back", () => {
     expect(element(".workspace__conversation .channel")).toBeTruthy();
 
     await act(async () => goTo!(-1));
-    await settle();
-    expect(history.at(-1)).toMatchObject({ path: channel.path, search: channel.search });
-    expect(document.querySelector(".place")).toBeNull();
+    await until("Back never filled the window with the channel again", () => {
+      expect(history.at(-1)).toMatchObject({ path: channel.path, search: channel.search });
+      expect(document.querySelector(".place")).toBeNull();
+    });
   });
   it("the input source opens its team message after Open task", async () => {
     await mount("/", {
@@ -1166,7 +1219,10 @@ describe("a link arriving at the start page", () => {
     // The older answer lands first: it shows nothing, and it spoils nothing for the newer one.
     await held.release(0);
     const older = await held.open.mock.results[0]!.value;
-    await settle();
+    // The older tab is listed: that is when it would have been shown.
+    await until("The older answer's tab was never listed", () =>
+      element(`.side-tab[data-place-key="${older.tabId}"]`),
+    );
     expect(history.length).toBe(before);
     expect(new URLSearchParams(history.at(-1)!.search).get("tab")).not.toBe(older.tabId);
     await held.release(1);
@@ -1204,14 +1260,18 @@ describe("a link arriving at the start page", () => {
     await act(async () => goTo!("/"));
     const before = history.length;
     await held.release(0);
-    await held.open.mock.results[0]!.value;
-    await settle();
+    const late = await held.open.mock.results[0]!.value;
+    // The late tab is listed: that is when it would have been shown.
+    await until("The late answer's tab was never listed", () =>
+      element(`.side-tab[data-place-key="${late.tabId}"]`),
+    );
     expect(history.length).toBe(before);
     expect(new URLSearchParams(history.at(-1)!.search).has("panel")).toBe(false);
     // Back to the consumed arrival: its address again, never a second open.
     await act(async () => goTo!(-1));
-    await settle();
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
+    await until("Back never returned to the arrival's address", () =>
+      expect(element<HTMLInputElement>(".start-page__input").value).toBe(address),
+    );
     expect(held.open).toHaveBeenCalledTimes(1);
   });
 

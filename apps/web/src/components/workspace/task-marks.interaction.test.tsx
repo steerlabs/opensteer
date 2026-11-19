@@ -10,7 +10,7 @@ import {
   history,
   goTo,
   mount,
-  settle,
+  until,
   element,
   click,
   pageTab,
@@ -44,14 +44,18 @@ describe("task marks", () => {
     if (!row) throw new Error(`The sidebar lists no ${state ?? ""} task`);
     const id = row.dataset.threadId!;
     await act(async () => goTo!(`/tasks/${id}`));
-    await settle();
+    await until("The task never opened", () => {
+      expect(history.at(-1)!.path).toBe(`/tasks/${id}`);
+      element(".conv-header__menu");
+    });
     return id;
   }
-  async function press(target: Element, key: string) {
+  /** Presses a key and waits until `done` holds: what the key is for. */
+  async function press(target: Element, key: string, done: () => void) {
     await act(async () =>
       target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key })),
     );
-    await settle();
+    await until(`${key} never took effect`, done);
   }
   async function picker() {
     await click(element(".conv-header__menu"));
@@ -77,11 +81,12 @@ describe("task marks", () => {
     await mount(`/tasks/${flights}`);
     const place = pageTab();
     await act(async () => client.actInPlace(flights, place.key));
-    await settle();
     const occupants = () => [
       ...document.querySelectorAll(`.occupant-mark[data-thread-id="${flights}"]`),
     ];
-    expect(occupants().length).toBeGreaterThan(0);
+    await until("The acting task never showed as an occupant", () =>
+      expect(occupants().length).toBeGreaterThan(0),
+    );
     expect(occupants().every((el) => el.querySelector('.task-mark[data-icon="plane"]'))).toBe(true);
     await act(async () => {
       await client.dispatch({
@@ -116,9 +121,8 @@ describe("task marks", () => {
     await act(async () => {
       for (const id of ids) client.actInPlace(id, place.key);
     });
-    await settle();
-    const more = element<HTMLButtonElement>(
-      `.side-tab[data-place-key="${place.key}"] .occupant-marks__more`,
+    const more = await until("The tab never folded its occupants under More", () =>
+      element<HTMLButtonElement>(`.side-tab[data-place-key="${place.key}"] .occupant-marks__more`),
     );
     more.focus();
     await click(more);
@@ -146,10 +150,8 @@ describe("task marks", () => {
     await click(element('[data-action="change-icon"]'));
     const options = document.querySelectorAll(".workspace-icon-picker__grid button");
     (options[0] as HTMLElement).focus();
-    await press(options[0]!, "ArrowRight");
-    expect(document.activeElement).toBe(options[1]);
-    await press(options[1]!, "Escape");
-    expect(document.activeElement).toBe(row);
+    await press(options[0]!, "ArrowRight", () => expect(document.activeElement).toBe(options[1]));
+    await press(options[1]!, "Escape", () => expect(document.activeElement).toBe(row));
   });
   it("edits from the header with keyboard search, locks Use default and restores focus", async () => {
     await mount(`/tasks/${flights}`);
@@ -161,7 +163,7 @@ describe("task marks", () => {
     const search = element<HTMLInputElement>('[aria-label="Search icons"]');
     expect(document.activeElement).toBe(search);
     await typeInto(search, "hotel");
-    await press(search, "Enter");
+    await press(search, "Enter", () => expect(document.activeElement).toBe(opener));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "thread.icon.set", threadId: flights, icon: "hotel" }),
     );
@@ -174,8 +176,9 @@ describe("task marks", () => {
     );
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("document");
     await picker();
-    await press(element('[aria-label="Search icons"]'), "Escape");
-    expect(document.activeElement).toBe(opener);
+    await press(element('[aria-label="Search icons"]'), "Escape", () =>
+      expect(document.activeElement).toBe(opener),
+    );
   });
   it("keeps a refused icon edit reviewable and restores its authoritative mark", async () => {
     await mount(`/tasks/${flights}`);
