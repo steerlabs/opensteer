@@ -10,9 +10,11 @@ import {
   markdownProse,
   parseRules,
   pythonComments,
+  Rewriter,
   rewriteProblems,
   scriptComments,
   scriptTokens,
+  topLevelMembers,
   type RewriteRules,
   type Source,
 } from "../scripts/catalog-snapshot/rewrite.ts";
@@ -572,6 +574,45 @@ describe("scoped rewrite rules", () => {
       parseRules(file({ scope: "text", from: "a", to: "b\nc", documents: ["d"], files: ["f"] }))
         .rules,
     ).toHaveLength(1);
+  });
+
+  test("renames only package.json's top-level key and name, leaving every other byte", () => {
+    const edit = (content: string, rule: RewriteRules["rules"][number]) => {
+      const { source, problems } = new Rewriter(rules({ rules: [rule] })).document("p", {
+        package: "p",
+        files: [{ path: "package.json", content }],
+      });
+      return { content: source.files[0]!.content, problems };
+    };
+    const key = { id: "key", scope: "manifest-key", from: "acme", to: "engine" } as const;
+    const scope = { id: "scope", scope: "package", from: "@acme.sh/", to: "@o.example/" } as const;
+    // A nested key of the same name neither blocks nor receives the rename.
+    expect(edit('{"name":"p","acme":{},"config":{"acme":true}}', key)).toEqual({
+      content: '{"name":"p","engine":{},"config":{"acme":true}}',
+      problems: [],
+    });
+    // A nested name before the package's own is left alone.
+    const nested =
+      '{\n  "config": { "name": "@acme.sh/x" },\n  "name" : "@acme.sh/p",\n  "x": ["}"]\n}\n';
+    expect(edit(nested, scope)).toEqual({
+      content: nested.replace('"@acme.sh/p"', '"@o.example/p"'),
+      problems: [],
+    });
+    // A top-level key written twice is not edited in place.
+    expect(edit('{"acme":1,"acme":2}', key).problems).toEqual([
+      "package.json's key for rule key could not be renamed in place",
+    ]);
+    const json = '{"a":{"b":"\\",}"},"c" : [1, {"d":2}] }';
+    expect(
+      topLevelMembers(json).map(({ key, keyRange, valueRange }) => [
+        key,
+        json.slice(...keyRange),
+        json.slice(...valueRange),
+      ]),
+    ).toEqual([
+      ["a", '"a"', '{"b":"\\",}"}'],
+      ["c", '"c"', '[1, {"d":2}]'],
+    ]);
   });
 
   test("takes rules as JSON data with known keys only, the engine's names in their own section", () => {

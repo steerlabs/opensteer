@@ -106,6 +106,9 @@ insertion depends) or changed how many line breaks a comment holds; if the file 
 import changed; if an import that named a file in its document no longer does; if a
 JSON file that parsed no longer does; or if any package name breaks the contract.
 
+`package.json` is edited in place: its top-level members are found by position, so a nested `name`
+or key of the same name is never edited, and every other byte stays as it was.
+
 The detailed report (counts per rule, and every remaining occurrence with its location and
 reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. It names the SHA-256
 of the manifest it describes and is committed with its snapshot: written to

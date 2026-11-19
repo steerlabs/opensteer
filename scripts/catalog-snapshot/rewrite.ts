@@ -334,6 +334,55 @@ function onlyScopeChanged(path: string, scope: "comments" | "markdown", was: str
   return outside(was, commentRanges(path, was)) === outside(now, commentRanges(path, now));
 }
 
+/** A top-level member of a JSON object's text: its key, and where its key and value are. */
+interface Member {
+  readonly key: string;
+  readonly keyRange: Range;
+  readonly valueRange: Range;
+}
+/**
+ * The top-level members of a JSON object's text, by position, tracking depth and strings so a
+ * nested key is never taken for a top-level one. The text must already parse as a JSON object.
+ */
+export function topLevelMembers(text: string): Member[] {
+  const members: Member[] = [];
+  let depth = 0;
+  let key: { key: string; range: Range } | undefined;
+  let valueStart = -1;
+  let valueEnd = -1;
+  const end = () => {
+    if (key !== undefined)
+      members.push({ key: key.key, keyRange: key.range, valueRange: [valueStart, valueEnd] });
+    key = undefined;
+    valueStart = -1;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (/\s/u.test(c) || c === ":") continue;
+    const start = i;
+    if (c === '"') for (i++; text[i] !== '"'; i++) if (text[i] === "\\") i++;
+    if (depth === 1 && c === ",") {
+      end();
+      continue;
+    }
+    if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) {
+        end();
+        continue;
+      }
+    }
+    if (depth === 1 && c === '"' && key === undefined)
+      key = { key: JSON.parse(text.slice(start, i + 1)) as string, range: [start, i + 1] };
+    else {
+      if (depth === 1 && valueStart === -1) valueStart = start;
+      valueEnd = i + 1;
+    }
+    if (c === "{" || c === "[") depth++;
+  }
+  return members;
+}
+
 /* ---- Applying rules ---- */
 
 export interface SourceFile {
@@ -466,24 +515,20 @@ export class Rewriter {
     if (typeof parsed.name === "string") {
       const name = this.#packageName(parsed.name, id);
       if (name !== parsed.name) {
-        const token = /("name"\s*:\s*)"(?:[^"\\]|\\.)*"/u.exec(output);
-        if (token === null) return { problem: "package.json's name could not be edited in place" };
-        output =
-          output.slice(0, token.index) +
-          token[1] +
-          JSON.stringify(name) +
-          output.slice(token.index + token[0].length);
+        const found = topLevelMembers(output).filter((member) => member.key === "name");
+        if (found.length !== 1)
+          return { problem: "package.json's name could not be edited in place" };
+        const [start, end] = found[0]!.valueRange;
+        output = output.slice(0, start) + JSON.stringify(name) + output.slice(end);
         expected.name = name;
       }
     }
     for (const rule of this.rules.rules) {
       if (!this.#applies(rule, id, "manifest-key") || !Object.hasOwn(parsed, rule.from)) continue;
-      const tokens = occurrences(output, `${JSON.stringify(rule.from)}`).filter(([, end]) =>
-        /^\s*:/u.test(output.slice(end)),
-      );
-      if (tokens.length !== 1 || Object.hasOwn(parsed, rule.to))
+      const found = topLevelMembers(output).filter((member) => member.key === rule.from);
+      if (found.length !== 1 || Object.hasOwn(parsed, rule.to))
         return { problem: `package.json's key for rule ${rule.id} could not be renamed in place` };
-      const [start, end] = tokens[0]!;
+      const [start, end] = found[0]!.keyRange;
       output = output.slice(0, start) + JSON.stringify(rule.to) + output.slice(end);
       expected[rule.to] = expected[rule.from];
       delete expected[rule.from];
