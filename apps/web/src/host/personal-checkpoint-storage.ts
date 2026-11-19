@@ -24,6 +24,8 @@ export function indexedDbCheckpointStorage(name: string): CheckpointStorage {
   let opened: Promise<IDBDatabase> | null = null;
   const database = () =>
     (opened ??= new Promise<IDBDatabase>((resolve, reject) => {
+      // Named before it can exist, so a later format can find it without enumeration.
+      registerCheckpointDatabase(name);
       const request = indexedDB.open(name, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(values);
@@ -137,14 +139,70 @@ export function checkpointDatabaseName(format: number, origin: string) {
   return `${checkpointDatabasePrefix}${format}:${origin}`;
 }
 
-/** Deletes every saved-state database of another format, for every origin; none is migrated. */
-export async function dropOtherCheckpointFormats(format: number): Promise<void> {
-  if (typeof indexedDB === "undefined" || typeof indexedDB.databases !== "function") return;
-  const held = await indexedDB.databases().catch(() => []);
-  for (const { name } of held) {
-    const version = name?.startsWith(checkpointDatabasePrefix)
-      ? Number.parseInt(name.slice(checkpointDatabasePrefix.length), 10)
-      : Number.NaN;
-    if (name && Number.isFinite(version) && version !== format) indexedDB.deleteDatabase(name);
+/** Where this origin lists the saved-state databases it has opened. */
+const registryKey = "opensteer.personal-stream.databases";
+
+function readRegistry(): string[] {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(registryKey) ?? "[]");
+    return Array.isArray(value) ? value.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
   }
+}
+
+function writeRegistry(names: readonly string[]) {
+  try {
+    window.localStorage.setItem(registryKey, JSON.stringify([...new Set(names)]));
+  } catch {
+    // Without storage the database still opens; only cleanup falls back to the other sources.
+  }
+}
+
+function registerCheckpointDatabase(name: string) {
+  const held = readRegistry();
+  if (!held.includes(name)) writeRegistry([...held, name]);
+}
+
+function formatOf(name: string) {
+  return name.startsWith(checkpointDatabasePrefix)
+    ? Number.parseInt(name.slice(checkpointDatabasePrefix.length), 10)
+    : Number.NaN;
+}
+
+/**
+ * Deletes every saved-state database of another format; none is migrated. They are found three
+ * ways, so no one of them failing keeps one: the names this origin registered before opening
+ * them, the names an earlier format would have used for `origin`, and the browser's own listing
+ * where it has one.
+ */
+export async function dropOtherCheckpointFormats(format: number, origin: string): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  const listed =
+    typeof indexedDB.databases === "function"
+      ? await indexedDB.databases().then(
+          (databases) => databases.flatMap(({ name }) => (name ? [name] : [])),
+          () => [],
+        )
+      : [];
+  const earlier = Array.from({ length: Math.max(0, format - 65) }, (_, index) =>
+    checkpointDatabaseName(65 + index, origin),
+  );
+  const doomed = [...new Set([...readRegistry(), ...listed, ...earlier])].filter((name) => {
+    const version = formatOf(name);
+    return Number.isFinite(version) && version !== format;
+  });
+  await Promise.all(
+    doomed.map(
+      (name) =>
+        new Promise<void>((resolve) => {
+          const request = indexedDB.deleteDatabase(name);
+          request.onsuccess = () => {
+            writeRegistry(readRegistry().filter((held) => held !== name));
+            resolve();
+          };
+          request.onerror = request.onblocked = () => resolve();
+        }),
+    ),
+  );
 }

@@ -1238,3 +1238,57 @@ describe("a message still on this device", () => {
     }
   });
 });
+
+describe("a long transcript's bodies", () => {
+  it("keep older rows' words as plain text until they near view, and parse the newest at once", async () => {
+    const observed: { element: Element; notify: () => void }[] = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        readonly #callback: IntersectionObserverCallback;
+        constructor(callback: IntersectionObserverCallback) {
+          this.#callback = callback;
+        }
+        observe(element: Element) {
+          observed.push({
+            element,
+            notify: () =>
+              this.#callback(
+                [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
+                this as unknown as IntersectionObserver,
+              ),
+          });
+        }
+        disconnect() {}
+      },
+    );
+    const entries: MessageEntry[] = Array.from({ length: 100 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Update **${index}**`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+          <AgentTranscript entries={entries} scroller={() => scroller} />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+    const body = (index: number) => scroller.querySelector(`[data-message-id="message-${index}"]`)!;
+    // The newest rows are parsed; an older one holds its words, plain, for Find and reading.
+    await vi.waitFor(() => expect(body(99).querySelector("strong")?.textContent).toBe("99"));
+    expect(body(3).querySelector("strong")).toBeNull();
+    expect(body(3).textContent).toContain("Update **3**");
+    const near = observed.find(({ element }) => body(3).contains(element))!;
+    await act(async () => near.notify());
+    await vi.waitFor(() => expect(body(3).querySelector("strong")?.textContent).toBe("3"));
+    vi.unstubAllGlobals();
+  });
+});

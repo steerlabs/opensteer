@@ -854,3 +854,19 @@ test("stalled saved-state storage never holds the attach", async () => {
     warm.client.dispose();
   }
 });
+
+test("a stalled saved read never holds a task's subscription on a healthy socket", async () => {
+  const { cache } = await savedCache();
+  const late = Promise.withResolvers<null>();
+  const stalled: PersonalStreamCache = { ...cache, load: () => late.promise };
+  const { stream, sent } = attachedWith(stalled, [task]);
+  stream.observe(threadScope);
+  await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 1_000 });
+  const subscribe = sent[0] as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  expect(subscribe).toMatchObject({ type: "client.subscribe", scope: threadScope });
+  expect(subscribe.cursor).toBeUndefined();
+  // The read that lands afterwards is dropped: nothing is installed under the live subscription.
+  late.resolve(null);
+  await late.promise;
+  expect(sent).toHaveLength(1);
+});

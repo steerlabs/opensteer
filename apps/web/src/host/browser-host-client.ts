@@ -46,7 +46,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
   // The format before per-scope keys lived in this tab's sessionStorage; it is dropped, not read.
   for (const key of Object.keys(window.sessionStorage))
     if (key.startsWith("opensteer.personal-stream.v")) window.sessionStorage.removeItem(key);
-  void dropOtherCheckpointFormats(personalCacheFormat);
+  void dropOtherCheckpointFormats(personalCacheFormat, origin);
   const streamCache =
     typeof indexedDB === "undefined"
       ? undefined

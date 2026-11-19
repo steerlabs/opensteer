@@ -264,6 +264,11 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
+  // What the transcript's rows scroll in; a new stage is a new scroller.
+  const transcriptScroller = useCallback(
+    () => (phoneStage ? bodyRef.current : scrollRef.current),
+    [phoneStage],
+  );
   const composerInputRef = useRef<HTMLElement | null>(null);
   // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
   const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
@@ -1370,6 +1375,7 @@ function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         revealMessage={revealMessage}
+                        scroller={transcriptScroller}
                         key={thread.id}
                         attachmentReader={hostClient}
                         activity={activity}

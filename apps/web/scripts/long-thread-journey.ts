@@ -84,13 +84,19 @@ try {
         return {
           rows: rows.length,
           skipped: getComputedStyle(rows[0]!).contentVisibility,
+          // Where the engine would not hold the reader's place, rows are all laid out instead.
+          skipping: document.documentElement.dataset.rowSkipping !== "off",
           nodes: document.getElementsByTagName("*").length,
           fromTail: element.scrollHeight - element.clientHeight - element.scrollTop,
         };
       }, scroller);
       await shot("01-tail.png");
       expectThat(observed, observed.rows >= turns * 2, "A loaded row is not in the document.");
-      expectThat(observed, observed.skipped === "auto", "Off-screen rows are not skipped.");
+      expectThat(
+        observed,
+        observed.skipped === (observed.skipping ? "auto" : "visible"),
+        "Off-screen rows are skipped where the reader's place would not hold, or not where it would.",
+      );
       expectThat(observed, observed.fromTail < 4, "The reader is not at the tail.");
       return observed;
     },

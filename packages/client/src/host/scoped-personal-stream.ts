@@ -103,6 +103,9 @@ type ShellCandidate = {
   readonly details: ReadonlyMap<string, DetailCheckpoint>;
 };
 
+/** How long a subscription, or the socket's attach, waits for saved state before going without. */
+export const savedStartWaitMs = 150;
+
 /** Saved checkpoints are written together, at most this often, in idle time. */
 const checkpointIntervalMs = 2_000;
 
@@ -886,6 +889,13 @@ export class ScopedPersonalStream {
     if (detail.saved === "reading") return true;
     detail.saved = "reading";
     const authority = this.#authority;
+    // Storage never holds a subscription: past a short wait the scope subscribes without its
+    // saved cut, and a read that lands later is dropped.
+    const waited = setTimeout(() => {
+      if (this.#authority !== authority || detail.saved !== "reading") return;
+      detail.saved = "read";
+      if (this.#details.get(scopeKey(detail.scope)) === detail) this.#reconcile();
+    }, savedStartWaitMs);
     const key = {
       ...identity,
       scopeKey: scopeKey(detail.scope),
@@ -895,6 +905,7 @@ export class ScopedPersonalStream {
       .load(key)
       .catch(() => null)
       .then((held) => {
+        clearTimeout(waited);
         if (this.#authority !== authority || detail.saved !== "reading") return;
         detail.saved = "read";
         const saved = held && validDetailCheckpoint(held, detail.scope, identity);

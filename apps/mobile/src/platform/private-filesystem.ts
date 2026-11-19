@@ -1,4 +1,4 @@
-import type { PrivateFilesystem } from "@opensteer/client/connections";
+import type { ListingPrivateFilesystem } from "@opensteer/client/connections";
 
 /**
  * `expo-file-system`'s `File`, as this adapter needs it. Named locally so the
@@ -70,7 +70,9 @@ const supersededUri = (uri: string): string => `${uri}.old`;
  * and without it `name.old` is restored; a staged file with no marker is the
  * interrupted first write of a file that never existed and is discarded.
  */
-export function createDocumentPrivateFilesystem(filesystem: DocumentFilesystem): PrivateFilesystem {
+export function createDocumentPrivateFilesystem(
+  filesystem: DocumentFilesystem,
+): ListingPrivateFilesystem {
   const root = filesystem.root.endsWith("/") ? filesystem.root : `${filesystem.root}/`;
   const decodedRoot = fullyDecoded(root);
 
@@ -137,6 +139,20 @@ export function createDocumentPrivateFilesystem(filesystem: DocumentFilesystem):
 
     async ensureDirectory(path): Promise<void> {
       filesystem.directory(within(path)).create({ idempotent: true, intermediates: true });
+    },
+
+    async listFiles(path): Promise<readonly string[]> {
+      const directory = filesystem.directory(within(path));
+      if (!directory.exists) return [];
+      // A directory entry can list; a file cannot. Names come from the entry's own URI.
+      return directory.list().flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || typeof Reflect.get(entry, "list") === "function")
+          return [];
+        const uri = Reflect.get(entry, "uri");
+        if (typeof uri !== "string") return [];
+        const name = uri.replace(/\/+$/u, "").split("/").pop();
+        return name ? [decodeURIComponent(name)] : [];
+      });
     },
 
     async fileExists(path): Promise<boolean> {

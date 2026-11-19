@@ -6,6 +6,7 @@ import { StartupFailure } from "./components/onboarding-card.js";
 import { installDictation } from "./desktop/dictation-runtime.js";
 
 import { createRoot } from "react-dom/client";
+import { checkRowSkipping } from "./row-skipping.js";
 import { desktopBridge } from "./desktop/desktop-bridge.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
@@ -30,6 +31,8 @@ if (!root) {
 }
 
 const appRoot = createRoot(root);
+// Decided once, beside the first paint: whether off-screen transcript rows may be skipped here.
+void checkRowSkipping().catch(() => undefined);
 const dictation = installDictation(desktopBridge()?.dictation);
 const reactRoot = {
   render: (children: React.ReactNode) =>
