@@ -2163,7 +2163,7 @@ export class HttpHostClient {
    */
   #syncEnvironmentDetails() {
     const listed = new Set(this.#snapshot.environments.map(({ id }) => id));
-    for (const id of [...this.#environmentDrivers.keys()])
+    for (const id of this.#environmentDrivers.keys())
       if (!listed.has(id)) {
         this.#environmentDrivers.delete(id);
         this.#environmentDetailReads.stop(`environment:${id}`);
@@ -2178,7 +2178,10 @@ export class HttpHostClient {
       void this.#environmentDetailReads
         .request(key, async (read) => {
           const { environment } = unwrapRpcResult(
-            await this.rpc["environment.detail.get"]({ environmentId: id }, { signal: read.signal }),
+            await this.rpc["environment.detail.get"](
+              { environmentId: id },
+              { signal: read.signal },
+            ),
           );
           if (!read.current()) return;
           if (!this.#snapshot.environments.some((held) => held.id === id)) return;
@@ -2224,7 +2227,7 @@ export class HttpHostClient {
    */
   #syncMachineDetails() {
     const listed = new Set(this.#snapshot.machines.map(({ id }) => id));
-    for (const id of [...this.#machineSections.keys()])
+    for (const id of this.#machineSections.keys())
       if (!listed.has(id)) {
         this.#machineSections.delete(id);
         this.#machineDetailReads.stop(`machine:${id}`);

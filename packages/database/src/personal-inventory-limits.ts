@@ -72,7 +72,9 @@ export async function requireHarnessRoom(tx: Tx, config: unknown, replacing?: Ha
   `.execute(tx);
   const count = Number(others.rows[0]?.count ?? 0);
   const bytes = Number(others.rows[0]?.bytes ?? 0);
-  if (Buffer.byteLength(JSON.stringify(config)) > personalInventoryLimits.harnessConfigBytesPerAccount)
+  if (
+    Buffer.byteLength(JSON.stringify(config)) > personalInventoryLimits.harnessConfigBytesPerAccount
+  )
     throw new OpensteerError({
       code: "conflict",
       message:

@@ -70,7 +70,50 @@ describe("Desktop preview Host simulation", () => {
     expect(details.data.kind).toBe("environment");
     if (details.data.kind !== "environment") throw new Error("Missing environment details");
     expect(details.data.environments).toHaveLength(1);
-    expect(details.data.environments[0]?.name).toBe("This Computer");
+    const [listed] = details.data.environments;
+    expect(listed).toMatchObject({ name: "This Computer", sections: { harnessDrivers: 0 } });
+    expect(listed).not.toHaveProperty("harnessDrivers");
+    // The environment whole is its own read, as on the real Host.
+    const whole = unwrapRpcResult(
+      await rpc["environment.detail.get"]({ environmentId: listed!.id }),
+    );
+    expect(whole.environment).toMatchObject({ id: listed!.id, name: "This Computer" });
+    expect(whole.environment.harnessDrivers).toEqual([]);
+    const machines = unwrapRpcResult(await rpc["resources.detail.get"]({ kind: "machine" }));
+    if (machines.data.kind !== "machine") throw new Error("Missing machine details");
+    const [computer] = machines.data.machines;
+    expect(computer).toMatchObject({ name: "Preview MacBook", sections: { apps: null } });
+    const machine = unwrapRpcResult(await rpc["machine.detail.get"]({ machineId: computer!.id }));
+    expect(machine.machine).toMatchObject({ id: computer!.id, name: "Preview MacBook" });
+    await expect(rpc["machine.detail.get"]({ machineId: "rnr_missing" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    // An attach is always answered, marked, even when every installed revision is current.
+    const frames: unknown[] = [];
+    const stop = bridge.onHostWebSocketEvent((event) => {
+      if (event.type === "text") frames.push(JSON.parse(event.data));
+    });
+    const { connectionId } = await bridge.openHostWebSocket({
+      expectedDeploymentId: snapshot.deployments[0]!.id,
+      path: "/v1/personal/socket",
+    });
+    await bridge.sendHostWebSocket({
+      connectionId,
+      type: "text",
+      data: JSON.stringify({
+        type: "client.attach",
+        apiVersion: scopedPersonalApiVersion,
+        generation: 1,
+        interests: ["environment"],
+        installed: { environment: "0" },
+      }),
+    });
+    await vi.runAllTimersAsync();
+    expect(frames).toContainEqual(
+      expect.objectContaining({ type: "host.resource", reply: true, revisions: {} }),
+    );
+    stop();
     vi.useRealTimers();
   });
 });
