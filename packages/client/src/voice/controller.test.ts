@@ -291,6 +291,25 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
+  it("keeps the call while only some of a new history's account inventories have landed", async () => {
+    const f = setup();
+    await f.controller.start();
+    const before = f.host.getSnapshot();
+    // After a reset, each inventory lands on its own: harnesses first, catalogs not yet.
+    f.publish({
+      environments: before.environments.map((environment) => ({
+        ...environment,
+        harnessCatalogs: [],
+      })),
+      harnesses: [],
+      loadedResources: ["environment", "harness"],
+    });
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+    f.publish({ loadedResources: ["environment", "harness", "harness-catalog"] });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe("idle"));
+    f.dispose();
+  });
+
   it("says the call failed when the Voice Thread can't open", async () => {
     const f = setup();
     f.publish({ voiceThreadId: null });

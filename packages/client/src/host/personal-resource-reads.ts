@@ -20,13 +20,32 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   ...pluginChangeResources,
   "team-replies",
 ]);
-const noop = () => undefined;
 /**
- * Guards against a Host that pages without end. Every page is at most 64 KiB and every row is
- * bounded by its schema; a person's inventory is what the client must hold to show it, so this
- * is far above any real one (the largest, `harness-catalog`, is up to 8,192 models per account).
+ * The most a complete inventory of each kind may hold, in serialized bytes, checked as each page
+ * arrives so a phone never accumulates more. Each is several times what the kind can legitimately
+ * hold: tabs are at most 1,000 plus 200 groups (about 2 KiB each) and a 128 KiB layout; one model
+ * catalog is at most 8,192 descriptors. Machines, environments and harnesses are not bounded per
+ * owner on the Host; a person with hundreds of each still fits. A read past its bound stops,
+ * installs nothing, keeps the last complete inventory, and is reported (`unreadable`); the next
+ * revision reads again.
  */
-export const inventoryCeilingBytes = 256 * 1024 * 1024;
+const mebibyte = 1024 * 1024;
+const inventoryBounds: Partial<Record<PersonalResourceKind, number>> = {
+  "harness-catalog": 8 * mebibyte,
+  tab: 4 * mebibyte,
+  "tab-layout": mebibyte,
+  machine: 4 * mebibyte,
+  environment: 2 * mebibyte,
+  harness: 2 * mebibyte,
+  "browser-profile": 2 * mebibyte,
+  "browser-placement": mebibyte,
+  "browser-home": mebibyte,
+};
+/** Settings, identity, profile, availability and every plugin signal are a single small value. */
+const smallInventoryBytes = 256 * 1024;
+export function inventoryBound(kind: PersonalResourceKind): number {
+  return inventoryBounds[kind] ?? smallInventoryBytes;
+}
 /**
  * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a
  * reread waits this long after the first such push, so a Runner that drops and comes back costs
@@ -65,6 +84,8 @@ export interface PersonalResourceReadOptions {
   loaded?(kind: PersonalResourceKind): void;
   /** The Host moved past what this client installed; its next read is coming. */
   behind?(kind: PersonalResourceKind): void;
+  /** Whether a kind's newest read could not be installed (too large, or malformed). */
+  unreadable?(kind: PersonalResourceKind, unreadable: boolean): void;
 }
 
 /**
@@ -85,6 +106,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
     { release: () => void; timer: ReturnType<typeof setTimeout> }
   >();
   readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+  readonly #unreadableKinds = new Set<PersonalResourceKind>();
   /** Each kind's read in flight, settled once it installs or gives up. */
   readonly #inFlight = new Map<PersonalResourceKind, Promise<void>>();
   /** A Runner kind's pending reread, from its first push within the settle window. */
@@ -136,17 +158,31 @@ export class PersonalResourceReads implements PersonalResourcePort {
         this.#options.behind?.(kind);
       // What flies is judged when it lands: older than this push, it installs nothing.
       const installed = this.#installed.get(kind);
-      if (runnerKinds.has(kind) && installed !== undefined && sameBoot(installed, revision))
+      // Only a live push of a Runner kind waits; what the Host says in answer to an attach is
+      // read at once.
+      if (
+        runnerKinds.has(kind) &&
+        installed !== undefined &&
+        sameBoot(installed, revision) &&
+        Date.now() >= this.#attachAnswerUntil
+      )
         this.#settle(kind);
       else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
+    // The revisions the Host sends in answer to an attach come in one frame.
+    this.#attachAnswerUntil = 0;
   }
 
   /** Read every watched kind that is behind, as after attaching or returning to the front. */
-  resume() {
+  resume(attached = false) {
+    // The Host answers an attach with every revision that moved meanwhile; that answer is read at
+    // once, never held in the settle window. Bounded, in case nothing moved and no answer comes.
+    if (attached) this.#attachAnswerUntil = Date.now() + runnerSettleMs;
     for (const kind of this.#listeners.keys()) this.#read(kind);
   }
+
+  #attachAnswerUntil = 0;
 
   abort() {
     for (const kind of personalResourceKinds) this.#reads.stop(kind);
@@ -181,7 +217,12 @@ export class PersonalResourceReads implements PersonalResourcePort {
     };
     return {
       hold: (kind) => {
-        if (!held.has(kind)) held.set(kind, this.watch(kind, noop));
+        // Its own registration: a listener shared with another reader would let either end both.
+        if (!held.has(kind))
+          held.set(
+            kind,
+            this.watch(kind, () => undefined),
+          );
         // Read by a render that never mounted: it lets go after the grace.
         if (opened === 0 && timer === undefined) arm();
       },
@@ -202,7 +243,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
       clearTimeout(held.timer);
       this.#timers.delete(held.timer);
     }
-    const release = held?.release ?? this.watch(kind, noop);
+    const release = held?.release ?? this.watch(kind, () => undefined);
     const timer = setTimeout(() => {
       this.#timers.delete(timer);
       this.#leases.delete(kind);
@@ -249,6 +290,13 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   #read(kind: PersonalResourceKind) {
+    // A read now (a new reader, an attach, the app in front) takes over a settling reread.
+    const settling = this.#settling.get(kind);
+    if (settling !== undefined) {
+      clearTimeout(settling);
+      this.#timers.delete(settling);
+      this.#settling.delete(kind);
+    }
     const known = this.#known.get(kind);
     const installed = this.#installed.get(kind);
     // A kind not read yet is read at once, beside the socket's attach, so a cold start paints it
@@ -273,13 +321,50 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   /**
-   * For a command that needs a kind's value: settles once the kind holds a read for this viewer,
-   * or its read gave up (a Host without the kind), or none can run now (the app is behind).
+   * For a command that needs a kind's current value: settles once the kind holds the newest
+   * revision this client has heard of. A read that cannot finish within `boundMs` (failing,
+   * retrying, or the app behind) rejects, so the command fails with a clear error instead of
+   * waiting on the resource owner. Commands that need no kind never call this.
    */
-  async firstRead(kind: PersonalResourceKind) {
+  async current(kind: PersonalResourceKind, boundMs: number) {
     this.lease(kind);
-    if (this.#installed.has(kind)) return;
-    await this.#inFlight.get(kind);
+    const ready = () => {
+      const installed = this.#installed.get(kind);
+      const known = this.#known.get(kind);
+      return installed !== undefined && (known === undefined || known === installed);
+    };
+    const deadline = Date.now() + boundMs;
+    while (!ready()) {
+      this.#read(kind);
+      const flying = this.#inFlight.get(kind);
+      const left = deadline - Date.now();
+      if (!flying || left <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        flying,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, left);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (Date.now() >= deadline) break;
+    }
+    if (!ready())
+      throw Object.assign(
+        new Error("Opensteer couldn't read this information from your computer. Try again."),
+        { code: "unavailable" as const },
+      );
+  }
+
+  /** A Host answer no retry can mend: reported, and read again on the kind's next revision. */
+  #unreadable(kind: PersonalResourceKind, detail: string) {
+    if (!this.#unreadableKinds.has(kind)) {
+      this.#unreadableKinds.add(kind);
+      this.#options.unreadable?.(kind, true);
+    }
+    return Object.assign(new Error(`The Host's ${kind} inventory ${detail}.`), {
+      code: "invalid-response",
+    });
   }
 
   /** Every page of one kind, installed together and only while nothing newer has arrived. */
@@ -292,10 +377,12 @@ export class PersonalResourceReads implements PersonalResourcePort {
       const page = await this.#options.read(kind, cursor, read.signal);
       if (!read.current()) return;
       if (!page.ok) throw Object.assign(new Error(page.error.message), page.error);
-      if (page.data.data.kind !== kind) throw invalidInventory(`answered a ${page.data.data.kind}`);
+      if (page.data.data.kind !== kind)
+        throw this.#unreadable(kind, `answered a ${page.data.data.kind}`);
       bytes += utf8ByteLength(JSON.stringify(page.data));
-      if (bytes > inventoryCeilingBytes) throw invalidInventory("exceeds the inventory ceiling");
-      if (page.data.next && cursors.has(page.data.next)) throw invalidInventory("repeats a cursor");
+      if (bytes > inventoryBound(kind)) throw this.#unreadable(kind, "exceeds its bound");
+      if (page.data.next && cursors.has(page.data.next))
+        throw this.#unreadable(kind, "repeats a cursor");
       pages.push(page.data);
       if (page.data.next === null) break;
       cursors.add(page.data.next);
@@ -315,6 +402,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
     }
     this.#behind.delete(kind);
     this.#options.apply(pages.map((page) => page.data));
+    if (this.#unreadableKinds.delete(kind)) this.#options.unreadable?.(kind, false);
     const first = !this.#installed.has(kind);
     this.#installed.set(kind, revision);
     // Installed with no push since it began, so it is at least as new as anything pushed before.
@@ -326,13 +414,6 @@ export class PersonalResourceReads implements PersonalResourcePort {
 /** Whether two revisions come from one Host boot, where a push may be a Runner's flap. */
 function sameBoot(a: string, b: string) {
   return a.split(".")[1] === b.split(".")[1];
-}
-
-/** A Host answer no retry can mend; the error names the kind and is logged by the read's owner. */
-function invalidInventory(detail: string) {
-  return Object.assign(new Error(`The Host's resource inventory ${detail}.`), {
-    code: "invalid-response",
-  });
 }
 
 /**
