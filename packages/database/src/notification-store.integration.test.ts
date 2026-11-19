@@ -2155,8 +2155,14 @@ integration("notification decision boundary", () => {
       return message;
     }
 
+    // The recent window lists settled tasks; a task whose Run is at work is in the active one.
     async function tasksOf(storeFixture: StoreFixture, userId: UserId) {
-      return storeFixture.store.taskPageForUser({ window: "recent", viewerId: userId });
+      const [recent, active] = await Promise.all(
+        (["recent", "active"] as const).map((window) =>
+          storeFixture.store.taskPageForUser({ window, viewerId: userId }),
+        ),
+      );
+      return { tasks: [...recent!.tasks, ...active!.tasks] };
     }
     function entryOf(page: Awaited<ReturnType<typeof tasksOf>>, threadId: ThreadId) {
       const entry = page.tasks.find(({ id }) => id === threadId);
