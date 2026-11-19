@@ -16,6 +16,7 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   ...pluginChangeResources,
   "team-replies",
 ]);
+const noop = () => undefined;
 /** Bounds what one kind's pages may hold before the read gives up. */
 const inventoryBytes = 1024 * 1024;
 
@@ -42,6 +43,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
   readonly #listeners = new Map<PersonalResourceKind, Set<() => void>>();
   readonly #known = new Map<PersonalResourceKind, string>();
   readonly #installed = new Map<PersonalResourceKind, string>();
+  readonly #retained = new Map<PersonalResourceKind, () => void>();
   readonly #reads = new Map<
     PersonalResourceKind,
     { controller: AbortController; stale: boolean }
@@ -110,8 +112,17 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#installed.delete(kind);
   }
 
-  /** Another viewer: nothing held belongs to them. */
+  /** Watches a kind for as long as this viewer lasts: something read the value it fills. */
+  retain(kind: PersonalResourceKind) {
+    if (this.#retained.has(kind)) return;
+    this.#retained.set(kind, this.watch(kind, noop));
+  }
+
+  /** Another viewer: nothing held or retained belongs to them. */
   reset() {
+    const retained = [...this.#retained.values()];
+    this.#retained.clear();
+    for (const release of retained) release();
     this.abort();
     this.#known.clear();
     this.#installed.clear();

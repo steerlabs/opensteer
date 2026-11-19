@@ -1,4 +1,3 @@
-import { usePersonalResources } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -30,8 +29,6 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
-const deviceResources = ["machine"] as const;
-
 export function DevicesSettingsController(): ReactNode {
   const [adding, setAdding] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -42,7 +39,6 @@ export function DevicesSettingsController(): ReactNode {
   const iphone = useIphoneAppsState(useIphoneApps());
   const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
   const host = selection.hostClient;
-  usePersonalResources(host, deviceResources);
   const deploymentId = selection.deploymentId;
   const overview = useScreenRead(host, {
     key: "devices-overview",

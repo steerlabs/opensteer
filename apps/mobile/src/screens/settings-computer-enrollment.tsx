@@ -4,10 +4,19 @@ import {
   runnerDistributionPrefix,
   runnerImageReference,
 } from "@opensteer/client/computers";
-import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  mutationIdempotencyKey,
+  unwrapRpcResult,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
 import { Text, View } from "react-native";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+
+const selectDeploymentShape = (snapshot: HostSnapshot) => snapshot.deploymentShape;
+const selectIdentityConfig = (snapshot: HostSnapshot) => snapshot.identityConfig;
 
 export function SettingsComputerEnrollment({ host }: { readonly host: HostClient }) {
   const [name, setName] = useState("New computer");
@@ -37,12 +46,14 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
     reconcile: async () => notDone("created"),
     retry: () => void create(),
   });
-  const snapshot = host.getSnapshot();
+  // Selected, so the commands appear as soon as the identity read lands.
+  const deploymentShape = useHostSelector(host, selectDeploymentShape);
+  const identityConfig = useHostSelector(host, selectIdentityConfig);
   const revision = process.env.EXPO_PUBLIC_OPENSTEER_RUNNER_SOURCE_REVISION;
   const commands =
-    issued && snapshot.deploymentShape && snapshot.identityConfig
+    issued && deploymentShape && identityConfig
       ? computerConnectionCommands({
-          deploymentShape: snapshot.deploymentShape,
+          deploymentShape,
           enrollmentId: issued.enrollmentId,
           hostOrigin: issued.hostOrigin,
           name: name.trim(),

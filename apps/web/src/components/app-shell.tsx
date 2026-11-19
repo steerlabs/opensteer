@@ -1,4 +1,3 @@
-import { usePersonalResources } from "@opensteer/client/react";
 import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
@@ -271,25 +270,6 @@ const selectNothing = () => null;
 const selectAttentionCount = (snapshot: HostSnapshot) =>
   snapshot.needsYouCount ?? taskAttention(snapshot).length;
 
-const workspaceResources = ["tab", "tab-layout", "browser-availability"] as const;
-const settingsResources = [
-  "identity",
-  "owner-profile",
-  "machine",
-  "environment",
-  "harness",
-  "harness-catalog",
-] as const;
-const placesResources = [
-  "tab",
-  "tab-layout",
-  "machine",
-  "browser-profile",
-  "browser-home",
-  "browser-placement",
-  "browser-availability",
-] as const;
-
 export function AppShell({
   deploymentAccess = null,
   desktopBridge: suppliedDesktopBridge = null,
@@ -311,14 +291,6 @@ export function AppShell({
   const toast = useToast();
   const location = useLocation();
   const settingsMode = isSettingsPath(location.pathname);
-  usePersonalResources(
-    hostClient,
-    settingsMode
-      ? settingsResources
-      : /^\/(places|browser|computers)(\/|$)/.test(location.pathname)
-        ? placesResources
-        : workspaceResources,
-  );
   // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
   const setupMode = isSetupPath(location.pathname);
   const fullWindow = settingsMode || setupMode;

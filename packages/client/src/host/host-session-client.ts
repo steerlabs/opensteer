@@ -134,7 +134,8 @@ import type {
   TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
-import { HostClientRequestError, mainDoneTasks } from "./client.js";
+import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
+import { trackSnapshot } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
@@ -867,7 +868,13 @@ export class HttpHostClient {
     this.listComputerAppWindows = views.listComputerAppWindows;
   }
 
-  readonly getSnapshot = (): HostSnapshot => this.#snapshot;
+  readonly #views = new WeakMap<HostSnapshot, HostSnapshot>();
+  /** Reading a resource-backed field watches its kinds for this viewer; see `resourceBackedFields`. */
+  readonly getSnapshot = (): HostSnapshot =>
+    trackSnapshot(this.#snapshot, this.#views, (field) => {
+      const kinds = resourceKindsOf(field);
+      if (kinds) for (const kind of kinds) this.#resources.retain(kind);
+    });
 
   readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
@@ -4625,4 +4632,10 @@ function updateRequired(): HostClientRequestError {
     retryable: false,
     status: 426,
   });
+}
+
+function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
+  return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)
+    ? resourceBackedFields[field as keyof typeof resourceBackedFields]
+    : undefined;
 }

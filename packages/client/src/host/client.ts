@@ -1491,3 +1491,32 @@ export function isHostRefusal(error: unknown): boolean {
     error.status !== 429
   );
 }
+
+/**
+ * Every HostSnapshot field a resource detail fills, with the kinds it reads. A real client's
+ * snapshot watches these kinds the first time anything reads the field, so a screen that shows
+ * one never stays empty for want of a separate watch.
+ */
+export const resourceBackedFields = {
+  personalSettings: ["settings"],
+  quietTaskDays: ["settings"],
+  executionPreferences: ["settings"],
+  voiceThreadId: ["settings"],
+  identityConfig: ["identity"],
+  ownerProfile: ["owner-profile"],
+  environments: ["environment", "harness-catalog"],
+  machines: ["machine"],
+  machineRevision: ["machine"],
+  harnesses: ["harness"],
+  tabs: ["tab", "tab-layout"],
+  browserProfiles: ["browser-profile"],
+  browserProfileDeletions: ["browser-profile"],
+  browserPlacements: ["browser-placement"],
+  browserProfileHomes: ["browser-home"],
+  browserAvailable: ["browser-availability"],
+} as const satisfies Partial<
+  Record<
+    keyof HostSnapshot,
+    readonly import("@opensteer/protocol/resources").PersonalResourceKind[]
+  >
+>;

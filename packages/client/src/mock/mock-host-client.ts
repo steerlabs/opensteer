@@ -3834,6 +3834,7 @@ function mockBootstrap(
     quietTaskDays: snapshot.quietTaskDays,
     identityConfig: requiredMockIdentityConfig(snapshot),
     machines: snapshot.machines,
+    ownerProfile: snapshot.ownerProfile,
     sessionSurface: "canonical",
     user: snapshot.user,
   };

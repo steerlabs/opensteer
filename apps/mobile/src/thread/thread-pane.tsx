@@ -1,4 +1,4 @@
-import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
+import { useThreadTranscript } from "@opensteer/client/react";
 import {
   hostMessageOutbox,
   messageDeliveryStatusShown,
@@ -310,8 +310,6 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
   });
 }
 
-const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
-
 export function ThreadPane(props: ThreadPaneProps): ReactNode {
   const threadId = props.threadId;
   const select = useMemo(() => {
@@ -439,7 +437,6 @@ function ThreadPaneForUser(
   const appForeground = useAppForeground();
   const showing = inView && navigationFocused && appForeground;
   const threadDetail = useThreadTranscript(hostClient, threadId, showing);
-  usePersonalResources(showing ? hostClient : null, threadResourceKinds);
   useFocusEffect(
     useCallback(() => {
       // The Host holds one active Thread. A task stays mounted under the one
