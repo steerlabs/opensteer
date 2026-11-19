@@ -1,4 +1,3 @@
-import { execFile, execFileSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -14,7 +13,6 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   buildSnapshot,
@@ -25,6 +23,7 @@ import {
   serialize,
   sha256,
 } from "../scripts/catalog-snapshot/core.ts";
+import { publishRelease } from "../scripts/catalog-snapshot/release.ts";
 import { liveManifest } from "../scripts/catalog-snapshot/served.ts";
 import { takeSnapshot } from "../scripts/catalog-snapshot/take.ts";
 import {
@@ -405,28 +404,22 @@ describe("assembling a release", () => {
     ).rejects.toThrow("overlaps --dir");
   });
 
-  const publish = (...args: string[]) => {
-    const repository = join(import.meta.dirname, "..");
-    const { GOOGLE_APPLICATION_CREDENTIALS: _key, FIREBASE_TOKEN: _token, ...env } = process.env;
-    return execFileSync(
-      join(repository, "node_modules", ".bin", "tsx"),
-      [join(repository, "scripts", "catalog-snapshot", "publish.ts"), ...args],
-      { cwd: root, encoding: "utf8", env: { ...env, HOME: root }, stdio: "pipe" },
+  test("a dry run needs no credentials, reads no site and writes nothing into the snapshot", async () => {
+    const snapshot = await snapshotAt(join(root, "snapshot"));
+    const before = [...(await readTree(snapshot)).keys()].sort();
+    const lines: string[] = [];
+    const deploys: string[] = [];
+    // An address nothing listens on: a dry run must not read it.
+    await publishRelease(
+      { dir: snapshot, site: "s", first: true, dryRun: true, siteUrl: "http://127.0.0.1:9/" },
+      (line) => lines.push(line),
+      (command) => void deploys.push(command.join(" ")),
     );
-  };
-
-  test(
-    "a dry run needs no credentials, reads no site and writes nothing into the snapshot",
-    { timeout: 60_000 },
-    async () => {
-      const snapshot = await snapshotAt(join(root, "snapshot"));
-      const before = [...(await readTree(snapshot)).keys()].sort();
-      const output = publish("--dir", snapshot, "--site", "s", "--first", "--dry-run");
-      expect(output).toContain("was not read");
-      expect(output).toContain("Dry run: nothing was uploaded.");
-      expect([...(await readTree(snapshot)).keys()].sort()).toEqual(before);
-    },
-  );
+    expect(lines.join("\n")).toContain("was not read");
+    expect(lines.join("\n")).toContain("Dry run: nothing was uploaded.");
+    expect(deploys).toEqual([]);
+    expect([...(await readTree(snapshot)).keys()].sort()).toEqual(before);
+  });
 
   test("takes --previous or --first, and refuses a blank --previous", () => {
     expect(previousChoice("/s", false)).toBe("/s");
@@ -468,54 +461,63 @@ describe("publishing over the live release", () => {
     expect(() => check({ live: undefined })).toThrow("the site serves no manifest: pass --first");
   });
 
-  test(
-    "refuses to deploy over a live site that is not --previous, too soon, or not new",
-    { timeout: 60_000 },
-    async () => {
-      const previous = await snapshotAt(join(root, "previous"), "old");
-      const snapshot = await snapshotAt(join(root, "snapshot"), "new");
-      const other = await snapshotAt(join(root, "other"), "other");
-      let live: Uint8Array | undefined;
-      const server = createServer((request, response) => {
-        if (request.url === "/manifest.json" && live !== undefined) response.end(live);
-        else response.writeHead(404).end();
-      });
-      await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-      const site = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-      // Only node on the PATH: nothing here can reach a deploy.
-      await mkdir(join(root, "bin"));
-      await symlink(process.execPath, join(root, "bin", "node"));
-      const repository = join(import.meta.dirname, "..");
-      const refused = async (args: string[], reason: string) => {
-        const stderr = await promisify(execFile)(
-          process.execPath,
-          [
-            join(repository, "node_modules", "tsx", "dist", "cli.mjs"),
-            join(repository, "scripts", "catalog-snapshot", "publish.ts"),
-            ...["--dir", snapshot, "--site", "s", "--site-url", site, ...args],
-          ],
-          { cwd: root, env: { HOME: root, PATH: join(root, "bin") } },
-        ).then(
-          () => "deployed",
-          (error: { stderr: string }) => error.stderr,
-        );
-        expect(stderr).toContain(reason);
-      };
-      const manifestOf = async (path: string) => readFile(join(path, "manifest.json"));
-      try {
-        live = publishedManifest(await manifestOf(previous), "2026-01-01T00:00:00.000Z");
-        await refused(["--previous", other], "--previous is not the live release");
-        await refused(["--first"], "--first, but the site already serves a manifest");
-        await refused(["--previous", " "], "--previous is blank");
-        live = publishedManifest(await manifestOf(previous), new Date().toISOString());
-        await refused(["--previous", previous], "wait until 65 minutes have passed");
-        live = undefined;
-        await refused(["--previous", previous], "the site serves no manifest: pass --first");
-      } finally {
-        await new Promise((done) => server.close(done));
-      }
-    },
-  );
+  test("deploys only over the live release it was given, long enough after it", async () => {
+    const previous = await snapshotAt(join(root, "previous"), "old");
+    const snapshot = await snapshotAt(join(root, "snapshot"), "new");
+    const other = await snapshotAt(join(root, "other"), "other");
+    let live: Uint8Array | undefined;
+    const server = createServer((request, response) => {
+      if (request.url === "/manifest.json" && live !== undefined) response.end(live);
+      else response.writeHead(404).end();
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const siteUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    const deployed: { command: string; manifest: string; previous: boolean }[] = [];
+    const publish = (options: { previous?: string; first?: boolean }) =>
+      publishRelease(
+        { dir: snapshot, site: "s", siteUrl, ...options },
+        () => {},
+        async (command, cwd) => {
+          const files = await readTree(join(cwd, "public"));
+          const old = JSON.parse(await readFile(join(previous, "index.json"), "utf8"));
+          deployed.push({
+            command: command.join(" "),
+            manifest: new TextDecoder().decode(files.get("manifest.json")),
+            previous: files.has(old.apps[0].source),
+          });
+        },
+      );
+    const manifestOf = async (path: string) => readFile(join(path, "manifest.json"));
+    try {
+      live = publishedManifest(await manifestOf(previous), "2026-01-01T00:00:00.000Z");
+      await expect(publish({ previous: other })).rejects.toThrow(
+        "--previous is not the live release",
+      );
+      await expect(publish({ first: true })).rejects.toThrow(
+        "--first, but the site already serves a manifest",
+      );
+      await expect(publish({ previous: " " })).rejects.toThrow("--previous is blank");
+      expect(deployed).toEqual([]);
+      // The live release given as --previous, published long ago: deployed with its documents.
+      await publish({ previous });
+      expect(deployed).toEqual([
+        {
+          command: expect.stringContaining("firebase-tools@15.34.2 deploy --only hosting"),
+          manifest: expect.stringMatching(/"published": "\d{4}-/u),
+          previous: true,
+        },
+      ]);
+      live = publishedManifest(await manifestOf(previous), new Date().toISOString());
+      await expect(publish({ previous })).rejects.toThrow("wait until 65 minutes have passed");
+      live = undefined;
+      await expect(publish({ previous })).rejects.toThrow(
+        "the site serves no manifest: pass --first",
+      );
+      expect(deployed).toHaveLength(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
 
   test("reads the live manifest without following a redirect", async () => {
     const answers: Record<string, [number, string]> = {
