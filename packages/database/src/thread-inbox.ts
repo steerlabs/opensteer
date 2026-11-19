@@ -175,6 +175,7 @@ import {
   lockThreadChannelAuthorities,
 } from "./channel-execution.js";
 import { resolveMessageQuote } from "./message-quotes.js";
+import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
 import { publishAssignmentSummaries, assignmentSummaryInTransaction } from "./assignment-store.js";
 import {
   assertThreadCaller,
@@ -273,7 +274,6 @@ export async function readThreadInputQueue(
   const messages = rows.length
     ? await transaction
         .selectFrom("messages")
-        .leftJoin("transcriptItems", "transcriptItems.messageId", "messages.id")
         .select([
           "messages.id",
           "messages.kind",
@@ -281,7 +281,16 @@ export async function readThreadInputQueue(
           "messages.revision",
           "messages.createdAt",
           "messages.editedAt",
-          "transcriptItems.view",
+          // The card for this message may be staged in this commit; read the message itself.
+          sql<string>`(
+            select coalesce(left(string_agg(left(part->>'text', ${transcriptMessageTextBytes + 1}),
+              E'\n' order by n) filter (where part->>'type' = 'text'), ${transcriptMessageTextBytes + 1}), '')
+            from jsonb_array_elements(messages.content) with ordinality as parts(part, n)
+          )`.as("text"),
+          sql<unknown[]>`(
+            select coalesce(jsonb_agg(part order by n) filter (where part->>'type' <> 'text'), '[]'::jsonb)
+            from jsonb_array_elements(messages.content) with ordinality as parts(part, n)
+          )`.as("richParts"),
           sql<unknown>`(
             select coalesce(jsonb_agg(part), '[]'::jsonb)
             from (select part from jsonb_path_query(
@@ -311,6 +320,20 @@ export async function readThreadInputQueue(
         }
       : null;
     const attachments = z.array(ArtifactContentPartSchema).parse(message.attachments);
+    const card = describeTranscriptMessage({
+      kind: message.kind,
+      content: {
+        hasContent: true,
+        hasRichParts: message.richParts.length > 0,
+        text: message.text,
+        richParts: message.richParts,
+      },
+      author: message.author,
+      edited: message.revision > 0,
+      admittedSeed: false,
+      seedInRun: false,
+      assigned: false,
+    }).view;
     const view = {
       message: {
         id: message.id,
@@ -320,8 +343,8 @@ export async function readThreadInputQueue(
           : {}),
         author: message.author,
         createdAt: message.createdAt.toISOString(),
-        preview: message.view?.preview ?? "",
-        truncated: message.view?.truncated ?? false,
+        preview: card.preview ?? "",
+        truncated: card.truncated ?? false,
         ...(attachments.length ? { attachments } : {}),
       },
       input: {
