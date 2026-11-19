@@ -179,7 +179,7 @@ import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
   harnessInspectionDefinition,
-  inspectAndRecordInvalidatedHarnessCatalog,
+  recaptureInvalidatedHarnessCatalog,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
   reconcileHarnessCatalogs,
@@ -2258,30 +2258,21 @@ export async function createHostRuntime(
         ),
         onRunDispatchAvailable: () => wakeExecutionCoordinator(),
         onHarnessInstallation: runnerObservations.onHarnessInstallation,
-        onHarnessCatalogInvalidated: async (identity, invalidation) => {
-          try {
-            const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);
-            if (
-              !harness ||
-              !harness.enabled ||
-              harness.removedAt !== null ||
-              !identity.environmentIds.includes(harness.environmentId)
-            ) {
-              return;
-            }
-            await store.discardHarnessCatalog(harness.environmentId, harness.id);
-            const captured = await inspectAndRecordInvalidatedHarnessCatalog({
-              catalogs: harnessCatalogs,
-              environmentId: harness.environmentId,
-              harnesses: [harnessInspectionDefinition(harness)],
-              runners,
-              signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
-            });
-            observeRunnerCatalogs(identity, harness.environmentId, captured);
-          } catch (error) {
-            reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
-          }
-        },
+        onHarnessCatalogInvalidated: (identity, invalidation) =>
+          recaptureInvalidatedHarnessCatalog({
+            catalogs: harnessCatalogs,
+            environmentIds: identity.environmentIds,
+            harnessInstanceId: invalidation.harnessInstanceId,
+            runners,
+            signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
+            store,
+            onCaptured: (environmentId, captured) =>
+              observeRunnerCatalogs(identity, environmentId, captured),
+            onFailed: (error) => {
+              reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
+              catalogConvergence?.wake();
+            },
+          }),
         onRegistered: runnerRegistrationHook(
           (identity: RunnerIdentity) => {
             registeringRunners.delete(identity.connectionId);
