@@ -621,6 +621,28 @@ const currentStateIndexes = `
   create index apps_run on apps(run_id);
 `;
 
+/**
+ * A subagent's approval is asked of the person in its task, so its receipt is drawn there, once,
+ * and not in the subagent's own history. The item keeps its asker in `node_id`; only the scope it
+ * is drawn in follows this rule, which reads and the task's order index share.
+ */
+const taskApproval = `kind = 'request' and view->>'requestKind' = 'harness.approval'`;
+export const taskItemsPredicate = `(node_id is null or (${taskApproval}))`;
+export const nodeItemsPredicate = `(kind <> 'request' or view->>'requestKind' is distinct from 'harness.approval')`;
+
+export const taskApprovalReceiptsMigrationName = "0039_task_approval_receipts";
+/**
+ * Orders the task's items under the rule above, and starts every client's sync over: a cursor
+ * from before it would resume a scope cut under the old rule.
+ */
+export async function applyTaskApprovalReceipts(database: Kysely<DatabaseSchema>) {
+  await sql`
+    create index if not exists transcript_task on transcript_items(thread_id,position desc,id desc)
+      where visible and ${sql.raw(taskItemsPredicate)};
+    update client_sync_state set epoch = gen_random_uuid();
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);

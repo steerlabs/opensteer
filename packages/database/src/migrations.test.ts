@@ -7,6 +7,7 @@ import {
   teamKnowledgeNotesMigrationName,
   threadVisitsMigrationName,
 } from "./migrations.js";
+import { taskApprovalReceiptsMigrationName } from "./personal-state-schema.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
   const names = Object.keys(await migrationProvider().getMigrations());
   expect(names).toEqual([
@@ -47,6 +48,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0036_one_plugin_per_owner_name",
     "0037_plugin_package_format",
     personalCurrentStateMigrationName,
+    taskApprovalReceiptsMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

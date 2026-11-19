@@ -165,19 +165,30 @@ export function mockScopedItems(
   revision = String(snapshot.revision),
   nodeEvents: readonly AgentEventView[] = [],
 ) {
-  const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index) => {
+  const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index): TranscriptItem[] => {
     if (
       (entry.kind === "reasoning" && entry.state === "streaming") ||
       (entry.kind === "message" && entry.streaming)
     )
       return [];
     const item = mockScopedItem(entry, String(index + 1), revision);
-    return item && item.nodeId === (nodeId ?? null) ? [item] : [];
+    if (!item) return [];
+    if (item.kind !== "request") return item.nodeId === (nodeId ?? null) ? [item] : [];
+    const scope = mockRequestScope(snapshot, threadId, item.requestId);
+    return scope === (nodeId ?? null) ? [{ ...item, nodeId: scope }] : [];
   });
   if (!nodeId) return rows;
   return [...mockScopedNodeItems(threadId, nodeId, nodeEvents, revision), ...rows]
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .map((row, index) => ({ ...row, position: String(index + 1) }));
+}
+
+/** As the Host places it: a node's receipt stays with that node, except an approval it asked. */
+function mockRequestScope(snapshot: MockTranscriptSnapshot, threadId: string, requestId: string) {
+  const request = snapshot.requests[threadId]?.find(({ id }) => id === requestId);
+  return request?.originatingNodeId && request.kind !== "harness.approval"
+    ? request.originatingNodeId
+    : null;
 }
 
 function mockScopedItem(
