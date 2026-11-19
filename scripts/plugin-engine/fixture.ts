@@ -3,6 +3,9 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import framework from "../../packages/plugin-engine/apps/package.json" with { type: "json" };
+/** The catalog fixture's icon, served beside the feed at the relative path its entry lists. */
+const catalogIcon =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1"/></svg>';
 export const pluginFixtureFiles = (revision: number, sites?: string[]) => [
   {
     path: "skills/demo/SKILL.md",
@@ -73,7 +76,7 @@ export async function pluginFixtureRegistry(
                   name: "Catalog fixture",
                   description: "Hermetic catalog plugin",
                   auth: [],
-                  icons: [],
+                  icons: [{ src: "icons/fixture.svg", mimeType: "image/svg+xml" }],
                   source: "apps/fixture.json",
                 },
               ]
@@ -82,6 +85,7 @@ export async function pluginFixtureRegistry(
       );
     else if (request.url === "/apps/fixture.json" && catalogFiles)
       response.end(JSON.stringify({ package: "fixture-plugin", files: catalogFiles }));
+    else if (request.url === "/icons/fixture.svg" && catalogFiles) response.end(catalogIcon);
     else {
       response.statusCode = 404;
       response.end();

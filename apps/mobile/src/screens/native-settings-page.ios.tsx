@@ -50,7 +50,7 @@ import {
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
 import { color } from "../theme.js";
-import { IntegrationIcon } from "../ui/integration-icon.js";
+import { RowMarkIcon } from "../ui/integration-icon.js";
 import type {
   NativeSettingsPageProps,
   NativeSettingsRow,
@@ -226,7 +226,7 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     const button = row.mark ? (
       <HStack spacing={12}>
         <RNHostView matchContents>
-          <IntegrationIcon definitionId={row.mark.definitionId} name={row.mark.name} size={28} />
+          <RowMarkIcon mark={row.mark} size={28} />
         </RNHostView>
         {plain}
       </HStack>

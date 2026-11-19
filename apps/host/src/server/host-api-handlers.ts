@@ -262,6 +262,7 @@ function pluginsUnavailable(): ReturnType<PluginOwnerApi["reads"]> {
     "plugins.page.view": refuse,
     "plugins.catalog.list": refuse,
     "plugins.catalog.get": refuse,
+    "plugins.icons.get": refuse,
     "plugins.accounts.list": refuse,
     "plugins.account.review": refuse,
     "plugins.schedule.runs": refuse,

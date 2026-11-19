@@ -8,7 +8,7 @@ export const pluginEngineSkillDigests: Readonly<Record<string, string>> = {
     "7c1000449d476974b37d99ba93ff44d2f8d75dd0a43a833a9f01552dc020142f",
   "app-authoring/starter.md": "6dbe4db7f6bce404b7899e87a9e0fcea6a40bc65f26a087f70eda23a1aefc3c0",
   "app-authoring/storage.md": "bf244dc4daf37c605c989024fa14181e10bbedf6d2c3a30d2d949629319737c0",
-  "app-authoring/tools.md": "9e828854aa8377cbd2da63a67f8c5c2ff49d75a6bbcc86cec590e830c7850222",
+  "app-authoring/tools.md": "9f74e039358619b236aafe3e099e20d4869599b59ebcf51a8a4216607e61ae94",
   "app-authoring/ui.md": "03849fa8f8ef7e857e0b478315be99162be8aac133f3fca877a5e9e793aac0d7",
   "app-authoring/upgrades/0.0.1-beta.38.md":
     "3eb7f9e3105d3c50eeabbc3d3d826048763da98c54400454399ed26c0cd45cfd",

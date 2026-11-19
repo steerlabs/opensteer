@@ -34,6 +34,7 @@
     "./fileDigest": "./src/fileDigest.ts",
     "./httpEndpoint": "./src/httpEndpoint.ts",
     "./httpServer": "./src/httpServer.ts",
+    "./imageType": "./src/imageType.ts",
     "./isRecord": "./src/isRecord.ts",
     "./jsonSchemaValidation": "./src/jsonSchemaValidation.ts",
     "./kernelLock": "./src/kernelLock.ts",
