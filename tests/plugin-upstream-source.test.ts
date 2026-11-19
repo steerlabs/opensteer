@@ -102,3 +102,39 @@ test("package names change only by the scope's prefix", () => {
   expect(rewriteUpstreamPackage(`${pkg.from}gmail`)).toBe(`${pkg.to}gmail`);
   expect(rewriteUpstreamPackage("@acme/notes")).toBe("@acme/notes");
 });
+
+test("renames a reserved route only in the plugin's own root-relative paths", () => {
+  const route = rule("route-path");
+  const content = [
+    `const local = "${route.from}api/query";`,
+    `const single = '${route.from}assets/main.js';`,
+    `const template = \`${route.from}api/\${name}\`;`,
+    `const provider = "https://api.fixture.invalid${route.from}callback";`,
+    `const relative = "//cdn.fixture.invalid${route.from}main.js";`,
+    `const text = "Open ${route.from} later";`,
+    `// Keep ${route.from} in this provider's callback.`,
+  ];
+  const { files } = rewriteUpstreamSource([{ path: "index.ts", content: content.join("\n") }]);
+  expect((files[0] as { content: string }).content.split("\n")).toEqual([
+    `const local = "${route.to}api/query";`,
+    `const single = '${route.to}assets/main.js';`,
+    `const template = \`${route.to}api/\${name}\`;`,
+    ...content.slice(3),
+  ]);
+});
+
+test("renames package.json's top-level name and keys, whatever is nested before them", () => {
+  const nested = `{
+  "metadata": { "name": "unrelated", "${key.from}": "nested" },
+  "name": "${pkg.from}fixture",
+  "${key.from}": { "title": "Demo" }
+}
+`;
+  const { files, problems } = rewriteUpstreamSource([{ path: "package.json", content: nested }]);
+  expect(problems).toEqual([]);
+  expect((files[0] as { content: string }).content).toBe(
+    nested
+      .replace(`"name": "${pkg.from}fixture"`, `"name": "${pkg.to}fixture"`)
+      .replace(`"${key.from}": { "title"`, `"${key.to}": { "title"`),
+  );
+});

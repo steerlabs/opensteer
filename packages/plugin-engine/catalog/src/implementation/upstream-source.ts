@@ -36,10 +36,19 @@ const signingSecret = (text: string) =>
     text,
   );
 
+/**
+ * A reserved route only where it is one of the plugin's own routes: a root-relative path literal,
+ * a string that starts with the route. Absolute and protocol-relative URLs, which name another
+ * site's paths, comments and other strings keep their bytes.
+ */
+const route = (text: string, rule: Rule) =>
+  text.replace(new RegExp(`(?<=["'\`])${escape(rule.from)}`, "gu"), () => rule.to);
+
 const code = (text: string) => {
-  let current = scoped("route-path", "element-id", "event", "ui-marker", "error-code").reduce(
+  let current = scoped("route-path").reduce((value, rule) => route(value, rule), text);
+  current = scoped("element-id", "event", "ui-marker", "error-code").reduce(
     (value, rule) => literal(value, rule),
-    text,
+    current,
   );
   current = scoped("header").reduce((value, rule) => literal(value, rule, "giu"), current);
   current = scoped("reserved-table").reduce((value, rule) => word(value, rule), current);
@@ -61,6 +70,57 @@ const canonical = (value: unknown) =>
   );
 
 /**
+ * The members of a JSON document's top-level object, in order, with where each key's string and
+ * each value sit in the text. The text has parsed as an object.
+ */
+const topLevelMembers = (text: string) => {
+  const members: {
+    key: string;
+    keyStart: number;
+    keyEnd: number;
+    valueStart: number;
+    valueEnd: number;
+  }[] = [];
+  let depth = 0;
+  let expectKey = false;
+  let current: (typeof members)[number] | undefined;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '"') {
+      let end = index + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      if (depth === 1 && expectKey) {
+        current = {
+          key: JSON.parse(text.slice(index, end + 1)) as string,
+          keyStart: index,
+          keyEnd: end + 1,
+          valueStart: -1,
+          valueEnd: -1,
+        };
+        expectKey = false;
+      }
+      index = end;
+    } else if (char === ":" && depth === 1 && current !== undefined && current.valueStart < 0) {
+      current.valueStart = index + 1;
+      while (/\s/u.test(text[current.valueStart]!)) current.valueStart++;
+    } else if (char === "{" || char === "[") {
+      depth++;
+      if (depth === 1) expectKey = true;
+    } else if (char === "}" || char === "]" || (char === "," && depth === 1)) {
+      if (depth === 1 && current !== undefined) {
+        let end = index;
+        while (/\s/u.test(text[end - 1]!)) end--;
+        members.push({ ...current, valueEnd: end });
+        current = undefined;
+      }
+      if (char === ",") expectKey = true;
+      else depth--;
+    }
+  }
+  return members;
+};
+
+/**
  * package.json, edited in place: the name's prefix and the renamed top-level keys, every other byte
  * kept. A problem when it holds a key under both names, or an edit would change anything else.
  */
@@ -74,11 +134,15 @@ const manifest = (text: string): string | { readonly problem: string } => {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return text;
   const expected: Record<string, unknown> = { ...parsed };
   let output = text;
+  // Edits run from the end of the text, so each member's offsets stay where they were read.
+  const edits: { start: number; end: number; text: string }[] = [];
+  const members = topLevelMembers(text);
+  const member = (key: string) => members.filter((candidate) => candidate.key === key);
   if (typeof expected.name === "string") {
     const name = rewriteUpstreamPackage(expected.name);
-    const token = /("name"\s*:\s*)"(?:[^"\\]|\\.)*"/u.exec(output);
-    if (name !== expected.name && token !== null) {
-      output = `${output.slice(0, token.index)}${token[1]}${JSON.stringify(name)}${output.slice(token.index + token[0].length)}`;
+    const [token] = member("name");
+    if (name !== expected.name && token !== undefined) {
+      edits.push({ start: token.valueStart, end: token.valueEnd, text: JSON.stringify(name) });
       expected.name = name;
     }
   }
@@ -86,13 +150,14 @@ const manifest = (text: string): string | { readonly problem: string } => {
     if (!Object.hasOwn(expected, from)) continue;
     if (Object.hasOwn(expected, to))
       return { problem: `package.json has both "${from}" and "${to}"; keep only "${to}".` };
-    const key = new RegExp(`${escape(JSON.stringify(from))}(?=\\s*:)`, "gu");
-    const found = [...output.matchAll(key)];
+    const found = member(from);
     if (found.length !== 1) return { problem: `package.json's "${from}" could not be renamed.` };
-    output = `${output.slice(0, found[0]!.index)}${JSON.stringify(to)}${output.slice(found[0]!.index + found[0]![0].length)}`;
+    edits.push({ start: found[0]!.keyStart, end: found[0]!.keyEnd, text: JSON.stringify(to) });
     expected[to] = expected[from];
     delete expected[from];
   }
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    output = `${output.slice(0, edit.start)}${edit.text}${output.slice(edit.end)}`;
   if (output === text) return text;
   let result: unknown;
   try {
