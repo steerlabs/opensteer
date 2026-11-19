@@ -2048,34 +2048,29 @@ export class HttpHostClient {
   ) {
     const tabPages = pages.flatMap((data) => (data.kind === "tab" ? [data.tabs] : []));
     if (tabPages.length) {
-      this.#tabs.replaceCurrent({
-        tabs: mergeResourceRows(
+      this.#tabs.replaceRows(
+        mergeResourceRows(
           [],
           tabPages.flatMap((page) => page.tabs),
           (tab) => tab.tabId,
         ),
-        layout: this.#tabs.layout,
         // Each page says whether the rows end with it; the last one speaks for the whole read.
-        complete: tabPages.at(-1)!.complete,
-      });
+        tabPages.at(-1)!.complete,
+      );
       return;
     }
     const layouts = pages.flatMap((data) => (data.kind === "tab-layout" ? [data.tabs.layout] : []));
     const last = layouts.at(-1);
     if (!last) return;
-    this.#tabs.replaceCurrent({
-      tabs: [...this.#tabs.rows.values()],
-      layout: {
-        ...last,
-        items: mergeResourceRows(
-          [],
-          layouts
-            .filter((layout) => layout.revision === last.revision)
-            .flatMap((layout) => layout.items),
-          (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
-        ),
-      },
-      complete: this.#tabs.complete,
+    this.#tabs.replaceLayout({
+      ...last,
+      items: mergeResourceRows(
+        [],
+        layouts
+          .filter((layout) => layout.revision === last.revision)
+          .flatMap((layout) => layout.items),
+        (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
+      ),
     });
   }
 
@@ -4126,7 +4121,10 @@ export class HttpHostClient {
    */
   #noticesMissed() {
     const appVersions = Object.fromEntries(
-      Object.entries(this.#snapshot.appVersions ?? {}).map(([appId, version]) => [appId, version + 1]),
+      Object.entries(this.#snapshot.appVersions ?? {}).map(([appId, version]) => [
+        appId,
+        version + 1,
+      ]),
     );
     this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1, appVersions });
     const deploymentId = this.#snapshot.deploymentId;
