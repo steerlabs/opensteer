@@ -189,3 +189,60 @@ it("keeps the whole AI account inventory within the client's bound at the accoun
     expect(bytes).toBeLessThanOrEqual(personalInventoryBound("harness"));
   });
 });
+
+it("serves a catalog whose models are each larger than a page, every option value intact", async () => {
+  await withHost(async (host) => {
+    const environmentId = await environmentOf(host);
+    const harness = await host.store.createHarnessInstance({
+      config: { model: "test" },
+      driverKind: HarnessIdSchema.parse("native"),
+      environmentId,
+      name: "Large options",
+      sourceId: "native",
+      stateKind: "isolated",
+    });
+    // Every option and value at its declared limit: each model is over 100 KB.
+    const options = Array.from({ length: 16 }, (_, index) => ({
+      id: `option-${index}`,
+      label: `Option ${index}`,
+      type: "select" as const,
+      values: Array.from({ length: 32 }, (_, value) => ({
+        label: `Value ${value}`,
+        value: `${value}`.padEnd(255, "x"),
+      })),
+    }));
+    const catalog = HarnessInstanceCatalogSchema.parse({
+      continuationIdentity,
+      driverKind: "native",
+      harnessInstanceId: harness.id,
+      models: Array.from({ length: 4 }, (_, index) => ({
+        displayName: `Large ${index}`,
+        isDefault: index === 0,
+        modelId: `large-${index}`,
+        options,
+        providerId: "test",
+      })),
+      status: "ready",
+    });
+    const [recorded] = await host.store.recordHarnessCatalogs({
+      catalogs: [catalog],
+      environmentId,
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
+    expect(recorded?.status).toBe("ready");
+    const { bytes, pages } = await readWhole(host, "harness-catalog");
+    expect(bytes).toBeLessThanOrEqual(personalInventoryBound("harness-catalog"));
+    const models = pages
+      .flatMap((page) => (page.kind === "harness-catalog" ? page.environments : []))
+      .flatMap(({ harnessCatalogs }) => harnessCatalogs)
+      .filter(({ harnessInstanceId }) => harnessInstanceId === harness.id)
+      .flatMap((served) => (served.status === "ready" ? served.models : []));
+    expect(models.map(({ modelId }) => modelId)).toEqual([
+      "large-0",
+      "large-1",
+      "large-2",
+      "large-3",
+    ]);
+    for (const model of models) expect(model.options).toEqual(catalog.models[0]!.options);
+  });
+});

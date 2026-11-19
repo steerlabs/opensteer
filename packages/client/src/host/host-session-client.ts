@@ -1617,6 +1617,7 @@ export class HttpHostClient {
     this.#ownerViews.clear();
     this.#machineSections.clear();
     this.#environmentDrivers.clear();
+    this.#pendingEnvironments.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
     this.#tabs.clear();
@@ -2162,7 +2163,10 @@ export class HttpHostClient {
    * cannot be read stays listed with its status.
    */
   #syncEnvironmentDetails() {
-    const listed = new Set(this.#snapshot.environments.map(({ id }) => id));
+    const listed = new Set([
+      ...this.#snapshot.environments.map(({ id }) => id),
+      ...this.#pendingEnvironments.keys(),
+    ]);
     for (const id of this.#environmentDrivers.keys())
       if (!listed.has(id)) {
         this.#environmentDrivers.delete(id);
@@ -2184,16 +2188,38 @@ export class HttpHostClient {
             ),
           );
           if (!read.current()) return;
-          if (!this.#snapshot.environments.some((held) => held.id === id)) return;
-          this.#update({
-            ...this.#snapshot,
-            environments: this.#snapshot.environments.map((held) =>
-              held.id === id ? { ...held, harnessDrivers: environment.harnessDrivers } : held,
-            ),
-          });
+          this.#installEnvironmentDrivers(id, environment.harnessDrivers);
         })
-        .catch(() => undefined);
+        // Its engines cannot be read: it is listed without them rather than not at all.
+        .catch(() => this.#installEnvironmentDrivers(id, null));
     }
+  }
+
+  /** Environments listed with engines this client has not read yet; they join once read. */
+  readonly #pendingEnvironments = new Map<string, EnvironmentSummary>();
+
+  /** One environment's engines, as read; `null` when they could not be read. */
+  #installEnvironmentDrivers(id: string, drivers: EnvironmentSummary["harnessDrivers"] | null) {
+    const pending = this.#pendingEnvironments.get(id);
+    if (pending) {
+      this.#pendingEnvironments.delete(id);
+      this.#update({
+        ...this.#snapshot,
+        environments: mergeResourceRows(
+          this.#snapshot.environments,
+          [this.#withEnvironmentCatalogs({ ...pending, harnessDrivers: drivers ?? [] })],
+          (row) => row.id,
+        ),
+      });
+      return;
+    }
+    if (!drivers || !this.#snapshot.environments.some((held) => held.id === id)) return;
+    this.#update({
+      ...this.#snapshot,
+      environments: this.#snapshot.environments.map((held) =>
+        held.id === id ? { ...held, harnessDrivers: drivers } : held,
+      ),
+    });
   }
 
   /** What the inventory said each computer's heavy sections hold, by computer. */
@@ -2326,17 +2352,28 @@ export class HttpHostClient {
         return { ...snapshot, identityConfig: data.identity };
       case "owner-profile":
         return { ...snapshot, ownerProfile: data.ownerProfile };
-      case "environment":
+      case "environment": {
+        if (!append) this.#pendingEnvironments.clear();
+        const rows = data.environments.flatMap((entry) => {
+          const environment = this.#withEnvironmentCatalogs(this.#environmentFromEntry(entry));
+          // An environment with engines nobody here has read yet waits for them: listed without
+          // them, every engine would read as missing from it.
+          const known = this.#snapshot.environments.some(({ id }) => id === entry.id);
+          if (entry.sections.harnessDrivers && !known) {
+            this.#pendingEnvironments.set(entry.id, environment);
+            return [];
+          }
+          return [environment];
+        });
         return {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
-            data.environments.map((entry) =>
-              this.#withEnvironmentCatalogs(this.#environmentFromEntry(entry)),
-            ),
+            rows,
             (row) => row.id,
           ),
         };
+      }
       case "harness-catalog":
         // Staged in the catalog map; the snapshot takes it once every page is in.
         if (!append) this.#environmentCatalogs.clear();
