@@ -965,6 +965,70 @@ describe("the reader's intended position", () => {
   });
 });
 
+test("a conversation's Request reads under churn wait for quiet like every other read, and land once it comes", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const requestId = createId("request");
+  const reads: ((value: unknown) => void)[] = [];
+  const list = vi.fn(() => new Promise((resolve) => reads.push(resolve)));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.requests.list": list } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const pend = (revision: number) =>
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(revision - 1),
+      throughSequence: String(revision),
+      changes: [
+        {
+          entityKind: "request",
+          entityId: requestId,
+          ordinal: 0,
+          sequence: String(revision),
+          operation: "upsert",
+          value: {
+            id: requestId,
+            revision: String(revision),
+            status: "pending",
+            kind: "person.question",
+            title: "Question",
+            threadId,
+          },
+        },
+      ],
+    } as never);
+  const answer = () => {
+    for (const resolve of reads.splice(0))
+      resolve({
+        ok: true,
+        data: {
+          threadId,
+          requests: [],
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null },
+        },
+      });
+  };
+  vi.useFakeTimers();
+  try {
+    // The Request changes every 50 ms while each read is out: faster than a read answers.
+    for (let revision = 2; revision < 22; revision++) {
+      pend(revision);
+      await vi.advanceTimersByTimeAsync(50);
+      answer();
+    }
+    expect(list.mock.calls.length, "every change restarted the Request read").toBeLessThan(6);
+    // Quiet again: it reads once more for the current Request.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reads.length).toBe(1);
+  } finally {
+    reader.dispose();
+  }
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {

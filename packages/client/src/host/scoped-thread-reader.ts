@@ -242,7 +242,9 @@ export class ScopedThreadReader implements ThreadViewSource {
         this.#reviewedRevisions.clear();
       if (state.synchronized) this.#requestGeneration = state.generation;
       this.#reads.changed("requests");
-      if (state.synchronized && pending?.length)
+      // A read in flight just runs again, under the same fairness as every key: a new request
+      // here would count as someone waiting and skip the wait for quiet.
+      if (state.synchronized && pending?.length && !this.#reads.busy("requests"))
         void this.#reads
           .request("requests", (read) => this.#readRequests(read), { observed: this.#observed })
           .catch(() => undefined);
