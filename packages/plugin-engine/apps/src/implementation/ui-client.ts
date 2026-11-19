@@ -18,7 +18,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { externalTrace, pendingSpan } from "@opensteer/plugin-engine-telemetry";
 import { FetchHttpClient, HttpClientError } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { AppUiApi, UiContext, UiVersionChanged, UiFailed } from "../contracts/ui.ts";
+import { AppUiApi, UiContext, UiVersionChanged, UiFailed, UiUpdating } from "../contracts/ui.ts";
 import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
 import { JsonValue } from "../contracts/schema.ts";
 import { decoderOf, type Schema } from "./schema.ts";
@@ -130,6 +130,8 @@ export const createAppClient = () => {
       return yield* EffectSchema.decodeUnknownEffect(decoderOf(output))(value);
     }).pipe(
       Effect.tapErrorTag("UiDeploymentChanged", () => versionChanged),
+      // The page reloads into the host's updating page, which reloads until the app is served.
+      Effect.tapErrorTag("UiUpdating", () => versionChanged),
       Effect.withSpan(`ui.app.${kind}`, { attributes: { "pluginEngine.operation.name": name } }),
     );
   const source = (name: string, input: JsonValue, output: Schema<unknown, boolean>) =>
@@ -256,7 +258,7 @@ export const createAppClient = () => {
             // Keep the last snapshot while the watcher replaces the document.
             // Unmount or client disposal interrupts the version-change wait.
             Stream.catch((error) =>
-              EffectSchema.is(UiVersionChanged)(error)
+              EffectSchema.is(UiVersionChanged)(error) || EffectSchema.is(UiUpdating)(error)
                 ? Stream.unwrap(versionChanged.pipe(Effect.as(Stream.never)))
                 : Stream.fail(error),
             ),

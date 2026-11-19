@@ -92,6 +92,16 @@ export class UiFailed extends Schema.TaggedError<UiFailed>()(
   },
   { httpApiStatus: 422 },
 ) {}
+/**
+ * The host does not serve the app while it updates it, as after the host's framework changed:
+ * nothing reached the app. The page reloads, and the host answers its document with a page that
+ * reloads until the app is served again. `message` says why it waits.
+ */
+export class UiUpdating extends Schema.TaggedError<UiUpdating>()(
+  "UiUpdating",
+  { message: Schema.String },
+  { httpApiStatus: 503 },
+) {}
 /** Every live stream carries heartbeats so the browser can detect a lost connection. */
 export const UiSnapshot = Schema.Union([
   Schema.Struct({
@@ -102,7 +112,7 @@ export const UiSnapshot = Schema.Union([
   Schema.Struct({ type: Schema.Literal("failure"), error: UiFailed }),
   Schema.Struct({ type: Schema.Literal("heartbeat") }),
 ]);
-const errors = [UiUnauthorized, UiForbidden, UiVersionChanged, UiFailed] as const;
+const errors = [UiUnauthorized, UiForbidden, UiVersionChanged, UiFailed, UiUpdating] as const;
 /** Portable serving contract; the host authenticates and resolves the configured app. */
 export const AppUiApi = HttpApi.make("app-ui").add(
   HttpApiGroup.make("ui")
