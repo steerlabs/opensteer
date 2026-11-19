@@ -302,6 +302,7 @@ test("a commit too large for one frame is repaired inline by a snapshot on the s
         purpose: "task" as const,
         askedAt: "2026-01-01T00:00:00.000Z",
         doneAt: null,
+        doneReason: null,
         pendingRequestCount: 0,
         lastReplyPreview: "\u0001".repeat(1050),
         failurePreview: null,
