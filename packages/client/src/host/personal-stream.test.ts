@@ -3189,3 +3189,34 @@ test("a stream sent again after a live reset replaces the text already held", ()
   expect(f.detail.text.get("live-reply")?.text).toBe(`${resent}!`);
   expect(f.sent.slice(sent).some((message) => message.type === "client.live.resync")).toBe(false);
 });
+
+test("an answered secret form is sent and never kept in the client's state", async () => {
+  const host = scriptedHost();
+  const commands: unknown[] = [];
+  const client = scriptedClient(host, async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/commands.dispatch")) {
+      commands.push(JSON.parse(String(init?.body)));
+      return Response.json({ ok: true, data: { type: "request.respond", wasDuplicate: false } });
+    }
+    return new Response(null, { status: 404 });
+  });
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await client.dispatch({
+      idempotencyKey: "request-secret:test",
+      expectedRevision: "1",
+      requestId,
+      response: { answers: { token: ["do-not-retain"] }, kind: "form" },
+      type: "request.respond",
+    });
+    expect(JSON.stringify(commands)).toContain("do-not-retain");
+    expect(JSON.stringify(client.getSnapshot())).not.toContain("do-not-retain");
+    expect(JSON.stringify(client.getThreadTranscript(threadId)?.getSnapshot())).not.toContain(
+      "do-not-retain",
+    );
+  } finally {
+    client.dispose();
+  }
+});
