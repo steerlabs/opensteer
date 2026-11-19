@@ -952,8 +952,9 @@ export interface BackgroundDeadlineStop {
  * nobody asked to hold the Thread.
  *
  * Each Run is stopped in a transaction of its own and handed to `onStopped`
- * as soon as that transaction commits: a later Run's failure ends the sweep,
- * and must not hide a stop that already happened.
+ * as soon as that transaction commits. A Run whose stop fails does not end the
+ * sweep: every overdue Run gets its turn, so one that keeps failing cannot
+ * starve the rest, and the failures are thrown together at the end.
  */
 export async function stopRunsPastBackgroundDeadline(
   database: Kysely<DatabaseSchema>,
@@ -968,6 +969,7 @@ export async function stopRunsPastBackgroundDeadline(
     .execute();
   // How many this sweep itself stopped: its owner's measure of progress.
   let settled = 0;
+  const failures: unknown[] = [];
   for (const candidate of candidates) {
     const stopped = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
@@ -1010,12 +1012,17 @@ export async function stopRunsPastBackgroundDeadline(
         },
         `background-deadline:${run.id}`,
       );
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
     if (stopped) {
       onStopped(stopped);
       settled += 1;
     }
   }
+  if (failures.length > 0)
+    throw new AggregateError(failures, "Stopping Runs past their background deadline failed");
   return settled;
 }
 export async function stopHeldRun(
@@ -1145,8 +1152,10 @@ export async function recoverRunsWithExpiredExecutionBindings(
     .execute();
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
-  // Every expired binding this sweep itself recovered, requeued or ended.
+  // Every expired binding this sweep itself recovered, requeued or ended. A
+  // Run whose recovery fails does not end the sweep, so it cannot starve the rest.
   let settled = 0;
+  const failures: unknown[] = [];
   for (const candidate of candidates) {
     const terminal = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
@@ -1198,6 +1207,9 @@ export async function recoverRunsWithExpiredExecutionBindings(
           threadId: run.threadId,
         },
       };
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
     if (terminal) {
       settled += 1;
@@ -1206,6 +1218,8 @@ export async function recoverRunsWithExpiredExecutionBindings(
       if (terminal.status === "terminal") terminatedRuns.push(terminal.target);
     }
   }
+  if (failures.length > 0)
+    throw new AggregateError(failures, "Recovering expired execution bindings failed");
   return {
     terminatedRuns,
     revokedGrants,
