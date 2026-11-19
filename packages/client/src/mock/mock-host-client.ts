@@ -42,6 +42,7 @@ import {
 } from "../host/device-commands.js";
 import { deviceDriverKey } from "../host/device-projection.js";
 import { mockDeviceMachine } from "./mock-device-machine.js";
+import { mockPendingRequestsRevision } from "./mock-scoped-personal.js";
 import {
   mockIphoneScreenDevice,
   mockIphoneScreenSession,
@@ -2696,16 +2697,16 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       );
     },
     "requests.list": async (input) => {
-      const waitingRequests = client
-        .getSnapshot()
-        .waitingRequests.filter(
-          ({ request }) =>
-            input.deviceAccessRequests === "include" || request.kind !== "device.access",
-        );
+      const all = client.getSnapshot().waitingRequests;
+      const waitingRequests = all.filter(
+        ({ request }) =>
+          input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      );
       return rpcSuccess(
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
           window: mockWindow(waitingRequests.length),
+          pendingRequestsRevision: mockPendingRequestsRevision(all),
         }),
       );
     },

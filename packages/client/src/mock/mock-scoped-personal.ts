@@ -36,6 +36,17 @@ type MockTranscriptSnapshot = TranscriptFixtureSnapshot;
 const itemRevisions = new WeakMap<TranscriptEntry, string>();
 const requestRevisions = new WeakMap<Request, string>();
 
+/**
+ * The preview has no commit sequence, so its pending-Requests revision is a digest of the list:
+ * it moves exactly when a Request, or what the list shows for one, changes. Shell and
+ * `requests.list` derive it from the same list.
+ */
+export function mockPendingRequestsRevision(waiting: readonly unknown[]): string {
+  let hash = 2166136261;
+  for (const char of JSON.stringify(waiting)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return String(waiting.length ? (hash >>> 0) + 1 : 0);
+}
+
 export function mockRequestRevision(request: Request, through: string) {
   const revision = requestRevisions.get(request) ?? through;
   requestRevisions.set(request, revision);
@@ -138,7 +149,7 @@ export function mockScopedShell(
     ),
     counts: {
       pendingRequestCount: snapshot.waitingRequests.length,
-      pendingRequestsRevision: "0",
+      pendingRequestsRevision: mockPendingRequestsRevision(snapshot.waitingRequests),
       needsYouCount: snapshot.needsYou?.count ?? 0,
       unreadTaskCount: [...threads.values()].filter(({ thread }) => thread.unread).length,
     },

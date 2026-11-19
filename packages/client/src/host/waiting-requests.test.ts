@@ -165,3 +165,24 @@ it("drops a Request answered here at once, and an older list read never brings i
   expect(f.ids()).not.toContain(answered);
   expect(shown.some((ids) => ids.includes(answered))).toBe(false);
 });
+
+it("lets a list read finish while unrelated shell activity keeps arriving", async () => {
+  const f = await harness();
+  f.control.holdLists = true;
+  await f.client.load();
+  await vi.waitFor(() => expect(f.lists).toHaveLength(1));
+  // Other tasks move: the shell advances, its pending-Requests revision does not.
+  for (let through = 1; through <= 5; through++) {
+    f.personal.publish(String(1_000 + through));
+    await f.roundTrip();
+  }
+  expect(f.lists).toHaveLength(1);
+  f.lists.splice(0)[0]!.release();
+  await vi.waitFor(() =>
+    expect(f.ids().sort()).toEqual(f.all.map(({ request }) => request.id).sort()),
+  );
+  // Installed at the revision the shell states: no further read.
+  f.personal.publish("2000");
+  await f.roundTrip();
+  expect(f.lists).toHaveLength(0);
+});

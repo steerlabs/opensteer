@@ -1960,14 +1960,16 @@ export class HttpHostClient {
   }
 
   /** The Host's pending Requests as the shell states them: their count and each row's revision. */
+  /**
+   * The pending count and the Host's `pendingRequestsRevision`, which moves exactly when the set
+   * of pending Requests or what their list shows changes; `requests.list` returns the same
+   * revision for the cut it read.
+   */
   #requestStamp(): string | undefined {
     const state = this.#stream.shell.getSnapshot();
     if (!state.synchronized || !state.snapshot) return undefined;
-    const rows = [...state.attention.values()]
-      .filter(({ kind }) => kind === "request")
-      .map(({ id, revision }) => `${id}@${revision}`)
-      .join(",");
-    return `${state.snapshot.counts.pendingRequestCount}|${rows}`;
+    const { pendingRequestCount, pendingRequestsRevision } = state.snapshot.counts;
+    return `${pendingRequestCount}|${pendingRequestsRevision}`;
   }
 
   /**
@@ -1986,18 +1988,20 @@ export class HttpHostClient {
         this.#update({ ...this.#snapshot, waitingRequests: [] });
       return;
     }
-    if (
-      !force &&
-      stamp === this.#waitingRequestStamp &&
-      !this.#waitingRequestReads.busy("waiting-requests")
-    )
-      return;
+    const busy = this.#waitingRequestReads.busy("waiting-requests");
+    if (!force && stamp === this.#waitingRequestStamp && !busy) return;
+    // A read already wanted for this stamp is left to finish: shell frames that do not move the
+    // pending Requests must not supersede it.
+    if (!force && busy && stamp === this.#wantedRequestStamp) return;
     if (this.#visibility === "background") return;
+    this.#wantedRequestStamp = stamp;
     this.#readWaitingRequests();
   }
 
   /** The stamp the installed `waitingRequests` were read at. */
   #waitingRequestStamp = "";
+  /** The stamp the read in flight (or queued) was asked for. */
+  #wantedRequestStamp = "";
   /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
   #waitingRequestRuns = 0;
   /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
@@ -2038,11 +2042,13 @@ export class HttpHostClient {
           const stamp = this.#requestStamp();
           const run = ++this.#waitingRequestRuns;
           const read_: HostSnapshot["waitingRequests"][number][] = [];
+          const revisions = new Set<string>();
           let before: string | null = null;
           for (let pages = 0; pages < 20; pages++) {
             const page: {
               requests: HostSnapshot["waitingRequests"];
               window: import("@opensteer/protocol").DurableWindow;
+              pendingRequestsRevision: string;
             } = unwrapRpcResult(
               await this.rpc["requests.list"](
                 { ...(before ? { before } : {}), limit: 100, deviceAccessRequests: "include" },
@@ -2051,10 +2057,16 @@ export class HttpHostClient {
             );
             if (!read.current()) return;
             read_.push(...page.requests);
+            revisions.add(page.pendingRequestsRevision);
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
           if (!read.current() || stamp === undefined) return;
+          // Pages read at different revisions are not one list: read it whole again.
+          if (revisions.size !== 1) {
+            queueMicrotask(() => this.#syncWaitingRequests(true));
+            return;
+          }
           // An answer confirmed before this run began is the Host's truth now: a Request it still
           // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
           for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
@@ -2063,7 +2075,8 @@ export class HttpHostClient {
           const waitingRequests = read_.filter(
             ({ request }) => !this.#answeredRequests.has(request.id),
           );
-          this.#waitingRequestStamp = stamp;
+          // Current for the revision the Host read it at, which the shell may not have reached yet.
+          this.#waitingRequestStamp = `${stamp.slice(0, stamp.indexOf("|"))}|${[...revisions][0]}`;
           this.#update({ ...this.#snapshot, waitingRequests });
           // The shell moved while this flew without overtaking it (a row outside the bound).
           if (this.#requestStamp() !== stamp) queueMicrotask(() => this.#syncWaitingRequests());
