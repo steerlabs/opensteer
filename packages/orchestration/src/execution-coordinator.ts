@@ -89,6 +89,7 @@ export class ExecutionCoordinator {
   #cancelPoll: (() => void) | undefined;
   #pollAt = 0;
   #readFailed = false;
+  readonly #owedSettlements = new Map<CommandId, () => Promise<unknown>>();
   #claimFailed = false;
   readonly #reads = new CoalescedWake({
     run: () => this.#poll(),
@@ -149,12 +150,22 @@ export class ExecutionCoordinator {
     this.#queue.length = 0;
     this.#queuedIds.clear();
     this.#dispatchBackoff.clear();
+    // Startup recovery returns dispatched resendable controls to pending.
+    this.#owedSettlements.clear();
     this.#queuedBytes = 0;
     this.#controller = undefined;
     this.#stopping = undefined;
   }
   async #poll(): Promise<void> {
     this.#claimFailed = false;
+    for (const [commandId, write] of this.#owedSettlements) {
+      try {
+        await write();
+        this.#owedSettlements.delete(commandId);
+      } catch {
+        this.#claimFailed = true;
+      }
+    }
     const recordedBefore = this.#backoffRecords;
     const commands = await this.#store.listPendingCommands(this.#maxQueuedCommands);
     this.#readFailed = false;
@@ -297,11 +308,9 @@ export class ExecutionCoordinator {
     if (!claimed) return false;
 
     if (claimed.terminalFailure) {
-      await this.#store.failCommand(
-        command.id,
-        claimed.terminalFailure,
-        claimed.terminalFailureInput ?? "authority-cohort",
-      );
+      const failure = claimed.terminalFailure;
+      const input = claimed.terminalFailureInput ?? "authority-cohort";
+      await this.#settle(command.id, () => this.#store.failCommand(command.id, failure, input));
       return true;
     }
     try {
@@ -315,17 +324,38 @@ export class ExecutionCoordinator {
       const resendable =
         dispatchError.disposition === "uncertain" && isResendableControlCommand(command.type);
       if (dispatchError.disposition === "retry" || resendable) {
-        await this.#store.retryCommand(command.id, dispatchError);
-        // Recorded once the retry has committed: a listing read before then
-        // misses the command, and must not take it for one that left.
-        this.#backOff(command.id);
+        await this.#settle(command.id, async () => {
+          await this.#store.retryCommand(command.id, dispatchError);
+          // Recorded once the retry has committed: a listing read before then
+          // misses the command, and must not take it for one that left.
+          this.#backOff(command.id);
+        });
       } else if (dispatchError.disposition === "failed") {
-        await this.#store.failCommand(command.id, dispatchError.message);
+        await this.#settle(command.id, () =>
+          this.#store.failCommand(command.id, dispatchError.message),
+        );
       } else if (command.type === "run.steer") {
-        await this.#store.markSteerUnknown(command.id, dispatchError.message);
+        await this.#settle(command.id, () =>
+          this.#store.markSteerUnknown(command.id, dispatchError.message),
+        );
       }
     }
     return true;
+  }
+
+  /**
+   * The write that settles a claimed command. A claimed command is no longer
+   * pending, so no listing will find it again: if this write fails it is owed,
+   * kept here and retried on the poll interval until it commits.
+   */
+  async #settle(commandId: CommandId, write: () => Promise<unknown>): Promise<void> {
+    try {
+      await write();
+      this.#owedSettlements.delete(commandId);
+    } catch (error) {
+      this.#owedSettlements.set(commandId, write);
+      throw error;
+    }
   }
 
   /**

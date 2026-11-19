@@ -11,13 +11,27 @@ import type { DeadlineDrain } from "./deadline-drain.js";
 beforeEach(() => vi.useFakeTimers({ now: 1_000_000 }));
 afterEach(() => vi.useRealTimers());
 
-type Exit = "future" | "none" | "due-then-done" | "due-stuck" | "settle-throws" | "next-throws";
+type Exit =
+  | "future"
+  | "none"
+  | "due-then-done"
+  | "due-stuck"
+  | "settle-throws"
+  | "next-throws"
+  | "capped-progress";
 
 function owner(kind: "requests" | "leases", exit: Exit) {
-  let due = exit.startsWith("due") || exit === "settle-throws";
+  let due = exit.startsWith("due") || exit === "settle-throws" || exit === "capped-progress";
+  // A capped sweep: each pass settles one page and commits, the next page is still due.
+  let pages = exit === "capped-progress" ? 2 : 0;
+  let head = 0;
   const settle = vi.fn(async () => {
     if (exit === "settle-throws") throw new Error("database down");
     if (exit === "due-then-done") due = false;
+    if (exit === "capped-progress") {
+      head++;
+      if (--pages < 0) due = false;
+    }
   });
   const next = vi.fn(async () => {
     if (exit === "next-throws") throw new Error("database down");
@@ -27,7 +41,7 @@ function owner(kind: "requests" | "leases", exit: Exit) {
   });
   const drain: DeadlineDrain =
     kind === "requests"
-      ? new RequestDeadlines({ next, settle, onError: () => undefined })
+      ? new RequestDeadlines({ next, settle, onError: () => undefined, progressMark: () => head })
       : executionLeaseDrain(
           {
             nextExecutionDeadline: next,
@@ -64,4 +78,16 @@ describe.each(["requests", "leases"] as const)("%s deadline owner", (kind) => {
     await drain.close();
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it("drains every capped page of due Requests at once while each pass makes progress", async () => {
+  const { drain, settle } = owner("requests", "capped-progress");
+  drain.start();
+  await drain.settled();
+  // Well inside the first backoff (5 s): only immediate reruns can reach page three.
+  await vi.advanceTimersByTimeAsync(100);
+  // Three pages settled without waiting for a backoff, then nothing armed.
+  expect(settle).toHaveBeenCalledTimes(3);
+  expect(vi.getTimerCount()).toBe(0);
+  await drain.close();
 });

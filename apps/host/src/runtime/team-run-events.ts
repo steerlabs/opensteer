@@ -1,6 +1,10 @@
 import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import type { RunId, TeamStatusStepKindSchema } from "@opensteer/core";
 import type { z } from "zod";
+import { systemClock, type Clock } from "@opensteer/shared/clock";
+
+const retryFloorMs = 1_000;
+const retryCeilingMs = 5 * 60_000;
 
 type StepKind = z.infer<typeof TeamStatusStepKindSchema>;
 type Step = { readonly kind: StepKind; readonly count: number };
@@ -9,20 +13,35 @@ interface RunChanges {
   dirty: boolean;
   terminal: boolean;
   sending: Promise<void> | null;
+  /** A terminal publication not yet recorded as delivered: owed, with its next retry. */
+  owed: boolean;
+  retryMs: number;
+  cancelRetry: (() => void) | undefined;
 }
+
+type TeamRunPublish = (runId: RunId, steps: readonly Step[]) => Promise<"pending" | void>;
 
 export class TeamRunEvents {
   readonly #runs = new Map<RunId, RunChanges>();
-  readonly #publish: (runId: RunId, steps: readonly Step[]) => Promise<void>;
+  readonly #publish: TeamRunPublish;
   readonly #onError: () => void;
+  readonly #clock: Clock;
   #closed = false;
 
   constructor(options: {
-    readonly publish: (runId: RunId, steps: readonly Step[]) => Promise<void>;
+    /**
+     * Publishes the Run's state. For a finished Run it answers "pending" while
+     * the team request has not recorded its terminal state (a timed-out call on
+     * a healthy link); that Run stays owed and is retried with backoff until it
+     * is recorded or the link removes the request.
+     */
+    readonly publish: TeamRunPublish;
     readonly onError: () => void;
+    readonly clock?: Clock;
   }) {
     this.#publish = options.publish;
     this.#onError = options.onError;
+    this.#clock = options.clock ?? systemClock;
   }
 
   observe(
@@ -37,6 +56,9 @@ export class TeamRunEvents {
       dirty: false,
       terminal: false,
       sending: null,
+      owed: false,
+      retryMs: retryFloorMs,
+      cancelRetry: undefined,
     };
     this.#runs.set(runId, run);
     const kind =
@@ -53,29 +75,45 @@ export class TeamRunEvents {
   }
 
   #schedule(runId: RunId, run: RunChanges): void {
+    run.cancelRetry?.();
+    run.cancelRetry = undefined;
     run.sending ??= this.#drain(runId, run).finally(() => {
       run.sending = null;
+      if (this.#closed) return;
       if (run.dirty) this.#schedule(runId, run);
-      else if (run.terminal) this.#runs.delete(runId);
+      else if (run.terminal && run.owed) {
+        run.cancelRetry = this.#clock.schedule(() => {
+          run.cancelRetry = undefined;
+          run.dirty = true;
+          this.#schedule(runId, run);
+        }, run.retryMs);
+        run.retryMs = Math.min(run.retryMs * 2, retryCeilingMs);
+      } else if (run.terminal) this.#runs.delete(runId);
     });
   }
 
   async #drain(runId: RunId, run: RunChanges): Promise<void> {
     while (run.dirty) {
       run.dirty = false;
+      let delivered = true;
       try {
-        await this.#publish(
-          runId,
-          [...run.counts].map(([kind, count]) => ({ kind, count })),
-        );
+        delivered =
+          (await this.#publish(
+            runId,
+            [...run.counts].map(([kind, count]) => ({ kind, count })),
+          )) !== "pending";
       } catch {
+        delivered = false;
         this.#onError();
       }
+      run.owed = run.terminal && !delivered;
+      if (!run.owed) run.retryMs = retryFloorMs;
     }
   }
 
   async close(): Promise<void> {
     this.#closed = true;
+    for (const run of this.#runs.values()) run.cancelRetry?.();
     while ([...this.#runs.values()].some((run) => run.sending !== null))
       await Promise.all([...this.#runs.values()].map((run) => run.sending));
     this.#runs.clear();

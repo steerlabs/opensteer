@@ -58,6 +58,45 @@ describeStore("PostgreSQL store", (it) => {
     expect(preferences.history.at(-1)).toEqual(selectionFor(1));
     await expect(store.getExecutionPreferences(userId)).resolves.toEqual(preferences);
   });
+  it("lets no superseded Runner connection erase or overwrite a newer catalog", async ({
+    storeFixture,
+  }) => {
+    const { store, database, createRunFixture } = storeFixture;
+    const f = await createRunFixture("catalog-generation");
+    const { connectionGeneration } = await database
+      .selectFrom("executionEnvironments")
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select("runners.connectionGeneration")
+      .where("executionEnvironments.id", "=", f.environmentId)
+      .executeTakeFirstOrThrow();
+    const current = Number(connectionGeneration);
+    const catalog = (modelId: string) =>
+      HarnessInstanceCatalogSchema.parse({
+        continuationIdentity: testContinuationIdentity,
+        driverKind: f.harnessInstance.driverKind,
+        harnessInstanceId: f.harnessInstance.id,
+        models: [
+          { displayName: modelId, isDefault: true, modelId, options: [], providerId: "openai" },
+        ],
+        status: "ready",
+      });
+    const record = (modelId: string, generation: number) =>
+      store.recordHarnessCatalogs({
+        catalogs: [catalog(modelId)],
+        environmentId: f.environmentId,
+        expectedRevisions: new Map([[f.harnessInstance.id, f.harnessInstance.runtimeRevision]]),
+        connectionGeneration: generation,
+      });
+    await expect(record("newer", current)).resolves.toHaveLength(1);
+    // The older registration's follow-up arrives after the newer one recorded.
+    await expect(record("older", current - 1)).resolves.toEqual([]);
+    await store.discardHarnessCatalog(f.environmentId, f.harnessInstance.id, current - 1);
+    await expect(
+      store.getHarnessCatalog(f.environmentId, f.harnessInstance.id),
+    ).resolves.toMatchObject({
+      models: [expect.objectContaining({ modelId: "newer" })],
+    });
+  });
   it("does not publish a catalog after its profile revision changes or is removed", async ({
     storeFixture,
   }) => {

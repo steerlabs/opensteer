@@ -2,6 +2,7 @@ import { createPersonalStreamCache, personalCacheFormat } from "@opensteer/clien
 import {
   dropEarlierCheckpointFormats,
   fileCheckpointStorage,
+  personalSessionLabel,
 } from "./client/personal-checkpoint-files.js";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
@@ -332,6 +333,8 @@ function mobileClient(): MobileRoot {
     fileCheckpointStorage(
       privateFiles,
       `${root}${storeName}/personal-stream-v${personalCacheFormat}`,
+      // Read only once the client exists: saved state lives exactly as long as its session.
+      (deploymentId) => personalSessionLabel(client.sessions, () => new Date())(deploymentId),
     ),
   );
   const client: MobileClient = new MobileClient({

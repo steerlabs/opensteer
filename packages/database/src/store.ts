@@ -966,14 +966,21 @@ export class OpensteerStore {
     readonly catalogs: readonly HarnessInstanceCatalog[];
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
+    readonly connectionGeneration?: number;
   }): Promise<readonly HarnessInstanceCatalog[]> {
     return harnessStore.recordHarnessCatalogs(this.#database, input);
   }
   async discardHarnessCatalog(
     environmentId: EnvironmentId,
     harnessInstanceId: HarnessInstanceId,
+    connectionGeneration?: number,
   ): Promise<void> {
-    return harnessStore.discardHarnessCatalog(this.#database, environmentId, harnessInstanceId);
+    return harnessStore.discardHarnessCatalog(
+      this.#database,
+      environmentId,
+      harnessInstanceId,
+      connectionGeneration,
+    );
   }
   async listHarnessCatalogs(
     environmentIds: readonly EnvironmentId[],

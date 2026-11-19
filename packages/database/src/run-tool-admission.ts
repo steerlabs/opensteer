@@ -14,7 +14,7 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
-import { type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
 import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
@@ -381,7 +381,8 @@ export async function admitWatchControlRequestInTransaction(
     .selectFrom("watchControlRequests")
     .select(({ fn }) => fn.countAll<string>().as("count"))
     .where("activationId", "=", input.activationId)
-    .where("createdAt", ">=", new Date(Date.now() - 60 * 60 * 1_000))
+    // created_at is the database's default: compare it on the database's clock.
+    .where("createdAt", ">=", sql<Date>`now() - interval '1 hour'`)
     .executeTakeFirstOrThrow();
   if (safeCount(window.count) >= WATCH_OBSERVATIONS_PER_HOUR) {
     throw new OpensteerError({

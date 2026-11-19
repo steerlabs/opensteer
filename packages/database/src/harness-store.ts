@@ -730,6 +730,8 @@ export async function recordHarnessCatalogs(
     readonly catalogs: readonly HarnessInstanceCatalog[];
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
+    /** Records nothing once this Runner connection generation is superseded. */
+    readonly connectionGeneration?: number;
   },
 ): Promise<readonly HarnessInstanceCatalog[]> {
   for (const catalog of input.catalogs) {
@@ -746,6 +748,10 @@ export async function recordHarnessCatalogs(
       left.harnessInstanceId.localeCompare(right.harnessInstanceId),
     );
     if (catalogs.length === 0) return [];
+    if (
+      !(await connectionStillCurrent(transaction, input.environmentId, input.connectionGeneration))
+    )
+      return [];
     const harnesses = await transaction
       .selectFrom("harnessInstances")
       .select(["driverKind", "enabled", "environmentId", "id", "removedAt", "runtimeRevision"])
@@ -918,12 +924,36 @@ async function adoptSupersededContinuationIdentities(
  * "connected" answer has to be dropped first — otherwise every client keeps
  * being told the profile is signed in until something else happens to look.
  */
+/**
+ * True unless a caller fenced to a Runner connection generation has been
+ * superseded: an older registration's follow-up must not erase or overwrite
+ * what a newer connection of the same Runner recorded. Read in the writing
+ * transaction, under a share lock on the Runner row its registration updates.
+ */
+async function connectionStillCurrent(
+  tx: Transaction<DatabaseSchema>,
+  environmentId: EnvironmentId,
+  connectionGeneration: number | undefined,
+): Promise<boolean> {
+  if (connectionGeneration === undefined) return true;
+  const runner = await tx
+    .selectFrom("executionEnvironments")
+    .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+    .select("runners.connectionGeneration")
+    .where("executionEnvironments.id", "=", environmentId)
+    .forShare("runners")
+    .executeTakeFirst();
+  return !runner || Number(runner.connectionGeneration) === connectionGeneration;
+}
+
 export async function discardHarnessCatalog(
   database: Kysely<DatabaseSchema>,
   environmentId: EnvironmentId,
   harnessInstanceId: HarnessInstanceId,
+  connectionGeneration?: number,
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx, mutation) => {
+    if (!(await connectionStillCurrent(tx, environmentId, connectionGeneration))) return;
     const deleted = await tx
       .deleteFrom("harnessCatalogs")
       .where("environmentId", "=", environmentId)

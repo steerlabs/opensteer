@@ -408,7 +408,15 @@ describeStore("Assignment result delivery", (it) => {
     await expect(s.store.drainAssignmentReturn(task.assignment.id)).resolves.toBe("held");
     const drained = await s.store.drainPendingAssignmentReturns();
     expect(drained).toMatchObject({ held: 1, settled: 0, failures: [], waiting: 0 });
-    expect(drained.heldUntil!.getTime()).toBeGreaterThan(Date.now());
+    // The hold's end as the delivery transaction saw it, not filtered by a later clock.
+    const stored = await s.database
+      .selectFrom("delegations")
+      .select("resultWaits")
+      .where("id", "=", task.assignment.id)
+      .executeTakeFirstOrThrow();
+    expect(drained.heldUntil!.getTime()).toBe(
+      Math.min(...stored.resultWaits.map(({ expiresAt }) => expiresAt)),
+    );
     expect(await s.returns()).toEqual([]);
     await endAssignmentResultWait(s.database, {
       assignmentId: task.assignment.id,
