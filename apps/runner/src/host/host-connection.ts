@@ -2394,6 +2394,7 @@ export function runnerCapabilities(
     "background-text-v1",
     "task-done-v1",
     "person-show-v1",
+    "full-disk-access-probe-v1",
   ];
 }
 

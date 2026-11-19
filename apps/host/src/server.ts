@@ -3214,7 +3214,8 @@ function attachRunnerSocket(
             message.type === "runner.authenticate" &&
             (reason === "agent-phone-outdated" ||
               reason === "runner-outdated" ||
-              reason === "iphone-app-outdated")
+              reason === "iphone-app-outdated" ||
+              reason === "run-events-version-mismatch")
           ) {
             const identity = await authenticator
               .authenticateUpdateRefusal(challenge, message)
@@ -3222,7 +3223,7 @@ function attachRunnerSocket(
             if (identity)
               await recordUpdateRequired({
                 ...identity,
-                reason: reason === "iphone-app-outdated" ? "runner-outdated" : reason,
+                reason: reason === "agent-phone-outdated" ? reason : "runner-outdated",
               });
             log.warn(
               {

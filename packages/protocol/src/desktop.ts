@@ -231,6 +231,8 @@ export const DesktopPersonalDeploymentIssueCodeSchema = z.enum([
   "service-crash-loop",
   "shutdown-incomplete",
   "update-incompatible",
+  /** The one-time Personal state conversion failed; Try again or Start fresh. */
+  "personal-conversion-failed",
   "unexpected",
 ]);
 

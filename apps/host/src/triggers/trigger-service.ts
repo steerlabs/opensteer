@@ -19,6 +19,8 @@ import {
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
+import type { Clock } from "@opensteer/shared/clock";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
   readonly onChanged?: () => void;
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
@@ -370,54 +372,46 @@ export class TriggerService {
     return `oswh_${this.#tokens.deriveSecret("webhook", routeKey)}`;
   }
 }
+/**
+ * Fires due schedules at the earliest armed `next_fire_at`, and again whenever
+ * a commit moves one (`triggerSchedulesChanged`). Nothing polls.
+ */
 export class TriggerScheduleLoop {
   readonly #onChanged: () => void;
-  readonly #onError: (error: unknown) => void;
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
-  readonly #store: Pick<TriggerStore, "claimDueSchedules">;
-  #closed = false;
-  #running: Promise<void> | undefined;
-  #timer: NodeJS.Timeout | undefined;
+  readonly #store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
+  readonly #drain: DeadlineDrain;
   constructor(options: {
     /** A due Trigger was paused or moved on to its next instant. */
     readonly onChanged: () => void;
     readonly onError: (error: unknown) => void;
     readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
-    readonly store: Pick<TriggerStore, "claimDueSchedules">;
+    readonly store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
+    readonly clock?: Clock;
   }) {
     this.#onChanged = options.onChanged;
-    this.#onError = options.onError;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#store = options.store;
+    this.#drain = new DeadlineDrain({
+      drain: () => this.#tick(),
+      onError: options.onError,
+      ...(options.clock ? { clock: options.clock } : {}),
+    });
   }
   start(): void {
-    if (this.#closed || this.#timer || this.#running) return;
-    this.#schedule(0);
+    this.#drain.start();
+  }
+  wake(): void {
+    this.#drain.wake();
   }
   async close(): Promise<void> {
-    this.#closed = true;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
-    await this.#running?.catch(() => undefined);
+    await this.#drain.close();
   }
-  #schedule(delayMs: number): void {
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      this.#running = this.#tick().finally(() => {
-        this.#running = undefined;
-        if (!this.#closed) this.#schedule(1_000);
-      });
-    }, delayMs);
-    this.#timer.unref();
-  }
-  async #tick(): Promise<void> {
-    try {
-      const { occurrences, changed } = await this.#store.claimDueSchedules();
-      for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
-      if (changed) this.#onChanged();
-    } catch (error) {
-      this.#onError(error);
-    }
+  async #tick(): Promise<Date | null> {
+    const { occurrences, changed } = await this.#store.claimDueSchedules();
+    for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
+    if (changed) this.#onChanged();
+    return this.#store.nextScheduleAt();
   }
 }
 function hashSecret(value: string): string {

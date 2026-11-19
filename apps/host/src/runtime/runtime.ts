@@ -59,7 +59,7 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import { DeadlineDrain } from "./deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "./deadline-drain.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -182,6 +182,7 @@ import {
   inspectAndRecordInvalidatedHarnessCatalog,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
+  reconcileHarnessCatalogs,
 } from "../agents/harness-catalogs.js";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
@@ -528,6 +529,10 @@ export async function createHostRuntime(
   let deadlines: RequestDeadlines | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
+  let assignmentReturns: DeadlineDrain | undefined;
+  let reconcileMemoryPasses: (() => void) | undefined;
+  let wakeTriggerSchedules: (() => void) | undefined;
+  let catalogConvergence: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
   let pluginOAuth: PluginOAuthService | undefined;
@@ -1546,6 +1551,9 @@ export async function createHostRuntime(
     let reportDuplicateRunUsage: (runId: RunId) => void = (runId) => {
       console.warn("Run usage was already recorded; the later statement was dropped", runId);
     };
+    let reportHarnessCatalogConvergenceError = (error: unknown): void => {
+      console.warn("AI model catalogs could not be refreshed", error);
+    };
     let reportHarnessCatalogInvalidationError: (
       harnessInstanceId: string,
       error: unknown,
@@ -1674,11 +1682,21 @@ export async function createHostRuntime(
       void shellHub?.endGrantSessions(grants, "run-ended").catch(reportMutationFailure);
     };
     store.onRunGrantsRevoked(endGrants);
-    store.onAssignmentReturnReady((assignmentId) =>
-      store
-        .drainAssignmentReturn(assignmentId)
-        .catch((error: unknown) => reportAssignmentReturnError(assignmentId, error)),
-    );
+    // Delegation returns are a durable outbox: a commit wakes the drain, and a
+    // return that failed or waits behind a full parent inbox is retried with
+    // backoff rather than waiting for the next commit or a Host restart.
+    assignmentReturns = new DeadlineDrain({
+      ...(options.executionClock ? { clock: options.executionClock } : {}),
+      onError: reportMutationFailure,
+      drain: async () => {
+        const returns = await store.drainPendingAssignmentReturns();
+        for (const { assignmentId, error } of returns.failures) {
+          reportAssignmentReturnError(assignmentId, error);
+        }
+        return returns.failures.length > 0 || returns.waiting > 0 ? retryWithBackoff : null;
+      },
+    });
+    store.onAssignmentReturnReady(() => assignmentReturns?.wake());
     store.onPersonMessageReady((message) => notificationDispatcher?.dispatch(message));
     finishLoop = new DeadlineDrain({
       onError: reportMutationFailure,
@@ -1704,6 +1722,12 @@ export async function createHostRuntime(
           break;
         case "automationFailuresChanged":
           notifyAutomationFailures();
+          break;
+        case "triggerSchedulesChanged":
+          wakeTriggerSchedules?.();
+          break;
+        case "runnerRevoked":
+          void runnerRegistry?.revoke(reaction.runnerId).catch(reportMutationFailure);
           break;
         case "authorityChanged":
           passwordSignIns.authorityChanged();
@@ -1764,6 +1788,7 @@ export async function createHostRuntime(
           liveText.finish(reaction, syncHead);
           realtime.wake(syncHead, new Set(["authority"]));
           if (reaction.attemptOnly) break;
+          reconcileMemoryPasses?.();
           teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           void toolActivity
@@ -2162,6 +2187,11 @@ export async function createHostRuntime(
             ?.onRunnerDisconnected(identity.runnerId, identity.connectionId)
             .catch((error) => app.log.warn({ err: error }, "App disconnect handling failed"));
           tabs?.changed();
+          // "Last seen" is written when a connection ends, not on every heartbeat.
+          await store.touchRunnerConnection({
+            connectionGeneration: identity.connectionGeneration,
+            runnerId: identity.runnerId,
+          });
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
@@ -2185,6 +2215,15 @@ export async function createHostRuntime(
           if (failedTriggerCount > 0) realtime.publishTriggersChanged();
         },
         onHeartbeat: async (identity, activeRunIds) => {
+          // The registry delivers heartbeats only from the current connection
+          // of a Runner it has not revoked, and every revocation reaches it at
+          // commit (`runnerRevoked`), so an idle heartbeat touches no row.
+          if (!runners.isCurrentConnection(identity)) {
+            throw new Error("Runner connection fence is no longer current");
+          }
+          if (activeRunIds.length === 0) return [];
+          // A lease change writes anyway; record that the Runner was seen and
+          // recheck the durable fence in the same breath.
           const connectionIsCurrent = await store.touchRunnerConnection({
             connectionGeneration: identity.connectionGeneration,
             runnerId: identity.runnerId,
@@ -2321,6 +2360,8 @@ export async function createHostRuntime(
               void naming?.reconcile().catch(reportThreadNamingError);
             } finally {
               watchService?.runnerRegistered(identity);
+              catalogConvergence?.wake();
+              reconcileMemoryPasses?.();
             }
           },
         ),
@@ -2369,6 +2410,34 @@ export async function createHostRuntime(
         // Observation cannot fail registration or convergence after its commit.
       }
     }
+    // A capture that failed on connect, an answer still preparing and a ready
+    // catalog older than thirty minutes are looked at again at a deadline.
+    catalogConvergence = new DeadlineDrain({
+      ...(options.executionClock ? { clock: options.executionClock } : {}),
+      onError: (error) => reportHarnessCatalogConvergenceError(error),
+      drain: async () => {
+        const connected = (await store.listEnvironments())
+          .map((environment) => environment.id)
+          .filter((environmentId) => runners.isAvailable(environmentId));
+        const identities = new Map(
+          connected.flatMap((environmentId) => {
+            const identity = runners.identityForEnvironment(environmentId);
+            return identity ? [[environmentId, identity] as const] : [];
+          }),
+        );
+        const convergence = await reconcileHarnessCatalogs({
+          catalogs: harnessCatalogs,
+          connectedEnvironmentIds: connected,
+          runners,
+          signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
+          onCommitted: (environmentId, catalogs) => {
+            const identity = identities.get(environmentId);
+            if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
+          },
+        });
+        return convergence.unsettled ? retryWithBackoff : convergence.staleAt;
+      },
+    });
     runnerRegistry = runners;
     const egress = new EgressService({
       authorizer: store,
@@ -2517,7 +2586,6 @@ export async function createHostRuntime(
       maxQueuedBytes: 64 * 1_024 * 1_024,
       maxQueuedCommands: 10_000,
       onDispatchError: (error, command) => reportDispatchError(error, command.id),
-
       store,
     });
     // Registration is the earliest proof that queued execution can make
@@ -3173,6 +3241,8 @@ export async function createHostRuntime(
       );
     reportDuplicateRunUsage = (runId) =>
       app.log.warn({ runId }, "Run usage was already recorded; the later statement was dropped");
+    reportHarnessCatalogConvergenceError = (error) =>
+      app.log.warn({ err: error }, "AI model catalogs could not be refreshed; retrying");
     reportHarnessCatalogInvalidationError = (harnessInstanceId, error) =>
       app.log.warn(
         { err: error, harnessInstanceId },
@@ -3224,6 +3294,9 @@ export async function createHostRuntime(
       });
     }
     await memoryPasses.reconcileMissing();
+    reconcileMemoryPasses = () => {
+      if (!memoryPasses.settled) void memoryPasses.reconcileMissing();
+    };
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
     coordinator.start();
@@ -3277,14 +3350,13 @@ export async function createHostRuntime(
       },
       store: triggerStore,
     });
+    wakeTriggerSchedules = () => triggerScheduleLoop.wake();
     triggerScheduleLoop.start();
     watchService.start();
     channels.start();
     if (await initializePersonal()) await ensureLinks();
-    const returns = await store.drainPendingAssignmentReturns();
-    for (const { assignmentId, error } of returns.failures) {
-      reportAssignmentReturnError(assignmentId, error);
-    }
+    assignmentReturns.start();
+    await assignmentReturns.settled();
     const executionLeases = executionLeaseDrain(
       store,
       wakeExecutionCoordinator,
@@ -3391,6 +3463,7 @@ export async function createHostRuntime(
         runnerBrowsers.close();
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());
+        await step("AI model catalogs", () => catalogConvergence?.close());
         await step("runners", () => runners.close());
         await step("thread naming", () => naming!.stop());
         await step("quiet tasks", () => quietTasks.stop());
@@ -3402,6 +3475,7 @@ export async function createHostRuntime(
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
         await step("Run finishes", () => finishLoop?.close());
+        await step("task result returns", () => assignmentReturns?.close());
         await step("Request deadlines", () => deadlines?.close());
         await step("personal retention", () => retention?.close());
         removeMutationHooks?.();
@@ -3428,6 +3502,8 @@ export async function createHostRuntime(
     await notificationDispatcher?.close();
     await executionLeaseLoop?.close();
     await finishLoop?.close();
+    await assignmentReturns?.close();
+    await catalogConvergence?.close();
     await deadlines?.close();
     retention?.close();
     removeMutationHooks?.();

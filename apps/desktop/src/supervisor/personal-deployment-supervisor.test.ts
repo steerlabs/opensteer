@@ -24,6 +24,7 @@ import type {
   PersonalDeploymentFilesystemPort,
   PersonalDeploymentManifest,
   PersonalDeploymentPreparedPaths,
+  PersonalRuntimeIdentity,
 } from "../secrets/personal-deployment-store.js";
 import {
   NativePersonalDeploymentFilesystem,
@@ -728,7 +729,7 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.stop();
   });
 
-  it("snapshots the stopped database before an app update commits, and never blocks the update", async () => {
+  it("after the conversion, snapshots the stopped database before an app update commits and never blocks it", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
     const fixture = supervisorFixture(configured, undefined, nextRelease);
@@ -748,6 +749,7 @@ describe("PersonalDeploymentSupervisor", () => {
       configured,
       nextRelease.identity,
       expect.any(Date),
+      false,
     );
     // Before the cutover and before PostgreSQL or the Host ran.
     expect(atSnapshot).toEqual([{ revision: configured.revision, processes: 0 }]);
@@ -944,6 +946,70 @@ describe("PersonalDeploymentSupervisor", () => {
     await expect(starting).rejects.toThrow(/invalid Host configuration/u);
     expect(fixture.supervisor.status.issue?.detail).toContain("credential=[redacted]");
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
+  });
+
+  it("keeps a pinned copy before converting, and refuses the update when it cannot", async () => {
+    const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
+    const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
+
+    const refused = supervisorFixture(configured, undefined, nextRelease);
+    refused.files.converted = false;
+    refused.files.snapshotDatabase.mockRejectedValue(new Error("ENOSPC: no space left"));
+    await expect(refused.supervisor.resumeIfConfigured()).rejects.toThrow(/couldn't keep a copy/u);
+    expect(refused.supervisor.status).toMatchObject({
+      canStart: true,
+      issue: { code: "disk-space-insufficient", repairAction: "free-disk-space" },
+      state: "repair-required",
+    });
+    // No copy, no conversion: the old release is still the committed one and nothing ran.
+    expect(refused.files.manifest?.release).toEqual(configured.release);
+    expect(refused.processes.specs).toEqual([]);
+
+    const pinned = supervisorFixture(configured, undefined, nextRelease);
+    pinned.files.converted = false;
+    await expect(pinned.supervisor.resumeIfConfigured()).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(pinned.files.snapshotDatabase).toHaveBeenCalledWith(
+      configured,
+      nextRelease.identity,
+      expect.any(Date),
+      true,
+    );
+    // The first healthy start releases the pin.
+    expect(pinned.files.markPersonalStateConverted).toHaveBeenCalledTimes(1);
+    expect(pinned.files.converted).toBe(true);
+    await pinned.supervisor.stop();
+  });
+
+  it("names the failed conversion step and the version that opens the kept copy", async () => {
+    const fixture = supervisorFixture(null);
+    fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
+    const starting = fixture.supervisor.start();
+    await vi.waitFor(() => {
+      expect(
+        fixture.processes.children.find(({ component }) => component === "host"),
+      ).toBeDefined();
+    });
+    const host = fixture.processes.children.find(({ component }) => component === "host")!;
+    host.stderr.write(
+      'PersonalStateConversionError: Personal state conversion failed at step "verify": Personal conversion parity check failed\n',
+    );
+    host.stderr.end();
+    host.emit("exit", 1, null);
+
+    await expect(starting).rejects.toThrow(/step "verify"/u);
+    expect(fixture.supervisor.status).toMatchObject({
+      canStart: true,
+      issue: {
+        code: "personal-conversion-failed",
+        component: "host",
+        repairAction: "restart-opensteer",
+      },
+      state: "repair-required",
+    });
+    expect(fixture.supervisor.status.issue?.detail).toContain("Opensteer 1.2.3 can open it");
+    expect(fixture.files.markPersonalStateConverted).not.toHaveBeenCalled();
   });
 
   it("includes redacted service diagnostics when readiness times out", async () => {
@@ -1870,7 +1936,21 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
     return this.databasePresent ? "initialized" : "empty";
   }
 
-  readonly snapshotDatabase = vi.fn(async () => "20261028T120000Z-1.2.3");
+  readonly snapshotDatabase = vi.fn(
+    async (
+      _manifest: PersonalDeploymentManifest,
+      _toRelease: PersonalRuntimeIdentity,
+      _createdAt: Date,
+      _pinned?: boolean,
+    ) => "20261028T120000Z-1.2.3",
+  );
+  /** Existing fixtures predate the gate; the conversion tests turn it off. */
+  converted = true;
+  readonly personalStateConverted = vi.fn(async () => this.converted);
+  readonly markPersonalStateConverted = vi.fn(async () => {
+    this.converted = true;
+  });
+  readonly pinnedSnapshotSourceVersion = vi.fn(async (): Promise<string | null> => "1.2.3");
 
   readonly stageDatabaseInitPassword = vi.fn(
     async (_: PersonalDeploymentManifest, password: string) => {
