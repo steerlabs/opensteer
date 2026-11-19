@@ -2210,6 +2210,7 @@ export async function createHostRuntime(
         onHarnessCatalogInvalidated: (identity, invalidation) =>
           recaptureInvalidatedHarnessCatalog({
             catalogs: harnessCatalogs,
+            connectionGeneration: identity.connectionGeneration,
             environmentIds: identity.environmentIds,
             harnessInstanceId: invalidation.harnessInstanceId,
             runners,

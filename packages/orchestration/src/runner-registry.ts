@@ -742,6 +742,10 @@ export class RunnerRegistry {
         message: "Runner connection generation is stale",
       });
   }
+  /** The current connection generation serving an environment, for fencing catalog writes. */
+  connectionGenerationFor(environmentId: EnvironmentId): number | undefined {
+    return this.#byEnvironment.get(environmentId)?.identity.connectionGeneration;
+  }
   /** The in-memory connection fence: superseded or revoked connections fail it. */
   isCurrentConnection(identity: Pick<RunnerIdentity, "connectionId" | "runnerId">): boolean {
     return (

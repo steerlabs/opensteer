@@ -131,6 +131,8 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     const beforeIdle = await readFile(capture, "utf8");
     let convergenceRequests = 0;
     const inspector: HarnessCatalogInspector = {
+      // Never asked here: this check expects no capture at all.
+      connectionGenerationFor: () => 1,
       inspectHarnesses: async () => {
         convergenceRequests++;
         await refresh();
