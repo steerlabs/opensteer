@@ -11,6 +11,7 @@
     "@opensteer/plugin-engine-app-templates": "workspace:*",
     "@opensteer/plugin-engine-sdk": "workspace:*",
     "@opensteer/plugin-engine-utils": "workspace:*",
+    "apps": "workspace:*",
     "effect": "4.1.4"
   },
   "scripts": {

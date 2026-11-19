@@ -20,7 +20,7 @@ import {
 } from "../contracts/sql.ts";
 import type { SkillFile } from "../contracts/skills.ts";
 import type { MigrateResult } from "../contracts/protocols/current.ts";
-import upstreamNames from "../../../upstream-names.json" with { type: "json" };
+import { renameReservedTables, renamedReservedTables } from "../contracts/reserved-tables.ts";
 
 /** The receipt table of workflow step mutations. */
 const receipts = `${reservedTablePrefix}step_receipts`;
@@ -35,45 +35,26 @@ const migrationsTable = `${reservedTablePrefix}migrations`;
  */
 const legacyRows = `${reservedTablePrefix}legacy_rows`;
 /**
- * The reserved tables as a framework from before the rename named them (`from`), and their names
- * now (`to`). The plugin source rewrite changes only these names in migrations, so a rewritten
- * migration with them changed back is its applied bytes.
- */
-const renamedTables = upstreamNames.rules.filter((rule) => rule.scope === "reserved-table");
-
-/**
  * Give a database created by a framework from before the rename its reserved tables' current names,
- * once. Its applied migrations are recorded by their bytes then; one rewritten since (see
- * `renamedTables`) is recorded by its current bytes, so its history still matches. Returns nothing:
- * after it the database reads as one this framework created.
+ * once: its tables are renamed and its old legacy view dropped (the current one is created after).
+ * A database that has a reserved table under both names is refused. After it the database reads as
+ * one this framework created.
  */
-const renameReservedTables = (
-  storage: AppSqlStorage,
-  migrations: readonly Migration[],
-  appliedHashes: readonly string[],
-) => {
+const renameReservedTableObjects = (storage: AppSqlStorage) => {
   const kind = (name: string) =>
     storage.sql.exec("SELECT type FROM sqlite_master WHERE name = ?", name).toArray()[0]?.type;
-  const migrationsTableRenamed = renamedTables.some(
-    ({ to }) => to === migrationsTable && kind(to) === undefined,
-  );
-  for (const { from, to } of renamedTables) {
+  for (const { from, to } of renamedReservedTables) {
     const found = kind(from);
-    if (found === "view") storage.sql.exec(`DROP VIEW ${from}`);
-    else if (found === "table" && kind(to) === undefined)
-      storage.sql.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
-  }
-  if (!migrationsTableRenamed || kind(migrationsTable) === undefined) return;
-  for (const [index, migration] of migrations.entries()) {
-    const applied = appliedHashes[index];
-    if (applied !== undefined && applied !== migration.hash)
-      storage.sql.exec(
-        `UPDATE ${migrationsTable} SET hash = ? WHERE id = ? AND path = ? AND hash = ?`,
-        migration.hash,
-        index + 1,
-        migration.path,
-        applied,
-      );
+    if (found === undefined) continue;
+    if (found === "view") {
+      storage.sql.exec(`DROP VIEW "${from}"`);
+      continue;
+    }
+    if (kind(to) !== undefined)
+      throw new MigrationHistoryChanged({
+        reason: `This app's database has the reserved table ${to} under an earlier name too.`,
+      });
+    storage.sql.exec(`ALTER TABLE "${from}" RENAME TO "${to}"`);
   }
 };
 
@@ -529,26 +510,30 @@ const History = Schema.Array(
 /**
  * Apply the build's pending migrations and report which ran. Every pending migration runs in one
  * transaction, so a failing one leaves the database exactly as the active version knows it. The
- * migrations already applied must still be the build's first ones, byte for byte.
+ * migrations already applied must still be the build's first ones, byte for byte, with one
+ * exception: a migration the build has only with the reserved tables renamed. `originals` are the
+ * active version's migrations as it retained them; an applied migration whose recorded hash is its
+ * original's, and whose original renamed is the build's file exactly, is recorded by its new bytes.
  */
-export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
+export const migrate = (
+  storage: AppSqlStorage,
+  files: readonly SkillFile[],
+  originals: ReadonlyArray<{ readonly path: string; readonly content: string }> = [],
+) =>
   Effect.gen(function* () {
     const migrations = yield* migrationsOf(files);
-    // Each migration's bytes with the reserved tables as an earlier framework named them.
-    const appliedHashes = yield* Effect.forEach(migrations, (migration) =>
-      sha256(
-        renamedTables.reduce(
-          (content, { from, to }) => content.replaceAll(to, from),
-          migration.content,
-        ),
-      ),
-    );
+    const renamed = yield* Effect.forEach(originals, ({ path, content }) => {
+      const original = content.replaceAll("\r\n", "\n");
+      return sha256(original).pipe(
+        Effect.map((hash) => ({ path, hash, renamed: renameReservedTables(original) })),
+      );
+    });
     // A migration may change connection settings while it runs, for example turning off foreign
     // keys to rebuild a table; whatever happens, they are PluginEngine's again afterwards.
     const baseline = readSettings(storage);
     return yield* Effect.sync(() =>
       storage.transactionSync(() => {
-        renameReservedTables(storage, migrations, appliedHashes);
+        renameReservedTableObjects(storage);
         storage.sql.exec(
           `CREATE TABLE IF NOT EXISTS ${migrationsTable} (id INTEGER PRIMARY KEY, path TEXT NOT NULL, hash TEXT NOT NULL, applied_at TEXT NOT NULL)`,
         );
@@ -576,10 +561,21 @@ export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
             throw new MigrationHistoryChanged({
               reason: `Migration ${index + 1} was applied as ${applied.path}, but the build has ${current.path} in its place.`,
             });
-          if (current.hash !== applied.hash)
+          if (current.hash === applied.hash) continue;
+          const original = renamed.find(({ path }) => path === applied.path);
+          if (
+            original === undefined ||
+            original.hash !== applied.hash ||
+            original.renamed !== current.content
+          )
             throw new MigrationHistoryChanged({
               reason: `${applied.path} changed after it was applied to this app's database.`,
             });
+          storage.sql.exec(
+            `UPDATE ${migrationsTable} SET hash = ? WHERE id = ?`,
+            current.hash,
+            applied.id,
+          );
         }
         const pending = migrations.slice(history.length);
         const appliedAt = new Date().toISOString();

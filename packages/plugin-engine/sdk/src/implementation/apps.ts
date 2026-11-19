@@ -531,8 +531,18 @@ export const makeApps = (
       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
       if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(appId, "deploy");
+      // The active version's migrations as it retained them: one applied before the framework
+      // renamed its reserved tables, which this build has only renamed, keeps its history.
+      const originals =
+        before === null || before.activeVersion === null || requirements.sql !== true
+          ? []
+          : (yield* readVersionSource(blobs, before.activeVersion)).flatMap((file) =>
+              file.path.startsWith("migrations/") && "content" in file && !("encoding" in file)
+                ? [{ path: file.path, content: file.content }]
+                : [],
+            );
       if (requirements.sql === true)
-        yield* runtime.migrate({ app: appId, build: built.build }).pipe(
+        yield* runtime.migrate({ app: appId, build: built.build, originals }).pipe(
           Effect.mapError((error) => {
             const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
             return new VersionBuildFailed({

@@ -447,7 +447,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
           AccountCheckResult,
           HostAccountCheckError,
         ).pipe(traced("checkAccount", app(input))),
-      migrate: (input) =>
+      migrate: ({ originals, ...input }) =>
         dispatch(
           // Migrations run the build's SQL files only, so they read no cache or API.
           {
@@ -456,7 +456,10 @@ export const appRuntime = (host: AppRuntimeHost) =>
             database: true,
             accounts: Redacted.make({ app: {} }),
           },
-          { operation: "migrate" },
+          {
+            operation: "migrate",
+            ...(originals === undefined ? {} : { originals }),
+          },
           MigrateResult,
           HostCallError,
         ).pipe(traced("migrate", app(input))),

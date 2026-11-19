@@ -559,5 +559,7 @@ export interface Runtime<Requirements = never> {
   readonly migrate: (input: {
     readonly app: string;
     readonly build: BuildId;
+    /** The active version's migrations, by which an applied one renamed since keeps its history. */
+    readonly originals?: ReadonlyArray<{ readonly path: string; readonly content: string }>;
   }) => Effect.Effect<MigrateResult, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
 }

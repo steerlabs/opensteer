@@ -2,9 +2,10 @@
  * Rewrite plugin source written for upstream's names with the rules in `upstream-names.json`. Each
  * rule applies only within its scope (the file says what each scope covers); a file no rule
  * changes keeps its exact bytes, so rewriting is idempotent and rewritten source rewrites to
- * itself. Migrations get only the reserved-table rule, which the framework can undo to recognize
- * an applied migration (see `renameReservedTables` in the framework's sql.ts).
+ * itself. Migrations get only the reserved-table rule, on complete SQL identifiers (see
+ * `renameReservedTables` in the framework's contracts).
  */
+import { renameReservedTables } from "apps/contracts";
 import upstreamNames from "../../../upstream-names.json" with { type: "json" };
 
 interface Rule {
@@ -114,8 +115,7 @@ const manifest = (text: string) => {
 /** One source file's new text, or its own text when no rule in scope applies. */
 export const rewriteUpstreamFile = (path: string, text: string): string => {
   if (path === "package.json") return manifest(text);
-  if (migration.test(path))
-    return scoped("reserved-table").reduce((value, rule) => literal(value, rule), text);
+  if (migration.test(path)) return renameReservedTables(text);
   if (path.endsWith(".md"))
     return scoped("readme-prose").reduce((value, rule) => word(value, rule), text);
   if (codeFile.test(path)) return code(path, text);
