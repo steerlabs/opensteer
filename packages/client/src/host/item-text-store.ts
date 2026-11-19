@@ -29,7 +29,6 @@ export class ItemTextStore {
   readonly #items = new Map<string, ItemText>();
   readonly #faces = new Map<string, NonNullable<LiveFrame["item"]>>();
   readonly #listeners = new Map<string, Set<() => void>>();
-  readonly #nodeListeners = new Set<() => void>();
   readonly #gaps = new Map<string, number>();
   readonly #closed = new Map<string, string>();
   readonly #retiredBoots = new Set<string>();
@@ -57,11 +56,6 @@ export class ItemTextStore {
       listeners.delete(listener);
       if (!listeners.size) this.#listeners.delete(itemId);
     };
-  }
-
-  subscribeNodeProgress(listener: () => void) {
-    this.#nodeListeners.add(listener);
-    return () => this.#nodeListeners.delete(listener);
   }
 
   generation(generation: number) {
@@ -194,7 +188,6 @@ export class ItemTextStore {
 
   #notify(id: string) {
     for (const listener of this.#listeners.get(id) ?? []) listener();
-    if (id.startsWith("node:")) for (const listener of this.#nodeListeners) listener();
   }
 }
 

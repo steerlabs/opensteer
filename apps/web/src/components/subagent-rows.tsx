@@ -49,6 +49,8 @@ interface AgentFoldState {
   readonly set: (key: string, open: boolean) => void;
 }
 const AgentFoldsContext = createContext<AgentFoldState | null>(null);
+/** The subagent whose own steps these rows are, whose scope carries its children's progress. */
+export const AgentProgressScope = createContext<string | undefined>(undefined);
 
 export function AgentFolds({ children }: { children: ReactNode }) {
   const [folds, setFolds] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -258,7 +260,11 @@ export const AgentRow = memo(function AgentRow({
   /** Alone in its place, so line two says what it is. */
   noun?: boolean;
 }) {
-  const card = useLiveAgentCard(useOptionalShell()?.hostClient, reported);
+  const card = useLiveAgentCard(
+    useOptionalShell()?.hostClient,
+    reported,
+    useContext(AgentProgressScope),
+  );
   const open = useOpenAgent();
   const tasks = useContext(TaskAssignments);
   const task = card.task ? tasks.get(card.task.assignmentId) : undefined;

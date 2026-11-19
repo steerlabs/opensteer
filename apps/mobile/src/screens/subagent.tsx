@@ -1,4 +1,4 @@
-import { useThreadTranscript } from "@opensteer/client/react";
+import { useLiveAgentCard, useThreadTranscript } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   canRespondToRequests,
@@ -280,6 +280,7 @@ function AttachedSubagent(props: {
   const agentScope = useMemo<AgentScope>(
     () => ({
       hostClient,
+      progressNodeId: nodeId,
       onOpen: (card: AgentCard) => {
         if (card.opens === null) return;
         navigation.dispatch(
@@ -293,7 +294,7 @@ function AttachedSubagent(props: {
         );
       },
     }),
-    [deploymentId, hostClient, navigation],
+    [deploymentId, hostClient, navigation, nodeId],
   );
   const openStep = useCallback(
     (entryId: string) =>
@@ -787,7 +788,7 @@ function Steps(props: {
   readonly state: SubagentDetail["state"] | "absent";
 }): ReactNode {
   const { detail, state } = props;
-  const now = detail.card.moving ? detail.card.detail[0] : undefined;
+  const moving = detail.card.moving && detail.card.detail[0] !== undefined;
   switch (state) {
     case "loading":
     case "absent":
@@ -835,19 +836,8 @@ function Steps(props: {
             live={props.live}
             onOpenStep={props.onOpenStep}
           />
-          {now === undefined ? null : (
-            <Animated.View
-              accessibilityLabel={`Subagent status: ${now.text}`}
-              entering={appear}
-              key={now.text}
-              style={styles.now}
-            >
-              <AppText role="secondaryMedium" tone="soft">
-                {now.text}
-              </AppText>
-            </Animated.View>
-          )}
-          {detail.entries.length === 0 && !props.settled && now === undefined ? (
+          <LiveNow card={detail.card} hostClient={props.agentScope.hostClient} />
+          {detail.entries.length === 0 && !props.settled && !moving ? (
             <AppText role="secondary" tone="muted">
               Nothing to show yet.
             </AppText>
@@ -855,6 +845,28 @@ function Steps(props: {
         </>
       );
   }
+}
+
+/** The subagent's live line: the one leaf its progress ticks redraw. */
+function LiveNow(props: {
+  readonly card: AgentCard;
+  readonly hostClient: HostClient | undefined;
+}): ReactNode {
+  const card = useLiveAgentCard(props.hostClient, props.card, props.card.nodeId ?? undefined);
+  const now = card.moving ? card.detail[0] : undefined;
+  if (now === undefined) return null;
+  return (
+    <Animated.View
+      accessibilityLabel={`Subagent status: ${now.text}`}
+      entering={appear}
+      key={now.text}
+      style={styles.now}
+    >
+      <AppText role="secondaryMedium" tone="soft">
+        {now.text}
+      </AppText>
+    </Animated.View>
+  );
 }
 
 function Skeleton(props: { readonly label: string }): ReactNode {

@@ -39,18 +39,25 @@ export function useItemText(store: ItemTextStore | undefined, itemId: string | u
   return useSyncExternalStore(subscribe, read, read);
 }
 
-/** A subagent row with its engine's live progress, read from that row's own text key. */
+/**
+ * A subagent row with its engine's live progress, read from that row's own text key. Inside a
+ * subagent's own steps, `nodeId` names that scope, whose store carries its children's progress.
+ */
 export function useLiveAgentCard(
   client: HostClient | null | undefined,
   card: AgentCard,
+  nodeId?: string,
 ): AgentCard {
   const threadId =
     card.origin === "subagent" && card.kind === "subagent" && card.opens?.kind === "subagent"
       ? card.opens.threadId
       : undefined;
-  const text = useItemText(
-    threadId ? client?.getThreadItemText(threadId) : undefined,
-    threadId ? card.key : undefined,
+  const key = threadId ? card.key : undefined;
+  const own = useItemText(threadId ? client?.getThreadItemText(threadId) : undefined, key);
+  const scoped = useItemText(
+    threadId && nodeId ? client?.getThreadItemText(threadId, nodeId) : undefined,
+    key,
   );
-  return useMemo(() => cardWithProgress(card, text?.text), [card, text]);
+  const text = (scoped ?? own)?.text;
+  return useMemo(() => cardWithProgress(card, text), [card, text]);
 }

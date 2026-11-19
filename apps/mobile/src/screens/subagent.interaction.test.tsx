@@ -174,6 +174,8 @@ async function scene(name: MockSubagentScene) {
     ...client,
     getSnapshot: () => current,
     getThreadTranscript: (threadId: string) => client.getThreadTranscript(threadId),
+    getThreadItemText: (threadId: string, nodeId?: string) =>
+      client.getThreadItemText(threadId, nodeId),
     observeThread: (threadId: string) => client.observeThread(threadId),
     subscribe: () => () => undefined,
   } as unknown as HostClient;

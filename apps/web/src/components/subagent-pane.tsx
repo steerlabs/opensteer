@@ -1,4 +1,4 @@
-import { useThreadTranscript } from "@opensteer/client/react";
+import { useLiveAgentCard, useThreadTranscript } from "@opensteer/client/react";
 import {
   Suspense,
   lazy,
@@ -31,7 +31,14 @@ import { LoadingRows } from "./loading-rows.js";
 import { MessageFold } from "./message-fold.js";
 import { SubagentStop } from "./subagent-stop.js";
 import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
-import { AgentEngine, AgentFolds, AgentMark, Elapsed, WorkflowPhases } from "./subagent-rows.js";
+import {
+  AgentEngine,
+  AgentFolds,
+  AgentMark,
+  AgentProgressScope,
+  Elapsed,
+  WorkflowPhases,
+} from "./subagent-rows.js";
 import { readableMarkdown } from "./references/readable-markdown.js";
 
 const Markdown = lazy(() => import("./markdown.js"));
@@ -473,16 +480,10 @@ function Steps({
               {view.loadingEarlier ? "Loading…" : "Show earlier steps"}
             </button>
           ) : null}
-          <SubagentSteps active={!settled} entries={view.entries} live={live} scope={scope} />
-          {view.card.moving && view.card.detail[0] ? (
-            <div aria-label="Subagent status" className="work work--live">
-              <div className="work__head">
-                <span className="work__label" key={view.card.detail[0].text}>
-                  {view.card.detail[0].text}
-                </span>
-              </div>
-            </div>
-          ) : null}
+          <AgentProgressScope value={scope.nodeId}>
+            <SubagentSteps active={!settled} entries={view.entries} live={live} scope={scope} />
+          </AgentProgressScope>
+          <LiveStatus card={view.card} scope={scope} />
           {view.entries.length === 0 && !settled ? (
             <p className="subagent-pane__note">
               <span>Nothing to show yet.</span>
@@ -491,6 +492,21 @@ function Steps({
         </>
       );
   }
+}
+
+/** The subagent's live line: the one leaf its progress ticks redraw. */
+function LiveStatus({ card: reported, scope }: { card: AgentCard; scope: TranscriptTextScope }) {
+  const card = useLiveAgentCard(scope.client, reported, scope.nodeId);
+  if (!card.moving || !card.detail[0]) return null;
+  return (
+    <div aria-label="Subagent status" className="work work--live">
+      <div className="work__head">
+        <span className="work__label" key={card.detail[0].text}>
+          {card.detail[0].text}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 /** In the composer's place: its question, if it asked one, and who it reports to. */

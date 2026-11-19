@@ -19,7 +19,7 @@ import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
-import { nodeCardProgress, nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
+import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
@@ -1456,13 +1456,8 @@ export class HttpHostClient {
     const notify = () => {
       for (const listener of listeners) listener();
     };
+    // Progress is not merged here: its leaf reads the item text store (`useLiveAgentCard`).
     const unsubscribe = detail.transcript.subscribe(notify);
-    let progressVersion = 0;
-    let shownProgress = 0;
-    const unsubscribeProgress = detail.text.subscribeNodeProgress(() => {
-      progressVersion++;
-      notify();
-    });
     let released = false;
     let read:
       | {
@@ -1519,9 +1514,7 @@ export class HttpHostClient {
         if (released) return closed;
         const state = detail.transcript.getSnapshot();
         const page = read?.generation === state.generation ? read : undefined;
-        const progressChanged = shownProgress !== progressVersion;
-        if (previous === state && shownRead === page && !progressChanged) return view;
-        shownProgress = progressVersion;
+        if (previous === state && shownRead === page) return view;
         shownRead = page;
         const status =
           state.removed || page?.status === "missing"
@@ -1532,7 +1525,6 @@ export class HttpHostClient {
                 ? "ready"
                 : "loading";
         const structureChanged =
-          progressChanged ||
           previous?.items !== state.items ||
           previous.liveItems !== state.liveItems ||
           (view.status === "missing") !== (status === "missing");
@@ -1540,12 +1532,10 @@ export class HttpHostClient {
         const node =
           status === "missing"
             ? null
-            : !progressChanged &&
-                subject === previous?.snapshot?.nodeSubject &&
-                view.status !== "missing"
+            : subject === previous?.snapshot?.nodeSubject && view.status !== "missing"
               ? view.node
               : subject
-                ? nodeCardProgress(transcriptCard(subject)!, detail.text.get(subject.id)?.text)
+                ? transcriptCard(subject)!
                 : null;
         const hasMore = status !== "missing" && state.snapshot?.nextBefore != null;
         const loadingOlder = page?.status === "loading" && page.mode === "earlier";
@@ -1573,7 +1563,7 @@ export class HttpHostClient {
                   const projected = durable ? cards : liveCards;
                   if (!projected.has(item)) projected.set(item, nodeTranscriptCard(item, !durable));
                   const card = projected.get(item);
-                  return card ? nodeCardProgress(card, detail.text.get(id)?.text) : [];
+                  return card ?? [];
                 });
         view = {
           ...view,
@@ -1600,7 +1590,6 @@ export class HttpHostClient {
         if (released) return;
         released = true;
         unsubscribe();
-        unsubscribeProgress();
         reader.dispose();
         release();
         notify();
