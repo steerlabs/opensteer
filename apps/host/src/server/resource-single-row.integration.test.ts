@@ -1,9 +1,6 @@
 import { HarnessIdSchema, utf8ByteLength } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema, maxHarnessModelsPerCatalog } from "@opensteer/protocol";
-import {
-  personalResourcePageBytes,
-  type PersonalResourceKind,
-} from "@opensteer/protocol/resources";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { expect, it, vi } from "vitest";
