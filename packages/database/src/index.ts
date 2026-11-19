@@ -140,5 +140,5 @@ export { getThreadForOwner } from "./thread-store.js";
 export { requestFromRow } from "./request-persistence.js";
 export { executionNodeFromRow } from "./thread-row-mappers.js";
 export { isEligibleBrowserRunner } from "./browser-home-store.js";
-export { decorateQueueEntries } from "./personal-queue-view.js";
+export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-view.js";
 export { republishThreads } from "./thread-status.js";

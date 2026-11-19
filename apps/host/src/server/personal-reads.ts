@@ -1,5 +1,5 @@
 import type { TranscriptItem } from "@opensteer/protocol/transcript";
-import type { MessageId } from "@opensteer/core";
+import type { AuthSessionId, MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
   decorateQueueEntries,
@@ -8,6 +8,7 @@ import {
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
   readPersonalTaskPage,
+  readQueueLeaseHolders,
   readTaskPageThreads,
   readTranscriptItem,
   readTranscriptOverlays,
@@ -22,6 +23,7 @@ import {
 } from "@opensteer/protocol";
 import {
   PersonalChangeSchema,
+  type PersonalChange,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedHostMessage,
@@ -103,6 +105,7 @@ export function createPersonalReads(
   >(
     session: Session,
     snapshot: Snapshot,
+    holders: ReadonlyMap<string, AuthSessionId>,
   ): Promise<Snapshot> => {
     const items = await decorateItems(session, [...snapshot.items, ...snapshot.activeItems]);
     if (
@@ -115,11 +118,11 @@ export function createPersonalReads(
     )
       return snapshot;
     const inputQueue = snapshot.inputQueue
-      ? await decorateQueueEntries(
-          database,
+      ? decorateQueueEntries(
           session.id,
           snapshot.inputQueue,
           await readSendKeys(session)(snapshot.inputQueue.map(({ message }) => message.id)),
+          holders,
         )
       : undefined;
     return {
@@ -159,7 +162,16 @@ export function createPersonalReads(
         ...(cursor ? { cursor } : {}),
         ...(anchorItemId ? { anchorItemId } : {}),
       });
-      return cut;
+      // Lease ownership is read in the cut its values come from.
+      const queued =
+        cut.kind === "snapshot"
+          ? (cut.snapshot.inputQueue ?? []).map(({ message }) => message.id)
+          : cut.kind === "replay"
+            ? cut.commits.flatMap(({ changes }) =>
+                changes.flatMap((row) => (row.entityKind === "queue-entry" ? [row.entityId] : [])),
+              )
+            : [];
+      return { ...cut, holders: await readQueueLeaseHolders(tx, queued) };
     });
 
   /** One database cut of a scope with its frames before any session decorates them. */
@@ -183,14 +195,9 @@ export function createPersonalReads(
     await dependencies.onPersonalScopeCut?.(scope);
     return {
       cut,
+      holders: "holders" in cut ? cut.holders : new Map<string, AuthSessionId>(),
       // Rows are parsed once per cut, however many sockets share it.
-      replay:
-        cut.kind === "replay"
-          ? cut.commits.map((commit) => ({
-              ...commit,
-              changes: commit.changes.map((change) => PersonalChangeSchema.parse(change)),
-            }))
-          : [],
+      replay: cut.kind === "replay" ? latestQueueEntries(cut.commits) : [],
     };
   };
   type SharedCut = Awaited<ReturnType<typeof readShared>>;
@@ -213,7 +220,8 @@ export function createPersonalReads(
       scope,
       cursor,
       anchorItemId ?? null,
-      scope.kind === "shell" && !cursor ? (selectedThreadId ?? null) : null,
+      // A shell cut that becomes a snapshot includes the reader's selected task.
+      scope.kind === "shell" ? (selectedThreadId ?? null) : null,
       // A shell snapshot carries the reading session; other cuts are the viewer's.
       scope.kind === "shell" && !cursor ? session.id : null,
     ]);
@@ -242,7 +250,9 @@ export function createPersonalReads(
     share?: { readonly reader: object; readonly atLeast: string },
   ) => {
     const input = [session, surface, scope, cursor, anchorItemId, selectedThreadId] as const;
-    const { cut, replay } = share ? await readOnce(share, ...input) : await readShared(...input);
+    const { cut, replay, holders } = share
+      ? await readOnce(share, ...input)
+      : await readShared(...input);
     const { state } = cut;
     const throughSequence = state.sequence;
     const next: PersonalResumeCursor = {
@@ -271,7 +281,7 @@ export function createPersonalReads(
         break;
       case "snapshot":
         if ("items" in cut.snapshot) {
-          const snapshot = await decorateDetail(session, cut.snapshot);
+          const snapshot = await decorateDetail(session, cut.snapshot, holders);
           frames.push(
             sharedFrame(cut.snapshot, snapshot === cut.snapshot, {
               type: "host.snapshot" as const,
@@ -306,16 +316,15 @@ export function createPersonalReads(
                   : [],
           ),
         );
+        // A replay carries one queue row per message (its latest), so this value is its frame's.
         const entries = new Map(
-          (
-            await decorateQueueEntries(
-              database,
-              session.id,
-              rows.flatMap((row) =>
-                row.operation === "upsert" && row.entityKind === "queue-entry" ? [row.value] : [],
-              ),
-              keys,
-            )
+          decorateQueueEntries(
+            session.id,
+            rows.flatMap((row) =>
+              row.operation === "upsert" && row.entityKind === "queue-entry" ? [row.value] : [],
+            ),
+            keys,
+            holders,
           ).map((entry) => [entry.message.id, entry]),
         );
         for (const commit of replay) {
@@ -479,7 +488,7 @@ export function createPersonalReads(
     "thread.snapshot.get": async (input, context) => {
       const cut = await detail(requireSession(context), detailScope(input));
       if (cut.kind !== "snapshot") return unavailable();
-      return rpcSuccess(await decorateDetail(requireSession(context), cut.snapshot));
+      return rpcSuccess(await decorateDetail(requireSession(context), cut.snapshot, cut.holders));
     },
     "thread.items.page": itemPage,
     "node.items.page": itemPage,
@@ -548,6 +557,33 @@ export function createPersonalReads(
 }
 
 /** The session's view of an item; the same object when the session adds nothing. */
+/**
+ * Within one replay only a waiting message's latest queue row is kept: its lease and send key
+ * are decorated from this cut, so an earlier row would carry a later value under an older
+ * sequence. The client applies the commits in order and lands on the same state.
+ */
+function latestQueueEntries(
+  commits: readonly {
+    readonly fromSequence: string;
+    readonly throughSequence: string;
+    readonly changes: readonly unknown[];
+  }[],
+): { fromSequence: string; throughSequence: string; changes: PersonalChange[] }[] {
+  const parsed = commits.map((commit) => ({
+    ...commit,
+    changes: commit.changes.map((change) => PersonalChangeSchema.parse(change)),
+  }));
+  const last = new Map<string, PersonalChange>();
+  for (const { changes } of parsed)
+    for (const row of changes) if (row.entityKind === "queue-entry") last.set(row.entityId, row);
+  return parsed.map((commit) => ({
+    ...commit,
+    changes: commit.changes.filter(
+      (row) => row.entityKind !== "queue-entry" || last.get(row.entityId) === row,
+    ),
+  }));
+}
+
 function decorateItem(item: TranscriptItem, keys: ReadonlyMap<string, string>): TranscriptItem {
   if (item.kind !== "message") return item;
   const key = keys.get(item.messageId);
