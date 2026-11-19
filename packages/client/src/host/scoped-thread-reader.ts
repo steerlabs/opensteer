@@ -475,7 +475,25 @@ export class ScopedThreadReader implements ThreadViewSource {
         },
         { observed: () => !this.#disposed, retry: false },
       )
-      .then(() => intent === undefined || this.#landed === intent);
+      .then(
+        () => this.#settled(intent, true),
+        (error: unknown) => {
+          // A failure answers for its own move only: a superseded one reports nothing.
+          if (!this.#settled(intent, false)) return false;
+          throw error;
+        },
+      );
+  }
+
+  /**
+   * The one place a reader's move learns how it ended, success or failure: the intent number is
+   * compared first. A move with no intent (paging) always speaks for itself; a superseded move
+   * resolves false, landed or not, so no caller acts on it.
+   */
+  #settled(intent: number | undefined, succeeded: boolean) {
+    if (intent === undefined) return true;
+    if (this.#detail.intent !== intent) return false;
+    return succeeded ? this.#landed === intent : true;
   }
 
   /** The intent whose page last landed. */

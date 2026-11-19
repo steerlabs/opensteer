@@ -750,7 +750,9 @@ function ThreadPaneForUser(
     setFailure(null);
     void hostClient
       .loadLatestTranscript(threadId)
-      .then(() => {
+      .then((landed) => {
+        // A newer move of the reader's took over: it owns the position and the route.
+        if (!landed) return;
         // The anchor is spent. It is released on the route too, so opening the
         // same message again is a new jump rather than a no-op.
         anchored.current = null;

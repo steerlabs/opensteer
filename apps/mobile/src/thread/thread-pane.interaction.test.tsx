@@ -1315,7 +1315,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
   }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
-  const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
+  const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => true);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
     snapshot = { ...earlierPage, deploymentId };
@@ -1493,7 +1493,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
-    loadLatestTranscript: vi.fn(async () => undefined),
+    loadLatestTranscript: vi.fn(async () => true),
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
     discardAttachment: vi.fn(async () => undefined),

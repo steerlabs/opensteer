@@ -780,16 +780,18 @@ describe("the reader's intended position", () => {
     const pending: {
       query: { aroundMessageId?: string; anchorItemId?: string };
       answer: () => void;
+      fail: () => void;
     }[] = [];
     const read = vi.fn(
       (query: { aroundMessageId?: string; anchorItemId?: string }) =>
-        new Promise((resolve) => {
+        new Promise((resolve, reject) => {
           const target = targets.find(
             ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
           );
           const items = target ? [target, item] : [item];
           pending.push({
             query,
+            fail: () => reject(new TypeError("The connection was lost.")),
             answer: () =>
               resolve({
                 ok: true,
@@ -835,6 +837,29 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
+  it("a jump whose read fails after the reader scrolled away reports nothing; one still current reports its failure", async () => {
+    const { f, targets, pending, reader } = positioned();
+    const jump = reader.history("around", targets[0]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    reader.setAnchor(targets[2]!.id);
+    pending[0]!.fail();
+    await expect(jump, "a superseded jump's failure reached its caller").resolves.toBe(false);
+    expect(f.detail.anchor).toBe(targets[2]!.id);
+    // Return to latest, overtaken by a scroll, says it did not land, so no caller acts on it.
+    const latest = reader.history("latest");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    reader.setAnchor(targets[1]!.id);
+    pending[1]!.answer();
+    await expect(latest).resolves.toBe(false);
+    expect(f.detail.anchor).toBe(targets[1]!.id);
+    // A failure of the move still current is the caller's to show.
+    const current = reader.history("around", targets[3]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!.fail();
+    await expect(current).rejects.toThrow("connection was lost");
+    reader.dispose();
+  });
+
   it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
     const { f, targets, reader } = positioned();
     // Back from the background: a subscription that asked for no anchor.
@@ -855,36 +880,40 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
-  it("under any interleaving of jumps, scrolls, repairs and resubscribes, only the latest move lands", async () => {
+  it("under any interleaving of jumps, returns to latest, scrolls, failures, repairs and resubscribes, only the latest move speaks", async () => {
     let seed = 11;
     const next = (limit: number) => {
       seed = (seed * 1103515245 + 12345) % 2 ** 31;
       return seed % limit;
     };
-    for (let run = 0; run < 60; run++) {
+    for (let run = 0; run < 80; run++) {
       const { f, targets, pending, reader, settle } = positioned();
-      const jumps: { promise: Promise<boolean>; target: number; move: number }[] = [];
+      const asked: { promise: Promise<boolean>; move: number }[] = [];
       let moves = 0;
-      let last: { kind: "jump" | "scroll"; target: number } | null = null;
-      for (let step = 0; step < 12; step++) {
-        const action = next(6);
+      let last: { kind: "jump" | "latest" | "scroll"; target: number } | null = null;
+      for (let step = 0; step < 14; step++) {
+        const action = next(8);
         if (action <= 1) {
           const target = next(targets.length);
           moves++;
           last = { kind: "jump", target };
-          jumps.push({
+          asked.push({
             promise: reader.history("around", targets[target]!.messageId),
-            target,
             move: moves,
           });
         } else if (action === 2) {
+          moves++;
+          last = { kind: "latest", target: -1 };
+          // Expo's and web's Return to latest: the same call, judged by what it resolves.
+          asked.push({ promise: reader.history("latest"), move: moves });
+        } else if (action === 3) {
           const target = next(targets.length);
           moves++;
           last = { kind: "scroll", target };
           reader.setAnchor(targets[target]!.id);
-        } else if (action === 3) {
-          f.stream.receive(f.detailSnapshot());
         } else if (action === 4) {
+          f.stream.receive(f.detailSnapshot());
+        } else if (action === 5) {
           f.stream.setBackground(true);
           f.stream.setBackground(false);
           const subscribe = f.sent.at(-1) as Extract<
@@ -904,23 +933,33 @@ describe("the reader's intended position", () => {
           });
           f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
         } else if (pending.length) {
-          pending.splice(next(pending.length), 1)[0]!.answer();
+          // Some reads fail: a failure, too, may speak only for the latest move.
+          const read = pending.splice(next(pending.length), 1)[0]!;
+          if (action === 6) read.answer();
+          else read.fail();
         }
         await settle();
       }
-      // Everything still asked for is answered.
       for (let guard = 0; guard < 50 && pending.length; guard++) {
         pending.shift()!.answer();
         await settle();
       }
-      const outcomes = await Promise.all(jumps.map(({ promise }) => promise));
+      const outcomes = await Promise.allSettled(asked.map(({ promise }) => promise));
       const label = `run ${run}`;
-      for (const [index, jump] of jumps.entries())
-        expect(outcomes[index], `${label}: jump ${index}`).toBe(
-          last?.kind === "jump" && jump.move === moves,
-        );
-      if (last?.kind === "jump") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      for (const [index, { move }] of asked.entries()) {
+        const outcome = outcomes[index]!;
+        const latest = last?.kind !== "scroll" && move === moves;
+        if (outcome.status === "rejected")
+          expect(latest, `${label}: a superseded move ${index} reported a failure`).toBe(true);
+        else if (outcome.value)
+          expect(latest, `${label}: a superseded move ${index} landed`).toBe(true);
+      }
+      const final = outcomes.at(-1);
+      const landed = final?.status === "fulfilled" && final.value === true;
       if (last?.kind === "scroll") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "jump" && landed)
+        expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "latest" && landed) expect(f.detail.anchor, label).toBeUndefined();
       reader.dispose();
     }
   });
