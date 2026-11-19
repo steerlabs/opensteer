@@ -229,6 +229,8 @@ export const PersonalDetailSnapshotSchema = z.object({
   queue: queue.optional(),
   /** Values for `queue.inputs`, oldest first, while they fit the frame. */
   inputQueue: z.array(WaitingInputViewSchema).max(personalInputQueueMaxEntries).optional(),
+  /** False when `inputQueue` stops short of `queue.inputs`; read the rest with `thread.inputQueue.get`. */
+  inputQueueComplete: z.boolean().optional(),
   items: z.array(TranscriptItemSchema).max(50),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),

@@ -50,9 +50,16 @@ export class RealtimeHub {
     return () => this.#connections.delete(connection);
   }
 
-  /** Every thread some socket holds a detail subscription for. */
-  watchedThreads(): ReadonlySet<string> {
-    return new Set([...this.#connections].flatMap(({ sync }) => sync.watchedThreads()));
+  /** Every detail scope some socket subscribes to, once each. */
+  watchedScopes() {
+    const scopes = new Map<string, ReturnType<PersonalSyncSocket["watchedScopes"]>[number]>();
+    for (const { sync } of this.#connections)
+      for (const scope of sync.watchedScopes())
+        scopes.set(
+          scope.kind === "node" ? `node:${scope.nodeId}` : `thread:${scope.threadId}`,
+          scope,
+        );
+    return [...scopes.values()];
   }
 
   wake(head: string, changedScopes: ReadonlySet<string> = new Set()): void {

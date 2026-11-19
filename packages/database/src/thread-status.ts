@@ -8,6 +8,7 @@ import {
   nonTerminalRunStatuses,
   type RunId,
   type ThreadId,
+  type ExecutionNodeId,
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
@@ -18,6 +19,7 @@ import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 import { readTaskPageThreads } from "./personal-task-store.js";
+import { detailThreadValue } from "./personal-snapshot-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
@@ -123,18 +125,38 @@ export function replyPreview(content: readonly ContentPart[]) {
     : null;
 }
 
-/** Republishes the `thread` values of these tasks, so their detail viewers see a derived change. */
-export function republishThreads(database: Kysely<DatabaseSchema>, threadIds: readonly ThreadId[]) {
-  return commitPersonalMutation(database, async (tx) => {
-    if (!threadIds.length) return;
+/**
+ * Republishes the `thread` value each viewed scope shows, so its viewers see a derived change:
+ * a task's own scope through its summary, a node scope with the same value.
+ */
+export function republishThreads(
+  database: Kysely<DatabaseSchema>,
+  scopes: readonly (
+    | { readonly kind: "thread"; readonly threadId: ThreadId }
+    | { readonly kind: "node"; readonly threadId: ThreadId; readonly nodeId: ExecutionNodeId }
+  )[],
+) {
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    if (!scopes.length) return;
     const live = await tx
       .selectFrom("threads")
-      .select("id")
-      .where("id", "in", threadIds)
+      .select(["id", "createdBy"])
+      .where("id", "in", [...new Set(scopes.map(({ threadId }) => threadId))])
       .where("removedAt", "is", null)
       .orderBy("id")
       .execute();
-    for (const { id } of live) await publishThreadSummary(tx, id);
+    for (const { id, createdBy } of live) {
+      await publishThreadSummary(tx, id);
+      const nodes = scopes.flatMap((scope) =>
+        scope.kind === "node" && scope.threadId === id ? [scope.nodeId] : [],
+      );
+      const value = nodes.length ? await detailThreadValue(tx, createdBy, id) : undefined;
+      for (const nodeId of value ? nodes : [])
+        mutation.change(
+          { scopeKey: `node:${nodeId}`, entityKind: "thread", entityId: id, operation: "upsert" },
+          () => value!,
+        );
+    }
   });
 }
 

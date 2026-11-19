@@ -9,6 +9,7 @@ import { readTranscriptPage } from "./personal-sync-store.js";
 import { readPersonalTaskPage } from "./personal-task-store.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import {
   describeStore,
   testModelSelection,
@@ -494,6 +495,37 @@ describeStore("Deployment snapshot history", (it) => {
       .orderBy("sequence", "desc")
       .executeTakeFirstOrThrow();
     expect(pushed.payload).toMatchObject({ doneReason: "quiet" });
+  });
+
+  it("budgets a detail's waiting messages for the send keys their sender's reads add", async ({
+    storeFixture,
+  }) => {
+    const { store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("queue-send-key-budget");
+    for (let index = 0; index < 40; index++)
+      await store.enqueueThreadInput({
+        requestedBy: f.userId,
+        threadId: f.thread.id,
+        content: [{ type: "text", text: `${index} ${"words ".repeat(400)}` }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: `queue-send-key-budget-${index}`,
+      });
+    const detail = await readPersonalDetailSnapshot(store.database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+    });
+    if (detail.kind !== "snapshot") throw new Error("Expected a detail cut");
+    const { inputQueue = [], inputQueueComplete, queue } = detail.snapshot;
+    expect(queue?.inputs).toHaveLength(40);
+    expect(inputQueueComplete).toBe(false);
+    expect(inputQueue.length).toBeGreaterThan(0);
+    expect(inputQueue.map(({ message }) => message.id)).toEqual(
+      queue?.inputs.slice(0, inputQueue.length),
+    );
+    expect(
+      Buffer.byteLength(JSON.stringify(inputQueue)) + inputQueue.length * clientSendKeyWireReserve,
+    ).toBeLessThanOrEqual(24 * 1024);
   });
 
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({

@@ -29,7 +29,7 @@ import { PluginService, PluginServiceError } from "../plugins/plugin-service.js"
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
-import { DeviceIdSchema, ThreadIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
 import { TabStore, AgentToolActivityStore } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -673,12 +673,8 @@ export async function createHostRuntime(
         code: error instanceof OpensteerError ? error.code : "internal",
       });
     const refreshReturnHints = createReturnHintRefresh({
-      watched: () => realtime.watchedThreads(),
-      republish: (threadIds) =>
-        republishThreads(
-          database,
-          threadIds.map((id) => ThreadIdSchema.parse(id)),
-        ),
+      watched: () => realtime.watchedScopes(),
+      republish: (scopes) => republishThreads(database, scopes),
       onError: reportMutationFailure,
     });
     removeMutationHooks = installPersonalMutationHooks(database, {

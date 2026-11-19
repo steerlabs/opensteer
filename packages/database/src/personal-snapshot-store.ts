@@ -8,7 +8,7 @@ import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/prot
 import { encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
 import { threadQueueView } from "./personal-queue-view.js";
 import { nodeSubjectView } from "./execution-nodes.js";
-import { boundedSerializedPrefix } from "./message-window.js";
+import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
 import {
@@ -107,6 +107,70 @@ export async function buildPersonalShellSnapshot(
 
 const inputQueueSnapshotBytes = 24 * 1024;
 
+/**
+ * Resources a task's compaction return hint reads besides the task itself: the owner's idle
+ * compaction policy, the harness, its environment and the hosting computer's capabilities.
+ */
+export const returnHintResources: ReadonlySet<PersonalResourceKind> = new Set([
+  "settings",
+  "environment",
+  "machine",
+  "harness",
+  "harness-catalog",
+]);
+
+/** A task's detail value: its row and full Thread view, return hint included. */
+export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: ThreadId) {
+  const thread = await currentTasks(tx, viewerId).where("id", "=", threadId).executeTakeFirst();
+  const view = thread && (await readTaskPageThreads(tx, viewerId, [thread.id])).get(thread.id);
+  return thread && view ? { ...taskView(thread), thread: view } : undefined;
+}
+
+/**
+ * A resumed detail gets its current thread value when a return-hint input changed since its
+ * cursor: the hint is derived, so no feed row of this scope carried the change.
+ */
+export async function resumedThreadValue(
+  tx: Tx,
+  state: SyncState,
+  viewerId: UserId,
+  threadId: ThreadId,
+  after: string,
+) {
+  const changed = [...returnHintResources].some(
+    (kind) => BigInt(state.resourceRevisions[kind] ?? "0") > BigInt(after),
+  );
+  const value = changed ? await detailThreadValue(tx, viewerId, threadId) : undefined;
+  return value
+    ? {
+        entityKind: "thread" as const,
+        entityId: threadId,
+        operation: "upsert" as const,
+        value,
+      }
+    : null;
+}
+
+/** The queue values that fit, budgeted for the send key each reader's own messages gain. */
+function queueSnapshot(queue: NonNullable<Awaited<ReturnType<typeof threadQueueView>>>) {
+  const inputQueue = [];
+  let bytes = 2;
+  for (const entry of queue.entries) {
+    const size =
+      Buffer.byteLength(JSON.stringify(entry)) +
+      1 +
+      (entry.message.author.kind === "human" ? clientSendKeyWireReserve : 0);
+    if (bytes + size > inputQueueSnapshotBytes) break;
+    bytes += size;
+    inputQueue.push(entry);
+  }
+  return {
+    queue: queue.queue,
+    inputQueue,
+    inputQueueComplete: inputQueue.length === queue.entries.length,
+  };
+}
+
 export async function buildPersonalDetailSnapshot(
   tx: Tx,
   state: SyncState,
@@ -114,11 +178,9 @@ export async function buildPersonalDetailSnapshot(
   scope: Exclude<PersonalReadScope, { kind: "shell" }>,
   anchorItemId?: string,
 ) {
-  const thread = await currentTasks(tx, viewerId)
-    .where("id", "=", scope.threadId)
-    .executeTakeFirstOrThrow();
-  const view = (await readTaskPageThreads(tx, viewerId, [thread.id])).get(thread.id);
-  if (!view) throw new Error("The selected task changed in its read cut");
+  const detailThread = await detailThreadValue(tx, viewerId, scope.threadId);
+  if (!detailThread) throw new Error("The selected task changed in its read cut");
+  const thread = detailThread;
   const page = await readTranscriptPage(tx, {
     viewerId,
     scope,
@@ -144,17 +206,8 @@ export async function buildPersonalDetailSnapshot(
   const nodeSubject =
     scope.kind === "node" ? await nodeSubjectView(tx, thread.id, scope.nodeId) : undefined;
   return PersonalDetailSnapshotSchema.parse({
-    thread: { ...taskView(thread), thread: view },
-    ...(queue
-      ? {
-          queue: queue.queue,
-          inputQueue: boundedSerializedPrefix(
-            queue.entries,
-            queue.entries.length,
-            inputQueueSnapshotBytes,
-          ).items,
-        }
-      : {}),
+    thread: detailThread,
+    ...(queue ? queueSnapshot(queue) : {}),
     ...(nodeSubject ? { nodeSubject } : {}),
     items: page.items,
     pendingRequests: requests.items,

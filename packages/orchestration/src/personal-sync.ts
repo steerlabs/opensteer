@@ -342,9 +342,9 @@ export class PersonalSyncSocket {
   }
 
   /** Threads with a detail subscription on this socket (at most four). */
-  watchedThreads() {
+  watchedScopes(): DetailScope[] {
     return [...this.#subscriptions.values()].flatMap(({ request, removed }) =>
-      request.scope.kind === "shell" || removed ? [] : [request.scope.threadId],
+      request.scope.kind === "shell" || removed ? [] : [request.scope],
     );
   }
 

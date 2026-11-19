@@ -1,4 +1,5 @@
 import { createId } from "@opensteer/core";
+import { republishThreads } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
@@ -136,6 +137,55 @@ it("does not share one viewer's shell repair across different selected tasks", a
       expect(snapshot.snapshot.tasks.map(({ id }) => id)).toContain(selected[index]);
       expect(snapshot.snapshot.tasks.map(({ id }) => id)).not.toContain(selected[1 - index]);
     }
+  } finally {
+    await host?.close();
+    await database.drop();
+  }
+});
+
+it("gives a resumed detail the current thread value after a return-hint input changed, and republishes to node viewers", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  try {
+    const f = await fixture(database);
+    host = f.host;
+    const { threadId } = await createPersonalRunFixturePort(host.store).createTask({
+      ownerId: host.ownerId,
+      suffix: "hint-resume",
+    });
+    const before = await f.state();
+    const cursor: PersonalResumeCursor = {
+      deploymentId: before.deploymentId,
+      epoch: before.epoch,
+      viewerId: host.ownerId,
+      scopeKey: `thread:${threadId}`,
+      afterSequence: before.sequence,
+    };
+    const resumed = () => f.reads.readCut(f.owner, f.surface, { kind: "thread", threadId }, cursor);
+    const threadRows = (cut: Awaited<ReturnType<typeof resumed>>) =>
+      cut.frames.flatMap((frame) =>
+        frame.type === "host.changes"
+          ? frame.changes.filter((change) => change.entityKind === "thread")
+          : [],
+      );
+    await host.store.notificationState.setIdleCompactionPolicy({
+      policy: { mode: "off" },
+      userId: host.ownerId,
+    });
+    // The settings commit wrote no row to this scope; the resume still carries the value.
+    expect(threadRows(await resumed())).toMatchObject([
+      { entityId: threadId, operation: "upsert", value: { thread: { id: threadId } } },
+    ]);
+
+    const nodeId = createId("executionNode");
+    await republishThreads(host.store.database, [{ kind: "node", threadId, nodeId }]);
+    expect(
+      await host.store.database
+        .selectFrom("clientChanges")
+        .select(["entityKind", "entityId"])
+        .where("scopeKey", "=", `node:${nodeId}`)
+        .execute(),
+    ).toEqual([{ entityKind: "thread", entityId: threadId }]);
   } finally {
     await host?.close();
     await database.drop();
