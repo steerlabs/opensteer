@@ -246,24 +246,38 @@ export class PersonalTeamRequests {
     }
   }
   async resumeAdmissions(teamId: DeploymentId): Promise<void> {
-    await this.#recoverCancelledAsks(teamId);
+    const failures = await this.#recoverCancelledAsks(teamId);
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Cleaning up cancelled asks failed");
     for (const local of await this.options.requests.mirrors(teamId))
       if (local.kind === "ask" && !local.terminalState && !local.taskId)
         await this.#admitAsk(local);
   }
-  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<void> {
+  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<unknown[]> {
+    // Every ask gets its turn; the failures are answered for the caller to report.
+    const failures: unknown[] = [];
     for (const local of await this.options.requests.terminalAsksPendingCleanup(teamId))
-      await this.options.admission.cancelTeamRequest({
-        teamId: local.teamId,
-        requestId: local.requestId,
-      });
+      await this.options.admission
+        .cancelTeamRequest({ teamId: local.teamId, requestId: local.requestId })
+        .catch((error: unknown) => {
+          failures.push(error);
+        });
+    return failures;
   }
   /** Answers how many expired asks it cancelled. */
   async expireUndecidedAsks(): Promise<number> {
-    await this.#recoverCancelledAsks();
+    // One ask that fails to clean up or cancel does not keep the rest from expiring.
+    const failures = await this.#recoverCancelledAsks();
     const expired = await this.options.requests.expiredUndecidedAsks();
     for (const local of expired)
-      await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
+      await this.cancel(
+        local.teamId,
+        local.requestId,
+        "The time to approve this ask expired.",
+      ).catch((error: unknown) => {
+        failures.push(error);
+      });
+    if (failures.length > 0) throw new AggregateError(failures, "Expiring team asks failed");
     return expired.length;
   }
   async decide(

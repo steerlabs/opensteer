@@ -8,7 +8,7 @@ import {
 import { createRunFinishDrain, republishThreads } from "@opensteer/database";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
-import { RequestDeadlines } from "../agents/request-deadlines.js";
+import { RequestDeadlines, settleEach } from "../agents/request-deadlines.js";
 import { harnessUsageLimitFailureCode } from "@opensteer/core";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PluginChange } from "@opensteer/protocol";
@@ -3338,13 +3338,15 @@ export async function createHostRuntime(
         return !local || (stored && stored <= local) ? stored : local;
       },
       // Progress is what these sweeps settled, never another writer's commit.
-      settle: async (now) =>
-        (await passwordSignIns.settleDeadlines()) +
-        (await store.requests.expirePasswordSignIns(now)) +
-        ((await linkServices?.requests.expireUndecidedAsks()) ?? 0) +
-        (await store.expireThreadInputLeases()).settled +
-        (await devices.computerAppApprovals.expireComputerAppSetupRequests()) +
-        (await localServers.requestLocalServerApprovals()),
+      settle: (now) =>
+        settleEach([
+          () => passwordSignIns.settleDeadlines(),
+          () => store.requests.expirePasswordSignIns(now),
+          async () => (await linkServices?.requests.expireUndecidedAsks()) ?? 0,
+          async () => (await store.expireThreadInputLeases()).settled,
+          () => devices.computerAppApprovals.expireComputerAppSetupRequests(),
+          () => localServers.requestLocalServerApprovals(),
+        ]),
       onError: reportMutationFailure,
     });
     deadlines.start();

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { RequestDeadlines } from "./request-deadlines.js";
+import { RequestDeadlines, settleEach } from "./request-deadlines.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -112,4 +112,18 @@ it("observes a deadline committed during an in-flight read", async () => {
     first.resolve(null);
     await scheduler.close();
   }
+});
+
+it("gives every settler its turn when one keeps failing, then reports the failure", async () => {
+  const later = vi.fn(async () => 2);
+  await expect(
+    settleEach([
+      async () => {
+        throw new Error("password broker down");
+      },
+      later,
+    ]),
+  ).rejects.toThrow("Settling due Requests failed");
+  expect(later).toHaveBeenCalledOnce();
+  expect(await settleEach([async () => 1, later])).toBe(3);
 });
