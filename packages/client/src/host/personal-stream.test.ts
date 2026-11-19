@@ -2525,3 +2525,42 @@ test("a burst of durable frames writes one checkpoint, for the changed scope onl
   await vi.advanceTimersByTimeAsync(0);
   expect(writes).toEqual([`thread:${threadId}`, `thread:${threadId}`]);
 });
+
+test("a task observed after the socket opened paints its saved cut and resumes from it", async () => {
+  const { cache } = await savedCache();
+  const stream = new ScopedPersonalStream(cache);
+  const sent: ScopedClientMessage[] = [];
+  stream.attach((frame) => sent.push(frame));
+  const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  const shell = {
+    scope: shellScope,
+    subscriptionId: "shell" as const,
+    generation: attach.generation,
+  };
+  stream.receive({
+    ...shell,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: {
+      deploymentId,
+      viewerId,
+      epoch,
+      session,
+      tasks: [task],
+      visits: [],
+      attention: [],
+      counts,
+      ...shellLists,
+      resourceRevisions: revisions("0"),
+    },
+  });
+  stream.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
+  sent.length = 0;
+  const release = stream.observe(threadScope);
+  // The saved cut is read before the subscription, so it can carry a cursor.
+  expect(sent).toEqual([]);
+  await vi.waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]).toMatchObject({ type: "client.subscribe", cursor: { afterSequence: "1" } });
+  expect(stream.detail(threadScope).transcript.getSnapshot().items.has(item.id)).toBe(true);
+  release();
+});

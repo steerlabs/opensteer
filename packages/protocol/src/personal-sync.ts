@@ -360,7 +360,12 @@ const liveText = {
   offset: z.int().nonnegative(),
   totalLength: z.int().nonnegative(),
 };
-export const ScopedHostMessageSchema = z
+/**
+ * A personal scope frame's structure and addressing, without its encoded size. A receiver that
+ * holds the wire text checks `personalHostFrameMaxBytes` against those bytes instead of
+ * re-encoding the frame.
+ */
+export const ScopedHostFrameSchema = z
   .discriminatedUnion("type", [
     z
       .strictObject({
@@ -368,14 +373,7 @@ export const ScopedHostMessageSchema = z
         ...durableAddress,
         snapshot: z.union([PersonalShellSnapshotSchema, PersonalDetailSnapshotSchema]),
       })
-      .refine(
-        (value) =>
-          (value.scope.kind === "shell") === "tasks" in value.snapshot &&
-          utf8ByteLength(JSON.stringify(value)) <=
-            (value.scope.kind === "shell"
-              ? personalShellFrameMaxBytes
-              : personalDetailFrameMaxBytes),
-      ),
+      .refine((value) => (value.scope.kind === "shell") === "tasks" in value.snapshot),
     z
       .strictObject({
         type: z.literal("host.changes"),
@@ -393,8 +391,7 @@ export const ScopedHostMessageSchema = z
             (row, index) =>
               row.sequence === frame.throughSequence &&
               (index === 0 || row.ordinal > frame.changes[index - 1]!.ordinal),
-          ) &&
-          utf8ByteLength(JSON.stringify(frame)) <= personalChangesFrameMaxBytes,
+          ),
       ),
     z.strictObject({
       type: z.literal("host.synchronized"),
@@ -415,24 +412,18 @@ export const ScopedHostMessageSchema = z
       revision: PersonalRevisionSchema,
       view: PersonalResourceViewSchema,
     }),
-    z
-      .strictObject({
-        type: z.literal("host.live"),
-        ...liveAddress,
-        update: z.discriminatedUnion("operation", [
-          z.strictObject({ operation: z.literal("append"), ...liveText }),
-          z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
-          z.strictObject({ operation: z.literal("close") }),
-        ]),
-      })
-      .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalLiveFrameMaxBytes),
+    z.strictObject({
+      type: z.literal("host.live"),
+      ...liveAddress,
+      update: z.discriminatedUnion("operation", [
+        z.strictObject({ operation: z.literal("append"), ...liveText }),
+        z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
+        z.strictObject({ operation: z.literal("close") }),
+      ]),
+    }),
   ])
   .refine((frame) => {
-    if (frame.type === "host.resource")
-      return utf8ByteLength(JSON.stringify(frame)) <= personalResourceFrameMaxBytes;
-    if (frame.type === "host.synchronized" || frame.type === "host.removed") {
-      if (utf8ByteLength(JSON.stringify(frame)) > personalControlFrameMaxBytes) return false;
-    }
+    if (frame.type === "host.resource") return true;
     const isShell = frame.scope.kind === "shell";
     if ((frame.subscriptionId === "shell") !== isShell) return false;
     if ("shellProgress" in frame && frame.shellProgress && !isShell) return false;
@@ -494,6 +485,11 @@ export const ScopedHostMessageSchema = z
       personalChangeFitsScope(frame.scope, row, frame.throughSequence),
     );
   });
+
+/** A personal scope frame within its encoded size limit. */
+export const ScopedHostMessageSchema = ScopedHostFrameSchema.refine(
+  (frame) => utf8ByteLength(JSON.stringify(frame)) <= personalHostFrameMaxBytes(frame),
+);
 
 /** Whether a change may appear in a scope's feed at a cut. */
 export function personalChangeFitsScope(
@@ -578,7 +574,7 @@ function withinCut(revision: string, through: string) {
 export type PersonalScope = z.infer<typeof PersonalScopeSchema>;
 export type PersonalResumeCursor = z.infer<typeof PersonalResumeCursorSchema>;
 export type PersonalChange = z.infer<typeof PersonalChangeSchema>;
-export type ScopedHostMessage = z.infer<typeof ScopedHostMessageSchema>;
+export type ScopedHostMessage = z.infer<typeof ScopedHostFrameSchema>;
 export type ScopedClientMessage = z.infer<typeof ScopedClientMessageSchema>;
 
 const authorityChanged = "Personal authority changed";

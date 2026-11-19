@@ -1,6 +1,7 @@
 import { utf8ByteLength, type AuthSessionId } from "@opensteer/core";
 import {
   scopedPersonalApiVersion,
+  ScopedHostFrameSchema,
   ScopedHostMessageSchema,
   personalHostFrameMaxBytes,
   PersonalResumeCursorSchema,
@@ -347,12 +348,25 @@ export class ScopedPersonalStream {
     this.#evict();
   }
 
+  /**
+   * Applies one frame. `wireBytes` is the received text's size, checked against the frame's limit
+   * instead of re-encoding it; a frame from the socket must also carry its shell's session.
+   */
   receive(input: unknown, wireBytes?: number) {
-    const parsed = ScopedHostMessageSchema.safeParse(input);
+    const parsed = (
+      wireBytes === undefined ? ScopedHostMessageSchema : ScopedHostFrameSchema
+    ).safeParse(input);
     if (!parsed.success) return false;
     const frame = parsed.data;
     if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(frame))
       throw new Error("Personal scope frame exceeds its encoded limit.");
+    if (
+      wireBytes !== undefined &&
+      frame.type === "host.snapshot" &&
+      "tasks" in frame.snapshot &&
+      !frame.snapshot.session
+    )
+      throw new Error("The Host omitted its authenticated shell identity.");
     if (!this.#send) return true;
     if (frame.type === "host.live") this.#creditLive(frame, wireBytes ?? bytes(frame));
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);

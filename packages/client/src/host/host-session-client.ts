@@ -23,7 +23,6 @@ import { nodeCardProgress, nodeTranscriptCard, transcriptCard } from "./transcri
 import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
-  PersonalShellSnapshotSchema,
   personalDetailFrameMaxBytes,
   affectedPersonalSubscriptions,
   personalShellSettledTasks,
@@ -3853,19 +3852,6 @@ export class HttpHostClient {
       try {
         const message: unknown = JSON.parse(data);
         parsed = true;
-        if (
-          message &&
-          typeof message === "object" &&
-          "type" in message &&
-          message.type === "host.snapshot" &&
-          "subscriptionId" in message &&
-          message.subscriptionId === "shell" &&
-          "snapshot" in message
-        ) {
-          const shell = PersonalShellSnapshotSchema.safeParse(message.snapshot);
-          if (!shell.success || !validNetworkShell(shell.data))
-            throw new Error("The Host omitted its authenticated shell identity.");
-        }
         if (this.#stream.receive(message, wireBytes)) return;
         if (
           message &&
@@ -4445,10 +4431,6 @@ function browserUseKey(
 
 function sameKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
-function validNetworkShell(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
-  return snapshot.session?.user.id === snapshot.viewerId;
 }
 
 const unknownModelSelection = ModelSelectionSchema.parse({
