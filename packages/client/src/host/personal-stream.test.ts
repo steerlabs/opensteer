@@ -2329,3 +2329,37 @@ test("acknowledges live text about every 32 KiB so a long reply keeps flowing, a
   for (let index = 0; index < 20; index++) live();
   expect(acks()).toBe(released);
 });
+
+test("shows a task's new return hint from its republished thread value, with no read", async () => {
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const reads = fetch.mock.calls.length;
+    const hint = { eligible: true, sessionRevision: "7", sourceRunId: runId, eligibleAt: 1_000 };
+    const value = detailThread({ ...task, status: "idle" as const, revision: "2" });
+    host.commit([], {
+      threadId,
+      changes: [
+        upsert("thread", threadId, { ...value, thread: { ...value.thread, returnHint: hint } }),
+      ],
+    });
+    expect(client.getSnapshot().threads.find(({ id }) => id === threadId)?.returnHint).toEqual(
+      hint,
+    );
+    expect(fetch.mock.calls.length).toBe(reads);
+    expect(host.sent.filter((frame) => frame.type === "client.subscribe")).toEqual([]);
+  } finally {
+    client.dispose();
+  }
+});
