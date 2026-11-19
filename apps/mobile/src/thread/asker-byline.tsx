@@ -1,31 +1,12 @@
-import { requestAsker, type HostClient, type RequestAsker } from "@opensteer/client/host";
+import type { HostClient, RequestAsker } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { Request } from "@opensteer/core";
 import { useCallback, type ReactNode } from "react";
+
+export { useRequestAsker } from "@opensteer/client/react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, space, touchTarget, type } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentEngine, AskerMark, threadEngine } from "./agent-mark.js";
-
-/** The subagent that asked a Request, or null when the Run's own agent did. */
-export function useRequestAsker(hostClient: HostClient, request: Request): RequestAsker | null {
-  return useHostSelector(
-    hostClient,
-    useCallback((snapshot) => requestAsker(snapshot, request), [request]),
-    sameAsker,
-  );
-}
-
-function sameAsker(left: RequestAsker | null, right: RequestAsker | null): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.nodeId === right.nodeId &&
-      left.title === right.title &&
-      left.byline === right.byline)
-  );
-}
 
 /**
  * Who asked, for a question a subagent asked: its mark and name, and the

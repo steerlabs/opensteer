@@ -13070,11 +13070,27 @@ class MockHostState {
             ? this.assignments.get(assignment.parentAssignmentId)
             : undefined;
         }
+        // As the Host does: the asking subagent, and the one it runs inside.
+        const nodes = (this.snapshot.transcripts[request.originatingThreadId] ?? []).filter(
+          (entry): entry is import("../host/client.js").NodeEntry => entry.kind === "node",
+        );
+        const asker = nodes.find(({ nodeId }) => nodeId === request.originatingNodeId);
+        const within = asker?.parentNodeId
+          ? nodes.find(({ nodeId }) => nodeId === asker.parentNodeId)
+          : undefined;
         return {
           assignments: held,
           presentation: null,
           request: PendingRequestSchema.parse(request),
-          subagent: null,
+          subagent: asker
+            ? {
+                id: ExecutionNodeIdSchema.parse(asker.nodeId),
+                title: asker.title,
+                within: within
+                  ? { id: ExecutionNodeIdSchema.parse(within.nodeId), title: within.title }
+                  : null,
+              }
+            : null,
         };
       })
       .sort((left, right) => right.request.createdAt.localeCompare(left.request.createdAt));
