@@ -150,34 +150,39 @@ export class FencedReads {
     };
     const stale = () =>
       slot.dirty || this.#options.epoch() !== epoch || (this.#changes.get(key) ?? 0) !== change;
-    void Promise.resolve()
-      .then(() => slot.job(read))
-      .then(
-        () => {
-          if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
-          slot.controller = null;
-          slot.attempt = 0;
-          if (stale() && slot.observed()) this.#start(key, slot);
+    // The job starts at once, so its request is out before the caller's next step.
+    let running: Promise<void>;
+    try {
+      running = slot.job(read);
+    } catch (error) {
+      running = Promise.reject(error);
+    }
+    void running.then(
+      () => {
+        if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
+        slot.controller = null;
+        slot.attempt = 0;
+        if (stale() && slot.observed()) this.#start(key, slot);
+        else this.#settle(key, slot);
+      },
+      (error: unknown) => {
+        if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
+        slot.controller = null;
+        if (!slot.observed()) return this.#settle(key, slot);
+        if (stale()) return this.#start(key, slot);
+        if (!classifyClientFailure(error).retryable) return this.#settle(key, slot, error);
+        const delay = Math.min(
+          this.#options.maxBackoffMs,
+          this.#options.minBackoffMs * 2 ** slot.attempt++,
+        );
+        slot.timer = setTimeout(() => {
+          slot.timer = null;
+          if (this.#slots.get(key) !== slot) return;
+          if (slot.observed()) this.#start(key, slot);
           else this.#settle(key, slot);
-        },
-        (error: unknown) => {
-          if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
-          slot.controller = null;
-          if (!slot.observed()) return this.#settle(key, slot);
-          if (stale()) return this.#start(key, slot);
-          if (!classifyClientFailure(error).retryable) return this.#settle(key, slot, error);
-          const delay = Math.min(
-            this.#options.maxBackoffMs,
-            this.#options.minBackoffMs * 2 ** slot.attempt++,
-          );
-          slot.timer = setTimeout(() => {
-            slot.timer = null;
-            if (this.#slots.get(key) !== slot) return;
-            if (slot.observed()) this.#start(key, slot);
-            else this.#settle(key, slot);
-          }, delay);
-        },
-      );
+        }, delay);
+      },
+    );
   }
 
   #settle(key: string, slot: Slot, error?: unknown) {

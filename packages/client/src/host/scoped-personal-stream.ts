@@ -653,13 +653,14 @@ export class ScopedPersonalStream {
         detail.saved = "read";
       }
     }
-    // A cut that says the anchor is gone ends it; one centred elsewhere, sent before the Host
-    // heard the reader's newest anchor, is answered by reading around that anchor.
+    // A subscription's first cut answers the anchor it asked for: null means that row is gone.
+    // A repair's cut may answer an older anchor; the reader reads around its own instead.
     if (
       frame.type === "host.snapshot" &&
       "items" in frame.snapshot &&
       detail.anchor &&
-      frame.snapshot.anchorItemId === null
+      frame.snapshot.anchorItemId === null &&
+      !detail.transcript.getSnapshot().synchronized
     )
       delete detail.anchor;
     // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
