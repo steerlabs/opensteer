@@ -197,6 +197,8 @@ export const TaskEntryViewSchema = z.object({
   failure: z.string().max(taskLineMaxLength).nullable(),
   lastReply: z.string().max(taskLineMaxLength).nullable(),
   thread: ThreadViewSchema,
+  /** A Run waits to start and none is executing, as on the shell's task row. */
+  runQueued: z.boolean().optional(),
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
 
