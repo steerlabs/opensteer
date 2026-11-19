@@ -2097,7 +2097,14 @@ export class MobileClient {
       this.#state = { ...this.#state, selection: { ...this.#state.selection, hostClient: null } };
       for (const listener of this.#listeners) listener();
     }
-    return this.#savedViewCache.invalidate(id);
+    // Every path that ends a session or authority comes here: the saved private cuts go too.
+    const parsed = DeploymentIdSchema.safeParse(id);
+    return Promise.all([
+      this.#savedViewCache.invalidate(id),
+      parsed.success
+        ? this.#host.clearPersonalStreamCache?.(parsed.data).catch(() => undefined)
+        : undefined,
+    ]).then(() => undefined);
   }
 
   #invalidateAccountSavedViews(): Promise<void> {
@@ -2639,6 +2646,7 @@ export class MobileClient {
       // Discovery refusal erases saved authority without starting a login change.
       this.savedViews.block();
       void this.#savedViewCache.invalidate(deploymentId);
+      void this.#host.clearPersonalStreamCache?.(deploymentId).catch(() => undefined);
       this.#verification.set(deploymentId, agreement);
       // Keep the selected Deployment and its repair, but revoke this attachment's
       // transports and authorization, including credential reads already awaiting storage.

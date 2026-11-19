@@ -130,9 +130,19 @@ export class ScopedPersonalStream {
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
-  constructor(cache?: PersonalStreamCache, resources?: PersonalResourcePort) {
+  /** The Deployment a saved start is read for, also cleared when no viewer is known yet. */
+  readonly #cacheDeploymentId: string | undefined;
+  /** The cache fence this stream's identity was confirmed under; its writes carry it. */
+  #fence: Promise<number> | undefined;
+
+  constructor(
+    cache?: PersonalStreamCache,
+    resources?: PersonalResourcePort,
+    cacheDeploymentId?: string,
+  ) {
     this.cache = cache;
     this.#resources = resources;
+    this.#cacheDeploymentId = cacheDeploymentId;
   }
 
   peekDetail(scope: DetailScope) {
@@ -199,10 +209,10 @@ export class ScopedPersonalStream {
    * from them is shown until the socket's attach reply confirms the same viewer, Deployment, epoch
    * and session; until then they only supply the resume cursors.
    */
-  async restore(deploymentId?: string) {
+  async restore() {
     if (!this.cache || this.#send || this.#identity) return;
     const authority = this.#authority;
-    const shell = await this.cache.latestShell(deploymentId).catch(() => null);
+    const shell = await this.cache.latestShell(this.#cacheDeploymentId).catch(() => null);
     const candidate = shell && validShellCheckpoint(shell);
     if (!candidate || this.#authority !== authority || this.#send || this.#identity) return;
     const details = new Map<string, DetailCheckpoint>();
@@ -316,11 +326,32 @@ export class ScopedPersonalStream {
     return scopes;
   }
 
+  /**
+   * Clears a viewer's saved state, durably against any other writer. With no viewer known yet (a
+   * refusal before the saved start was read), the whole Deployment's, or everything this storage
+   * holds when the Deployment is not known either. The cache orders it before any later fence.
+   */
   #purge(identity: ScopedPersonalIdentity | undefined) {
-    if (!identity || !this.cache) return;
-    this.#enqueue(JSON.stringify([identity.deploymentId, identity.viewerId]), () =>
-      this.cache!.removeViewer(identity),
-    );
+    if (!this.cache) return;
+    this.#fence = undefined;
+    const cleared = identity
+      ? this.cache.removeViewer(identity)
+      : this.#cacheDeploymentId !== undefined
+        ? this.cache.removeDeployment(this.#cacheDeploymentId)
+        : this.cache.clear();
+    void cleared.catch(() => undefined);
+  }
+
+  /** This viewer is the socket's: its writes from now on carry the cache's current fence. */
+  #confirm(identity: ScopedPersonalIdentity) {
+    const changed =
+      !this.#identity ||
+      this.#identity.deploymentId !== identity.deploymentId ||
+      this.#identity.viewerId !== identity.viewerId ||
+      this.#identity.epoch !== identity.epoch;
+    this.#identity = identity;
+    if (this.cache && (changed || !this.#fence))
+      this.#fence = this.cache.fence(identity).catch(() => -1);
   }
 
   setBackground(background: boolean) {
@@ -335,6 +366,7 @@ export class ScopedPersonalStream {
     this.#authority++;
     const identity = this.#identity ?? this.#candidate?.identity;
     this.#identity = undefined;
+    this.#fence = undefined;
     this.#sessionId = undefined;
     this.#candidate = undefined;
     this.#dirty.clear();
@@ -472,7 +504,7 @@ export class ScopedPersonalStream {
         this.#discardViewerCheckpoints();
         for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
       }
-      this.#identity = { deploymentId, viewerId, epoch };
+      this.#confirm({ deploymentId, viewerId, epoch });
       this.#sessionId = sessionId;
     }
     // Readiness is set before the shell publishes its first synchronized cut on this socket.
@@ -532,7 +564,7 @@ export class ScopedPersonalStream {
       }
     }
     // A reply that is not a snapshot resumed from the saved cursor under the saved session.
-    this.#identity = candidate.identity;
+    this.#confirm(candidate.identity);
     this.#sessionId = candidate.sessionId;
     if (frame.type !== "host.snapshot") {
       this.shell.apply({
@@ -944,7 +976,9 @@ export class ScopedPersonalStream {
       const fence = () => (detail ? detail.subscriptions : this.shell.getSnapshot().generation);
       const taken = fence();
       const current = () => authority === this.#authority && fence() === taken;
-      this.#enqueue(key, () => this.cache!.commit(checkpoint, current));
+      const written = this.#fence;
+      if (!written) continue;
+      this.#enqueue(key, async () => this.cache!.commit(checkpoint, current, await written));
     }
   }
 

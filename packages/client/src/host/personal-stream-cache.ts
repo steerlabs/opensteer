@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/protocol/personal-sync";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
-export const personalCacheFormat = 65;
+export const personalCacheFormat = 66;
 
 export interface PersonalCacheScope {
   readonly deploymentId: string;
@@ -30,29 +30,88 @@ export type PersonalShellCheckpoint = Extract<PersonalStreamCheckpoint, { kind: 
 
 type Identity = Pick<PersonalCacheScope, "deploymentId" | "viewerId" | "epoch">;
 
+type Viewer = Pick<PersonalCacheScope, "deploymentId" | "viewerId">;
+
 export interface PersonalStreamCache {
+  /**
+   * The fence a writer for this viewer takes once its identity is confirmed. A clear of the viewer,
+   * its Deployment or everything raises the fence, so every write taken under an older one, from
+   * any process sharing the storage, is refused and every record saved under one is never loaded.
+   */
+  fence(viewer: Viewer): Promise<number>;
   /** The newest saved shell, for this Deployment when named. */
   latestShell(deploymentId?: string): Promise<PersonalShellCheckpoint | null>;
   load(scope: PersonalCacheScope): Promise<PersonalStreamCheckpoint | null>;
-  commit(checkpoint: PersonalStreamCheckpoint, isCurrent: () => boolean): Promise<void>;
+  commit(
+    checkpoint: PersonalStreamCheckpoint,
+    isCurrent: () => boolean,
+    fence: number,
+  ): Promise<void>;
   remove(scope: PersonalCacheScope): Promise<void>;
   removeThread(identity: Identity, threadId: string): Promise<void>;
-  removeViewer(identity: Pick<PersonalCacheScope, "deploymentId" | "viewerId">): Promise<void>;
+  removeViewer(identity: Viewer): Promise<void>;
   removeDeployment(deploymentId: string): Promise<void>;
   clear(): Promise<void>;
 }
 
+/** Raised by each clear; a viewer's fence is the sum of the three that cover it. */
+export interface CheckpointFences {
+  readonly all: number;
+  readonly deployments: Readonly<Record<string, number>>;
+  /** Keyed by `checkpointViewerKey`. */
+  readonly viewers: Readonly<Record<string, number>>;
+}
+export const noCheckpointFences: CheckpointFences = { all: 0, deployments: {}, viewers: {} };
+
+export function checkpointViewerKey(viewer: Viewer) {
+  return JSON.stringify([viewer.deploymentId, viewer.viewerId]);
+}
+
+export function checkpointFence(fences: CheckpointFences, viewer: Viewer) {
+  return (
+    fences.all +
+    (fences.deployments[viewer.deploymentId] ?? 0) +
+    (fences.viewers[checkpointViewerKey(viewer)] ?? 0)
+  );
+}
+
+/** The fences once a clear of `scope` (a viewer, a Deployment, or everything when empty) lands. */
+export function raiseCheckpointFence(
+  fences: CheckpointFences,
+  scope: Partial<Viewer>,
+): CheckpointFences {
+  if (scope.deploymentId !== undefined && scope.viewerId !== undefined) {
+    const key = checkpointViewerKey({ deploymentId: scope.deploymentId, viewerId: scope.viewerId });
+    return { ...fences, viewers: { ...fences.viewers, [key]: (fences.viewers[key] ?? 0) + 1 } };
+  }
+  if (scope.deploymentId !== undefined)
+    return {
+      ...fences,
+      deployments: {
+        ...fences.deployments,
+        [scope.deploymentId]: (fences.deployments[scope.deploymentId] ?? 0) + 1,
+      },
+    };
+  return { ...fences, all: fences.all + 1 };
+}
+
 /**
  * One value per key. A write replaces its key whole or not at all, so a failed or interrupted
- * write leaves the previous value readable; other keys are untouched.
+ * write leaves the previous value readable; other keys are untouched. `write` and `clear` each
+ * check or raise the fences in the same transaction as their keys, so another process sharing the
+ * storage cannot land a write between a clear and its fence.
  */
 export interface CheckpointStorage {
   list(): Promise<
     readonly { readonly key: string; readonly savedAt: number; readonly bytes: number }[]
   >;
   read(key: string): Promise<string | null>;
-  write(key: string, value: string): Promise<void>;
+  fences(): Promise<CheckpointFences>;
+  /** Writes only while `checkpointFence(fences, guard)` is still `guard.fence`; says whether. */
+  write(key: string, value: string, guard: Viewer & { readonly fence: number }): Promise<boolean>;
   remove(keys: readonly string[]): Promise<void>;
+  /** Removes every key `matches` accepts and raises the fence for `scope`, together. */
+  clear(matches: (key: string) => boolean, scope: Partial<Viewer>): Promise<void>;
 }
 
 export const personalCheckpointMaxBytes = 512 * 1024;
@@ -105,11 +164,15 @@ function threadOf(scopeKey: string, checkpoint?: PersonalStreamCheckpoint) {
   return checkpoint?.kind === "detail" ? checkpoint.state.thread.id : null;
 }
 
-function parse(serialized: string | null): PersonalStreamCheckpoint | null {
+type Stored = PersonalStreamCheckpoint & { readonly fence: number };
+
+function parse(serialized: string | null): Stored | null {
   if (!serialized) return null;
   try {
     const value: unknown = JSON.parse(serialized);
-    return value && typeof value === "object" ? (value as PersonalStreamCheckpoint) : null;
+    return value && typeof value === "object" && typeof Reflect.get(value, "fence") === "number"
+      ? (value as Stored)
+      : null;
   } catch {
     return null;
   }
@@ -141,6 +204,22 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
       const doomed = (await keys()).filter(match).map(({ key }) => key);
       if (doomed.length) await storage.remove(doomed);
     });
+  const clearWhere = (match: (key: Key) => boolean, scope: Partial<Viewer>) =>
+    serial(() =>
+      storage.clear((key) => {
+        const parsed = parseKey(key);
+        // Another format's key is never this viewer's to keep.
+        return !parsed || parsed.format !== personalCacheFormat || match(parsed);
+      }, scope),
+    );
+  /** A record saved before its viewer's last clear is never handed out. */
+  const current = async (held: Stored | null) => {
+    if (!held?.scope) return null;
+    const fence = checkpointFence(await storage.fences(), held.scope);
+    if (held.fence < fence) return null;
+    const { fence: _fence, ...checkpoint } = held;
+    return checkpoint as PersonalStreamCheckpoint;
+  };
   const evict = async () => {
     const held = (await keys()).sort((a, b) => b.savedAt - a.savedAt);
     let total = 0;
@@ -151,6 +230,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
     if (doomed.length) await storage.remove(doomed.map(({ key }) => key));
   };
   return {
+    fence: (viewer) => serial(async () => checkpointFence(await storage.fences(), viewer)),
     latestShell: (deploymentId) =>
       serial(async () => {
         const newest = (await keys())
@@ -159,7 +239,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
               entry.scopeKey === "shell" && (!deploymentId || entry.deploymentId === deploymentId),
           )
           .sort((a, b) => b.savedAt - a.savedAt)[0];
-        const held = newest ? parse(await storage.read(newest.key)) : null;
+        const held = newest ? await current(parse(await storage.read(newest.key))) : null;
         return held?.kind === "shell" ? held : null;
       }),
     load: (scope) =>
@@ -168,7 +248,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
           ? scope.scopeKey.slice("thread:".length)
           : undefined;
         if (threadId !== undefined || scope.scopeKey === "shell")
-          return parse(await storage.read(storageKey(scope, threadId ?? null)));
+          return current(parse(await storage.read(storageKey(scope, threadId ?? null))));
         const entry = (await keys()).find(
           (key) =>
             key.deploymentId === scope.deploymentId &&
@@ -176,18 +256,23 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
             key.epoch === scope.epoch &&
             key.scopeKey === scope.scopeKey,
         );
-        return entry ? parse(await storage.read(entry.key)) : null;
+        return entry ? current(parse(await storage.read(entry.key))) : null;
       }),
-    commit: (checkpoint, isCurrent) =>
+    commit: (checkpoint, isCurrent, fence) =>
       serial(async () => {
         if (!isCurrent()) return;
-        const serialized = JSON.stringify(checkpoint);
+        const serialized = JSON.stringify({ ...checkpoint, fence });
         if (utf8ByteLength(serialized) > personalCheckpointMaxBytes) return;
-        await storage.write(
+        const written = await storage.write(
           storageKey(checkpoint.scope, threadOf(checkpoint.scope.scopeKey, checkpoint)),
           serialized,
+          {
+            deploymentId: checkpoint.scope.deploymentId,
+            viewerId: checkpoint.scope.viewerId,
+            fence,
+          },
         );
-        await evict();
+        if (written) await evict();
       }),
     remove: (scope) =>
       removeWhere(
@@ -206,10 +291,12 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
           key.threadId === threadId,
       ),
     removeViewer: (identity) =>
-      removeWhere(
+      clearWhere(
         (key) => key.deploymentId === identity.deploymentId && key.viewerId === identity.viewerId,
+        { deploymentId: identity.deploymentId, viewerId: identity.viewerId },
       ),
-    removeDeployment: (deploymentId) => removeWhere((key) => key.deploymentId === deploymentId),
-    clear: () => removeWhere(() => true),
+    removeDeployment: (deploymentId) =>
+      clearWhere((key) => key.deploymentId === deploymentId, { deploymentId }),
+    clear: () => clearWhere(() => true, {}),
   };
 }

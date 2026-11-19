@@ -1,5 +1,8 @@
 import { createPersonalStreamCache, personalCacheFormat } from "@opensteer/client/host";
-import { fileCheckpointStorage } from "./client/personal-checkpoint-files.js";
+import {
+  dropEarlierCheckpointFormats,
+  fileCheckpointStorage,
+} from "./client/personal-checkpoint-files.js";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -321,10 +324,10 @@ function mobileClient(): MobileRoot {
         notifications.registration,
         port.signedInSubject,
       );
-  // The single-file format before per-scope files is dropped, not read.
-  void privateFiles
-    .removeFile(`${root}${storeName}/personal-stream-v64/checkpoints.json`)
-    .catch(() => undefined);
+  // Saved state of earlier formats is dropped, not read.
+  void dropEarlierCheckpointFormats(privateFiles, `${root}${storeName}`, personalCacheFormat).catch(
+    () => undefined,
+  );
   const personalStreamCache = createPersonalStreamCache(
     fileCheckpointStorage(
       privateFiles,

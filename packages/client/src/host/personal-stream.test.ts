@@ -1745,8 +1745,8 @@ test("a named socket close purges its task and resumes the unaffected scope", as
   const base = createPersonalStreamCache(memoryCheckpointStorage());
   const cache: PersonalStreamCache = {
     ...base,
-    commit: async (checkpoint, current) => {
-      await base.commit(checkpoint, current);
+    commit: async (checkpoint, current, fence) => {
+      await base.commit(checkpoint, current, fence);
       if (current()) saved.set(checkpoint.scope.scopeKey, checkpoint);
     },
     removeThread: async (identity, id) => {
@@ -2433,9 +2433,9 @@ test("a burst of durable frames writes one checkpoint, for the changed scope onl
   const storage = memoryCheckpointStorage();
   const writes: string[] = [];
   const write = storage.write;
-  storage.write = async (key, value) => {
+  storage.write = async (key, value, guard) => {
     writes.push(JSON.parse(key)[4] as string);
-    await write(key, value);
+    return write(key, value, guard);
   };
   const f = fixture(createPersonalStreamCache(storage));
   f.syncShell();
@@ -2824,4 +2824,36 @@ test("a task the shell removes takes its saved cut with it, from memory and disk
       false,
     ),
   );
+});
+
+test("a refusal before any viewer is known still clears that Deployment's saved state", async () => {
+  const { cache, storage } = await savedCache();
+  const stream = new ScopedPersonalStream(cache, undefined, deploymentId);
+  stream.clear(true);
+  await vi.waitFor(() => expect(storage.values.size).toBe(0));
+  expect(await new ScopedPersonalStream(cache, undefined, deploymentId).restore()).toBeUndefined();
+});
+
+test("stalled saved-state storage never holds the attach", async () => {
+  const { cache } = await savedCache();
+  const late = Promise.withResolvers<void>();
+  const stalled: PersonalStreamCache = {
+    ...cache,
+    latestShell: async (id) => {
+      await late.promise;
+      return cache.latestShell(id);
+    },
+  };
+  let attach: Extract<ScopedClientMessage, { type: "client.attach" }> | undefined;
+  const warm = warmClient(stalled, (_socket, message) => {
+    attach = message;
+  });
+  try {
+    void warm.client.load();
+    await vi.waitFor(() => expect(attach).toBeDefined(), { timeout: 1_000 });
+    expect(attach?.cursor).toBeUndefined();
+  } finally {
+    late.resolve();
+    warm.client.dispose();
+  }
 });
