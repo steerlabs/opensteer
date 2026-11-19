@@ -16,9 +16,11 @@ export function createReturnHintRefresh<Scope>(input: {
 }) {
   let running = false;
   let again = false;
+  let closed = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let delay = retryFloorMs;
   const start = () => {
+    if (closed) return;
     if (running) {
       again = true;
       return;
@@ -36,9 +38,11 @@ export function createReturnHintRefresh<Scope>(input: {
         delay = retryFloorMs;
       } catch (error) {
         input.onError(error);
-        retry = setTimeout(start, delay);
-        retry.unref?.();
-        delay = Math.min(delay * 2, retryCeilingMs);
+        if (!closed) {
+          retry = setTimeout(start, delay);
+          retry.unref?.();
+          delay = Math.min(delay * 2, retryCeilingMs);
+        }
       } finally {
         running = false;
       }
@@ -50,6 +54,7 @@ export function createReturnHintRefresh<Scope>(input: {
     },
     {
       close() {
+        closed = true;
         clearTimeout(retry);
         retry = undefined;
       },

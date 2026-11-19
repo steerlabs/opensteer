@@ -41,3 +41,23 @@ it("ignores resources the return hint does not read", async () => {
   expect(republish).not.toHaveBeenCalled();
   refresh.close();
 });
+
+it("arms nothing after close, even for a pass that fails as the Host shuts down", async () => {
+  vi.useFakeTimers();
+  const pass = Promise.withResolvers<void>();
+  const republish = vi.fn(() => pass.promise);
+  const refresh = createReturnHintRefresh({
+    watched: () => ["thread:viewed"],
+    republish,
+    onError: () => undefined,
+  });
+  refresh(new Set(["settings"]));
+  await vi.advanceTimersByTimeAsync(0);
+  refresh.close();
+  pass.reject(new Error("database closed"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(vi.getTimerCount()).toBe(0);
+  refresh(new Set(["settings"]));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(republish).toHaveBeenCalledTimes(1);
+});
