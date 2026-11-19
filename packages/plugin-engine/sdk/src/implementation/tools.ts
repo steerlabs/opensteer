@@ -1933,6 +1933,14 @@ export const makeTools = (
                   } satisfies ToolResumeResult;
                 }
                 const { state } = checked.success;
+                // Only the app's active version runs anything: a call reviewed on another is
+                // stale, and the person approves it again.
+                if (state.app.activeVersion !== saved.version)
+                  return {
+                    status: "failed",
+                    requestId: input.requestId,
+                    reason: "stale",
+                  } satisfies ToolResumeResult;
                 return yield* Effect.gen(function* () {
                   yield* Effect.annotateCurrentSpan({
                     "pluginEngine.app.id": saved.app,

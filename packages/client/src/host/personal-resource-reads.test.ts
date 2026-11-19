@@ -1,3 +1,4 @@
+import { HostTransportError } from "../connections/host-transport-error.js";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import { expect, test, vi } from "vitest";
 import {
@@ -591,4 +592,31 @@ test("the Host's answer to an attach is read at once however late it comes, and 
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("a read the attachment cut off is a cancel: the kind stays readable and nothing installs", async () => {
+  const unreadable: [PersonalResourceKind, boolean][] = [];
+  const applied: unknown[] = [];
+  let cut = true;
+  const reads = new PersonalResourceReads({
+    read: async (kind) => {
+      if (cut) throw new HostTransportError("deployment-changed");
+      return { ok: true, data: { revision: "1", next: null, data: { kind } as never } };
+    },
+    apply: (pages) => applied.push(pages),
+    canRead: () => true,
+    watchChanged: () => undefined,
+    unreadable: (kind, value) => unreadable.push([kind, value]),
+  });
+  const release = reads.watch("settings", () => {});
+  await vi.waitFor(() => expect(reads.revision("settings")).toBeUndefined());
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  expect(unreadable).toEqual([]);
+  expect(applied).toEqual([]);
+  // The next attach reads again and installs.
+  cut = false;
+  reads.resume();
+  await vi.waitFor(() => expect(applied).toHaveLength(1));
+  expect(unreadable).toEqual([]);
+  release();
 });

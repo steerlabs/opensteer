@@ -1,14 +1,12 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
-import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { fork, type ChildProcess } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { engineDemand } from "./engine-storage.js";
+import { engineActiveVersions, engineDemand } from "./engine-storage.js";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -107,7 +105,6 @@ const idleCheckMs = 60_000;
 const keepForMs = 120_000;
 /** A stopped engine starts this long before its next saved background work is due. */
 const wakeLeadMs = 15_000;
-const versionTarget = z.object({ plugin: z.string().optional(), key: z.string().optional() });
 const liveExecution = new Set(["running", "waiting", "answered"]);
 // Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
 // instead of V8's machine-sized default; the supervisor then restarts the lost process.
@@ -122,7 +119,6 @@ interface Pending {
 /** Host-owned Promise boundary. Its callbacks are the only route back to Host authority and tools. */
 export class PluginService {
   readonly skillCache: PluginSkillCache;
-  readonly #versionChanges = new KeyedMutationQueue();
   readonly #config: EngineInit;
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
@@ -399,6 +395,8 @@ export class PluginService {
         this.#touch();
         this.#set({ status: "ready", generation, pid: message.pid, startupMs: message.startupMs });
         resolveReady();
+        // A refresh that failed before is repaired now.
+        void this.reconcileSkills().catch(() => {});
       } else if (message.type === "fatal") {
         rejectReady(
           new PluginServiceError(message.error.code, message.error.message, message.error.tag),
@@ -636,33 +634,72 @@ export class PluginService {
       this.#touch();
     }
   }
-  request<K extends PluginOperation>(
+  async request<K extends PluginOperation>(
     operation: K,
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
   ): Promise<PluginOutput<K>> {
-    if (operation !== "install" && operation !== "activate" && operation !== "remove")
-      return this.#request(operation, input, context, signal);
-    // A new install is keyed by its creation identity: nothing else can name its plugin yet.
-    const { plugin, key } = versionTarget.parse(input);
-    return this.#versionChanges.run(plugin ?? `new:${key ?? randomUUID()}`, async () => {
-      const result = await this.#request(operation, input, context, signal);
-      if (operation === "install") {
-        const installed = operations.install.output.parse(result);
-        if (installed.status === "installed") {
-          const id = installed.plugin.id;
-          const publish = () => this.#cacheVersion(id, signal);
-          if (plugin === undefined) await this.#versionChanges.run(id, publish);
-          else await publish();
+    const result = await this.#request(operation, input, context, signal);
+    // A change of which version is active, an install replayed from its receipt included, is
+    // answered once the skill record follows it.
+    const plugin =
+      operation === "install"
+        ? (result as PluginOutput<"install">).status === "installed"
+          ? (result as Extract<PluginOutput<"install">, { status: "installed" }>).plugin.id
+          : undefined
+        : operation === "activate"
+          ? operations.activate.input.parse(input).plugin
+          : operation === "remove"
+            ? operations.remove.input.parse(input).plugin
+            : undefined;
+    if (plugin !== undefined) await this.reconcileSkills([plugin], signal);
+    return result;
+  }
+  /**
+   * Make the skill record follow the committed active versions: a plugin's entry names its active
+   * version, and a plugin with none has no entry. Idempotent, so a refresh that failed is repaired
+   * by the next one: after every promotion, install and removal, and once each engine is ready,
+   * for every plugin (without `plugins`). A plugin whose refresh fails keeps its entry until then.
+   */
+  async reconcileSkills(plugins?: readonly string[], signal?: AbortSignal) {
+    const targets = plugins ?? [
+      ...new Set([
+        ...(await engineActiveVersions(this.#options.databaseUrl)).keys(),
+        ...(await this.skillCache.plugins()),
+      ]),
+    ];
+    await Promise.all(targets.map((plugin) => this.#refreshSkills(plugin, signal)));
+  }
+  /** The plugin's skill record, only while it names the active version; never wakes the engine. */
+  async activeEntry(plugin: string) {
+    const version = (await engineActiveVersions(this.#options.databaseUrl)).get(plugin) ?? null;
+    return this.skillCache.current(plugin, version);
+  }
+  /** One refresh at a time per plugin, each reading the active version when it starts. */
+  readonly #skillRefreshes = new Map<string, Promise<void>>();
+  #refreshSkills(plugin: string, signal?: AbortSignal): Promise<void> {
+    const previous = this.#skillRefreshes.get(plugin) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      try {
+        const active = async () =>
+          (await engineActiveVersions(this.#options.databaseUrl)).get(plugin);
+        const version = await active();
+        if (version === undefined) await this.skillCache.remove(plugin);
+        else if ((await this.skillCache.get(plugin))?.version !== version) {
+          const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
+          // Written only while the version it read is still the active one.
+          await this.skillCache.record(await this.skillFiles({ plugin }, context, signal), active);
         }
-      } else if (operation === "activate") {
-        await this.#cacheVersion(operations.activate.input.parse(input).plugin, signal);
-      } else {
-        await this.skillCache.remove(operations.remove.input.parse(input).plugin);
+      } catch {
+        this.#options.onDiagnostic?.("skill-record-refresh-failed");
       }
-      return result;
     });
+    this.#skillRefreshes.set(plugin, next);
+    void next.finally(() => {
+      if (this.#skillRefreshes.get(plugin) === next) this.#skillRefreshes.delete(plugin);
+    });
+    return next;
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,
@@ -722,7 +759,7 @@ export class PluginService {
       const plugins = await Promise.all(
         operations.list.output.parse(parsed).map(async (plugin) => ({
           ...plugin,
-          ...((await this.skillCache.get(plugin.id))?.hasPage
+          ...((await this.skillCache.current(plugin.id, plugin.activeVersion))?.hasPage
             ? { page: { kind: "plugin" as const, pluginId: plugin.id } }
             : {}),
         })),
@@ -730,10 +767,6 @@ export class PluginService {
       return operations.list.output.parse(plugins) as PluginOutput<K>;
     }
     return parsed;
-  }
-  async #cacheVersion(plugin: string, signal?: AbortSignal) {
-    const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
-    await this.skillCache.record(await this.skillFiles({ plugin }, context, signal));
   }
   discardStream(id: string): void {
     if (this.#child) this.#send(this.#child, { type: "cancel", id });

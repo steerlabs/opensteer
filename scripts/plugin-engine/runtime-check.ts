@@ -69,7 +69,7 @@ export const startRuntimeCheck = (options: {
   });
 
 export async function catalogCheck() {
-  const { feed } = await import("../../packages/plugin-engine/catalog/src/published-compat.ts");
+  const { officialCatalogUrl: feed } = await import("@opensteer/plugin-engine-catalog");
   const get = async (url: string) => {
     const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);

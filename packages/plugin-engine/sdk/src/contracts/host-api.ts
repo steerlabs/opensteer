@@ -1,4 +1,3 @@
-import * as __published from "apps/published-compat";
 /** How an invocation of an app that reads this host's API is bound to one revision of it. */
 import type { HostApiCheck } from "@opensteer/plugin-engine-app-data/host-api";
 
@@ -18,4 +17,4 @@ export const appCacheNamespace = (build: string, hostApi: HostApiCheck | undefin
  * crosses back from the app's isolate as the app's own failure, so its presentation says that the
  * app reported it.
  */
-export const hostApiChangingCode = __published.changingCode;
+export const hostApiChangingCode = "PLUGIN_ENGINE_API_CHANGING";

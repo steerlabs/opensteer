@@ -983,9 +983,12 @@ const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
 ]);
 const loadingInstructions =
   "This happened while PluginEngine loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
+/** Every new build links the host's own framework; a stored build keeps the copy it was built with. */
+const redeploy =
+  "Deploy the app's source again: every new build links this host's own apps framework, while a stored build keeps the one it was built with. Change any source the current apps version no longer accepts (framework.release names it).";
 const rebuild = {
-  action: "Rebuild the app on this host’s apps version and deploy it again.",
-  instructions: `${loadingInstructions} Read framework.release for the apps version this host runs, pin it in the app's package.json, deploy the app again, and verify that its tools load.`,
+  action: "Deploy the app again so it is built with this host’s apps framework.",
+  instructions: `${loadingInstructions} ${redeploy} Verify that its tools load.`,
 };
 const retryOnce = (then: string, instructions: string) => ({
   action: `Try again once. If it fails the same way, ${then}`,
@@ -1050,8 +1053,8 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
       return {
         description,
         recovery: retryOnce(
-          "rebuild the app on this host’s apps version.",
-          "An answer that does not match the host protocol matches this failure, such as one from an app built on another apps version. Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.",
+          "deploy the app again so it is built with this host’s apps framework.",
+          `An answer that does not match the host protocol matches this failure, such as one from a build made with another apps version. ${redeploy}`,
         ),
         retryable: true,
       };
@@ -1117,8 +1120,8 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
           `The app’s framework answered ${runtime.error} without details: it reported that ${frameworkFailures[runtime.error]}.`,
         ),
         recovery: retryOnce(
-          "rebuild the app on this host’s apps version.",
-          `The app's framework reported this, so PluginEngine has not confirmed its cause. An app built on an apps version far from this host's is a common one.${runtime.error === "HostDeclarationInvalid" ? " Check the app's tool and skill declarations too, such as duplicate tool names or invalid schemas." : ""} Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.`,
+          "deploy the app again so it is built with this host’s apps framework.",
+          `The app's framework reported this, so PluginEngine has not confirmed its cause. A build made with an apps version far from this host's is a common one.${runtime.error === "HostDeclarationInvalid" ? " Check the app's tool and skill declarations too, such as duplicate tool names or invalid schemas." : ""} ${redeploy}`,
         ),
         retryable: true,
       };
@@ -2136,13 +2139,14 @@ export const ToolResumeResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("denied"), requestId: ApprovalRequestId }),
   Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
   /**
-   * PluginEngine did not resume the saved call: the request expired, or PluginEngine read the app,
-   * version or accounts and they differ from the reviewed call.
+   * PluginEngine did not resume the saved call: the request expired, PluginEngine read the app,
+   * version or accounts and they differ from the reviewed call, or (`stale`) the version it was
+   * reviewed on is no longer the app's active one. A stale call is approved again as a new request.
    */
   Schema.Struct({
     status: Schema.Literal("failed"),
     requestId: ApprovalRequestId,
-    reason: Schema.Literals(["expired", "context-changed"]),
+    reason: Schema.Literals(["expired", "context-changed", "stale"]),
   }),
   /** Resuming the approved call failed with the error a live call reports. */
   Schema.Struct({

@@ -1,4 +1,3 @@
-import * as __published from "../published-compat.ts";
 /**
  * App-owned SQLite. An app with migrations in `migrations/` reads and writes its own database with
  * plain SQL. The author API mirrors Cloudflare's `SqlStorage`, so tools built for Durable Object
@@ -65,7 +64,7 @@ export interface AppSqlStorage {
  * SQL, with JSON bodies (empty for apps that never stored any). Apps should only read them; a
  * changed migration history fails the next deploy.
  */
-export const reservedTablePrefix = __published.tablePrefix;
+export const reservedTablePrefix = "_plugin_engine_";
 
 /** Where an app keeps its migrations: `0001_create_notes.sql`, applied in number order. */
 export const migrationsDirectory = "migrations";

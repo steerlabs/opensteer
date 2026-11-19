@@ -6,18 +6,20 @@ description: Build and deploy PluginEngine apps with tools, storage, UI, account
 # Build an PluginEngine app
 
 An app is TypeScript source with a default `defineApp` export from `apps`.
-Its `package.json` declares the exact `apps` version it uses, which
-`framework.release` returns. App authors use ordinary async functions; Effect stays inside
+Its `package.json` declares `apps` at the version
+`framework.release` returns; builds always use the host's own `apps`. App authors use ordinary async functions; Effect stays inside
 the framework. An app's installed name is separate from its source definition.
 
 ## Choose how to work
 
-With a shell, prefer the **local CLI path** in [deploy.md](deploy.md): keep the
-source in a directory, edit it with your file tools, and deploy with
-`pluginEngine apps` (npm `pluginEngine@beta`). The pinned `apps` package from npm
-supplies types and `framework-reference.json`, so writing code needs no MCP.
-Use MCP only to connect accounts and call the deployed app. Without a shell,
-build through `execute`; source then travels as data inside tool calls.
+With a shell in Opensteer, keep the source in a folder inside Agent home, edit
+it with your file tools, and deploy it with the `opensteer_plugin_install` tool
+(`source: "folder"`, with `pluginId` to deploy a new version of an installed
+plugin). `opensteer_plugin_export` writes an installed version into a new folder
+to edit. There is no separate command-line tool or npm package to install:
+read exact contracts with `framework.search` and `framework.describe` below.
+Without a shell, build through `execute`; source then travels as data inside
+tool calls.
 
 ## Read only the topics needed
 
@@ -61,8 +63,8 @@ with a symbol it returns. Start with `apps.defineApp`, `apps.query`, `DatabaseTa
 Both take their input under `query`, unlike `tools.search({ query: "send email" })`,
 whose `query` is a plain string.
 The reference identifies its exact framework version and content digest. Keep
-that identity on subsequent reads. Do not assume a host reference describes a
-different pinned `apps` package; that package ships `framework-reference.json`.
+that identity on subsequent reads. Builds always link this host's framework, so
+this reference describes the framework an app runs on.
 
 Hosted management calls require an explicit organization. Discover and call
 `context.get({})` first. Local management calls have no organization parameter.

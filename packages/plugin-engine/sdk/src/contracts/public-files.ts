@@ -1,4 +1,4 @@
-import * as __published from "apps/published-compat";
+import { reservedPublicPrefix, reservedSegment } from "apps/ui/contracts";
 /**
  * A version's public files: the `ui/public/` files of its source, copied by the deploy into the
  * host's blob store and served from there. Nothing outside the host reads or writes this store;
@@ -11,15 +11,13 @@ import { GitObjectId, SourceFilePath } from "./source.ts";
 
 /**
  * Where a public file is served, relative to the page's origin. `index.html` is the app's page and
- * `_pluginEngine/` belongs to the host, so neither can be a public file.
+ * `_plugin-engine/` belongs to the host, so neither can be a public file.
  */
 export const PublicFilePath = SourceFilePath.pipe(
   Schema.check(
     Schema.makeFilter((path: string) =>
-      path === "index.html" ||
-      path === __published.internalSegment ||
-      path.startsWith(__published.reservedPublicPrefix)
-        ? "expected a path other than index.html and _pluginEngine/"
+      path === "index.html" || path === reservedSegment || path.startsWith(reservedPublicPrefix)
+        ? "expected a path other than index.html and _plugin-engine/"
         : true,
     ),
   ),

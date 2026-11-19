@@ -33,7 +33,7 @@ if (!process.argv.includes("--payload-only")) {
   const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
   if (!databaseUrl) throw new Error("A private throwaway PostgreSQL URL is required");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-measure-"));
-  const registry = await pluginFixtureRegistry(directory);
+  const registry = await pluginFixtureRegistry();
   const caller = { caller: "owner:measurement", mode: "automatic" as const };
   const options = {
     owner: "owner",

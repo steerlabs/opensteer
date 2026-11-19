@@ -1,5 +1,5 @@
-import * as __published from "../published-compat.ts";
 /** Browser transport uses native Effect HTTP and Atom; authors receive Promise calls and atoms. */
+import * as page from "../contracts/page-names.ts";
 import { browserSettings, makeBrowserTelemetry } from "@opensteer/plugin-engine-telemetry/browser";
 import {
   Cause,
@@ -74,11 +74,11 @@ const visibleResult = <E>(
 /** A scoped page client. Host-injected context carries only the version, never credentials. */
 export const createAppClient = () => {
   const { runtime, atoms } = makeBrowserTelemetry(
-    browserSettings("/_pluginEngine/api/telemetry", "pluginEngine-app-web"),
+    browserSettings(`/${page.reservedSegment}/api/telemetry`, "pluginEngine-app-web"),
   );
   const browser = atoms(Layer.empty);
   const versionChanged = Effect.sync(() => {
-    window.dispatchEvent(new Event(__published.deploymentEvent));
+    window.dispatchEvent(new Event(page.deploymentEvent));
   });
   let pendingWrites = 0;
   const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -106,7 +106,7 @@ export const createAppClient = () => {
   runtime.runFork(Effect.void);
 
   const context = Effect.try({
-    try: () => document.getElementById(__published.contextElement)?.textContent,
+    try: () => document.getElementById(page.contextElement)?.textContent,
     catch: () => new UiFailed({ reason: "unavailable" }),
   }).pipe(Effect.flatMap(EffectSchema.decodeUnknownEffect(EffectSchema.fromJsonString(UiContext))));
   const client = HttpApiClient.make(AppUiApi).pipe(Effect.provide(FetchHttpClient.layer));

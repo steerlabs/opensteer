@@ -1,5 +1,5 @@
-import * as __published from "apps/published-compat";
 /** Shared HTML planning and output checks for Node and Worker browser compilers. */
+import { reservedPublicPrefix, uiMarkerData } from "apps/ui/contracts";
 import { Effect, Path, Schema } from "effect";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { SourceFilePath } from "../contracts/version.ts";
@@ -73,10 +73,7 @@ export const prepareUiBuild = (
           const assets = new Map<string, UiBuildFile>();
           for (const file of compiled) {
             yield* Schema.decodeUnknownEffect(SourceFilePath)(file.path);
-            if (
-              file.path === "index.html" ||
-              file.path.startsWith(__published.reservedPublicPrefix)
-            )
+            if (file.path === "index.html" || file.path.startsWith(reservedPublicPrefix))
               return yield* failed();
             const previous = assets.get(file.path);
             if (
@@ -118,7 +115,7 @@ export const prepareUiBuild = (
             );
             head.childNodes.unshift({
               nodeName: "#comment",
-              data: __published.uiMarkerData,
+              data: uiMarkerData,
               parentNode: head,
             });
           }

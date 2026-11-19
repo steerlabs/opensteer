@@ -5,7 +5,14 @@ import {
 } from "@opensteer/protocol";
 import { CurrentPluginRequest } from "./engine-authority.js";
 import { projectDirectPluginTools } from "./local-tool-results.js";
-import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
+import {
+  agentDefinitions,
+  agentScheduledRun,
+  agentWorkflowRun,
+  detailSection,
+  detailPreview,
+  previewOutput,
+} from "./engine-detail.js";
 import {
   backgroundResourceChanges,
   engineOAuthAttempt,
@@ -13,6 +20,7 @@ import {
   workflowRunPage,
 } from "./engine-storage.js";
 import { pluginNamespace } from "./provider-names.js";
+import { holdEngineDirectory } from "./engine-ownership.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
@@ -47,6 +55,7 @@ import {
   OAuthClientId,
   OAuthAttemptId,
   OAuthClientChoice,
+  OAuthSetupFailed,
   OAuthClientInputs,
   OAuthBrokerFailed,
   OAuthAttemptRecord,
@@ -73,6 +82,7 @@ import {
   CompleteWebhookSetup,
   WebhookSetupView,
   RuntimeProtocolFailed,
+  type AppCopyOrigin,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/node";
@@ -84,7 +94,7 @@ import {
   ScheduleAccessRevoked,
   deliverEvents,
 } from "@opensteer/plugin-engine-sdk/scheduling";
-import { createCatalog, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
+import { createCatalog, deployedCopy, officialCatalogUrl } from "@opensteer/plugin-engine-catalog";
 import { graphqlAppSource } from "@opensteer/plugin-engine-app-templates";
 import { DestinationRefused, safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
 import {
@@ -106,7 +116,7 @@ import {
   InteractionId,
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
-import { engineAccounts, migrateEngineProduct } from "./engine-accounts.js";
+import { engineAccounts, InstallAuthor, migrateEngineProduct } from "./engine-accounts.js";
 import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { enginePages } from "./engine-pages.js";
@@ -163,6 +173,9 @@ export async function startEngine(
   changed: (categories: PluginResourceCategory[]) => void = () => {},
 ) {
   const started = performance.now();
+  // Before workerd opens anything in it: the directory is this process's until it exits.
+  phase("directory");
+  await holdEngineDirectory(config.directory, () => phase("directory-wait"));
   const scope = Scope.makeUnsafe();
   const services = Layer.mergeAll(
     NodeServices.layer,
@@ -573,6 +586,16 @@ export async function startEngine(
     );
     const { engine, owner, accountAdapter, catalog, manager, executions, blobs } = composed;
     const startupMs = performance.now() - started;
+    /**
+     * The version whose source a plugin shows and exports by default: the active one, else the
+     * newest. None for a plugin with no version.
+     */
+    const shownVersion = (plugin: { readonly id: AppId; readonly activeVersion: string | null }) =>
+      plugin.activeVersion !== null
+        ? Effect.succeed(VersionId.make(plugin.activeVersion))
+        : engine.apps
+            .versions({ app: plugin.id, owner })
+            .pipe(Effect.map((versions) => versions[0]?.id ?? null));
     const authorize = (
       context: PluginCaller,
       operation: string,
@@ -769,6 +792,7 @@ export async function startEngine(
               "plugin",
               Effect.gen(function* () {
                 let files: Schema.Schema.Type<typeof SourceFiles>;
+                let origin: AppCopyOrigin | undefined;
                 let name: string | undefined;
                 let app: AppId | undefined;
                 let warnings: string[] | undefined;
@@ -788,7 +812,8 @@ export async function startEngine(
                 } else if (input.kind === "catalog") {
                   const prepared = yield* catalog.prepare({ entry: input.id });
                   files = prepared.files;
-                  name = (yield* catalog.list).apps.find((entry) => entry.id === input.id)?.name;
+                  origin = prepared.origin;
+                  name = prepared.name;
                 } else if (input.kind === "mcp") {
                   files = (yield* catalog.custom({ ...input, kind: "mcp" })).files;
                   name = input.name;
@@ -837,27 +862,56 @@ export async function startEngine(
                     status: "build-error" as const,
                     error: { code: "invalid-skills", message: validSkills.failure.message },
                   };
-                return yield* engine.apps
-                  .deploy({
-                    owner,
-                    ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
-                    files,
-                  })
-                  .pipe(
-                    Effect.map((result) => ({
-                      status: "installed" as const,
-                      plugin: result.app,
-                      version: result.version,
-                      origin: input.kind,
-                      ...(warnings ? { warnings } : {}),
-                    })),
-                    Effect.catchTags({
-                      VersionBuildFailed: (error) =>
-                        Effect.succeed({ status: "build-error" as const, error }),
-                      BuildMemoryExceeded: (error) =>
-                        Effect.succeed({ status: "build-error" as const, error }),
-                    }),
-                  );
+                // A catalog install keeps where it came from: the document's address and SHA-256.
+                const deployed = Effect.gen(function* () {
+                  return origin === undefined
+                    ? yield* engine.apps.deploy({
+                        owner,
+                        ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
+                        files,
+                      })
+                    : yield* engine.apps
+                        .copy({
+                          owner,
+                          name: name ?? "Plugin",
+                          from: { files, origin, activation: "deploy" },
+                        })
+                        .pipe(
+                          Effect.flatMap(deployedCopy),
+                          Effect.flatMap((copied) =>
+                            engine.apps
+                              .version({ app: copied.id, owner, version: copied.activeVersion })
+                              .pipe(
+                                Effect.map(
+                                  ({ id, code, owner, sourceCommit, build, createdAt }) => ({
+                                    app: copied,
+                                    version: { id, code, owner, sourceCommit, build, createdAt },
+                                  }),
+                                ),
+                              ),
+                          ),
+                        );
+                });
+                // Whoever installs it is its author, recorded when it becomes active.
+                return yield* deployed.pipe(
+                  Effect.provideService(
+                    InstallAuthor,
+                    input.kind === "catalog" ? "catalog" : "agent",
+                  ),
+                  Effect.map((result) => ({
+                    status: "installed" as const,
+                    plugin: result.app,
+                    version: result.version,
+                    origin: input.kind,
+                    ...(warnings ? { warnings } : {}),
+                  })),
+                  Effect.catchTags({
+                    VersionBuildFailed: (error) =>
+                      Effect.succeed({ status: "build-error" as const, error }),
+                    BuildMemoryExceeded: (error) =>
+                      Effect.succeed({ status: "build-error" as const, error }),
+                  }),
+                );
               }),
               (receipt) => Effect.try(() => operations.install.output.parse(receipt.result)),
               input.kind,
@@ -876,7 +930,12 @@ export async function startEngine(
             const selected = yield* accountAdapter.accounts(app).pipe(Effect.option);
             const read = <A, E>(effect: Effect.Effect<A, E>) =>
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
-            const { files } = yield* engine.apps.source({ app: plugin.id, owner });
+            const versions = yield* engine.apps.versions({ app, owner });
+            const shown = yield* shownVersion(plugin);
+            const { files } =
+              shown === null
+                ? { files: [] }
+                : yield* engine.apps.source({ app: plugin.id, owner, version: shown });
             const notices = files.find((file) => file.path === openapiNoticesFile);
             const warnings =
               notices &&
@@ -894,7 +953,7 @@ export async function startEngine(
               ...(warnings && warnings.length ? { importWarnings: warnings } : {}),
               plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
               ...(yield* accountAdapter.metadata(plugin)),
-              versions: yield* engine.apps.versions({ app, owner }),
+              versions,
               schedules: Option.isSome(selected)
                 ? ((yield* read(
                     engine.schedules.definitions({
@@ -940,10 +999,15 @@ export async function startEngine(
           }
           case "export": {
             const input = operations.export.input.parse(raw);
+            const app = AppId.make(input.plugin);
+            const version =
+              input.version === undefined
+                ? yield* shownVersion(yield* engine.apps.get({ app, owner }))
+                : VersionId.make(input.version);
             const source = yield* engine.apps.source({
-              app: AppId.make(input.plugin),
+              app,
               owner,
-              ...(input.version === undefined ? {} : { version: VersionId.make(input.version) }),
+              ...(version === null ? {} : { version }),
             });
             const size = source.files.reduce(
               (total, file) =>
@@ -1084,15 +1148,31 @@ export async function startEngine(
                 ),
               );
             yield* accountAdapter.reviewedConnection(input.connection, input.consent);
-            const result = yield* engine.accountConnections.startOAuth({
-              connection: AccountConnectionId.make(input.connection),
-              owner,
-              method: input.method,
-              redirectUri: input.redirectUri,
-              ...(input.client
-                ? { client: Schema.decodeUnknownSync(OAuthClientChoice)(input.client) }
-                : {}),
-            });
+            const result = yield* engine.accountConnections
+              .startOAuth({
+                connection: AccountConnectionId.make(input.connection),
+                owner,
+                method: input.method,
+                redirectUri: input.redirectUri,
+                ...(input.client
+                  ? { client: Schema.decodeUnknownSync(OAuthClientChoice)(input.client) }
+                  : {}),
+              })
+              .pipe(
+                // The person can act on this one: the service needs their own app's secret.
+                Effect.catchIf(
+                  (error) =>
+                    Schema.is(OAuthSetupFailed)(error) && error.reason === "client_secret_required",
+                  () =>
+                    Effect.fail(
+                      new PluginServiceError(
+                        "invalid",
+                        "This service signs in without PKCE, so it needs your own OAuth app with its client secret. Create an app in the service's developer settings with this callback, then enter its client ID and client secret.",
+                        "OAuthSetupFailed",
+                      ),
+                    ),
+                ),
+              );
             if (result.status !== "redirect" || result.brokerAttemptId) return result;
             const rows = yield* engineOAuthAttempt(composed.sql, input.connection);
             const row = rows[0];
@@ -1410,8 +1490,8 @@ export async function startEngine(
                           app,
                           run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(run.id),
                         })
-                        .pipe(Effect.map(previewOutput))
-                    : Effect.succeed(run),
+                        .pipe(Effect.map((view) => agentWorkflowRun(previewOutput(view))))
+                    : Effect.succeed(agentWorkflowRun(run)),
                 ),
                 ...(page.next ? { next: page.next } : {}),
                 ...(yield* definitions("workflows.list")),
@@ -1427,7 +1507,7 @@ export async function startEngine(
             return {
               ...(yield* definitions("schedules.definitions")),
               ...(input.cursor ? {} : { schedules: yield* engine.schedules.list({ app, owner }) }),
-              runs: page.runs,
+              runs: page.runs.map(agentScheduledRun),
               ...(page.next ? { next: page.next } : {}),
             };
           }

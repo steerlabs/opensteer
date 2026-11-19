@@ -1,4 +1,4 @@
-import { personalResourceSingleRowBytes } from "@opensteer/protocol/resources";
+import { personalResourceReadCeilingBytes } from "@opensteer/protocol/resources";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import {
   HostApiErrorSchema,
@@ -71,8 +71,8 @@ const scopedReadLimits = {
   "transcript.item.get": 1024 * 1024,
   "thread.inputQueue.get": 96 * 1024,
   "thread.overlays.page": 16 * 1024,
-  // A page, or one row too large to share a page, which travels alone.
-  "resources.detail.get": personalResourceSingleRowBytes,
+  // A page, or one row too large to share a page, which travels alone up to the read ceiling.
+  "resources.detail.get": personalResourceReadCeilingBytes,
   "tasks.page": 64 * 1024,
   "needsYou.get": 64 * 1024,
 } satisfies Partial<Record<keyof typeof hostApi, number>>;
@@ -362,6 +362,10 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
+    // A request the attachment moved out from under is cancelled too: as a
+    // Host error it would read as a refusal, not as one to try again.
+    if (error instanceof HostTransportError && classifyClientFailure(error).kind === "cancelled")
+      throw error;
     if (
       authenticationRequired ||
       (error instanceof HostTransportError && error.failure.code === "unauthorized")

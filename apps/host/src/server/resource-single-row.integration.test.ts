@@ -1,12 +1,10 @@
 import { HarnessIdSchema, utf8ByteLength } from "@opensteer/core";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
-import {
-  personalResourcePageBytes,
-  personalResourceSingleRowBytes,
-  type PersonalResourceKind,
-} from "@opensteer/protocol/resources";
+import { HarnessInstanceCatalogSchema, maxHarnessModelsPerCatalog } from "@opensteer/protocol";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import {
   startPrivateMachineHost,
   type PrivateMachineHost,
@@ -106,19 +104,19 @@ it("serves a catalog whose models are each larger than a page, every option valu
   });
 });
 
-it("serves an AI account whose settings are larger than a page alone on its page, and refuses only a row past the ceiling", async () => {
+it("serves an AI account of several MB alone and the client installs it", async () => {
   await withHost(async (host) => {
     const environmentId = await environmentOf(host);
-    const models = (count: number) =>
-      Object.fromEntries(
-        Array.from({ length: count }, (_, index) => [
-          `model-${String(index).padStart(5, "0")}-${"k".repeat(200)}`,
-          { contextWindow: 100_000 },
-        ]),
-      );
-    // About 150 KiB of saved model settings, shown twice in the account's row.
+    // The most saved model settings an account can hold, each id near its longest: about 2.2 MB,
+    // shown twice in the account's row.
+    const models = Object.fromEntries(
+      Array.from({ length: maxHarnessModelsPerCatalog }, (_, index) => [
+        `model-${String(index).padStart(6, "0")}-${"k".repeat(227)}`,
+        { contextWindow: 100_000 },
+      ]),
+    );
     const large = await host.store.createHarnessInstance({
-      config: { model: "test", models: models(600) },
+      config: { model: "test", models },
       driverKind: HarnessIdSchema.parse("native"),
       environmentId,
       name: "Many saved models",
@@ -129,14 +127,36 @@ it("serves an AI account whose settings are larger than a page alone on its page
     const served = pages
       .flatMap((page) => (page.kind === "harness" ? page.harnesses : []))
       .find(({ id }) => id === large.id);
-    expect(Object.keys(served?.modelSettings ?? {})).toHaveLength(600);
-    expect(utf8ByteLength(JSON.stringify(served))).toBeGreaterThan(personalResourcePageBytes);
-    // Past the one ceiling a single row is refused, with the error the screen offers to retry.
-    await host.store.updateHarnessInstance({
-      id: large.id,
-      config: { model: "test", models: models(Math.ceil(personalResourceSingleRowBytes / 450)) },
+    expect(Object.keys(served?.modelSettings ?? {})).toHaveLength(maxHarnessModelsPerCatalog);
+    expect(utf8ByteLength(JSON.stringify(served))).toBeGreaterThan(4 * 1024 * 1024);
+
+    // The client a person runs reads it under its own limits and installs it.
+    const client = new HttpHostClient({
+      baseUrl: host.origin,
+      fetch: (url, init) =>
+        fetch(url, {
+          ...init,
+          headers: { ...Object.fromEntries(new Headers(init?.headers)), ...host.ownerHeaders },
+        }),
+      webSocketFactory: (url) =>
+        new WebSocket(url, { headers: host.ownerHeaders }) as unknown as WebSocketClient,
     });
-    const refused = await host.api["resources.detail.get"]({ kind: "harness" });
-    expect(refused).toMatchObject({ ok: false, error: { code: "resource_exhausted" } });
+    try {
+      await client.load();
+      const stop = client.watchPersonalResource("harness", () => undefined);
+      await vi.waitFor(
+        () => {
+          const installed = client.getSnapshot().harnesses.find(({ id }) => id === large.id);
+          expect(Object.keys(installed?.modelSettings ?? {})).toHaveLength(
+            maxHarnessModelsPerCatalog,
+          );
+        },
+        { timeout: 15_000, interval: 50 },
+      );
+      expect(client.getSnapshot().unreadableResources ?? []).not.toContain("harness");
+      stop();
+    } finally {
+      client.dispose();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { signingSecretSource } from "apps/published-compat";
+import { engineSigningSecret } from "apps/contracts";
 import { z } from "zod";
 
 const id = z.string().min(1);
@@ -119,7 +119,7 @@ export const EngineWebhookSetupSchema = z.discriminatedUnion("step", [
     instructions: z.string(),
     stateSchema: jsonObject,
     signingSecret: z.union([
-      z.object({ source: z.literal(signingSecretSource), value: id }),
+      z.object({ source: z.literal(engineSigningSecret), value: id }),
       z.object({ source: z.literal("provider") }),
     ]),
   }),

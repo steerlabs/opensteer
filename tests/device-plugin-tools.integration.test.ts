@@ -1,8 +1,5 @@
 import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -43,19 +40,16 @@ const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
 let databaseUrl = "postgres://unconfigured";
-let registryDirectory: string;
 let registry: Awaited<ReturnType<typeof pluginFixtureRegistry>>;
 
 integration("device data apps as plugin tools", () => {
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;
-    registryDirectory = await mkdtemp(join(tmpdir(), "opensteer-device-plugins-"));
-    registry = await pluginFixtureRegistry(registryDirectory, undefined, pluginFixtureFiles(1));
+    registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1));
   }, 120_000);
   afterAll(async () => {
     await registry?.close();
-    await rm(registryDirectory, { recursive: true, force: true });
     await database?.drop();
   }, 120_000);
   beforeEach(async () => resetMachineAccessDatabase(databaseUrl));

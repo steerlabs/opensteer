@@ -91,7 +91,8 @@ export const ApprovalUnavailable = UserFacingError.define({
   fields: {
     /**
      * `expired`: the request passed its deadline. `context-changed`: PluginEngine read the app
-     * version or accounts and they differ from the reviewed call.
+     * version or accounts and they differ from the reviewed call. `stale`: the version the call was
+     * reviewed on is no longer the app's active one.
      * `context-unconfirmed`: PluginEngine's storage failed while it read them, so it could not compare.
      * `answered`: another answer already claimed it. `ended`: the execution ended before the
      * request could be saved.
@@ -99,6 +100,7 @@ export const ApprovalUnavailable = UserFacingError.define({
     reason: Schema.Literals([
       "expired",
       "context-changed",
+      "stale",
       "context-unconfirmed",
       "answered",
       "ended",
@@ -127,6 +129,16 @@ export const ApprovalUnavailable = UserFacingError.define({
           recovery: {
             action: "Run the call again to review it with the current settings.",
             instructions: `PluginEngine resumes only the exact call that was reviewed, and its settings changed while it waited. ${check} Then start a new execute and ask the user to approve its new request.`,
+          },
+        };
+      case "stale":
+        return {
+          title: "Approved call is out of date",
+          description:
+            "The app changed after this call was saved for approval: the version it was reviewed on is no longer the active one, so PluginEngine did not run it.",
+          recovery: {
+            action: "Run the call again and approve its new request.",
+            instructions: `PluginEngine runs an approved call only while the version it was reviewed on is the app's active version. ${check} Then start a new execute and ask the user to approve its new request.`,
           },
         };
       case "context-unconfirmed":

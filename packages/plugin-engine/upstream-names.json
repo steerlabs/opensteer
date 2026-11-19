@@ -1,0 +1,108 @@
+{
+  "$comment": "Data, not code: upstream's names and what they became. `identity` is what the name guard (scripts/plugin-engine/names.mjs) forbids. `rules` are the renames plugin source written for upstream's framework needs to build and run on Opensteer's; one rewriter applies them, `rewriteUpstreamSource` and `rewriteUpstreamPackage` from @opensteer/plugin-engine-catalog, for the catalog snapshot and its qualification. A rule applies only within its scope; see `scopes`. Matching is exact and case-sensitive unless a scope says otherwise. Prose and comments are not rules here: they change nothing a build or a run reads, and the catalog snapshot edits them on top.",
+  "identity": {
+    "everywhere": [
+      "executor.sh",
+      "executor.community",
+      "@executor-js",
+      "rhys sullivan",
+      "rhys-sullivan",
+      "rhyssullivan"
+    ],
+    "pluginCode": ["executor", "rhys", "sullivan", "fumadb"]
+  },
+  "scopes": {
+    "package": "A package name's prefix: a catalog index entry's `package`, a source document's `package`, and the `name` of a plugin's package.json.",
+    "manifest-key": "A top-level key of a plugin's package.json, renamed with its value kept. A package.json with both keys is refused.",
+    "route-path": "Code files: a reserved route path that starts a literal, as the language reads it: in scripts a string, a template without substitutions or a template's head, found by the TypeScript parser. A root-relative path only, never an absolute or protocol-relative URL, a comment, another string or other text.",
+    "header": "Code files: a header name, matched without regard to case.",
+    "element-id": "Code files: an element id the framework puts in an app's page.",
+    "event": "Code files: the window event the framework dispatches when a new version is active.",
+    "ui-marker": "Code files: the marker the framework puts in an app's page.",
+    "error-code": "Code files: an error code the Host returns to app code.",
+    "reserved-table": "A table the framework keeps in an app's SQLite database. In code files a whole word in any case; in migrations/*.sql only complete SQL identifiers, bare or quoted and in any case, never string literals or comments (packages/plugin-engine/catalog/src/implementation/reserved-tables.ts).",
+    "signing-secret": "Code files: the value of a `signingSecret` property in a manual webhook setup."
+  },
+  "rules": [
+    {
+      "scope": "package",
+      "from": "@executor.sh/",
+      "to": "@opensteer-plugins/"
+    },
+    {
+      "scope": "manifest-key",
+      "from": "executor",
+      "to": "pluginEngine"
+    },
+    {
+      "scope": "route-path",
+      "from": "/_executor/",
+      "to": "/_plugin-engine/"
+    },
+    {
+      "scope": "header",
+      "from": "x-executor-refused",
+      "to": "x-plugin-engine-refused"
+    },
+    {
+      "scope": "header",
+      "from": "x-executor-unreachable",
+      "to": "x-plugin-engine-unreachable"
+    },
+    {
+      "scope": "header",
+      "from": "x-executor-api-changing",
+      "to": "x-plugin-engine-api-changing"
+    },
+    {
+      "scope": "element-id",
+      "from": "executor-context",
+      "to": "plugin-engine-context"
+    },
+    {
+      "scope": "element-id",
+      "from": "executor-account-notice",
+      "to": "plugin-engine-account-notice"
+    },
+    {
+      "scope": "event",
+      "from": "executor:deployment-changed",
+      "to": "plugin-engine:deployment-changed"
+    },
+    {
+      "scope": "ui-marker",
+      "from": "<!--executor-ui-->",
+      "to": "<!--plugin-engine-ui-->"
+    },
+    {
+      "scope": "error-code",
+      "from": "EXECUTOR_API_CHANGING",
+      "to": "PLUGIN_ENGINE_API_CHANGING"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_migrations",
+      "to": "_plugin_engine_migrations"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_step_receipts",
+      "to": "_plugin_engine_step_receipts"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_step_events",
+      "to": "_plugin_engine_step_events"
+    },
+    {
+      "scope": "reserved-table",
+      "from": "_executor_legacy_rows",
+      "to": "_plugin_engine_legacy_rows"
+    },
+    {
+      "scope": "signing-secret",
+      "from": "executor",
+      "to": "plugin-engine"
+    }
+  ]
+}

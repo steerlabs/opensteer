@@ -10,18 +10,27 @@ import {
   markdownProse,
   parseRules,
   pythonComments,
-  Rewriter,
   rewriteProblems,
   scriptComments,
   scriptTokens,
-  topLevelMembers,
   type RewriteRules,
   type Source,
 } from "../scripts/catalog-snapshot/rewrite.ts";
+import names from "../packages/plugin-engine/upstream-names.json" with { type: "json" };
 
-// "acme" stands in for the upstream name throughout.
+// The engine's shared rewrite renames what a build or a run reads; its old strings come from the
+// rules data, so this file names none itself. "acme" stands in for the upstream name in prose.
+const rule = (scope: string, index = 0) => {
+  const found = names.rules.filter((candidate) => candidate.scope === scope)[index];
+  if (found === undefined) throw new Error(`No ${scope} rule`);
+  return found;
+};
+const pkg = rule("package");
+const key = rule("manifest-key");
+const table = rule("reserved-table");
 const manifest = (name: string) =>
-  JSON.stringify({ name, acme: { title: "x" }, dependencies: { apps: "1.0.0" } }, null, 2) + "\n";
+  JSON.stringify({ name, [key.from]: { title: "x" }, dependencies: { apps: "1.0.0" } }, null, 2) +
+  "\n";
 const source = (name: string, extra: { path: string; content: string }[] = []) => ({
   files: [
     { path: "index.ts", content: `import { tools } from "./tools/main.ts"; // acme app ${name}` },
@@ -33,7 +42,7 @@ const source = (name: string, extra: { path: string; content: string }[] = []) =
 });
 const entry = (id: string, icons: { src: string }[] = []) => ({
   id,
-  package: `@acme.sh/${id}`,
+  package: `${pkg.from}${id}`,
   name: id,
   description: `Talk to ${id}`,
   auth: [{ method: "oauth", kind: "oauth2" }],
@@ -51,8 +60,8 @@ async function build(options: {
 }) {
   const apps = options.apps ?? [entry("mail", [{ src: "icons/mail.svg" }]), entry("chat")];
   const sources = options.sources ?? {
-    mail: source("@acme.sh/mail"),
-    chat: source("@acme.sh/chat"),
+    mail: source(`${pkg.from}mail`),
+    chat: source(`${pkg.from}chat`),
   };
   const icons = options.icons ?? { "icons/mail.svg": "<svg/>" };
   return buildSnapshot({
@@ -144,14 +153,14 @@ describe("catalog snapshot layout", () => {
         entry("x", [{ src: "https://cdn.example/a.svg" }]),
       ],
       sources: {
-        mail: { ...source("@acme.sh/mail"), package: "@acme.sh/other" },
-        chat: { package: "@acme.sh/chat" },
-        x: source("@acme.sh/x"),
+        mail: { ...source(`${pkg.from}mail`), package: `${pkg.from}other` },
+        chat: { package: `${pkg.from}chat` },
+        x: source(`${pkg.from}x`),
       },
       icons: {},
     });
     expect(failures.map((failure) => [failure.document, failure.reason.slice(0, 30)])).toEqual([
-      ["apps/mail.json", "package.json names @acme.sh/ma"],
+      ["apps/mail.json", `package.json names ${pkg.to}ma`.slice(0, 30)],
       ["apps/chat.json", "not a catalog source: Missing "],
       ["apps/gone.json", "the feed has no source documen"],
       ["index.json#/apps/3", 'id "../up" cannot name a file'],
@@ -194,7 +203,7 @@ describe("icons", () => {
       "icons/j.svg": '<!DOCTYPE html [<!ENTITY a "b">]><html>',
     };
     const apps = Object.keys(icons).map((src, index) => entry(`app${index}`, [{ src }]));
-    const sources = Object.fromEntries(apps.map((app) => [app.id, source(`@acme.sh/${app.id}`)]));
+    const sources = Object.fromEntries(apps.map((app) => [app.id, source(`${pkg.from}${app.id}`)]));
     const { failures } = await buildSnapshot({
       feed: JSON.stringify({ apps, version: 1 }),
       readSource: async (id) => JSON.stringify(sources[id]),
@@ -299,8 +308,6 @@ describe("scoped rewrite rules", () => {
   const scoped = rules({
     names: ["acme"],
     rules: [
-      { id: "scope", scope: "package", from: "@acme.sh/", to: "@opensteer.example/" },
-      { id: "key", scope: "manifest-key", from: "acme", to: "engine" },
       { id: "prose", scope: "markdown", from: "Acme", to: "Opensteer" },
       { id: "comments", scope: "comments", from: "acme", to: "the engine" },
       {
@@ -340,29 +347,27 @@ describe("scoped rewrite rules", () => {
     "const t = `acme ${x /* acme */} acme`;",
     'export const tools = ["Acme tools"];',
   ].join("\n");
-  const mail = source("@acme.sh/mail", [
+  const mail = source(`${pkg.from}mail`, [
     { path: "README.md", content: readme },
     { path: "helper.py", content: '# acme\nname = "acme"  # acme\n' },
   ]).files.map((f) => (f.path === "tools/main.ts" ? { ...f, content: code } : f));
 
-  test("rewrites only where each rule applies and keeps preserved, coded and encoded text", async () => {
+  test("applies the shared rewrite, then each rule only where it applies, keeping preserved, coded and encoded text", async () => {
     const { files, failures, report, manifest } = await build({
       apps: [entry("mail")],
-      sources: { mail: { files: mail, package: "@acme.sh/mail" } },
+      sources: { mail: { files: mail, package: `${pkg.from}mail` } },
       rules: scoped,
     });
     expect(failures).toEqual([]);
     const document = documentOf(files, "mail");
-    // The package name in all three places, and a valid one.
-    expect(document.package).toBe("@opensteer.example/mail");
+    // The shared rewrite's package name in all three places, and its package.json key.
+    expect(document.package).toBe(`${pkg.to}mail`);
     expect(JSON.parse(file(document, "package.json"))).toEqual({
-      name: "@opensteer.example/mail",
-      engine: { title: "x" },
+      name: `${pkg.to}mail`,
+      [key.to]: { title: "x" },
       dependencies: { apps: "1.0.0" },
     });
-    expect(JSON.parse(text(files.get("index.json"))).apps[0].package).toBe(
-      "@opensteer.example/mail",
-    );
+    expect(JSON.parse(text(files.get("index.json"))).apps[0].package).toBe(`${pkg.to}mail`);
     expect(file(document, "README.md")).toBe(
       readme.replace("Acme registers", "Opensteer registers"),
     );
@@ -389,7 +394,9 @@ describe("scoped rewrite rules", () => {
         ["tools/main.ts:2", "regular expression"],
       ]),
     );
-    expect(report.rules.find((rule) => rule.id === "scope")?.count).toBe(3);
+    // The index entry's and the document's package names, and package.json; then the rules' edits.
+    expect(report.shared).toEqual({ packages: 2, files: 1 });
+    expect(report.ruleFiles).toBe(4);
     // The published manifest carries the rule file's hash, never its strings.
     expect(text(files.get("manifest.json"))).not.toMatch(/acme/iu);
     expect(manifest.rules).toBe("f".repeat(64));
@@ -398,7 +405,7 @@ describe("scoped rewrite rules", () => {
   test("fails a name no rule rewrites and no preserve entry keeps", async () => {
     const { failures } = await build({
       apps: [entry("mail")],
-      sources: { mail: { files: mail, package: "@acme.sh/mail" } },
+      sources: { mail: { files: mail, package: `${pkg.from}mail` } },
       // A string in code no scope reaches, and no preserve entry keeps.
       rules: { ...scoped, preserve: scoped.preserve.filter((item) => item.reason !== "string") },
     });
@@ -409,17 +416,77 @@ describe("scoped rewrite rules", () => {
     expect(failures).toEqual([unaccounted, unaccounted]);
   });
 
-  test("refuses a package scope the engine's package-name contract rejects", async () => {
+  test("refuses a rewritten package name the engine's package-name contract rejects", async () => {
     const { failures } = await build({
-      rules: rules({
-        rules: [{ id: "scope", scope: "package", from: "@acme.sh/", to: "@Opensteer/" }],
-      }),
+      apps: [entry("Mail")],
+      sources: { Mail: source(`${pkg.from}Mail`) },
+    });
+    expect(failures).toEqual([
+      { document: "apps/Mail.json", reason: `${pkg.to}Mail is not a valid package name` },
+    ]);
+  });
+
+  test("fails a document the shared rewrite cannot rewrite exactly", async () => {
+    const both = JSON.stringify({ name: `${pkg.from}mail`, [key.from]: {}, [key.to]: {} });
+    const { failures } = await build({
+      apps: [entry("mail")],
+      sources: {
+        mail: {
+          package: `${pkg.from}mail`,
+          files: source(`${pkg.from}mail`).files.map((f) =>
+            f.path === "package.json" ? { ...f, content: both } : f,
+          ),
+        },
+      },
     });
     expect(failures).toEqual(
       expect.arrayContaining([
-        { document: "apps/mail.json", reason: "@Opensteer/mail is not a valid package name" },
+        { document: "apps/mail.json", reason: expect.stringMatching(/^package\.json: /u) },
       ]),
     );
+  });
+
+  test("accepts exactly the shared rewrite of a migration, and no rule's edit of one", async () => {
+    const sql = `-- acme\nCREATE TABLE notes (id TEXT);\nSELECT * FROM ${table.from};\n`;
+    const { files, failures } = await build({
+      apps: [entry("mail")],
+      sources: {
+        mail: source(`${pkg.from}mail`, [{ path: "migrations/0001_init.sql", content: sql }]),
+      },
+      rules: rules({
+        rules: [
+          { id: "c", scope: "comments", from: "acme", to: "engine" },
+          {
+            id: "sql",
+            scope: "text",
+            from: "notes",
+            to: "memos",
+            documents: ["mail"],
+            files: ["migrations/0001_init.sql"],
+          },
+        ],
+      }),
+    });
+    expect(failures).toEqual([]);
+    expect(file(documentOf(files, "mail"), "migrations/0001_init.sql")).toBe(
+      sql.replace(table.from, table.to),
+    );
+    // The audit compares the catalog's edits with the shared rewrite's output: any change there fails.
+    const shared: Source = {
+      package: "p",
+      files: [{ path: "migrations/0001_init.sql", content: sql.replace(table.from, table.to) }],
+    };
+    expect(
+      rewriteProblems(shared, {
+        ...shared,
+        files: [
+          {
+            path: "migrations/0001_init.sql",
+            content: shared.files[0]!.content!.replace("notes", "memos"),
+          },
+        ],
+      }),
+    ).toEqual(["migrations/0001_init.sql: a migration changed"]);
   });
 
   test("refuses a rewrite that breaks an import, a JSON file or encoded data", () => {
@@ -493,7 +560,7 @@ describe("scoped rewrite rules", () => {
     const { files, failures } = await build({
       apps: [entry("mail")],
       sources: {
-        mail: source("@acme.sh/mail", [
+        mail: source(`${pkg.from}mail`, [
           { path: "check.ts", content: regex },
           { path: "migrations/0001_init.sql", content: "-- acme\nselect 1;\n" },
         ]),
@@ -520,7 +587,7 @@ describe("scoped rewrite rules", () => {
     // A comment rule whose replacement ends the comment early changes the code, and fails.
     const broken = await build({
       apps: [entry("mail")],
-      sources: { mail: source("@acme.sh/mail", [{ path: "a.ts", content: "/* acme */ x;" }]) },
+      sources: { mail: source(`${pkg.from}mail`, [{ path: "a.ts", content: "/* acme */ x;" }]) },
       rules: rules({ rules: [{ id: "c", scope: "comments", from: "acme", to: "*/ y; /*" }] }),
     });
     expect(broken.failures).toEqual([
@@ -548,7 +615,7 @@ describe("scoped rewrite rules", () => {
     const run = (content: string) =>
       build({
         apps: [entry("mail")],
-        sources: { mail: source("@acme.sh/mail", [{ path: "a.ts", content }]) },
+        sources: { mail: source(`${pkg.from}mail`, [{ path: "a.ts", content }]) },
         // Built directly: a rule file with this rule is refused when it is read (below).
         rules: rules({ rules: [{ id: "c", scope: "comments", from: "note", to: "a\nb" }] }),
       });
@@ -576,50 +643,9 @@ describe("scoped rewrite rules", () => {
     ).toHaveLength(1);
   });
 
-  test("renames only package.json's top-level key and name, leaving every other byte", () => {
-    const edit = (content: string, rule: RewriteRules["rules"][number]) => {
-      const { source, problems } = new Rewriter(rules({ rules: [rule] })).document("p", {
-        package: "p",
-        files: [{ path: "package.json", content }],
-      });
-      return { content: source.files[0]!.content, problems };
-    };
-    const key = { id: "key", scope: "manifest-key", from: "acme", to: "engine" } as const;
-    const scope = { id: "scope", scope: "package", from: "@acme.sh/", to: "@o.example/" } as const;
-    // A nested key of the same name neither blocks nor receives the rename.
-    expect(edit('{"name":"p","acme":{},"config":{"acme":true}}', key)).toEqual({
-      content: '{"name":"p","engine":{},"config":{"acme":true}}',
-      problems: [],
-    });
-    // A nested name before the package's own is left alone.
-    const nested =
-      '{\n  "config": { "name": "@acme.sh/x" },\n  "name" : "@acme.sh/p",\n  "x": ["}"]\n}\n';
-    expect(edit(nested, scope)).toEqual({
-      content: nested.replace('"@acme.sh/p"', '"@o.example/p"'),
-      problems: [],
-    });
-    // A top-level key written twice is not edited in place.
-    expect(edit('{"acme":1,"acme":2}', key).problems).toEqual([
-      "package.json's key for rule key could not be renamed in place",
-    ]);
-    const json = '{"a":{"b":"\\",}"},"c" : [1, {"d":2}] }';
-    expect(
-      topLevelMembers(json).map(({ key, keyRange, valueRange }) => [
-        key,
-        json.slice(...keyRange),
-        json.slice(...valueRange),
-      ]),
-    ).toEqual([
-      ["a", '"a"', '{"b":"\\",}"}'],
-      ["c", '"c"', '[1, {"d":2}]'],
-    ]);
-  });
-
-  test("takes rules as JSON data with known keys only, the engine's names in their own section", () => {
-    // The package scope and the package.json key are the engine's names, kept apart.
-    const engine = scoped.rules.filter((rule) => ["package", "manifest-key"].includes(rule.scope));
-    const others = scoped.rules.filter((rule) => !engine.includes(rule));
-    const file = { ...scoped, engine, rules: others };
+  test("takes rules as JSON data with known keys only, never the shared rewrite's scopes", () => {
+    const others = scoped.rules;
+    const file = scoped;
     expect(parseRules(JSON.stringify(file))).toEqual(scoped);
     // A variable is set once and used by name.
     expect(
@@ -638,10 +664,10 @@ describe("scoped rewrite rules", () => {
       JSON.stringify({ ...file, rules: [{ id: "t", scope: "text", from: "a", to: "b" }] }),
       JSON.stringify({ ...file, rules: [others[0], others[0]] }),
       JSON.stringify({ ...file, rules: [...others, { ...others[0], id: "u", to: "{{unset}}" }] }),
-      // Engine scopes only in the engine section, and only engine scopes there.
-      JSON.stringify(scoped),
-      JSON.stringify({ ...file, engine: [...engine, others[0]] }),
-      JSON.stringify({ ...file, engine: [{ ...engine[0], documents: ["mail"] }] }),
+      // Package names and package.json's key are the shared rewrite's alone.
+      JSON.stringify({ ...file, rules: [{ id: "p", scope: "package", from: "a", to: "b" }] }),
+      JSON.stringify({ ...file, rules: [{ id: "k", scope: "manifest-key", from: "a", to: "b" }] }),
+      JSON.stringify({ ...file, engine: [] }),
     ])
       expect(() => parseRules(invalid)).toThrow();
   });

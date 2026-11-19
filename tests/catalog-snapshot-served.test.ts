@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
@@ -5,6 +6,7 @@ import {
   buildSnapshot,
   cacheControlFor,
   publishedManifest,
+  sha256,
 } from "../scripts/catalog-snapshot/core.ts";
 import { verifyServed } from "../scripts/catalog-snapshot/served.ts";
 
@@ -41,7 +43,8 @@ afterEach(async () => {
 });
 /**
  * Serve a release on loopback as the publisher deploys it: the manifest as published, each path
- * with its `Cache-Control`. `answer` may change what one request gets.
+ * with its `Cache-Control` and an ETag of its bytes, and 304 to a request whose If-None-Match is
+ * that ETag. `answer` may change what one request gets.
  */
 async function serve(
   files: ReadonlyMap<string, Uint8Array>,
@@ -52,41 +55,51 @@ async function serve(
     undefined,
 ) {
   const requested: string[] = [];
+  /** The If-None-Match of each index request, or null for an unconditional one. */
+  const indexConditions: (string | null)[] = [];
   const release = new Map(files);
   release.set("manifest.json", publishedManifest(files.get("manifest.json")!, published));
   const server = createServer((request, response) => {
     const path = new URL(request.url!, "http://x").pathname.slice(1);
     requested.push(path);
+    const condition = request.headers["if-none-match"] ?? null;
+    if (path === "index.json") indexConditions.push(condition);
     const changed = answer(path, requested.filter((item) => item === path).length);
     const bytes = changed?.body ?? release.get(path);
     if (changed?.status !== undefined) response.writeHead(changed.status, changed.headers).end();
     else if (bytes === undefined) response.writeHead(404).end();
-    else
-      response
-        .writeHead(200, {
-          "content-type": "application/json",
-          "cache-control": cacheControlFor(path) ?? "no-store",
-          ...changed?.headers,
-        })
-        .end(bytes);
+    else {
+      const headers = {
+        "content-type": "application/json",
+        "cache-control": cacheControlFor(path) ?? "no-store",
+        etag: `"${createHash("sha256").update(bytes).digest("hex")}"`,
+        ...changed?.headers,
+      };
+      if (condition === headers.etag) response.writeHead(304, headers).end();
+      else response.writeHead(200, headers).end(bytes);
+    }
   });
   servers.push(server);
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const { port } = server.address() as AddressInfo;
-  return { feedUrl: `http://127.0.0.1:${port}/index.json`, requested };
+  return { feedUrl: `http://127.0.0.1:${port}/index.json`, requested, indexConditions };
 }
 const published = "2026-11-18T00:00:00.000Z";
 
 describe("checking a served catalog", () => {
   test("checks every document and icon the manifest lists, and the client's listing", async () => {
     const files = await snapshot();
-    const { feedUrl, requested } = await serve(files);
+    const { feedUrl, requested, indexConditions } = await serve(files);
     const report = await verifyServed({ feedUrl, manifest: files.get("manifest.json")! });
     expect(report.problems).toEqual([]);
     expect(report.checked).toEqual({ files: files.size, documents: 4, icons: 1, retained: 0 });
     expect(report.listed).toBe(2);
-    // Ours, and the catalog client's listing.
+    // Full reads: ours, and the catalog client's listing. Each prepare then revalidates the index
+    // with the ETag of that checked read, and the 304 is checked to confirm it.
+    const etag = `"${sha256(files.get("index.json")!)}"`;
     expect(report.indexReads).toBe(2);
+    expect(report.indexRevalidations).toBe(2);
+    expect(indexConditions).toEqual([null, null, etag, etag]);
     expect(report.prepared.map((entry) => [entry.id, entry.matchesDocument])).toEqual([
       ["mail", true],
       ["chat", true],
@@ -132,6 +145,28 @@ describe("checking a served catalog", () => {
     expect(report.listed).toBe(2);
     expect(report.problems).toEqual([
       "an index response (read 2) is not the manifest's index.json (hash or size differs)",
+    ]);
+  });
+
+  test("checks every revalidation against an index that was the manifest's", async () => {
+    const files = await snapshot();
+    const other = (await snapshot("Send other mail")).get("index.json")!;
+    // The client lists another release's index; its prepares revalidate that index's ETag and are
+    // answered 304, confirming bytes that were never the manifest's.
+    const { feedUrl } = await serve(files, (path, count) =>
+      path === "index.json" && count >= 2
+        ? count === 2
+          ? { body: other }
+          : { status: 304, headers: { "cache-control": cacheControlFor(path)! } }
+        : undefined,
+    );
+    const report = await verifyServed({ feedUrl, manifest: files.get("manifest.json")! });
+    const etag = `"${sha256(other)}"`;
+    expect(report.indexRevalidations).toBe(2);
+    expect(report.problems).toEqual([
+      "an index response (read 2) is not the manifest's index.json (hash or size differs)",
+      `an index revalidation (1) answered 304 for the ETag ${etag}, which no index response checked against the manifest carried`,
+      `an index revalidation (2) answered 304 for the ETag ${etag}, which no index response checked against the manifest carried`,
     ]);
   });
 

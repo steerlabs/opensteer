@@ -32,6 +32,30 @@ function distribution(values: number[]) {
   };
 }
 
+/**
+ * Rows each table or index scan in an `explain (analyze, format json)` plan read: what it
+ * returned and what its filters threw away, over every loop.
+ */
+function rowsRead(plan: unknown): number[] {
+  const scans: number[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const fields = node as Record<string, unknown>;
+    if (typeof fields["Relation Name"] === "string") {
+      const counted = (key: string) => Number(fields[key] ?? 0);
+      scans.push(
+        (counted("Actual Rows") +
+          counted("Rows Removed by Filter") +
+          counted("Rows Removed by Index Recheck")) *
+          Number(fields["Actual Loops"] ?? 1),
+      );
+    }
+    for (const child of Object.values(fields)) visit(child);
+  };
+  visit(plan);
+  return scans;
+}
+
 async function measure(events: number) {
   const fixture = await createStoreFixture();
   const { database } = fixture;
@@ -300,6 +324,8 @@ async function measure(events: number) {
       ),
       // machines.list for 64 computers: the hosting one holds every task, the rest none.
       placedCount: await explain(placedThreadsQuery(placedIds)),
+      // What the placed-count check must catch: a scan that reads every task and returns none.
+      fullScan: await explain(sql`select 1 from threads where title = '' limit 1`),
     };
     expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
     expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
@@ -311,10 +337,14 @@ async function measure(events: number) {
     }
     expect(JSON.stringify(plans.detail)).toContain("transcript_root");
     // Each computer's count stops at the cap: the hosting computer's scan ends after 1,000 rows,
-    // and every other computer reads the partial index.
+    // and every other computer reads the partial index. Rows read, not rows returned: a scan that
+    // filters the whole table down to nothing returns no rows but reads them all.
     expect(JSON.stringify(plans.placedCount)).toContain("threads_environment_live");
-    const scans = JSON.stringify(plans.placedCount).match(/"Actual Rows":\d+/g) ?? [];
-    expect(Math.max(...scans.map((each) => Number(each.split(":")[1])))).toBeLessThanOrEqual(
+    expect(Math.max(...rowsRead(plans.fullScan))).toBeGreaterThan(pinnedThreadsCountCap);
+    const scans = rowsRead(plans.placedCount);
+    expect(scans.length).toBeGreaterThan(0);
+    expect(Math.max(...scans)).toBeLessThanOrEqual(pinnedThreadsCountCap);
+    expect(scans.reduce((total, rows) => total + rows, 0)).toBeLessThanOrEqual(
       pinnedThreadsCountCap,
     );
     expect(shellBytes).toBeLessThanOrEqual(96 * 1024);

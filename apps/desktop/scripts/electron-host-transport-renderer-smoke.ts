@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { createId, DeploymentIdSchema } from "@opensteer/core";
 import { desktopBridge } from "../../web/src/desktop/desktop-bridge.js";
@@ -54,5 +55,8 @@ window.hostTransportSmoke = async (origin, deploymentId, action) => {
     if (result.ok) throw new Error("Oversized binary response was accepted.");
     return { code: result.error.reason, retryable: result.error.retryable };
   }
-  return client["auth.config"]({});
+  // A cancelled request rejects rather than becoming the Host's answer.
+  return client["auth.config"]({}).catch((error: unknown) => ({
+    rejected: classifyClientFailure(error),
+  }));
 };

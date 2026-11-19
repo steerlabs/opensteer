@@ -1,6 +1,6 @@
 import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
 import { EventEmitter, once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "vitest";
@@ -21,6 +21,8 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { createDatabase } from "../packages/database/src/connection.js";
+import { PluginAgentStore } from "../packages/database/src/index.js";
+import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   pluginFixtureFiles,
@@ -57,7 +59,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-service-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
   const events = new EventEmitter();
-  const registry = await pluginFixtureRegistry(directory, () => events.emit("waiting"));
+  const registry = await pluginFixtureRegistry(() => events.emit("waiting"));
   context.onTestFinished(() => registry.close());
   const origin = registry.origin;
   let refused = false;
@@ -271,11 +273,12 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
 async function outputFixture(
   context: import("vitest").TestContext,
   options: Pick<PluginServiceOptions, "providers" | "authorize"> = {},
+  handle?: Parameters<typeof pluginFixtureRegistry>[2],
 ) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
-  const registry = await pluginFixtureRegistry(directory);
+  const registry = await pluginFixtureRegistry(undefined, undefined, handle);
   context.onTestFinished(() => registry.close());
   const service = new PluginService({
     ...options,
@@ -286,6 +289,7 @@ async function outputFixture(
     origin: "https://fixture.invalid",
     npmRegistry: registry.origin,
     catalogUrl: registry.origin + "/catalog",
+    selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
   });
@@ -294,18 +298,15 @@ async function outputFixture(
   return { service, databaseUrl: clone.url };
 }
 
-test("a version change of one plugin waits only for that plugin's earlier changes", async (context) => {
-  const authorized: string[] = [];
+test("changes of one plugin run one at a time and of two at once one wins, while calls and other plugins go on", async (context) => {
+  // A call of the first plugin that runs until the test releases it.
   const reached = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<boolean>();
-  let hold = false;
-  const { service } = await outputFixture(context, {
-    authorize: async (input) => {
-      authorized.push(`${input.operation}:${input.plugin ?? ""}`);
-      if (!hold || input.operation !== "install") return { allowed: true };
-      reached.resolve();
-      return { allowed: await release.promise };
-    },
+  let release = () => {};
+  const { service } = await outputFixture(context, {}, (request, response) => {
+    if (request.url !== "/wait") return false;
+    release = () => response.end("released");
+    reached.resolve();
+    return true;
   });
   const installed = await Promise.all(
     ["First", "Second"].map((name) =>
@@ -314,31 +315,46 @@ test("a version change of one plugin waits only for that plugin's earlier change
   );
   const [a, b] = installed.map((result) => {
     if (result.status !== "installed") throw new Error("Fixture did not install");
-    return { plugin: result.plugin.id, version: result.version.id };
+    return { plugin: result.plugin.id, version: result.version.id, slug: result.plugin.slug };
   });
-  hold = true;
-  const held = service.install(
-    { kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(2) },
-    caller,
+  const calling = service.call({ calls: { path: `tools.${a!.slug}.wait`, input: {} } }, caller);
+  await deadline(reached.promise, "The call never reached the fixture");
+  // Four installs into the first plugin build at once, each expecting the version active when it
+  // started. A running call holds none of them.
+  const installs = [2, 3, 4, 5].map((revision) =>
+    service
+      .install({ kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(revision) }, caller)
+      .then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
   );
-  const heldOutcome = expect(held).rejects.toMatchObject({ code: "forbidden" });
-  await deadline(reached.promise, "The held install never reached authorization");
-  const queued = service.activate(a!, caller);
+  // The other plugin's changes go on meanwhile.
   await deadline(
-    service.activate(b!, caller),
-    "Another plugin's activation waited behind an install",
+    service.activate({ plugin: b!.plugin, version: b!.version }, caller),
+    "Another plugin's activation waited",
   );
-  await deadline(
-    service.remove({ plugin: b!.plugin }, caller),
-    "Another plugin's removal waited behind an install",
+  await deadline(service.remove({ plugin: b!.plugin }, caller), "Another plugin's removal waited");
+  // One install commits; the others expected the version it replaced and change nothing.
+  const results = await deadline(Promise.all(installs), "The installs never finished");
+  const committed = results.flatMap((outcome) =>
+    outcome.ok && outcome.result.status === "installed" ? [outcome.result.version.id] : [],
   );
-  expect(authorized).not.toContain(`activate:${a!.plugin}`);
-  release.resolve(false);
-  await heldOutcome;
-  await deadline(queued, "The same plugin's queued activation never ran");
-  expect(authorized.slice(authorized.indexOf(`install:${a!.plugin}`))).toContain(
-    `activate:${a!.plugin}`,
+  expect(committed).toHaveLength(1);
+  for (const outcome of results.filter((outcome) => !outcome.ok))
+    expect(outcome).toMatchObject({ error: { tag: "AppVersionChanged" } });
+  expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
+    plugin: { activeVersion: committed[0] },
+  });
+  const versions = await service.detail({ plugin: a!.plugin }, caller);
+  expect(versions.versions.map((version) => version.id).sort()).toEqual(
+    [a!.version, committed[0]!].sort(),
   );
+  // The call that ran through all of it finishes as it began.
+  release();
+  expect((await deadline(calling, "The call never finished")).result).toMatchObject({
+    execution: { value: { ok: true, value: "released" } },
+  });
 });
 
 test("reads installed metadata without decoding unrequested plugins", async (context) => {
@@ -453,4 +469,81 @@ test("oversized execution results are refused before IPC and terminal state is p
   }
   expect(service.listExecutions()).toEqual([]);
   expect(await service.request("executions", {}, caller)).toEqual([]);
+});
+
+test("a skill refresh that failed fails no install and is repaired by the next, and a replay changes no author", async (context) => {
+  const clone = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-publication-"));
+  context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
+  const database = createDatabase({ connectionString: clone.url });
+  context.onTestFinished(() => database.destroy());
+  const personal = await seedPersonalFixture(database, directory);
+  const settings = new PluginAgentStore(database);
+  const registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1));
+  context.onTestFinished(() => registry.close());
+  const service = new PluginService({
+    databaseUrl: clone.url,
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32).fill(1),
+    origin: "https://fixture.invalid",
+    npmRegistry: registry.origin,
+    catalogUrl: registry.origin + "/catalog",
+    processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
+    bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
+  });
+  await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
+  context.onTestFinished(() => service.close());
+  const authors = (plugin: string, versions: string[]) =>
+    settings
+      .versionAuthors(
+        personal.userId,
+        versions.map((version) => ({ pluginId: plugin, version })),
+      )
+      .then((found) => versions.map((version) => found.get(`${plugin}\u0000${version}`)));
+  // Reviewed catalog source, then an agent's update of it.
+  const catalog = { kind: "catalog" as const, id: "fixture", key: "catalog-install" };
+  const first = await service.install(catalog, caller);
+  if (first.status !== "installed") throw new Error(JSON.stringify(first));
+  const plugin = first.plugin.id;
+  expect(await service.skillCache.get(plugin)).toMatchObject({ version: first.version.id });
+  // The skill record cannot be written while the update promotes.
+  const active = join(directory, "plugins", "active");
+  await rm(active, { recursive: true, force: true });
+  await writeFile(active, "not a folder");
+  const update = await service.install(
+    { kind: "files", plugin, files: pluginFixtureFiles(2), key: "agent-update" },
+    caller,
+  );
+  if (update.status !== "installed") throw new Error(JSON.stringify(update));
+  expect((await service.installed({ plugins: [plugin] }, caller))[0]).toMatchObject({
+    plugin: { activeVersion: update.version.id },
+  });
+  // The author was recorded with each promotion.
+  expect(await authors(plugin, [first.version.id, update.version.id])).toEqual([
+    "catalog",
+    "agent",
+  ]);
+  expect(
+    (await settings.settings(personal.userId)).find((row) => row.pluginId === plugin),
+  ).toMatchObject({
+    author: "agent",
+  });
+  // The catalog install replayed from its receipt repairs the skill record, which follows the
+  // active version, and changes no author.
+  await rm(active, { force: true });
+  expect(await service.install(catalog, caller)).toMatchObject({
+    status: "installed",
+    version: { id: first.version.id },
+  });
+  expect(await service.skillCache.get(plugin)).toMatchObject({ version: update.version.id });
+  expect(
+    (await settings.settings(personal.userId)).find((row) => row.pluginId === plugin),
+  ).toMatchObject({
+    author: "agent",
+  });
+  expect(await authors(plugin, [first.version.id, update.version.id])).toEqual([
+    "catalog",
+    "agent",
+  ]);
 });

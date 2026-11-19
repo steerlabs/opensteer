@@ -1,13 +1,13 @@
-import * as __published from "../published-compat.ts";
 /** Host-owned watcher also works when an app has no queries or its JavaScript fails. */
+import * as page from "../contracts/page-names.ts";
 const install = () => {
-  const context = document.getElementById(__published.contextElement)?.textContent;
+  const context = document.getElementById(page.contextElement)?.textContent;
   if (!context) return;
   const pinned: unknown = JSON.parse(context);
   if (typeof pinned !== "object" || pinned === null || !("version" in pinned)) return;
   const version = pinned.version;
   if (typeof version !== "string" || version.length === 0) return;
-  const stream = new EventSource(__published.versionPath);
+  const stream = new EventSource(page.versionPath);
   let reloading = false;
   const reload = () => {
     if (reloading) return;
@@ -27,7 +27,7 @@ const install = () => {
       reload();
   });
   stream.addEventListener("revoked", reload);
-  window.addEventListener(__published.deploymentEvent, reload);
+  window.addEventListener(page.deploymentEvent, reload);
   window.addEventListener("pagehide", () => stream.close(), { once: true });
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) reload();

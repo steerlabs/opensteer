@@ -1,7 +1,7 @@
-import * as __published from "../published-compat.ts";
 /** Advisory account card; must not depend on authored modules or their framework. */
+import * as page from "../contracts/page-names.ts";
 const install = () => {
-  const data = document.getElementById(__published.accountNoticeElement)?.textContent;
+  const data = document.getElementById(page.accountNoticeElement)?.textContent;
   if (!data) return;
   const notice: unknown = JSON.parse(data);
   if (typeof notice !== "object" || notice === null || !("items" in notice) || !("fix" in notice))

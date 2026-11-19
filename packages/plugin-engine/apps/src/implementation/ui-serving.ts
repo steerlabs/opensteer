@@ -1,5 +1,5 @@
-import * as __published from "../published-compat.ts";
 /** Shared private SPA rendering, independent of identity, database, and runtime choice. */
+import * as page from "../contracts/page-names.ts";
 import { CurrentTelemetryConfig } from "@opensteer/plugin-engine-telemetry";
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -97,10 +97,10 @@ export const appDocument = <E, R>(options: {
         : `<meta name="pluginEngine-build" content="${attribute(telemetry.version)}"><meta name="pluginEngine-environment" content="${attribute(telemetry.environment)}">`;
     // The watcher is inline so a page costs no extra request. An inline module runs after
     // parsing, as the deferred file it replaces did.
-    const boot = `${metadata}<script type="application/json" id="${__published.contextElement}">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
+    const boot = `${metadata}<script type="application/json" id="${page.contextElement}">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
     return HttpServerResponse.text(
       versionDocument(new TextDecoder().decode(document.body), options.version).replace(
-        __published.uiMarker,
+        page.uiMarker,
         boot,
       ),
       { contentType: "text/html", headers: appPrivateHeaders },

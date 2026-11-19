@@ -44,7 +44,7 @@ export class PluginPages {
   }
   async authorize(user: UserId, plugin: string) {
     await this.options.assertOwner(user);
-    const entry = await this.options.service.skillCache.get(plugin);
+    const entry = await this.options.service.activeEntry(plugin);
     if (!entry?.hasPage || (await this.options.access(user, plugin)) === "off") throw unavailable();
   }
   async view(user: UserId, plugin: string, theme: "light" | "dark") {
