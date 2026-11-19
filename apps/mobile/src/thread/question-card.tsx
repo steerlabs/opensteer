@@ -28,6 +28,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { Markdown } from "../markdown/markdown.js";
 import { AppText } from "../ui/primitives.js";
 import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
@@ -36,12 +37,13 @@ import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { requestTitle } from "./docked-requests.js";
 import { questionHeading } from "./request-answers.js";
 import { arrivalGuardMs, WaitingMenu } from "./request-card.js";
+import { MessageFold } from "./message-fold.js";
 import { requestAnswerMaxLength } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useQuestionAnswering } from "./use-question-answering.js";
 
-/** Past this the agent's note is folded to three lines, with More to read the rest. */
-const detailFoldLength = 140;
+/** Body lines of detail shown before Show more: a short draft whole, its answers still near. */
+const detailFoldLines = 6;
 
 export interface QuestionRequestCardProps {
   readonly canRespond: boolean;
@@ -99,7 +101,6 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
   const { heading, prompt } = questionHeading(requestTitle(request), field.prompt);
   const detail = presentation.detail ?? "";
   const [unfolded, setUnfolded] = useState(false);
-  const folds = detail.length > detailFoldLength || detail.split("\n").length > 3;
 
   useEffect(() => {
     void AccessibilityInfo.announceForAccessibility(
@@ -173,25 +174,21 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
         >
           {detail === "" ? null : (
             <View style={styles.detail}>
-              <AppText
-                role="caption"
-                tone="soft"
-                {...(folds && !unfolded ? { numberOfLines: 3 } : {})}
+              <MessageFold
+                lines={detailFoldLines}
+                mine={false}
+                more={false}
+                onToggle={() => setUnfolded(!unfolded)}
+                open={unfolded}
               >
-                {detail}
-              </AppText>
-              {folds ? (
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={space[10]}
-                  onPress={() => setUnfolded(!unfolded)}
-                  style={styles.fold}
-                >
-                  <AppText role="caption" tone="ember">
-                    {unfolded ? "Less" : "More"}
+                {request.kind === "person.question" ? (
+                  <Markdown text={detail} />
+                ) : (
+                  <AppText role="caption" tone="soft">
+                    {detail}
                   </AppText>
-                </Pressable>
-              ) : null}
+                )}
+              </MessageFold>
             </View>
           )}
           {several ? (
@@ -416,7 +413,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 0,
   },
-  fold: { alignSelf: "flex-start" },
   foot: { paddingBottom: 2, paddingLeft: space[4], paddingRight: 6 },
   head: {
     alignItems: "flex-start",

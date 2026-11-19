@@ -994,6 +994,11 @@ button.surface-chip:hover {
     padding-bottom: var(--space-10);
   }
 
+  .thread--sheet-open .action-panel__content {
+    max-height: none;
+    overflow-y: visible;
+  }
+
   .thread--sheet .composer-dock {
     padding-top: var(--space-6);
     border-top: 1px solid var(--line);

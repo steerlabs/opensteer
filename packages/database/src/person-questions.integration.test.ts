@@ -1,6 +1,7 @@
 import { createId, type RequestPresentation } from "@opensteer/core";
 import { expect } from "vitest";
 import { needsYouPage } from "./needs-you-store.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 import {
   describeStore,
   pendingEvent,
@@ -62,6 +63,16 @@ async function finish(f: StoreFixture, run: Started) {
       data: { status: "completed" },
     }),
   });
+}
+
+/** The question as its thread keeps it once settled: the record clients draw. */
+async function threadRecord(f: StoreFixture, run: Started, requestId: string) {
+  const read = await readTranscriptItem(f.database, {
+    viewerId: run.userId,
+    scope: { kind: "thread", threadId: run.thread.id },
+    itemId: `request:${requestId}`,
+  });
+  return read.kind === "item" ? read.item : null;
 }
 
 async function continuations(f: StoreFixture) {
@@ -147,6 +158,14 @@ describeStore("person questions", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ pendingRequestCount: 0 });
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
+    expect(await threadRecord(f, run, request.id)).toMatchObject({
+      kind: "request",
+      question: {
+        outcome: "answered",
+        detail: presentation.detail,
+        answers: [{ prompt: "Send this reply?", answer: ["Wait until Friday"] }],
+      },
+    });
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
@@ -176,6 +195,9 @@ describeStore("person questions", (it) => {
     });
     expect(dismissed.request.status).toBe("declined");
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
+    expect(await threadRecord(f, run, request.id)).toMatchObject({
+      question: { outcome: "dismissed", detail: presentation.detail, answers: [] },
+    });
   });
 
   it("wakes the task with one answer while the agent's other question still waits", async ({

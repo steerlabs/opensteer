@@ -22,6 +22,7 @@ import {
   RunUsageViewSchema,
   RunFailureViewSchema,
   RequestKindSchema,
+  AnsweredQuestionSchema,
   AssignmentSummarySchema,
   RequestIdSchema,
   RunAttemptIdSchema,
@@ -153,6 +154,8 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     requestId: RequestIdSchema,
     requestKind: RequestKindSchema.optional(),
     waitedSince: z.iso.datetime().optional(),
+    /** A settled agent question: what was asked and the answer, cut to fit. */
+    question: AnsweredQuestionSchema.optional(),
   }),
   z.object({
     ...card,

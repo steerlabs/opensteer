@@ -1,6 +1,10 @@
 import type { HostClient } from "@opensteer/client/host";
 import { AnswerPill } from "./answer-pill.js";
-import { useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
+import {
+  useAnsweredQuestion,
+  useTranscriptMessage,
+  useTranscriptText,
+} from "@opensteer/client/react";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { presentMessageDelivery } from "@opensteer/client/feedback";
 import { useClientConnectionName } from "@opensteer/client/react";
@@ -28,6 +32,7 @@ import {
   traceWindow,
   workSummary,
   type ActivityStepHead,
+  type AnsweredQuestionEntry,
   type ActivityTone,
   type AgentCard,
   type AgentGroup,
@@ -49,17 +54,17 @@ import {
 import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
-import { ReferenceVisibility } from "../markdown/reference-context.js";
-import { color, material, radius, space, touchTarget, type } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
 import { useScreenAction } from "../ui/client-feedback.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
+import { MessageFold } from "./message-fold.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
@@ -198,6 +203,8 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
         <TaskCards entries={[group.entry]} live={props.live ?? true} />
       ) : group.kind === "delegation" ? (
         <DelegationLine delegation={group.entry} onOpenThread={props.onOpenThread} />
+      ) : group.kind === "question" ? (
+        <AnsweredQuestionRow entry={group.entry} />
       ) : props.voiceThread === true &&
         group.entry.messageKind !== "assistant" &&
         group.entry.body === voiceCallSeed ? (
@@ -1713,50 +1720,80 @@ function OwnMessage(props: {
 const ignoreDeliveryAction = () => {};
 
 /**
- * A sent message's words, folded to `lines` of body text until the reader
- * opens them. Show more stands inside the message, and only when the words run
- * past the fold or `more` says what is drawn is an excerpt of something longer.
+ * A question an agent asked, as the thread keeps it once answered: what it
+ * asked about, then the answer. One cut to fit reads whole once opened.
  */
-function MessageFold(props: {
-  readonly children: ReactNode;
-  readonly lines: number;
-  /** The reader's own bubble is the accent, so its toggle takes the bubble's ink. */
-  readonly mine: boolean;
-  readonly more: boolean;
-  readonly onToggle: () => void;
-  readonly open: boolean;
-}): ReactNode {
-  // Lines of body text, which grow with the reader's text size.
-  const { fontScale } = useWindowDimensions();
-  const fold = props.lines * type.body.lineHeight * fontScale;
-  const [height, setHeight] = useState<number | null>(null);
-  const overflowing = height !== null && height > fold + 1;
-  // Words folded out of sight look nothing up until the reader opens them.
-  const visible = props.open || (height !== null && !overflowing);
+function AnsweredQuestionRow(props: { readonly entry: AnsweredQuestionEntry }): ReactNode {
+  const { entry } = props;
+  const scope = useContext(TaskScopeContext);
+  const [open, setOpen] = useState(false);
+  const { question, error, reload } = useAnsweredQuestion({
+    client: scope?.hostClient ?? null,
+    threadId: scope?.threadId ?? null,
+    requestId: entry.requestId,
+    question: entry.question,
+    open,
+  });
+  const dismissed = question.outcome === "dismissed";
+  const several = question.answers.length > 1;
+  const excerpt = question.truncated === true;
   return (
-    <>
-      <View style={props.open ? undefined : [styles.fold, { maxHeight: fold }]}>
-        <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
-          <ReferenceVisibility value={visible}>{props.children}</ReferenceVisibility>
-        </View>
+    <View accessibilityLabel={`Question: ${entry.title}`} style={styles.answered}>
+      <View style={styles.answeredHead}>
+        <Symbol
+          name={dismissed ? "stop.circle" : "checkmark.circle"}
+          size={13}
+          tint={color.green}
+        />
+        <AppText role="caption" tone="muted">
+          {dismissed ? "Dismissed" : "You answered"} · {formatClockTime(entry.createdAt)}
+        </AppText>
       </View>
-      {overflowing || props.more ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded: props.open }}
-          onPress={props.onToggle}
-          style={styles.foldToggle}
+      <AppText role="secondaryMedium">{entry.title}</AppText>
+      {question.detail ? (
+        <MessageFold
+          lines={answeredDetailLines}
+          mine={false}
+          more={excerpt}
+          onToggle={() => setOpen(!open)}
+          open={open}
         >
-          <AppText
-            role="secondaryMedium"
-            style={props.mine ? styles.bubbleInk : undefined}
-            tone="ember"
-          >
-            {props.open ? "Show less" : "Show more"}
+          <Markdown excerpt={excerpt} text={question.detail} />
+        </MessageFold>
+      ) : null}
+      {question.answers.map(({ prompt, answer }, index) => (
+        <View key={index} style={styles.answeredAnswer}>
+          {several || prompt.trim() !== entry.title.trim() ? (
+            <AppText role="caption" tone="muted">
+              {prompt}
+            </AppText>
+          ) : null}
+          <AnsweredWords words={answer.join(", ")} />
+        </View>
+      ))}
+      {open && error ? (
+        <Pressable accessibilityRole="button" onPress={reload}>
+          <AppText role="caption" tone="muted">
+            Couldn’t load the whole question. Tap to retry.
           </AppText>
         </Pressable>
       ) : null}
-    </>
+    </View>
+  );
+}
+
+/** Body lines of what was asked before Show more: a short draft whole. */
+const answeredDetailLines = 8;
+
+/** The person's answer, folded like the words of a message when it runs long. */
+function AnsweredWords(props: { readonly words: string }): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    <MessageFold lines={6} mine={false} more={false} onToggle={() => setOpen(!open)} open={open}>
+      <View style={styles.answeredWords}>
+        <AppText role="secondary">{props.words}</AppText>
+      </View>
+    </MessageFold>
   );
 }
 
@@ -1988,6 +2025,20 @@ export function WorkingIndicator({
 }
 
 const styles = StyleSheet.create({
+  answered: {
+    borderLeftColor: color.line,
+    borderLeftWidth: 2,
+    gap: space[8],
+    paddingLeft: space[12],
+  },
+  answeredAnswer: { alignItems: "flex-start", gap: space[4] },
+  answeredHead: { alignItems: "center", flexDirection: "row", gap: space[6] },
+  answeredWords: {
+    backgroundColor: color.greenWash,
+    borderRadius: radius.md,
+    paddingHorizontal: space[12],
+    paddingVertical: space[4],
+  },
   earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   call: {
     alignItems: "center",
@@ -2060,7 +2111,6 @@ const styles = StyleSheet.create({
   bubbleQueuedMine: { borderColor: color.emberLine },
   bubbleQueuedOther: { borderColor: color.lineStrong },
   steerMarker: { flexDirection: "row", alignItems: "center", gap: space[4] },
-  bubbleInk: { color: color.bubbleInk },
   bubbleInput: { ...material.plate },
   /** Another Thread's result is the one framed thing among the agent's rows: it came from elsewhere. */
   card: {
@@ -2081,8 +2131,6 @@ const styles = StyleSheet.create({
   },
   // `scroll`, not `hidden`: layout leaves a scrolling box's words their whole
   // height, so they measure all they hold, and the box still clips them.
-  fold: { overflow: "scroll" },
-  foldToggle: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
   /** The work's one line: no ground of its own, so the reply below stays the loudest thing in the turn. */
   head: {
     alignItems: "center",

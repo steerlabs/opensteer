@@ -314,6 +314,7 @@ export function itemView(row: Item) {
     completedAt,
     tool,
     requestKind,
+    question,
     waitedSince,
     endedAt,
     replyMessageId,
@@ -369,6 +370,7 @@ export function itemView(row: Item) {
         requestId: row.requestId,
         requestKind,
         waitedSince,
+        question,
       });
     case "node":
       return TranscriptItemSchema.parse({

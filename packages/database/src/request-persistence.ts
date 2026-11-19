@@ -1,4 +1,6 @@
 import {
+  answeredQuestion,
+  answeredQuestionWithin,
   OpensteerError,
   RequestSchema,
   requestOutcomeText,
@@ -25,14 +27,21 @@ export function assertRequestRevision(row: Pick<RequestRow, "revision">, expecte
     });
 }
 
+/** The most a settled question's record adds to its thread item, beside the item's own view. */
+const answeredQuestionBytes = 3 * 1024;
+
 export function describeTranscriptRequest(request: Request) {
-  return transcriptPreview({
-    title: request.presentation.title,
-    status: request.status,
-    preview: requestOutcomeText(request),
-    requestKind: request.kind,
-    ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
-  });
+  const question = answeredQuestion(request);
+  return {
+    ...transcriptPreview({
+      title: request.presentation.title,
+      status: request.status,
+      preview: requestOutcomeText(request),
+      requestKind: request.kind,
+      ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
+    }),
+    ...(question ? { question: answeredQuestionWithin(question, answeredQuestionBytes) } : {}),
+  };
 }
 
 export async function lockRequestThreads(

@@ -95,7 +95,8 @@ You never message the person directly. Each item they need to hear about gets it
   and mark itself Done once settled, saying in its last reply whether the person answered,
   dismissed it, or was only told. If the next step is clear and small, such as a short reply, it
   drafts and asks "Send this?"; if the person must choose a direction first, it asks that before
-  drafting. A pure heads-up asks nothing and marks itself Done. Put the task's link on the item.
+  drafting. Your facts and IDs are for the task's work: its question shows the draft and only what
+  the decision needs. A pure heads-up asks nothing and marks itself Done. Put the task's link on the item.
 - **The task being Done settles nothing by itself.** A dismissal closes the item as dismissed;
   otherwise the item stays open until the evidence above closes it.
 - **Later news on that item:** `opensteer_task_send` to that task with `delivery: "queue"`. If the

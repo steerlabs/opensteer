@@ -19,7 +19,12 @@ import { TranscriptImageContext, useClientConnectionName } from "@opensteer/clie
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
+import {
+  useAnsweredQuestion,
+  useToolOutput,
+  useTranscriptMessage,
+  useTranscriptText,
+} from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -95,6 +100,7 @@ import {
   type ConversationActivity as ReplyActivity,
   type ConversationActivitySelection,
   type AssignmentEntry,
+  type AnsweredQuestionEntry,
   type DelegationEntry,
   type MessageEntry,
   type TranscriptGroup,
@@ -146,6 +152,7 @@ import {
   SurfaceLink,
 } from "./surface-chips.js";
 import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
+import { RequestDetail } from "./request-detail.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
@@ -701,6 +708,8 @@ const TranscriptRow = memo(
               <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
             ) : group.kind === "delegation" ? (
               <DelegationNotice delegation={group.entry} />
+            ) : group.kind === "question" ? (
+              <AnsweredQuestionRow entry={group.entry} />
             ) : group.kind === "assignment" ? (
               renderTask?.([group.entry])
             ) : (
@@ -3101,6 +3110,72 @@ function HeldDelegationNotice({
 }
 
 const nothingHeld = { activeTasks: [], tasks: null, threads: [], workspaceTasks: {} };
+
+/* ---- Answered questions ---- */
+
+/**
+ * A question an agent asked, as the thread keeps it once answered: what it
+ * asked about, then the answer. One cut to fit reads whole once opened.
+ */
+function AnsweredQuestionRow({ entry }: { entry: AnsweredQuestionEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [open, setOpen] = useState(false);
+  const { question, error, reload } = useAnsweredQuestion({
+    client,
+    threadId,
+    requestId: entry.requestId,
+    question: entry.question,
+    open,
+  });
+  const dismissed = question.outcome === "dismissed";
+  const several = question.answers.length > 1;
+  return (
+    <section aria-label={`Question: ${entry.title}`} className="answered-question">
+      <p className="answered-question__head">
+        <Icon name={dismissed ? "stop" : "check-circle"} />
+        {dismissed ? "Dismissed" : "You answered"} ·{" "}
+        <time dateTime={entry.createdAt}>{formatClockTime(entry.createdAt)}</time>
+      </p>
+      <p className="answered-question__title">{entry.title}</p>
+      {question.detail ? (
+        <RequestDetail
+          excerpt={question.truncated === true}
+          markdown
+          onOpenChange={setOpen}
+          open={open}
+          text={question.detail}
+        />
+      ) : null}
+      {question.answers.map(({ prompt, answer }, index) => (
+        <div className="answered-question__answer" key={index}>
+          {several || prompt.trim() !== entry.title.trim() ? (
+            <p className="answered-question__prompt">{prompt}</p>
+          ) : null}
+          <AnsweredWords words={answer.join(", ")} />
+        </div>
+      ))}
+      {open && error ? (
+        <p className="answered-question__issue">
+          Couldn’t load the whole question.{" "}
+          <button className="answered-question__retry" onClick={reload} type="button">
+            Retry
+          </button>
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/** The person's answer, folded like the words of a message when it runs long. */
+function AnsweredWords({ words }: { words: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <MessageFold lines={6} onOpenChange={setOpen} open={open}>
+      <p className="answered-question__words">{words}</p>
+    </MessageFold>
+  );
+}
 
 /* ---- Run outcomes ---- */
 

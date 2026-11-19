@@ -20,12 +20,19 @@ const record = (value: unknown): JsonSchema =>
 export const same = (left: unknown, right: unknown) =>
   JSON.stringify(left) === JSON.stringify(right);
 
-/** Names a union member by its literal discriminator, or by its JSON type. */
+/**
+ * Names a union member by its literal discriminator, a nested union by its own
+ * members' names, so a field added inside one is compared rather than read as
+ * a removed member, or anything else by its JSON type.
+ */
 function memberKey(member: JsonSchema): string {
   const literals = Object.entries(record(member.properties))
     .filter(([, value]) => "const" in record(value))
     .map(([name, value]) => `${name}=${String(record(value).const)}`);
-  return literals.length ? literals.join(",") : String(member.type ?? JSON.stringify(member));
+  if (literals.length) return literals.join(",");
+  const union = member.oneOf ?? member.anyOf;
+  if (Array.isArray(union)) return `(${union.map((item) => memberKey(record(item))).join("|")})`;
+  return String(member.type ?? JSON.stringify(member));
 }
 
 /**

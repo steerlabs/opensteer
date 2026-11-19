@@ -4,7 +4,7 @@ import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
-import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
+import type { AnsweredQuestion, TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
@@ -456,6 +456,8 @@ export interface RequestReceiptEntry {
   id: string;
   kind: "request";
   outcome: string;
+  /** A settled agent question's record, which the thread shows as its own row. */
+  question?: AnsweredQuestion;
   requestId: string;
   requestKind: Request["kind"] | null;
   runId: string | null;

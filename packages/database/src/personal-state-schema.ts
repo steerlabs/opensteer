@@ -1,4 +1,5 @@
 import type {
+  AnsweredQuestion,
   AppId,
   AssignmentSummary,
   DelegationId,
@@ -137,6 +138,7 @@ export interface TranscriptPreview {
   readonly completedAt?: string;
   readonly tool?: ToolIdentity | null;
   readonly requestKind?: Request["kind"];
+  readonly question?: AnsweredQuestion;
   readonly waitedSince?: string;
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;

@@ -10,6 +10,8 @@ import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { RequestDetail } from "./request-detail.js";
+import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { type Request, type RequestResponse } from "@opensteer/core";
 import { EngineDotMark } from "./subagent-rows.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
@@ -649,6 +651,8 @@ function RequestPanel({
   // An access card names the app and the reason itself, so the panel's own
   // head would only say them twice.
   const ownHead = request.kind === "integration.access" && !surface.denied;
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  useScrollEdges(contentRef);
   return (
     <fieldset
       aria-label={asker ? `${asker.title} asks: ${title}` : "Opensteer needs your input"}
@@ -665,9 +669,14 @@ function RequestPanel({
           <span className="action-panel__title">{title}</span>
         </div>
       )}
-      <div className="action-panel__content">
+      <div className="action-panel__content" data-scroll-edges="" ref={contentRef}>
         {detail && !ownHead ? (
-          <ActionDetail mono={request.kind === "harness.approval"}>{detail}</ActionDetail>
+          <RequestPanelDetail
+            key={request.id}
+            markdown={request.kind === "person.question"}
+            mono={request.kind === "harness.approval"}
+            text={detail}
+          />
         ) : null}
         {isQuestionRequest(request) && !surface.denied ? (
           <QuestionBody
@@ -809,32 +818,10 @@ function requestIcon(request: Request): IconName {
   return "shield";
 }
 
-/* ---- Detail: the substance of the decision, clamped until asked ---- */
-
-function ActionDetail({ children, mono }: { children: string; mono: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const clampable = children.length > 320 || children.split("\n").length > 4;
-  const className = [
-    "action-detail",
-    mono ? "action-detail--mono" : "",
-    clampable && !expanded ? "action-detail--clamped" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  return (
-    <div className="action-detail__frame">
-      <div className={className}>{children}</div>
-      {clampable ? (
-        <button
-          className="action-detail__more"
-          onClick={() => setExpanded(!expanded)}
-          type="button"
-        >
-          {expanded ? "Less" : "More"}
-        </button>
-      ) : null}
-    </div>
-  );
+/** The open Request's detail, folded again for each Request the panel shows. */
+function RequestPanelDetail(props: { markdown: boolean; mono: boolean; text: string }) {
+  const [open, setOpen] = useState(false);
+  return <RequestDetail {...props} onOpenChange={setOpen} open={open} />;
 }
 
 /* ---- Forms: the request's own fields are the input ---- */
