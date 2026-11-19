@@ -3,9 +3,11 @@
  * downloaded and must match its hash and size exactly, and the served set must pass the same
  * relationship checks the publisher applies. Every response must carry the `Cache-Control` the
  * publisher deploys for its kind of path, and every index response during the run, the catalog
- * client's included, must be the manifest's exact index. No request follows a redirect: one is a
- * failure. Responses are hashed as they arrive; only the index and one document at a time are held.
- * Then the engine's catalog client lists the feed and prepares entries, as a Host does.
+ * client's included, must be the manifest's exact index: a full one by its bytes, a 304 by the
+ * ETag it confirms, which a full response checked earlier must have carried. No request follows a
+ * redirect: one is a failure. Responses are hashed as they arrive; only the index and one document
+ * at a time are held. Then the engine's catalog client lists the feed and prepares entries, as a
+ * Host does.
  */
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -43,8 +45,13 @@ export interface ServedReport {
   };
   readonly listed: number;
   readonly prepared: ReadonlyArray<{ id: string; files: number; matchesDocument: boolean }>;
-  /** Index responses seen, ours and the catalog client's; each must be the manifest's index. */
+  /** Full index responses seen, ours and the catalog client's; each must be the manifest's index. */
   readonly indexReads: number;
+  /**
+   * The catalog client's revalidations of the index answered 304; each must confirm the ETag of a
+   * full response that was the manifest's index.
+   */
+  readonly indexRevalidations: number;
   /** Requests per host, ours and the catalog client's. */
   readonly hosts: Readonly<Record<string, number>>;
   readonly problems: readonly string[];
@@ -74,6 +81,9 @@ export async function verifyServed(input: {
   // One wrong header class is one problem, with an example, not thousands.
   const headerProblems = new Map<string, string>();
   let indexReads = 0;
+  let indexRevalidations = 0;
+  /** The ETags of full index responses that were the manifest's index. */
+  const checkedEtags = new Set<string>();
   /** What every response is checked for, whoever asked: its header, and an index's exact bytes. */
   const observe = (url: string, response: Response) => {
     const path = pathOf(url);
@@ -89,11 +99,20 @@ export async function verifyServed(input: {
     }
     return path;
   };
-  const checkIndex = (record: FileRecord) => {
+  const checkIndex = (record: FileRecord, etag: string | null) => {
     indexReads++;
     if (record.sha256 !== manifest.feed.sha256 || record.bytes !== manifest.feed.bytes)
       problems.push(
         `an index response (read ${indexReads}) is not the manifest's index.json (hash or size differs)`,
+      );
+    else if (etag !== null) checkedEtags.add(etag);
+  };
+  /** A 304 for the index: the ETag it confirms must be one a checked full response carried. */
+  const checkRevalidation = (asked: string | null) => {
+    indexRevalidations++;
+    if (asked === null || !checkedEtags.has(asked))
+      problems.push(
+        `an index revalidation (${indexRevalidations}) answered 304 for ${asked === null ? "no ETag" : `the ETag ${asked}`}, which no index response checked against the manifest carried`,
       );
   };
   /** Every request of the run, ours and the catalog client's: counted, never redirected. */
@@ -131,7 +150,7 @@ export async function verifyServed(input: {
       if (keep) chunks.push(chunk);
     }
     const record: FileRecord = { sha256: hash.digest("hex"), bytes };
-    if (path === "index.json") checkIndex(record);
+    if (path === "index.json") checkIndex(record, response.headers.get("etag"));
     return { record, body: keep ? new Uint8Array(Buffer.concat(chunks)) : undefined };
   };
 
@@ -148,6 +167,7 @@ export async function verifyServed(input: {
       listed,
       prepared,
       indexReads,
+      indexRevalidations,
       hosts: Object.fromEntries(hosts),
       problems: [...new Set([...problems, ...headerProblems.values()])],
     };
@@ -234,13 +254,21 @@ export async function verifyServed(input: {
   }
 
   // The catalog client, as a Host runs it. Its requests go through the same checks as ours, and
-  // an index it reads must be the manifest's too.
+  // an index it reads or revalidates must be the manifest's too.
   const clientFetch = (async (resource: RequestInfo | URL, init?: RequestInit) => {
     const url = resource instanceof Request ? resource.url : String(resource);
     const response = await send(url, init);
-    if (observe(url, response) !== "index.json" || response.status !== 200) return response;
+    if (observe(url, response) !== "index.json") return response;
+    if (response.status === 304) {
+      const headers = new Headers(
+        init?.headers ?? (resource instanceof Request ? resource.headers : undefined),
+      );
+      checkRevalidation(headers.get("if-none-match"));
+      return response;
+    }
+    if (response.status !== 200) return response;
     const body = new Uint8Array(await response.arrayBuffer());
-    checkIndex({ sha256: sha256(body), bytes: body.byteLength });
+    checkIndex({ sha256: sha256(body), bytes: body.byteLength }, response.headers.get("etag"));
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,

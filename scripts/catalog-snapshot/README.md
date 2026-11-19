@@ -133,7 +133,8 @@ pnpm catalog:verify --feed https://catalog.opensteer.com/index.json \
 
 No request it makes follows a redirect; a redirect is a failure. Every path the manifest lists
 must be one the layout allows before any is requested. Every index response during the run, its
-own and those the catalog client makes, must have the manifest's exact size and hash, and the
+own and those the catalog client makes, must have the manifest's exact size and hash; a 304 the
+client gets when it revalidates the index must confirm the ETag of a full response that did. The
 served `manifest.json` must be the snapshot's manifest as published (the same bytes plus
 `published`). Every file the manifest lists, every document at both paths and every icon, is
 fetched (eight at a time, `--concurrency`) and must match its hash and size, and the served set
