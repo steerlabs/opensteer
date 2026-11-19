@@ -800,6 +800,7 @@ describe("HostCommandDispatcher model selection", () => {
         supportsMessageAttachments: () => input.supportsAttachments ?? false,
         canRunHarness: () => true,
         dispatch,
+        connectionGenerationFor: () => 7,
         identityForEnvironment: () => ({
           bootId: "boot-run",
           connectionGeneration: 7,
@@ -969,6 +970,7 @@ describe("HostCommandDispatcher run planning", () => {
           supportsMessageAttachments: () => false,
           canRunHarness: () => true,
           dispatch,
+          connectionGenerationFor: () => identity.connectionGeneration,
           identityForEnvironment: () => identity,
           inspectHarnesses: async () => [
             {
