@@ -283,11 +283,14 @@ describe("a catalog the Host can't reach", () => {
     const state = await settle(list);
     stop();
     expect(state.error).toMatchObject({ code: "read-failed", reason: pluginCatalogUnavailable });
-    expect(pluginCatalogListView(state, "")).toEqual({
+    const failed = {
       kind: "failed",
       text: "The plugin catalog can't be reached right now.",
       retry: true,
-    });
+    };
+    expect(pluginCatalogListView(state, "")).toEqual(failed);
+    // Device apps listed beside the plugins never hide that the plugins couldn't be read.
+    expect(pluginCatalogListView(state, "", 2)).toEqual(failed);
   });
 
   it("keeps the entries already shown when a later page can't be read", async () => {
@@ -359,6 +362,10 @@ describe("a catalog the Host can't reach", () => {
       kind: "empty",
       text: "The catalog is empty.",
     });
+    // A device app matched beside the plugins: nothing on the page is unmatched.
+    expect(
+      pluginCatalogListView({ loading: false, items: [], error: null }, "imessage", 1),
+    ).toEqual({ kind: "empty", text: null });
     expect(pluginCatalogListView({ loading: true, items: [], error: null }, "")).toEqual({
       kind: "loading",
     });

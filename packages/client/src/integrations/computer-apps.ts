@@ -68,6 +68,36 @@ export function computerAppDefinitions(
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/** What people call an app when its definition says otherwise. */
+const computerAppSearchWords: Readonly<Record<string, string>> = {
+  "apple-messages": "iMessage SMS texts",
+};
+
+/**
+ * The apps a person can turn on for a device, as the plugin catalog lists them
+ * beside its plugins, matched by name, description, the device they need or
+ * a word people call them by.
+ */
+export function computerAppCatalogMatches(
+  definitions: readonly IntegrationDefinitionSummaryView[],
+  search: string,
+): readonly IntegrationDefinitionSummaryView[] {
+  const term = search.trim().toLocaleLowerCase();
+  return computerAppDefinitions(definitions).filter(
+    (definition) =>
+      !term ||
+      [
+        definition.name,
+        definition.description,
+        computerAppPlatformRequirementLabel(definition),
+        computerAppSearchWords[definition.id],
+      ]
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(term),
+  );
+}
+
 /** The live app connections one person owns on one computer. */
 export function computerConnectionsOn(
   connections: readonly ClientComputerConnection[],
@@ -371,6 +401,11 @@ export function computerAppStateLabel(
 export interface ComputerAppPermissionNotice {
   readonly detail: string;
   readonly title: string;
+}
+
+/** What a person reads after asking a device to turn an app on. */
+export function computerAppSetupRequested(appName: string, machineName: string): string {
+  return `Setup requested. On ${machineName}, open Opensteer → Settings → Devices to approve ${appName}.`;
 }
 
 /**
