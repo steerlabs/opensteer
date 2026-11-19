@@ -127,3 +127,13 @@ test("plugin engine packages get the same lint and typecheck as every package", 
   assert.ok(plan.commands.some((command) => command.includes("typecheck")));
   assert.ok(plan.commands.some((command) => command.includes("oxlint")));
 });
+test("a change only to the lint-ignored plugin example is format-checked and not linted", () => {
+  const file = "packages/plugin-engine/apps/reference-example/index.ts";
+  const p = localPlan(
+    [file],
+    [{ name: "apps", dir: "packages/plugin-engine/apps", deps: [], coverage: [] }],
+    [file],
+  );
+  assert.ok(p.commands.some((c) => c.includes("prettier") && c.includes(file)));
+  assert.ok(!p.commands.some((c) => c.includes("oxlint")));
+});

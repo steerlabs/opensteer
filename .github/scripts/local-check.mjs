@@ -20,7 +20,10 @@ export function localPlan(files, graph, present, baseGraph = graph, platform = p
   const commands = [];
   if (existing.length)
     commands.push(["exec", "prettier", "--check", "--ignore-unknown", "--", ...existing]);
-  const changedCode = code.filter((p) => files.includes(p));
+  // .oxlintrc.json ignores the plugin author example; oxlint fails when every input is ignored.
+  const changedCode = code.filter(
+    (p) => files.includes(p) && !p.startsWith("packages/plugin-engine/apps/reference-example/"),
+  );
   if (changedCode.length)
     commands.push(
       ["exec", "oxlint", "--deny-warnings", ...changedCode],
