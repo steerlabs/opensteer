@@ -1,7 +1,6 @@
 import { AppIdSchema, createId, SequenceSchema, TabSchema } from "@opensteer/core";
 import { afterEach, expect, test, vi } from "vitest";
 import {
-  personalAuthorityChangedReason,
   personalChangesFrameMaxBytes,
   type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
@@ -11,14 +10,8 @@ import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HttpHostClient } from "./host-session-client.js";
 import type { ClientLifecycle } from "./lifecycle.js";
-import {
-  createPersonalStreamCache,
-  personalCacheFormat,
-  type PersonalStreamCache,
-  type PersonalStreamCheckpoint,
-} from "./personal-stream-cache.js";
+import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { ScopedPersonalStream, type PersonalResourcePort } from "./scoped-personal-stream.js";
-import { memoryCheckpointStorage } from "../test-support/memory-checkpoint-storage.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
