@@ -753,6 +753,54 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
   }
 });
 
+test("reads a detail around the reader's current anchor, not the one it subscribed with", async () => {
+  const detail = { kind: "thread", threadId: createId("thread") } as const;
+  const read = vi.fn(
+    async (
+      _scope: PersonalScope,
+      after: PersonalResumeCursor | null,
+      _signal: AbortSignal,
+      _anchor?: string,
+    ) => ({
+      throughSequence: after ? "2" : "1",
+      cursor: {
+        ...cursor,
+        scopeKey: `thread:${detail.threadId}` as const,
+        afterSequence: after ? "2" : "1",
+      },
+      frames: [],
+    }),
+  );
+  const second = Promise.withResolvers<void>();
+  const socket = new PersonalSyncSocket({
+    async read(scope, after, signal, anchor) {
+      const cut = await read(scope, after, signal, anchor);
+      if (read.mock.calls.length === 2) second.resolve();
+      return cut;
+    },
+    async send(_raw, guard) {
+      return guard();
+    },
+    close() {},
+  });
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: detail,
+      generation: 1,
+      anchorItemId: "older-message",
+    });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    socket.anchor({ subscriptionId: "detail:0", generation: 1 });
+    socket.wake("2");
+    await deadline(second.promise, "The detail was not read again");
+    expect(read.mock.calls.map((call) => call[3])).toEqual(["older-message", undefined]);
+  } finally {
+    socket.close("test finished");
+  }
+});
+
 test("addresses a shared encoded body exactly as stringifying the whole frame", () => {
   const threadId = createId("thread");
   const frame = {

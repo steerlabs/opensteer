@@ -154,6 +154,16 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
     runId: RunIdSchema,
     streamIds: z.array(z.string().min(1).max(600)).min(1).max(16),
   }),
+  /**
+   * Where the reader is: a later repair snapshot of this detail centres on this item, or on the
+   * latest messages when it is absent. Sends nothing back.
+   */
+  z.strictObject({
+    type: z.literal("client.anchor"),
+    ...address,
+    subscriptionId: detailId,
+    anchorItemId: TranscriptItemIdSchema.optional(),
+  }),
   z.strictObject({ type: z.literal("client.ping"), nonce: z.string().min(1).max(256) }),
 ]);
 

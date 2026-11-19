@@ -104,6 +104,8 @@ interface Subscription {
   synchronized: boolean;
   /** The next read ignores the cursor, so the Host repairs this scope with a snapshot. */
   repair: boolean;
+  /** The reader's current anchor; a repair snapshot centres on it. */
+  anchorItemId: string | undefined;
   removed: boolean;
   pauseCount: number;
   readonly live: Map<string, PendingLive>;
@@ -223,6 +225,7 @@ export class PersonalSyncSocket {
       sending: false,
       synchronized: false,
       repair: false,
+      anchorItemId: request.anchorItemId,
       removed: false,
       live: new Map(),
       liveBytes: 0,
@@ -234,6 +237,12 @@ export class PersonalSyncSocket {
     this.#generations.set(request.subscriptionId, request.generation);
     this.#subscriptions.set(request.subscriptionId, current);
     this.#reschedule();
+  }
+
+  anchor(message: Address & { readonly anchorItemId?: string | undefined }) {
+    const current = this.#subscriptions.get(message.subscriptionId);
+    if (!current || current.request.generation !== message.generation) return;
+    current.anchorItemId = message.anchorItemId;
   }
 
   unsubscribe(address: Address) {
@@ -579,7 +588,7 @@ export class PersonalSyncSocket {
       request.scope,
       cursor,
       controller.signal,
-      request.anchorItemId,
+      current.anchorItemId,
       this.#selectedThreadId,
       current.pendingHead.toString(),
     );
