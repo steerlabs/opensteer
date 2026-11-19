@@ -50,6 +50,12 @@
       "path": "operation=inspect/definitions",
       "since": 14,
       "gate": "Sent only to a build whose requirements declare capabilities.sharedDefinitions, which no protocol 1 to 12 build declares, nor a protocol 13 build from a release before the capability."
+    },
+    {
+      "message": "request",
+      "path": "operation=migrate/originals",
+      "since": 14,
+      "gate": "Sent only by a deploy, to the build it has just compiled with the Host's own framework. A retained build of an earlier protocol is never migrated: a plugin built for another framework is rebuilt before anything of it runs."
     }
   ]
 }
