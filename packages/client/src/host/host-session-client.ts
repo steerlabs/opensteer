@@ -2032,7 +2032,11 @@ export class HttpHostClient {
           const read_: HostSnapshot["waitingRequests"][number][] = [];
           const revisions = new Set<string>();
           let before: string | null = null;
-          for (let pages = 0; pages < 20; pages++) {
+          // Read to the end, as the list is the person's whole set of open asks; the Host keeps no
+          // cap on it, so no page count is a bound it guarantees. Only a broken cursor stops the
+          // read, as a failure that retries, never as a shorter list.
+          const cursors = new Set<string>();
+          for (;;) {
             const page: {
               requests: HostSnapshot["waitingRequests"];
               window: import("@opensteer/protocol").DurableWindow;
@@ -2046,8 +2050,13 @@ export class HttpHostClient {
             if (!read.current()) return;
             read_.push(...page.requests);
             revisions.add(page.pendingRequestsRevision);
-            before = page.window.hasMore ? page.window.nextBefore : null;
-            if (!before) break;
+            if (!page.window.hasMore) break;
+            before = page.window.nextBefore ?? null;
+            if (!before || cursors.has(before))
+              throw Object.assign(new Error("The Host's waiting Requests list repeats a page."), {
+                code: "conflict",
+              });
+            cursors.add(before);
           }
           if (!read.current()) return;
           // Pages read at different revisions are not one list: read it whole again.
