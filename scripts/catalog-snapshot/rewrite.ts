@@ -3,6 +3,7 @@
  *
  *   {
  *     "version": 1,
+ *     "variables": { "contact": "value" },     // optional; `{{contact}}` in a rule's `to` is the value
  *     "names": ["word"],                       // every remaining case-insensitive occurrence must be
  *                                              // preserved below or inside base64 data
  *     "rules": [{ "id", "scope", "from", "to", "documents"?, "files"? }],
@@ -15,14 +16,21 @@
  *   which must stay equal.
  * - `manifest-key`: a top-level key of `package.json`, renamed in place.
  * - `markdown`: prose in `.md` files, outside fenced code blocks and inline code spans.
- * - `comments`: comments in JavaScript, TypeScript and Python files.
+ * - `comments`: comments in JavaScript and TypeScript files (found by the TypeScript compiler), and
+ *   full-line comments in Python files.
  * - `text`: the whole text of the named `files` in the named `documents`, for one-off edits.
  *
- * Text matching a `preserve` entry, a data URI or a long base64 run is never rewritten. After
- * rewriting, `rewriteProblems` checks that what must not change did not.
+ * Text matching a `preserve` entry, a data URI or a long base64 run is never rewritten, and SQL under
+ * a `migrations/` path is never touched. A `comments` or `markdown` rule that changes anything
+ * outside its scope (for scripts, the non-comment token stream) is a problem. After rewriting,
+ * `rewriteProblems` checks that what must not change did not.
  */
+import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { Schema } from "effect";
+import type * as TypeScript from "typescript-5";
+
+const ts = createRequire(import.meta.url)("typescript-5") as typeof TypeScript;
 
 export type RuleScope = "package" | "manifest-key" | "markdown" | "comments" | "text";
 export interface RewriteRule {
@@ -50,6 +58,7 @@ export interface RewriteRules {
 const strings = Schema.Array(Schema.NonEmptyString);
 const RulesFile = Schema.Struct({
   version: Schema.Literal(1),
+  variables: Schema.optionalKey(Schema.Record(Schema.String, Schema.NonEmptyString)),
   names: strings,
   rules: Schema.Array(
     Schema.Struct({
@@ -78,7 +87,7 @@ export function parseRules(text: string): RewriteRules {
     throw new Error(`Not a rewrite rule file: ${decoded.failure.message}`);
   const value = JSON.parse(text) as Record<string, unknown>;
   const allowed = {
-    top: ["version", "names", "rules", "preserve"],
+    top: ["version", "variables", "names", "rules", "preserve"],
     rule: ["id", "scope", "from", "to", "documents", "files"],
     preserve: ["text", "reason", "documents"],
   };
@@ -89,7 +98,19 @@ export function parseRules(text: string): RewriteRules {
     (value.rules as object[]).map((rule) => unknown(rule, allowed.rule)).find(Boolean) ??
     (value.preserve as object[]).map((item) => unknown(item, allowed.preserve)).find(Boolean);
   if (extra !== undefined) throw new Error(`Not a rewrite rule file: unknown key ${extra}`);
-  const rules = decoded.success;
+  const { variables = {}, ...rest } = decoded.success;
+  // A rule's `to` may name a variable, so one value (a contact address) is set in one place.
+  const rules: RewriteRules = {
+    ...rest,
+    rules: rest.rules.map((rule) => ({
+      ...rule,
+      to: rule.to.replace(/\{\{([A-Za-z0-9_-]+)\}\}/gu, (_, name: string) => {
+        if (!Object.hasOwn(variables, name))
+          throw new Error(`Rule ${rule.id} names the variable ${name}, which is not set`);
+        return variables[name]!;
+      }),
+    })),
+  };
   const ids = new Set<string>();
   for (const rule of rules.rules) {
     if (ids.has(rule.id)) throw new Error(`The rule id ${rule.id} is used twice`);
@@ -177,103 +198,50 @@ export function markdownProse(text: string): Range[] {
   return prose.filter(([from, to]) => to > from);
 }
 
-const regexBefore = new Set("(,=:[!&|?{};+-*%<>~^");
-const regexKeywords = new Set([
-  "return",
-  "typeof",
-  "case",
-  "do",
-  "else",
-  "in",
-  "of",
-  "new",
-  "delete",
-  "void",
-  "throw",
-  "yield",
-  "await",
-]);
-
-/** Comments in JavaScript or TypeScript, skipping strings, templates and regular expressions. */
-export function scriptComments(text: string): Range[] {
+/**
+ * A JavaScript or TypeScript file as the TypeScript compiler reads it: its comments, and its
+ * other tokens (kind and text) in order. The parser decides what a `/` or a `}` starts, so a
+ * regular expression or template is never mistaken for a comment or the other way round.
+ */
+export function scriptTokens(path: string, text: string) {
+  const kind = /\.[cm]?tsx$/u.test(path)
+    ? ts.ScriptKind.TSX
+    : /\.[cm]?jsx?$/u.test(path)
+      ? ts.ScriptKind.JSX
+      : ts.ScriptKind.TS;
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false, kind);
   const comments: Range[] = [];
-  const templates: number[] = [];
-  let depth = 0;
-  let previous = "";
-  let i = 0;
-  const template = () => {
-    // Inside a template literal: until its closing backtick or a `${`.
-    while (i < text.length) {
-      const c = text[i]!;
-      if (c === "\\") i += 2;
-      else if (c === "`") {
-        i++;
-        previous = "a";
-        return;
-      } else if (c === "$" && text[i + 1] === "{") {
-        templates.push(depth);
-        depth = 0;
-        i += 2;
-        previous = "{";
-        return;
-      } else i++;
-    }
+  const tokens: string[] = [];
+  const found = new Set<number>();
+  const visit = (node: TypeScript.Node) => {
+    // JSDoc nodes describe comment text; the comment itself is trivia, found below.
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode)
+      return;
+    const children = node.getChildren(file);
+    if (children.length > 0) return children.forEach(visit);
+    // A token: the trivia before it holds the comments, on its line and the lines before.
+    for (const range of [
+      ...(ts.getTrailingCommentRanges(text, node.pos) ?? []),
+      ...(ts.getLeadingCommentRanges(text, node.pos) ?? []),
+    ])
+      if (!found.has(range.pos)) {
+        found.add(range.pos);
+        comments.push([range.pos, range.end]);
+      }
+    if (node.end > node.pos)
+      tokens.push(`${node.kind}:${text.slice(node.getStart(file), node.end)}`);
   };
-  while (i < text.length) {
-    const c = text[i]!;
-    const next = text[i + 1];
-    if (c === "/" && next === "/") {
-      const end = text.indexOf("\n", i);
-      comments.push([i, end === -1 ? text.length : end]);
-      i = end === -1 ? text.length : end;
-    } else if (c === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
-      comments.push([i, end === -1 ? text.length : end + 2]);
-      i = end === -1 ? text.length : end + 2;
-    } else if (c === "'" || c === '"') {
-      i++;
-      while (i < text.length && text[i] !== c && text[i] !== "\n") i += text[i] === "\\" ? 2 : 1;
-      i++;
-      previous = "a";
-    } else if (c === "`") {
-      i++;
-      template();
-    } else if (c === "/" && (previous === "" || regexBefore.has(previous))) {
-      let j = i + 1;
-      let inClass = false;
-      while (j < text.length && text[j] !== "\n" && (inClass || text[j] !== "/")) {
-        if (text[j] === "\\") j++;
-        else if (text[j] === "[") inClass = true;
-        else if (text[j] === "]") inClass = false;
-        j++;
-      }
-      // An unterminated one was division after all.
-      i = text[j] === "/" ? j + 1 : i + 1;
-      previous = text[j] === "/" ? "a" : "/";
-    } else if (/[A-Za-z0-9_$]/u.test(c)) {
-      let j = i;
-      while (j < text.length && /[A-Za-z0-9_$]/u.test(text[j]!)) j++;
-      previous = regexKeywords.has(text.slice(i, j)) ? "(" : "a";
-      i = j;
-    } else {
-      if (c === "{") depth++;
-      else if (c === "}") {
-        if (depth === 0 && templates.length > 0) {
-          depth = templates.pop()!;
-          i++;
-          template();
-          continue;
-        }
-        depth--;
-      }
-      if (!/\s/u.test(c)) previous = c === ")" || c === "]" ? ")" : c;
-      i++;
-    }
-  }
-  return comments;
+  visit(file);
+  return { comments: comments.sort((a, b) => a[0] - b[0]), tokens };
 }
 
-/** Comments in Python, skipping single, double and triple-quoted strings. */
+/** Comments in JavaScript or TypeScript, found by the TypeScript compiler. */
+export const scriptComments = (text: string, path = "file.ts") => scriptTokens(path, text).comments;
+
+/**
+ * Full-line comments in Python: a `#` with only indentation before it on its line, outside
+ * strings. A comment after code on its line is left alone.
+ */
 export function pythonComments(text: string): Range[] {
   const comments: Range[] = [];
   let i = 0;
@@ -281,7 +249,9 @@ export function pythonComments(text: string): Range[] {
     const c = text[i]!;
     if (c === "#") {
       const end = text.indexOf("\n", i);
-      comments.push([i, end === -1 ? text.length : end]);
+      const lineStart = text.lastIndexOf("\n", i - 1) + 1;
+      if (/^[ \t]*$/u.test(text.slice(lineStart, i)))
+        comments.push([i, end === -1 ? text.length : end]);
       i = end === -1 ? text.length : end;
     } else if (c === "'" || c === '"') {
       const triple = text.startsWith(c.repeat(3), i);
@@ -297,7 +267,32 @@ export function pythonComments(text: string): Range[] {
 
 const scriptFile = /\.(?:[cm]?[jt]sx?)$/u;
 const commentRanges = (path: string, text: string): Range[] =>
-  scriptFile.test(path) ? scriptComments(text) : path.endsWith(".py") ? pythonComments(text) : [];
+  scriptFile.test(path)
+    ? scriptComments(text, path)
+    : path.endsWith(".py")
+      ? pythonComments(text)
+      : [];
+/** SQL migrations: the engine records each one's hash, so no rule may touch them. */
+const migration = /(?:^|\/)migrations\/.*\.sql$/iu;
+
+/** Text outside `ranges`, each range marked, for checking that only those ranges changed. */
+const outside = (text: string, ranges: readonly Range[]) => {
+  let rest = "";
+  let last = 0;
+  for (const [from, to] of ranges) {
+    rest += text.slice(last, from) + "\u0000";
+    last = to;
+  }
+  return rest + text.slice(last);
+};
+/** Whether a comments-only or prose-only edit left everything else exactly as it was. */
+function onlyScopeChanged(path: string, scope: "comments" | "markdown", was: string, now: string) {
+  if (scope === "markdown")
+    return outside(was, markdownProse(was)) === outside(now, markdownProse(now));
+  if (scriptFile.test(path))
+    return isDeepStrictEqual(scriptTokens(path, was).tokens, scriptTokens(path, now).tokens);
+  return outside(was, commentRanges(path, was)) === outside(now, commentRanges(path, now));
+}
 
 /* ---- Applying rules ---- */
 
@@ -380,16 +375,23 @@ export class Rewriter {
   document(id: string, source: Source): { source: Source; problems: string[] } {
     const problems: string[] = [];
     const files = source.files.map((file): SourceFile => {
-      if (!isText(file)) return file;
+      if (!isText(file) || migration.test(file.path)) return file;
       let content = file.content!;
       for (const rule of this.rules.rules) {
         if (rule.documents !== undefined && !rule.documents.includes(id)) continue;
+        const was = content;
         if (rule.scope === "text" && rule.files!.includes(file.path))
           content = this.#replace(content, rule, id, [[0, content.length]]);
         else if (rule.scope === "markdown" && /\.md$/iu.test(file.path))
           content = this.#replace(content, rule, id, markdownProse(content));
         else if (rule.scope === "comments")
           content = this.#replace(content, rule, id, commentRanges(file.path, content));
+        if (
+          (rule.scope === "markdown" || rule.scope === "comments") &&
+          content !== was &&
+          !onlyScopeChanged(file.path, rule.scope, was, content)
+        )
+          problems.push(`${file.path}: rule ${rule.id} changed text outside its scope`);
       }
       if (file.path === "package.json") {
         const edited = this.#manifest(id, content);
@@ -532,6 +534,7 @@ export function rewriteProblems(original: Source, output: Source): string[] {
     const was = before.content!;
     const now = after.content!;
     if (was === now) continue;
+    if (migration.test(before.path)) problems.push(`${before.path}: a migration changed`);
     if (!isDeepStrictEqual(encodedRuns(was), encodedRuns(now)))
       problems.push(`${before.path}: a data URI or base64 run changed`);
     if (before.path.endsWith(".json")) {

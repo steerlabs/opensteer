@@ -172,6 +172,46 @@ describe("catalog snapshot layout", () => {
   });
 });
 
+describe("icons", () => {
+  test("are svg, png or webp, and their bytes are that type", async () => {
+    const png = "\x89PNG\r\n\x1a\n....";
+    const webp = "RIFF\x10\x00\x00\x00WEBPVP8 ";
+    const svg = '\ufeff<?xml version="1.0"?>\n<!-- logo -->\n<!DOCTYPE svg>\n<svg xmlns="x"/>';
+    const icons: Record<string, string> = {
+      "icons/a.png": png,
+      "icons/b.webp": webp,
+      "icons/c.svg": svg,
+      "icons/d.gif": "GIF89a",
+      "icons/e.png": "<svg/>",
+      "icons/f.webp": "RIFF\x10\x00\x00\x00WAVE",
+      "icons/g.svg": "<html><svg/></html>",
+      "icons/h.svg": "<svgx/>",
+      // A doctype with an internal subset, as an Illustrator export writes it.
+      "icons/i.svg": '<!DOCTYPE svg PUBLIC "x" "y" [\r\n\t<!ENTITY a "b">\r\n]>\r\n<svg>',
+      "icons/j.svg": "<!DOCTYPE html [<!ENTITY a \"b\">]><html>",
+    };
+    const apps = Object.keys(icons).map((src, index) => entry(`app${index}`, [{ src }]));
+    const sources = Object.fromEntries(apps.map((app) => [app.id, source(`@acme.sh/${app.id}`)]));
+    const { failures } = await buildSnapshot({
+      feed: JSON.stringify({ apps, version: 1 }),
+      readSource: async (id) => JSON.stringify(sources[id]),
+      // Binary signatures byte for byte; SVG as UTF-8 text.
+      readIcon: async (path) =>
+        path.endsWith(".svg")
+          ? new TextEncoder().encode(icons[path])
+          : Uint8Array.from(icons[path]!, (char) => char.charCodeAt(0)),
+    });
+    expect(failures.map((failure) => failure.reason)).toEqual([
+      "icon icons/d.gif: icons are svg, png, webp, not .gif",
+      "icon icons/e.png: not a PNG image",
+      "icon icons/f.webp: not a WebP image",
+      "icon icons/g.svg: not an SVG image (no <svg> root)",
+      "icon icons/h.svg: not an SVG image (no <svg> root)",
+      "icon icons/j.svg: not an SVG image (no <svg> root)",
+    ]);
+  });
+});
+
 describe("snapshot relationships", () => {
   /** The snapshot's files with one changed and the manifest fixed up to match, as an attacker would. */
   async function tampered(change: (files: Map<string, Uint8Array>) => void) {
@@ -278,7 +318,8 @@ describe("scoped rewrite rules", () => {
       { text: "/acme\\/\\//u", reason: "regular expression" },
       { text: "`acme ${", reason: "template" },
       { text: "} acme`", reason: "template" },
-      { text: 'name = "acme"', reason: "string" },
+      // A Python comment after code is left alone, like the code.
+      { text: 'name = "acme"  # acme', reason: "string" },
     ],
   });
   const readme = [
@@ -330,7 +371,7 @@ describe("scoped rewrite rules", () => {
         'export const tools = ["Opensteer tools"];',
       ].join("\n"),
     );
-    expect(file(document, "helper.py")).toBe('# the engine\nname = "acme"  # the engine\n');
+    expect(file(document, "helper.py")).toBe('# the engine\nname = "acme"  # acme\n');
     // Every name left is accounted for: preserved, inside code the rules do not touch, or base64.
     const left = report.remaining.map((occurrence) => [
       occurrence.location.split("#")[1],
@@ -358,9 +399,11 @@ describe("scoped rewrite rules", () => {
       // A string in code no scope reaches, and no preserve entry keeps.
       rules: { ...scoped, preserve: scoped.preserve.filter((item) => item.reason !== "string") },
     });
-    expect(failures).toEqual([
-      { document: "apps/mail.json#helper.py:2", reason: expect.stringContaining("a name remains") },
-    ]);
+    const unaccounted = {
+      document: "apps/mail.json#helper.py:2",
+      reason: expect.stringContaining("a name remains"),
+    };
+    expect(failures).toEqual([unaccounted, unaccounted]);
   });
 
   test("refuses a package scope the engine's package-name contract rejects", async () => {
@@ -432,10 +475,64 @@ describe("scoped rewrite rules", () => {
       "/* e */",
       "// f",
     ]);
-    expect(comments("x = '''# not\n''' # yes\n\"#\" # also", pythonComments)).toEqual([
-      "# yes",
-      "# also",
+    // Python: full-line comments only, never a `#` in a string or after code.
+    expect(
+      comments("x = '''\n# not\n'''  # after code\n  # yes\n\"#\"\n# also", pythonComments),
+    ).toEqual(["# yes", "# also"]);
+    // A regular expression after an `if` condition is code, and so is `//` inside it.
+    expect(
+      comments("if (ok) /[/*] acme */u.test(s); // acme\nconst t = `${a}//`; /* b */"),
+    ).toEqual(["// acme", "/* b */"]);
+  });
+
+  test("leaves code exactly as it was under a comments or prose rule, and never touches a migration", async () => {
+    const regex = "if (ok) /[/*] acme */u.test(s); // acme\n";
+    const { files, failures } = await build({
+      apps: [entry("mail")],
+      sources: {
+        mail: source("@acme.sh/mail", [
+          { path: "check.ts", content: regex },
+          { path: "migrations/0001_init.sql", content: "-- acme\nselect 1;\n" },
+        ]),
+      },
+      rules: rules({
+        rules: [
+          { id: "c", scope: "comments", from: "acme", to: "engine" },
+          {
+            id: "sql",
+            scope: "text",
+            from: "acme",
+            to: "engine",
+            documents: ["mail"],
+            files: ["migrations/0001_init.sql"],
+          },
+        ],
+      }),
+    });
+    expect(failures).toEqual([]);
+    const document = documentOf(files, "mail");
+    expect(file(document, "check.ts")).toBe("if (ok) /[/*] acme */u.test(s); // engine\n");
+    expect(file(document, "migrations/0001_init.sql")).toBe("-- acme\nselect 1;\n");
+
+    // A comment rule whose replacement ends the comment early changes the code, and fails.
+    const broken = await build({
+      apps: [entry("mail")],
+      sources: { mail: source("@acme.sh/mail", [{ path: "a.ts", content: "/* acme */ x;" }]) },
+      rules: rules({ rules: [{ id: "c", scope: "comments", from: "acme", to: "*/ y; /*" }] }),
+    });
+    expect(broken.failures).toEqual([
+      { document: "apps/mail.json", reason: "a.ts: rule c changed text outside its scope" },
     ]);
+    const original: Source = {
+      package: "p",
+      files: [{ path: "db/migrations/1.sql", content: "select 1;" }],
+    };
+    expect(
+      rewriteProblems(original, {
+        ...original,
+        files: [{ path: "db/migrations/1.sql", content: "select 2;" }],
+      }),
+    ).toEqual(["db/migrations/1.sql: a migration changed"]);
   });
 
   test("takes rules as JSON data with known keys only", () => {

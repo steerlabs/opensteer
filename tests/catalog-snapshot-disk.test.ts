@@ -5,20 +5,37 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { buildSnapshot, serialize, sha256 } from "../scripts/catalog-snapshot/core.ts";
 import {
+  buildSnapshot,
+  checkLive,
+  previousChoice,
+  publishedManifest,
+  releaseIntervalSeconds,
+  serialize,
+  sha256,
+} from "../scripts/catalog-snapshot/core.ts";
+import { liveManifest } from "../scripts/catalog-snapshot/served.ts";
+import { takeSnapshot } from "../scripts/catalog-snapshot/take.ts";
+import {
+  asideOf,
   readTree,
+  recoverBeside,
+  refuseLinks,
   replaceDirectory,
   separatePlaces,
   stageRelease,
   stagingBeside,
+  writeFileAtomic,
   writeTree,
 } from "../scripts/catalog-snapshot/disk.ts";
 
@@ -30,6 +47,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+const published = "2026-11-18T00:00:00.000Z";
 const documentFor = (id: string, note = "") => ({
   package: `@acme.sh/${id}`,
   files: [
@@ -106,10 +124,163 @@ describe("where the snapshot tool writes", () => {
   });
 });
 
+describe("temporary files and the swap", () => {
+  test("never writes through a symlink at a temporary path or on the way to the file", async () => {
+    const victim = join(root, "repository-file");
+    await writeFile(victim, "keep");
+    const target = join(root, "out.rewrites.json");
+    // The adjacent `.part` name an earlier version wrote through.
+    await symlink(victim, `${target}.part`);
+    await writeFileAtomic(target, new TextEncoder().encode("report"));
+    expect(await readFile(target, "utf8")).toBe("report");
+    expect(await readFile(victim, "utf8")).toBe("keep");
+    // A symlink at the target itself is replaced, not followed.
+    await rm(target);
+    await symlink(victim, target);
+    await writeFileAtomic(target, new TextEncoder().encode("again"));
+    expect(await readFile(victim, "utf8")).toBe("keep");
+    // A directory reached through a symlink is refused.
+    await mkdir(join(root, "real"));
+    await symlink(join(root, "real"), join(root, "cache"));
+    await expect(
+      writeFileAtomic(join(root, "cache", "apps.json"), new TextEncoder().encode("x")),
+    ).rejects.toThrow("through a symlink");
+    expect(await readdir(join(root, "real"))).toEqual([]);
+  });
+
+  test("refuses a cache that holds a symlink", async () => {
+    await mkdir(join(root, "cache", "apps"), { recursive: true });
+    await writeFile(join(root, "cache", "index.json"), "{}");
+    await refuseLinks(join(root, "cache"));
+    await symlink(join(root, "elsewhere"), join(root, "cache", "apps", "mail.json"));
+    await expect(refuseLinks(join(root, "cache"))).rejects.toThrow(/symlinks are refused.*mail/u);
+  });
+
+  test("puts back a snapshot left aside by a stopped swap and clears stale staging", async () => {
+    const target = await snapshotAt(join(root, "snapshot"), "old");
+    const before = await readFile(join(target, "manifest.json"));
+    // Stopped between the two renames: the earlier snapshot aside, the new one still staged.
+    const staged = await stagingBeside(target);
+    await writeTree(staged, await snapshotFiles("new"));
+    await rename(target, asideOf(target));
+    expect(await recoverBeside(target)).toEqual([
+      expect.stringContaining("the earlier snapshot was put back"),
+      expect.stringContaining("left by an interrupted run"),
+    ]);
+    expect(await readFile(join(target, "manifest.json"))).toEqual(before);
+    expect(await readdir(root)).toEqual(["snapshot"]);
+    // Stopped after both renames, before the earlier one was removed.
+    await mkdir(asideOf(target));
+    expect(await recoverBeside(target)).toEqual([expect.stringContaining("swap that completed")]);
+    expect(await readdir(root)).toEqual(["snapshot"]);
+    // A missing parent is created.
+    expect(await recoverBeside(join(root, "a", "b", "snapshot"))).toEqual([]);
+    expect(await readdir(join(root, "a"))).toEqual(["b"]);
+    await expect(recoverBeside("/")).rejects.toThrow("is a mount root");
+  });
+});
+
+describe("the snapshot tool", () => {
+  /** Rebuild from a cache, as `--offline`; returns what it said. */
+  const run = async (options: { out: string; cache: string; rules?: string }) => {
+    const lines: string[] = [];
+    await takeSnapshot({ ...options, offline: true }, (line) => lines.push(line));
+    return lines.join("\n");
+  };
+  async function cache(note = "") {
+    const path = join(root, "cache");
+    await rm(path, { recursive: true, force: true });
+    await mkdir(join(path, "apps"), { recursive: true });
+    await mkdir(join(path, "icons"));
+    const apps = ["mail", "chat"].map((id) => ({
+      id,
+      package: `@acme.sh/${id}`,
+      name: id,
+      description: id,
+      auth: [],
+      icons: id === "mail" ? [{ src: "icons/mail.svg" }] : [],
+      source: `apps/${id}.json`,
+    }));
+    await writeFile(join(path, "index.json"), JSON.stringify({ version: 1, apps }));
+    for (const id of ["mail", "chat"])
+      await writeFile(join(path, "apps", `${id}.json`), JSON.stringify(documentFor(id, note)));
+    await writeFile(join(path, "icons", "mail.svg"), "<svg/>");
+    return path;
+  }
+  const rulesFile = async (names: string[]) => {
+    const path = join(root, "rules.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        names,
+        rules: [{ id: "c", scope: "comments", from: "old", to: "new" }],
+        preserve: [],
+      }),
+    );
+    return path;
+  };
+
+  test("writes its report beside the snapshot it describes, and never through a link", async () => {
+    const out = join(root, "out");
+    const victim = join(root, "repository-file");
+    await writeFile(victim, "keep");
+    await symlink(victim, `${out}.rewrites.json.part`);
+    await run({ out, cache: await cache("old"), rules: await rulesFile([]) });
+    expect(await readFile(victim, "utf8")).toBe("keep");
+    const manifest = await readFile(join(out, "manifest.json"));
+    const report = JSON.parse(await readFile(`${out}.rewrites.json`, "utf8"));
+    expect(report.manifestSha256).toBe(sha256(manifest));
+    expect(report.rules).toEqual([{ id: "c", scope: "comments", count: 2 }]);
+
+    // A build that fails leaves the snapshot and its report as they were.
+    await expect(
+      run({ out, cache: join(root, "cache"), rules: await rulesFile(["new"]) }),
+    ).rejects.toThrow("Not usable");
+    expect(await readFile(join(out, "manifest.json"))).toEqual(manifest);
+    expect(JSON.parse(await readFile(`${out}.rewrites.json`, "utf8")).manifestSha256).toBe(
+      sha256(manifest),
+    );
+    expect(await readFile(`${out}.rewrites.failed.json`, "utf8")).toContain('"remaining"');
+
+    // A report that describes another build is removed; a build without rules leaves none.
+    await writeFile(`${out}.rewrites.json`, JSON.stringify({ manifestSha256: "0".repeat(64) }));
+    const output = await run({ out, cache: await cache("other") });
+    expect(output).toContain("did not describe the snapshot");
+    expect((await readdir(root)).sort()).toEqual(
+      ["cache", "out", "out.rewrites.json.part", "repository-file", "rules.json"].sort(),
+    );
+  });
+
+  test("recovers from a stop between the swap's renames", async () => {
+    const out = join(root, "nested", "out");
+    await run({ out, cache: await cache("old") });
+    const manifest = await readFile(join(out, "manifest.json"));
+    await rename(out, asideOf(out));
+    await mkdir(join(root, "nested", ".out.staging-stale"));
+    const output = await run({ out, cache: await cache("new") });
+    expect(output).toContain("the earlier snapshot was put back");
+    expect(output).toContain(".out.staging-stale, left by an interrupted run");
+    expect(await readFile(join(out, "manifest.json"))).not.toEqual(manifest);
+    expect(await readdir(join(root, "nested"))).toEqual(["out"]);
+  });
+
+  test("refuses a cache holding a symlink", async () => {
+    const path = await cache();
+    await writeFile(join(root, "outside.json"), JSON.stringify(documentFor("mail")));
+    await rm(join(path, "apps", "mail.json"));
+    await symlink(join(root, "outside.json"), join(path, "apps", "mail.json"));
+    await expect(run({ out: join(root, "out"), cache: path })).rejects.toThrow(
+      /symlinks are refused/u,
+    );
+  });
+});
+
 describe("assembling a release", () => {
   const stage = async (snapshot: string, previous: string[] = []) => {
     const staging = await mkdtemp(join(root, "staging-"));
-    return { staging, result: await stageRelease({ snapshot, previous, staging, site: "s" }) };
+    const result = await stageRelease({ snapshot, previous, staging, site: "s", published });
+    return { staging, result };
   };
 
   test("deploys only checked files, with its configuration outside the snapshot", async () => {
@@ -136,6 +307,11 @@ describe("assembling a release", () => {
       "/icons/*": "public, max-age=31536000, immutable",
     });
     expect(result.retained).toBe(0);
+    // The release's manifest is the snapshot's, recording when it was published.
+    const manifest = await readFile(join(snapshot, "manifest.json"));
+    expect(await readFile(join(staging, "public", "manifest.json"))).toEqual(
+      Buffer.from(publishedManifest(manifest, published)),
+    );
     // Nothing was written into the snapshot.
     expect([...(await readTree(snapshot)).keys()].sort()).toEqual(listing.sort());
   });
@@ -195,25 +371,83 @@ describe("assembling a release", () => {
     ).rejects.toThrow("overlaps --dir");
   });
 
-  test("a dry run needs no credentials and writes nothing into the snapshot", async () => {
-    const snapshot = await snapshotAt(join(root, "snapshot"));
-    const before = [...(await readTree(snapshot)).keys()].sort();
+  const publish = (...args: string[]) => {
     const repository = join(import.meta.dirname, "..");
     const { GOOGLE_APPLICATION_CREDENTIALS: _key, FIREBASE_TOKEN: _token, ...env } = process.env;
-    const output = execFileSync(
+    return execFileSync(
       join(repository, "node_modules", ".bin", "tsx"),
-      [
-        join(repository, "scripts", "catalog-snapshot", "publish.ts"),
-        "--dir",
-        snapshot,
-        "--site",
-        "s",
-        "--first",
-        "--dry-run",
-      ],
-      { cwd: root, encoding: "utf8", env: { ...env, HOME: root } },
+      [join(repository, "scripts", "catalog-snapshot", "publish.ts"), ...args],
+      { cwd: root, encoding: "utf8", env: { ...env, HOME: root }, stdio: "pipe" },
     );
+  };
+
+  test("a dry run needs no credentials, reads no site and writes nothing into the snapshot", async () => {
+    const snapshot = await snapshotAt(join(root, "snapshot"));
+    const before = [...(await readTree(snapshot)).keys()].sort();
+    const output = publish("--dir", snapshot, "--site", "s", "--first", "--dry-run");
+    expect(output).toContain("was not read");
     expect(output).toContain("Dry run: nothing was uploaded.");
     expect([...(await readTree(snapshot)).keys()].sort()).toEqual(before);
+  });
+
+  test("takes --previous or --first, and refuses a blank --previous", () => {
+    expect(previousChoice("/s", false)).toBe("/s");
+    expect(previousChoice(undefined, true)).toBeUndefined();
+    for (const [previous, first] of [
+      ["", false],
+      [" ", false],
+      [undefined, false],
+      ["/s", true],
+    ] as const)
+      expect(() => previousChoice(previous, first)).toThrow(/blank|Pass --previous/u);
+  });
+});
+
+describe("publishing over the live release", () => {
+  const now = new Date("2026-11-18T12:00:00.000Z");
+  const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000).toISOString();
+
+  test("requires --previous to be exactly the live release, published long enough ago", async () => {
+    const previous = (await snapshotFiles("old")).get("manifest.json")!;
+    const other = (await snapshotFiles("other")).get("manifest.json")!;
+    const live = publishedManifest(previous, ago(releaseIntervalSeconds + 1));
+    const check = (input: Partial<Parameters<typeof checkLive>[0]>) =>
+      checkLive({ live, previous, now, ignoreInterval: false, ...input });
+    expect(check({})).toContain("the live release is --previous");
+    // A stale --previous: another snapshot, or the live one with any byte changed.
+    expect(() => check({ previous: other })).toThrow("--previous is not the live release");
+    const edited = new Uint8Array(live);
+    edited[edited.length - 1] = 0x20;
+    expect(() => check({ live: edited })).toThrow("--previous is not the live release");
+    expect(() => check({ live: previous })).toThrow("--previous is not the live release");
+    // Too soon after the live release, unless asked to.
+    const recent = publishedManifest(previous, ago(60));
+    expect(() => check({ live: recent })).toThrow(/published 1 minutes ago; wait until/u);
+    expect(check({ live: recent, ignoreInterval: true })).toContain("the live release is");
+    // --first only for a site that serves no manifest.
+    expect(() => check({ previous: undefined })).toThrow("--first, but the site already serves");
+    expect(check({ live: undefined, previous: undefined })).toBe("the site serves no manifest yet");
+    expect(() => check({ live: undefined })).toThrow("the site serves no manifest: pass --first");
+  });
+
+  test("reads the live manifest without following a redirect", async () => {
+    const answers: Record<string, [number, string]> = {
+      "/a/manifest.json": [200, "{}"],
+      "/b/manifest.json": [404, ""],
+      "/c/manifest.json": [302, ""],
+    };
+    const server = createServer((request, response) => {
+      const [status, body] = answers[request.url!] ?? [500, ""];
+      response.writeHead(status, status === 302 ? { location: "/a/manifest.json" } : {}).end(body);
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      expect(new TextDecoder().decode(await liveManifest(`${base}/a/manifest.json`))).toBe("{}");
+      expect(await liveManifest(`${base}/b/manifest.json`)).toBeUndefined();
+      await expect(liveManifest(`${base}/c/manifest.json`)).rejects.toThrow("HTTP 302");
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
   });
 });

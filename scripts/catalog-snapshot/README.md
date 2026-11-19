@@ -21,11 +21,18 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
   feed changes, start a new one.
 - `--offline` rebuilds from the cache alone, for example to apply new rules.
 - `--out`, the cache and the staging directory are resolved through symlinks and must lie outside
-  the repository and apart from each other.
+  the repository and apart from each other. A cache that holds a symlink is refused. Every file the
+  tool writes outside the staging directory (cache files, the rewrite report) goes first to a new,
+  uniquely named file created exclusively, never through an existing entry, in a directory that is
+  its own real path, and is then renamed into place.
+- `<out>`'s parent is created if missing; a mount root is refused, since it cannot be renamed.
 - The build is written to a new, uniquely named directory beside `<out>`, read back and checked as
-  `catalog:publish` checks it, and only then swapped in. An earlier snapshot is moved aside and
-  removed only once the new one is in place; a build with any problem writes nothing to `<out>`.
-  Two builds from the same cache are byte-identical.
+  `catalog:publish` checks it, and only then swapped in with two renames: an earlier snapshot to
+  `.<out>.previous`, then the build to `<out>`. The earlier one is removed once the new one is in
+  place; a build with any problem writes nothing to `<out>`. A run stopped between the renames is
+  put right by the next run: with `<out>` missing and `.<out>.previous` present, the earlier
+  snapshot is put back, and the run says so. Staging directories left by a stopped run are
+  removed. Two builds from the same cache are byte-identical.
 - `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
 
 ### Layout
@@ -42,40 +49,55 @@ and icons are addressed by the SHA-256 of their bytes, so a path never changes m
 | `icons/<sha256>.<ext>`    | The icons the feed refers to; entries name these paths.     | `public, max-age=31536000, immutable`  |
 | `manifest.json`           | Hash and size of every other file, counts, the rules' hash. | `public, max-age=300, must-revalidate` |
 
-`catalog:publish` writes these lifetimes into the Hosting configuration it deploys with.
+`catalog:publish` writes these lifetimes into the Hosting configuration it deploys with, and
+`catalog:verify` expects them; both read them from `cacheHeaders` in `core.ts`. The manifest a
+release serves also records `published`, the time its publish started; a snapshot's own manifest
+never has it.
 
 Every document is validated with the engine's `CatalogFeed` and `CatalogFeedSource` contracts, the
 check the client makes when it prepares an install (`package.json` names the document's package),
 the index entry's `package` matching the document's, and the engine's `PackageName` contract. An
 id the source feed lists twice with identical entries is listed once (`duplicateIds` in the
 manifest); an id listed twice with different entries fails the build. An icon outside the feed
-fails it too. JSON is written with sorted keys and two-space indentation.
+fails it too, and so does one that is not SVG, PNG or WebP, or whose bytes are not that type (the
+PNG or WebP signature, or an `<svg>` root after any XML declaration, comments and doctype). JSON is
+written with sorted keys and two-space indentation.
 
 ### Rewriting
 
 `--rules <rules.json>` takes a JSON rule file: data, never a module. Each rule names where it
 applies, and everything else is left as it is:
 
-| `scope`        | Where `from` becomes `to`                                                          |
-| -------------- | ---------------------------------------------------------------------------------- |
-| `package`      | The index entry's `package`, the document's `package` and `package.json`'s `name`. |
-| `manifest-key` | A top-level key of `package.json`, renamed in place.                               |
-| `markdown`     | Prose in `.md` files: outside fenced code blocks and inline code spans.            |
-| `comments`     | Comments in JavaScript, TypeScript and Python files.                               |
-| `text`         | The whole text of the `files` named, in the `documents` named, for one-off edits.  |
+| `scope`        | Where `from` becomes `to`                                                           |
+| -------------- | ----------------------------------------------------------------------------------- |
+| `package`      | The index entry's `package`, the document's `package` and `package.json`'s `name`.  |
+| `manifest-key` | A top-level key of `package.json`, renamed in place.                                |
+| `markdown`     | Prose in `.md` files: outside fenced code blocks and inline code spans.             |
+| `comments`     | Comments in JavaScript and TypeScript (as the TypeScript compiler parses the file), |
+|                | and full-line `#` comments in Python files.                                         |
+| `text`         | The whole text of the `files` named, in the `documents` named, for one-off edits.   |
 
 Any rule may be limited to `documents` (entry ids). `preserve` lists literals that are never
 rewritten wherever they appear, each with its reason (a third-party literal, an identifier a
 provider receives, an ordinary English word); data URIs and long base64 runs are never rewritten
 either. `names` lists words to account for: after rewriting, every remaining case-insensitive
-occurrence must lie inside a preserved literal or base64 data, or the build fails.
+occurrence must lie inside a preserved literal or base64 data, or the build fails. `variables`
+sets values a rule's `to` names as `{{name}}`, so one value (such as a contact address) is set in
+one place. SQL under any `migrations/` path is never rewritten by any rule: the engine records
+each migration's hash.
 
-After rewriting, the build also fails if the file list, a non-text file, a data URI or base64 run,
-or a relative import changed; if an import that named a file in its document no longer does; if a
+After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
+its scope (for JavaScript and TypeScript, the file's token stream apart from comments must be
+identical); if the file list, a non-text file, a data URI or base64 run, a migration, or a relative
+import changed; if an import that named a file in its document no longer does; if a
 JSON file that parsed no longer does; or if any package name breaks the contract.
 
 The detailed report (counts per rule, and every remaining occurrence with its location and
-reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. The published manifest
+reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. It names the SHA-256
+of the manifest it describes and is written right after its snapshot is swapped in, the earlier
+report removed first; a run that finds a report not describing the snapshot at `<out>` removes it
+and says so. A build that fails writes its report to `<out>.rewrites.failed.json` instead and
+leaves `<out>` and its report as they were. The published manifest
 records only the rule file's SHA-256, never its strings. The proposed rule set is kept outside this
 repository, with the rest of the catalog working files.
 
@@ -83,17 +105,23 @@ repository, with the rest of the catalog working files.
 
 ```sh
 pnpm catalog:verify --feed https://catalog.opensteer.com/index.json \
-  --manifest ~/catalog/2026-11-18/manifest.json [--entry gmail --entry resend]
+  --manifest ~/catalog/2026-11-25/manifest.json [--previous ~/catalog/2026-11-18/manifest.json] \
+  [--entry gmail --entry resend]
 ```
 
-No request it makes follows a redirect; a redirect is a failure. The served `index.json` must have
-the manifest's exact size and hash, and the served `manifest.json` must be the same bytes. Every
-file the manifest lists, every document at both paths and every icon, is fetched (eight at a time,
-`--concurrency`) and must match its hash and size, and the served set must pass the checks
-`catalog:publish` applies. Then the engine's catalog client lists the feed (the count must be the
-manifest's) and prepares the named entries (by default the first OAuth and the first key-based
-one), each of which must be the document the index names. Any request or listed icon that leaves
-the feed's host fails the check.
+No request it makes follows a redirect; a redirect is a failure. Every path the manifest lists
+must be one the layout allows before any is requested. Every index response during the run, its
+own and those the catalog client makes, must have the manifest's exact size and hash, and the
+served `manifest.json` must be the snapshot's manifest as published (the same bytes plus
+`published`). Every file the manifest lists, every document at both paths and every icon, is
+fetched (eight at a time, `--concurrency`) and must match its hash and size, and the served set
+must pass the checks `catalog:publish` applies. Every response must carry the `Cache-Control` its
+kind of path is deployed with. With `--previous`, the previous snapshot's documents and icons must
+still be served with their hashes. Responses are hashed as they arrive; only the index and one
+document or icon per request in flight are held. Then the engine's catalog client lists the feed
+(the count must be the manifest's) and prepares the named entries (by default the first OAuth and
+the first key-based one), each of which must be the document the index names. Any request or
+listed icon that leaves the feed's host fails the check.
 
 ## Publish
 
@@ -106,8 +134,12 @@ pnpm catalog:publish --dir ~/catalog/2026-11-25 --previous ~/catalog/2026-11-18 
   --site opensteer-catalog
 ```
 
-`--previous` is the snapshot published last; `--first` replaces it for the first release. The
-snapshot and the previous one are read as regular files only (a symlink or any other entry is
+`--previous` is the snapshot the site serves now; `--first` replaces it for the first release. The
+publisher reads the live `manifest.json` (from `https://<site>.web.app/`, or `--site-url`; no
+redirect is followed) and refuses to deploy unless the snapshot given as `--previous` is exactly
+the live one: the live manifest must be that snapshot's manifest, byte for byte, plus its
+`published` time. A blank `--previous` is refused, and so is `--first` once the site serves a
+manifest. The snapshot and the previous one are read as regular files only (a symlink or any other entry is
 refused) and must each pass every check: each file listed in its manifest with its hash and size
 and nothing else present; every path one the layout allows; each content-addressed file named by
 its own hash; every index entry's document present, hashed as the entry says, valid, and the same
@@ -118,19 +150,29 @@ snapshot, plus the previous snapshot's content-addressed documents and icons, wi
 configuration (site, the cache lifetimes above, no ignore patterns) written beside them. The
 deploy runs there; nothing is written into a snapshot, and the directory is removed afterwards.
 
-Retention: a release holds two snapshots' content-addressed files, its own and the previous one's,
-so an install that read the previous index finds its document. Older ones are pruned by the deploy
-itself, because a Hosting release is its complete file set. The index's lifetime is five minutes,
-so leave at least that long between releases.
+Retention: a release keeps its own content-addressed files and the live release's, so an install
+that read the live index finds its document after the switch. Older ones are pruned by the deploy
+itself, because a Hosting release is its complete file set. An index stays usable for its cache
+lifetime (`max-age=300`, five minutes) plus the time an install that read it is still running, so
+two publishes must be further apart than both: the publisher refuses a publish less than
+65 minutes (`releaseIntervalSeconds`: the index lifetime plus an hour for an install in flight and
+the upload itself) after the live release's `published` time, unless `--ignore-interval` is given.
+`published` is taken when the publish starts, before the upload, which the hour also covers.
 
-`--dry-run` stops before the deploy and needs no credentials. Deploying needs a dedicated identity
+`--dry-run` stops before the deploy, needs no credentials and does not read the live site, so it
+does not check `--previous` or `--first` against it; it says so. Deploying needs a dedicated identity
 with Firebase Hosting permissions on the project (for example the Firebase Hosting Admin role),
 signed in as Application Default Credentials or with `firebase login`. The deploy, with a pinned `firebase-tools`,
 uploads a new version and switches the whole site to it in one release, clearing the CDN.
 
 Rollback: the pinned CLI has no rollback command. In the Firebase console, open Hosting, the site,
 then its release history, and choose Roll back on the release to return to. That release becomes
-current again with its complete file set.
+current again with its complete file set: its own documents and those of the release before it,
+not those of the release rolled back from, so an install in flight from the rolled-back index can
+fail. The live manifest is then the older release's, with its older `published` time, so the next
+publish passes that release's snapshot as `--previous`. The publisher cannot tell when a rollback
+happened: wait 65 minutes after rolling back before publishing again, as the interval would
+require.
 
 ## Hosting
 

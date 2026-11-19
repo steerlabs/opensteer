@@ -2,6 +2,7 @@
  * The disk side of the catalog tools: where they may write, reading a directory as plain files
  * only, replacing a snapshot only once its replacement is complete, and assembling a release.
  */
+import { randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -11,10 +12,11 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { snapshotPathKind, snapshotProblems } from "./core.ts";
+import { cacheHeaders, publishedManifest, snapshotPathKind, snapshotProblems } from "./core.ts";
 
 /** A path with every existing part resolved through symlinks, as a write to it would land. */
 export async function realTarget(path: string): Promise<string> {
@@ -56,6 +58,45 @@ export async function separatePlaces<K extends string>(
   return resolved;
 }
 
+/**
+ * Write `path` whole: the bytes go to a new file with a unique name beside it, created
+ * exclusively (an existing entry, a symlink included, fails it and is never followed), which is
+ * then renamed over `path`. The directory is created if missing and must be its own real path, so
+ * nothing on the way to it is a symlink.
+ */
+export async function writeFileAtomic(path: string, bytes: Uint8Array) {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  if ((await realpath(directory)) !== directory)
+    throw new Error(`${directory} is reached through a symlink; nothing is written there`);
+  const part = join(directory, `.${basename(path)}.${randomUUID()}.part`);
+  try {
+    await writeFile(part, bytes, { flag: "wx" });
+    await rename(part, path);
+  } catch (error) {
+    await rm(part, { force: true });
+    throw error;
+  }
+}
+
+/** Refuse a directory that holds a symlink or anything else that is not a file or directory. */
+export async function refuseLinks(directory: string) {
+  const refused: string[] = [];
+  const walk = async (folder: string) => {
+    for (const entry of await readdir(folder, { withFileTypes: true })) {
+      const path = join(folder, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (!entry.isFile()) refused.push(relative(directory, path));
+    }
+  };
+  if (!(await lstat(directory)).isDirectory()) throw new Error(`${directory} is not a directory`);
+  await walk(directory);
+  if (refused.length > 0)
+    throw new Error(
+      `${directory} holds entries that are not regular files (symlinks are refused): ${refused.sort().join(", ")}`,
+    );
+}
+
 /** Every file under a directory, by relative path. A symlink or any non-regular entry is refused. */
 export async function readTree(directory: string): Promise<Map<string, Uint8Array>> {
   const files = new Map<string, Uint8Array>();
@@ -93,36 +134,78 @@ export async function writeTree(directory: string, files: ReadonlyMap<string, Ui
   }
 }
 
+const stagingPrefix = (target: string) => `.${basename(target)}.staging-`;
+/** Where an earlier `target` waits while its replacement is renamed into place. */
+export const asideOf = (target: string) => join(dirname(target), `.${basename(target)}.previous`);
+
 /** A new, empty directory of its own beside `target`, for building its replacement. */
 export const stagingBeside = (target: string) =>
-  mkdtemp(join(dirname(target), `.${basename(target)}.staging-`));
+  mkdtemp(join(dirname(target), stagingPrefix(target)));
 
 /**
- * Put `staged` at `target`. An earlier `target` is moved aside first and removed only once the
- * replacement is in place; if that fails, the earlier one is moved back.
+ * Before writing `target`: create its parent, refuse a mount root (it cannot be renamed), and
+ * finish an interrupted replacement. When `target` is missing and an earlier one waits aside, the
+ * swap stopped between its two renames, so the earlier one is put back; one left aside beside a
+ * present `target` is the end of a swap that completed. Staging directories from a stopped run are
+ * removed. Returns what it did, to say.
+ */
+export async function recoverBeside(target: string): Promise<string[]> {
+  const done: string[] = [];
+  const parent = dirname(target);
+  if (parent === target) throw new Error(`${target} is a mount root; choose a directory inside it`);
+  await mkdir(parent, { recursive: true });
+  const present = await lstat(target).then(
+    (entry) => entry,
+    () => undefined,
+  );
+  if (present !== undefined && present.dev !== (await stat(parent)).dev)
+    throw new Error(`${target} is a mount root; choose a directory inside it`);
+  const aside = asideOf(target);
+  if (
+    await lstat(aside).then(
+      () => true,
+      () => false,
+    )
+  ) {
+    if (present === undefined) {
+      await rename(aside, target);
+      done.push(
+        `${target} was missing after an interrupted swap; the earlier snapshot was put back`,
+      );
+    } else {
+      await rm(aside, { recursive: true, force: true });
+      done.push(`removed ${aside}, left by a swap that completed`);
+    }
+  }
+  for (const entry of await readdir(parent))
+    if (entry.startsWith(stagingPrefix(target))) {
+      await rm(join(parent, entry), { recursive: true, force: true });
+      done.push(`removed ${join(parent, entry)}, left by an interrupted run`);
+    }
+  return done;
+}
+
+/**
+ * Put `staged` at `target` with two renames: an earlier `target` aside, then `staged` into place.
+ * If the second fails, the earlier one is moved back; a run stopped between them is put right by
+ * `recoverBeside`. The earlier one is removed once the replacement is in place.
  */
 export async function replaceDirectory(target: string, staged: string) {
-  let aside: string | undefined;
+  const aside = asideOf(target);
+  let moved = false;
   try {
-    await lstat(target);
-    aside = join(
-      await mkdtemp(join(dirname(target), `.${basename(target)}.previous-`)),
-      "snapshot",
-    );
     await rename(target, aside);
+    moved = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   try {
     await rename(staged, target);
   } catch (error) {
-    if (aside !== undefined) {
-      await rename(aside, target);
-      await rm(dirname(aside), { recursive: true, force: true });
-    }
+    if (moved) await rename(aside, target);
     throw error;
   }
-  if (aside !== undefined) await rm(dirname(aside), { recursive: true, force: true });
+  if (moved) await rm(aside, { recursive: true, force: true });
 }
 
 /** Read and check one snapshot directory, or throw with every problem. */
@@ -136,31 +219,23 @@ export async function readSnapshot(directory: string) {
   return files;
 }
 
-/** Cache lifetimes per path, as the Hosting configuration states them. */
-export const cacheHeaders = [
-  // The feed and its manifest change with every release: short, and revalidated.
-  ["/index.json", "public, max-age=300, must-revalidate"],
-  ["/manifest.json", "public, max-age=300, must-revalidate"],
-  // Today's client reads `apps/<id>.json`, which changes with a release like the index.
-  ["/apps/*.json", "public, max-age=300, must-revalidate"],
-  // Content-addressed: a path's bytes never change.
-  ["/apps/*/*.json", "public, max-age=31536000, immutable"],
-  ["/icons/*", "public, max-age=31536000, immutable"],
-] as const;
-
 /**
- * Assemble a release in `staging`: the snapshot's files under `public/`, plus the
- * content-addressed documents and icons of each earlier snapshot, so an index cached from the
- * release before still resolves; then the Hosting configuration beside `public/`, never in a
- * snapshot. Every source is read as regular files only and checked against its own manifest.
+ * Assemble a release in `staging`: the snapshot's files under `public/`, its manifest recording
+ * the publish time, plus the content-addressed documents and icons of the live release's
+ * snapshot, so an index cached from it still resolves; then the Hosting configuration beside
+ * `public/`, never in a snapshot. Every source is read as regular files only and checked against
+ * its own manifest.
  */
 export async function stageRelease(input: {
   readonly snapshot: string;
   readonly previous: readonly string[];
   readonly staging: string;
   readonly site: string;
+  /** When this release is published, as an ISO time. */
+  readonly published: string;
 }) {
   const release = new Map(await readSnapshot(input.snapshot));
+  release.set("manifest.json", publishedManifest(release.get("manifest.json")!, input.published));
   let retained = 0;
   for (const earlier of input.previous)
     for (const [path, bytes] of await readSnapshot(earlier)) {
@@ -179,7 +254,7 @@ export async function stageRelease(input: {
       public: "public",
       // Upload exactly what was staged and checked.
       ignore: [],
-      headers: cacheHeaders.map(([source, value]) => ({
+      headers: cacheHeaders.map(({ source, value }) => ({
         source,
         headers: [{ key: "Cache-Control", value }],
       })),

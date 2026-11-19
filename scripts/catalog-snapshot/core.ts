@@ -48,6 +48,8 @@ export interface Manifest {
   readonly rules: string | null;
   /** Every file except this manifest, by path. */
   readonly files: Readonly<Record<string, FileRecord>>;
+  /** When the release serving it was published: added by the publisher, never in a snapshot. */
+  readonly published?: string;
 }
 
 export interface SnapshotInput {
@@ -83,6 +85,35 @@ export const servableId = (id: string) => segment.test(id) && !id.endsWith(".jso
 export const sourcePath = (id: string, sha256: string) => `apps/${id}/${sha256}.json`;
 export const legacySourcePath = (id: string) => `apps/${id}.json`;
 export const iconFile = (sha256: string, extension: string) => `icons/${sha256}.${extension}`;
+
+/** The image types the feed's icons use; anything else fails the build. */
+const iconTypes = ["svg", "png", "webp"] as const;
+const startsWith = (bytes: Uint8Array, prefix: readonly number[], at = 0) =>
+  prefix.every((byte, offset) => bytes[at + offset] === byte);
+const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+
+/** Why these bytes are not an icon of this type (by its extension), or undefined when they are. */
+export function iconProblem(extension: string, bytes: Uint8Array): string | undefined {
+  if (!(iconTypes as readonly string[]).includes(extension))
+    return `icons are ${iconTypes.join(", ")}, not .${extension}`;
+  if (extension === "png")
+    return startsWith(bytes, [0x89, ...ascii("PNG\r\n\x1a\n")]) ? undefined : "not a PNG image";
+  if (extension === "webp")
+    return startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8)
+      ? undefined
+      : "not a WebP image";
+  // SVG: after an optional byte order mark, XML declaration, comments and doctype, an <svg> root.
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return "not an SVG image (not UTF-8)";
+  }
+  const prolog = /^(?:\s+|<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^[>]*(?:\[[\s\S]*?\])?\s*>)/iu;
+  for (let match = prolog.exec(text); match; match = prolog.exec(text))
+    text = text.slice(match[0].length);
+  return /^<svg[\s/>]/u.test(text) ? undefined : "not an SVG image (no <svg> root)";
+}
 
 /**
  * Where a relative icon lives in the source feed, or undefined for an address outside it. The
@@ -205,6 +236,11 @@ export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResul
         failures.push({ document, reason: `the feed has no icon ${path}` });
         return src;
       }
+      const problem = iconProblem(extension.toLowerCase(), bytes);
+      if (problem !== undefined) {
+        failures.push({ document, reason: `icon ${path}: ${problem}` });
+        return src;
+      }
       const name = iconFile(sha256(bytes), extension.toLowerCase());
       files.set(name, bytes);
       icons.set(path, name);
@@ -315,7 +351,9 @@ export function snapshotPathKind(
     return servableId(parts[1]!.slice(0, -".json".length)) ? "legacy" : undefined;
   if (parts[0] === "icons" && parts.length === 2) {
     const [hash, extension, ...rest] = parts[1]!.split(".");
-    return hex64.test(hash!) && /^[a-z0-9]{1,8}$/u.test(extension ?? "") && rest.length === 0
+    return hex64.test(hash!) &&
+      (iconTypes as readonly string[]).includes(extension ?? "") &&
+      rest.length === 0
       ? "icon"
       : undefined;
   }
@@ -323,36 +361,165 @@ export function snapshotPathKind(
 }
 
 /**
+ * How long each kind of path may be cached: the one source for the Hosting configuration the
+ * publisher deploys and the headers the verifier expects.
+ */
+export const indexLifetimeSeconds = 300;
+const revalidated = `public, max-age=${indexLifetimeSeconds}, must-revalidate`;
+const immutable = "public, max-age=31536000, immutable";
+export const cacheHeaders = [
+  // The feed and its manifest change with every release: short, and revalidated.
+  { kind: "index", source: "/index.json", value: revalidated },
+  { kind: "manifest", source: "/manifest.json", value: revalidated },
+  // Today's client reads `apps/<id>.json`, which changes with a release like the index.
+  { kind: "legacy", source: "/apps/*.json", value: revalidated },
+  // Content-addressed: a path's bytes never change.
+  { kind: "document", source: "/apps/*/*.json", value: immutable },
+  { kind: "icon", source: "/icons/*", value: immutable },
+] as const;
+/** The `Cache-Control` a snapshot path is served with. */
+export const cacheControlFor = (path: string) =>
+  cacheHeaders.find((rule) => rule.kind === snapshotPathKind(path))?.value;
+
+/**
+ * Retention. A release holds its own content-addressed files and the live release's, so an index
+ * read from the live release still finds its documents after the switch, while one read from the
+ * release before that may not. So the next publish must come later than an index can stay cached
+ * plus the time an install that read it may still be running.
+ */
+export const installAllowanceSeconds = 3600;
+export const releaseIntervalSeconds = indexLifetimeSeconds + installAllowanceSeconds;
+
+/** The publisher's `--previous` (the snapshot the site serves now), or undefined for `--first`. */
+export function previousChoice(previous: string | undefined, first: boolean): string | undefined {
+  if (previous !== undefined && previous.trim() === "")
+    throw new Error("--previous is blank: pass the snapshot the site serves now");
+  if (first === (previous !== undefined))
+    throw new Error(
+      "Pass --previous <the snapshot the site serves now>, so its documents stay reachable, or --first for the first release",
+    );
+  return previous;
+}
+
+/**
+ * Check a publish against the live site: `--first` only when it serves no manifest; otherwise the
+ * snapshot given as previous must be exactly the live one, published at least the release
+ * interval ago unless `ignoreInterval`. Returns what was found, or throws why the publish would
+ * break an install.
+ */
+export function checkLive(input: {
+  /** The site's `manifest.json`, or undefined when it serves none. */
+  readonly live: Uint8Array | undefined;
+  /** The previous snapshot's `manifest.json`; undefined for a first release. */
+  readonly previous: Uint8Array | undefined;
+  readonly now: Date;
+  readonly ignoreInterval: boolean;
+}): string {
+  if (input.previous === undefined) {
+    if (input.live !== undefined)
+      throw new Error("--first, but the site already serves a manifest: pass --previous");
+    return "the site serves no manifest yet";
+  }
+  if (input.live === undefined)
+    throw new Error("--previous, but the site serves no manifest: pass --first");
+  const published = publishedAt(input.live, input.previous);
+  if (published === undefined)
+    throw new Error(
+      "--previous is not the live release: the site's manifest.json is not that snapshot's manifest as published",
+    );
+  const age = (input.now.getTime() - Date.parse(published)) / 1000;
+  if (age < releaseIntervalSeconds && !input.ignoreInterval)
+    throw new Error(
+      `The live release was published ${Math.max(0, Math.round(age / 60))} minutes ago; wait until ${releaseIntervalSeconds / 60} minutes have passed, so installs that read the index before it finish, or pass --ignore-interval`,
+    );
+  return `the live release is --previous, published ${published}`;
+}
+
+/**
+ * The manifest a release serves: the snapshot's, plus when it was published (an ISO time), so the
+ * next publish can tell how long the live release has been out.
+ */
+export const publishedManifest = (snapshot: Uint8Array, published: string) =>
+  encoder.encode(
+    serialize({ ...(JSON.parse(new TextDecoder().decode(snapshot)) as object), published }),
+  );
+
+/** The publish time a served manifest records, if it is exactly `snapshot`'s manifest published. */
+export function publishedAt(served: Uint8Array, snapshot: Uint8Array): string | undefined {
+  const published = (parse(new TextDecoder().decode(served)) as { published?: unknown } | undefined)
+    ?.published;
+  return typeof published === "string" &&
+    !Number.isNaN(Date.parse(published)) &&
+    Buffer.from(served).equals(publishedManifest(snapshot, published))
+    ? published
+    : undefined;
+}
+
+/** What `setProblems` needs of a set of files: hashes and sizes, and a check of one file's content. */
+export interface FileSet {
+  readonly manifest: Uint8Array;
+  readonly index: Uint8Array | undefined;
+  /** Hash and size of every file present except `manifest.json`. */
+  readonly records: ReadonlyMap<string, FileRecord>;
+  /**
+   * What is wrong with a present file's content: an icon's type, or a document that the index
+   * lists under the package `listed`.
+   */
+  readonly contentProblem: (path: string, listed: string) => string | undefined;
+}
+
+/**
  * Every way a set of files differs from the snapshot its `manifest.json` describes: each file
  * listed with its hash and size and nothing else present; every path one the layout allows; each
  * content-addressed file named by its own hash; every index entry's document present, hashed as
- * the entry says, valid, and the same bytes at its legacy path; every icon an entry names present.
- * Files with any problem must not be published.
+ * the entry says, valid, and the same bytes at its legacy path; every icon an entry names present
+ * and of its type. Files with any problem must not be published.
  */
 export function snapshotProblems(files: ReadonlyMap<string, Uint8Array>): string[] {
+  const records = new Map<string, FileRecord>();
+  for (const [path, bytes] of files) if (path !== "manifest.json") records.set(path, record(bytes));
+  return setProblems({
+    manifest: files.get("manifest.json") ?? new Uint8Array(),
+    index: files.get("index.json"),
+    records,
+    contentProblem: (path, listed) => contentProblem(path, files.get(path)!, listed),
+  });
+}
+
+/** What is wrong with one file's content for its kind of path, or undefined. */
+export function contentProblem(path: string, bytes: Uint8Array, listed: string) {
+  const kind = snapshotPathKind(path);
+  if (kind === "icon") return iconProblem(path.split(".").pop()!, bytes);
+  if (kind === "document") return sourceProblem(parse(new TextDecoder().decode(bytes)), listed);
+  return undefined;
+}
+
+/** `snapshotProblems` over hashes and sizes, so a caller need not hold every file's bytes. */
+export function setProblems(set: FileSet): string[] {
   const problems: string[] = [];
-  const manifestBytes = files.get("manifest.json");
-  const manifest = manifestBytes && (parse(new TextDecoder().decode(manifestBytes)) as Manifest);
+  const manifest = parse(new TextDecoder().decode(set.manifest)) as Manifest | undefined;
   if (!manifest || manifest.version !== 2 || typeof manifest.files !== "object")
     return ["manifest.json is missing or not a version 2 manifest"];
   for (const [path, expected] of Object.entries(manifest.files)) {
-    const bytes = files.get(path);
-    if (bytes === undefined) problems.push(`${path} is missing`);
-    else if (!isDeepStrictEqualRecord(record(bytes), expected))
+    const present = set.records.get(path);
+    if (present === undefined) problems.push(`${path} is missing`);
+    else if (!isDeepStrictEqualRecord(present, expected))
       problems.push(`${path} differs from the manifest`);
   }
-  for (const path of files.keys()) {
-    if (path !== "manifest.json" && manifest.files[path] === undefined)
-      problems.push(`${path} is not in the manifest`);
+  for (const [path, present] of set.records) {
+    if (manifest.files[path] === undefined) problems.push(`${path} is not in the manifest`);
     const kind = snapshotPathKind(path);
     if (kind === undefined) problems.push(`${path} has no place in a snapshot`);
-    const bytes = files.get(path)!;
-    if (kind === "document" && path.split("/")[2] !== `${sha256(bytes)}.json`)
+    if (kind === "document" && path.split("/")[2] !== `${present.sha256}.json`)
       problems.push(`${path} is not named by its hash`);
-    if (kind === "icon" && !path.startsWith(`icons/${sha256(bytes)}.`))
-      problems.push(`${path} is not named by its hash`);
+    if (kind === "icon") {
+      if (!path.startsWith(`icons/${present.sha256}.`))
+        problems.push(`${path} is not named by its hash`);
+      const problem = set.contentProblem(path, "");
+      if (problem !== undefined) problems.push(`${path}: ${problem}`);
+    }
   }
-  const index = files.get("index.json");
+  const index = set.index;
   if (index === undefined) return [...problems, "index.json is missing"];
   if (!isDeepStrictEqualRecord(record(index), manifest.feed))
     problems.push("the manifest's feed is not its index.json");
@@ -371,27 +538,26 @@ export function snapshotProblems(files: ReadonlyMap<string, Uint8Array>): string
     const hash = typeof app.sha256 === "string" ? app.sha256 : "";
     if (app.source !== sourcePath(app.id, hash) || !hex64.test(hash))
       problems.push(`${app.id}: its source is not its document's content address`);
-    const bytes = files.get(app.source);
-    if (bytes === undefined || sha256(bytes) !== hash)
+    const document = set.records.get(app.source);
+    if (document === undefined || document.sha256 !== hash)
       problems.push(`${app.id}: no document with its hash`);
     else {
-      const legacy = files.get(legacySourcePath(app.id));
-      if (legacy === undefined || !Buffer.from(legacy).equals(bytes))
+      const legacy = set.records.get(legacySourcePath(app.id));
+      if (!isDeepStrictEqualRecord(document, legacy))
         problems.push(`${app.id}: ${legacySourcePath(app.id)} is not the same document`);
-      const problem = sourceProblem(parse(new TextDecoder().decode(bytes)), app.package);
+      const problem = set.contentProblem(app.source, app.package);
       if (problem !== undefined) problems.push(`${app.id}: ${problem}`);
     }
     referenced.add(app.source).add(legacySourcePath(app.id));
     for (const icon of app.icons) {
       if (icon.src.startsWith("data:")) continue;
-      if (snapshotPathKind(icon.src) !== "icon" || !files.has(icon.src))
+      if (snapshotPathKind(icon.src) !== "icon" || !set.records.has(icon.src))
         problems.push(`${app.id}: icon ${icon.src} is not a file in the snapshot`);
       referenced.add(icon.src);
     }
   }
-  for (const path of files.keys())
-    if (path !== "manifest.json" && !referenced.has(path))
-      problems.push(`${path} is not referenced by the index`);
+  for (const path of set.records.keys())
+    if (!referenced.has(path)) problems.push(`${path} is not referenced by the index`);
   return problems;
 }
 
