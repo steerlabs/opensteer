@@ -153,12 +153,10 @@ export function useWaitingEdit(
             shown?.messageId === messageId
               ? {
                   ...shown,
-                  draft: editor.content
-                    ? hydrateWaitingDraft(shown.draft, {
-                        content: editor.content,
-                        revision: editor.revision,
-                      })
-                    : shown.draft,
+                  draft: hydrateWaitingDraft(shown.draft, {
+                    content: editor.content,
+                    revision: editor.revision,
+                  }),
                   failure: null,
                   phase: "open",
                 }
@@ -226,10 +224,14 @@ export function useWaitingEdit(
       close();
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
-        draft: openWaitingDraft({
-          content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
-          revision: item.revision,
-        }),
+        // The preview shows while the full body is read; it cannot be edited or saved.
+        draft: openWaitingDraft(
+          {
+            content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
+            revision: item.revision,
+          },
+          true,
+        ),
         failure: null,
         gone: false,
         kind: item.kind,

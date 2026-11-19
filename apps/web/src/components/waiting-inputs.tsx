@@ -212,7 +212,6 @@ type EditNotice = "taken" | "changed" | "failed" | "unconfirmed";
 interface EditSession {
   /** Replaced when a lease that never opened is taken again; the words stay. */
   opening: Promise<WaitingMessageEditor>;
-  bodyLoaded: boolean;
   /** Left: unmounted, or closed by the person. */
   closed: boolean;
   /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
@@ -279,34 +278,39 @@ function useInPlaceEdit(
     if (!input || session.current) return;
     const held: EditSession = {
       closed: false,
-      bodyLoaded: false,
       opening: client.editWaitingMessage(input.threadId, input.messageId),
       saving: false,
       scope: client.connection.getSnapshot().scope,
       sending: null,
     };
     session.current = held;
+    // The preview shows while the full body is read; it cannot be edited or saved.
     setKept(
-      openWaitingDraft({
-        content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
-        revision: input.revision,
-      }),
+      openWaitingDraft(
+        {
+          content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
+          revision: input.revision,
+        },
+        true,
+      ),
     );
     setNotice(null);
     onOpenChange(true);
-    void held.opening.then(
+    load(held);
+  };
+
+  /** Installs the full body the lease read returns: the only words an edit opens from. */
+  const load = (held: EditSession) => {
+    const opening = held.opening;
+    void opening.then(
       (editor) => {
-        if (session.current !== held) return;
-        if (!editor.content) {
-          held.bodyLoaded = true;
-          return;
-        }
+        if (session.current !== held || held.opening !== opening) return;
         const source = { content: editor.content, revision: editor.revision };
         setKept((draft) => (draft ? hydrateWaitingDraft(draft, source) : draft));
-        held.bodyLoaded = true;
       },
       (error: unknown) => {
-        if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
+        if (session.current === held && held.opening === opening)
+          setNotice(isConflict(error) ? "changed" : "failed");
       },
     );
   };
@@ -342,7 +346,15 @@ function useInPlaceEdit(
   const save = async (): Promise<number | null> => {
     const held = session.current;
     if (!input || !held || !draft || held.saving) return null;
-    const bodyWasLoaded = held.bodyLoaded;
+    if (draft.loading) {
+      // The lease never opened: take it again; the field stays locked until its body arrives.
+      if (notice === "failed") {
+        held.opening = client.editWaitingMessage(input.threadId, input.messageId);
+        setNotice(null);
+        load(held);
+      }
+      return null;
+    }
     held.saving = true;
     const current = await typed();
     held.saving = false;
@@ -363,20 +375,7 @@ function useInPlaceEdit(
         held.opening = client.editWaitingMessage(input.threadId, input.messageId);
         return held.opening;
       });
-      const ready =
-        !bodyWasLoaded && editor.content
-          ? waitingDraftSave(
-              hydrateWaitingDraft(current, { content: editor.content, revision: editor.revision }),
-            )
-          : plan;
-      if (!ready || ready.kind !== "edit") {
-        held.saving = false;
-        setSaving(false);
-        setNotice("changed");
-        return null;
-      }
-      held.bodyLoaded = true;
-      const edit = await editor.save(ready.content, ready.expectedRevision);
+      const edit = await editor.save(plan.content, plan.expectedRevision);
       held.saving = false;
       // Saving ended the lease; there is nothing left to cancel.
       finish(held, true);
@@ -582,7 +581,7 @@ function WaitingRow({
           client={client}
           draft={edit.draft}
           field={edit.field}
-          locked={edit.saving || edit.notice === "unconfirmed"}
+          locked={edit.saving || edit.notice === "unconfirmed" || edit.draft.loading}
           source={input.entry.teamSource ?? null}
           onCancel={edit.close}
           onRemovePart={edit.removePart}
@@ -669,7 +668,8 @@ function WaitingRow({
                     gone ||
                     otherDevice !== null ||
                     edit.saving ||
-                    edit.draft?.conflict != null
+                    edit.draft?.conflict != null ||
+                    edit.draft?.loading === true
                   }
                   onClick={() => decide("approve", ask)}
                   title={

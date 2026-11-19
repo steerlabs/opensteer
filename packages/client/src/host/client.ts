@@ -1066,7 +1066,8 @@ export type MachineAccessUpdateOutcome =
  * leaving the person's text with them.
  */
 export interface WaitingMessageEditor {
-  readonly content?: readonly ContentPart[];
+  /** The full body at `revision`, read under the lease: the only thing an edit opens from. */
+  readonly content: readonly ContentPart[];
   readonly leaseId: string;
   readonly revision: number;
   touch(): void;

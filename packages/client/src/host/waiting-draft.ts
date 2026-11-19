@@ -33,10 +33,15 @@ export interface WaitingDraft {
   readonly conflict: WaitingDraftSource | null;
   /** The base version's words and how many parts it had, which `dirty` measures against. */
   readonly base: { readonly text: string; readonly parts: number };
+  /**
+   * Shown from the queue's clipped preview while the full body is read. Nothing
+   * edits or saves it: the full body replaces it whole (`hydrateWaitingDraft`).
+   */
+  readonly loading: boolean;
 }
 
-/** A draft of `source` exactly as it stands. */
-export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
+/** A draft of `source` exactly as it stands; `loading` when `source` is only a preview. */
+export function openWaitingDraft(source: WaitingDraftSource, loading = false): WaitingDraft {
   const text = messageDraftParts(source.content).body;
   const parts = source.content.filter((part) => part.type !== "text");
   return {
@@ -44,6 +49,7 @@ export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
     baseRevision: source.revision,
     conflict: null,
     dirty: false,
+    loading,
     parts,
     text,
   };
@@ -51,11 +57,12 @@ export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
 
 /** The person typed. */
 export function setWaitingDraftText(draft: WaitingDraft, text: string): WaitingDraft {
-  return measured({ ...draft, text });
+  return draft.loading ? draft : measured({ ...draft, text });
 }
 
 /** The person took a file, page or place off the message. */
 export function removeWaitingDraftPart(draft: WaitingDraft, index: number): WaitingDraft {
+  if (draft.loading) return draft;
   return measured({ ...draft, parts: draft.parts.filter((_, at) => at !== index) });
 }
 
@@ -70,28 +77,21 @@ export function removeWaitingDraftPart(draft: WaitingDraft, index: number): Wait
  */
 export function followWaitingDraft(draft: WaitingDraft, current: WaitingDraftSource): WaitingDraft {
   if (current.revision <= draft.baseRevision) return draft;
-  if (!draft.dirty) return openWaitingDraft(current);
+  if (!draft.dirty) return openWaitingDraft(current, draft.loading);
   return draft.conflict?.revision === current.revision ? draft : { ...draft, conflict: current };
 }
 
-/** Installs the full body once the lease opens, preserving text typed over its preview. */
+/**
+ * Installs the full body the lease read returned. A draft still showing the
+ * preview is replaced whole: no words are ever kept from a preview. An open
+ * draft (a lease taken again) follows it as `followWaitingDraft` does.
+ */
 export function hydrateWaitingDraft(
   draft: WaitingDraft,
   current: WaitingDraftSource,
 ): WaitingDraft {
-  if (current.revision < draft.baseRevision) return draft;
-  if (draft.dirty && current.revision > draft.baseRevision) return { ...draft, conflict: current };
-  const full = openWaitingDraft(current);
-  if (!draft.dirty) return full;
-  return measured({
-    ...full,
-    text: draft.text,
-    parts: full.parts.filter(
-      (part) =>
-        !draft.base.parts ||
-        draft.parts.some((kept) => JSON.stringify(part) === JSON.stringify(kept)),
-    ),
-  });
+  if (draft.loading) return openWaitingDraft(current);
+  return followWaitingDraft(draft, current);
 }
 
 /** Lets the person's words go for the newer version that arrived under them. */
@@ -120,7 +120,7 @@ export function waitingDraftSave(draft: WaitingDraft):
       readonly expectedRevision: number;
     }
   | null {
-  if (draft.conflict) return null;
+  if (draft.conflict || draft.loading) return null;
   if (!draft.dirty) return { kind: "unchanged", revision: draft.baseRevision };
   const content = waitingDraftContent(draft);
   return content.length === 0

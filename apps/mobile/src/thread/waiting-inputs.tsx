@@ -366,7 +366,7 @@ function WaitingEditor(props: {
   const { edit, editing } = props;
   const { draft } = edit;
   const input = editing.field;
-  const locked = edit.phase === "saving";
+  const locked = edit.phase === "saving" || edit.draft.loading;
   const notice = editNotice(edit);
   // Android drops a keyboard asked for while the menu that opened this still
   // holds the window, and focusing a field that already has focus does

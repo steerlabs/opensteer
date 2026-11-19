@@ -40,7 +40,7 @@ export interface WaitingMessageEditorPort {
     messageId: string,
     revision: number,
     leaseId: string,
-  ): Promise<readonly ContentPart[] | undefined>;
+  ): Promise<readonly ContentPart[]>;
   now(): number;
 }
 
@@ -59,7 +59,7 @@ export async function openWaitingMessageEditor(
   const leaseId = globalThis.crypto.randomUUID().replaceAll("-", "");
   port.leases.add(leaseId);
   let revision: number;
-  let content: readonly ContentPart[] | undefined;
+  let content: readonly ContentPart[];
   let leaseTaken = false;
   try {
     const taken = await port.dispatch({
@@ -91,7 +91,7 @@ export async function openWaitingMessageEditor(
   let attempt: { readonly content: string; readonly key: string } | null = null;
 
   return {
-    ...(content ? { content } : {}),
+    content,
     leaseId,
     revision,
     touch() {

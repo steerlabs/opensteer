@@ -124,9 +124,14 @@ function inputsOf(
   );
 }
 
-function fakeEditor(overrides: Partial<WaitingMessageEditor> = {}): WaitingMessageEditor {
+/** An editor whose lease read returned `body`, the full message the edit opens from. */
+function fakeEditor(
+  body: string | ContentPart[],
+  overrides: Partial<WaitingMessageEditor> = {},
+): WaitingMessageEditor {
   return {
     cancel: vi.fn(async () => undefined),
+    content: typeof body === "string" ? [{ text: body, type: "text" }] : body,
     leaseId: "lease",
     revision: 0,
     save: vi.fn(async () => ({ editedAt: "2026-10-31T12:01:00.000Z", revision: 1 })),
@@ -437,7 +442,7 @@ describe("WaitingInputs", () => {
       { ...photo, type: "artifact" },
       { ...notes, type: "artifact" },
     ];
-    const editor = fakeEditor({ content });
+    const editor = fakeEditor(content);
     const editWaitingMessage = vi.fn(async () => editor);
     const client = { editWaitingMessage } as unknown as HostClient;
     const container = mount(
@@ -460,32 +465,56 @@ describe("WaitingInputs", () => {
     expect(editor.cancel).not.toHaveBeenCalled();
   });
 
-  it("takes the lease again when an edit that could not open is tried again, keeping the words", async () => {
-    const editor = fakeEditor();
+  it("opens an edit from the full body only: the preview stays locked until the lease read returns", async () => {
+    const page = {
+      type: "browser-page",
+      sessionId: `bsn_${crypto.randomUUID()}`,
+      tabId: "tab-1",
+      title: "Docs",
+      url: "https://example.com",
+    } as ContentPart;
+    const full: ContentPart[] = [
+      { text: "Check the shard and then the whole integration suite", type: "text" },
+      page,
+    ];
+    const editor = fakeEditor(full);
+    let opened!: (editor: WaitingMessageEditor) => void;
     const editWaitingMessage = vi
-      .fn<() => Promise<typeof editor>>()
+      .fn<() => Promise<WaitingMessageEditor>>()
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(editor);
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            opened = resolve;
+          }),
+      );
     const client = { editWaitingMessage } as unknown as HostClient;
+    // The queue's preview is clipped and carries no page.
     const container = mount(
       render(client, inputsOf([item("mine", "Check the shard", { canEdit: true })])),
     );
     await clickWords(container, "mine");
-    await write(field(container)!, "Check the integration shard");
+    expect(field(container)?.value).toBe("Check the shard");
+    expect(field(container)?.readOnly).toBe(true);
     expect(container.textContent).toContain("Couldn’t save your edit.");
 
+    // Try again takes the lease again; the field stays locked until the full body arrives.
     await act(async () => button(container, "Try again").click());
-
     expect(editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(field(container)?.readOnly).toBe(true);
+    await act(async () => opened(editor));
+    expect(field(container)?.readOnly).toBe(false);
+    expect(field(container)?.value).toBe("Check the shard and then the whole integration suite");
+    await write(field(container)!, "Check the shard and then the whole integration suite, twice");
+    await press(field(container)!, "Enter");
     expect(editor.save).toHaveBeenCalledWith(
-      [{ text: "Check the integration shard", type: "text" }],
+      [{ text: "Check the shard and then the whole integration suite, twice", type: "text" }, page],
       0,
     );
-    expect(field(container)).toBeNull();
   });
 
   it("Escape ends the edit unsaved and lets the message go on", async () => {
-    const editor = fakeEditor();
+    const editor = fakeEditor("Draft");
     const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
     const container = mount(render(client, inputsOf([item("mine", "Draft", { canEdit: true })])));
     await clickWords(container, "mine");
@@ -498,7 +527,7 @@ describe("WaitingInputs", () => {
   });
 
   it("keeps the words when the save is refused or the message is taken", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Open a PR", {
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
       }),
@@ -561,7 +590,7 @@ describe("WaitingInputs", () => {
 
   it("answering an ask mid-edit saves the edit first and approves the version saved", async () => {
     const calls: string[] = [];
-    const editor = fakeEditor({
+    const editor = fakeEditor("Is CI green?", {
       save: vi.fn(async () => {
         calls.push("save");
         return { editedAt: "2026-10-31T12:01:00.000Z", ownerEdited: true as const, revision: 3 };
@@ -607,7 +636,7 @@ describe("WaitingInputs", () => {
     // Another device saved before this one held the ask.
     await act(async () => {
       root?.render(render(client, inputsOf([edited(old, "New words on iPad", 1)])));
-      opened(fakeEditor({ revision: 1 }));
+      opened(fakeEditor("New words on iPad", { revision: 1 }));
     });
     expect(field(container)?.value).toBe("New words on iPad");
     await act(async () => button(container, "Answer").click());
@@ -615,7 +644,7 @@ describe("WaitingInputs", () => {
   });
 
   it("keeps words typed over a newer version: nothing saves or approves them until reloaded", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Old words", {
       save: vi.fn(async () => ({ editedAt: "2026-10-31T12:02:00.000Z", revision: 2 })),
     });
     const decideTeamAsk = vi.fn(async () => undefined);
@@ -644,7 +673,7 @@ describe("WaitingInputs", () => {
   });
 
   it("hands an edit to the app outbox before closing its editor", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Old", {
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "taken", status: 409 });
       }),
@@ -691,7 +720,7 @@ describe("WaitingInputs", () => {
 
   it("a save under way holds its editor: Escape waits, and only that save closes it", async () => {
     let saved!: (edit: { revision: number; editedAt: string }) => void;
-    const first = fakeEditor({
+    const first = fakeEditor("Old", {
       save: vi.fn(
         () =>
           new Promise<{ revision: number; editedAt: string }>((resolve) => {
@@ -699,7 +728,7 @@ describe("WaitingInputs", () => {
           }),
       ),
     });
-    const second = fakeEditor({ leaseId: "second" });
+    const second = fakeEditor("Old", { leaseId: "second" });
     const editWaitingMessage = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const client = { editWaitingMessage } as unknown as HostClient;
     const container = mount(render(client, inputsOf([item("mine", "Old", { canEdit: true })])));
@@ -719,7 +748,7 @@ describe("WaitingInputs", () => {
   });
 
   it("opens an ask's editor from its labelled Edit button and hands focus back on the way out", async () => {
-    const editor = fakeEditor();
+    const editor = fakeEditor("Is CI green?");
     const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
     const container = mount(render(client, inputsOf([ask("asked", "Is CI green?")])));
     const trigger = () => button(container, "Edit Maya Chen’s ask");

@@ -1405,7 +1405,18 @@ function fakeHost(initial: FixtureHostSnapshot) {
     browserWatchState: watch.get,
     cancelThreadInput: vi.fn(async () => undefined),
     decideTeamAsk: vi.fn(async (_decision: object) => undefined),
-    editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
+    // The lease read returns the full waiting message, as the Host holds it now.
+    editWaitingMessage: vi.fn(async (threadId: string, messageId: string) => {
+      const held = snapshot.inputQueues[threadId]?.items.find(
+        ({ message }) => message.id === messageId,
+      );
+      if (!held) throw new Error("That message is not waiting.");
+      return {
+        ...editor,
+        content: held.message.content,
+        revision: held.message.edit?.revision ?? 0,
+      };
+    }),
     latestPlaceOfThread: () => null,
     ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
     releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
@@ -4068,19 +4079,14 @@ describe("a task", () => {
       threadId: workId,
     });
     const host = fakeHost(initial);
-    let acquire!: (editor: typeof host.editor) => void;
-    host.editWaitingMessage.mockImplementationOnce(
-      () => new Promise((resolve) => (acquire = resolve)),
-    );
     const { container } = await mount(host, workId);
     await tapWaiting(container, ask.entry.body);
+    await settle();
     await type(container, "Edit Maya’s ask", "A local change to the original ask");
-    // The iPad saved its own version while this phone was still opening the ask.
+    // The iPad saved its own version while these words were being written.
     await act(async () =>
       host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
     );
-    host.editor.revision = 1;
-    await act(async () => acquire(host.editor));
     await settle();
     expect(text(container)).toContain("This ask changed elsewhere");
     expect(button(container, "Save and answer").disabled).toBe(true);
@@ -4150,7 +4156,7 @@ describe("a task", () => {
     expect(text(container)).toContain("Third in line");
   });
 
-  it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
+  it("opens an edit only from the full body: locked while opening, and taken again after a refusal", async () => {
     const task = taskAtWork();
     const waiting = said("Original", null);
     const host = fakeHost(
@@ -4167,7 +4173,8 @@ describe("a task", () => {
     );
     const { container } = await mount(host, workId);
     await tapWaiting(container, waiting.body);
-    await type(container, "Edit message", "Words typed on a slow connection");
+    // Nothing can be typed against the preview while the full body is read.
+    expect(editField(container)?.disabled).toBe(true);
     await act(async () =>
       refuse(
         new HostClientRequestError({
@@ -4178,15 +4185,16 @@ describe("a task", () => {
       ),
     );
     await settle();
-    expect(editField(container)?.value).toBe("Words typed on a slow connection");
     expect(text(container)).toContain("This message can’t be edited right now.");
-    expect(hasButton(container, "Discard")).toBe(true);
 
     await press(container, "Try again");
+    await settle();
     expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editField(container)?.disabled).toBe(false);
+    await type(container, "Edit message", "Words typed once it opened");
     await press(container, "Save");
     expect(host.editor.save).toHaveBeenCalledWith(
-      [{ text: "Words typed on a slow connection", type: "text" }],
+      [{ text: "Words typed once it opened", type: "text" }],
       0,
     );
   });
