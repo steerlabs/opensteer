@@ -155,3 +155,62 @@ it("says a screen's list could not be loaded, and Try again reads it", async () 
   act(() => document.querySelector("button")!.click());
   await vi.waitFor(() => expect(document.body.textContent).toMatch(/[1-9]\d* devices/));
 });
+
+it("keeps the devices it holds, with their controls, when a later read of them fails", async () => {
+  const seed = new MockHostClient({ latencyMs: 0 });
+  const host = new MockPersonalHost(seed);
+  let refuse = false;
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        refuse &&
+        url.pathname.endsWith("/resources.detail.get") &&
+        JSON.parse(url.searchParams.get("input")!).kind === "machine"
+      )
+        return Response.json({
+          ok: false,
+          error: { code: "resource_exhausted", message: "Too large", retryable: false },
+        });
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+    capabilities: [],
+  });
+  disposals.push(() => {
+    client.dispose();
+    host.dispose();
+  });
+  await client.load();
+  function Devices() {
+    const count = useHostSelector(client, (snapshot) => snapshot.machines.length);
+    const { held, unreadable } = useUnreadableResources(client, ["machine"]);
+    if (unreadable && !held) return <p>Couldn't load your devices.</p>;
+    return (
+      <>
+        {unreadable ? <p>Couldn't refresh your devices.</p> : null}
+        <p>{`${count} devices`}</p>
+      </>
+    );
+  }
+  const root = createRoot(document.body.appendChild(document.createElement("div")));
+  roots.push(root);
+  act(() => root.render(<Devices />));
+  await vi.waitFor(() => expect(document.body.textContent).toMatch(/[1-9]\d* devices/));
+  // The Host moves on; reading the devices again now fails.
+  refuse = true;
+  const unrelated = seed.getSnapshot().tasks?.entries[0]?.thread.id;
+  await seed.dispatch({
+    type: "thread.rename",
+    threadId: unrelated!,
+    title: "Renamed while devices fail",
+    idempotencyKey: "rename:devices",
+  });
+  // A pushed machine revision is read after the Runner settle window (two seconds).
+  await vi.waitFor(
+    () => expect(document.body.textContent).toContain("Couldn't refresh your devices."),
+    { timeout: 4_000 },
+  );
+  expect(document.body.textContent).toMatch(/[1-9]\d* devices/);
+});

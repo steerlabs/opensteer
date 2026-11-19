@@ -196,7 +196,9 @@ export function DevicesSettingsController(): ReactNode {
           title: "",
           rows: [],
           footer: {
-            text: "Couldn't load your devices.",
+            text: machinesRead.held
+              ? "Couldn't refresh your devices. Showing what was last loaded."
+              : "Couldn't load your devices.",
             tone: "danger",
             link: { label: "Try again", onPress: machinesRead.retry },
           },
@@ -206,7 +208,8 @@ export function DevicesSettingsController(): ReactNode {
   const nativeSections: NativeSettingsSection[] = [
     ...(answer === undefined ? [] : [{ key: "failure", title: "", rows: [], footer: answer }]),
     ...unreadableDevices,
-    ...(machinesRead.unreadable ? [] : sections).map((section) => ({
+    // Held devices stay with their controls, under the error.
+    ...(machinesRead.unreadable && !machinesRead.held ? [] : sections).map((section) => ({
       key: section.key,
       title: section.title,
       ...(section.footer === null ? {} : { footer: { text: section.footer } }),

@@ -96,8 +96,8 @@ function SignedInBrowserProfiles(props: {
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   const profilesRead = useUnreadableResources(props.hostClient, profileKinds);
-  // Profiles that could not be read are said so, with Try again, never listed empty or stale.
-  if (profilesRead.unreadable)
+  // Profiles that could not be read, with none held: said so, with Try again, never listed empty.
+  if (profilesRead.unreadable && !profilesRead.held)
     return (
       <Screen>
         <Notice
@@ -126,6 +126,7 @@ function BrowserProfilesSettings({
 }): ReactNode {
   const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
+  const profilesRead = useUnreadableResources(hostClient, profileKinds);
   const hereId = useHereDeviceId(deploymentId);
   const rows = browserProfileSettingsRows(snapshot, hereId);
   const homes = profileHomeChoice(snapshot, hereId);
@@ -186,6 +187,14 @@ function BrowserProfilesSettings({
           }}
           ref={scroll}
         >
+          {/* A held list stays with its controls; above it, that it could not be refreshed. */}
+          {profilesRead.unreadable ? (
+            <Notice
+              action={{ label: "Try again", onPress: profilesRead.retry }}
+              detail="Your computer sent a profile list this phone couldn't read. These are the profiles it last read."
+              title="Couldn't refresh your browser profiles."
+            />
+          ) : null}
           {rows.length === 0 && deletions.length === 0 ? (
             <AppText role="secondary" tone="muted">
               No profiles yet.

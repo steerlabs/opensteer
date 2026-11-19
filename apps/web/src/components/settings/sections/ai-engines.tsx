@@ -75,7 +75,9 @@ export function AiEnginesSection() {
   const toast = useToast();
   const background = useSettingsRead(() => getAutomaticModels(hostClient), "automatic-models");
   const accountsRead = useUnreadableResources(hostClient, accountKinds);
-  if (accountsRead.unreadable)
+  // With no accounts held, the error alone; with some, they stay with their controls (Remove, model
+  // settings) under it, so whatever is too large can be removed.
+  if (accountsRead.unreadable && !accountsRead.held)
     return (
       <>
         <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />
@@ -85,6 +87,9 @@ export function AiEnginesSection() {
   return (
     <>
       <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />
+      {accountsRead.unreadable ? (
+        <SettingsUnreadable held label="your AI accounts" onRetry={accountsRead.retry} />
+      ) : null}
       <AiEngineSettings
         client={hostClient}
         environments={snapshot.environments}

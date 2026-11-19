@@ -114,15 +114,24 @@ export function SettingsError({ message }: { readonly message: string | null }) 
  * again, in place of a list that would be empty or out of date.
  */
 export function SettingsUnreadable({
+  held = false,
   label,
   onRetry,
 }: {
+  /** What was last loaded stays on screen below, with its controls. */
+  readonly held?: boolean;
   readonly label: string;
   readonly onRetry: () => void;
 }) {
   return (
     <div className="settings-unreadable">
-      <SettingsError message={`Couldn't load ${label}.`} />
+      <SettingsError
+        message={
+          held
+            ? `Couldn't refresh ${label}. Showing what was last loaded.`
+            : `Couldn't load ${label}.`
+        }
+      />
       <button className="btn btn--secondary" onClick={onRetry} type="button">
         Try again
       </button>

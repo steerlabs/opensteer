@@ -43,7 +43,11 @@ export function BrowserProfilesSection() {
         <h2 className="settings-group__title" id="browser-profiles-title">
           Opensteer browsers
         </h2>
-        {profilesRead.unreadable ? (
+        {/* With profiles held they stay, with their controls, under the error. */}
+        {profilesRead.unreadable && profilesRead.held ? (
+          <SettingsUnreadable held label="your browser profiles" onRetry={profilesRead.retry} />
+        ) : null}
+        {profilesRead.unreadable && !profilesRead.held ? (
           <SettingsUnreadable label="your browser profiles" onRetry={profilesRead.retry} />
         ) : (
           <div className="card">
