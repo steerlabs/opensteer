@@ -13,7 +13,7 @@ import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction, type UpdateObject } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
@@ -22,8 +22,14 @@ import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
 
-/** `changes` lets a caller fold its own task update into the one that publishes it. */
-export async function publishThreadSummary(
+/** Publishes the task once per commit, after every change this commit makes to it. */
+export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<void> {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (_tx, mutation) => mutation.deferSummary(threadId));
+}
+
+/** Publishes the task now, folding the caller's own task update into the publishing one. */
+export async function writeThreadSummary(
   tx: Tx,
   threadId: ThreadId,
   changes: UpdateObject<DatabaseSchema, "threads"> = {},
@@ -36,6 +42,7 @@ export async function publishThreadSummary(
       .returning("nextTranscriptPosition")
       .executeTakeFirstOrThrow();
   return commitPersonalMutation(tx, async (tx, mutation) => {
+    mutation.summaryWritten(threadId);
     const row = await tx
       .updateTable("threads")
       .set({ ...changes, revision: mutation.sequence })
@@ -233,6 +240,9 @@ export async function projectThreadState(
 }
 
 export async function threadMutationHead(tx: Tx, threadId: ThreadId) {
+  // A summary this commit has yet to write already belongs to its head.
+  const mutation = activePersonalMutation(tx);
+  if (mutation?.summaryPending(threadId)) return SequenceSchema.parse(mutation.sequence);
   const state = await tx
     .selectFrom("clientSyncState")
     .select(

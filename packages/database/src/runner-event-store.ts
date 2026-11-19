@@ -1,6 +1,11 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { executionDate } from "./personal-transaction.js";
-import { projectThreadState, publishThreadSummary, replyPreview } from "./thread-status.js";
+import {
+  projectThreadState,
+  publishThreadSummary,
+  replyPreview,
+  writeThreadSummary,
+} from "./thread-status.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
@@ -187,7 +192,7 @@ async function publishRunnerMessage(
       : {}),
   };
   const thread = reply
-    ? await publishThreadSummary(tx, row.threadId, changes)
+    ? await writeThreadSummary(tx, row.threadId, changes)
     : await tx
         .updateTable("threads")
         .set(changes)

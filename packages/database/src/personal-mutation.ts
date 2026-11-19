@@ -31,7 +31,7 @@ import type {
   TranscriptItemTable,
 } from "./personal-state-schema.js";
 import type { RevokedRunGrant } from "./run-grants.js";
-import { publishThreadSummary } from "./thread-status.js";
+import { publishThreadSummary, writeThreadSummary } from "./thread-status.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
 const retainedRows = 4_096;
@@ -234,6 +234,7 @@ class Mutation {
   >();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
   readonly touchedThreads = new Set<ThreadId>();
+  readonly #summaries = new Set<ThreadId>();
   readonly #counters = {
     pendingRequestCount: 0,
     pendingDeviceAccessRequestCount: 0,
@@ -402,6 +403,20 @@ class Mutation {
     this.#receipts.push(write);
   }
   /** A Request or approval-gated input of this task changed; its pending count is recounted. */
+  deferSummary(threadId: ThreadId) {
+    this.#summaries.add(threadId);
+  }
+  summaryPending(threadId: ThreadId) {
+    return this.#summaries.has(threadId);
+  }
+  summaryWritten(threadId: ThreadId) {
+    this.#summaries.delete(threadId);
+  }
+  takeSummaries() {
+    const ids = [...this.#summaries].sort();
+    this.#summaries.clear();
+    return ids;
+  }
   touchThread(threadId: ThreadId) {
     this.touchedThreads.add(threadId);
   }
@@ -554,6 +569,9 @@ export type PersonalMutation = Pick<
   | "fence"
   | "receipt"
   | "touchThread"
+  | "deferSummary"
+  | "summaryPending"
+  | "summaryWritten"
   | "observation"
   | "reaction"
   | "react"
@@ -562,6 +580,13 @@ export type PersonalMutation = Pick<
   | "attentionKind"
   | "stageAttention"
 >;
+
+/** The Personal mutation this transaction commits, if it is one. */
+export function activePersonalMutation(
+  tx: PersonalMutationTransaction,
+): PersonalMutation | undefined {
+  return active.get(tx);
+}
 
 export async function commitPersonalMutation<Result>(
   database: TargetDb,
@@ -595,6 +620,7 @@ export async function commitPersonalMutation<Result>(
         await publishThreadSummary(tx, id);
         await refreshAssignmentWorkerSummaries(tx, id);
       }
+    for (const id of mutation.takeSummaries()) await writeThreadSummary(tx, id);
     const notice = await mutation.write(tx);
     if (mutation.authorityScopes.size) {
       if (!listener?.suspend) throw new Error("Personal authority mutation has no dispatch fence");
