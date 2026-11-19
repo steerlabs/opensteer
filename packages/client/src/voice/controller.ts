@@ -71,6 +71,13 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
   );
 }
 
+/** The inventories an account is looked up in, each read complete for this viewer. */
+function accountsKnown(snapshot: HostSnapshot): boolean {
+  return (["environment", "harness-catalog", "harness"] as const).every((kind) =>
+    snapshot.loadedResources.includes(kind),
+  );
+}
+
 function holdsAccount(snapshot: HostSnapshot, account: VoiceAccount): boolean {
   return voiceAccounts(snapshot).some(
     ({ environmentId, harnessInstanceId }) =>
@@ -429,16 +436,25 @@ export class VoiceController {
     const session = this.#session;
     if (!session) return;
     const snapshot = this.#input.hostClient.getSnapshot();
+    // Only what is known ends a call. While the client reads its viewer again (a new history,
+    // a reconnect) the viewer and its accounts are unknown, not gone.
+    const viewerKnown = snapshot.user !== null;
     if (
-      snapshot.deploymentId !== session.baseline.deploymentId ||
-      snapshot.user?.id !== session.baseline.user?.id ||
-      snapshot.session !== "authenticated" ||
-      !snapshot.voiceAvailable ||
-      (session.account !== null && !holdsAccount(snapshot, session.account))
+      snapshot.session === "authentication-required" ||
+      (viewerKnown &&
+        (snapshot.deploymentId !== session.baseline.deploymentId ||
+          snapshot.user?.id !== session.baseline.user?.id ||
+          snapshot.session !== "authenticated" ||
+          !snapshot.voiceAvailable)) ||
+      (viewerKnown &&
+        session.account !== null &&
+        accountsKnown(snapshot) &&
+        !holdsAccount(snapshot, session.account))
     ) {
       void this.#end(session);
       return;
     }
+    if (!viewerKnown) return;
     this.#readActivity(session);
     this.#readWork(session, snapshot);
   }

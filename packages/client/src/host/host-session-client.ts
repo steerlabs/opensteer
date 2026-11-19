@@ -30,7 +30,7 @@ import {
 } from "@opensteer/protocol/personal-sync";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PersonalShellStore } from "./personal-shell-store.js";
-import { PersonalResourceReads } from "./personal-resource-reads.js";
+import { PersonalResourceReads, type ResourceInterest } from "./personal-resource-reads.js";
 import { savedStartWaitMs, ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
@@ -136,7 +136,7 @@ import type {
   WaitingMessageEditor,
 } from "./client.js";
 import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
-import { trackSnapshot } from "./host-snapshot-store.js";
+import { rawSnapshot, trackSnapshot, type SnapshotReader } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
@@ -336,7 +336,8 @@ export class HttpHostClient {
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
-  readonly #listeners = new Set<() => void>();
+  /** Each subscription is a reader: what its listener reads stays watched while it is subscribed. */
+  readonly #listeners = new Map<() => void, ResourceInterest>();
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
@@ -673,7 +674,7 @@ export class HttpHostClient {
     this.#resources = new PersonalResourceReads({
       read: (kind, cursor, signal) =>
         this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
-      apply: (data, append, hasMore) => this.#applyResource(data, append, hasMore),
+      apply: (pages) => this.#applyResource(pages),
       canRead: () => this.#visibility !== "background",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
@@ -889,12 +890,37 @@ export class HttpHostClient {
   }
 
   readonly #views = new WeakMap<HostSnapshot, HostSnapshot>();
-  /** Reading a resource-backed field watches its kinds for this viewer; see `resourceBackedFields`. */
+  /** The subscription whose listener is running: what it reads, it holds while subscribed. */
+  #reading: ResourceInterest | undefined;
+  /**
+   * Reading a resource-backed field watches its kinds (`resourceBackedFields`): for the
+   * subscription whose listener reads it, or else for a short lease renewed by every such read.
+   * Mounted screens read through a selection's own reader (`snapshotReader`).
+   */
   readonly getSnapshot = (): HostSnapshot =>
     trackSnapshot(this.#snapshot, this.#views, (field) => {
       const kinds = resourceKindsOf(field);
-      if (kinds) for (const kind of kinds) this.#resources.retain(kind);
+      if (!kinds) return;
+      const reading = this.#reading;
+      for (const kind of kinds) {
+        if (reading) reading.hold(kind);
+        else this.#resources.lease(kind);
+      }
     });
+
+  /** A reader of its own: kinds read through its view stay watched while it is open. */
+  readonly snapshotReader = (): SnapshotReader => {
+    const interest = this.#resources.interest();
+    const views = new WeakMap<HostSnapshot, HostSnapshot>();
+    return {
+      view: (snapshot) =>
+        trackSnapshot(rawSnapshot(snapshot), views, (field) => {
+          for (const kind of resourceKindsOf(field) ?? []) interest.hold(kind);
+        }),
+      open: interest.open,
+      close: interest.close,
+    };
+  };
 
   readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
@@ -934,8 +960,16 @@ export class HttpHostClient {
   };
 
   readonly subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+    const interest = this.#listeners.get(listener) ?? this.#resources.interest();
+    if (!this.#listeners.has(listener)) {
+      interest.open();
+      this.#listeners.set(listener, interest);
+    }
+    return () => {
+      if (this.#listeners.get(listener) !== interest) return;
+      this.#listeners.delete(listener);
+      interest.close();
+    };
   };
 
   /** Writes saved personal state now, for a page about to be hidden or unloaded. */
@@ -1908,44 +1942,103 @@ export class HttpHostClient {
     if (this.#attentionTarget) void this.#readAttention(true).catch(() => undefined);
   }
 
+  /** A kind's complete inventory, every page of one read, installed as one change. */
   #applyResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const first = pages[0];
+    if (!first) return;
+    if (first.kind === "tab" || first.kind === "tab-layout") return this.#applyTabResource(pages);
+    let snapshot = this.#snapshot;
+    pages.forEach((data, index) => {
+      snapshot = this.#resourcePage(snapshot, data, index > 0);
+    });
+    if (first.kind === "harness-catalog")
+      snapshot = {
+        ...snapshot,
+        environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
+      };
+    if (first.kind === "machine")
+      snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
+    if (snapshot !== this.#snapshot) this.#update(snapshot);
+  }
+
+  /** The tab rows or layout of one read, replacing what the tab store holds in one step. */
+  #applyTabResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const tabPages = pages.flatMap((data) => (data.kind === "tab" ? [data.tabs] : []));
+    if (tabPages.length) {
+      this.#tabs.replaceCurrent({
+        tabs: mergeResourceRows(
+          [],
+          tabPages.flatMap((page) => page.tabs),
+          (tab) => tab.tabId,
+        ),
+        layout: this.#tabs.layout,
+        // Each page says whether the rows end with it; the last one speaks for the whole read.
+        complete: tabPages.at(-1)!.complete,
+      });
+      return;
+    }
+    const layouts = pages.flatMap((data) => (data.kind === "tab-layout" ? [data.tabs.layout] : []));
+    const last = layouts.at(-1);
+    if (!last) return;
+    this.#tabs.replaceCurrent({
+      tabs: [...this.#tabs.rows.values()],
+      layout: {
+        ...last,
+        items: mergeResourceRows(
+          [],
+          layouts
+            .filter((layout) => layout.revision === last.revision)
+            .flatMap((layout) => layout.items),
+          (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
+        ),
+      },
+      complete: this.#tabs.complete,
+    });
+  }
+
+  /** One page of a read laid onto the snapshot being built; nothing is published here. */
+  #resourcePage(
+    snapshot: HostSnapshot,
     data: import("zod").infer<
       typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
     >,
     append: boolean,
-    hasMore: boolean,
-  ) {
-    const snapshot = this.#snapshot;
+  ): HostSnapshot {
     switch (data.kind) {
       case "plugin-engine":
         for (const listener of this.#pluginEngineListeners) listener(data.engine);
-        break;
+        return snapshot;
       case "settings":
-        this.#update({
+        return {
           ...snapshot,
           personalSettings: data.settings,
           quietTaskDays: data.quietTaskDays,
           executionPreferences: data.executionPreferences,
           voiceThreadId: data.settings?.voiceThreadId ?? null,
-        });
-        break;
+        };
       case "identity":
-        this.#update({ ...snapshot, identityConfig: data.identity });
-        break;
+        return { ...snapshot, identityConfig: data.identity };
       case "owner-profile":
-        this.#update({ ...snapshot, ownerProfile: data.ownerProfile });
-        break;
+        return { ...snapshot, ownerProfile: data.ownerProfile };
       case "environment":
-        this.#update({
+        return {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
             data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
             (row) => row.id,
           ),
-        });
-        break;
+        };
       case "harness-catalog":
+        // Staged in the catalog map; the snapshot takes it once every page is in.
         if (!append) this.#environmentCatalogs.clear();
         for (const row of data.environments) {
           const held = this.#environmentCatalogs.get(row.id) ?? [];
@@ -1962,24 +2055,18 @@ export class HttpHostClient {
             mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
           );
         }
-        this.#update({
-          ...snapshot,
-          environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
-        });
-        break;
+        return snapshot;
       case "machine":
-        this.#update({
+        return {
           ...snapshot,
           machines: mergeResourceRows(
             append ? snapshot.machines : [],
             data.machines,
             (row) => row.id,
           ),
-          machineRevision: snapshot.machineRevision + 1,
-        });
-        break;
+        };
       case "harness":
-        this.#update({
+        return {
           ...snapshot,
           harnesses: mergeResourceRows(
             append ? snapshot.harnesses : [],
@@ -1989,37 +2076,12 @@ export class HttpHostClient {
             })),
             (row) => row.id,
           ),
-        });
-        break;
+        };
       case "tab":
-        this.#tabs.replaceCurrent({
-          tabs: mergeResourceRows(
-            append ? [...this.#tabs.rows.values()] : [],
-            data.tabs.tabs,
-            (tab) => tab.tabId,
-          ),
-          layout: this.#tabs.layout,
-          complete: data.tabs.complete && !hasMore,
-        });
-        break;
       case "tab-layout":
-        this.#tabs.replaceCurrent({
-          tabs: [...this.#tabs.rows.values()],
-          layout: {
-            ...data.tabs.layout,
-            items: mergeResourceRows(
-              append && this.#tabs.layout.revision === data.tabs.layout.revision
-                ? this.#tabs.layout.items
-                : [],
-              data.tabs.layout.items,
-              (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
-            ),
-          },
-          complete: this.#tabs.complete,
-        });
-        break;
+        return snapshot;
       case "browser-profile":
-        this.#update({
+        return {
           ...snapshot,
           browserProfiles: mergeResourceRows(
             append ? snapshot.browserProfiles : [],
@@ -2031,32 +2093,29 @@ export class HttpHostClient {
             data.deletions ?? [],
             (row) => row.profileId,
           ),
-        });
-        break;
+        };
       case "browser-placement":
-        this.#update({
+        return {
           ...snapshot,
           browserPlacements: mergeResourceRows(
             append ? snapshot.browserPlacements : [],
             data.placements,
             (row) => row.runnerId,
           ),
-        });
-        break;
+        };
       case "browser-home":
-        this.#update({
+        return {
           ...snapshot,
           browserProfileHomes: mergeResourceRows(
             append ? (snapshot.browserProfileHomes ?? []) : [],
             data.homes ?? [],
             (runnerId) => runnerId,
           ),
-        });
-        break;
+        };
       case "browser-availability":
-        this.#update({ ...snapshot, browserAvailable: data.available });
-        break;
+        return { ...snapshot, browserAvailable: data.available };
     }
+    return snapshot;
   }
 
   #withEnvironmentCatalogs(row: EnvironmentSummary): EnvironmentSummary {
@@ -3200,6 +3259,7 @@ export class HttpHostClient {
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#listeners.clear();
+    this.#resources.dispose();
   }
 
   loadEarlierNeedsYou(): Promise<void> {
@@ -4339,7 +4399,15 @@ export class HttpHostClient {
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     if (this.connection) nameConnectionFromHost(this.connection, this.#snapshot);
-    for (const listener of this.#listeners) listener();
+    for (const [listener, interest] of this.#listeners) {
+      const outer = this.#reading;
+      this.#reading = interest;
+      try {
+        listener();
+      } finally {
+        this.#reading = outer;
+      }
+    }
     this.#checkBrowserUsageRuns();
   }
 }
