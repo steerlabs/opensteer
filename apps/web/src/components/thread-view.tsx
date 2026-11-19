@@ -91,6 +91,7 @@ import { VoiceStart } from "./voice.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
+import { anchorCorrection, readingAnchor, type ReadingAnchor } from "./reading-position.js";
 import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
@@ -214,7 +215,11 @@ interface ThreadViewProps {
 /** Where each conversation was left, by deployment, user and Thread. */
 const readingPositions = new Map<
   string,
-  { readonly scrollTop: number; readonly seenSequence: string | null }
+  {
+    readonly anchor: ReadingAnchor | null;
+    readonly scrollTop: number;
+    readonly seenSequence: string | null;
+  }
 >();
 
 const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
@@ -290,9 +295,12 @@ function ThreadView({
   } | null>(null);
   // The row an earlier page is anchored to stays drawn until the page has landed under it.
   const [earlierKeep, setEarlierKeep] = useState<readonly string[]>(noRows);
+  // A reading position being restored: its row stays drawn and is put back as rows measure.
+  const restoring = useRef<ReadingAnchor | null>(null);
+  const [restoreKeep, setRestoreKeep] = useState<readonly string[]>(noRows);
   const transcriptWindowing = useMemo(
-    () => ({ scroller: transcriptScroller, keep: earlierKeep }),
-    [earlierKeep, transcriptScroller],
+    () => ({ scroller: transcriptScroller, keep: [...earlierKeep, ...restoreKeep] }),
+    [earlierKeep, restoreKeep, transcriptScroller],
   );
   const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
@@ -521,22 +529,72 @@ function ThreadView({
       // What had arrived by then was seen; only what came after is new.
       seenSequenceRef.current = saved.seenSequence;
       scroller.scrollTop = saved.scrollTop;
+      // The row the reader stood on, not the pixel: rows above it may measure differently now.
+      restoring.current = saved.anchor;
+      if (saved.anchor) setRestoreKeep([saved.anchor.key]);
+      restoreReading();
     }
     return () => {
       if (!scroller) return;
       if (tailRef.current.follows) readingPositions.delete(composerKey);
-      else
+      else {
+        const top = scroller.getBoundingClientRect().top;
+        const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]")].map(
+          (row) => {
+            const box = row.getBoundingClientRect();
+            return { key: row.dataset.transcriptRow!, top: box.top, bottom: box.bottom };
+          },
+        );
         readingPositions.set(composerKey, {
+          anchor: readingAnchor(rows, top),
           scrollTop: scroller.scrollTop,
           seenSequence: seenSequenceRef.current,
         });
+      }
     };
   }, [composerKey]);
+
+  /** Puts a restoring reader's anchor row back where it stood, once it is drawn. */
+  const restoreReading = () => {
+    const anchor = restoring.current;
+    const scroller = currentScroller();
+    if (!anchor || !scroller) return;
+    const row = scroller.querySelector<HTMLElement>(
+      `[data-transcript-row="${CSS.escape(anchor.key)}"]`,
+    );
+    if (!row) return;
+    const delta = anchorCorrection(
+      anchor,
+      row.getBoundingClientRect().top,
+      scroller.getBoundingClientRect().top,
+    );
+    if (delta) scroller.scrollTop += delta;
+  };
+  useLayoutEffect(restoreReading, [conversation, restoreKeep]);
+  // The reader moving on ends the restore; until then it is re-applied as rows are measured.
+  useEffect(() => {
+    const scrollers = [scrollRef.current, bodyRef.current].filter(
+      (element): element is HTMLDivElement => element !== null,
+    );
+    const stop = () => {
+      if (!restoring.current) return;
+      restoring.current = null;
+      setRestoreKeep(noRows);
+    };
+    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    for (const scroller of scrollers)
+      for (const event of events) scroller.addEventListener(event, stop, { passive: true });
+    return () => {
+      for (const scroller of scrollers)
+        for (const event of events) scroller.removeEventListener(event, stop);
+    };
+  }, []);
 
   const setFollows = (follows: boolean) => {
     tailRef.current = { ...tailRef.current, follows };
     setAtTail(follows);
     if (!follows) return;
+    restoring.current = null;
     seenSequenceRef.current = observed;
     setPendingUpdates(0);
   };
@@ -591,7 +649,10 @@ function ThreadView({
     const elements = [transcript, body, transcript.firstElementChild, body.lastElementChild].filter(
       (element): element is Element => element !== null,
     );
-    return observeResize(elements, keepTailInView);
+    return observeResize(elements, () => {
+      keepTailInView();
+      restoreReading();
+    });
   }, []);
 
   // Arriving work never moves a reader who is elsewhere; it offers.
