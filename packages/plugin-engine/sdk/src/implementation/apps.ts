@@ -29,7 +29,7 @@ import {
   VersionSummary,
   SourceFiles,
 } from "../contracts/version.ts";
-import type { PluginEngine } from "../contracts/pluginEngine.ts";
+import type { DeployOptions, PluginEngine } from "../contracts/pluginEngine.ts";
 import {
   RuntimeBuildFailed,
   RuntimeAppsDependencyMissing,
@@ -167,6 +167,54 @@ export const storedVersion = (
   });
 
 const StoredVersionRequirements = Schema.Struct({ requirements: AppRequirements });
+
+/**
+ * Whether `version` is the host's rebuild of `pinned`'s exact source: built again from it, or from
+ * a rebuild of it, any number of times. A version is created after the one it is rebuilt from, so
+ * the chain ends.
+ */
+export const rebuildOf = (db: Query, version: VersionId, pinned: VersionId) =>
+  Effect.gen(function* () {
+    let current: VersionId | null = version;
+    while (current !== null) {
+      const id: VersionId = current;
+      const row = yield* query(() =>
+        db.findFirst("deployments", { select: ["rebuiltFrom"], where: (b) => b("id", "=", id) }),
+      );
+      if (row === null) return false;
+      current = row.rebuiltFrom;
+      if (current === pinned) return true;
+    }
+    return false;
+  });
+
+/**
+ * The version work saved for `pinned` runs on now, or none when the work is stale. The identity of
+ * reviewed work is the exact source it was built from: it runs on its pinned version while the
+ * runtime runs that version's build as it is (`Runtime.current`), and otherwise only on the app's
+ * active version when that is the pinned version itself, waiting for its rebuild, or the host's
+ * rebuild of its exact source (`rebuildOf`). Whether the selected build may run is decided where
+ * it is dispatched. A version the owner deployed from other source, a removed version and an app
+ * left with no active version continue nothing.
+ */
+export const continuedVersion = (
+  db: Query,
+  runtime: Pick<Runtime, "current">,
+  app: AppId,
+  pinned: VersionId,
+) =>
+  Effect.gen(function* () {
+    const stored = yield* storedApp(db, { app });
+    const version = yield* storedVersion(db, stored, pinned).pipe(
+      Effect.catchTag("VersionNotFound", () => Effect.succeed(undefined)),
+    );
+    if (version === undefined) return null;
+    if (yield* runtime.current?.(version.build) ?? Effect.succeed(true)) return pinned;
+    const active = stored.activeVersion;
+    if (active === null) return null;
+    if (active === pinned || (yield* rebuildOf(db, active, pinned))) return active;
+    return null;
+  });
 
 /** Whether any version of the app's code applied SQL migrations. */
 const hadMigrations = (db: Query, code: AppCodeId) =>
@@ -443,6 +491,7 @@ export const makeApps = (
     copiedFrom: AppCopyOrigin | null = null,
     stored?: StoredBytes,
     reserved?: AppId,
+    options: DeployOptions = {},
   ) =>
     Effect.gen(function* () {
       // Reserve an order before building. Only successful promotions advance the other counter.
@@ -540,150 +589,284 @@ export const makeApps = (
       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
       if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(appId, "deploy");
-      // A deploy that lost its place never changes the app's database: the version it started
-      // from must still be active, with nothing activated since, before it migrates and again
-      // when it promotes. The host serializes an app's version changes, so this only fails for a
-      // writer outside that.
-      const named = "expectedVersion" in input ? input.expectedVersion : undefined;
-      const expected = before === null ? null : named === undefined ? before.activeVersion : named;
-      const unchanged = (current: StoredApp) =>
-        before === null ||
-        (current.activeVersion === expected && current.activatedSequence < sequence)
-          ? Effect.void
-          : Effect.fail(
-              new AppVersionChanged({
-                app: current.id,
-                expected,
-                current: current.activeVersion,
-              }),
-            );
-      if (before !== null) yield* unchanged(yield* storedApp(db, { app: before.id }));
-      // The active version's migrations as it retained them: one applied before the framework
-      // renamed its reserved tables, which this build has only renamed, keeps its history.
-      const originals =
-        before === null || before.activeVersion === null || requirements.sql !== true
-          ? []
-          : (yield* readVersionSource(blobs, before.activeVersion)).flatMap((file) =>
-              file.path.startsWith("migrations/") && "content" in file && !("encoding" in file)
-                ? [{ path: file.path, content: file.content }]
-                : [],
-            );
-      if (requirements.sql === true)
-        yield* runtime.migrate({ app: appId, build: built.build, originals }).pipe(
-          Effect.mapError((error) => {
-            const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
-            return new VersionBuildFailed({
-              owner: input.owner,
-              name: deployName,
-              stage: "migrate",
-              reason: message,
-              message,
-              // The app's data facet failing to answer says nothing about its migrations.
-              ...(Schema.is(RuntimeProtocolFailed)(error) ||
-              Schema.is(RuntimeBuildUnavailable)(error)
-                ? { retryable: true as const }
-                : {}),
-            });
-          }),
-          Effect.withSpan("sdk.apps.migrate"),
-        );
-
-      const version = {
-        id: VersionId.make(`dpl_${yield* crypto.random.uuidV4()}`),
-        code,
-        owner: input.owner,
-        sourceCommit: input.commit ?? null,
-        build: built.build,
-        createdAt: new Date(yield* Clock.currentTimeMillis),
-      };
-      yield* writeVersionSource(blobs, version.id, retainedFiles);
-      // A new app owns an initial workspace independently of this immutable version.
-      if (before === null) yield* writeInitialSource(blobs, code, retainedFiles);
-      return yield* transaction(db, (tx) =>
+      const commit = options.commit ?? ((_app, work) => work);
+      return yield* commit(
+        appId,
         Effect.gen(function* () {
-          const row = yield* query(() =>
-            tx.findFirst("apps", {
-              where: (b) =>
-                input.app !== undefined
-                  ? b.and(b("id", "=", input.app), b("owner", "=", input.owner))
-                  : b.and(b("owner", "=", input.owner), b("name", "=", deployName)),
-            }),
-          );
-          const existing =
-            row === null ? undefined : yield* lockApp(tx, { app: row.id, owner: input.owner });
-          if (existing !== undefined && existing.code !== code)
-            return yield* new AppNameTaken({ owner: input.owner, name: deployName });
-          if (before !== null && existing === undefined)
-            return yield* new AppNotFound({ app: before.id });
-          if (input.app !== undefined && existing === undefined)
-            return yield* Effect.fail(new AppNotFound({ app: input.app }));
-          if (existing !== undefined && input.app === undefined)
-            return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
-          if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
-          if (existing !== undefined) yield* unchanged(existing);
-          const createdAt = new Date(yield* Clock.currentTimeMillis);
-          const promote = existing === undefined || sequence > existing.activatedSequence;
-          for (const { provider } of entries) {
-            // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
-            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
-              Effect.mapError(() => new StorageError()),
-            );
-            yield* query(() =>
-              tx.upsert("providers", {
-                where: (b) => b("id", "=", provider.id),
-                create: { id: provider.id, definition },
-                update: { definition },
-              }),
-            );
-          }
+          // A deploy that lost its place never changes the app's database: the version it started
+          // from must still be active, with nothing activated since, before it migrates and again
+          // when it promotes. The host serializes an app's version changes, so this only fails for a
+          // writer outside that.
+          const named = "expectedVersion" in input ? input.expectedVersion : undefined;
+          const expected =
+            before === null ? null : named === undefined ? before.activeVersion : named;
+          const unchanged = (current: StoredApp) =>
+            before === null ||
+            (current.activeVersion === expected && current.activatedSequence < sequence)
+              ? Effect.void
+              : Effect.fail(
+                  new AppVersionChanged({
+                    app: current.id,
+                    expected,
+                    current: current.activeVersion,
+                  }),
+                );
+          if (before !== null) yield* unchanged(yield* storedApp(db, { app: before.id }));
+          const version = {
+            id: VersionId.make(`dpl_${yield* crypto.random.uuidV4()}`),
+            code,
+            owner: input.owner,
+            sourceCommit: input.commit ?? null,
+            build: built.build,
+            createdAt: new Date(yield* Clock.currentTimeMillis),
+            rebuiltFrom: options.rebuiltFrom ?? null,
+          };
           const encodedRequirements = yield* Schema.encodeEffect(
             Schema.toCodecJson(AppRequirements),
           )(requirements).pipe(Effect.mapError(() => new StorageError()));
-          yield* query(() =>
-            tx.create("deployments", {
-              ...version,
-              requirements: encodedRequirements,
-              fileCount: files.length,
-            }),
-          );
-          const app = {
-            id: appId,
-            code,
-            repository: existing === undefined ? null : existing.repository,
-            owner: input.owner,
-            name: existing?.name ?? deployName,
-            slug: appSlug(existing?.name ?? deployName),
-            activeVersion: promote ? version.id : existing.activeVersion,
-            copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
-            createdAt: existing === undefined ? createdAt : existing.createdAt,
+          const versionRow = {
+            ...version,
+            requirements: encodedRequirements,
+            fileCount: files.length,
           };
-          if (existing === undefined) {
-            yield* createApp(tx, {
-              ...app,
-              name: deployName,
-              deploySequence: sequence,
-              activatedSequence: sequence,
-            });
-            if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements });
-          } else if (promote)
-            yield* query(() =>
-              tx.updateMany("apps", {
-                where: (b) => b("id", "=", app.id),
-                set: { activeDeployment: version.id, activatedSequence: sequence },
+          yield* writeVersionSource(blobs, version.id, retainedFiles);
+          // A new app owns an initial workspace independently of this immutable version.
+          if (before === null) yield* writeInitialSource(blobs, code, retainedFiles);
+          // An existing app saves the version as its pending one before its database changes: a
+          // process that stops after the migration and before the promotion leaves it to promote at
+          // the next start (`promotePending`), so the previously active build never runs on the
+          // migrated database.
+          if (before !== null)
+            yield* transaction(db, (tx) =>
+              Effect.gen(function* () {
+                const existing = yield* lockApp(tx, { app: before.id, owner: input.owner });
+                yield* unchanged(existing);
+                yield* query(() => tx.create("deployments", versionRow));
+                yield* query(() =>
+                  tx.updateMany("apps", {
+                    where: (b) => b("id", "=", existing.id),
+                    set: { pendingDeployment: version.id },
+                  }),
+                );
               }),
             );
-          if (promote) yield* webhookSourcesPending(tx, app.id);
-          const projected = promote
-            ? { ...app, requirements }
-            : yield* project(tx, { ...existing, ...app });
-          const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
-            Effect.mapError(() => new StorageError()),
+          // A migration that failed changed nothing to promote: the pending version goes.
+          const abandon =
+            before === null
+              ? Effect.void
+              : transaction(db, (tx) =>
+                  Effect.gen(function* () {
+                    yield* query(() =>
+                      tx.updateMany("apps", {
+                        where: (b) =>
+                          b.and(b("id", "=", before.id), b("pendingDeployment", "=", version.id)),
+                        set: { pendingDeployment: null },
+                      }),
+                    );
+                    yield* query(() =>
+                      tx.deleteMany("deployments", { where: (b) => b("id", "=", version.id) }),
+                    );
+                  }),
+                );
+          // The active version's migrations as it retained them: one applied before the framework
+          // renamed its reserved tables, which this build has only renamed, keeps its history.
+          const originals =
+            before === null || before.activeVersion === null || requirements.sql !== true
+              ? []
+              : (yield* readVersionSource(blobs, before.activeVersion)).flatMap((file) =>
+                  file.path.startsWith("migrations/") && "content" in file && !("encoding" in file)
+                    ? [{ path: file.path, content: file.content }]
+                    : [],
+                );
+          if (requirements.sql === true)
+            yield* runtime.migrate({ app: appId, build: built.build, originals }).pipe(
+              Effect.mapError((error) => {
+                const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
+                return new VersionBuildFailed({
+                  owner: input.owner,
+                  name: deployName,
+                  stage: "migrate",
+                  reason: message,
+                  message,
+                  // The app's data facet failing to answer says nothing about its migrations.
+                  ...(Schema.is(RuntimeProtocolFailed)(error) ||
+                  Schema.is(RuntimeBuildUnavailable)(error)
+                    ? { retryable: true as const }
+                    : {}),
+                });
+              }),
+              Effect.tapError(() => abandon),
+              Effect.withSpan("sdk.apps.migrate"),
+            );
+
+          return yield* transaction(db, (tx) =>
+            Effect.gen(function* () {
+              const row = yield* query(() =>
+                tx.findFirst("apps", {
+                  where: (b) =>
+                    input.app !== undefined
+                      ? b.and(b("id", "=", input.app), b("owner", "=", input.owner))
+                      : b.and(b("owner", "=", input.owner), b("name", "=", deployName)),
+                }),
+              );
+              const existing =
+                row === null ? undefined : yield* lockApp(tx, { app: row.id, owner: input.owner });
+              if (existing !== undefined && existing.code !== code)
+                return yield* new AppNameTaken({ owner: input.owner, name: deployName });
+              if (before !== null && existing === undefined)
+                return yield* new AppNotFound({ app: before.id });
+              if (input.app !== undefined && existing === undefined)
+                return yield* Effect.fail(new AppNotFound({ app: input.app }));
+              if (existing !== undefined && input.app === undefined)
+                return yield* Effect.fail(
+                  new AppNameTaken({ owner: input.owner, name: deployName }),
+                );
+              if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
+              if (existing !== undefined) yield* unchanged(existing);
+              const createdAt = new Date(yield* Clock.currentTimeMillis);
+              const promote = existing === undefined || sequence > existing.activatedSequence;
+              for (const { provider } of entries) {
+                // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
+                const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
+                  provider.shared,
+                ).pipe(Effect.mapError(() => new StorageError()));
+                yield* query(() =>
+                  tx.upsert("providers", {
+                    where: (b) => b("id", "=", provider.id),
+                    create: { id: provider.id, definition },
+                    update: { definition },
+                  }),
+                );
+              }
+              if (before === null) yield* query(() => tx.create("deployments", versionRow));
+              const app = {
+                id: appId,
+                code,
+                repository: existing === undefined ? null : existing.repository,
+                owner: input.owner,
+                name: existing?.name ?? deployName,
+                slug: appSlug(existing?.name ?? deployName),
+                activeVersion: promote ? version.id : existing.activeVersion,
+                copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
+                createdAt: existing === undefined ? createdAt : existing.createdAt,
+              };
+              if (existing === undefined) {
+                yield* createApp(tx, {
+                  ...app,
+                  name: deployName,
+                  deploySequence: sequence,
+                  activatedSequence: sequence,
+                });
+                if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements });
+              } else if (promote)
+                yield* query(() =>
+                  tx.updateMany("apps", {
+                    where: (b) => b("id", "=", app.id),
+                    set: {
+                      activeDeployment: version.id,
+                      activatedSequence: sequence,
+                      pendingDeployment: null,
+                    },
+                  }),
+                );
+              if (promote) yield* webhookSourcesPending(tx, app.id);
+              const projected = promote
+                ? { ...app, requirements }
+                : yield* project(tx, { ...existing, ...app });
+              const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
+                Effect.mapError(() => new StorageError()),
+              );
+              if (lifecycle?.appDeployed) yield* lifecycle.appDeployed(deployedApp, version);
+              return { app: deployedApp, version };
+            }),
           );
-          if (lifecycle?.appDeployed) yield* lifecycle.appDeployed(deployedApp, version);
-          return { app: deployedApp, version };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
+  /** See `PluginEngine["apps"]["promotePending"]`. */
+  const promotePending = (input: { readonly owner: OwnerId }) =>
+    Effect.gen(function* () {
+      const rows = yield* query(() =>
+        db.findMany("apps", {
+          select: ["id", "pendingDeployment"],
+          where: (b) => b.and(b("owner", "=", input.owner), b("pendingDeployment", "is not", null)),
+        }),
+      );
+      const promoted: AppId[] = [];
+      for (const row of rows) {
+        const app = yield* storedApp(db, { app: row.id, owner: input.owner });
+        const pending = row.pendingDeployment!;
+        const version = yield* storedVersion(db, app, pending);
+        // The migration may or may not have run before the process stopped; it applies once.
+        if (version.requirements.sql === true) {
+          const originals =
+            app.activeVersion === null
+              ? []
+              : (yield* readVersionSource(blobs, app.activeVersion)).flatMap((file) =>
+                  file.path.startsWith("migrations/") && "content" in file && !("encoding" in file)
+                    ? [{ path: file.path, content: file.content }]
+                    : [],
+                );
+          yield* runtime.migrate({ app: app.id, build: version.build, originals }).pipe(
+            Effect.mapError((error) => {
+              const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
+              return new VersionBuildFailed({
+                owner: input.owner,
+                name: app.name,
+                stage: "migrate",
+                reason: message,
+                message,
+                retryable: true,
+              });
+            }),
+          );
+        }
+        const done = yield* transaction(db, (tx) =>
+          Effect.gen(function* () {
+            const locked = yield* lockApp(tx, { app: app.id, owner: input.owner });
+            const current = yield* query(() =>
+              tx.findFirst("apps", {
+                select: ["pendingDeployment"],
+                where: (b) => b("id", "=", locked.id),
+              }),
+            );
+            if (current?.pendingDeployment !== pending) return false;
+            yield* query(() =>
+              tx.updateMany("apps", {
+                where: (b) => b("id", "=", locked.id),
+                set: {
+                  activeDeployment: pending,
+                  pendingDeployment: null,
+                  deploySequence: locked.deploySequence + 1,
+                  activatedSequence: locked.deploySequence + 1,
+                },
+              }),
+            );
+            yield* webhookSourcesPending(tx, locked.id);
+            if (lifecycle?.appDeployed)
+              yield* lifecycle.appDeployed(
+                {
+                  ...Struct.omit(locked, ["deploySequence", "activatedSequence"]),
+                  activeVersion: pending,
+                  requirements: version.requirements,
+                },
+                Struct.omit(version, ["requirements", "fileCount"]),
+              );
+            return true;
+          }),
+        );
+        if (done) promoted.push(app.id);
+      }
+      return promoted;
+    }).pipe(
+      // An app or version a pending version names that cannot be read is the store's fault.
+      Effect.catchTags({
+        AppNotFound: () => Effect.fail(new StorageError()),
+        AppNotDeployed: () => Effect.fail(new StorageError()),
+        VersionNotFound: () => Effect.fail(new StorageError()),
+      }),
+      Effect.withSpan("sdk.apps.promotePending"),
+    );
   const copy = (
     input: Parameters<PluginEngine["apps"]["copy"]>[0],
     reserved?: { readonly id: AppId; readonly save?: boolean | undefined },
@@ -754,6 +937,9 @@ export const makeApps = (
   return {
     ...authoring,
     deploy: (input: DeployInput) => deploy(input),
+    deployWith: (input: DeployInput, options: DeployOptions) =>
+      deploy(input, null, undefined, undefined, options),
+    promotePending,
     build: (input: Parameters<PluginEngine["apps"]["build"]>[0]) =>
       buildSource(input.owner, input.name, input.files, {
         unanswered: () => new BuildUnanswered({ owner: input.owner, name: input.name }),
@@ -963,11 +1149,17 @@ export const makeApps = (
             }),
           );
           yield* webhookSourcesPending(tx, app.id);
-          return {
+          const activated = {
             ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
             activeVersion: version.id,
             requirements: version.requirements,
           };
+          if (lifecycle?.appDeployed)
+            yield* lifecycle.appDeployed(
+              activated,
+              Struct.omit(version, ["requirements", "fileCount"]),
+            );
+          return activated;
         }),
       ).pipe(Effect.withSpan("sdk.apps.activate")),
     versions: (input: Parameters<PluginEngine["apps"]["versions"]>[0]) =>

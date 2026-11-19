@@ -85,9 +85,9 @@ export class WorkflowFailure extends Schema.TaggedError<WorkflowFailure>()("Work
     "conflict",
     "engine",
     /**
-     * The run was saved for a build of an earlier framework, and the app's active version does not
-     * take it as it was started: it no longer declares the workflow, refuses its input, or needs
-     * other accounts. Nothing of it ran on the active version; start it again.
+     * The run was saved for a build the runtime no longer runs: it had started, so it never moves,
+     * or the app's active version is not the host's rebuild of its version's exact source. Nothing
+     * more of it ran; start it again.
      */
     "stale",
   ]),

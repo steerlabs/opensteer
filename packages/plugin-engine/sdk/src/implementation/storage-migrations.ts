@@ -20,6 +20,7 @@ import {
   version4014Tables,
   version4015Tables,
   version4017Tables,
+  version4018Tables,
   eventSelectionIndexes,
   appScheduleIndex,
   scopedRunKeyIndex,
@@ -681,6 +682,21 @@ export const storageSchemas = [
           ...eventSelectionIndexes.map((sql) => ({ type: "custom" as const, sql })),
         ]),
       ),
+  }),
+  // Additive for the running server: two nullable columns it never names. It writes no lineage
+  // and no pending version, which reads as a version built from new source and as a deploy that
+  // promoted, as every version before it was.
+  schema({
+    version: "4.0.18",
+    tables: version4018Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
   }),
 ] as const;
 

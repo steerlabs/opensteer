@@ -41,7 +41,7 @@ import type { PluginEngine } from "../contracts/pluginEngine.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp, storedVersion } from "./apps.ts";
+import { continuedVersion, storedApp, storedVersion } from "./apps.ts";
 import { isContextChange, resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { invocationScope, scopedSelection } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
@@ -239,60 +239,20 @@ export const makeWorkflowRuns = (
       captured: { accounts: row.accounts, scope: row.scope },
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
   /** Whether the runtime runs this build as it is; see `Runtime.current`. */
-  const current = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
+  const runsAsIs = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
+  /** End a run stale: nothing more of it runs, and its view says why. */
+  const stale = (run: WorkflowRunId) =>
+    finish(run, { ok: false, error: "stale" }).pipe(Effect.andThen(Effect.fail(failure("stale"))));
   /**
-   * A run pinned to a build the runtime no longer runs as it is, moved to the app's active version
-   * when that version takes the run as it was started: it declares the workflow, accepts the saved
-   * request, and runs with the accounts and scope the run captured. Otherwise the run ends stale.
-   * Only a queued run moves: one that started ran its steps on the build it names.
+   * The version a queued run starts on (`continuedVersion`): its pinned version, or the host's
+   * rebuild of that version's exact source, saved on the run; none for a stale run.
    */
-  const rebind = (row: typeof StoredRun.Type) =>
+  const continued = (row: typeof StoredRun.Type) =>
     Effect.gen(function* () {
-      const stale = failure("stale");
-      if (row.status !== "queued") return yield* stale;
-      const app = yield* storedApp(db, { app: row.app });
-      if (app.activeVersion === null || app.activeVersion === row.version) return yield* stale;
-      const state = yield* snapshot(db, {
-        app: row.app,
-        version: app.activeVersion,
-        captured: { accounts: row.accounts, scope: row.scope },
-      }).pipe(
-        Effect.provideService(CurrentActor, row.actor ?? undefined),
-        Effect.catchIf(isContextChange, () => Effect.fail(stale)),
+      const version = yield* continuedVersion(db, runtime, row.app, row.version).pipe(
+        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
       );
-      if (
-        !Schema.toEquivalence(SelectedAccounts)(state.accounts, row.accounts) ||
-        !(yield* current(state.version.build))
-      )
-        return yield* stale;
-      const payload = yield* decrypt(row);
-      const bound = yield* resolve(state, resolveAccount).pipe(
-        Effect.provideService(CurrentActor, state.actor),
-      );
-      const parsed = yield* runtime
-        .workflow({
-          app: row.app,
-          build: state.version.build,
-          hostApi: declarations.hostApi(state.version),
-          ...bound,
-          command: { operation: "workflow-validate", name: row.name, input: payload.request },
-        })
-        .pipe(
-          // A build that could not load or answer says nothing about the run; the app's own
-          // refusal of the workflow or its input does.
-          Effect.catchTags({
-            RuntimeBuildUnavailable: () => Effect.fail(failure("engine", true)),
-            RuntimeProtocolFailed: () => Effect.fail(failure("engine", true)),
-          }),
-          Effect.catchIf(
-            (error) => !(Schema.is(WorkflowFailure)(error) && error.reason === "engine"),
-            () => Effect.fail(stale),
-          ),
-        );
-      const encrypted = yield* credentials.encrypt(
-        row.id,
-        Redacted.make({ input: parsed, request: payload.request }),
-      );
+      if (version === null || version === row.version) return version;
       yield* query(() =>
         db.updateMany("workflowRuns", {
           where: (b) =>
@@ -301,30 +261,54 @@ export const makeWorkflowRuns = (
               b("status", "=", "queued"),
               b("deployment", "=", row.version),
             ),
-          set: { deployment: state.version.id, encrypted },
+          set: { deployment: version },
         }),
       );
-      const rebound = yield* read(row.id);
-      if (rebound.version !== state.version.id) return yield* stale;
-      yield* Effect.logInfo("Workflow run moved to the active version").pipe(
-        Effect.annotateLogs({ run: row.id, from: row.version, to: rebound.version }),
+      yield* Effect.logInfo("Workflow run continues on its version's rebuild").pipe(
+        Effect.annotateLogs({ run: row.id, from: row.version, to: version }),
       );
-      return rebound;
+      return version;
     });
-  /** The run as it may run now: pinned to a current build, or moved to one by `rebind`. */
-  const runnable = (row: typeof StoredRun.Type) =>
+  /**
+   * The run as it may run now. A started run ran its steps on its version's build and never
+   * moves: once the runtime no longer runs that build, it ends stale at its next step, neither
+   * continuing on old code nor jumping to new code. A queued run starts on the version `continued`
+   * selects, or ends stale.
+   */
+  const runnable = (saved: typeof StoredRun.Type) =>
     Effect.gen(function* () {
-      const state = yield* captured(row);
-      if (yield* current(state.version.build)) return { row, state };
-      // A stale run ends here, whichever host path reached it, so its view says why.
-      const rebound = yield* rebind(row).pipe(
-        Effect.tapError((error) =>
-          Schema.is(WorkflowFailure)(error) && error.reason === "stale"
-            ? finish(row.id, { ok: false, error: "stale" })
-            : Effect.void,
+      if (saved.status === "queued" && (yield* continued(saved)) === null)
+        return yield* stale(saved.id);
+      const row = yield* read(saved.id);
+      const state = yield* captured(row).pipe(
+        Effect.catchIf(
+          (error) => row.status !== "queued" && isContextChange(error),
+          () => stale(row.id),
         ),
       );
-      return { row: rebound, state: yield* captured(rebound) };
+      if (row.status !== "queued" && !(yield* runsAsIs(state.version.build)))
+        return yield* stale(row.id);
+      return { row, state };
+    });
+  /**
+   * Hand a queued run to the native engine once the version it starts on runs as it is: one whose
+   * build waits for its rebuild stays queued, and a stale one ends. Reports whether the engine
+   * accepted it.
+   */
+  const dispatchQueued = (backend: WorkflowRuntime, row: typeof StoredRun.Type) =>
+    Effect.gen(function* () {
+      const version = yield* continued(row);
+      if (version === null) {
+        yield* finish(row.id, { ok: false, error: "stale" });
+        return false;
+      }
+      const app = yield* storedApp(db, { app: row.app });
+      const build = (yield* storedVersion(db, app, version)).build;
+      if (!(yield* runsAsIs(build))) {
+        yield* Effect.annotateCurrentSpan("pluginEngine.workflow.dispatch", "held");
+        return false;
+      }
+      return yield* dispatch(backend, row.id);
     });
   const context: WorkflowHost["context"] = (run) =>
     safe(
@@ -503,8 +487,8 @@ export const makeWorkflowRuns = (
         // native dispatch. A status read reconciles that gap without waiting for cron.
         const current = yield* read(row.id);
         if (terminal(current)) return yield* view(current);
-        if (current.status === "queued" && !(yield* dispatch(backend, row.id)))
-          return yield* view(current);
+        if (current.status === "queued" && !(yield* dispatchQueued(backend, current)))
+          return yield* view(yield* read(row.id));
         state = yield* backend.status(row.id);
       }
       if (state.status === "complete") {
@@ -512,7 +496,16 @@ export const makeWorkflowRuns = (
         return yield* view(yield* read(row.id));
       }
       if (state.status === "errored" || (state.status === "missing" && row.status !== "queued")) {
-        yield* finish(row.id, { ok: false, error: "engine" });
+        // The native engine gave the run up. One whose build the runtime no longer runs could not
+        // have continued: it is stale, not an engine failure.
+        const runs = yield* captured(row).pipe(
+          Effect.flatMap((captured) => runsAsIs(captured.version.build)),
+          Effect.catchIf(
+            (error) => isContextChange(error),
+            () => Effect.succeed(false),
+          ),
+        );
+        yield* finish(row.id, { ok: false, error: runs ? "engine" : "stale" });
         return yield* view(yield* read(row.id));
       }
       if (state.status === "terminated") {
@@ -696,7 +689,7 @@ export const makeWorkflowRuns = (
         if (retained.name !== input.workflow || stable(payload.request) !== stable(input.input))
           return yield* failure("conflict");
         yield* Effect.annotateCurrentSpan("pluginEngine.run.id", retained.id);
-        if (!terminal(retained)) yield* dispatch(backend, retained.id);
+        if (retained.status === "queued") yield* dispatchQueued(backend, retained);
         return yield* view(yield* read(retained.id));
       }).pipe(
         // The run is saved, and a saved queued run is dispatched later even if this call stops, so
@@ -920,7 +913,12 @@ export const makeWorkflowRuns = (
               (row) =>
                 safe(
                   Effect.gen(function* () {
-                    if (row.status === "queued") yield* backend.start(row.id);
+                    if (row.status === "queued") {
+                      const queued = yield* Schema.decodeUnknownEffect(StoredRun)(row).pipe(
+                        Effect.mapError(() => new StorageError()),
+                      );
+                      yield* dispatchQueued(backend, queued);
+                    }
                     yield* get({ app: row.app, run: row.id });
                   }),
                   "engine",

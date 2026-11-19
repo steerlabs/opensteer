@@ -408,8 +408,8 @@ export interface Runtime<Requirements = never> {
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
   /**
    * Whether this runtime runs a retained build as it is. A build linked against a framework other
-   * than this runtime's is never run: work pinned to one is rebound to the app's active version, or
-   * ends stale. Without it every build is current.
+   * than this runtime's is never run: work pinned to one continues only on the host's rebuild of its
+   * version's exact source, and otherwise ends stale. Without it every build is current.
    */
   readonly current?: (build: BuildId) => Effect.Effect<boolean, never, Requirements>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */

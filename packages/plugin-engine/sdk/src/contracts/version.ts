@@ -22,6 +22,12 @@ export const VersionMetadata = Schema.Struct({
   sourceCommit: Schema.NullOr(SourceCommit),
   build: BuildId,
   createdAt: Schema.Date,
+  /**
+   * The version whose exact source this one is the host's own rebuild of, built again for a newer
+   * framework; null for one built from source as it was deployed. Work saved for a version
+   * continues on its rebuilds, and on no other version.
+   */
+  rebuiltFrom: Schema.NullOr(VersionId),
 });
 /** A retained build reference without loading its source files. */
 export type VersionMetadata = typeof VersionMetadata.Type;

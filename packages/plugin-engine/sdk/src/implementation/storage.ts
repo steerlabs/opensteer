@@ -24,7 +24,7 @@ export const makePluginEngineStorage = (options: { readonly provider: SqlProvide
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "pluginEngine" });
     const client = pluginEngineDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
+    const db = bindOrm(client.orm("4.0.18"), sql, reactivity);
     const checkMigration = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       const version = yield* migrator.version;
@@ -79,7 +79,7 @@ export const makePluginEngineStorage = (options: { readonly provider: SqlProvide
       Effect.mapError(() => new StorageError()),
     );
     return {
-      orm: (_version: "4.0.17") => db,
+      orm: (_version: "4.0.18") => db,
       reactivity,
       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
       toolSearch: makeToolSearchStore(sql),

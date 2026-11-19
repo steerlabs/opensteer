@@ -192,7 +192,9 @@ export const makeSchedules = (
         (item) => item.name === input.name && (item.scope === "app") === (input.actor === null),
       );
       if (found === undefined) return yield* new ScheduleNotFound();
-      return found;
+      // The version whose declaration this is: an occurrence calls that version, never another
+      // activated since it read the declaration.
+      return { ...found, version: declared.version };
     });
   /** The actor's copy of a user declaration, or without an actor the app schedule, or null. */
   const findOwn = (input: {
@@ -983,6 +985,7 @@ export const makeSchedules = (
                   );
                   const response = yield* tools.call({
                     app: setting.app,
+                    version: declared.version,
                     accounts,
                     tool: declared.tool,
                     // Schedules only target mutations; defineApp checks this.

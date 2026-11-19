@@ -30,6 +30,7 @@ import {
   type PluginEngine,
   runtimeAdapter,
   toEffectRuntime,
+  WorkflowTarget,
 } from "@opensteer/plugin-engine-sdk/core";
 import { WorkflowFailure } from "apps/contracts";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
@@ -90,8 +91,8 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({
 
 /**
  * A plugin whose workflows and reviewed tool are pinned to their version. `revision` tells the
- * versions apart; `drop` leaves out the reviewed tool and the `moved` workflow; `extra` adds a
- * second migration.
+ * versions apart; `drop` leaves out the reviewed tool and the `moved` workflow. `slow` sleeps
+ * before its step. `extra` adds a second migration.
  */
 const pinnedSource = (revision: number, drop = false) => `
 import { defineApp, query, mutation, router, object, number, workflow } from "apps";
@@ -108,6 +109,10 @@ export default defineApp({}, {
   workflows: {
     ${drop ? "" : `moved: workflow({ input: object({ amount: number() }) }, async (ctx, { amount }) => ({ amount, revision: ${revision} })),`}
     kept: workflow({ input: object({}) }, async (ctx) => ctx.step.runQuery("read", read, {})),
+    slow: workflow({ input: object({}) }, async (ctx) => {
+      await ctx.step.sleep("wait", 3000);
+      return ctx.step.runQuery("read", read, {});
+    }),
   },
 });`;
 
@@ -432,64 +437,71 @@ test.for(fixtureFlows)(
           SELECT status, failure, deployment FROM plugin_engine_workflow_runs WHERE id = ${id}`).then(
           (rows) => rows[0],
         );
-      // Work saved on the first version: two queued runs and two reviewed calls.
-      holding = true;
-      const moved = await runs("moved", { amount: 2 });
-      const dropped = await runs("moved", { amount: 3 });
-      const kept = await runs("kept", {});
-      const approval = await call("reviewed", { amount: 5 });
-      const refused = await call("reviewed", { amount: 6 });
-      if (approval.status !== "approval-required" || refused.status !== "approval-required")
-        throw new Error("The reviewed call did not ask for approval");
-      expect((await stored(moved.id))?.status).toBe("queued");
-
-      // The first version's build is replaced; the second declares the same workflows and tool.
-      replaced.add(v1.version.build);
-      const v2 = await run(engine.apps.deploy({ owner, app, files: files(pinnedSource(2), true) }));
-      holding = false;
-      // A queued run moves to the active version, which validates its saved input, and runs there.
-      const finished = (id: (typeof moved)["id"]) =>
+      const finished = (id: string) =>
         vi.waitFor(
           async () => {
-            const current = await run(engine.apps.workflowRuns.get({ app, run: id }));
+            const current = await run(
+              engine.apps.workflowRuns.get({
+                app,
+                run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(id),
+              }),
+            );
             if (current.status !== "complete" && current.status !== "errored")
               throw new Error(`Run ${id} is ${current.status}`);
             return current;
           },
-          { timeout: 10_000, interval: 100 },
+          { timeout: 15_000, interval: 100 },
         );
-      expect(await finished(moved.id)).toMatchObject({
+      /** The Host's rebuild of a version: its exact source, built again, as that version's. */
+      const rebuild = (version: typeof v1.version, source: string) =>
+        run(
+          engine.apps.deployWith(
+            { owner, app, files: files(source, true), expectedVersion: version.id },
+            { rebuiltFrom: version.id },
+          ),
+        );
+      // Work saved on the first version: a queued run and a reviewed call.
+      holding = true;
+      const queued = await runs("moved", { amount: 2 });
+      const approval = await call("reviewed", { amount: 5 });
+      if (approval.status !== "approval-required")
+        throw new Error("The reviewed call did not ask for approval");
+      expect((await stored(queued.id))?.status).toBe("queued");
+
+      // An upgrade: the first version's build no longer runs, and the Host rebuilds its exact
+      // source. Nothing was changed by anyone, so the saved work continues on the rebuild.
+      replaced.add(v1.version.build);
+      const v2 = await rebuild(v1.version, pinnedSource(1));
+      expect(v2.version.rebuiltFrom).toBe(v1.version.id);
+      holding = false;
+      expect(await finished(queued.id)).toMatchObject({
         status: "complete",
-        output: { amount: 2, revision: 2 },
+        output: { amount: 2, revision: 1 },
       });
-      expect(await stored(moved.id)).toMatchObject({ deployment: v2.version.id });
-      expect(await finished(kept.id)).toMatchObject({
-        status: "complete",
-        output: { revision: 2 },
-      });
-      // A reviewed call moves to the active version, which takes it as reviewed.
+      expect(await stored(queued.id)).toMatchObject({ deployment: v2.version.id });
       expect(
         await run(
           engine.tools.resume({ requestId: approval.requestId, response: { action: "accept" } }),
         ),
-      ).toMatchObject({ status: "completed", value: { value: 5, revision: 2 } });
+      ).toMatchObject({ status: "completed", value: { value: 5, revision: 1 } });
 
-      // The third version no longer declares the workflow or the tool: what waits for them is
-      // stale, and nothing of it runs on any build.
-      replaced.add(v2.version.build);
+      // Work saved on the rebuild, then the owner replaces it with other source that declares
+      // the same workflow and tool, and refuses the call: whatever the new version declares, the
+      // saved work is stale, and nothing of it runs on any build.
       holding = true;
-      const waiting = await runs("kept", {});
-      await run(engine.apps.deploy({ owner, app, files: files(pinnedSource(3, true), true) }));
+      const pending = await runs("moved", { amount: 3 });
+      const refused = await call("reviewed", { amount: 6 });
+      if (refused.status !== "approval-required")
+        throw new Error("The reviewed call did not ask for approval");
+      replaced.add(v2.version.build);
+      const owned = pinnedSource(3).replace("approval: always()", 'approval: () => "denied"');
+      await run(engine.apps.deploy({ owner, app, files: files(owned, true) }));
       holding = false;
-      expect(await finished(dropped.id)).toMatchObject({ status: "errored", error: "stale" });
-      expect(await stored(dropped.id)).toMatchObject({
+      expect(await finished(pending.id)).toMatchObject({ status: "errored", error: "stale" });
+      expect(await stored(pending.id)).toMatchObject({
         status: "errored",
         failure: "stale",
-        deployment: v1.version.id,
-      });
-      expect(await finished(waiting.id)).toMatchObject({
-        status: "complete",
-        output: { revision: 3 },
+        deployment: v2.version.id,
       });
       expect(
         await run(
@@ -497,6 +509,22 @@ test.for(fixtureFlows)(
         ),
       ).toMatchObject({ status: "failed", reason: "stale" });
       expect(await call("read")).toMatchObject({ value: { value: 5, revision: 3 } });
+
+      // A run that has started never moves: once its build no longer runs it ends stale at its
+      // next step, even beside a rebuild of its exact source.
+      const slow = await runs("slow", {});
+      await vi.waitFor(async () => expect((await stored(slow.id))?.status).toBe("running"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      const v3 = (await run(engine.apps.get({ app, owner }))).activeVersion!;
+      const v3Version = await run(engine.apps.version({ app, owner, version: v3 }));
+      replaced.add(v3Version.build);
+      const v4 = await rebuild(v3Version, owned);
+      expect(await finished(slow.id)).toMatchObject({ status: "errored", error: "stale" });
+      expect(await stored(slow.id)).toMatchObject({ failure: "stale", deployment: v3 });
+      expect(await call("read")).toMatchObject({ value: { value: 5, revision: 3 } });
+      expect((await run(engine.apps.get({ app, owner }))).activeVersion).toBe(v4.version.id);
 
       // A deploy that expects another active version than the current one fails before it
       // migrates the plugin's database, and saves nothing.

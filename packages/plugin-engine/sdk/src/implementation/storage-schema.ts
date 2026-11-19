@@ -886,10 +886,42 @@ const selectingEventSubscriptions = table("plugin_engine_event_subscriptions", {
   selection: column("selection", Schema.NullOr(Schema.Json)).default(null),
 });
 
-/** Tables of the 4.0.17 layout, the current one. */
+/** Tables of the 4.0.17 layout. */
 export const version4017Tables = {
   ...version4015Tables,
   eventSubscriptions: selectingEventSubscriptions,
+};
+
+/**
+ * Version 4.0.18 records which version a host rebuilt each version from, the same source built
+ * again (`rebuilt_from`): work saved for a version continues on its rebuilds, and on nothing else.
+ */
+const rebuiltDeployments = table("plugin_engine_deployments", {
+  ...version4Tables.deployments.columns,
+  rebuiltFrom: column("rebuilt_from", Schema.NullOr(VersionId), { type: "varchar(255)" }).default(
+    null,
+  ),
+}).unique("plugin_engine_deployments_id_code", ["id", "code"]);
+
+/**
+ * A deploy saves its version as the app's pending one before it migrates the app's database and
+ * clears it when it promotes the version. One still pending at start is promoted then, so the
+ * previously active build never runs against the migrated database.
+ */
+const pendingApps = table("plugin_engine_apps", {
+  ...version4Tables.apps.columns,
+  pendingDeployment: column("pending_deployment", Schema.NullOr(VersionId), {
+    type: "varchar(255)",
+  }).default(null),
+})
+  .unique("plugin_engine_apps_owner_name", ["owner", "name"])
+  .unique("plugin_engine_apps_owner_slug", ["owner", "slug"]);
+
+/** Tables of the 4.0.18 layout, the current one. */
+export const version4018Tables = {
+  ...version4017Tables,
+  deployments: rebuiltDeployments,
+  apps: pendingApps,
 };
 
 /** Selections across an owner's apps are matched by owner. */

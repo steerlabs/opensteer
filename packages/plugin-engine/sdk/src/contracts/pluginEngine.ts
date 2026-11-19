@@ -200,7 +200,10 @@ export interface ResourceLifecycle {
   ) => Effect.Effect<void, Error>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
-  /** Runs in the version commit transaction, including deployments to an existing app. */
+  /**
+   * Runs in the transaction that makes a version active: a deploy's promotion, an activation, and
+   * the promotion of a pending version at start.
+   */
   readonly appDeployed?: (
     app: App,
     version: import("./version.ts").VersionMetadata,
@@ -333,6 +336,24 @@ export interface PluginEngineInputs {
 }
 
 /** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */
+/**
+ * A host's part in a deploy, which a deploy's HTTP caller never has.
+ *
+ * `rebuiltFrom` names the version whose exact source the deploy builds again, for this host's
+ * framework. Only the host's own rebuild sets it: work saved for that version (an approval, a
+ * queued workflow run, a schedule's approval, a webhook subscription) continues on the new one,
+ * and on no other version.
+ *
+ * `commit` runs the deploy's commit, which follows its build: the check that the version it
+ * expects is still active, the migration of the app's database and the promotion. The host wraps
+ * it to hold the app's version changes and its execution for that short time, and not for the
+ * build.
+ */
+export interface DeployOptions {
+  readonly rebuiltFrom?: VersionId;
+  readonly commit?: <A, E, R>(app: AppId, work: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+}
+
 export type PluginEngineOptions = PluginEngineInputs &
   (
     | { readonly secret: Redacted.Redacted<string>; readonly credentials?: undefined }
@@ -471,6 +492,22 @@ export type PluginEngine = Omit<
       },
     ) => ReturnType<FlatPluginEngine["apps"]["copy"]>;
     /**
+     * Host-only: `deploy` with the host's part in it (see `DeployOptions`): the version its source
+     * is a rebuild of, and the wrapper of its commit.
+     */
+    readonly deployWith: (
+      input: Parameters<FlatPluginEngine["apps"]["deploy"]>[0],
+      options: DeployOptions,
+    ) => ReturnType<FlatPluginEngine["apps"]["deploy"]>;
+    /**
+     * Host-only: promote each app's pending version, one a deploy saved and may have migrated the
+     * app's database for, but whose process stopped before it promoted the version. Run at start,
+     * before anything of the app is served. Returns the apps whose version it promoted.
+     */
+    readonly promotePending: (input: {
+      readonly owner: OwnerId;
+    }) => Effect.Effect<ReadonlyArray<AppId>, StorageError | VersionBuildFailed>;
+    /**
      * Host-only: leave the app with no active version, as one whose build failed has, keeping its
      * versions, accounts and data, only while `expectedVersion` is still the active one. Reports
      * whether it did. A person or agent activates or deploys a version again.
@@ -541,6 +578,9 @@ export type PromisePluginEngine = Promisify<
     | "apps"
   > & {
     readonly tools: Omit<PluginEngine["tools"], "approval" | "searchable" | "search">;
-    readonly apps: Omit<PluginEngine["apps"], "copyAs" | "build" | "deactivate">;
+    readonly apps: Omit<
+      PluginEngine["apps"],
+      "copyAs" | "build" | "deactivate" | "deployWith" | "promotePending"
+    >;
   }
 >;

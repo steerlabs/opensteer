@@ -35,6 +35,7 @@ import {
   StorageError,
   RequestInvalid,
   type AccountId,
+  type VersionId,
 } from "../contracts/shared.ts";
 import { SelectedAccounts } from "../contracts/apps.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -44,7 +45,7 @@ import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
 import { storedAccount } from "./accounts.ts";
-import { lockApp, storedApp, storedVersion } from "./apps.ts";
+import { continuedVersion, lockApp, storedApp, storedVersion } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
 import { setupCompleted } from "./webhook-sources.ts";
 import { accountAuthority } from "./selection.ts";
@@ -416,9 +417,46 @@ export const makeWebhooks = (
           : Effect.fail(new StorageError());
       }),
     );
-  /** The subscription's pinned version and source, with the actor's accounts for the rest. */
-  const subscriptionState = (row: typeof StoredWebhook.Type) =>
+  /**
+   * The version a subscription's work runs on (`continuedVersion`): its pinned version, or the
+   * host's rebuild of that version's exact source, which the subscription then names. One that can
+   * continue on neither ends here, and none of its pinned build runs: an unregistered one stops,
+   * and a registered one waits for a person to remove it at the provider (`disabled`).
+   */
+  const continued = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
+      const version = yield* continuedVersion(db, runtime, row.app, row.version).pipe(
+        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
+      );
+      if (version === row.version) return row;
+      if (version !== null) {
+        yield* query(() =>
+          db.updateMany("webhooks", {
+            where: (b) => b.and(b("id", "=", row.id), b("deployment", "=", row.version)),
+            set: { deployment: version },
+          }),
+        );
+        return { ...row, version };
+      }
+      const registered = (yield* registrationOf(row)) !== undefined;
+      yield* query(() =>
+        db.updateMany("webhooks", {
+          where: (b) =>
+            b.and(
+              b("id", "=", row.id),
+              b("deployment", "=", row.version),
+              b("status", "!=", "stopped"),
+            ),
+          set: { status: registered ? "disabled" : "stopped", leaseUntil: new Date(0) },
+        }),
+      );
+      yield* refused("stale");
+      return yield* new WebhookFailed({ reason: "inactive" });
+    });
+  /** The subscription's continued version and source, with the actor's accounts for the rest. */
+  const subscriptionState = (pinned: typeof StoredWebhook.Type) =>
+    Effect.gen(function* () {
+      const row = yield* continued(pinned);
       const accounts = yield* backgroundAccounts(db, lifecycle, {
         app: row.app,
         version: row.version,
@@ -426,16 +464,20 @@ export const makeWebhooks = (
         source: row.sourceAccount,
       });
       return yield* snapshot(db, { app: row.app, version: row.version, accounts });
-    }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
+    }).pipe(Effect.provideService(CurrentActor, pinned.actor ?? undefined));
   /**
    * The registration's pinned version and the accounts it ran with, as the actor it ran as.
    * Removing it uses only them: the subscription may have moved to another actor since, and the
    * actor's current links may no longer resolve every requirement.
    */
-  const removalState = (row: typeof StoredWebhook.Type, registration: Registration) =>
+  const removalState = (
+    row: typeof StoredWebhook.Type,
+    registration: Registration,
+    version: VersionId,
+  ) =>
     snapshot(db, {
       app: row.app,
-      version: row.version,
+      version,
       // Only an app-account webhook's registration runs without an actor, and without a caller.
       captured: {
         accounts: registration.accounts,
@@ -720,8 +762,18 @@ export const makeWebhooks = (
               if (stopping) {
                 // A registration that never started reached no provider: nothing to remove.
                 const registration = yield* registrationOf(row);
-                if (registration !== undefined) {
-                  const state = yield* removalState(row, registration);
+                // Removal runs on the registration's version, or on the host's rebuild of its
+                // exact source; never on an old build. A registration neither can remove waits
+                // for a person to remove it at the provider, as a refused one does.
+                const version =
+                  registration === undefined
+                    ? null
+                    : yield* continuedVersion(db, runtime, row.app, row.version).pipe(
+                        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
+                      );
+                if (registration !== undefined && version === null) refused = true;
+                else if (registration !== undefined && version !== null) {
+                  const state = yield* removalState(row, registration, version);
                   // The product can refuse before resolving or once a renewal settles; either is
                   // lasting, unlike a storage failure, which the next attempt retries.
                   const context = (yield* registrationUsable(state, registration))

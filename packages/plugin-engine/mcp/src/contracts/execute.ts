@@ -92,7 +92,7 @@ export const ApprovalUnavailable = UserFacingError.define({
     /**
      * `expired`: the request passed its deadline. `context-changed`: PluginEngine read the app
      * version or accounts and they differ from the reviewed call. `stale`: the call was saved for a
-     * build of an earlier framework, and the app's active version does not take it as reviewed.
+     * build that no longer runs, and the app's active version is not a rebuild of its source.
      * `context-unconfirmed`: PluginEngine's storage failed while it read them, so it could not compare.
      * `answered`: another answer already claimed it. `ended`: the execution ended before the
      * request could be saved.
@@ -135,10 +135,10 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call is out of date",
           description:
-            "This call was saved for a version of the app built before Opensteer updated, and the app's current version does not take it as reviewed, so PluginEngine did not run it.",
+            "The app changed after this call was saved for approval: the version it was reviewed on no longer runs, and the app's current version is other source, so PluginEngine did not run it.",
           recovery: {
             action: "Run the call again and approve its new request.",
-            instructions: `The app was rebuilt for this version of Opensteer while the call waited. Its tool, input or accounts no longer match the reviewed call. ${check} Then start a new execute and ask the user to approve its new request.`,
+            instructions: `PluginEngine runs an approved call only on the version it was reviewed on, or on that version's own source rebuilt for this version of Opensteer. ${check} Then start a new execute and ask the user to approve its new request.`,
           },
         };
       case "context-unconfirmed":

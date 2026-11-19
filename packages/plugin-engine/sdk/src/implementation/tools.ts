@@ -62,7 +62,6 @@ import {
   CredentialsError,
   type AccountId,
   type AppId,
-  type BuildId,
   type VersionId,
 } from "../contracts/shared.ts";
 import type { Account } from "../contracts/account.ts";
@@ -112,7 +111,7 @@ import {
   StoredVersion,
 } from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
-import { gotApp, storedVersion } from "./apps.ts";
+import { continuedVersion, gotApp, storedVersion } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
 import type { OwnerId } from "../contracts/shared.ts";
 import { invocationAccounts } from "./linked-accounts.ts";
@@ -649,15 +648,6 @@ function invocation(
  * Check failures that are answers: the saved call's app, version or accounts are now missing
  * or different. Anything else, such as storage failing, answers nothing.
  */
-/** An app's refusals of a call that come before its tool's handler runs. */
-const refusedBeforeHandler = new Set([
-  "HostToolNotFound",
-  "HostOperationNotFound",
-  "HostInputInvalid",
-  "HostKindMismatch",
-  "HostToolApprovalRequired",
-]);
-
 export const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
@@ -949,8 +939,6 @@ export const makeTools = (
 ) => {
   const db = database(storage);
   const resolveAccount = oauth.resolveSelected;
-  /** Whether the runtime runs this build as it is; see `Runtime.current`. */
-  const runsAsIs = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
   /** Renew an account the service refused without repeating what it refused; undefined when none was. */
   const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
@@ -1921,39 +1909,30 @@ export const makeTools = (
                     ),
                     Effect.result,
                   );
-                let checked = yield* reread(saved.version);
-                // The reviewed call as it may run now. A call saved for a build the runtime no
-                // longer runs is never run on it: it moves to the app's active version when that
-                // version takes it as reviewed, with the same tool, input, kind and accounts, and
-                // the app's own check of the input and approval refuses anything else (`rebound`).
-                // Otherwise it is stale, and the person approves it again as a new request.
-                let reviewed: ToolInvocation = saved;
-                let rebound = false;
-                const stale = {
-                  status: "failed",
-                  requestId: input.requestId,
-                  reason: "stale",
-                } satisfies ToolResumeResult;
-                if (
-                  Result.isSuccess(checked) &&
-                  !(yield* runsAsIs(checked.success.state.version.build))
-                ) {
-                  const replaced = yield* reread(undefined);
-                  if (Result.isFailure(replaced)) {
-                    if (isContextChange(replaced.failure)) return stale;
-                    checked = replaced;
-                  } else {
-                    reviewed = { ...saved, version: replaced.success.state.version.id };
-                    if (
-                      reviewed.version === saved.version ||
-                      !(yield* runsAsIs(replaced.success.state.version.build)) ||
-                      !Schema.toEquivalence(ToolInvocation)(reviewed, replaced.success.current)
-                    )
-                      return stale;
-                    checked = replaced;
-                    rebound = true;
-                  }
-                }
+                // The reviewed call runs on the version it was reviewed on, or on the host's
+                // rebuild of that version's exact source; on nothing else (`continuedVersion`). A
+                // call that can continue on neither is stale, and the person approves it again.
+                const continued = yield* continuedVersion(
+                  db,
+                  runtime,
+                  saved.app,
+                  saved.version,
+                ).pipe(
+                  Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
+                  Effect.result,
+                );
+                if (Result.isSuccess(continued) && continued.success === null)
+                  return {
+                    status: "failed",
+                    requestId: input.requestId,
+                    reason: "stale",
+                  } satisfies ToolResumeResult;
+                const reviewed: ToolInvocation = Result.isSuccess(continued)
+                  ? { ...saved, version: continued.success! }
+                  : saved;
+                const checked = Result.isFailure(continued)
+                  ? Result.fail(continued.failure)
+                  : yield* reread(reviewed.version);
                 // A failed read shows nothing about the context: only an answer that differs does.
                 if (Result.isFailure(checked) && !isContextChange(checked.failure)) {
                   yield* Effect.annotateCurrentSpan({
@@ -2041,8 +2020,6 @@ export const makeTools = (
                       execute,
                     );
                     if (Result.isFailure(result)) {
-                      // The active version's own refusal of the moved call, before its handler.
-                      if (rebound && refusedBeforeHandler.has(result.failure._tag)) return stale;
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
                         toolCallFailure(
