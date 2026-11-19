@@ -405,19 +405,13 @@ integration("computer apps", () => {
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
 
-    // Unavailable, the provider says why instead of listing tools.
-    expect(await gateway.call("plugin_search", { namespace: messagesNamespace })).toMatchObject({
-      unavailableApps: [
-        {
-          blocked: {
-            code: "unavailable",
-            message:
-              "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
-            next: "Continue without it and tell the person what the message says.",
-          },
-        },
-      ],
-    });
+    // Unreachable, its tools stay listed as they are and the call says why.
+    const away = await gateway.call("plugin_search", { namespace: messagesNamespace });
+    expect(away).toMatchObject({ unavailableApps: [] });
+    expect((away.items as { path: string }[]).map(({ path }) => path)).toContain(queryMessages);
+    expect(JSON.stringify(away)).not.toContain("blocked");
+    const unreachable = await pluginCall(gateway, queryMessages, { sql: "SELECT 1" });
+    expect(unreachable.failure).toContain("Studio Mac");
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("plugin_search", { query: "query_messages" });
@@ -721,32 +715,36 @@ integration("computer apps", () => {
         integration: "apple-reminders",
       });
 
-      // 1. Full access not yet allowed: the provider says so and lists no tools.
+      // 1. Full access not yet allowed: its tools are listed, and its namespace says why once.
       const calendarNamespace = () => gateway.call("plugin_search", { namespace: calendarSlug });
+      const fullAccess =
+        "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.";
       await waitForCondition(async () =>
         JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
       const blocked = await calendarNamespace();
       record("calendar before its grant", blocked);
-      expect(blocked.items).toEqual([]);
+      expect((blocked.items as unknown[]).length).toBeGreaterThan(0);
+      expect(JSON.stringify(blocked.items)).not.toContain("blocked");
       expect(blocked).toMatchObject({
-        unavailableApps: [
+        namespaces: [
           {
             blocked: {
               code: "unavailable",
-              message:
-                "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+              message: fullAccess,
               next: "Continue without it and tell the person what the message says.",
             },
           },
         ],
+        unavailableApps: [],
       });
+      expect(JSON.stringify(blocked).split(fullAccess).length - 1).toBe(1);
 
       // 2. The person allows it on the Mac.
       helper.grants.calendars = "granted";
       helper.grants.reminders = "granted";
       await waitForCondition(
-        async () => ((await calendarNamespace()).items as unknown[]).length > 0,
+        async () => !JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
       const calendarSearch = await calendarNamespace();
       record("calendar once allowed", calendarSearch.items);

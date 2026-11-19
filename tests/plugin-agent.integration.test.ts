@@ -483,6 +483,25 @@ test("connected external agents can discover and list, but cannot execute, manag
   expect(await call(caller, "plugin_describe", { paths: ["tools.fixture.read"] })).toMatchObject({
     items: [expect.objectContaining({ path: "tools.fixture.read" })],
   });
+  // A write it is kept from by Read-only is named without its input type or signature.
+  await records.setAccess(personal.userId, plugin, "read-only");
+  const found = await call(caller, "plugin_search", { namespace: "fixture" });
+  const items = found.items as { path: string; input?: string }[];
+  expect(items.find(({ path }) => path === "tools.fixture.read")).toHaveProperty("input");
+  expect(items.find(({ path }) => path === "tools.fixture.reviewed")).toEqual({
+    path: "tools.fixture.reviewed",
+    description: expect.any(String),
+    blocked: expect.objectContaining({ code: "access_denied" }),
+  });
+  expect(
+    await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] }),
+  ).toMatchObject({
+    items: [{ path: "tools.fixture.reviewed", blocked: { code: "access_denied" } }],
+  });
+  expect(
+    (await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] })).items,
+  ).toEqual([expect.not.objectContaining({ signature: expect.anything() })]);
+  await records.setAccess(personal.userId, plugin, "all");
   expect(await call(caller, "opensteer_plugin_list", {})).toMatchObject({
     plugins: expect.arrayContaining([expect.objectContaining({ id: plugin })]),
   });
@@ -568,21 +587,39 @@ test("plugin access settings keep known tools visible with typed refusals", asyn
       message: expect.stringContaining(label),
       next: expect.stringMatching(/person.*Plugins/u),
     };
-    expect(await call(caller, "plugin_search", { namespace: "fixture" })).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ path, blocked })]),
-    });
-    expect(await call(caller, "plugin_describe", { paths: [path] })).toMatchObject({
-      items: [expect.objectContaining({ path, blocked })],
-    });
+    // Off keeps the whole plugin, so its namespace says so once; Read-only keeps each write.
+    for (const found of [
+      await call(caller, "plugin_search", { namespace: "fixture" }),
+      await call(caller, "plugin_describe", { paths: [path] }),
+    ]) {
+      const items = found.items as { path: string; blocked?: unknown }[];
+      expect(items.map((item) => item.path)).toContain(path);
+      if (access === "off") {
+        expect(found.namespaces).toEqual([expect.objectContaining({ blocked })]);
+        expect(items.filter((item) => "blocked" in item)).toEqual([]);
+      } else expect(items.find((item) => item.path === path)).toMatchObject({ blocked });
+    }
     expect(await call(caller, "plugin_call", { calls: { path, input } }, true)).toMatchObject({
       error: blocked,
     });
+    // Inside a program the refused call fails with the Host's code, as every refusal there does.
     expect(
       await call(caller, "plugin_execute", {
-        code: `return await ${path}(${JSON.stringify(input)})`,
+        code: `try { return await ${path}(${JSON.stringify(input)}); } catch (error) { return { refused: JSON.parse(error.message) }; }`,
       }),
     ).toMatchObject({
-      result: { execution: { value: { kind: "blocked", blocked } } },
+      result: {
+        execution: {
+          ok: true,
+          value: {
+            refused: {
+              code: blocked.code,
+              message: blocked.message,
+              recovery: { instructions: blocked.next },
+            },
+          },
+        },
+      },
     });
   }
   expect(await call(caller, "opensteer_plugin_list", {})).toEqual({

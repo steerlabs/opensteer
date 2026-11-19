@@ -20,7 +20,6 @@ import { assertPersonalOwner } from "./private-resource-owner.js";
 import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import {
   type ComputerAppIdentity,
   IntegrationConnectionRequirementSchema,
@@ -143,13 +142,21 @@ export type IntegrationDiscoveryRequester = IntegrationRequester & {
     { readonly serverId: IntegrationServerId } | { readonly connectionId: IntegrationConnectionId };
 };
 
+/** Installations one read of every installation takes at a time. */
+const discoveryInventoryPage = 1_000;
+
 export interface DiscoveredIntegrationServer {
   readonly connectionRequirement: IntegrationServer["connectionRequirement"];
   readonly id: IntegrationServerId;
   readonly name: string;
   readonly status: "active" | "disabled" | "needs-attention";
   readonly statusDetail: string | null;
-  readonly catalog: IntegrationToolCatalog;
+  /**
+   * Its tools, or null when they are not known yet: a server waiting for its launch's approval.
+   * An existing server keeps the tools its last approved launch listed, still not callable, so a
+   * path an agent holds says why it waits rather than that it is gone.
+   */
+  readonly catalog: IntegrationToolCatalog | null;
   readonly transport: IntegrationServer["transport"];
 }
 
@@ -269,8 +276,8 @@ export abstract class IntegrationPlatformStoreBase {
 export interface InstallIntegrationInput {
   readonly administration?: AdministrationCommandIdentity | undefined;
   /**
-   * For each server an install keeps on a computer: whether it keeps its
-   * approval for the new launch, and its secrets for it.
+   * For each server an install keeps on a computer: the secrets it keeps for
+   * the new launch. Approval never carries: it names one launch, by digest.
    */
   readonly retainedServer?: (
     existing: {
@@ -280,7 +287,7 @@ export interface InstallIntegrationInput {
       transport: IntegrationServer["transport"];
     },
     discovered: DiscoveredIntegrationServer,
-  ) => { carryApproval: boolean; secrets: LocalMcpSecretsUpdate } | null;
+  ) => { secrets: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly actorUserId: UserId | null;
@@ -929,10 +936,6 @@ export async function installIntegrationInTransaction(
         .returningAll()
         .executeTakeFirstOrThrow();
 
-  const retainedUpdates = new Map<
-    IntegrationServerId,
-    { carryApproval: boolean; secrets: LocalMcpSecretsUpdate }
-  >();
   for (const existing of existingServers) {
     const discovered = input.servers.find((s) => s.name === existing.name);
     if (!discovered) continue;
@@ -941,7 +944,6 @@ export async function installIntegrationInTransaction(
       discovered,
     );
     if (retained && discovered.transport.type === "runner" && discovered.transport.runnerId) {
-      retainedUpdates.set(existing.id, retained);
       await replaceSecrets(
         transaction,
         existing.id,
@@ -966,7 +968,6 @@ export async function installIntegrationInTransaction(
   const retainedServerIds: IntegrationServerId[] = [];
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
-    const retained = existing ? retainedUpdates.get(existing.id) : undefined;
     const previousRunner = existing ? runnerOf(existing.transport) : null;
     if (
       installation.pluginId &&
@@ -982,9 +983,6 @@ export async function installIntegrationInTransaction(
       ? await transaction
           .updateTable("integrationServers")
           .set({
-            ...(retained?.carryApproval && discovered.transport.type === "runner"
-              ? { approvedLaunchDigest: localMcpLaunchDigest(discovered.transport.launch) }
-              : {}),
             connectionRequirement: jsonValue(discovered.connectionRequirement),
             status: discovered.status,
             statusDetail: discovered.statusDetail,
@@ -1018,11 +1016,12 @@ export async function installIntegrationInTransaction(
           .returningAll()
           .executeTakeFirstOrThrow();
     retainedServerIds.push(server.id);
-    await replaceServerToolsInTransaction(transaction, {
-      now,
-      serverId: server.id,
-      catalog: discovered.catalog,
-    });
+    if (discovered.catalog)
+      await replaceServerToolsInTransaction(transaction, {
+        now,
+        serverId: server.id,
+        catalog: discovered.catalog,
+      });
   }
   if (retainedServerIds.length === 0) {
     await transaction
@@ -1126,12 +1125,33 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  /** Every installation, read a page at a time by id, in title order. */
   async listInstallations(): Promise<readonly IntegrationInstallation[]> {
+    const rows: Selectable<IntegrationInstallationTable>[] = [];
+    for (;;) {
+      const after = rows.at(-1)?.id;
+      const page = await this.database
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .$if(after !== undefined, (query) => query.where("id", ">", after!))
+        .orderBy("id", "asc")
+        .limit(discoveryInventoryPage)
+        .execute();
+      rows.push(...page);
+      if (page.length < discoveryInventoryPage) break;
+    }
+    return rows
+      .map(installationFromRow)
+      .sort((left, right) => (left.title < right.title ? -1 : left.title > right.title ? 1 : 0));
+  }
+
+  /** The installations of one plugin, however many installations there are. */
+  async installationsForPlugin(pluginId: string): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")
       .selectAll()
-      .orderBy("title", "asc")
-      .limit(1_000)
+      .where("pluginId", "=", pluginId)
+      .orderBy("id", "asc")
       .execute();
     return rows.map(installationFromRow);
   }
@@ -1221,10 +1241,11 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     }[]
   > {
     const provider = input.provider;
-    const [installations, authority, grants] = await Promise.all([
+    const page = (after: IntegrationInstallationId | null) =>
       this.database
         .selectFrom("integrationInstallations")
         .selectAll()
+        .$if(after !== null, (query) => query.where("id", ">", after!))
         .$if(provider !== undefined, (query) =>
           query.where(({ exists, selectFrom }) => {
             let server = selectFrom("integrationServers")
@@ -1243,9 +1264,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             return exists(server);
           }),
         )
-        .orderBy("title", "asc")
-        .limit(1_000)
-        .execute(),
+        .orderBy("id", "asc")
+        .limit(discoveryInventoryPage)
+        .execute();
+    // Every installation, a page at a time by its id, so none is left out however many there are.
+    const allInstallations = async () => {
+      const rows: Awaited<ReturnType<typeof page>> = [];
+      for (;;) {
+        const next = await page(rows.at(-1)?.id ?? null);
+        rows.push(...next);
+        if (next.length < discoveryInventoryPage) return rows;
+      }
+    };
+    const [installations, authority, grants] = await Promise.all([
+      allInstallations(),
       this.authoritySnapshot(input.ownerUserId),
       this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);
@@ -1390,7 +1422,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
       .select(integrationToolListingColumns)
       .where("integrationServers.installationId", "=", installationId)
-      .where("integrationServers.status", "=", "active")
+      // A server that cannot be called now still lists its tools; readiness says why.
+      .where("integrationServers.status", "!=", "disabled")
       .where("integrationTools.status", "=", "active")
       .$if(ownerUserId !== undefined, (builder) =>
         builder.where(
@@ -1773,7 +1806,7 @@ function validateInstallation(input: {
     ) {
       throw invalidAdapterInstallation("A computer server must match its installation definition");
     }
-    if (server.catalog.tools.length !== 0) {
+    if (server.catalog?.tools.length) {
       throw invalidAdapterInstallation("A computer server cannot carry server-level tools");
     }
   }

@@ -58,6 +58,7 @@ export class IntegrationPlatformStore {
   readonly install: IntegrationInstallStore["install"];
   readonly uninstall: IntegrationInstallStore["uninstall"];
   readonly listInstallations: IntegrationInstallStore["listInstallations"];
+  readonly installationsForPlugin: IntegrationInstallStore["installationsForPlugin"];
   readonly listComputerDeviceIdsForInstallation: IntegrationInstallStore["listComputerDeviceIdsForInstallation"];
   readonly listComputerRunnerIdsForInstallation: IntegrationInstallStore["listComputerRunnerIdsForInstallation"];
   readonly listDiscoveryInventory: IntegrationInstallStore["listDiscoveryInventory"];
@@ -175,6 +176,9 @@ export class IntegrationPlatformStore {
     this.install = this.installations.install.bind(this.installations);
     this.uninstall = this.installations.uninstall.bind(this.installations);
     this.listInstallations = this.installations.listInstallations.bind(this.installations);
+    this.installationsForPlugin = this.installations.installationsForPlugin.bind(
+      this.installations,
+    );
     this.listComputerDeviceIdsForInstallation =
       this.installations.listComputerDeviceIdsForInstallation.bind(this.installations);
     this.listComputerRunnerIdsForInstallation =

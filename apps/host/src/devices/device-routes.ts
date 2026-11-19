@@ -95,8 +95,9 @@ export function createDeviceRpcHandlers(
                   (installation) => installation.provenance.definitionId === definition.id,
                 )?.id ?? null,
             })),
+            // The dashboard shows at most its first 1,000, as it always has.
             installations: await Promise.all(
-              installations.map(async (installation) => ({
+              installations.slice(0, 1_000).map(async (installation) => ({
                 installation,
                 servers: (await store.listServers(installation.id)).map(
                   ({ transport, ...server }) => ({ ...server, transportType: transport.type }),

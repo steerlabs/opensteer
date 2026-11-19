@@ -38,6 +38,9 @@ it("serves the pinned immutable whole package, retaining sibling files and file 
     expect(await service.snapshot("run", digest)).toEqual([
       { path: "sibling.sh", mode: 0o700, content: Buffer.from("echo sibling").toString("base64") },
     ]);
+    // A package altered after it was stored is never delivered as the digest it no longer is.
+    await writeFile(join(root, digest, "sibling.sh"), "echo altered", { mode: 0o700 });
+    await expect(service.snapshot("run", digest)).rejects.toThrow("do not match its digest");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

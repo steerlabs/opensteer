@@ -246,6 +246,53 @@ update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}
   where program->'toolContractVersion' = '4'::jsonb
     and program->>'source' !~ 'integration_(call|describe|list|remove|request|search)';
 `;
+/**
+ * One plugin per person and name. Two first registrations of one name at once could each create a
+ * plugin; the later of any such pair keeps its rows under its name with the end of its id added,
+ * and a number after that when the person already has that name. Every name it gives stays a
+ * valid server name (at most 63 characters), so the person can remove it by name.
+ */
+export const onePluginPerOwnerNameMigrationName = "0036_one_plugin_per_owner_name";
+const ONE_PLUGIN_PER_OWNER_NAME_SQL = `
+do $$
+declare
+  duplicate record;
+  candidate text;
+  attempt integer;
+begin
+  for duplicate in
+    select id, installed_by, name from (
+      select id, installed_by, name, created_at,
+        row_number() over (partition by installed_by, name order by created_at, id) as rank
+      from plugins
+    ) ranked
+    where rank > 1
+    order by created_at, id
+  loop
+    attempt := 1;
+    loop
+      candidate := rtrim(left(duplicate.name, 50), '-.') || '-' || right(duplicate.id, 8)
+        || case when attempt = 1 then '' else '-' || attempt end;
+      exit when not exists (
+        select 1 from plugins
+        where installed_by is not distinct from duplicate.installed_by and name = candidate
+      );
+      attempt := attempt + 1;
+    end loop;
+    update plugins set name = candidate where id = duplicate.id;
+  end loop;
+end $$;
+create unique index plugins_owner_name on plugins(installed_by, name);
+`;
+/**
+ * The definition each plugin version's package digest follows. Versions stored before it was
+ * recorded are null: their digests follow the earlier definition, which no reader accepts now, so
+ * the Host stores each such package again under its current digest at startup.
+ */
+export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
+const PLUGIN_PACKAGE_FORMAT_SQL = `
+alter table plugin_versions add column package_format text;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -518,6 +565,16 @@ export function migrationProvider(): MigrationProvider {
         [dropStoredDefinitionApiKeyMigrationName]: {
           async up(database) {
             await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
+          },
+        },
+        [onePluginPerOwnerNameMigrationName]: {
+          async up(database) {
+            await sql.raw(ONE_PLUGIN_PER_OWNER_NAME_SQL).execute(database);
+          },
+        },
+        [pluginPackageFormatMigrationName]: {
+          async up(database) {
+            await sql.raw(PLUGIN_PACKAGE_FORMAT_SQL).execute(database);
           },
         },
       };

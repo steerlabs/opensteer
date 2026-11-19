@@ -150,6 +150,10 @@ integration("MCP servers on a computer", () => {
         { headers: host.ownerHeaders },
       );
       expect(reviewed.request.server?.launch).toEqual(launch);
+      // It says what allowing covers: the command, and the files of its folder it runs.
+      expect(reviewed.request.reason).toMatch(
+        /^Allowing it covers this command and the 1 file in its folder \(\d+\.\d KB\); a program it starts from elsewhere on this computer is covered by its command only\. Once allowed, it runs as you on this computer, with your permissions, not in a sandbox\.$/u,
+      );
 
       // 3. Approved on the Mac: started there once, and its tools listed.
       const approved = await computer.answer(asked.id, {
@@ -307,18 +311,34 @@ integration("MCP servers on a computer", () => {
         orphan,
       });
 
-      // 8. Offline: the program ends, the tools say so, and return with the Mac.
+      // 8. Offline: the program ends, its tools stay listed, a call says the Mac is away, and
+      // they work again with the Mac.
       const running = await readPid(fixture.pidFile);
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = JSON.stringify(await gateway.call("plugin_search", { namespace }));
-      expect(offline).toContain("Studio Mac");
-      expect(await listed()).toBe(false);
+      const offline = await gateway.call("plugin_search", { namespace });
+      expect(offline).toMatchObject({ unavailableApps: [] });
+      expect(JSON.stringify(offline)).not.toContain("blocked");
+      expect(await listed()).toBe(true);
+      const away = await call("echo", { text: "away" });
+      expect(away.isError).toBe(true);
+      expect(said(away)).toContain("Studio Mac");
+      // The person's Plugins screen says when the Mac is back.
+      const ownerSees = async () =>
+        (
+          await testRpcData(
+            host.origin,
+            "plugins.installed.list",
+            {},
+            { headers: host.ownerHeaders },
+          )
+        ).local.find(({ id }) => id === `app_server_${server.id}`)?.unavailable ?? null;
+      expect(await ownerSees()).toContain("Studio Mac");
       await computer.reconnectModule();
-      await waitForCondition(listed, 30_000);
+      await waitForCondition(async () => (await ownerSees()) === null, 30_000);
       expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
-      record("offline and back", offline);
+      record("offline and back", { offline, away: said(away) });
 
       // Host-held exact-launch consent survives a fresh Runner instance.
       await computer.disconnectModule();
@@ -356,7 +376,50 @@ integration("MCP servers on a computer", () => {
       expect(reasked).toEqual([]);
       record("installed again", { reasked });
 
-      // The Personal owner's update keeps approval on the same computer and ends the old launch.
+      // 11. Registered again with a changed launch: the previous version stops, nothing runs
+      // until the Mac's owner allows the new one, and the Request says how it changed.
+      const allowAgain = async (expected: RegExp) => {
+        const asked = await waitingRequest(host, server.id);
+        const changed = (await serverRow(host)).transport as { readonly launch: LocalMcpLaunch };
+        expect(asked.definitionDigest).toBe(localMcpLaunchDigest(changed.launch));
+        const review = await testRpcData(
+          host.origin,
+          "integration.computer.setup.review",
+          { setupRequestId: asked.id },
+          { headers: host.ownerHeaders },
+        );
+        expect(review.request.reason).toMatch(expected);
+        // The tools its approved launch listed stay listed, and the path an agent holds is
+        // refused with why it waits, not as unknown.
+        const waiting = {
+          code: "setup_required",
+          message: "Waiting for approval on the computer that runs it.",
+          next: "Wait for the person to review it on the computer that runs it.",
+        };
+        const echo = `tools[${JSON.stringify(namespace)}].echo`;
+        const listed = await gateway.call("plugin_search", { namespace });
+        expect(listed).toMatchObject({
+          items: expect.arrayContaining([expect.objectContaining({ path: echo })]),
+          namespaces: [expect.objectContaining({ blocked: waiting })],
+        });
+        // Named and described only, without its saved input type, until it may be called.
+        for (const item of listed.items as Record<string, unknown>[])
+          expect(Object.keys(item).sort()).toEqual(["description", "path"]);
+        expect(await gateway.call("plugin_describe", { paths: [echo] })).toMatchObject({
+          items: [{ path: echo, description: expect.any(String) }],
+          namespaces: [expect.objectContaining({ blocked: waiting })],
+        });
+        expect(
+          (await gateway.call("plugin_describe", { paths: [echo] })).items as object[],
+        ).toEqual([expect.not.objectContaining({ signature: expect.anything() })]);
+        const refused = await pluginCall(gateway, echo, { text: "unapproved" });
+        expect(refused.raw).toMatchObject({ isError: true, structuredContent: { error: waiting } });
+        expect(
+          (await computer.answer(asked.id, { setupRequestId: asked.id, kind: "allow" })).kind,
+        ).toBe("allowed");
+        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+        return { launch: changed.launch, review: review.request.reason, refused: refused.failure };
+      };
       const previous = Number(said(await call("pid", {})));
       expect(alive(previous)).toBe(true);
       await fixture.changeLaunch();
@@ -368,19 +431,30 @@ integration("MCP servers on a computer", () => {
         runnerId: computer.runnerId,
       });
       await waitForCondition(async () => !alive(previous), 15_000);
-      const changed = await serverRow(host);
-      const changedLaunch = (changed.transport as { readonly launch: LocalMcpLaunch }).launch;
-      expect(changedLaunch).not.toEqual(launch);
-      await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-      expect(
-        await host.store.database
-          .selectFrom("computerAppSetupRequests")
-          .select("id")
-          .where("kind", "=", "server")
-          .execute(),
-      ).toEqual([]);
+      const command = await allowAgain(/^How it runs changed since you allowed it\. /u);
+      expect(command.launch).not.toEqual(launch);
       expect(said(await call("echo", { text: "changed" }))).toBe("echo: changed");
-      record("installed with a changed launch", { previous });
+      record("installed with a changed launch", { previous, ...command });
+
+      // 11b. Registered again with one file changed: asked again, naming that file.
+      const edited = Number(said(await call("pid", {})));
+      await writeFile(
+        join(fixture.plugin, "server.cjs"),
+        `${await readFile(join(fixture.plugin, "server.cjs"), "utf8")}// tuned\n`,
+      );
+      await host.runtime.localServers.installPackage({
+        actorUserId: host.ownerId,
+        directory: fixture.plugin,
+        registration: fixture.registration,
+        requestId: "local-mcp-file-changed",
+        runnerId: computer.runnerId,
+      });
+      await waitForCondition(async () => !alive(edited), 15_000);
+      const file = await allowAgain(
+        /^Changed since you allowed it: changed server\.cjs \([\d.]+ KB → [\d.]+ KB\)\. Allowing it covers/u,
+      );
+      expect(said(await call("echo", { text: "edited" }))).toBe("echo: edited");
+      record("installed with a changed file", { edited, ...file });
 
       // 12. Uninstalled: nothing waits on the Mac and nothing runs.
       const last = Number(said(await call("pid", {})));
@@ -587,41 +661,38 @@ integration("MCP servers on a computer", () => {
       // A new launch is asked about again; leaving the field blank keeps the value.
       await fixture.changeLaunch();
       await install("update");
-      if (personal) {
-        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-        expect((await serverRow(host)).transport).toMatchObject({ runnerId: computer.runnerId });
-        expect(
-          await host.store.database
-            .selectFrom("computerAppSetupRequests")
-            .select("id")
-            .where("kind", "=", "server")
-            .execute(),
-        ).toEqual([]);
-        const before = await serverRow(host);
-        const versions = await host.store.database
-          .selectFrom("pluginVersions")
+      const askedAgain = await waitingRequest(host, server.id);
+      expect((await review(askedAgain.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
+      await expect(
+        dispatch("early", {
+          secrets: { CAMERA_PASSWORD: "too-early" },
+          serverId: server.id,
+          type: "integration.server.secrets.set",
+        }),
+      ).rejects.toThrow("It's waiting for approval.");
+      await writeFile(fixture.seenFile, "");
+      await answer(askedAgain.id);
+      await started("swordfish:2");
+      await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+      expect((await serverRow(host)).transport).toMatchObject({ runnerId: computer.runnerId });
+      // Registered again exactly so: nothing changes and nothing is asked.
+      const before = await serverRow(host);
+      const versions = await host.store.database
+        .selectFrom("pluginVersions")
+        .select("id")
+        .execute();
+      await install("unchanged");
+      expect(await serverRow(host)).toEqual(before);
+      expect(await host.store.database.selectFrom("pluginVersions").select("id").execute()).toEqual(
+        versions,
+      );
+      expect(
+        await host.store.database
+          .selectFrom("computerAppSetupRequests")
           .select("id")
-          .execute();
-        await install("unchanged");
-        expect(await serverRow(host)).toEqual(before);
-        expect(
-          await host.store.database.selectFrom("pluginVersions").select("id").execute(),
-        ).toEqual(versions);
-        await started("swordfish:2");
-      } else {
-        const askedAgain = await waitingRequest(host, server.id);
-        expect((await review(askedAgain.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
-        await expect(
-          dispatch("early", {
-            secrets: { CAMERA_PASSWORD: "too-early" },
-            serverId: server.id,
-            type: "integration.server.secrets.set",
-          }),
-        ).rejects.toThrow("It's waiting for approval.");
-        await writeFile(fixture.seenFile, "");
-        await answer(askedAgain.id);
-        await started("swordfish:2");
-      }
+          .where("kind", "=", "server")
+          .execute(),
+      ).toEqual([]);
 
       if (personal) {
         const declare = async (names: string[]) => {
@@ -647,6 +718,8 @@ integration("MCP servers on a computer", () => {
         await answer(next.id, { RENAMED_PASSWORD: "renamed" });
         await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
         await declare([]);
+        next = await waitingRequest(host, server.id);
+        await answer(next.id);
         await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
         expect(
           await host.store.database

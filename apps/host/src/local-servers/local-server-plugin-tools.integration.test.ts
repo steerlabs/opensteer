@@ -1,6 +1,14 @@
 import { IntegrationInstallStore } from "@opensteer/database";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import {
+  pluginPackageFormat,
+  readPluginSnapshot,
+  readVerifiedPluginSnapshot,
+} from "@opensteer/agent-plugins";
+import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
+import { sql } from "kysely";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rename, rm, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -260,6 +268,206 @@ integration("local servers as plugin tools", () => {
     });
   }, 60_000);
 
+  it("names a renamed duplicate by its plugin's name wherever an agent finds it", async () => {
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
+    closers.unshift(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Caller",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    closers.unshift(() => caller.close());
+    const computer = await connectComputerAppMachine(host, []);
+    closers.unshift(() => computer.close());
+    const run = await dispatchCallerRun(host, caller, { key: "twins", title: "Two of a name" });
+    closers.unshift(() => run.complete());
+    const gateway = await integrationGateway(run.integrationTools);
+    closers.unshift(() => gateway.close());
+    const add = (url: string) =>
+      gateway.call("local_server_add", { name: "twin", computerId: computer.runnerId, url });
+    await add("http://127.0.0.1:12351/mcp");
+    // What migration 0036 leaves when one person had two plugins of one name: the later is
+    // renamed, while its package manifest still says the old name.
+    await host.store.database
+      .updateTable("plugins")
+      .set({ name: "twin-000000bb" })
+      .where("name", "=", "twin")
+      .execute();
+    await add("http://127.0.0.1:12352/mcp");
+    const { servers } = (await gateway.call("local_server_list", {})) as {
+      servers: { name: string; path: string }[];
+    };
+    expect(servers.map(({ name }) => name).toSorted()).toEqual(["twin", "twin-000000bb"]);
+    const { local } = (await gateway.call("opensteer_plugin_list", {})) as {
+      local: { id: string; slug: string }[];
+    };
+    for (const server of await host.runtime.localServers.options.store.localMcp.list()) {
+      const listed = servers.find(({ name }) => name === server.pluginName);
+      const found = local.find(({ id }) => id === `app_server_${server.id}`);
+      expect(listed?.path).toContain(`"${found?.slug}"`);
+    }
+  }, 60_000);
+
+  it("asks once again after an update for a server allowed before it, listing its tools blocked meanwhile", async () => {
+    const work = await mkdtemp(join(tmpdir(), "opensteer-local-server-upgrade-"));
+    closers.push(() => rm(work, { recursive: true, force: true }));
+    const program = await pairingServer(work);
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
+    closers.unshift(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Caller",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    closers.unshift(() => caller.close());
+    const localMcp = new LocalMcpServers({ stateDirectory: join(work, "runner-state") });
+    const computer = await connectComputerAppMachine(host, [], { desktop: { localMcp } });
+    closers.unshift(() => computer.close());
+    const run = await dispatchCallerRun(host, caller, { key: "upgrade", title: "Use the TV" });
+    closers.unshift(() => run.complete());
+    const gateway = await integrationGateway(run.integrationTools);
+    closers.unshift(() => gateway.close());
+    const added = (await gateway.call("local_server_add", {
+      name: "tv",
+      computerId: computer.runnerId,
+      launch: { command: "node", args: [program] },
+    })) as { server: { path: string } };
+    const status = `${added.server.path}.status`;
+    const namespace = /"([^"]+)"/u.exec(status)![1]!;
+    const database = host.store.database;
+    const allow = async () => {
+      const setup = await vi.waitFor(
+        async () => {
+          const row = await database
+            .selectFrom("computerAppSetupRequests")
+            .select("id")
+            .where("kind", "=", "server")
+            .executeTakeFirst();
+          expect(row, "The launch approval did not open").toBeDefined();
+          return row!;
+        },
+        { timeout: 10_000 },
+      );
+      expect(
+        await computer.answer(setup.id, { setupRequestId: setup.id, kind: "allow" }),
+      ).toMatchObject({ kind: "allowed" });
+    };
+    const callable = () =>
+      vi.waitFor(
+        async () =>
+          expect(
+            await gateway.callRaw("plugin_call", {
+              calls: { path: status, input: { caller: "upgrade", mode: "call" } },
+            }),
+          ).toMatchObject({ structuredContent: { ready: true } }),
+        { timeout: 30_000 },
+      );
+    await allow();
+    const installed = await vi.waitFor(
+      async () => {
+        const row = await database
+          .selectFrom("integrationServers")
+          .select(["id", "installationId", "status", "transport"])
+          .executeTakeFirstOrThrow();
+        expect(row.status, "The approved server was not discovered").toBe("active");
+        return row;
+      },
+      { timeout: 15_000 },
+    );
+    await dispatch(host, {
+      type: "integration.grant.create",
+      input: {
+        access: "read-write",
+        alias: "TV",
+        connectionId: null,
+        installationId: installed.installationId,
+        isDefault: true,
+      },
+    });
+    await callable();
+
+    // As a release before package formats were recorded left it: the same files, stored and
+    // allowed under that release's digest of them, which no reader accepts now.
+    const packages = join(host.runtime.localServers.options.dataDirectory, "plugins/data/packages");
+    const transport = installed.transport as { launch: LocalMcpLaunch };
+    const digest = transport.launch.packageDigest!;
+    const files = await readPluginSnapshot(join(packages, digest));
+    const hash = createHash("sha256");
+    for (const file of files.toSorted((left, right) => left.path.localeCompare(right.path)))
+      hash.update(file.path).update("\0").update(String(file.mode)).update("\0").update(file.bytes);
+    const earlier = hash.digest("hex");
+    await rename(join(packages, digest), join(packages, earlier));
+    const launch = { ...transport.launch, packageDigest: earlier };
+    await database
+      .updateTable("pluginVersions")
+      .set({ digest: earlier, packageFormat: null })
+      .where("digest", "=", digest)
+      .execute();
+    await sql`update integration_installations
+      set provenance = jsonb_set(provenance, '{snapshotDigest}', to_jsonb(${earlier}::text))
+      where id = ${installed.installationId}`.execute(database);
+    await sql`update integration_servers
+      set transport = jsonb_set(transport, '{launch,packageDigest}', to_jsonb(${earlier}::text)),
+        approved_launch_digest = ${localMcpLaunchDigest(launch)}
+      where id = ${installed.id}`.execute(database);
+
+    // What the upgraded Host does as it starts.
+    const service = host.runtime.localServers.options.localServers as LocalServerService;
+    await service.upgradePackages();
+    await service.requestLocalServerApprovals();
+    await service.upgradePackages();
+    const [current] = await host.runtime.localServers.options.store.plugins.current(host.ownerId);
+    expect(current?.digest).toBe(digest);
+    expect(await readVerifiedPluginSnapshot(join(packages, digest), digest)).toHaveLength(
+      files.length,
+    );
+    expect(
+      await database.selectFrom("pluginVersions").select(["digest", "packageFormat"]).execute(),
+    ).toEqual(
+      expect.arrayContaining([
+        { digest: earlier, packageFormat: null },
+        { digest, packageFormat: pluginPackageFormat },
+      ]),
+    );
+    expect(await database.selectFrom("pluginVersions").select("id").execute()).toHaveLength(2);
+    expect(await gateway.call("local_server_list", {})).toMatchObject({
+      servers: [{ name: "tv", state: "waiting" }],
+    });
+    // Its tools stay listed while it waits, refused with why.
+    const waiting = { code: "setup_required", message: expect.stringContaining("approval") };
+    expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: status })]),
+      namespaces: [{ blocked: waiting }],
+    });
+    expect(
+      await gateway.callRaw("plugin_call", {
+        calls: { path: status, input: { caller: "upgrade", mode: "call" } },
+      }),
+    ).toMatchObject({ isError: true, structuredContent: { error: waiting } });
+    // The person's usual approval, saying why it asks again and nothing about file changes.
+    const [setup] = await database
+      .selectFrom("computerAppSetupRequests")
+      .select("id")
+      .where("kind", "=", "server")
+      .execute();
+    const review = (await testRpcData(
+      host.origin,
+      "integration.computer.setup.review",
+      { setupRequestId: setup!.id },
+      { headers: host.ownerHeaders },
+    )) as { request: { reason: string } };
+    expect(review.request.reason).toMatch(
+      /Opensteer was updated since you allowed it, so it needs allowing again\. Allowing it covers this command .* Once allowed, it runs as you on this computer, with your permissions, not in a sandbox\.$/u,
+    );
+    expect(review.request.reason).not.toMatch(/changed/iu);
+    await allow();
+    await callable();
+  }, 90_000);
+
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {
     const work = await mkdtemp(join(tmpdir(), "opensteer-local-server-tools-"));
     closers.push(() => rm(work, { recursive: true, force: true }));
@@ -339,17 +547,21 @@ integration("local servers as plugin tools", () => {
     const blocked = await gateway.call("plugin_search", {
       namespace: /"([^"]+)"/u.exec(pair)?.[1],
     });
-    expect(blocked.unavailableApps).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
+    // Its saved tools are listed; its namespace says once why none can be called yet.
+    expect(blocked).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: pair })]),
+      namespaces: [
+        {
           blocked: {
             code: "access_required",
             message: expect.any(String),
             next: expect.stringContaining('"server":"tv"'),
           },
-        }),
-      ]),
-    );
+        },
+      ],
+      unavailableApps: [],
+    });
+    expect(JSON.stringify(blocked.items)).not.toContain("blocked");
     await dispatch(host, {
       type: "integration.grant.create",
       input: {

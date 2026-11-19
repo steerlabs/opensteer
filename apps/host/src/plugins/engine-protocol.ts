@@ -409,7 +409,8 @@ export const operations = {
           z.strictObject({
             path: id,
             description: z.string(),
-            input: z.string(),
+            // Absent for a tool the caller is kept from, until it may call it.
+            input: z.string().optional(),
             inputTruncated: z.literal(true).optional(),
             blocked: BlockedSchema.optional(),
           }),
@@ -428,7 +429,7 @@ export const operations = {
         z.strictObject({
           path: id,
           description: z.string(),
-          signature: z.string(),
+          signature: z.string().optional(),
           blocked: BlockedSchema.optional(),
         }),
       ),
@@ -505,11 +506,12 @@ export const HostProviderSchema = z.strictObject({
   name: id,
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
   version: id,
+  /** Always listed, whatever keeps an agent from calling them now. */
   tools: z.array(HostToolSchema),
+  /** Why none of its tools can be called now, said once for all of them. */
   blocked: BlockedSchema.optional(),
+  /** Why one tool cannot be called now, where the rest can. */
   toolBlockers: z.record(z.string(), BlockedSchema).optional(),
-  /** Discovery hides tools while the provider is unavailable. */
-  unavailable: z.string().min(1).max(2000).optional(),
 });
 export type PluginHostProvider = z.infer<typeof HostProviderSchema>;
 export const BrokerBindingSchema = z.strictObject({

@@ -2,12 +2,18 @@ import { engineActiveVersions } from "./engine-storage.js";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { pluginSnapshotDigest, readPluginSnapshot } from "@opensteer/agent-plugins";
+import {
+  pluginPackageFormat,
+  pluginSnapshotDigest,
+  readPluginSnapshot,
+  readVerifiedPluginSnapshot,
+} from "@opensteer/agent-plugins";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import type { PinnedPluginSchema } from "@opensteer/protocol";
 import type { PluginOutput } from "./engine-protocol.js";
 
 const entrySchema = z.strictObject({
+  format: z.literal(pluginPackageFormat),
   pluginId: z.string().regex(/^app_[0-9a-f-]{36}$/u),
   name: z.string().min(1).max(64),
   version: z.string().min(1),
@@ -50,6 +56,7 @@ export class PluginSkillCache {
       }
       const digest = pluginSnapshotDigest(await readPluginSnapshot(stage));
       const entry = entrySchema.parse({
+        format: pluginPackageFormat,
         pluginId,
         name: bundle.slug,
         version: bundle.version,
@@ -63,8 +70,7 @@ export class PluginSkillCache {
       } catch (error) {
         if (!["EEXIST", "ENOTEMPTY"].includes(String((error as NodeJS.ErrnoException).code)))
           throw error;
-        if (pluginSnapshotDigest(await readPluginSnapshot(target)) !== digest)
-          throw new Error("Cached plugin skill package changed");
+        await readVerifiedPluginSnapshot(target, digest);
       }
       await mkdir(this.#root, { recursive: true, mode: 0o700 });
       await replacePrivateFileAtomically(
@@ -78,9 +84,12 @@ export class PluginSkillCache {
   async get(plugin: string) {
     if (!/^app_[0-9a-f-]{36}$/u.test(plugin)) return undefined;
     try {
-      return entrySchema.parse(
-        JSON.parse(await readFile(join(this.#root, plugin + ".json"), "utf8")),
-      );
+      const entry: unknown = JSON.parse(await readFile(join(this.#root, plugin + ".json"), "utf8"));
+      // One recorded under another package format names a digest no reader accepts; the plugin's
+      // next install or activation records it again.
+      if (typeof entry !== "object" || entry === null || !("format" in entry)) return undefined;
+      if (entry.format !== pluginPackageFormat) return undefined;
+      return entrySchema.parse(entry);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
