@@ -1,8 +1,14 @@
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import {
+  createHostSelection,
+  hostSnapshotStore,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
@@ -55,13 +61,17 @@ export function useHostValue<Value>(
   select: (snapshot: HostSnapshot) => Value,
   detached: Value,
 ): Value {
+  const selection = useMemo(
+    () => hostClient && createHostSelection(hostSnapshotStore(hostClient), select),
+    [hostClient, select],
+  );
   const subscribe = useCallback(
-    (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
-    [hostClient],
+    (listener: () => void) => selection?.subscribe(listener) ?? (() => undefined),
+    [selection],
   );
   const read = useCallback(
-    () => (hostClient === null ? detached : select(hostClient.getSnapshot())),
-    [detached, hostClient, select],
+    () => (selection === null ? detached : selection.getSnapshot()),
+    [detached, selection],
   );
   return useSyncExternalStore(subscribe, read, read);
 }
