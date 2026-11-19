@@ -658,7 +658,7 @@ describe("publishing over the live release", () => {
   });
 });
 
-it("refuses a run with no source feed before it reads or changes anything", async () => {
+test("refuses a run with no source feed before it reads or changes anything", async () => {
   // A path that does not exist: reaching the disk would create its parent or fail another way.
   await expect(takeSnapshot({ out: "/nonexistent-catalog-parent/snapshot" })).rejects.toThrow(
     "--feed <index.json URL> is required unless --offline",
