@@ -103,7 +103,10 @@ describe("session recovery owner", () => {
           return {
             ...lease(),
             lastProgressAt: () => openedAt,
-            probe: () => (probes++, new Promise<void>(() => {})),
+            probe: () => {
+              probes++;
+              return new Promise<void>(() => {});
+            },
           };
         },
       },

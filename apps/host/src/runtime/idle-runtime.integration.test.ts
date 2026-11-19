@@ -50,17 +50,18 @@ integration("An idle personal Host", () => {
         renewals++;
     });
     const statements: string[] = [];
-    const query = pg.Client.prototype.query;
+    // Every statement any pg client in this process sends, by its text.
+    const query = pg.Client.prototype.query as (...values: unknown[]) => unknown;
     vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
       this: pg.Client,
-      ...args: Parameters<typeof query>
-    ) {
-      const [text] = args as unknown as [string | { text?: string }];
+      ...args: unknown[]
+    ): unknown {
+      const [text] = args as [string | { text?: string } | undefined];
       statements.push(typeof text === "string" ? text : (text?.text ?? "?"));
-      return (query as (...values: unknown[]) => unknown).apply(this, args);
-    } as typeof query);
+      return query.apply(this, args);
+    } as unknown as typeof pg.Client.prototype.query);
 
-    // One heartbeat interval at a time, with each heartbeat answered, until a
+    // One heartbeat interval at a time, with each heartbeat answered, until
     // two whole minutes pass with no statement: registration's tail (catalog
     // capture, watch reconcile, first passes) has finished.
     const heartbeat = async () => {
