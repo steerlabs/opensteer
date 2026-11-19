@@ -990,6 +990,8 @@ export async function personalDeploymentOwner(
           .selectFrom("users")
           .select(["users.id", "users.disabledAt"])
           .orderBy("users.createdAt", "asc")
+          // Every read of "the first user" breaks a tie the same way.
+          .orderBy("users.id", "asc")
           .limit(1)
           .as("owner"),
       (join) => join.onTrue(),

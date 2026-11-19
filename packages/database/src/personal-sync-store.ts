@@ -82,7 +82,12 @@ export async function authorizedSyncState(tx: Read, viewerId: UserId) {
           eb(
             "owner.id",
             "=",
-            eb.selectFrom("users").select("users.id").orderBy("users.createdAt", "asc").limit(1),
+            eb
+              .selectFrom("users")
+              .select("users.id")
+              .orderBy("users.createdAt", "asc")
+              .orderBy("users.id", "asc")
+              .limit(1),
           ),
         ]),
       ]),

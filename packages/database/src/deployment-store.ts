@@ -147,7 +147,8 @@ export async function createUser(
   await database
     .insertInto("users")
     .values({
-      createdAt: now,
+      // PostgreSQL's microsecond clock: users made back to back still have an order.
+      createdAt: sql<Date>`clock_timestamp()`,
       disabledAt: null,
       displayName,
       email: `${id}@test.invalid`,
@@ -167,6 +168,7 @@ export async function firstUser(
     .selectFrom("users")
     .select(["id", "displayName"])
     .orderBy("createdAt", "asc")
+    .orderBy("id", "asc")
     .executeTakeFirst();
   return row ?? null;
 }
