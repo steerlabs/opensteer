@@ -902,6 +902,11 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
+  /** Writes saved personal state now, for a page about to be hidden or unloaded. */
+  flushSavedState() {
+    this.#stream.flushCheckpoints();
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
@@ -3796,30 +3801,8 @@ export class HttpHostClient {
     if (this.#visibility === "foreground") this.#resumeForeground();
     await this.#prepareSocket?.();
     attempt.signal.throwIfAborted();
-    const cache = this.#stream.cache;
-    const cacheCandidate = await cache
-      ?.hasCheckpoints?.(this.#cacheDeploymentId)
-      .catch(() => false);
-    attempt.signal.throwIfAborted();
-    if (cacheCandidate && this.#snapshot.session === "checking") {
-      const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
-      const result = await this.rpc["personal.shell.get"](
-        selected.success ? { selectedThreadId: selected.data } : {},
-        { signal: attempt.signal },
-      );
-      attempt.signal.throwIfAborted();
-      if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
-      else if (!result.ok) {
-        if (
-          ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
-            result.error.reason ?? "",
-          )
-        )
-          throw updateRequired();
-        if (!result.error.retryable) unwrapRpcResult(result);
-      }
-    }
-    attempt.signal.throwIfAborted();
+    // The saved state is read while the socket opens; the attach reply decides whether it is ours.
+    const restored = this.#stream.restore(this.#cacheDeploymentId).catch(() => undefined);
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
@@ -3841,12 +3824,14 @@ export class HttpHostClient {
       liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
     );
     socket.addEventListener("open", () => {
-      if (this.#socket !== socket) return;
-      try {
-        this.#stream.attach((message) => socket.send(JSON.stringify(message)));
-      } catch {
-        this.#socketFailed();
-      }
+      void restored.then(() => {
+        if (this.#socket !== socket) return;
+        try {
+          this.#stream.attach((message) => socket.send(JSON.stringify(message)));
+        } catch {
+          this.#socketFailed();
+        }
+      });
     });
     socket.addEventListener("message", ({ data }) => {
       if (this.#socket !== socket || typeof data !== "string") return;
