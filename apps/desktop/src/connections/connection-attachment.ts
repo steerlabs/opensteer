@@ -47,6 +47,7 @@ export class ConnectionAttachment {
   readonly #listeners = new Set<(snapshot: ConnectionAttachmentSnapshot) => void>();
   #attachment: AttachmentObservation | null = null;
   #attachmentKey: string | null;
+  #held = false;
   #operationId = 0;
 
   constructor(options: {
@@ -138,8 +139,41 @@ export class ConnectionAttachment {
     this.#publish();
   }
 
+  /** Whether this attachment is live or wanted, as opposed to plain "not attached". */
+  get attached(): boolean {
+    return this.#attachment !== null;
+  }
+
+  get key(): string | null {
+    return this.#attachmentKey;
+  }
+
+  get held(): boolean {
+    return this.#held;
+  }
+
+  /**
+   * Keeps a live or wanted attachment `connecting` without establishing it:
+   * its Host is restarting and can't own a session yet. `attach()` resumes it,
+   * and the Host's old connections are closed once, when the hold begins.
+   */
+  hold(attachmentKey: string | null): void {
+    if (this.#attachment === null) return;
+    const holding = this.#held;
+    if (holding && this.#attachmentKey === attachmentKey) return;
+    this.#operationId += 1;
+    this.#attachmentKey = attachmentKey;
+    this.#held = true;
+    this.#attachment = { failure: null, status: "connecting" };
+    this.#publish();
+    if (!holding) void this.#close().catch(() => undefined);
+  }
+
   observe(observation: HostSessionObservation): void {
+    // A held attachment answers only to `attach()`: a session result published
+    // before the hold describes the Host that is restarting.
     if (
+      this.#held ||
       this.#attachment === null ||
       observation.deploymentId !== this.#deploymentId ||
       observation.attachmentKey !== this.#attachmentKey
@@ -150,6 +184,7 @@ export class ConnectionAttachment {
   }
 
   #detach(): void {
+    this.#held = false;
     this.#operationId += 1;
     if (this.#attachment === null) return;
     this.#attachment = null;
@@ -157,6 +192,7 @@ export class ConnectionAttachment {
   }
 
   #run(operationId: number, closeFirst: boolean): void {
+    this.#held = false;
     this.#attachment = { failure: null, status: "connecting" };
     this.#publish();
     void (

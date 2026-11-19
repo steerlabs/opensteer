@@ -230,9 +230,10 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
         return value;
       });
       try {
-        const result = await transport.rpc["team.members.list"]({});
-        expect(result.ok).toBe(false);
-        expect(result).not.toHaveProperty("data");
+        // The retired runtime's answer is withheld as a cancel, with no data.
+        await expect(transport.rpc["team.members.list"]({})).rejects.toMatchObject({
+          code: "deployment-changed",
+        });
       } finally {
         spy.mockRestore();
       }

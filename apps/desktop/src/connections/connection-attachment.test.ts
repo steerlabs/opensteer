@@ -28,6 +28,25 @@ describe("ConnectionAttachment", () => {
     expect(supervisor.snapshot().status).toBe("idle");
   });
 
+  it("keeps a held attachment waiting through a late session result", async () => {
+    const deploymentId = createId("deployment");
+    const attachment = new ConnectionAttachment({
+      attachmentKey: "owner",
+      deploymentId,
+      establish: async () => ({ attachmentKey: "owner", deploymentId, outcome: "ready" }),
+    });
+    attachment.attach();
+    await settle();
+    expect(attachment.snapshot().status).toBe("connected");
+
+    // The Host restarts as the same key; the earlier attempt's ready arrives afterwards.
+    attachment.hold("owner");
+    attachment.observe({ attachmentKey: "owner", deploymentId, outcome: "ready" });
+
+    expect(attachment.snapshot().status).toBe("connecting");
+    expect(attachment.canCancel()).toBe(true);
+  });
+
   it("leaves retry scheduling to the shared controller", async () => {
     const deploymentId = createId("deployment");
     const establish = vi
