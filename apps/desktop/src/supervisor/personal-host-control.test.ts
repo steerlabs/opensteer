@@ -559,7 +559,12 @@ function shellData(): Response {
       recentTaskIds: [],
       nextBefore: null,
       taskCounts: { active: 0, open: 0 },
-      counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+      counts: {
+        pendingRequestCount: 0,
+        pendingRequestsRevision: "0",
+        needsYouCount: 0,
+        unreadTaskCount: 0,
+      },
     }),
   });
 }

@@ -123,7 +123,12 @@ export function previewPersonalHost(
     visits: [],
     attention: [],
     attentionHasMore: false,
-    counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+    counts: {
+      pendingRequestCount: 0,
+      pendingRequestsRevision: "0",
+      needsYouCount: 0,
+      unreadTaskCount: 0,
+    },
   });
   return {
     shell,

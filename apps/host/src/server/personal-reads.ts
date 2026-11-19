@@ -266,6 +266,7 @@ export function createPersonalReads(
         ? {
             counts: {
               pendingRequestCount: state.pendingRequestCount,
+              pendingRequestsRevision: state.pendingRequestsRevision,
               needsYouCount: state.needsYouCount,
               unreadTaskCount: state.unreadTaskCount,
             },

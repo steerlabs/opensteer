@@ -666,6 +666,50 @@ describeStore("Deployment snapshot history", (it) => {
     const revisions = new Map(repaired.snapshot.attention.map((item) => [item.id, item.revision]));
     expect(revisions.get(`request:${requestId}`)).toBe(renamed.sequence);
     expect(revisions.get(`request:${childRequestId}`)).toBe(renamed.sequence);
+    expect(repaired.snapshot.counts.pendingRequestsRevision).toBe(renamed.sequence);
+  });
+
+  it("moves the shell's pending-Requests revision when, and only when, the Waiting Requests list changes", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture, openLiveRequest } = storeFixture;
+    const f = await startRunFixture("pending-revision");
+    const other = await startRunFixture("pending-revision-other");
+    const state = () =>
+      database
+        .selectFrom("clientSyncState")
+        .select(["sequence", "pendingRequestsRevision"])
+        .executeTakeFirstOrThrow();
+    const rename = (threadId: typeof f.threadId, title: string) =>
+      store.renameThread({
+        threadId,
+        requestedBy: f.userId,
+        title,
+        idempotencyKey: `rename-${title}`,
+      });
+    const before = await state();
+    const requestId = createId("request");
+    await openLiveRequest(f, requestId);
+    const opened = await state();
+    expect(BigInt(opened.pendingRequestsRevision)).toBeGreaterThan(
+      BigInt(before.pendingRequestsRevision),
+    );
+    // The list and the shell read the same stamp in their cut.
+    const page = await store.requests.waitingOnUserPage({ limit: 10, userId: f.userId });
+    expect(page.requests.map(({ request }) => request.id)).toEqual([requestId]);
+    expect(page.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    const shell = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (shell.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    expect(shell.snapshot.counts.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // A task no pending Request sits in: the shell moves, the stamp does not.
+    await rename(other.threadId, "Elsewhere");
+    const unrelated = await state();
+    expect(BigInt(unrelated.sequence)).toBeGreaterThan(BigInt(opened.sequence));
+    expect(unrelated.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // The task the Request sits in is named on its list row.
+    await rename(f.threadId, "Where it asks");
+    const shown = await state();
+    expect(shown.pendingRequestsRevision).toBe(shown.sequence);
   });
 
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({

@@ -32,6 +32,7 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
         const shellProgress = {
           counts: {
             pendingRequestCount: cut.state.pendingRequestCount,
+            pendingRequestsRevision: cut.state.pendingRequestsRevision,
             needsYouCount: cut.state.needsYouCount,
             unreadTaskCount: cut.state.unreadTaskCount,
           },

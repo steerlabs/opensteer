@@ -2041,6 +2041,8 @@ const hostApiGroup4 = defineRpc({
     z.object({
       requests: readableRequestList(WaitingRequestViewSchema, 100),
       window: DurableWindowSchema,
+      /** The shell's `counts.pendingRequestsRevision` in the cut this page was read from. */
+      pendingRequestsRevision: PersonalRevisionSchema,
     }),
   ),
   "tasks.list": declaration(

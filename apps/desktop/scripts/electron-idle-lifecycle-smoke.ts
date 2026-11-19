@@ -48,7 +48,12 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     visits: [],
     attention: [],
     attentionHasMore: false,
-    counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+    counts: {
+      pendingRequestCount: 0,
+      pendingRequestsRevision: "0",
+      needsYouCount: 0,
+      unreadTaskCount: 0,
+    },
     session: {
       sessionId: createId("authSession"),
       sessionSurface: "canonical",

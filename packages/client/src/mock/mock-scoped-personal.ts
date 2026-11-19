@@ -138,6 +138,7 @@ export function mockScopedShell(
     ),
     counts: {
       pendingRequestCount: snapshot.waitingRequests.length,
+      pendingRequestsRevision: "0",
       needsYouCount: snapshot.needsYou?.count ?? 0,
       unreadTaskCount: [...threads.values()].filter(({ thread }) => thread.unread).length,
     },

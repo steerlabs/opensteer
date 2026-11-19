@@ -70,7 +70,12 @@ const item = {
   createdAt: time,
   view: { preview: "A" },
 } satisfies TranscriptItem;
-const counts = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
+const counts = {
+  pendingRequestCount: 0,
+  pendingRequestsRevision: "0",
+  needsYouCount: 0,
+  unreadTaskCount: 0,
+};
 const shellLists = {
   activeTaskIds: [],
   activeNextBefore: null,
