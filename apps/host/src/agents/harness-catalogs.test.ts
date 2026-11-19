@@ -152,7 +152,7 @@ describe("harness catalog convergence", () => {
         runners: { inspectHarnesses },
         signal: AbortSignal.timeout(1_000),
       }),
-    ).resolves.toEqual({ staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs) });
+    ).resolves.toMatchObject({ staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs) });
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
   it("asks again thirty seconds after inspecting an error", async () => {
@@ -167,7 +167,7 @@ describe("harness catalog convergence", () => {
         runners: { inspectHarnesses },
         signal: AbortSignal.timeout(1_000),
       }),
-    ).resolves.toEqual({ staleAt: new Date(now + harnessCatalogRetryMs) });
+    ).resolves.toMatchObject({ staleAt: new Date(now + harnessCatalogRetryMs) });
   });
   it("leaves convergence owed after an invalidation whose recapture fails", async () => {
     let stored: HarnessInstanceCatalog | null = {
@@ -275,6 +275,40 @@ describe("harness catalog convergence", () => {
       expect(stored.inspectHarnesses).toHaveBeenCalledTimes(1);
       await owner.close();
     });
+    it("keeps a newer invalidation owed when an older pass finishes after it", async () => {
+      const time = manual();
+      const stored = convergence({ stored: signIn });
+      const recording = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
+      const record = stored.catalogs.recordHarnessCatalogs.bind(stored.catalogs);
+      let held = true;
+      stored.catalogs.recordHarnessCatalogs = async (input) => {
+        if (held) {
+          held = false;
+          reached.resolve();
+          await recording.promise;
+        }
+        return record(input);
+      };
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      owner.owe(harnessInstanceId);
+      await reached.promise;
+      // A second invalidation fails while the first pass is still recording.
+      owner.owe(harnessInstanceId);
+      recording.resolve();
+      await owner.settled();
+      // The older pass did not clear the newer debt: the profile is asked again.
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(2);
+      await owner.close();
+    });
     it("arms a deadline after a recapture that comes back unsettled", async () => {
       const time = manual();
       const stored = convergence({
@@ -312,7 +346,7 @@ describe("harness catalog convergence", () => {
         runners: { inspectHarnesses: fresh.inspectHarnesses },
         signal: AbortSignal.timeout(1_000),
       }),
-    ).resolves.toEqual({ staleAt: new Date(now - 1_000 + harnessCatalogRetryMs) });
+    ).resolves.toMatchObject({ staleAt: new Date(now - 1_000 + harnessCatalogRetryMs) });
     expect(fresh.inspectHarnesses).not.toHaveBeenCalled();
     const { catalogs, inspectHarnesses } = convergence({
       capturedAt: new Date(now - harnessCatalogRetryMs),

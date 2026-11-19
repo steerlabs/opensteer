@@ -142,12 +142,16 @@ export function createHarnessCatalogConvergence(options: {
   readonly onError: (error: unknown) => void;
   readonly clock?: Clock;
 }) {
-  const owed = new Set<HarnessInstanceId>();
+  // Each owed profile carries the number of the invalidation that owes it, so a
+  // pass clears only the debt it started with, never a newer one.
+  const owed = new Map<HarnessInstanceId, number>();
+  let invalidations = 0;
   const drain = new DeadlineDrain({
     ...(options.clock ? { clock: options.clock } : {}),
     onError: options.onError,
     drain: async () => {
-      const reinspect = new Set(owed);
+      const started = new Map(owed);
+      const reinspect = new Set(started.keys());
       const convergence = await reconcileHarnessCatalogs({
         catalogs: options.catalogs,
         connectedEnvironmentIds: await options.connectedEnvironmentIds(),
@@ -157,7 +161,8 @@ export function createHarnessCatalogConvergence(options: {
         ...(options.clock ? { now: options.clock.now() } : {}),
         onCommitted: options.onCommitted,
       });
-      for (const id of reinspect) owed.delete(id);
+      for (const id of convergence.inspected)
+        if (started.has(id) && owed.get(id) === started.get(id)) owed.delete(id);
       return convergence.staleAt;
     },
   });
@@ -165,7 +170,7 @@ export function createHarnessCatalogConvergence(options: {
     wake: () => drain.wake(),
     /** A recapture after invalidation failed: the next pass asks for it regardless. */
     owe(harnessInstanceId: HarnessInstanceId) {
-      owed.add(harnessInstanceId);
+      owed.set(harnessInstanceId, ++invalidations);
       drain.wake();
     },
     settled: () => drain.settled(),
@@ -444,7 +449,7 @@ export async function reconcileHarnessCatalogs(options: {
     catalogs: readonly HarnessInstanceCatalog[],
   ) => void;
 }): Promise<HarnessCatalogConvergence> {
-  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null };
+  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null, inspected: new Set() };
   const now = options.now ?? Date.now();
   const [harnesses, stored] = await Promise.all([
     options.catalogs.listHarnessInstances({ environmentIds: options.connectedEnvironmentIds }),
@@ -504,7 +509,10 @@ export async function reconcileHarnessCatalogs(options: {
     result.status === "rejected" ? [result.reason] : [],
   );
   if (failures.length > 0) throw new AggregateError(failures, "AI model catalog refresh failed");
-  return { staleAt: next.staleAt === null ? null : new Date(next.staleAt) };
+  return {
+    staleAt: next.staleAt === null ? null : new Date(next.staleAt),
+    inspected: new Set([...pending.values()].flat().map(({ id }) => id)),
+  };
 }
 
 export interface HarnessCatalogConvergence {
@@ -514,4 +522,6 @@ export interface HarnessCatalogConvergence {
    * was recorded. Sign-in required waits for the person.
    */
   readonly staleAt: Date | null;
+  /** The profiles this pass asked their Runner about and recorded. */
+  readonly inspected: ReadonlySet<HarnessInstanceId>;
 }
