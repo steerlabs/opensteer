@@ -132,6 +132,15 @@ export function parseRules(text: string): RewriteRules {
   for (const rule of rules.rules) {
     if (ids.has(rule.id)) throw new Error(`The rule id ${rule.id} is used twice`);
     ids.add(rule.id);
+    // A line break added to or removed from a comment can change the code after it (a `return`
+    // followed by a line break returns nothing), and in prose can start a code block.
+    if (
+      (rule.scope === "comments" || rule.scope === "markdown") &&
+      !isDeepStrictEqual(lineBreaks(rule.from), lineBreaks(rule.to))
+    )
+      throw new Error(
+        `Rule ${rule.id}: a ${rule.scope} rule's replacement must have the same line breaks as what it replaces`,
+      );
     if ((rule.scope === "text") !== (rule.files !== undefined))
       throw new Error(
         `Rule ${rule.id}: files belong to text rules, and every text rule names them`,
@@ -145,6 +154,9 @@ export function parseRules(text: string): RewriteRules {
 /* ---- Where text may change ---- */
 
 type Range = readonly [start: number, end: number];
+
+/** The line terminators in `text`, in order, as JavaScript counts them. */
+const lineBreaks = (text: string) => text.match(/\r\n|[\n\r\u2028\u2029]/gu) ?? [];
 
 /** Data URIs and long base64 runs: never rewritten, and compared byte for byte afterwards. */
 export function encodedRuns(text: string): string[] {
@@ -217,8 +229,11 @@ export function markdownProse(text: string): Range[] {
 
 /**
  * A JavaScript or TypeScript file as the TypeScript compiler reads it: its comments, and its
- * other tokens (kind and text) in order. The parser decides what a `/` or a `}` starts, so a
- * regular expression or template is never mistaken for a comment or the other way round.
+ * other tokens (kind, whether a line terminator precedes it, and text) in order. The parser decides
+ * what a `/` or a `}` starts, so a regular expression or template is never mistaken for a comment
+ * or the other way round. A preceding line terminator is part of a token because automatic
+ * semicolon insertion depends on it: `return`, a block comment and `42` return 42 while the
+ * comment stays on one line, and nothing once the comment holds a line break.
  */
 export function scriptTokens(path: string, text: string) {
   const kind = /\.[cm]?tsx$/u.test(path)
@@ -245,8 +260,13 @@ export function scriptTokens(path: string, text: string) {
         found.add(range.pos);
         comments.push([range.pos, range.end]);
       }
-    if (node.end > node.pos)
-      tokens.push(`${node.kind}:${text.slice(node.getStart(file), node.end)}`);
+    if (node.end > node.pos) {
+      // What the scanner reports as a preceding line break: one in the trivia before the token,
+      // including inside a multi-line comment.
+      const start = node.getStart(file);
+      const broken = lineBreaks(text.slice(node.pos, start)).length > 0;
+      tokens.push(`${node.kind}:${broken ? "\n" : ""}:${text.slice(start, node.end)}`);
+    }
   };
   visit(file);
   return { comments: comments.sort((a, b) => a[0] - b[0]), tokens };
@@ -289,6 +309,9 @@ const commentRanges = (path: string, text: string): Range[] =>
     : path.endsWith(".py")
       ? pythonComments(text)
       : [];
+/** How many line terminators each comment holds. */
+const commentBreaks = (path: string, text: string) =>
+  commentRanges(path, text).map(([from, to]) => lineBreaks(text.slice(from, to)).length);
 /** SQL migrations: the engine records each one's hash, so no rule may touch them. */
 const migration = /(?:^|\/)migrations\/.*\.sql$/iu;
 
@@ -409,6 +432,12 @@ export class Rewriter {
           !onlyScopeChanged(file.path, rule.scope, was, content)
         )
           problems.push(`${file.path}: rule ${rule.id} changed text outside its scope`);
+        else if (
+          rule.scope === "comments" &&
+          content !== was &&
+          !isDeepStrictEqual(commentBreaks(file.path, was), commentBreaks(file.path, content))
+        )
+          problems.push(`${file.path}: rule ${rule.id} changed the line breaks in a comment`);
       }
       if (file.path === "package.json") {
         const edited = this.#manifest(id, content);

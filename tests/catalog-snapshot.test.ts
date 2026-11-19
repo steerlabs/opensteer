@@ -12,6 +12,7 @@ import {
   pythonComments,
   rewriteProblems,
   scriptComments,
+  scriptTokens,
   type RewriteRules,
   type Source,
 } from "../scripts/catalog-snapshot/rewrite.ts";
@@ -533,6 +534,44 @@ describe("scoped rewrite rules", () => {
         files: [{ path: "db/migrations/1.sql", content: "select 2;" }],
       }),
     ).toEqual(["db/migrations/1.sql: a migration changed"]);
+  });
+
+  test("never adds or removes a line break in a comment, which can change what code does", async () => {
+    // `return /* note */ 42;` returns 42; with a line break in the comment it returns nothing,
+    // though the tokens are the same: whether a line break precedes `42` is what differs.
+    const returns = "function f() {\n  return /* note */ 42;\n}\n";
+    const tokens = (value: string) => scriptTokens("a.ts", value).tokens;
+    expect(tokens(returns.replace("note", "a\nb"))).not.toEqual(tokens(returns));
+    expect(tokens(returns.replace("note", "remark"))).toEqual(tokens(returns));
+    const run = (content: string) =>
+      build({
+        apps: [entry("mail")],
+        sources: { mail: source("@acme.sh/mail", [{ path: "a.ts", content }]) },
+        // Built directly: a rule file with this rule is refused when it is read (below).
+        rules: rules({ rules: [{ id: "c", scope: "comments", from: "note", to: "a\nb" }] }),
+      });
+    expect((await run(returns)).failures).toEqual([
+      { document: "apps/mail.json", reason: "a.ts: rule c changed text outside its scope" },
+    ]);
+    // Where the code after the comment does not change, the comment's own line breaks still may not.
+    expect((await run("/* note */\nx;\n")).failures).toEqual([
+      { document: "apps/mail.json", reason: "a.ts: rule c changed the line breaks in a comment" },
+    ]);
+    // A rule file whose comments or prose replacement adds or removes a line break is refused.
+    const file = (rule: object) =>
+      JSON.stringify({ version: 1, names: [], rules: [{ id: "r", ...rule }], preserve: [] });
+    for (const rule of [
+      { scope: "comments", from: "acme", to: "a\nb" },
+      { scope: "comments", from: "acme", to: "a\u2028b" },
+      { scope: "markdown", from: "a\nb", to: "a b" },
+      { scope: "markdown", from: "a\nb", to: "a\r\nb" },
+    ])
+      expect(() => parseRules(file(rule))).toThrow("must have the same line breaks");
+    expect(parseRules(file({ scope: "comments", from: "a\nb", to: "c\nd" })).rules).toHaveLength(1);
+    expect(
+      parseRules(file({ scope: "text", from: "a", to: "b\nc", documents: ["d"], files: ["f"] }))
+        .rules,
+    ).toHaveLength(1);
   });
 
   test("takes rules as JSON data with known keys only, the engine's names in their own section", () => {

@@ -94,12 +94,15 @@ provider receives, an ordinary English word); data URIs and long base64 runs are
 either. `names` lists words to account for: after rewriting, every remaining case-insensitive
 occurrence must lie inside a preserved literal or base64 data, or the build fails. `variables`
 sets values a rule's `to` names as `{{name}}`, so one value (such as a contact address) is set in
-one place. SQL under any `migrations/` path is never rewritten by any rule: the engine records
+one place. A `comments` or `markdown` rule whose `to` does not have exactly the line breaks of its
+`from` is refused when the file is read: a line break added to a comment can change the code after
+it (`return`, a comment, then `42` returns nothing once the comment spans two lines). SQL under any `migrations/` path is never rewritten by any rule: the engine records
 each migration's hash.
 
 After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
 its scope (for JavaScript and TypeScript, the file's token stream apart from comments must be
-identical); if the file list, a non-text file, a data URI or base64 run, a migration, or a relative
+identical, including whether a line break precedes each token, on which automatic semicolon
+insertion depends) or changed how many line breaks a comment holds; if the file list, a non-text file, a data URI or base64 run, a migration, or a relative
 import changed; if an import that named a file in its document no longer does; if a
 JSON file that parsed no longer does; or if any package name breaks the contract.
 
