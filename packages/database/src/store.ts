@@ -72,7 +72,7 @@ import {
   type ThreadMessagePage,
 } from "@opensteer/protocol";
 import type { Clock } from "@opensteer/shared/clock";
-import { type Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import {
   type RunToolAdmissionInput,
   type RunToolAdmissionResult,
@@ -180,6 +180,9 @@ import {
 
 /** Told, after commit, which grants a write revoked. */
 export type RunGrantRevocationListener = (grants: readonly RevokedRunGrant[]) => void;
+/** A computer's placed-task count stops here; a longer history reads as the cap. */
+export const pinnedThreadsCountCap = 1_000;
+
 export class OpensteerStore {
   readonly #database: Kysely<DatabaseSchema>;
 
@@ -1046,14 +1049,21 @@ export class OpensteerStore {
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {
     if (environmentIds.length === 0) return new Map();
-    const rows = await this.#database
-      .selectFrom("threads")
-      .select(["environmentId", ({ fn }) => fn.countAll<string>().as("count")])
-      .where("environmentId", "in", [...environmentIds])
-      .where("status", "!=", "archived")
-      .groupBy("environmentId")
-      .execute();
-    return new Map(rows.map((row) => [row.environmentId, Number(row.count)]));
+    // Bounded per environment through its partial index; a long history reads as the cap.
+    const rows = await sql<{ environmentId: EnvironmentId; count: string }>`
+      select environment.id as "environmentId", (
+        select count(*) from (
+          select 1 from threads where threads.environment_id = environment.id
+            and threads.status <> 'archived' limit ${pinnedThreadsCountCap}
+        ) pinned
+      ) as count
+      from unnest(${[...new Set(environmentIds)]}::text[]) as environment(id)
+    `.execute(this.#database);
+    return new Map(
+      rows.rows.flatMap((row) =>
+        Number(row.count) ? [[row.environmentId, Number(row.count)] as const] : [],
+      ),
+    );
   }
 
   async listThreadsForOwner(ownerId: UserId, limit = 10_000): Promise<readonly Thread[]> {

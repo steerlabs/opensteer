@@ -55,6 +55,11 @@ export const PersonalInputQueueViewSchema = z
   .object({
     threadId: ThreadIdSchema,
     revision: PersonalRevisionSchema,
+    /**
+     * The personal head this read saw. A reader drops a response older than the snapshot it
+     * last installed for the task: a repair since then replaced the queue.
+     */
+    asOfSequence: PersonalRevisionSchema.optional(),
     paused: z.boolean(),
     steerRunId: RunIdSchema.nullable(),
     items: z.array(WaitingInputViewSchema).max(100),

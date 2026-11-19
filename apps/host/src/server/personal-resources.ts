@@ -141,7 +141,11 @@ export class PersonalResources {
           },
           next: null,
         });
-      if (pluginChangeResources.some((kind) => kind === input.kind))
+      // Revision-only kinds: a reader learns that something changed and rereads its own view.
+      if (
+        input.kind === "team-replies" ||
+        pluginChangeResources.some((kind) => kind === input.kind)
+      )
         return PersonalResourceDetailSchema.parse({
           revision,
           data: { kind: input.kind },
