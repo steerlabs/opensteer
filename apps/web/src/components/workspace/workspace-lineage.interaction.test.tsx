@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ThreadIdSchema, createId } from "@opensteer/core";
 import type { TranscriptFixtureSnapshot } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
-import { click, element, history, mount, settle } from "./workspace.interaction.test-support.js";
+import { click, element, history, mount, until } from "./workspace.interaction.test-support.js";
 
 /**
  * The mock's tasks with one made a helper: unlisted, with no row of its own,
@@ -206,9 +206,10 @@ describe("the conversation's family", () => {
       expect(earlier.querySelector(".task-family__row")).not.toBeNull();
     }
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await settle();
-    expect(document.querySelector(".popover--task-family")).toBeNull();
-    expect(document.activeElement).toBe(button);
+    await until("Escape never closed the family and returned focus", () => {
+      expect(document.querySelector(".popover--task-family")).toBeNull();
+      expect(document.activeElement).toBe(button);
+    });
     await click(button);
     await click(element<HTMLAnchorElement>(".task-family a"));
     expect(history.at(-1)!.path).toBe("/automations/family-automation");

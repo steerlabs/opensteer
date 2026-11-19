@@ -19,7 +19,8 @@ import {
   resize,
   mount,
   stubLayout,
-  settle,
+  until,
+  microtasksDrained,
   element,
   click,
   placeParams,
@@ -46,9 +47,10 @@ describe("a conversation chosen before the list redraws", () => {
         `.side-task[data-thread-id="${threadId}"] .side-task__main`,
       ).click();
     });
-    await settle();
-    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    await until("The second press never opened its task beside the first's place", () => {
+      expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
+      expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    });
     // A modified click still belongs to the link.
     const other = document.querySelectorAll<HTMLAnchorElement>(".side-task .side-task__main")[1]!;
     const event = new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true });
@@ -115,8 +117,8 @@ describe("the dock's slide always settles", () => {
     const phase = () => workspace.layout.get();
     const slideStarted = async () => {
       const count = slides.length;
-      await settle(40);
-      expect(slides.length).toBe(count + 1);
+      // The slide starts in the frame after the layout settles on it.
+      await until("The slide never started", () => expect(slides.length).toBe(count + 1));
       expect(phase()).toBe("settling");
       return slides.at(-1)!;
     };
@@ -128,7 +130,8 @@ describe("the dock's slide always settles", () => {
     await act(async () => go("/"));
     expect(phase()).toBe("settled");
     await act(async () => go("/?panel=browser"));
-    await settle(40);
+    // A slide would start in the next frame; that frame has run.
+    await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     expect(phase()).toBe("settled");
 
     // A slide the browser cancels without starting another settles too.
@@ -386,7 +389,6 @@ describe("task titles", () => {
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, isComposing }),
       ),
     );
-    await settle();
   }
 
   it.each(["header", "sidebar"])(
@@ -410,13 +412,19 @@ describe("task titles", () => {
       const field = element<HTMLInputElement>('input[aria-label="Task title"]');
       expect(document.activeElement).toBe(field);
       await typeInto(field, "  Shipping plan  ");
+      const rename = vi.spyOn(client, "renameThread");
       await key(field, "Enter", true);
+      // An Enter that composes a character is the input method's: nothing is asked of the Host.
+      await microtasksDrained();
+      expect(rename).not.toHaveBeenCalled();
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(original);
       await key(field, "Enter");
-      expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(
-        "Shipping plan",
-      );
-      expect(element(`[data-thread-id="${id}"]`).textContent).toContain("Shipping plan");
+      await until("Enter never renamed the task and its row", () => {
+        expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(
+          "Shipping plan",
+        );
+        expect(element(`[data-thread-id="${id}"]`).textContent).toContain("Shipping plan");
+      });
     },
   );
 
@@ -439,8 +447,9 @@ describe("task titles", () => {
       const message = "Prepare a launch plan for the new mobile application with milestones";
       await write(element<HTMLElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
-      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
-        await settle(25);
+      await until("The new task never opened", () =>
+        expect(history.at(-1)!.path).toMatch(/^\/tasks\//u),
+      );
       const id = history.at(-1)!.path.split("/").at(-1)!;
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(message);
       if (renameEarly) {
@@ -464,9 +473,10 @@ describe("task titles", () => {
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
-    await settle();
-    expect(element("a.agent-step__head .agent-step__title").textContent).toBe(
-      "Renamed delegated task",
+    await until("The delegated task line never took the new name", () =>
+      expect(element("a.agent-step__head .agent-step__title").textContent).toBe(
+        "Renamed delegated task",
+      ),
     );
   });
 
@@ -499,7 +509,11 @@ describe("task titles", () => {
     await act(async () => {
       await client.renameThread(worker, "Guest room mattress");
     });
-    await settle();
+    await until("The assignment never took the worker's new name", () =>
+      expect(client.getSnapshot().assignments[assignment.id]?.workerThread.title).toBe(
+        "Guest room mattress",
+      ),
+    );
     expect(client.getSnapshot().assignments[assignment.id]).toMatchObject({
       revision: assignment.revision + 1,
       status: "completed",
@@ -937,7 +951,8 @@ describe("a conversation's foot", () => {
     await act(async () => goTo!(`/tasks/${long}?messageId=${b}`));
     await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(2));
     await act(async () => first(false));
-    await settle();
+    // The superseded page's answer is handled by a promise chain with no timer: it has run by now.
+    await microtasksDrained();
     expect(
       document.querySelector(".ref-unavailable"),
       "a superseded link reported its message missing",
